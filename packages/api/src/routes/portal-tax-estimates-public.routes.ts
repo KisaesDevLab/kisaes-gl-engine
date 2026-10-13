@@ -30,7 +30,7 @@ import { resolvePackScopeForUser } from '../services/tax-estimator/estimate-docu
 //     resolvePackScopeForUser). Otherwise the preview sees featureEnabled:false / 404.
 //   - Q51: per-contact options (tax_est_portal_contact_options) decide which sections the
 //     detail carries; disabled sections are ABSENT from the JSON, the voucher PDF needs
-//     quarterly_estimates, the client estimate PDF pdf_download, and a scenario the firm did
+//     quarterly_estimates, the portal-safe estimate PDF pdf_download, and a scenario the firm did
 //     not share is the same 404.
 // Every miss is a 404 (TE_PORTAL_FORBIDDEN) that does not say why. GET-only.
 
@@ -145,17 +145,18 @@ portalTaxEstimatesPublicRouter.get('/:taxpayerId/vouchers.pdf', computeLimiter, 
 });
 
 // GET /api/portal/tax-estimates/:taxpayerId/estimate.pdf?year=&companyId=&scenarioId=
-// Q51: the CLIENT-audience estimate PDF, only when the contact's `pdf_download` option is on;
-// the same data the portal view shows (live, or the finalized snapshot). Every download is
-// audited on the contact's tenant (tax_est_portal_pdf).
+// Q51: the PORTAL-SAFE estimate PDF, only when the contact's `pdf_download` option is on. It
+// is rendered from the same option-filtered DTO the JSON carries (never the engine result), so
+// it shows exactly what this contact may see. Every download is audited on the contact's
+// tenant (tax_est_portal_pdf).
 portalTaxEstimatesPublicRouter.get('/:taxpayerId/estimate.pdf', computeLimiter, async (req, res) => {
   const c = caller(req);
   const taxpayerId = uuid.safeParse(req.params['taxpayerId']);
   if (!taxpayerId.success) throw forbidden();
   if (!(await available(req, c.tenantId))) throw forbidden();
   const r = await portalEstimates.resolveForContact(c, taxpayerId.data, c.year, {}, { scenarioId: c.scenarioId });
-  if (!r.options.pdfDownload || !r.result) throw forbidden();
-  const pdf = await portalEstimates.renderClientEstimatePdf(r);
+  if (!r.options.pdfDownload || !r.result || !r.response.estimate) throw forbidden();
+  const pdf = await portalEstimates.renderPortalSafePdf(r);
   const pc = req.portalContact!;
   await auditLog(c.tenantId, 'download', 'tax_est_portal_pdf', taxpayerId.data, null, {
     portalContactId: c.contactId, taxYear: r.result.taxYear, scenarioId: r.scenarioId, source: r.snapshot ? 'snapshot' : 'live',

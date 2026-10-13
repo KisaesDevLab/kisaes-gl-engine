@@ -5,7 +5,7 @@
 // Tax Estimator Q51 — per-portal-contact view options and shared scenarios, HTTP level.
 //   - defaults reproduce the pre-Q51 response byte for byte,
 //   - a section switched off is ABSENT from the JSON (not hidden), the voucher PDF needs
-//     quarterly_estimates, the client estimate PDF needs pdf_download (and is audited),
+//     quarterly_estimates, the portal-safe estimate PDF needs pdf_download (and is audited) and prints only the shared sections,
 //   - the calculation summary carries only allow-listed fields,
 //   - Base is always offered; a what-if only when shared, otherwise 404; snapshot mode offers
 //     a scenario only when it has a finalized snapshot,
@@ -39,6 +39,7 @@ import { createScenario } from '../services/tax-estimator/scenarios.service.js';
 import { createSnapshot } from '../services/tax-estimator/estimate-snapshots.service.js';
 import { resolveForContact } from '../services/tax-estimator/portal-estimates.service.js';
 import * as portalAuth from '../services/portal-auth.service.js';
+import { pdfDrawnText } from '../services/tax-estimator/pdf-text.test-fixtures.js';
 import { portalTaxEstimatesPublicRouter } from './portal-tax-estimates-public.routes.js';
 import { portalContactsRouter } from './portal-contacts.routes.js';
 import { taxEstimatorRouter } from './tax-estimator.routes.js';
@@ -127,6 +128,20 @@ function paths(v: unknown, prefix = '', out = new Set<string>()): Set<string> {
     }
   }
   return out;
+}
+
+// Words / fields the portal-safe PDF must never print (staff-only concepts, other owners,
+// the Report Pack client copy's sections).
+const PDF_BANNED = [
+  'Owners', "'s share", '%', 'Marginal', 'marginal', 'Safe harbor', 'safe harbor', 'Schedule AI', 'Penalty', 'penalty',
+  'Detailed calculation', 'Warnings', 'Entity total', 'Businesses included', 'Assumptions', 'trace', 'Trace', 'parameter',
+  'Verify', 'engine', 'SEP contribution', 'Interest income', 'Prior-year', 'prior-year tax', 'C corporation',
+];
+const pdfText = (raw: Buffer) => pdfDrawnText(raw).map((t) => t.text).join('\n');
+const getPdf = (key: string, extra = '') => call('GET', `${BASE}/${fx.taxpayerId}/estimate.pdf?year=2026${extra}`, portal(key));
+async function setOpts(key: string, o: Record<string, boolean>) {
+  const r = await call('PUT', optionsUrl(key), as('staff'), o);
+  expect(r.status).toBe(200);
 }
 
 const SUMMARY_PATHS = new Set([
@@ -270,9 +285,24 @@ describe('the portal applies the contact\'s options server-side', () => {
     expect(other.raw.toString('utf8')).toBe(JSON.stringify({ estimate: resolvedOther.full, unavailableReason: null }));
   }, 180_000);
 
-  it('the client estimate PDF downloads (audited) only for a contact with pdf_download', async () => {
-    const pdf = await call('GET', `${BASE}/${fx.taxpayerId}/estimate.pdf?year=2026`, portal('good'));
+  it('the portal-safe estimate PDF downloads (audited) only for a contact with pdf_download, and prints only the shared sections', async () => {
+    const pdf = await getPdf('good');
     expect(pdf.status).toBe(200);
+    // good: summary ON, quarterly ON, payments OFF.
+    const text = pdfText(pdf.raw);
+    expect(text).toContain('Your 2026 tax estimate');
+    expect(text).toContain('Carlos & Maria Rivera');
+    expect(text).toContain('Rivera CPA LLC');
+    expect(text).toContain('Projected 2026 total');
+    expect(text).toContain('How your estimate is calculated');
+    expect(text).toContain('Estimated payments');
+    expect(text).not.toContain('Payments on record');
+    for (const banned of PDF_BANNED) expect(text, banned).not.toContain(banned);
+    // Never a business's entity total when the household owns only part of it.
+    const resolved = await resolveForContact({ contactId: contacts['good']!, tenantId: fx.T.schc, companyId: null }, fx.taxpayerId, 2026);
+    for (const e of resolved.result!.federal.entities.filter((x) => x.shares.every((sh) => Number(sh.profitFraction) < 1))) {
+      expect(text).not.toContain(`$${Math.round(Number(e.projectedProfit)).toLocaleString('en-US')}`);
+    }
     expect(pdf.headers['content-type']).toContain('application/pdf');
     expect(pdf.raw.subarray(0, 5).toString('latin1')).toBe('%PDF-');
     expect(pdf.headers['cache-control']).toBe('no-store');
@@ -293,6 +323,36 @@ describe('the portal applies the contact\'s options server-side', () => {
     expect((await call('GET', `${BASE}/${fx.taxpayerId}/vouchers.pdf?year=2026`, portal('spouse'))).status).toBe(200);
     expect((await call('PUT', optionsUrl('good'), as('staff'), { quarterlyEstimates: true })).status).toBe(200);
   }, 180_000);
+
+  it('portal-safe PDF per option combination: only the projected total + what is switched on', async () => {
+    try {
+      // Total + payments only.
+      await setOpts('good', { calculationSummary: false, quarterlyEstimates: false, paymentsOnRecord: true });
+      let text = pdfText((await getPdf('good')).raw);
+      expect(text).toContain('Projected 2026 total');
+      expect(text).toContain('Payments on record');
+      expect(text).not.toContain('How your estimate is calculated');
+      expect(text).not.toContain('Estimated payments');
+      expect(text).not.toContain('Next payment');
+      for (const banned of PDF_BANNED) expect(text, banned).not.toContain(banned);
+      // Total only.
+      await setOpts('good', { paymentsOnRecord: false });
+      text = pdfText((await getPdf('good')).raw);
+      expect(text).toContain('Total estimated tax');
+      for (const section of ['How your estimate is calculated', 'Estimated payments', 'Payments on record', 'Adjusted gross income']) expect(text).not.toContain(section);
+      for (const banned of PDF_BANNED) expect(text, banned).not.toContain(banned);
+      // Everything on.
+      await setOpts('good', { calculationSummary: true, quarterlyEstimates: true, paymentsOnRecord: true });
+      text = pdfText((await getPdf('good')).raw);
+      for (const section of ['How your estimate is calculated', 'Adjusted gross income', 'Estimated payments', 'Payments on record', 'Disclaimer']) expect(text).toContain(section);
+      for (const banned of PDF_BANNED) expect(text, banned).not.toContain(banned);
+      // pdf_download off → 404 whatever else is on.
+      await call('PUT', optionsUrl('good'), as('bookkeeper'), { pdfDownload: false });
+      expect((await getPdf('good')).status).toBe(404);
+    } finally {
+      await setOpts('good', { calculationSummary: true, quarterlyEstimates: true, paymentsOnRecord: false, pdfDownload: true });
+    }
+  }, 300_000);
 
   it('"View as Client" shows the previewed contact\'s options', async () => {
     const pvGood = await portalAuth.startPreview({
@@ -360,9 +420,13 @@ describe('scenarios shared in the portal', () => {
       expect(both.json.scenarioId).toBe(fx.baseScenarioId);
       expect(both.json.estimate.asOf).toBe(base.createdAt);
       expect(both.json.scenarios.map((s: { id: string }) => s.id)).toEqual([fx.baseScenarioId, whatIf]);
-      // The client estimate PDF of a snapshot is that snapshot (audited with its id).
+      // The portal-safe PDF of a snapshot shows that snapshot (audited with its id).
       const pdf = await call('GET', `${BASE}/${fx.taxpayerId}/estimate.pdf?year=2026&scenarioId=${whatIf}`, portal('good'));
       expect(pdf.status).toBe(200);
+      const text = pdfText(pdf.raw);
+      expect(text).toContain('Scenario: If you buy the truck');
+      expect(text).toContain(`Prepared ${truck.createdAt.slice(0, 10)}`);
+      for (const banned of PDF_BANNED) expect(text, banned).not.toContain(banned);
       const rows = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, fx.T.schc), eq(auditLog.entityType, 'tax_est_portal_pdf')));
       expect(rows.map((x) => x.afterData)).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'snapshot', snapshotId: truck.id, scenarioId: whatIf })]));
     } finally {

@@ -26,7 +26,7 @@
 // record) and adds the calculation summary (shared/portal-summary.ts, its own allow-list) when
 // switched on — as absent keys, never hidden ones. Staff share what-if scenarios one by one
 // (tax_est_scenarios.show_in_portal); Base is always offered. The voucher PDF needs
-// `quarterly_estimates`, the client estimate PDF `pdf_download`. The estimate is computed /
+// `quarterly_estimates`, the portal-safe estimate PDF (rendered from the filtered DTO) `pdf_download`. The estimate is computed /
 // cached once for everyone; the options are applied per request after it.
 //
 // LIVE vs SNAPSHOT (D10). Default live: computed on request through the same scoped
@@ -53,7 +53,7 @@ import { allowedTenantIds, UNRESTRICTED_VIEWER, type FirmScope } from './firm-sc
 import { getFirmSettings } from './firm-settings.service.js';
 import { computeEstimate, type EstimateOptions } from './estimate.service.js';
 import { getSnapshot } from './estimate-snapshots.service.js';
-import { renderEstimatePdf } from './estimate-pdf.service.js';
+import { renderPortalEstimatePdf } from './portal-estimate-pdf.service.js';
 import { estimatePdfFilename } from './estimate-documents.service.js';
 import { optionsForContact } from './portal-options.service.js';
 
@@ -197,7 +197,7 @@ export interface PortalScenarioPick {
 /**
  * Everything one portal request resolves to. `response` is the per-contact, option-filtered
  * DTO the route sends; `full` is the unfiltered allow-list projection (voucher PDF) and
- * `result` the engine result it came from (client estimate PDF). Neither leaves the server.
+ * `result` the engine result it came from (audit metadata only; the portal-safe PDF reads `response`). Neither leaves the server.
  */
 export interface ResolvedPortalEstimate {
   response: PortalTaxEstimateResponseDTO;
@@ -209,6 +209,8 @@ export interface ResolvedPortalEstimate {
   disclaimer: string | null;
   snapshot: { id: string; createdAt: string; reason: SnapshotReason } | null;
   scenarioId: string | null;
+  /** Q51: the shown scenario's name (staff-named, as the picker shows it). */
+  scenarioName: string | null;
 }
 
 /**
@@ -290,7 +292,7 @@ export async function resolveForContact(
     if (pick.scenarioId && !offered.some((s) => s.id === pick.scenarioId)) throw notFound();
     const chosen = pick.scenarioId ?? offered[0]?.id ?? null;
     const none = () => resolved({
-      response: { estimate: null, unavailableReason: 'no_snapshot' }, full: null, result: null, disclaimer: null, snapshot: null, scenarioId: null,
+      response: { estimate: null, unavailableReason: 'no_snapshot' }, full: null, result: null, disclaimer: null, snapshot: null, scenarioId: null, scenarioName: null,
     });
     if (!chosen) return none();
     let s;
@@ -307,6 +309,7 @@ export async function resolveForContact(
       response: withPicker(offered, chosen, { estimate: applyPortalOptions(full, s.payload.result, options), unavailableReason: null }),
       full, result: { ...s.payload.result, assumptions: s.payload.assumptions }, disclaimer: s.payload.disclaimerText ?? null,
       snapshot: { id: s.id, createdAt: s.createdAt, reason: s.reason }, scenarioId: chosen,
+      scenarioName: offered.find((x) => x.id === chosen)?.name ?? null,
     });
   }
 
@@ -320,6 +323,7 @@ export async function resolveForContact(
   return resolved({
     response: withPicker(shared, chosen, { estimate: applyPortalOptions(full, result, options), unavailableReason: null }),
     full, result, disclaimer, snapshot: null, scenarioId: chosen,
+    scenarioName: shared.find((x) => x.id === chosen)?.name ?? null,
   });
 }
 
@@ -331,16 +335,15 @@ export async function getForContact(
 }
 
 /**
- * Q51: the client-audience estimate PDF (estimate-pdf.service audience 'client' — the same
- * deliverable as the Report Pack section) of exactly what the portal shows: the live result,
- * or the finalized snapshot when the taxpayer's portal shows snapshots.
+ * Q51 (Kurt: "Portal-safe PDF"): the estimate PDF a portal contact downloads, rendered ONLY
+ * from the option-filtered portal DTO (portal-estimate-pdf.service), so it never shows more
+ * than the portal JSON. Not the Report Pack client copy.
  */
-export async function renderClientEstimatePdf(r: ResolvedPortalEstimate): Promise<{ bytes: Uint8Array; filename: string }> {
-  if (!r.result) throw notFound();
-  const bytes = await renderEstimatePdf(r.result, {
-    taxpayerName: r.taxpayer.displayName, firmName: r.firmName, disclaimer: r.disclaimer, snapshot: r.snapshot, audience: 'client',
-  });
-  return { bytes, filename: estimatePdfFilename(r.result.taxYear, r.taxpayer.displayName, r.result.scenarioName) };
+export async function renderPortalSafePdf(r: ResolvedPortalEstimate): Promise<{ bytes: Uint8Array; filename: string }> {
+  const e = r.response.estimate;
+  if (!e) throw notFound();
+  const bytes = await renderPortalEstimatePdf(e, { scenarioName: r.scenarioName });
+  return { bytes, filename: estimatePdfFilename(e.taxYear, r.taxpayer.displayName, r.scenarioName) };
 }
 
 // ── Voucher PDF (built from the projected DTO only, so it cannot carry more) ──

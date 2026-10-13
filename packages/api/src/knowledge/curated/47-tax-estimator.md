@@ -203,8 +203,9 @@ deduction, QBI deduction, taxable income, regular tax, credits,
 self-employment and other taxes, federal total, tax per state and the
 total; no rates, formulas or adjustment detail), Quarterly estimates and
 vouchers (on), Payments on record (on) and Download the estimate PDF (off;
-the client copy of the estimate PDF, which does show business totals,
-owners and the detailed calculation). The projected total always shows.
+a PDF of exactly what that contact sees in the portal: the projected total
+plus the sections switched on, never business totals, other owners, rates
+or adjustment detail; it is not the Report Pack client copy). The projected total always shows.
 One setting covers every taxpayer the contact can open. Turning a switch on
 needs firm staff with Tax Estimator access; the client's own staff can only
 turn switches off. A switched-off section is not sent to the portal at all.
