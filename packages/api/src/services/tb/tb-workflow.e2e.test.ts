@@ -156,21 +156,21 @@ describe('full TB workflow — 1120S (14.2)', () => {
     await seedDefaultGroupings(tenantId, companyId, userId);
     const { groupings } = await listGroupings(tenantId, companyId);
     for (const g of groupings) {
-      await sign(tenantId, companyId, { taxYear: 2026, groupingId: g.id, role: 'preparer' }, userId);
-      await sign(tenantId, companyId, { taxYear: 2026, groupingId: g.id, role: 'reviewer' }, userId);
+      await sign(tenantId, companyId, { periodEnd: '2026-12-31', groupingId: g.id, role: 'preparer' }, userId);
+      await sign(tenantId, companyId, { periodEnd: '2026-12-31', groupingId: g.id, role: 'reviewer' }, userId);
     }
-    expect((await checkCompletionGate(tenantId, companyId, 2026)).ok).toBe(true);
+    expect((await checkCompletionGate(tenantId, companyId, '2026-12-31')).ok).toBe(true);
 
     // A late AJE makes every signature stale; re-sign one grouping.
     await createAje(tenantId, companyId, {
       txnDate: '2026-12-31', memo: 'Late adjustment', basis: 'both',
       lines: [line('Depreciation Expense', 10, 0), line('Accumulated Depreciation', 0, 10)],
     }, userId);
-    const stale = await listSignoffs(tenantId, companyId, 2026);
+    const stale = await listSignoffs(tenantId, companyId, '2026-12-31');
     expect(stale.signoffs.every((s) => s.stale)).toBe(true);
     const g0 = groupings[0]!;
-    await sign(tenantId, companyId, { taxYear: 2026, groupingId: g0.id, role: 'preparer' }, userId);
-    await sign(tenantId, companyId, { taxYear: 2026, groupingId: g0.id, role: 'reviewer' }, userId);
+    await sign(tenantId, companyId, { periodEnd: '2026-12-31', groupingId: g0.id, role: 'preparer' }, userId);
+    await sign(tenantId, companyId, { periodEnd: '2026-12-31', groupingId: g0.id, role: 'reviewer' }, userId);
 
     // 7. Close the period: client hard-blocked, staff JE needs override,
     // AJE still posts.

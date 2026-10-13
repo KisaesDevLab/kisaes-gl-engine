@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { db, pool } from '../../db/index.js';
 import {
   accounts, accountTaxAssignments, companies, companyTaxProfiles,
-  journalLines, tbGroupings, tbTickmarkApplications, tbTickmarks,
+  journalLines, tbGroupings, tbNotes, tbTickmarkApplications, tbTickmarks,
   tenants, transactions,
 } from '../../db/schema/index.js';
 import { importSeed } from './tax-code-seed.service.js';
@@ -67,6 +67,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db.execute(sql`DELETE FROM tb_tickmark_applications WHERE tenant_id = ${tenantId}`);
+  await db.execute(sql`DELETE FROM tb_notes WHERE tenant_id = ${tenantId}`);
   await db.execute(sql`DELETE FROM tb_tickmarks WHERE tenant_id = ${tenantId}`);
   await db.execute(sql`DELETE FROM tb_grouping_accounts WHERE tenant_id = ${tenantId}`);
   await db.execute(sql`DELETE FROM tb_groupings WHERE tenant_id = ${tenantId}`);
@@ -135,7 +136,7 @@ describe('TB report family (Phase 12)', () => {
     const [used] = await db.insert(tbTickmarks).values({ tenantId, symbol: 'F', description: 'Footed', sortOrder: 1 }).returning();
     await db.insert(tbTickmarks).values({ tenantId, symbol: 'Z', description: 'Unused mark', sortOrder: 2 });
     await db.insert(tbTickmarkApplications).values({
-      tenantId, companyId, taxYear: 2026, accountId: A['Cash']!, column: 'adjusted', tickmarkId: used!.id,
+      tenantId, companyId, taxYear: 2026, periodEnd: END, accountId: A['Cash']!, column: 'adjusted', tickmarkId: used!.id,
     });
 
     const all = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual');
@@ -162,5 +163,44 @@ describe('TB report family (Phase 12)', () => {
 
     await expect(tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual', '00000000-0000-0000-0000-000000000099'))
       .rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('period-end scoping (0208): a mark/note on 07/31 never reaches the 12/31 downloads, and vice versa', async () => {
+    const JUL = '2026-07-31';
+    const [julMark] = await db.insert(tbTickmarks).values({ tenantId, symbol: 'J7', description: 'July-only mark', sortOrder: 3 }).returning();
+    await db.insert(tbTickmarkApplications).values({
+      tenantId, companyId, taxYear: 2026, periodEnd: JUL, accountId: A['Cash']!, column: 'adjusted', tickmarkId: julMark!.id,
+    });
+    await db.insert(tbNotes).values({ tenantId, companyId, taxYear: 2026, periodEnd: JUL, accountId: A['Cash']!, body: 'July note' });
+
+    const cashRow = (data: Array<Record<string, unknown>>) => data.find((r) => r['name'] === 'Cash')!;
+
+    // 12/31 workpaper download: only the 12/31 'F', never July's 'J7'.
+    const dec = await tbReports.buildTbWorkpaperReport(tenantId, companyId, END, 'accrual');
+    expect(String(cashRow(dec.data)['marks'])).toBe('F');
+    // 07/31 workpaper download: only July's mark.
+    const jul = await tbReports.buildTbWorkpaperReport(tenantId, companyId, JUL, 'accrual');
+    expect(String(cashRow(jul.data)['marks'])).toBe('J7');
+
+    // Leadsheet PDF/report: marks + legend follow the period.
+    const lsDec = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, END, 'accrual');
+    const lsDecLegend = lsDec.data.slice(lsDec.data.findIndex((r) => r['name'] === 'Tickmark Legend') + 1);
+    expect(lsDecLegend.map((r) => r['marks'])).toEqual(['F']);
+    const lsJul = await tbReports.buildTbLeadsheetsReport(tenantId, companyId, JUL, 'accrual');
+    const lsJulLegend = lsJul.data.slice(lsJul.data.findIndex((r) => r['name'] === 'Tickmark Legend') + 1);
+    expect(lsJulLegend.map((r) => r['marks'])).toEqual(['J7']);
+
+    // Workpaper index counts are per period too.
+    const sumCol = (data: Array<Record<string, unknown>>, key: string) => data.reduce((n, r) => n + Number(r[key] ?? 0), 0);
+    const idxDec = await tbReports.buildTbWorkpaperIndex(tenantId, companyId, END);
+    const idxJul = await tbReports.buildTbWorkpaperIndex(tenantId, companyId, JUL);
+    expect(sumCol(idxDec.data, 'tickmarks')).toBe(1);
+    expect(sumCol(idxDec.data, 'notes')).toBe(0);
+    expect(sumCol(idxJul.data, 'tickmarks')).toBe(1);
+    expect(sumCol(idxJul.data, 'notes')).toBe(1);
+
+    // A period end with nothing applied starts blank (no roll-forward).
+    const aug = await tbReports.buildTbWorkpaperReport(tenantId, companyId, '2026-08-31', 'accrual');
+    expect(String(cashRow(aug.data)['marks'])).toBe('');
   });
 });

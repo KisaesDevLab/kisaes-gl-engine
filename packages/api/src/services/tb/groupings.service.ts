@@ -4,7 +4,9 @@
 
 // Groupings / leadsheets / tickmarks / notes (Phase 7). Groupings are
 // persistent across years (D8) — membership lives on the account, not
-// per tax year. Tickmark applications and notes ARE per tax year.
+// per tax year. Tickmark applications and notes are per workpaper
+// PERIOD END (migration 0208; see period-scope.ts) — tax_year is stored
+// but derived from the period end.
 
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
@@ -13,6 +15,7 @@ import {
 } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
+import { resolvePeriodScope } from './period-scope.js';
 
 // Seeded default leadsheet structure (plan §4.8). Account membership
 // auto-assigns by account_type + detail_type heuristics on seed.
@@ -230,16 +233,17 @@ export async function deleteTickmark(tenantId: string, id: string, userId?: stri
   await auditLog(tenantId, 'delete', 'tb_tickmark', id, before, null, userId);
 }
 
-export async function listTickmarkApplications(tenantId: string, companyId: string, taxYear: number) {
+export async function listTickmarkApplications(tenantId: string, companyId: string, periodEnd: string) {
   return db.select().from(tbTickmarkApplications)
     .where(and(
       eq(tbTickmarkApplications.tenantId, tenantId),
       eq(tbTickmarkApplications.companyId, companyId),
-      eq(tbTickmarkApplications.taxYear, taxYear),
+      eq(tbTickmarkApplications.periodEnd, periodEnd),
     ));
 }
 
-export async function applyTickmark(tenantId: string, companyId: string, input: { taxYear: number; accountId: string; column: string; tickmarkId: string; note?: string | null }, userId?: string) {
+export async function applyTickmark(tenantId: string, companyId: string, input: { periodEnd: string; accountId: string; column: string; tickmarkId: string; note?: string | null }, userId?: string) {
+  const scope = await resolvePeriodScope(tenantId, companyId, { periodEnd: input.periodEnd });
   const [mark] = await db.select({ id: tbTickmarks.id }).from(tbTickmarks)
     .where(and(eq(tbTickmarks.id, input.tickmarkId), eq(tbTickmarks.tenantId, tenantId))).limit(1);
   if (!mark) throw AppError.notFound('Tickmark not found');
@@ -248,7 +252,8 @@ export async function applyTickmark(tenantId: string, companyId: string, input: 
   if (!acct) throw AppError.notFound('Account not found');
   const [row] = await db.insert(tbTickmarkApplications).values({
     tenantId, companyId,
-    taxYear: input.taxYear,
+    taxYear: scope.taxYear,
+    periodEnd: scope.periodEnd,
     accountId: input.accountId,
     column: input.column,
     tickmarkId: input.tickmarkId,
@@ -270,13 +275,14 @@ export async function removeTickmarkApplication(tenantId: string, companyId: str
 
 // ── Notes (7.4) ─────────────────────────────────────────────────────
 
-export async function listNotes(tenantId: string, companyId: string, taxYear: number) {
+export async function listNotes(tenantId: string, companyId: string, periodEnd: string) {
   return db.select().from(tbNotes)
-    .where(and(eq(tbNotes.tenantId, tenantId), eq(tbNotes.companyId, companyId), eq(tbNotes.taxYear, taxYear)))
+    .where(and(eq(tbNotes.tenantId, tenantId), eq(tbNotes.companyId, companyId), eq(tbNotes.periodEnd, periodEnd)))
     .orderBy(asc(tbNotes.createdAt));
 }
 
-export async function createNote(tenantId: string, companyId: string, input: { taxYear: number; accountId?: string | null; body: string }, userId?: string) {
+export async function createNote(tenantId: string, companyId: string, input: { periodEnd: string; accountId?: string | null; body: string }, userId?: string) {
+  const scope = await resolvePeriodScope(tenantId, companyId, { periodEnd: input.periodEnd });
   if (input.accountId) {
     const [acct] = await db.select({ id: accounts.id }).from(accounts)
       .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, input.accountId))).limit(1);
@@ -284,7 +290,8 @@ export async function createNote(tenantId: string, companyId: string, input: { t
   }
   const [row] = await db.insert(tbNotes).values({
     tenantId, companyId,
-    taxYear: input.taxYear,
+    taxYear: scope.taxYear,
+    periodEnd: scope.periodEnd,
     accountId: input.accountId ?? null,
     body: input.body,
     authorId: userId ?? null,

@@ -852,8 +852,14 @@ Key ideas:
   workpapers (Cash, AR, Fixed Assets…) with tickmarks, notes, and a
   preparer→reviewer sign-off flow. The date box at the top is the period
   end (shared with the Trial Balance page); the leadsheet shows balances
-  as of that date, and tickmarks, notes and sign-offs belong to the tax
-  year it falls in. Click **Edit** on a leadsheet to change its accounts:
+  as of that date, and tickmarks, notes, sign-offs and row attachments
+  belong to that exact **period end** — a tickmark placed on the 08/31
+  workpaper does not appear on 07/31 (and vice versa), and a reviewer
+  sign-off on 08/31 does not count for 07/31. A new period end starts
+  blank; nothing is copied forward. The tickmark library itself (TB
+  Settings) is shared by every period. Marking the tax year **Complete**
+  checks reviewer sign-offs on the fiscal-year-end date (e.g. 12/31), so
+  interim sign-offs don't complete the year. Click **Edit** on a leadsheet to change its accounts:
   "Move to…" on a row moves it to another leadsheet (or removes it), and
   "Add account" pulls any account — including zero-balance ones — into
   the open leadsheet. While editing, the Groupings list on the left also

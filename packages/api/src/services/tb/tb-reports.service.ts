@@ -82,8 +82,9 @@ const toFiveCol = (r: { accountNumber: string | null; name: string; unadjusted: 
 });
 
 // Workpaper annotations shared by the TB reports: leadsheet code (WP
-// ref) per account, and the tax year's applied tickmark symbols.
-async function loadWpAnnotations(tenantId: string, companyId: string, taxYear: number) {
+// ref) per account, and the tickmark symbols applied on THIS workpaper
+// period end (period-scoped, migration 0208 — 07/31 never shows 08/31's).
+async function loadWpAnnotations(tenantId: string, companyId: string, periodEnd: string) {
   const [groupings, memberships, marks] = await Promise.all([
     db.select().from(tbGroupings)
       .where(and(eq(tbGroupings.tenantId, tenantId), eq(tbGroupings.companyId, companyId))),
@@ -95,7 +96,7 @@ async function loadWpAnnotations(tenantId: string, companyId: string, taxYear: n
       .where(and(
         eq(tbTickmarkApplications.tenantId, tenantId),
         eq(tbTickmarkApplications.companyId, companyId),
-        eq(tbTickmarkApplications.taxYear, taxYear),
+        eq(tbTickmarkApplications.periodEnd, periodEnd),
       )),
   ]);
   const codeByGrouping = new Map(groupings.map((g) => [g.id, g.leadsheetCode ?? '']));
@@ -127,7 +128,7 @@ export async function buildTbWorkpaperReport(
 ) {
   const { taxYear } = await fiscalContext(tenantId, companyId, endDate);
   const wp = await computeWorkpaper(tenantId, companyId, { periodEnd: endDate, basis, taxYear, tagId });
-  const [ann, fmt] = await Promise.all([loadWpAnnotations(tenantId, companyId, taxYear), loadUnitFormatting(tenantId, companyId)]);
+  const [ann, fmt] = await Promise.all([loadWpAnnotations(tenantId, companyId, endDate), loadUnitFormatting(tenantId, companyId)]);
   const activityView = view.activityView ?? '';
   const byTag = activityView === TB_VIEW_BY_TAG;
   // One line per account (or per account × segment in by-tag view),
@@ -198,7 +199,7 @@ export async function buildTbGroupedReport(tenantId: string, companyId: string, 
     set.add(m.accountId);
     byGrouping.set(m.groupingId, set);
   }
-  const ann = await loadWpAnnotations(tenantId, companyId, taxYear);
+  const ann = await loadWpAnnotations(tenantId, companyId, endDate);
   const data: Array<Record<string, unknown>> = [];
   const used = new Set<string>();
   const pushSection = (label: string, rows: typeof wp.rows) => {
@@ -254,7 +255,7 @@ export async function buildTbLeadsheetsReport(
   }
   const memberships = await db.select().from(tbGroupingAccounts)
     .where(and(eq(tbGroupingAccounts.tenantId, tenantId), eq(tbGroupingAccounts.companyId, companyId)));
-  const { signoffs } = await listSignoffs(tenantId, companyId, taxYear);
+  const { signoffs } = await listSignoffs(tenantId, companyId, endDate);
   const marks = await db.select({
     accountId: tbTickmarkApplications.accountId,
     symbol: tbTickmarks.symbol,
@@ -264,7 +265,7 @@ export async function buildTbLeadsheetsReport(
     .where(and(
       eq(tbTickmarkApplications.tenantId, tenantId),
       eq(tbTickmarkApplications.companyId, companyId),
-      eq(tbTickmarkApplications.taxYear, taxYear),
+      eq(tbTickmarkApplications.periodEnd, endDate),
     ));
   const marksByAccount = new Map<string, Set<string>>();
   const markDescriptions = new Map<string, string>();
@@ -689,14 +690,14 @@ export async function buildTbWorkpaperIndex(tenantId: string, companyId: string,
     .orderBy(tbGroupings.sortOrder);
   const memberships = await db.select().from(tbGroupingAccounts)
     .where(and(eq(tbGroupingAccounts.tenantId, tenantId), eq(tbGroupingAccounts.companyId, companyId)));
-  const { signoffs } = await listSignoffs(tenantId, companyId, taxYear);
+  const { signoffs } = await listSignoffs(tenantId, companyId, endDate);
   const { byGrouping: attachCounts } = await refCodesByAccount(tenantId, companyId, endDate);
   const marks = await db.select({ id: tbTickmarkApplications.id, accountId: tbTickmarkApplications.accountId })
     .from(tbTickmarkApplications)
-    .where(and(eq(tbTickmarkApplications.tenantId, tenantId), eq(tbTickmarkApplications.companyId, companyId), eq(tbTickmarkApplications.taxYear, taxYear)));
+    .where(and(eq(tbTickmarkApplications.tenantId, tenantId), eq(tbTickmarkApplications.companyId, companyId), eq(tbTickmarkApplications.periodEnd, endDate)));
   const notes = await db.select({ id: tbNotes.id, accountId: tbNotes.accountId, resolvedAt: tbNotes.resolvedAt })
     .from(tbNotes)
-    .where(and(eq(tbNotes.tenantId, tenantId), eq(tbNotes.companyId, companyId), eq(tbNotes.taxYear, taxYear)));
+    .where(and(eq(tbNotes.tenantId, tenantId), eq(tbNotes.companyId, companyId), eq(tbNotes.periodEnd, endDate)));
   const data = groupings.map((g) => {
     const accts = new Set(memberships.filter((m) => m.groupingId === g.id).map((m) => m.accountId));
     const sig = (role: string) => {
