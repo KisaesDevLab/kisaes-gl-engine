@@ -1103,6 +1103,29 @@ to the latest finalized snapshot (per taxpayer, or the firm default in
 Firm settings). The client has no control over it. Clients never see persons,
 other owners, adjustments, traces, parameters or prior-year figures.
 
+What each contact sees is set PER CONTACT (a spouse or a bookkeeper can see
+less): on the taxpayer page open Portal contacts -> "What they see", or in
+Practice -> Client Portal edit the contact -> "Tax estimates in the
+portal". The switches are Calculation summary (off by default: income by
+business showing only the household's share, adjustments total, AGI, the
+deduction, QBI deduction, taxable income, regular tax, credits,
+self-employment and other taxes, federal total, tax per state and the
+total; no rates, formulas or adjustment detail), Quarterly estimates and
+vouchers (on), Payments on record (on) and Download the estimate PDF (off;
+the client copy of the estimate PDF, which does show business totals,
+owners and the detailed calculation). The projected total always shows.
+One setting covers every taxpayer the contact can open. Turning a switch on
+needs firm staff with Tax Estimator access; the client's own staff can only
+turn switches off. A switched-off section is not sent to the portal at all.
+
+Scenarios: the Base scenario is always shown. To share a what-if, select it
+on Annual settings and tick "Show this scenario in the client portal"; with
+more than one shared scenario the client gets a scenario picker. Clients see
+the scenario name exactly as written, so name it for them ("If you buy the
+truck"). When the portal shows finalized snapshots, each shared scenario
+shows its own latest finalized snapshot and a scenario without one is not
+offered. "View as Client" shows exactly what the previewed contact sees.
+
 ## Super admin
 
 Admin -> Tax parameters edits federal parameters per tax year and the
@@ -1797,6 +1820,16 @@ WEBP/HEIC (10 MB each, up to 10 per drop), then a list of their own uploads with
 Being processed / Entered / Reviewed. No amounts or accounting detail are shown. Uploads land in
 the company's **Payables → Bill Capture** queue for staff; one email per upload batch goes to the
 company's bill-pay notify user, else the owners. Preview ("View as Client") cannot upload.
+
+### Tax estimates in the portal
+Flags `CLIENT_PORTAL_V1` + `TAX_ESTIMATOR_V1` on the client tenant, the per-company **Tax
+estimates** toggle, and the contact linked to the taxpayer on the Tax Estimator taxpayer page
+(full rules: the Tax Estimator knowledge). What each contact sees is a per-contact setting —
+**Tax estimates in the portal** in the Edit contact dialog (or the taxpayer page's Portal
+contacts → What they see): Calculation summary (off), Quarterly estimates and vouchers (on),
+Payments on record (on), Download the estimate PDF (off); the projected total always shows.
+Only firm staff with Tax Estimator access can turn a switch on; the client's own staff can turn
+switches off. Shared what-if scenarios get a picker; Base is always shown.
 
 ## Clients suggesting categories ("What was this?")
 

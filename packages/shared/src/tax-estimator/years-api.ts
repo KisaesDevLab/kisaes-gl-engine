@@ -102,6 +102,11 @@ export interface ScenarioDTO {
   taxYear: number;
   name: string;
   isBase: boolean;
+  /**
+   * Q51: shared in the client portal (contacts get a scenario picker). Always true in
+   * effect for Base, which the portal shows whenever it is on; the stored value is kept.
+   */
+  showInPortal: boolean;
   sortOrder: number;
   sourceScenarioId: string | null;
   createdAt: string;

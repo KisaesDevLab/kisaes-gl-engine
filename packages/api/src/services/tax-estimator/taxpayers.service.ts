@@ -23,6 +23,7 @@
 
 import { and, asc, desc, eq, ilike, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import type {
+  PortalContactTaxOptionsDTO, PortalContactTaxOptionsInput,
   CreateTaxpayerInput, UpdateTaxpayerInput, ListTaxpayersQuery, UpsertPersonInput, UpsertLinkInput, UpsertDependentInput,
   DependentDTO, DependentListDTO, DependentKind, DependentRelationship,
   CompanyOptionsQuery, LinkContactInput, TaxpayerDTO, PersonDTO, TaxpayerListDTO, TaxpayerDetailDTO,
@@ -46,6 +47,7 @@ import { portalContacts, portalContactCompanies } from '../../db/schema/portal-c
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
 import { baseScope, isElevated, isTenantInScope, scopeForTaxpayer, tenantInScopeSql, visibleTaxpayerFilter, type FirmScope } from './firm-scope.service.js';
+import * as portalOptionsService from './portal-options.service.js';
 
 /** Who is acting: audit tenant = the caller's ACTIVE tenant (not a linked tenant). */
 export interface Actor {
@@ -834,12 +836,13 @@ export async function listCompanyOptions(scope: FirmScope, query: CompanyOptions
 
 function toContactDTO(c: {
   contactId: string; tenantId: string; email: string; firstName: string | null; lastName: string | null; createdAt: Date; access: boolean;
+  portalOptions: PortalContactTaxOptionsDTO | null;
 }, scope: FirmScope): TaxpayerContactDTO {
   const outOfScope = !isTenantInScope(scope, c.tenantId);
   return {
     portalContactId: c.contactId, tenantId: c.tenantId, email: outOfScope ? '' : c.email,
     firstName: outOfScope ? null : c.firstName, lastName: outOfScope ? null : c.lastName,
-    outOfScope, taxEstimatesAccess: c.access, createdAt: c.createdAt.toISOString(),
+    outOfScope, taxEstimatesAccess: c.access, portalOptions: outOfScope ? null : c.portalOptions, createdAt: c.createdAt.toISOString(),
   };
 }
 
@@ -868,13 +871,15 @@ export async function listContacts(scope: FirmScope, taxpayerId: string): Promis
   const data: TaxpayerContactDTO[] = [];
   for (const r of rows) {
     let access = false;
+    let portalOptions: PortalContactTaxOptionsDTO | null = null;
     if (isTenantInScope(scope, r.tenantId)) {
+      portalOptions = await portalOptionsService.optionsForContact(r.tenantId, r.contactId);
       const grants = await db.select({ on: portalContactCompanies.taxEstimatesAccess }).from(portalContactCompanies)
         .where(and(eq(portalContactCompanies.contactId, r.contactId),
           inArray(portalContactCompanies.companyId, linkedCompanyIds(taxpayerId, r.tenantId))));
       access = grants.length > 0 && grants.every((g) => g.on);
     }
-    data.push(toContactDTO({ ...r, access }, scope));
+    data.push(toContactDTO({ ...r, access, portalOptions }, scope));
   }
   return { data, total: data.length };
 }
@@ -965,4 +970,28 @@ export async function unlinkContact(
       { op: 'link_contact', portalContactId }, { op: 'unlink_contact', portalContactId, revokeAccess, revokedCompanies: revoked }, tx);
     return { revokedCompanies: revoked };
   });
+}
+
+/**
+ * Q51: set what a linked portal contact may see in the portal, from the taxpayer page. The
+ * setting is per CONTACT (it applies to every taxpayer the contact can open). Firm staff here
+ * pass the Tax Estimator gates (requireTaxEstimatorWrite), so they may grant; the contact must
+ * be linked to this taxpayer and in the caller's own reach (D18 base scope).
+ */
+export async function setContactPortalOptions(
+  scope: FirmScope, actor: Actor, taxpayerId: string, portalContactId: string, input: PortalContactTaxOptionsInput,
+): Promise<TaxpayerContactDTO> {
+  scope = baseScope(scope); // D18
+  await db.transaction(async (tx) => {
+    await loadTaxpayer(scope, taxpayerId, tx, true);
+    const [mapping] = await tx.select().from(taxEstTaxpayerContacts).where(and(
+      eq(taxEstTaxpayerContacts.taxpayerId, taxpayerId), eq(taxEstTaxpayerContacts.portalContactId, portalContactId)));
+    if (!mapping) throw new AppError(404, 'Contact not found', 'TE_CONTACT_NOT_FOUND');
+    const [contact] = await tx.select().from(portalContacts).where(eq(portalContacts.id, portalContactId));
+    if (!contact || contact.status === 'deleted' || !isTenantInScope(scope, contact.tenantId)) throw notManaged();
+    await portalOptionsService.setContactOptions(contact.tenantId, contact.id, input, {
+      actorUserId: actor.userId, canGrant: true, via: 'taxpayer', taxpayerId, firmId: scope.firmId,
+    }, tx);
+  });
+  return contactDTO(scope, taxpayerId, portalContactId);
 }

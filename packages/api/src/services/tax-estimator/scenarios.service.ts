@@ -18,7 +18,7 @@ const MAX_NAME = 120;
 
 export function toScenarioDTO(r: ScenarioRow): ScenarioDTO {
   return {
-    id: r.id, taxpayerId: r.taxpayerId, taxYear: r.taxYear, name: r.name, isBase: r.isBase,
+    id: r.id, taxpayerId: r.taxpayerId, taxYear: r.taxYear, name: r.name, isBase: r.isBase, showInPortal: r.showInPortal,
     sortOrder: r.sortOrder, sourceScenarioId: r.sourceScenarioId,
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(),
   };
@@ -76,15 +76,29 @@ export async function createScenario(
 }
 
 export async function renameScenario(scope: FirmScope, actor: Actor, scenarioId: string, name: string): Promise<ScenarioDTO> {
+  return updateScenario(scope, actor, scenarioId, { name });
+}
+
+/**
+ * PATCH /scenarios/:id — rename and / or (Q51) share the scenario in the client portal.
+ * Base keeps its name (QA D21) and is always shown in the portal, so `showInPortal` is
+ * not stored for it. Sharing is audited like any scenario change (tax_est_scenario).
+ */
+export async function updateScenario(
+  scope: FirmScope, actor: Actor, scenarioId: string, input: { name?: string; showInPortal?: boolean },
+): Promise<ScenarioDTO> {
   return db.transaction(async (tx) => {
     const before = await loadScenarioForFirm(scope, scenarioId, tx);
+    const name = input.name ?? before.name;
     // QA D21: Base keeps its name (it is the scenario the portal, packs and finalize default to).
     if (before.isBase && name !== before.name) throw AppError.unprocessableEntity('The Base scenario cannot be renamed', 'TE_BASE_SCENARIO_PROTECTED');
     await loadTaxpayerForFirm(scope, before.taxpayerId, tx, true);
-    await assertNameFree(tx, before.taxpayerId, before.taxYear, name, scenarioId);
-    const [row] = await tx.update(taxEstScenarios).set({ name, updatedAt: new Date() })
+    if (name !== before.name) await assertNameFree(tx, before.taxpayerId, before.taxYear, name, scenarioId);
+    const showInPortal = before.isBase ? before.showInPortal : (input.showInPortal ?? before.showInPortal);
+    if (name === before.name && showInPortal === before.showInPortal) return toScenarioDTO(before);
+    const [row] = await tx.update(taxEstScenarios).set({ name, showInPortal, updatedAt: new Date() })
       .where(eq(taxEstScenarios.id, scenarioId)).returning();
-    if (!row) throw AppError.internal('Scenario rename failed');
+    if (!row) throw AppError.internal('Scenario update failed');
     await auditYears(scope, actor, 'update', 'tax_est_scenario', scenarioId, toScenarioDTO(before), toScenarioDTO(row), tx);
     return toScenarioDTO(row);
   });

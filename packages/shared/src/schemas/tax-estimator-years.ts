@@ -121,7 +121,12 @@ export type UpsertYearInput = z.infer<typeof upsertYearSchema>;
 export const scenarioNameSchema = z.string().trim().min(1).max(MAX_NAME);
 export const createScenarioSchema = z.object({ name: scenarioNameSchema });
 export type CreateScenarioInput = z.infer<typeof createScenarioSchema>;
-export const updateScenarioSchema = z.object({ name: scenarioNameSchema });
+/**
+ * PATCH /scenarios/:id — rename and / or (Q51) share the scenario in the client portal.
+ * `showInPortal` is ignored on the Base scenario (always shown while the portal is on).
+ */
+export const updateScenarioSchema = z.object({ name: scenarioNameSchema.optional(), showInPortal: z.boolean().optional() })
+  .refine((v) => v.name !== undefined || v.showInPortal !== undefined, { message: 'Nothing to update' });
 /** QA D21: POST .../clone — optional name for the copy. */
 export const cloneScenarioSchema = z.object({ name: scenarioNameSchema.optional() });
 export type UpdateScenarioInput = z.infer<typeof updateScenarioSchema>;

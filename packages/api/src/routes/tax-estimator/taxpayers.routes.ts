@@ -6,7 +6,7 @@ import { Router, type Request } from 'express';
 import {
   createTaxpayerSchema, updateTaxpayerSchema, listTaxpayersQuerySchema, taxpayerIdParamsSchema,
   personRoleParamsSchema, upsertPersonSchema, linksQuerySchema, upsertLinkSchema, linkIdParamsSchema,
-  companyOptionsQuerySchema, linkContactSchema, contactIdParamsSchema, unlinkContactQuerySchema,
+  companyOptionsQuerySchema, linkContactSchema, contactIdParamsSchema, unlinkContactQuerySchema, portalContactTaxOptionsSchema,
   replaceTaxpayerStaffSchema, can, upsertDependentSchema, dependentIdParamsSchema,
   outsideEntitiesQuerySchema, upsertOutsideEntitySchema, upsertOutsideEntityYearSchema, outsideEntityIdParamsSchema, outsideEntityYearParamsSchema,
 } from '@kis-books/shared';
@@ -167,6 +167,13 @@ taxpayersRouter.post('/:id/contacts', requireTaxEstimatorWrite, async (req, res)
   const { id } = taxpayerIdParamsSchema.parse(req.params);
   const input = linkContactSchema.parse(req.body);
   res.status(201).json({ data: await taxpayersService.linkContact(getScope(req), actor(req), id, input) });
+});
+
+// Q51: what the linked contact may see in the portal (one setting per contact; grants allowed here).
+taxpayersRouter.put('/:id/contacts/:contactId/portal-options', requireTaxEstimatorWrite, async (req, res) => {
+  const { id, contactId } = contactIdParamsSchema.parse(req.params);
+  const input = portalContactTaxOptionsSchema.parse(req.body);
+  res.json({ data: await taxpayersService.setContactPortalOptions(getScope(req), actor(req), id, contactId, input) });
 });
 
 taxpayersRouter.delete('/:id/contacts/:contactId', requireTaxEstimatorWrite, async (req, res) => {

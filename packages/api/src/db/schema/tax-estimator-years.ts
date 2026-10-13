@@ -51,6 +51,8 @@ export const taxEstScenarios = pgTable('tax_est_scenarios', {
   taxYear: integer('tax_year').notNull(),
   name: varchar('name', { length: 120 }).notNull(),
   isBase: boolean('is_base').notNull().default(false),
+  /** Q51 (migration 0211): shared in the client portal. Base is always shown; this is for what-ifs. */
+  showInPortal: boolean('show_in_portal').notNull().default(false),
   sortOrder: integer('sort_order').notNull().default(0),
   sourceScenarioId: uuid('source_scenario_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
