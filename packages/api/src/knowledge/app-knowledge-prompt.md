@@ -279,6 +279,42 @@ write a bank RULE, which is visible and editable, rather than rely on invisible 
    are never voided automatically.
 4. **Complete** — locks in the cleared state for that statement.
 
+**Bank-to-books reconciliation (professional format).** The Reconcile screen
+shows, live while clearing, the standard CPA reconciliation: Balance per bank
+statement + Deposits in transit − Outstanding checks and payments = **Adjusted
+bank balance**; Balance per books (the account's GL balance at the statement
+date — every posted transaction dated on/before it, cleared or not, voids
+excluded) ± Unrecorded bank items (in-progress recs with an imported
+statement only: statement lines with no matching book transaction) =
+**Adjusted book balance**; **Unreconciled difference** = adjusted bank −
+adjusted book (0.00 → "Reconciled to books"). Credit cards / lines of credit
+use the same layout in amount-owed terms ("Charges recorded in books, not yet
+on statement" / "Payments and credits recorded in books, not yet on
+statement"). Aged-item flags: outstanding check/payment > 90 days *Stale*,
+> 180 days *Stale-dated — review / void / escheat*; deposit in transit > 10
+days *Investigate*; card item > 30 days *Investigate*.
+
+**Reconciliation discrepancies (book-side proof).** Checks beginning balance
++ cleared on this reconciliation + outstanding items = balance per books. When
+it doesn't tie, a red banner on the Reconcile screen ("Show discrepancy
+details") and the reports explain why: changes to previously reconciled
+transactions (each earlier reconciliation's cleared total at completion vs
+now, with the deleted / voided / moved / re-dated / audit-log-edited items
+listed and linked); reconciled items re-dated after the statement date; items
+cleared on this reconciliation dated after the statement date, voided or
+moved; or a beginning balance the prior reconciliations don't support
+(opening balance / changed prior rec). Fix: restore the original entry, or
+undo and redo the affected reconciliation.
+
+**Reports.** Reconciliation Detail (History → Report) = bank-to-books summary,
+cleared-activity roll, supporting schedules (date, type, number, payee, age,
+amount, flag), cleared list, subsequent activity (after the statement date +
+today's register balance), book-side proof, sign-off (prepared/reviewed by,
+statement file). Bank Reconciliation Summary (Reports → Banking, or History →
+Summary for one rec) = the same per account for its latest completed rec, with
+schedule totals and the oldest items. PDF, CSV and the Report Pack's Bank
+Reconciliations section use the same layout.
+
 If the difference is off by a small amount like $0.01, it's almost always a
 rounding mismatch on a journal entry. Common causes: tax calculation rounding,
 foreign currency conversion, or a bill paid for slightly more than its total.
@@ -717,7 +753,16 @@ and follow each request rule's "Email staff when the client submits" list.
 - **Unpaid Bills** — all outstanding bills across all vendors.
 - **Bill Payment History** — log of all bill payments made.
 - **Transactions by Vendor** — every transaction involving a specific vendor.
-- **Bank Reconciliation Summary** — reconciliation status for each bank account.
+- **Bank Reconciliation Summary** — reconciliation status for each bank account
+  (last reconciled, statement gaps, uncleared items, stale checks) plus, per
+  account, the professional bank-to-books reconciliation of its latest
+  completed reconciliation (adjusted bank balance vs balance per books,
+  unreconciled difference, schedule totals, subsequent activity, book-side
+  discrepancy proof, sign-off). `?reconciliation_id=` summarizes one rec.
+- **Reconciliation Detail** — one reconciliation in full professional format
+  (opened from Reconciliation History → Report): summary to books, cleared roll,
+  deposits-in-transit / outstanding-checks schedules with stale flags, cleared
+  list, subsequent activity, discrepancies, sign-off.
 - **Deposit Detail** — breakdown of each bank deposit and its component payments.
 - **Check Register** — all checks written, with check numbers, payees, and amounts.
 - **1099 Vendor Summary** — detailed 1099-eligible payments per vendor.
@@ -760,7 +805,9 @@ and follow each request rule's "Email staff when the client submits" list.
   generated in the background. Besides the financial/TB reports, the
   **Banking & Source Documents** group adds: **Bank Reconciliations** (completed
   reconciliations with statement date in the period, all company accounts; a
-  summary page, then per reconciliation a detail page + its linked statement
+  summary page (statement balance, adjusted bank balance, balance per books,
+  unreconciled difference), then per reconciliation the Reconciliation Detail
+  layout + its linked statement
   file, toggle "Include the statement after each reconciliation"; in-progress
   ones excluded), **Bank Statements** (every statement whose period ends in the
   period, reconciled or not — index page then the files; OFX imports have no

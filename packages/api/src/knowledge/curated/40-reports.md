@@ -35,7 +35,16 @@
 - **Unpaid Bills** — all outstanding bills across all vendors.
 - **Bill Payment History** — log of all bill payments made.
 - **Transactions by Vendor** — every transaction involving a specific vendor.
-- **Bank Reconciliation Summary** — reconciliation status for each bank account.
+- **Bank Reconciliation Summary** — reconciliation status for each bank account
+  (last reconciled, statement gaps, uncleared items, stale checks) plus, per
+  account, the professional bank-to-books reconciliation of its latest
+  completed reconciliation (adjusted bank balance vs balance per books,
+  unreconciled difference, schedule totals, subsequent activity, book-side
+  discrepancy proof, sign-off). `?reconciliation_id=` summarizes one rec.
+- **Reconciliation Detail** — one reconciliation in full professional format
+  (opened from Reconciliation History → Report): summary to books, cleared roll,
+  deposits-in-transit / outstanding-checks schedules with stale flags, cleared
+  list, subsequent activity, discrepancies, sign-off.
 - **Deposit Detail** — breakdown of each bank deposit and its component payments.
 - **Check Register** — all checks written, with check numbers, payees, and amounts.
 - **1099 Vendor Summary** — detailed 1099-eligible payments per vendor.
@@ -78,7 +87,9 @@
   generated in the background. Besides the financial/TB reports, the
   **Banking & Source Documents** group adds: **Bank Reconciliations** (completed
   reconciliations with statement date in the period, all company accounts; a
-  summary page, then per reconciliation a detail page + its linked statement
+  summary page (statement balance, adjusted bank balance, balance per books,
+  unreconciled difference), then per reconciliation the Reconciliation Detail
+  layout + its linked statement
   file, toggle "Include the statement after each reconciliation"; in-progress
   ones excluded), **Bank Statements** (every statement whose period ends in the
   period, reconciled or not — index page then the files; OFX imports have no
