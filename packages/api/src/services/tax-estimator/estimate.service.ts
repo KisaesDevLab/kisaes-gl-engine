@@ -28,6 +28,7 @@ import type {
   FarmerYearGross, FarmerGrossYearDTO, FederalEngineInput, FederalResult, JurisdictionEstimate, LinkDTO, ParameterUse, PersonDTO, DependentDTO,
   SchAiPeriodSourceDTO, StateResult, StateRuleUse, StateRulesDTO, TaxBasisPl, TaxEstimatorWarning, EntitySettingsResponse,
   StateGateInputs, TaxMethod, EstimateAdjustmentSummaryDTO, EstimateEntityReclassDTO, FirmSettingsDTO, PortalShows, OutsideEntityDTO,
+  ProjectionMethod,
 } from '@kis-books/shared';
 import {
   computeFederal, computeState, computeFederalEstimates, computeStateEstimates, computeCcorp, computeFarmer,
@@ -35,6 +36,7 @@ import {
   parameterMapFromRows, jurisdictionFromStateRules, federalFiguresFromResult, stateRowFromDto, sourcedEntitiesFromFederal,
   projectCharacters, sumCharacters, allocateAdjustment, FARMER_SAFE_HARBOR_POLICY, FARMER_INSTALLMENT_POLICY, TAX_ENGINE_VERSION,
   dAdd, dDiv, dMul, dSum, dRoundDollars, buildEstimateAssumptions, engineEntityFromOutside, outsidePeriodEntity, OUTSIDE_TENANT_ID,
+  priorYearTrendFor, DEFAULT_PROJECTION_METHOD, PROJECTION_METHOD_LABELS, PY_TREND_FALLBACK_LABELS,
 } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { accounts } from '../../db/schema/index.js';
@@ -47,7 +49,8 @@ import { getFirmSettings } from './firm-settings.service.js';
 import { isElevated, isTenantInScope, scopeForTaxpayer, type FirmScope } from './firm-scope.service.js';
 import { getTaxBasisPl, loadConfigVersion } from './pl-provider.service.js';
 import { getReadiness } from './readiness.service.js';
-import { getEntitySettings } from './entity-settings.service.js';
+import { getEntitySettings, getYearInputs } from './entity-settings.service.js';
+import { loadPriorYearTrendInputs, priorYearTrendReadinessWarning, type PriorYearTrendInputs } from './prior-year-trend.service.js';
 import { scopeWarningForLink } from './entity-type.service.js';
 import { getParameters } from './tax-parameters.service.js';
 import { getStateRules } from './tax-state-rules.service.js';
@@ -68,7 +71,8 @@ type DecJs = InstanceType<typeof Decimal>;
 // v3 (QA2-04): adjustments carry their monthly allocation.
 // v4 (2026-10-12): entities carry their owners (PDF "Businesses included").
 // v5 (Q45): businesses outside MyBooks (entities carry `source` / `outside`).
-const CACHE_VERSION = 'te-estimate-v5';
+// v6 (Q46): projection method + prior-year trend figures per company (entity results carry `projection`).
+const CACHE_VERSION = 'te-estimate-v6';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
@@ -188,6 +192,10 @@ interface CompanyInputs {
   settings: EntitySettingsResponse;
   glVersionStamp: number;
   configVersion: string;
+  /** Q46: the entity year's projection method (default run_rate). */
+  projectionMethod: ProjectionMethod;
+  /** Q46: prior-year monthly figures (or why none) — read only when a prior-year method is selected. */
+  priorYear: PriorYearTrendInputs | null;
 }
 
 interface Gathered {
@@ -252,12 +260,18 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
 
   const companies: CompanyInputs[] = [];
   for (const c of inScopeCompanies(scope, links)) {
-    const [settings, glVersionStamp, configVersion] = await Promise.all([
+    const [settings, glVersionStamp, configVersion, yearInputs] = await Promise.all([
       getEntitySettings(scope, c.tenantId, c.companyId),
       getGlVersionStamp(c.tenantId, c.companyId),
       loadConfigVersion(c.tenantId, c.companyId, req.taxYear),
+      getYearInputs(scope, c.tenantId, c.companyId, req.taxYear),
     ]);
-    companies.push({ ...c, settings, glVersionStamp, configVersion });
+    // Q46: the prior year is read (through the same provider, Redis-cached by the GL stamp) only
+    // when a prior-year method is selected; its figures go into the cache key and the snapshot.
+    const projectionMethod = yearInputs.projectionMethod ?? DEFAULT_PROJECTION_METHOD;
+    const priorYear = projectionMethod === 'run_rate' ? null
+      : await loadPriorYearTrendInputs(scope, c.tenantId, c.companyId, req.taxYear, settings.resolved.entityType ?? null);
+    companies.push({ ...c, settings, glVersionStamp, configVersion, projectionMethod, priorYear });
   }
 
   const states = [...new Set(stateRows.map((r) => r.dto.state))];
@@ -294,7 +308,7 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
     filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
     // Q45: any change to an outside business or its year amounts re-keys the live estimate.
     outside: g.outside,
-    companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings })),
+    companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings, pm: c.projectionMethod, py: c.priorYear })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, snapshots: [...g.snapshots.entries()],
     // Phase 12: the disclaimer / portal default / safe-harbor default land on the result.
@@ -335,6 +349,8 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
       monthsElapsed: pl.monthsElapsed, monthsRemaining: pl.monthsRemaining, glVersionStamp: pl.glVersionStamp, providerCached: pl.cached,
       basis: pl.basis, throughMonthReason: pl.throughMonthReason, nonRecurringYtd: pl.nonRecurring, reclass: reclassOf(pl),
       includeSehiInW2Wages: pl.w2Wages.includeSehiInW2Wages ?? false,
+      // Q46: only a non-default method is marked (run-rate DTOs unchanged).
+      ...(c.projectionMethod !== 'run_rate' ? { projectionMethod: c.projectionMethod } : {}),
     };
     if (!pl.entityType) {
       warnings.push({ code: 'TE_ENTITY_TYPE_MISSING', severity: 'warning', message: `${pl.companyName} has no tax entity type (no TB profile and no estimator setting); left out of the estimate.`, details: { companyId: c.companyId } });
@@ -342,12 +358,20 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
       continue;
     }
     if (pl.entityType === 'c_corp') {
+      if (c.projectionMethod !== 'run_rate') {
+        warnings.push({ code: 'TE_PY_TREND_FALLBACK', severity: 'warning', message: `${pl.companyName}: ${PROJECTION_METHOD_LABELS[c.projectionMethod]} could not be used (${PY_TREND_FALLBACK_LABELS.not_supported_entity}); the run rate was used.`, details: { companyId: c.companyId, method: c.projectionMethod, reason: 'not_supported_entity' } });
+      }
       out.push({ company: c, pl, dto: { ...dto, path: 'c_corp' }, engine: null });
       continue;
     }
-    const engine = engineEntityFromTaxBasisPl(pl, g.links, {
+    const bridged = engineEntityFromTaxBasisPl(pl, g.links, {
       isSstb: c.settings.settings.isSstb, rentalQbiTradeOrBusiness: c.settings.settings.rentalQbiTradeOrBusiness,
     });
+    // Q46: prior-year figures split at THIS year's through month (calendar window: months elapsed).
+    const engine: EngineEntity = c.projectionMethod === 'run_rate' ? bridged : {
+      ...bridged,
+      priorYearTrend: priorYearTrendFor(c.projectionMethod, c.priorYear?.figures ?? null, pl.monthsElapsed, c.priorYear?.reason ?? null),
+    };
     out.push({ company: c, pl, dto: { ...dto, path: 'individual' }, engine });
   }
   return out;
@@ -608,11 +632,12 @@ async function assemble(scope: FirmScope, req: EstimateRequest, g: Gathered, opt
     for (const r of individual) {
       if (!available) break;
       const snap = g.snapshots.get(`${p.periodIndex}|${r.engine.tenantId}|${r.engine.companyId}`);
-      if (snap) { ents.push({ ...r.engine, ...snap }); snapshotEntities++; continue; }
+      // Q46: a period column uses actuals only — never the prior-year trend.
+      if (snap) { ents.push({ ...r.engine, ...snap, priorYearTrend: undefined }); snapshotEntities++; continue; }
       if (r.pl.throughMonth < p.periodMonth) { available = false; break; }
       const ppl = r.pl.throughMonth === p.periodMonth ? r.pl
         : await getTaxBasisPl(scope, { tenantId: r.engine.tenantId, companyId: r.engine.companyId, taxYear, throughMonth: p.periodMonth }, { today, skipCache: opts.skipProviderCache });
-      ents.push({ ...r.engine, ...periodFiguresFromPl(ppl, p.months) });
+      ents.push({ ...r.engine, ...periodFiguresFromPl(ppl, p.months), priorYearTrend: undefined });
       liveEntities++;
     }
     // Q45: outside businesses — full-year entries spread evenly; YTD entries prorated up to their
@@ -868,7 +893,11 @@ export interface EstimateInputsForSnapshot {
   links: LinkDTO[];
   /** Q45: outside businesses with the year's amounts, as used. */
   outsideEntities: OutsideEntityDTO[];
-  companies: Array<{ tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: EntitySettingsResponse }>;
+  companies: Array<{
+    tenantId: string; companyId: string; companyName: string | null; glVersionStamp: number; configVersion: string; settings: EntitySettingsResponse;
+    /** Q46: present only when a prior-year method was selected — the method and the PY figures used. */
+    projectionMethod?: ProjectionMethod; priorYear?: PriorYearTrendInputs | null;
+  }>;
   adjustments: AdjustmentDTO[];
   types: AdjustmentTypeDTO[];
   stateRows: StateRowForEngine[];
@@ -890,7 +919,10 @@ export async function computeEstimateWithInputs(
   const inputs: EstimateInputsForSnapshot = {
     taxpayer: g.taxpayer, firmSettings: g.firmSettings, scenarioName: g.scenarioName, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
     outsideEntities: g.outside,
-    companies: g.companies.map((c) => ({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, glVersionStamp: c.glVersionStamp, configVersion: c.configVersion, settings: c.settings })),
+    companies: g.companies.map((c) => ({
+      tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, glVersionStamp: c.glVersionStamp, configVersion: c.configVersion, settings: c.settings,
+      ...(c.projectionMethod !== 'run_rate' ? { projectionMethod: c.projectionMethod, priorYear: c.priorYear } : {}),
+    })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, federalParameters: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, schAiFigures: [...g.snapshots.entries()].map(([key, figures]) => ({ key, figures })),
   };
@@ -958,6 +990,9 @@ export async function getEstimateReadiness(
       // QA D20: the range the summary is showing ("Actuals through"), else each entity's default.
       const readiness = await getReadiness(scope, { tenantId: c.tenantId, companyId: c.companyId, taxYear, throughMonth: opts.throughMonth }, { today });
       warnings.push(...readiness.warnings.map((w) => ({ ...w, details: { ...(w.details ?? {}), companyId: c.companyId } })));
+      // Q46: a selected prior-year method that would fall back to the run rate.
+      const trend = await priorYearTrendReadinessWarning(scope, { ...c, entityType: readiness.entity.entityType ?? null }, taxYear, opts.throughMonth, { today });
+      if (trend) warnings.push(trend);
       entities.push({ tenantId: c.tenantId, companyId: c.companyId, companyName: c.companyName, linkCount: c.count, inScope: true, readiness, error: null, ...viaList(c.tenantId) });
     } catch (err) {
       if (!(err instanceof AppError)) throw err;

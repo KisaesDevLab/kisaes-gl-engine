@@ -9,6 +9,7 @@
 // so the YTD column is blank for deduction and tax lines). No tax math here: every figure is a
 // field of the DTO; the only arithmetic is the YTD column's sum of the entity's YTD characters
 // and an owner's YTD share (entity YTD × allocated %). Q45 outside businesses: see the income block.
+// Q46: an entity with a prior-year trend method carries the method sub-label and comparison chips.
 import type { EstimateResultDTO } from './estimate-api.js';
 
 const num = (v: unknown): number => {
@@ -55,6 +56,26 @@ export function calcEntityTypeLabel(entityType: string | null | undefined): stri
 const nonZero = (v: unknown) => Math.abs(num(v)) > 0;
 const sum = (o: Record<string, string> | null | undefined) => Object.values(o ?? {}).reduce((a, v) => a + num(v), 0);
 
+type EntityProjection = EstimateResultDTO['federal']['entities'][number]['projection'];
+const dollars = (v: unknown) => `$${Math.round(num(v)).toLocaleString('en-US')}`;
+
+/** Q46: the method sub-label of a business whose entity year selected a prior-year trend (absent = run rate, nothing printed). */
+export function projectionSub(p: EntityProjection): string | null {
+  if (!p) return null;
+  if (p.applied === 'prior_year_scaled') return `Prior-year seasonal (scaled ×${num(p.factor).toFixed(2)})`;
+  if (p.applied === 'prior_year_dollar') return 'Prior-year seasonal (prior-year dollars)';
+  return p.fallbackReason ? 'Run rate (prior-year trend unavailable)' : 'Run rate';
+}
+
+function projectionChips(p: EntityProjection): NonNullable<CalcLine['chips']> {
+  if (!p) return [];
+  const out: NonNullable<CalcLine['chips']> = [];
+  if (p.applied !== 'run_rate' && p.runRateProjectedProfit != null) out.push({ text: `Run rate would be ${dollars(p.runRateProjectedProfit)}`, tone: 'info' });
+  if (p.capped) out.push({ text: `Scale factor capped at ×${num(p.factor).toFixed(2)} (was ×${num(p.rawFactor).toFixed(2)})`, tone: 'warn', review: true });
+  if (p.fallbackReason) out.push({ text: 'Prior-year trend fell back to the run rate', tone: 'warn', review: true });
+  return out;
+}
+
 export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
   const f = r.federal;
   const sections: CalcSection[] = [];
@@ -96,10 +117,12 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
         };
       });
     }
+    const chips = projectionChips(e.projection);
     const lines: CalcLine[] = [{
       key: `inc.${e.companyId}`, label: e.companyName,
-      sub: [calcEntityTypeLabel(e.entityType), activity, 'Entity total (100%)', enteredSub].filter(Boolean).join(' · '),
+      sub: [calcEntityTypeLabel(e.entityType), activity, 'Entity total (100%)', enteredSub, projectionSub(e.projection)].filter(Boolean).join(' · '),
       ytd: ytdOf(entityYtd), projected: e.projectedProfit, muted: true,
+      ...(chips.length ? { chips } : {}),
       trace: { kind: 'federal', steps: ['entity_income', 'allocation'], idPrefix: undefined },
     }];
     for (const s of shares) {

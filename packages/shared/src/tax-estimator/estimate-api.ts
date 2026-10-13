@@ -8,6 +8,7 @@
 // engine results unchanged (federal, state, vouchers, farmer, C corp) so the UI, the
 // PDF and the portal read one contract; services never re-implement tax math.
 
+import type { ProjectionMethod } from './projection-method.js';
 import type { BooksReadiness, CharacterAmounts, PaymentJurisdiction, TaxEstimatorWarning, ThroughMonthSource } from './entities-api.js';
 import type { EntityTaxType, FilingStatus, TaxMethod } from './types.js';
 import type { PersonRole, SafeHarborOverride, PortalShows } from './taxpayers-api.js';
@@ -103,6 +104,12 @@ export interface EstimateEntityDTO {
   source?: EntitySource;
   /** Q45: outside businesses only — how the amounts were entered (absent on book entities). */
   outside?: EstimateOutsideEntityDTO;
+  /**
+   * Q46 (optional, additive): the projection method selected for the entity year when it is not the
+   * default run rate (absent = run rate). The outcome (applied method, factor, PY figures) is on the
+   * federal EntityResult.projection.
+   */
+  projectionMethod?: ProjectionMethod;
 }
 
 /** Q45: entry details of a business outside MyBooks, for the Calculation view, PDF and assumptions page. */

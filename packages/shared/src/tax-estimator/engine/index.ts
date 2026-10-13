@@ -14,6 +14,7 @@ export {
   characters, sumCharacters, projectAmount, projectCharacters, allocateEntity, aggregatePersons, netIncome, seIncomeFor, adjustmentCharacter,
   type AllocatedEntity, type AllocatedShare, type PersonIncome, type AggregatedIncome, type IncomeExact,
 } from './income.js';
+export { priorYearTrendFor, evaluatePriorYearTrend, priorYearFullOrdinary, type PriorYearTrendOutcome, type TrendEntityFigures } from './py-trend.js';
 export { computeSeTax, type SeTaxInput, type SeTaxExact } from './se-tax.js';
 export {
   computeRetirementLimit, computeSehiLimit, computeHsaLimit, seEarnedIncomeBase,

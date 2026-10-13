@@ -14,7 +14,7 @@
 
 import type { CharacterAmounts } from '../entities-api.js';
 import {
-  ZERO, dAdd, dCmp, dFloorZero, dIsPos, dIsZero, dMax, dMin, dRoundDollars, dRoundRate, dSub, dSum, dec, type Dec,
+  ZERO, dAdd, dCmp, dFloorZero, dIsPos, dIsZero, dMax, dMin, dRound, dRoundDollars, dRoundRate, dSub, dSum, dec, type Dec,
 } from '../decimal.js';
 import { EngineContext, ageAtYearEnd } from './context.js';
 import { allocateEntity, aggregatePersons, netIncome, type AggregatedIncome, type AllocatedEntity, type AllocatedShare, type IncomeExact, type PersonIncome } from './income.js';
@@ -27,8 +27,9 @@ import { computeOtherTaxes, type OtherTaxesPerson } from './other-taxes.js';
 import { computeRegularTax } from './bracket-tax.js';
 import { computeDependentCredits, type EarnedIncomePerson } from './dependents.js';
 import { TAX_ENGINE_VERSION } from './version.js';
+import { PY_TREND_FACTOR_PLACES } from '../projection-method.js';
 import type {
-  EngineEntity, EnginePerson, EntityResult, EntityShareResult, FederalEngineInput, FederalResult, LossLimitationResult, PersonResult, QbiComponentResult, QbiResult,
+  EngineEntity, EnginePerson, EntityProjectionResult, EntityResult, EntityShareResult, FederalEngineInput, FederalResult, LossLimitationResult, PersonResult, QbiComponentResult, QbiResult,
 } from './types.js';
 
 const STEP_AGI = 'agi';
@@ -62,6 +63,22 @@ function entityResult(a: AllocatedEntity, limited: ReadonlyMap<string, Character
     projected: roundCharacters(a.projected), projectedProfit: R(a.projectedProfit), shares: a.shares.map((s) => shareResult(s, limited)),
     // Q45: only outside businesses carry the markers, so book results stay byte-identical to rc.4.
     ...(e.source === 'outside' ? { source: 'outside' as const, amountBasis: e.amountBasis ?? 'entity_total', entryMode: e.entryMode ?? 'full_year' } : {}),
+    // Q46: only an entity that selected a prior-year trend carries it (run-rate results stay byte-identical to rc.5).
+    ...(a.trend ? { projection: projectionResult(a) } : {}),
+  };
+}
+
+function projectionResult(a: AllocatedEntity): EntityProjectionResult {
+  const t = a.trend!;
+  const py = a.entity.priorYearTrend?.priorYear ?? null;
+  return {
+    method: t.method, applied: t.applied, fallbackReason: t.fallbackReason,
+    factor: t.factor == null ? null : dRound(t.factor, PY_TREND_FACTOR_PLACES), rawFactor: t.rawFactor == null ? null : dRound(t.rawFactor, PY_TREND_FACTOR_PLACES), capped: t.capped,
+    runRateOrdinary: R(t.runRateOrdinary), projectedOrdinary: R(t.projectedOrdinary), runRateProjectedProfit: R(a.runRateProjectedProfit ?? a.projectedProfit),
+    priorYear: py ? {
+      taxYear: py.taxYear, throughMonth: py.throughMonth, sameMonthsOrdinary: R(py.sameMonthsOrdinary), remainingOrdinary: R(py.remainingOrdinary),
+      fullYearOrdinary: R(dAdd(py.sameMonthsOrdinary, py.remainingOrdinary)), monthsWithActivity: py.monthsWithActivity,
+    } : null,
   };
 }
 

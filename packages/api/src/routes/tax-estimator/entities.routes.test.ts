@@ -162,6 +162,20 @@ describe('entities routes — happy path inside the scope', () => {
     expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { includeSehiInW2Wages: false })).status).toBe(200);
     expect((await request('PUT', `${b}/settings`, staffToken, { taxEntityType: null })).status).toBe(200);
 
+    // Q46: projection method per entity year — default run rate, enum-checked, C corporations refused.
+    expect(((await request('GET', `${b}/year-inputs/2026`, staffToken)).json.data as { projectionMethod: string }).projectionMethod).toBe('run_rate');
+    expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { projectionMethod: 'seasonal' })).status).toBe(400);
+    const pm = await request('PUT', `${b}/year-inputs/2026`, staffToken, { projectionMethod: 'prior_year_scaled' });
+    expect(pm.status).toBe(200);
+    expect(pm.json.data).toMatchObject({ projectionMethod: 'prior_year_scaled', ubia: '5000.0000' });
+    expect(((await request('GET', `${b}/year-inputs/2025`, staffToken)).json.data as { projectionMethod: string }).projectionMethod).toBe('run_rate'); // per tax year
+    expect((await request('PUT', `${b}/settings`, staffToken, { taxEntityType: 'c_corp' })).status).toBe(200);
+    const cc = await request('PUT', `${b}/year-inputs/2026`, staffToken, { projectionMethod: 'prior_year_dollar' });
+    expect(cc.status).toBe(422);
+    expect((cc.json.error as { code: string }).code).toBe('TE_PROJECTION_METHOD_NOT_SUPPORTED');
+    expect((await request('PUT', `${b}/year-inputs/2026`, staffToken, { projectionMethod: 'run_rate' })).status).toBe(200);
+    expect((await request('PUT', `${b}/settings`, staffToken, { taxEntityType: null })).status).toBe(200);
+
     const sug = await request('GET', `${b}/treatment-suggestions`, staffToken);
     expect((sug.json.data as Array<{ accountId: string }>).map((x) => x.accountId)).toContain(X.meals2);
 
@@ -212,6 +226,7 @@ describe('entities routes — happy path inside the scope', () => {
     const b = base(T.t2, C.c2);
     expect((await request('GET', `${b}/settings`, readonlyToken)).status).toBe(200);
     expect((await request('PUT', `${b}/settings`, readonlyToken, { isSstb: false })).status).toBe(403);
+    expect((await request('PUT', `${b}/year-inputs/2026`, readonlyToken, { projectionMethod: 'prior_year_scaled' })).status).toBe(403);
     expect((await request('PUT', `${b}/treatments`, readonlyToken, {
       treatments: [{ accountId: X.meals2, treatment: null, nonRecurring: false }],
     })).status).toBe(403);
@@ -224,6 +239,7 @@ describe('entities routes — isolation (D1)', () => {
     ['PUT', `${base(t, c)}/settings`, { isSstb: true }],
     ['GET', `${base(t, c)}/year-inputs/2026`],
     ['PUT', `${base(t, c)}/year-inputs/2026`, { ubia: '1' }],
+    ['PUT', `${base(t, c)}/year-inputs/2026`, { projectionMethod: 'prior_year_scaled' }],
     ['GET', `${base(t, c)}/treatments`],
     ['PUT', `${base(t, c)}/treatments`, { treatments: [{ accountId: account, treatment: 'owner_personal', nonRecurring: false }] }],
     ['GET', `${base(t, c)}/treatment-suggestions`],

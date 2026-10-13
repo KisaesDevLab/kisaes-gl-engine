@@ -1,0 +1,90 @@
+{
+  "capped_min": {
+    "capped": "min",
+    "factor": 0.25,
+    "fallback": null,
+    "federal": {
+      "agi": 37174,
+      "income_tax": 398,
+      "qbi": 995,
+      "se_tax": 5652,
+      "taxable_income": 3979,
+      "total_income": 40000
+    },
+    "federal_total": 6050,
+    "federal_total_exact": 6049.747200000001,
+    "projected_ordinary": 40000,
+    "py": {
+      "full_year": 180000,
+      "remaining": 80000,
+      "same_months": 100000
+    },
+    "run_rate_ordinary": 26667
+  },
+  "seasonal_prior_year_dollar": {
+    "capped": null,
+    "factor": null,
+    "fallback": null,
+    "federal": {
+      "agi": 205615,
+      "income_tax": 19945,
+      "qbi": 34683,
+      "se_tax": 28770,
+      "taxable_income": 138732,
+      "total_income": 220000
+    },
+    "federal_total": 48715,
+    "federal_total_exact": 48714.97616,
+    "projected_ordinary": 220000,
+    "py": {
+      "full_year": 180000,
+      "remaining": 80000,
+      "same_months": 100000
+    },
+    "run_rate_ordinary": 183333
+  },
+  "seasonal_prior_year_scaled": {
+    "capped": null,
+    "factor": 1.3,
+    "fallback": null,
+    "federal": {
+      "agi": 229294,
+      "income_tax": 24112,
+      "qbi": 39419,
+      "se_tax": 29413,
+      "taxable_income": 157675,
+      "total_income": 244000
+    },
+    "federal_total": 53525,
+    "federal_total_exact": 53525.169632000005,
+    "projected_ordinary": 244000,
+    "py": {
+      "full_year": 180000,
+      "remaining": 80000,
+      "same_months": 100000
+    },
+    "run_rate_ordinary": 183333
+  },
+  "seasonal_run_rate": {
+    "capped": null,
+    "factor": null,
+    "fallback": null,
+    "federal": {
+      "agi": 170381,
+      "income_tax": 13744,
+      "qbi": 27636,
+      "se_tax": 25904,
+      "taxable_income": 110545,
+      "total_income": 183333
+    },
+    "federal_total": 39648,
+    "federal_total_exact": 39648.07426666667,
+    "projected_ordinary": 183333,
+    "py": {
+      "full_year": 180000,
+      "remaining": 80000,
+      "same_months": 100000
+    },
+    "run_rate_ordinary": 183333
+  }
+}

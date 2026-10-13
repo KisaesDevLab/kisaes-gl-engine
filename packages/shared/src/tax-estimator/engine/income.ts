@@ -22,6 +22,8 @@ import {
 } from '../decimal.js';
 import type { EngineContext } from './context.js';
 import type { EngineAdjustment, EngineEntity, EnginePerson } from './types.js';
+import { evaluatePriorYearTrend, priorYearFullOrdinary, type PriorYearTrendOutcome } from './py-trend.js';
+import { PROJECTION_METHOD_LABELS, PY_TREND_FALLBACK_LABELS } from '../projection-method.js';
 
 const MONTHS_PER_YEAR = 12;
 const STEP_INCOME = 'entity_income';
@@ -97,6 +99,10 @@ export interface AllocatedEntity {
   projected: CharacterAmounts;
   projectedProfit: Dec;
   shares: AllocatedShare[];
+  /** Q46: the prior-year trend outcome when the entity selected one (absent = run rate). */
+  trend?: PriorYearTrendOutcome;
+  /** Q46: Σ characters under the run rate (only with `trend`). */
+  runRateProjectedProfit?: Dec;
 }
 
 const SE_PARTNER_STATUSES: ReadonlySet<PartnerSeStatus> = new Set<PartnerSeStatus>(['general', 'llc_member_manager']);
@@ -199,20 +205,27 @@ export function seIncomeFor(entityType: EntityTaxType, partnerSeStatus: PartnerS
 
 export function allocateEntity(e: EngineEntity, adjustments: EngineAdjustment[], ctx: EngineContext): AllocatedEntity {
   const eid = entityId(e);
-  const projected = projectCharacters(e.ytd, e.recurringYtd, e.monthsElapsed, e.monthsRemaining);
+  const runRated = projectCharacters(e.ytd, e.recurringYtd, e.monthsElapsed, e.monthsRemaining);
+  // Q46: the ordinary character may follow the prior year's monthly trend (absent = run rate, rc.5).
+  const trend = e.priorYearTrend
+    ? evaluatePriorYearTrend({ ytdOrdinary: e.ytd.ordinary, recurringOrdinary: e.recurringYtd.ordinary, monthsElapsed: e.monthsElapsed, monthsRemaining: e.monthsRemaining }, e.priorYearTrend)
+    : undefined;
+  const projected = trend ? { ...runRated, ordinary: trend.projectedOrdinary } : runRated;
   const projectedProfit = sumCharacters(projected);
   if (e.monthsElapsed <= 0) ctx.warn('TE_NO_MONTHS_ELAPSED', `${e.companyName}: no closed months; the projection equals the year-to-date books.`, { entityId: eid });
   for (const w of e.warnings) ctx.warn(w.code, `${e.companyName}: ${w.message}`, w.details, w.severity);
+  if (trend && e.priorYearTrend) traceTrend(e, eid, trend, ctx);
 
   // Q45: an outside business's amounts were entered by hand (trace source 'input', not the GL map).
   const outside = e.source === 'outside';
   const entered = outside ? (e.amountBasis === 'owner_share' ? ' (entered, owner\'s share)' : ' (entered, entity total)') : '';
   for (const k of INCOME_CHARACTERS) {
     if (dIsZero(projected[k]) && dIsZero(e.ytd[k])) continue;
+    const trendFormula = k === 'ordinary' && trend && trend.applied !== 'run_rate' && e.monthsRemaining > 0 ? trendOrdinaryFormula(e, trend) : null;
     ctx.trace.add({
       step: STEP_INCOME, id: `entity.${eid}.${k}`, label: `${e.companyName} — ${k} (projected)${entered}`, exact: projected[k], source: outside ? 'input' : 'gl_map',
-      formula: e.monthsRemaining > 0 ? `YTD ${e.ytd[k]} + recurring ${e.recurringYtd[k]} ÷ ${e.monthsElapsed} × ${e.monthsRemaining}`
-        : outside && e.entryMode !== 'ytd' ? `full-year ${e.ytd[k]} as entered` : `YTD ${e.ytd[k]} (year closed)`,
+      formula: trendFormula ?? (e.monthsRemaining > 0 ? `YTD ${e.ytd[k]} + recurring ${e.recurringYtd[k]} ÷ ${e.monthsElapsed} × ${e.monthsRemaining}`
+        : outside && e.entryMode !== 'ytd' ? `full-year ${e.ytd[k]} as entered` : `YTD ${e.ytd[k]} (year closed)`),
       entityId: eid,
     });
   }
@@ -279,7 +292,43 @@ export function allocateEntity(e: EngineEntity, adjustments: EngineAdjustment[],
     linked.add(pid);
   }
 
-  return { entity: e, projected, projectedProfit, shares };
+  return trend
+    ? { entity: e, projected, projectedProfit, shares, trend, runRateProjectedProfit: sumCharacters(runRated) }
+    : { entity: e, projected, projectedProfit, shares };
+}
+
+/** Q46 trace formula of the ordinary line under a prior-year method. */
+function trendOrdinaryFormula(e: EngineEntity, t: PriorYearTrendOutcome): string {
+  const py = e.priorYearTrend!.priorYear!;
+  if (t.applied === 'prior_year_dollar') return `YTD ${e.ytd.ordinary} + PY ${py.taxYear} months ${py.throughMonth + 1}–12 ${py.remainingOrdinary} (prior-year dollars)`;
+  return `YTD ${e.ytd.ordinary} + PY ${py.taxYear} months ${py.throughMonth + 1}–12 ${py.remainingOrdinary} × ${t.factor} (CY recurring ${e.recurringYtd.ordinary} ÷ PY months 1–${py.throughMonth} ${py.sameMonthsOrdinary}${t.capped ? `; ${t.rawFactor} capped` : ''})`;
+}
+
+/** Q46 trace + warnings of a selected prior-year method (prior-year figures, run-rate comparison, fallback / cap). */
+function traceTrend(e: EngineEntity, eid: string, t: PriorYearTrendOutcome, ctx: EngineContext): void {
+  const sel = e.priorYearTrend!;
+  const label = PROJECTION_METHOD_LABELS[sel.method];
+  if (t.fallbackReason) {
+    ctx.warn('TE_PY_TREND_FALLBACK', `${e.companyName}: ${label} could not be used (${PY_TREND_FALLBACK_LABELS[t.fallbackReason]}); the run rate was used for ordinary income.`,
+      { entityId: eid, method: sel.method, reason: t.fallbackReason });
+  }
+  if (t.capped) {
+    ctx.info('TE_PY_TREND_CAPPED', `${e.companyName}: the prior-year scale factor ${t.rawFactor} was capped at ${t.factor}.`,
+      { entityId: eid, rawFactor: t.rawFactor, factor: t.factor, bound: t.capped });
+  }
+  const py = sel.priorYear;
+  if (py) {
+    ctx.trace.add({
+      step: STEP_INCOME, id: `entity.${eid}.py_trend`, label: `${e.companyName} — prior year ${py.taxYear} recurring ordinary (full year)`, exact: priorYearFullOrdinary(sel), source: 'gl_map',
+      formula: `months 1–${py.throughMonth} ${py.sameMonthsOrdinary} + months ${py.throughMonth + 1}–12 ${py.remainingOrdinary}; ${py.monthsWithActivity} of 12 months with activity`,
+      entityId: eid,
+    });
+  }
+  ctx.trace.add({
+    step: STEP_INCOME, id: `entity.${eid}.ordinary.run_rate`, label: `${e.companyName} — ordinary under the run rate (comparison)`, exact: t.runRateOrdinary, source: 'gl_map',
+    formula: e.monthsRemaining > 0 && e.monthsElapsed > 0 ? `YTD ${e.ytd.ordinary} + recurring ${e.recurringYtd.ordinary} ÷ ${e.monthsElapsed} × ${e.monthsRemaining}` : `YTD ${e.ytd.ordinary}`,
+    entityId: eid,
+  });
 }
 
 // ── Taxpayer-level aggregation ───────────────────────────────────────

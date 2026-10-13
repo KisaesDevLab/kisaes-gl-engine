@@ -309,7 +309,7 @@ describe('Q45 businesses outside MyBooks flow into the estimate', () => {
     expect(d.federal.entities.find((e: { companyId: string }) => e.companyId === oid)).toMatchObject({ source: 'outside', amountBasis: 'owner_share', entryMode: 'full_year' });
     const projection = d.assumptions.sections.find((x: { id: string }) => x.id === 'projection');
     expect(JSON.stringify(projection)).toContain('Lakeside Partners LP (outside MyBooks)');
-    expect(d.engineVersion).toBe('1.0.0-rc.5');
+    expect(d.engineVersion).toBe('1.0.0-rc.6');
 
     expect((await request('POST', est(tp, sid), staffToken, { throughMonth: '2026-09' })).json.data.cached).toBe(true);
     expect((await putYear('80000')).status).toBe(200);

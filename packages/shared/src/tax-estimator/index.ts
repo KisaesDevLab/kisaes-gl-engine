@@ -11,6 +11,7 @@ export * from './parameterKeys.js';
 export * from './parameter-api.js';
 export * from './taxpayers-api.js';
 export * from './outside-entities-api.js';
+export * from './projection-method.js';
 export * from './stateRuleKeys.js';
 export * from './installment-shape.js';
 export * from './format-text.js';

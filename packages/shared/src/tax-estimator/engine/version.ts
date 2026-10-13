@@ -40,5 +40,11 @@
  *              EngineEntity (`source: 'outside'`) and flow through every step;
  *              entity results carry the source / basis / entry-mode markers. A
  *              taxpayer with no outside businesses reproduces rc.4.
+ *   1.0.0-rc.6 Q46 prior-year trend projection: per entity year, the ORDINARY
+ *              character may be projected from the prior year's monthly trend
+ *              (`prior_year_scaled`: YTD + PY remaining × capped CY ÷ PY same
+ *              months; `prior_year_dollar`: YTD + PY remaining) with guardrail
+ *              fallbacks to the run rate (TE_PY_TREND_FALLBACK / _CAPPED); entity
+ *              results carry `projection`. Run rate (the default) reproduces rc.5.
  */
-export const TAX_ENGINE_VERSION = '1.0.0-rc.5';
+export const TAX_ENGINE_VERSION = '1.0.0-rc.6';

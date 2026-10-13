@@ -105,6 +105,21 @@ books.
   card, shown to firm staff when the flag is on in that client and the
   company is linked to a taxpayer); the account register shows an "NR"
   badge on it. It is counted once and left out of the run-rate.
+- **Projection method** (Entity tax setup, year inputs, per company and
+  tax year): how the rest of the year's ORDINARY income is projected.
+  "Run rate" (default) = year-to-date recurring per month x months left.
+  "Prior-year seasonal (scaled)" = year-to-date + last year's remaining
+  months x (this year's recurring year-to-date / last year's same months),
+  the scale kept between 0.25 and 4. "Prior-year seasonal (dollar)" =
+  year-to-date + last year's remaining months as-is. Example: 120,000
+  through September, last year Jan-Sep 100,000 and Oct-Dec 80,000 -> run
+  rate 160,000, scaled 216,000, dollar 200,000. Last year is read from the
+  same company's books through the same treatment map, non-recurring
+  items excluded. Other income kinds keep the run rate. Falls back to the
+  run rate with a warning (also on readiness) when last year's books are
+  incomplete (every month needs activity) or the figures do not support
+  a trend. Not for C corporations or outside businesses. The Calculation
+  view shows the method and "Run rate would be $X" on the company line.
 - **Annual settings** (per taxpayer and year): deduction method, federal
   method (bracket or effective-rate override), OTHER credits (not the
   dependent credits, which are computed), child and dependent care

@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { ENTITY_TAX_TYPES, TAX_METHODS } from '../tax-estimator/types.js';
 import { ACCOUNT_TREATMENTS, allowsPersonTarget } from '../tax-estimator/entities-api.js';
+import { PROJECTION_METHODS } from '../tax-estimator/projection-method.js';
 import { taxEstimatorStateCodeSchema } from './tax-estimator-taxpayers.js';
 
 const MIN_TAX_YEAR = 2000;
@@ -47,6 +48,8 @@ export const upsertEntityYearInputsSchema = z.object({
   ubia: money.nullable().optional(),
   /** Q41: include the >2% shareholder health W-2 add-on in §199A W-2 wages (default false). */
   includeSehiInW2Wages: z.boolean().optional(),
+  /** Q46: projection of the ordinary character for this entity year (default run_rate). */
+  projectionMethod: z.enum(PROJECTION_METHODS).optional(),
 }).strict().refine(
   (v) => !v.w2WagesOverride || (v.w2WagesOverrideReason ?? '').trim().length > 0,
   { message: 'A reason is required when overriding W-2 wages', path: ['w2WagesOverrideReason'] },

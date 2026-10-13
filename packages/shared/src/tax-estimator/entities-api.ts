@@ -13,6 +13,7 @@
 // guaranteed payments, W-2 wages, payments, add-backs and farming gross income
 // are POSITIVE magnitudes.
 
+import type { ProjectionMethod } from './projection-method.js';
 import type { EntityTaxType, TaxMethod, TraceRow } from './types.js';
 
 export const INCOME_CHARACTERS = [
@@ -164,6 +165,12 @@ export interface EntityYearInputsDto {
    * W-2 wages the engine uses).
    */
   includeSehiInW2Wages: boolean;
+  /**
+   * Q46: how the ORDINARY character is projected for this entity year. Default 'run_rate';
+   * 'prior_year_scaled' / 'prior_year_dollar' follow the prior year's monthly trend (individual-path
+   * entities only; C corporations keep the run rate).
+   */
+  projectionMethod: ProjectionMethod;
   updatedAt: string | null;
 }
 

@@ -297,3 +297,32 @@ describe('Q45 — businesses outside MyBooks on the assumptions page', () => {
     expect(t).toContain('books through 2026-09');
   });
 });
+
+describe('Q46 — projection method on the assumptions page', () => {
+  const withProjection = (projection: Record<string, unknown>) => riveraLike({
+    federal: { ...riveraLike().federal, entities: [{ tenantId: 't1', companyId: 'c1', projection }] } as unknown as EstimateResultDTO['federal'],
+  });
+  const py = { taxYear: 2025, throughMonth: 9, sameMonthsOrdinary: '100000', remainingOrdinary: '80000', fullYearOrdinary: '180000', monthsWithActivity: 12 };
+
+  it('states the scaled method with the factor and the prior-year figures', () => {
+    const t = text(buildEstimateAssumptions(withProjection({
+      method: 'prior_year_scaled', applied: 'prior_year_scaled', fallbackReason: null, factor: '1.2', rawFactor: '1.2', capped: null,
+      runRateOrdinary: '160000', projectedOrdinary: '216000', runRateProjectedProfit: '160000', priorYear: py,
+    })), 'projection');
+    expect(t).toContain('Prior-year seasonal (scaled): ordinary = year-to-date + the prior year\'s remaining months × 1.2');
+    expect(t).toContain('prior year 2025 recurring ordinary: months 1–9 $100,000, months 10–12 $80,000, full year $180,000');
+    expect(t).toContain('the run rate would project ordinary $160,000');
+  });
+
+  it('states a fallback and its reason', () => {
+    const t = text(buildEstimateAssumptions(withProjection({
+      method: 'prior_year_dollar', applied: 'run_rate', fallbackReason: 'py_books_incomplete', factor: null, rawFactor: null, capped: null,
+      runRateOrdinary: '160000', projectedOrdinary: '160000', runRateProjectedProfit: '160000', priorYear: { ...py, monthsWithActivity: 7 },
+    })), 'projection');
+    expect(t).toContain('Prior-year seasonal (dollar) selected but not used — the prior-year books are incomplete');
+  });
+
+  it('the run rate keeps the existing wording', () => {
+    expect(text(buildEstimateAssumptions(riveraLike()), 'projection')).toContain('9 months actual + 3 projected (year-to-date + recurring ÷ 9 × 3)');
+  });
+});

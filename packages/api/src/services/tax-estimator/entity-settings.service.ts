@@ -9,9 +9,10 @@
 
 import { and, eq } from 'drizzle-orm';
 import type {
-  EntitySettingsDto, EntitySettingsResponse, EntityTaxType, EntityYearInputsDto, TaxMethod,
+  EntitySettingsDto, EntitySettingsResponse, EntityTaxType, EntityYearInputsDto, ProjectionMethod, TaxMethod,
   UpsertEntitySettingsInput, UpsertEntityYearInputsInput,
 } from '@kis-books/shared';
+import { DEFAULT_PROJECTION_METHOD } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import { taxEstEntitySettings, taxEstEntityYearInputs } from '../../db/schema/index.js';
 import { auditLog } from '../../middleware/audit.js';
@@ -46,6 +47,7 @@ function toYearDto(tenantId: string, companyId: string, taxYear: number, row: Ye
     w2WagesOverrideReason: row?.w2WagesOverrideReason ?? null,
     ubia: row?.ubia ?? null,
     includeSehiInW2Wages: row?.includeSehiInW2Wages ?? false,
+    projectionMethod: (row?.projectionMethod as ProjectionMethod | undefined) ?? DEFAULT_PROJECTION_METHOD,
     updatedAt: row?.updatedAt ? row.updatedAt.toISOString() : null,
   };
 }
@@ -116,6 +118,10 @@ export async function upsertYearInputs(
   if (input.includeSehiInW2Wages === true && (await resolveForCompany(company)).entityType !== 's_corp') {
     throw new AppError(422, 'Including >2% shareholder health insurance in W-2 wages applies to S corporations only', 'TE_SEHI_W2_S_CORP_ONLY');
   }
+  // Q46: prior-year trend methods are for individual-path entities (a C corporation keeps the run rate).
+  if (input.projectionMethod && input.projectionMethod !== DEFAULT_PROJECTION_METHOD && (await resolveForCompany(company)).entityType === 'c_corp') {
+    throw new AppError(422, 'Prior-year trend projection applies to pass-through and Schedule C / F businesses only, not C corporations', 'TE_PROJECTION_METHOD_NOT_SUPPORTED');
+  }
   const after = await db.transaction(async (tx) => {
     const [before] = await tx.select().from(taxEstEntityYearInputs)
       .where(and(
@@ -137,6 +143,7 @@ export async function upsertYearInputs(
       w2WagesOverrideReason: reason,
       ...(input.ubia !== undefined ? { ubia: input.ubia } : {}),
       ...(input.includeSehiInW2Wages !== undefined ? { includeSehiInW2Wages: input.includeSehiInW2Wages } : {}),
+      ...(input.projectionMethod !== undefined ? { projectionMethod: input.projectionMethod } : {}),
       updatedBy: userId ?? null,
       updatedAt: new Date(),
     };

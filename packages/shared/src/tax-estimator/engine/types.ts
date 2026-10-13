@@ -20,6 +20,7 @@ import type { CharacterAmounts, TaxEstimatorWarning } from '../entities-api.js';
 import type { PartnerSeStatus, PersonRole } from '../taxpayers-api.js';
 import type { AdjustmentKind, DeductionMode, HsaCoverage, RateMode } from '../years-api.js';
 import type { EntitySource, OutsideAmountBasis, OutsideEntryMode } from '../outside-entities-api.js';
+import type { PriorYearTrendMethod, ProjectionMethod, PyTrendFallbackReason } from '../projection-method.js';
 
 // ── Parameters ───────────────────────────────────────────────────────
 
@@ -203,6 +204,34 @@ export interface EngineEntity {
   amountBasis?: OutsideAmountBasis;
   /** Q45 (outside businesses): 'full_year' amounts (no projection) or 'ytd' (projected). */
   entryMode?: OutsideEntryMode;
+  /**
+   * Q46 (optional): project the ORDINARY character from the prior year's monthly trend instead of
+   * the run rate. Absent = run rate (rc.5 behaviour, byte-identical). Never set on Schedule AI period
+   * entities or outside businesses.
+   */
+  priorYearTrend?: EnginePriorYearTrend;
+}
+
+/**
+ * Q46: the prior-year figures one entity's trend projection needs, already split at the
+ * current year's through month (engine/py-trend.ts priorYearTrendFor). Recurring ordinary only.
+ */
+export interface EnginePriorYearTrend {
+  method: PriorYearTrendMethod;
+  /** null = no prior-year figures (see unavailableReason). */
+  priorYear: {
+    taxYear: number;
+    /** Current-year through month (1–12); "same months" = Jan..throughMonth of the prior year. */
+    throughMonth: number;
+    /** Σ PY recurring ordinary, Jan..throughMonth. */
+    sameMonthsOrdinary: string;
+    /** Σ PY recurring ordinary, the months after throughMonth through December. */
+    remainingOrdinary: string;
+    /** PY months (of 12) with any P&L activity. */
+    monthsWithActivity: number;
+  } | null;
+  /** Set by the service when the figures could not be read or the entity cannot use a trend. */
+  unavailableReason?: PyTrendFallbackReason | null;
 }
 
 // ── Adjustments ──────────────────────────────────────────────────────
@@ -388,6 +417,36 @@ export interface EntityResult {
   amountBasis?: OutsideAmountBasis;
   /** Q45: outside businesses only — full-year or year-to-date entry. */
   entryMode?: OutsideEntryMode;
+  /** Q46 (optional, additive): present only when a prior-year trend method was selected for the entity year. */
+  projection?: EntityProjectionResult;
+}
+
+/** Q46: how an entity's ordinary income was projected when a prior-year trend method was selected (whole dollars; factors to 4 places). */
+export interface EntityProjectionResult {
+  /** The method selected on the entity year. */
+  method: ProjectionMethod;
+  /** The method actually used: the selected one, or 'run_rate' after a fallback. */
+  applied: ProjectionMethod;
+  fallbackReason: PyTrendFallbackReason | null;
+  /** Scale factor applied (scaled method), after the cap; null otherwise. */
+  factor: string | null;
+  /** CY recurring YTD ÷ PY same months before the cap (scaled method); null otherwise. */
+  rawFactor: string | null;
+  capped: 'min' | 'max' | null;
+  /** Ordinary projection under the run rate (for the "Run rate would be" comparison). */
+  runRateOrdinary: string;
+  /** Ordinary projection used. */
+  projectedOrdinary: string;
+  /** Entity projected profit had the run rate been used (every character). */
+  runRateProjectedProfit: string;
+  priorYear: {
+    taxYear: number;
+    throughMonth: number;
+    sameMonthsOrdinary: string;
+    remainingOrdinary: string;
+    fullYearOrdinary: string;
+    monthsWithActivity: number;
+  } | null;
 }
 
 export interface RetirementLimitResult {

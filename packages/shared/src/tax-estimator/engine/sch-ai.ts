@@ -91,6 +91,8 @@ function annualizeEntity(e: EngineEntity, f: Dec, sehiFraction: SehiFractionFor)
     officerWages: e.officerWages.map((w) => ({ ...w, amount: scale(w.amount, f) })),
     taxDepreciationBookYtd: scale(e.taxDepreciationBookYtd, f),
     w2WagesEffective: scaleNullable(e.w2WagesEffective, f),
+    // Q46: a Schedule AI column annualizes period actuals; the prior-year trend never applies to it.
+    priorYearTrend: undefined,
   };
 }
 

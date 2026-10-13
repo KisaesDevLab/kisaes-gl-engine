@@ -19,6 +19,8 @@ import { ASSUMPTION_SECTION_IDS } from './estimate-api.js';
 import type { CharacterAmounts, ThroughMonthSource } from './entities-api.js';
 import type { JurisdictionEstimate } from './engine/vouchers.js';
 import { NONRESIDENT_FLAT_RATE_LABEL } from './engine/state-types.js';
+import type { EntityProjectionResult } from './engine/types.js';
+import { PROJECTION_METHOD_LABELS, PY_TREND_FALLBACK_LABELS } from './projection-method.js';
 import { dIsZero, dRound, dRoundDollars, dSum } from './decimal.js';
 import { DEFAULT_DISCLAIMER_TEXT } from '../schemas/tax-estimator-years.js';
 import { presentEngineText, presentParameterValue, presentWarningMessage } from './format-text.js';
@@ -192,14 +194,32 @@ function projectionSection(r: EstimateResultDTO): AssumptionSectionDTO {
     const through = e.throughMonth
       ? `books through ${e.throughMonth} (${e.throughMonthSource ? THROUGH_SOURCE_LABELS[e.throughMonthSource] : 'default'}${reason})`
       : 'no month range';
+    const proj = (r.federal.entities ?? []).find((x) => x.tenantId === e.tenantId && x.companyId === e.companyId)?.projection;
     const method = e.monthsRemaining > 0
-      ? `${e.monthsElapsed} months actual + ${e.monthsRemaining} projected (year-to-date + recurring ÷ ${e.monthsElapsed} × ${e.monthsRemaining})`
+      ? `${e.monthsElapsed} months actual + ${e.monthsRemaining} projected (${proj ? trendDetail(proj, e.monthsElapsed, e.monthsRemaining) : `year-to-date + recurring ÷ ${e.monthsElapsed} × ${e.monthsRemaining}`})`
       : `${e.monthsElapsed} months actual (year closed; no projection)`;
     const basis = e.basis ? `, ${e.basis} basis` : '';
     const path = e.path === 'c_corp' ? ' — C corporation, estimated at entity level and not in the taxpayer totals' : '';
     items.push({ label: e.companyName, detail: `${through}; ${method}${basis}${path}.` });
   }
   return section('projection', items, 'No businesses were included.');
+}
+
+/** Q46: the projection method of a business whose entity year selected a prior-year trend. */
+function trendDetail(p: EntityProjectionResult, elapsed: number, remaining: number): string {
+  const label = PROJECTION_METHOD_LABELS[p.method];
+  const runRate = `year-to-date + recurring ÷ ${elapsed} × ${remaining}`;
+  const py = p.priorYear;
+  const pyText = py
+    ? `prior year ${py.taxYear} recurring ordinary: months 1–${py.throughMonth} ${formatDollars(py.sameMonthsOrdinary)}, months ${py.throughMonth + 1}–12 ${formatDollars(py.remainingOrdinary)}, full year ${formatDollars(py.fullYearOrdinary)}`
+    : 'prior-year figures unavailable';
+  if (p.applied === 'run_rate') {
+    return `${label} selected but not used — ${p.fallbackReason ? PY_TREND_FALLBACK_LABELS[p.fallbackReason] : 'not applicable'}; ${runRate} for every character (${pyText})`;
+  }
+  const how = p.applied === 'prior_year_scaled'
+    ? `ordinary = year-to-date + the prior year's remaining months × ${p.factor} (this year's recurring ÷ the prior year's same months${p.capped ? `, ${p.rawFactor} capped at ${p.factor}` : ''})`
+    : 'ordinary = year-to-date + the prior year\'s remaining months in dollars';
+  return `${label}: ${how}; ${pyText}; the run rate would project ordinary ${formatDollars(p.runRateOrdinary)}; other characters ${runRate}`;
 }
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
