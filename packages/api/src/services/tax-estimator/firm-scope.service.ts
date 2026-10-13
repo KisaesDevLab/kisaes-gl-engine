@@ -3,9 +3,9 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { and, eq, sql, type SQL } from 'drizzle-orm';
-import type { FirmRole } from '@kis-books/shared';
+import { resolveFirmCapabilities, type FirmCapabilityMap, type FirmRole } from '@kis-books/shared';
 import { db } from '../../db/index.js';
-import { tenantFirmAssignments, userTenantAccess } from '../../db/schema/index.js';
+import { firms, firmUsers, tenantFirmAssignments, userTenantAccess } from '../../db/schema/index.js';
 import { taxEstFirmSettings } from '../../db/schema/tax-estimator-years.js';
 import * as firmsService from '../firms.service.js';
 import * as firmUsersService from '../firm-users.service.js';
@@ -45,24 +45,36 @@ export interface FirmScope {
 }
 
 /**
- * D17 + D18 (Kurt, 2026-10-12) — taxpayer visibility. Resolved once per request by `resolveScope`.
+ * D17 + D18 (Kurt, 2026-10-12) as amended by Q54 (Kurt, 2026-10-13) — taxpayer visibility.
+ * Resolved once per request by `resolveScope` (every input server-side, never client input).
  *
- *   bypass (firm_admin in the firm, or super admin) → every taxpayer of the firm.
+ *   bypass (super admin, or UNRESTRICTED_VIEWER) → every taxpayer of the firm, listed or not.
  *   taxpayer WITH a staff list (`tax_est_taxpayer_staff` rows; D18) → visible iff the list
- *     names the user. The list REPLACES the linked-tenant rule: tenant reach and the firm
- *     switch play no part (and `scopeForTaxpayer` widens that taxpayer's reads to its links).
- *   taxpayer with NO staff list → the D17 firm rule: when the switch
- *     `restrict_taxpayers_to_linked_tenants` is ON (default), a link of the taxpayer points
- *     into a tenant of `allowedTenantIds` (any year), OR the taxpayer has no active link (no
- *     link into a tenant the firm still actively manages) and the user created it
- *     (`created_by`; NULL = firm admins only); switch OFF → visible.
+ *     names the user — firm admins included (Q54: a firm admin NOT on the list does not see
+ *     it). The list REPLACES every other rule: tenant reach, the firm switch and the
+ *     capability play no part (and `scopeForTaxpayer` widens that taxpayer's reads to its links).
+ *   taxpayer with NO staff list →
+ *     firm admin → visible (as before Q54);
+ *     firm_staff / firm_readonly → (a) the member holds the firm capability
+ *       `tax_estimator_view_taxpayers` (Q54; default OFF) AND the D17 firm rule holds — the
+ *       switch `restrict_taxpayers_to_linked_tenants` OFF, or ON (default) and a link of the
+ *       taxpayer points into a tenant of `allowedTenantIds` (any year); OR (b) the taxpayer has
+ *       no active link (no link into a tenant the firm still actively manages) and the user
+ *       created it (`created_by`; NULL = firm admins only) — with or without the capability.
+ *     Tenant-level access alone (e.g. the Accountant role on a linked client) never reveals a
+ *     taxpayer any more.
  *
  * Under the firm rule, data from linked tenants outside `allowedTenantIds` stays hidden (partial view).
  */
 export interface TaxpayerViewer {
   /** The acting user; null only for UNRESTRICTED_VIEWER. */
   userId: string | null;
+  /** Super admin (or UNRESTRICTED_VIEWER): every taxpayer, staff list or not. Q54: NOT firm admins. */
   bypass: boolean;
+  /** Q54: firm_admin of the firm (not a super admin) — every taxpayer WITHOUT a staff list. */
+  firmAdmin: boolean;
+  /** Q54: the member holds `tax_estimator_view_taxpayers` (resolved from firm_users each request). */
+  canViewUnlisted: boolean;
   restrictToLinkedTenants: boolean;
 }
 
@@ -70,7 +82,18 @@ export interface TaxpayerViewer {
  * Sees every taxpayer of the firm. ONLY for server paths that are not a staff user's view:
  * the client portal (its contact mapping governs it, D17 item 6) and service tests.
  */
-export const UNRESTRICTED_VIEWER: TaxpayerViewer = Object.freeze({ userId: null, bypass: true, restrictToLinkedTenants: false });
+export const UNRESTRICTED_VIEWER: TaxpayerViewer = Object.freeze({
+  userId: null, bypass: true, firmAdmin: false, canViewUnlisted: true, restrictToLinkedTenants: false,
+});
+
+/** Q54: the firm capability that opens unlisted taxpayers to firm_staff / firm_readonly. */
+export const TAX_EST_VIEW_CAPABILITY = 'tax_estimator_view_taxpayers' as const;
+
+/**
+ * Q54: true when the caller sees at least the taxpayers without a staff list (super admin, firm
+ * admin, or the capability). The UI's "Ask a firm admin for Tax Estimator access" state keys off it.
+ */
+export const canViewUnlistedTaxpayers = (v: TaxpayerViewer): boolean => v.bypass || v.firmAdmin || v.canViewUnlisted;
 
 /** Pick the caller's firm. One membership → that firm; several → `requestedFirmId` must name one. */
 export async function resolveFirmForUser(
@@ -128,13 +151,35 @@ export async function resolveScope(
   requestedFirmId?: string,
 ): Promise<FirmScope> {
   const { firmId, firmRole } = await resolveFirmForUser(userId, isSuperAdmin, requestedFirmId);
-  const [tenantIds, restrict] = await Promise.all([
+  const [tenantIds, restrict, canView] = await Promise.all([
     allowedTenantIds(firmId, userId, isSuperAdmin), firmRestrictsToLinkedTenants(firmId),
+    isSuperAdmin ? Promise.resolve(true) : memberHasViewCapability(firmId, userId),
   ]);
   return {
     firmId, firmRole, allowedTenantIds: tenantIds,
-    viewer: { userId, bypass: isSuperAdmin || firmRole === 'firm_admin', restrictToLinkedTenants: restrict },
+    viewer: {
+      userId,
+      bypass: isSuperAdmin, // Q54: firm admins are no longer a bypass for listed taxpayers
+      firmAdmin: !isSuperAdmin && firmRole === 'firm_admin',
+      canViewUnlisted: canView,
+      restrictToLinkedTenants: restrict,
+    },
   };
+}
+
+/**
+ * Q54: does the ACTIVE membership of `userId` in the (active) firm hold
+ * `tax_estimator_view_taxpayers`? Read from `firm_users.capabilities` on every request through
+ * the shared resolver (NULL = role defaults: firm_staff / firm_readonly OFF; absent key = OFF).
+ */
+export async function memberHasViewCapability(firmId: string, userId: string): Promise<boolean> {
+  const [row] = await db.select({ role: firmUsers.firmRole, caps: firmUsers.capabilities })
+    .from(firmUsers)
+    .innerJoin(firms, eq(firms.id, firmUsers.firmId))
+    .where(and(eq(firmUsers.firmId, firmId), eq(firmUsers.userId, userId), eq(firmUsers.isActive, true), eq(firms.isActive, true)))
+    .limit(1);
+  if (!row) return false;
+  return resolveFirmCapabilities(row.role, (row.caps ?? null) as FirmCapabilityMap | null)[TAX_EST_VIEW_CAPABILITY] === true;
 }
 
 /** The firm switch (D17). A firm that never saved settings is ON (the column default). */
@@ -149,7 +194,7 @@ export async function firmRestrictsToLinkedTenants(firmId: string): Promise<bool
 const TP = sql.raw('"tax_est_taxpayers"');
 
 /**
- * THE taxpayer visibility predicate (D17), as SQL on `tax_est_taxpayers` (un-aliased) —
+ * THE taxpayer visibility predicate (D17 / D18 / Q54 — see TaxpayerViewer), as SQL on `tax_est_taxpayers` (un-aliased) —
  * includes `firm_id = scope.firmId`. Every taxpayer read (list, by-id loaders, scenario /
  * adjustment / payment / snapshot loaders, Report Pack choices and rendering) puts this in
  * its WHERE, so a hidden taxpayer is indistinguishable from another firm's (404).
@@ -157,20 +202,24 @@ const TP = sql.raw('"tax_est_taxpayers"');
 export function visibleTaxpayerFilter(scope: FirmScope): SQL {
   const firm = sql`${TP}.firm_id = ${scope.firmId}::uuid`;
   const v = scope.viewer;
-  if (v.bypass) return firm;
+  if (v.bypass) return firm; // super admin / UNRESTRICTED_VIEWER only (Q54)
   if (!v.userId) return sql`false`;
   const uid = sql`${v.userId}::uuid`;
-  // D18: on a non-empty list → that alone decides; empty list → the D17 firm rule.
+  // D18 / Q54: on a non-empty list → that alone decides (firm admins included); empty list → below.
   const listed = sql`EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes WHERE tes.firm_id = ${TP}.firm_id AND tes.taxpayer_id = ${TP}.id AND tes.user_id = ${uid})`;
   const noList = sql`NOT EXISTS (SELECT 1 FROM tax_est_taxpayer_staff tes WHERE tes.firm_id = ${TP}.firm_id AND tes.taxpayer_id = ${TP}.id)`;
-  if (!v.restrictToLinkedTenants) return sql`(${firm} AND (${listed} OR ${noList}))`;
-  const reachable = scope.allowedTenantIds.length === 0
-    ? sql`false`
-    : sql`EXISTS (SELECT 1 FROM tax_est_links tel WHERE tel.taxpayer_id = ${TP}.id AND ${tenantInScopeSql(scope, sql.raw('tel.tenant_id'))})`;
+  if (v.firmAdmin) return sql`(${firm} AND (${listed} OR ${noList}))`;
+  // Q54 (c): the unlinked-own creator rule needs no capability.
   const unlinkedOwn = sql`(${TP}.created_by = ${uid} AND NOT EXISTS (
     SELECT 1 FROM tax_est_links tel
     JOIN tenant_firm_assignments tfa ON tfa.tenant_id = tel.tenant_id AND tfa.firm_id = ${TP}.firm_id AND tfa.is_active = true
     WHERE tel.taxpayer_id = ${TP}.id))`;
+  // Q54 (b): without the firm capability, an unlisted taxpayer is visible only through (c).
+  if (!v.canViewUnlisted) return sql`(${firm} AND (${listed} OR (${noList} AND ${unlinkedOwn})))`;
+  if (!v.restrictToLinkedTenants) return sql`(${firm} AND (${listed} OR ${noList}))`;
+  const reachable = scope.allowedTenantIds.length === 0
+    ? sql`false`
+    : sql`EXISTS (SELECT 1 FROM tax_est_links tel WHERE tel.taxpayer_id = ${TP}.id AND ${tenantInScopeSql(scope, sql.raw('tel.tenant_id'))})`;
   return sql`(${firm} AND (${listed} OR (${noList} AND (${reachable} OR ${unlinkedOwn}))))`;
 }
 
@@ -179,8 +228,8 @@ export function visibleTaxpayerFilter(scope: FirmScope): SQL {
  *
  * Returns the scope to use for reads / computations OF `taxpayerId` (its links, its
  * entities' tax-basis figures, readiness, payments, Schedule AI figures, snapshots, PDFs,
- * Report Pack section): when the viewer is NOT a bypass user and the taxpayer's staff list
- * names them, `allowedTenantIds` gains every tenant the firm still ACTIVELY manages that the
+ * Report Pack section): when the viewer is NOT a bypass user (Q54: firm admins are not) and
+ * the taxpayer's staff list names them, `allowedTenantIds` gains every tenant the firm still ACTIVELY manages that the
  * taxpayer links into (any year) — the same tenants a super admin would read for it.
  * Otherwise the scope is returned unchanged (no `elevation`). Self-contained: membership is
  * checked here (firm + taxpayer + user), so a stray call can never widen anything.
@@ -194,7 +243,7 @@ export async function scopeForTaxpayer(scope: FirmScope, taxpayerId: string): Pr
   if (scope.elevation?.taxpayerId === taxpayerId) return scope;
   const base = baseScope(scope);
   const v = base.viewer;
-  if (v.bypass || !v.userId) return base;
+  if (v.bypass || !v.userId) return base; // super admin: already the firm's full managed set
   const rows = (await db.execute(sql`SELECT DISTINCT tel.tenant_id::text AS tenant_id
     FROM tax_est_links tel
     JOIN tax_est_taxpayers tp ON tp.id = tel.taxpayer_id AND tp.firm_id = ${base.firmId}::uuid

@@ -2,6 +2,10 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+// Q54 (Kurt, 2026-10-13): firm_staff / firm_readonly members below hold "Tax Estimator: view
+// taxpayers" (capabilities) so these pre-Q54 expectations hold as written; the Q54 matrix itself
+// (capability off, unlisted firm admin, ...) is in tax-estimator/taxpayer-visibility-q54.routes.test.ts.
+
 // Tax Estimator Phase 13 — the Report Pack `tax-estimate` section's request-side gates:
 // /reports/catalog lists it only for callers who pass the Tax Estimator gates;
 // /reports/tax-estimate/taxpayers (pack-builder choices) and /reports/tax-estimate (the
@@ -43,7 +47,7 @@ async function mkUser(key: string, tenantId: string, opts: { userType?: string; 
     tenantId, email: `te13r-${key}-${randomUUID().slice(0, 8)}@example.com`, passwordHash: await bcrypt.hash('x-secret-12345', 4),
     displayName: key, role: opts.userType === 'client' ? 'owner' : 'accountant', userType: opts.userType ?? 'staff',
   }).returning();
-  if (opts.firm) await db.insert(firmUsers).values({ firmId: opts.firm, userId: u!.id, firmRole: 'firm_staff' });
+  if (opts.firm) await db.insert(firmUsers).values({ firmId: opts.firm, userId: u!.id, firmRole: 'firm_staff', capabilities: { tax_estimator_view_taxpayers: true } });
   for (const t of opts.access ?? []) await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: t, role: 'accountant' });
   tokens[key] = jwt.sign({ userId: u!.id, tenantId, role: opts.userType === 'client' ? 'owner' : 'accountant', isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '5m' });
 }

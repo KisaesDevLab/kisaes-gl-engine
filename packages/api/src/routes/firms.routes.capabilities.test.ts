@@ -146,6 +146,30 @@ describe('firm member capabilities routes', () => {
     expect((await request('GET', capsPath(firmId, managedAdminFuId), undefined, adminToken)).status).toBe(404);
   });
 
+  it('Q54: "Tax Estimator: view taxpayers" defaults OFF; readonly may hold it (and only it); grants are audited', async () => {
+    for (const fu of [staffFuId, readonlyFuId]) {
+      const g = await request('GET', capsPath(firmId, fu), undefined, adminToken);
+      expect(g.status).toBe(200);
+      expect(g.json.capabilities['tax_estimator_view_taxpayers']).toBe(false);
+    }
+    const ro = await request('PUT', capsPath(firmId, readonlyFuId), { capabilities: { tax_estimator_view_taxpayers: true } }, adminToken);
+    expect(ro.status, JSON.stringify(ro.json)).toBe(200);
+    expect(ro.json.capabilities['tax_estimator_view_taxpayers']).toBe(true);
+    expect(ro.json.capabilities.team_management).toBe(false);
+    // A readonly grant that sneaks in an owner key is still refused as a whole.
+    const mixed = await request('PUT', capsPath(firmId, readonlyFuId), { capabilities: { tax_estimator_view_taxpayers: true, team_management: true } }, adminToken);
+    expect(mixed.status).toBe(400);
+    expect(mixed.json.error.code).toBe('FIRM_ROLE_INELIGIBLE');
+    const st = await request('PUT', capsPath(firmId, staffFuId), { capabilities: { tax_estimator_view_taxpayers: true } }, adminToken);
+    expect(st.status).toBe(200);
+    const audits = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'firm_user_capabilities')));
+    expect(audits).toHaveLength(2);
+    const after = audits.map((a) => (a.afterData as { capabilities: Record<string, boolean> }).capabilities['tax_estimator_view_taxpayers']);
+    expect(after).toEqual([true, true]);
+    const before = audits.map((a) => (a.beforeData as { capabilities: Record<string, boolean> }).capabilities['tax_estimator_view_taxpayers']);
+    expect(before).toEqual([false, false]);
+  });
+
   it('super-admin-managed firm: firm_admin refused, super admin succeeds', async () => {
     const denied = await request('PUT', capsPath(managedFirmId, managedAdminFuId), { capabilities: {} }, adminToken);
     expect(denied.status).toBe(403);

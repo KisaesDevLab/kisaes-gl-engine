@@ -2,6 +2,10 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+// Q54 (Kurt, 2026-10-13): firm_staff / firm_readonly members below hold "Tax Estimator: view
+// taxpayers" (capabilities) so these pre-Q54 expectations hold as written; the Q54 matrix itself
+// (capability off, unlisted firm admin, ...) is in tax-estimator/taxpayer-visibility-q54.routes.test.ts.
+
 // Register / transaction-detail non-recurring flag (R7-07 #2) behind the real Tax
 // Estimator guard chain. The caller works INSIDE a client tenant (T2, managed by firm A,
 // flag ON): the firm is the active tenant's managing firm (like the Report Pack section),
@@ -45,7 +49,7 @@ async function mkUser(key: string, jwtTenant: string, opts: { firm?: string; fir
     displayName: key, role, isSuperAdmin: false, userType: opts.userType ?? 'staff',
   }).returning();
   userIds.push(u!.id);
-  if (opts.firm) await db.insert(firmUsers).values({ firmId: opts.firm, userId: u!.id, firmRole: opts.firmRole ?? 'firm_staff' });
+  if (opts.firm) await db.insert(firmUsers).values({ firmId: opts.firm, userId: u!.id, firmRole: opts.firmRole ?? 'firm_staff', capabilities: { tax_estimator_view_taxpayers: true } });
   for (const t of opts.access) await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: t, role });
   tok[key] = jwt.sign({ userId: u!.id, tenantId: jwtTenant, role, isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '5m' });
 }

@@ -20,6 +20,8 @@ export interface TaxpayerDTO {
   residentState: string | null;
   safeHarborOverride: SafeHarborOverride | null;
   portalShows: PortalShows | null;
+  /** Q54: the Q52 company-dashboard cards show this taxpayer only when true (default false). */
+  showOnCompanyDashboard: boolean;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -109,20 +111,28 @@ export interface TaxpayerStaffMemberDTO {
 
 export interface TaxpayerStaffDTO {
   taxpayerId: string;
-  /** Empty = everyone the linked-tenant rule allows; non-empty = only these users plus firm admins. */
+  /**
+   * Empty = the firm rule (firm admins; staff holding "Tax Estimator: view taxpayers" who reach a
+   * linked client). Non-empty = ONLY these users plus super admins — firm admins included (Q54).
+   */
   members: TaxpayerStaffMemberDTO[];
   total: number;
   /** The firm switch (restrict_taxpayers_to_linked_tenants) at read time. */
   restrictToLinkedTenants: boolean;
-  /** The caller is a firm admin / super admin and may change the list. */
+  /** The caller is a firm admin who can see the taxpayer, or a super admin, and may change the list. */
   canEdit: boolean;
+  /**
+   * Q54: present (true) only on a PUT response when the save removed the caller's own access —
+   * the list no longer names them and they are not a super admin. `members` is then empty.
+   */
+  callerLostAccess?: boolean;
 }
 
 export interface TaxpayerStaffCandidateDTO {
   userId: string;
   email: string;
   displayName: string | null;
-  firmRole: 'firm_staff' | 'firm_readonly';
+  firmRole: 'firm_admin' | 'firm_staff' | 'firm_readonly';
 }
 
 export interface TaxpayerStaffCandidateListDTO {

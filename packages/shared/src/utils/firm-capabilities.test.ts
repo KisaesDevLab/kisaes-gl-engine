@@ -7,6 +7,7 @@ import {
   FIRM_CAPABILITY_KEYS,
   TENANT_CAPABILITY_KEYS,
   ADMIN_CAPABILITY_KEYS,
+  FIRM_DATA_CAPABILITY_KEYS,
   FIRM_CAPABILITIES,
 } from '../constants/firm-capabilities.js';
 import {
@@ -14,6 +15,7 @@ import {
   emptyFirmCapabilities,
   hasAnyFirmCapability,
   isCapabilityEligibleRole,
+  isCapabilityKeyEligibleForRole,
   normalizeFirmCapabilityMap,
   resolveFirmCapabilities,
   unionFirmCapabilities,
@@ -23,8 +25,9 @@ const allTrue = Object.fromEntries(FIRM_CAPABILITY_KEYS.map((k) => [k, true]));
 const allFalse = Object.fromEntries(FIRM_CAPABILITY_KEYS.map((k) => [k, false]));
 
 describe('firm capability catalog', () => {
-  it('splits cleanly into tenant and admin scopes', () => {
-    expect(TENANT_CAPABILITY_KEYS.length + ADMIN_CAPABILITY_KEYS.length).toBe(FIRM_CAPABILITY_KEYS.length);
+  it('splits cleanly into tenant, admin and firm-data scopes', () => {
+    expect(TENANT_CAPABILITY_KEYS.length + ADMIN_CAPABILITY_KEYS.length + FIRM_DATA_CAPABILITY_KEYS.length).toBe(FIRM_CAPABILITY_KEYS.length);
+    expect(FIRM_DATA_CAPABILITY_KEYS).toEqual(['tax_estimator_view_taxpayers']);
     expect(TENANT_CAPABILITY_KEYS).toContain('team_management');
     expect(ADMIN_CAPABILITY_KEYS).toContain('admin_tenant_ops');
     expect(new Set(FIRM_CAPABILITIES.map((c) => c.key)).size).toBe(FIRM_CAPABILITIES.length);
@@ -61,9 +64,20 @@ describe('resolveFirmCapabilities', () => {
     expect(r.admin_user_support).toBe(false);
     expect(r.team_management).toBe(true);
   });
-  it('firm_readonly is always nothing, regardless of stored map', () => {
-    expect(resolveFirmCapabilities('firm_readonly', allTrue)).toEqual(allFalse);
+  it('firm_readonly never holds owner / admin keys, whatever is stored (Q54: only firm-data keys)', () => {
+    expect(resolveFirmCapabilities('firm_readonly', allTrue)).toEqual({ ...allFalse, tax_estimator_view_taxpayers: true });
+    expect(resolveFirmCapabilities('firm_readonly', { team_management: true })).toEqual(allFalse);
+    expect(resolveFirmCapabilities('firm_readonly', null)).toEqual(allFalse);
     expect(isCapabilityEligibleRole('firm_readonly')).toBe(false);
+    expect(isCapabilityKeyEligibleForRole('tax_estimator_view_taxpayers', 'firm_readonly')).toBe(true);
+    expect(isCapabilityKeyEligibleForRole('team_management', 'firm_readonly')).toBe(false);
+    expect(isCapabilityKeyEligibleForRole('tax_estimator_view_taxpayers', 'bogus')).toBe(false);
+  });
+  it('Q54: "Tax Estimator: view taxpayers" is OFF by default for firm_staff, readonly and any customized set', () => {
+    expect(resolveFirmCapabilities('firm_staff', null).tax_estimator_view_taxpayers).toBe(false);
+    expect(resolveFirmCapabilities('firm_readonly', null).tax_estimator_view_taxpayers).toBe(false);
+    expect(resolveFirmCapabilities('firm_staff', { team_management: true }).tax_estimator_view_taxpayers).toBe(false);
+    expect(resolveFirmCapabilities('firm_staff', { tax_estimator_view_taxpayers: true }).tax_estimator_view_taxpayers).toBe(true);
   });
   it('unknown role → nothing', () => {
     expect(resolveFirmCapabilities('bogus', allTrue)).toEqual(allFalse);

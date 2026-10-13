@@ -26,6 +26,11 @@
 //            Scenario: the one the portal shows by default — Base (live: Base's cache entry;
 //            snapshot: Base's latest finalized snapshot only, never a shared what-if's).
 //   anyone else — `null` (cards hidden), indistinguishable from "flag off / nothing linked".
+//   Q54 (Kurt, 2026-10-13): a taxpayer appears on ANY company dashboard (staff and owner alike)
+//   only when its switch `show_on_company_dashboard` ("Show on linked company dashboards",
+//   migration 0215) is ON — default OFF. No qualifying taxpayer → `null` (the section is gone);
+//   a staff Refresh of a switched-off taxpayer is the uniform 404. The firm-wide cards below
+//   are NOT affected (staff tool).
 //
 // FIRM-WIDE (GET /api/v1/tax-estimator/dashboard, Tax Estimator home): "Vouchers due in the
 // next 30 days" and "Behind on payments" across every taxpayer `visibleTaxpayerFilter` lets
@@ -202,11 +207,26 @@ async function figuresFor(
 
 // ── company dashboard: staff ────────────────────────────────────────────
 
+/** Q54: of these taxpayer ids, the ones switched to "Show on linked company dashboards". */
+async function shownOnCompanyDashboard(ids: readonly string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db.select({ id: taxEstTaxpayers.id }).from(taxEstTaxpayers)
+    .where(and(inArray(taxEstTaxpayers.id, [...ids]), eq(taxEstTaxpayers.showOnCompanyDashboard, true)));
+  return new Set(rows.map((r) => r.id));
+}
+
+/** D17 / D18 / Q54 visible, active, linked to this company AND switched onto company dashboards. */
+async function staffCardTaxpayers(scope: FirmScope, tenantId: string, companyId: string) {
+  const linked = await listPackTaxpayers(scope, tenantId, companyId);
+  const shown = await shownOnCompanyDashboard(linked.map((t) => t.id));
+  return linked.filter((t) => shown.has(t.id));
+}
+
 /** Staff audience. `scope` = the Report Pack gate's scope for the company's tenant (resolvePackScope). */
 export async function companyCardsForStaff(scope: FirmScope, tenantId: string, companyId: string, opts: CardOptions = {}): Promise<CompanyTaxEstimatesDTO | null> {
   const now = opts.today ?? new Date();
   const today = isoDay(now);
-  const linked = await listPackTaxpayers(scope, tenantId, companyId); // D17 / D18 visible, active, linked to this company
+  const linked = await staffCardTaxpayers(scope, tenantId, companyId);
   if (linked.length === 0) return null;
   const taxpayers: TaxEstDashboardTaxpayerDTO[] = [];
   for (const t of linked) {
@@ -223,7 +243,7 @@ export async function refreshCompanyCard(
   scope: FirmScope, tenantId: string, companyId: string, taxpayerId: string, opts: CardOptions = {},
 ): Promise<TaxEstDashboardTaxpayerDTO> {
   const now = opts.today ?? new Date();
-  const t = (await listPackTaxpayers(scope, tenantId, companyId)).find((x) => x.id === taxpayerId);
+  const t = (await staffCardTaxpayers(scope, tenantId, companyId)).find((x) => x.id === taxpayerId);
   if (!t) throw taxpayerNotFound();
   const taxYear = portalDefaultYear(t.years, now);
   if (taxYear == null) throw taxpayerNotFound();
@@ -280,6 +300,7 @@ async function ownerTaxpayers(email: string, tenantId: string, companyId: string
       sql`lower(${portalContacts.email}) = lower(${email})`,
       eq(taxEstTaxpayers.firmId, firmId),
       eq(taxEstTaxpayers.isActive, true),
+      eq(taxEstTaxpayers.showOnCompanyDashboard, true), // Q54: the per-taxpayer switch (default OFF)
     ))
     .orderBy(taxEstTaxpayers.displayName, desc(taxEstLinks.taxYear));
 }

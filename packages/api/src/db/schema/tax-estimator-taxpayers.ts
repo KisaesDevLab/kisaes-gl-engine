@@ -22,6 +22,9 @@ export const taxEstTaxpayers = pgTable('tax_est_taxpayers', {
   residentState: char('resident_state', { length: 2 }),
   safeHarborOverride: varchar('safe_harbor_override', { length: 20 }),
   portalShows: varchar('portal_shows', { length: 10 }),
+  // Q54 (Kurt, 2026-10-13; migration 0215): the Q52 company-dashboard cards appear for this
+  // taxpayer only when ON (staff and owner audiences alike). Default OFF.
+  showOnCompanyDashboard: boolean('show_on_company_dashboard').notNull().default(false),
   isActive: boolean('is_active').notNull().default(true),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

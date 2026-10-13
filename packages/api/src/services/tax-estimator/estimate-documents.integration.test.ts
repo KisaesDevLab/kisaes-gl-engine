@@ -2,6 +2,10 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+// Q54 (Kurt, 2026-10-13): firm_staff / firm_readonly members below hold "Tax Estimator: view
+// taxpayers" (capabilities) so these pre-Q54 expectations hold as written; the Q54 matrix itself
+// (capability off, unlisted firm admin, ...) is in routes/tax-estimator/taxpayer-visibility-q54.routes.test.ts.
+
 // Phase 13 acceptance (PHASES.md "PDF for each entity type"): the one estimate PDF
 // renderer prints an individual with a Sch C + an S corp owner + a limited partner
 // (Rivera), and a Sch F farmer with a linked C corporation — every PDF printed from a
@@ -52,7 +56,7 @@ beforeAll(async () => {
   await db.insert(tenantFirmAssignments).values([fx.T.schc, fx.T.scorp, fx.T.lp].map((tenantId) => ({ tenantId, firmId: FIRM_A })));
   await db.insert(tenantFirmAssignments).values({ tenantId: fx.T.other, firmId: FIRM_B });
   await db.insert(users).values({ id: USER, tenantId: fx.T.schc, email: `te13-${USER}@example.com`, passwordHash: 'x', displayName: 'Staff', role: 'accountant' });
-  await db.insert(firmUsers).values({ firmId: FIRM_A, userId: USER, firmRole: 'firm_staff' });
+  await db.insert(firmUsers).values({ firmId: FIRM_A, userId: USER, firmRole: 'firm_staff', capabilities: { tax_estimator_view_taxpayers: true } });
   await db.insert(userTenantAccess).values([fx.T.schc, fx.T.scorp, fx.T.lp].map((tenantId) => ({ userId: USER, tenantId, role: 'accountant' })));
   await db.insert(tenantFeatureFlags).values({ tenantId: fx.T.schc, flagKey: 'TAX_ESTIMATOR_V1', enabled: true });
 

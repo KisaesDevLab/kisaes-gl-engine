@@ -8,7 +8,9 @@
 //
 // Fixture (Rivera household, firm A, links into T.schc / T.scorp / T.lp; practice tenant P
 // with the flag ON is every staff user's ACTIVE tenant):
-//   admin     firm_admin,    access {P}          → bypass, own (partial) data — unaffected by D18
+//   admin     firm_admin,    access {P}          → Q54: on every non-empty list as its manager, so it
+//                                                  gets D18 full data like listed staff
+//   admin2    firm_admin,    access {P}          → Q54: the manager of a list that leaves `admin` out
 //   super     super admin (X-Firm-Id)            → bypass, full managed set
 //   listed    firm_staff,    access {P}          → on the list, reaches NO linked tenant
 //   listedLp  firm_staff,    access {P, lp}      → on the list, reaches lp only
@@ -102,7 +104,10 @@ function call(method: string, path: string, key: string, body?: unknown, extra: 
   });
 }
 
-const setStaff = (keys: string[]) => call('PUT', `${TE}/taxpayers/${fx.taxpayerId}/staff`, 'admin', { userIds: keys.map((k) => uid[k]!) });
+// Q54: a non-empty list must name a firm admin (or super admin); `admin` is added unless `raw`.
+const setStaff = (keys: string[], raw = false) => call('PUT', `${TE}/taxpayers/${fx.taxpayerId}/staff`, 'admin', {
+  userIds: (raw || keys.length === 0 ? keys : ['admin', ...keys]).map((k) => uid[k]!),
+});
 const setSwitch = (on: boolean) => call('PUT', `${TE}/firm-settings`, 'admin', { restrictTaxpayersToLinkedTenants: on });
 const listIds = async (key: string) => {
   const r = await call('GET', `${TE}/taxpayers?limit=50`, key);
@@ -131,12 +136,17 @@ beforeAll(async () => {
   for (const t of [P, fx.T.other]) await db.insert(tenantFeatureFlags).values({ tenantId: t, flagKey: 'TAX_ESTIMATOR_V1', enabled: true });
 
   await mkUser('admin', P, { firm: FIRM_A, firmRole: 'firm_admin', access: [P] });
+  await mkUser('admin2', P, { firm: FIRM_A, firmRole: 'firm_admin', access: [P] });
   await mkUser('super', P, { superAdmin: true });
   await mkUser('listed', P, { firm: FIRM_A, access: [P] });
   await mkUser('listedLp', P, { firm: FIRM_A, access: [P, fx.T.lp] });
   await mkUser('ro', P, { firm: FIRM_A, firmRole: 'firm_readonly', access: [P] });
   await mkUser('all', P, { firm: FIRM_A, access: [P, fx.T.schc] });
   await mkUser('fb', fx.T.other, { firm: FIRM_B, access: [fx.T.other, fx.T.schc] });
+  // Q54: the no-list (D17) comparisons below need the firm capability; every non-admin member
+  // holds it here (a list decides regardless of it — see taxpayer-visibility-q54.routes.test.ts).
+  await db.update(firmUsers).set({ capabilities: { tax_estimator_view_taxpayers: true } })
+    .where(inArray(firmUsers.userId, ['listed', 'listedLp', 'ro', 'all', 'fb'].map((k) => uid[k]!)));
 
   const app = express();
   app.use(express.json());
@@ -302,13 +312,33 @@ describe('D18 full data for a listed user', () => {
     expect(partial2.inputsHash).toBe(partial1.inputsHash);
   }, 240_000);
 
-  it('firm admins are unaffected: own scope, no elevation, even with a list', async () => {
-    expect((await setStaff(['listed'])).status).toBe(200);
+  // Q54 (Kurt, 2026-10-13) restates the pre-Q54 "firm admins are unaffected" expectation: firm
+  // admins are no longer a bypass, so a LISTED firm admin gets D18 full data like listed staff,
+  // an UNLISTED one the uniform 404, and with no list the admin keeps its own (partial) scope.
+  it('Q54: a listed firm admin gets full data (elevation); without a list the admin keeps its own scope', async () => {
+    const own = await estimate('admin');
+    expect(companies(own)).toEqual([]); // no list: the admin reaches P only, no elevation
+    expect(own.elevatedAccess ?? false).toBe(false);
+    expect((await setStaff(['listed'])).status).toBe(200); // admin is on it (manager)
     const a = await estimate('admin');
-    expect(companies(a)).toEqual([]); // the admin reaches P only
-    expect(a.elevatedAccess ?? false).toBe(false);
+    expect(companies(a)).toEqual([fx.C.schc, fx.C.scorp, fx.C.lp].sort());
+    expect(a.elevatedAccess).toBe(true);
     const s = await resolveScope(uid['admin']!, false, FIRM_A);
-    expect((await scopeForTaxpayer(s, fx.taxpayerId)).elevation).toBeUndefined();
+    expect((await scopeForTaxpayer(s, fx.taxpayerId)).elevation?.taxpayerId).toBe(fx.taxpayerId);
+  }, 120_000);
+
+  it('Q54: a firm admin NOT on the list gets the uniform 404, and saving such a list reports callerLostAccess', async () => {
+    const put = await setStaff(['admin2', 'listed'], true);
+    expect(put.status, JSON.stringify(put.json)).toBe(200);
+    expect(put.json.data.callerLostAccess).toBe(true);
+    expect(put.json.data.members).toEqual([]);
+    const r = await call('GET', `${TE}/taxpayers/${fx.taxpayerId}`, 'admin');
+    expect(r.status).toBe(404);
+    expect(r.json.error.code).toBe('TE_TAXPAYER_NOT_FOUND');
+    expect((await call('GET', `${TE}/taxpayers/${fx.taxpayerId}`, 'admin2')).status).toBe(200);
+    expect((await call('GET', `${TE}/taxpayers/${fx.taxpayerId}`, 'super')).status).toBe(200);
+    // The unlisted admin can no longer edit the list either (it cannot see the taxpayer).
+    expect((await setStaff([])).status).toBe(404);
   }, 120_000);
 });
 

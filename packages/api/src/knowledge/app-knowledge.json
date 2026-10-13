@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T17:25:25.002Z",
+  "generatedAt": "2026-10-13T18:47:10.665Z",
   "curated": {
     "files": [
       "00-identity.md",
@@ -19,7 +19,7 @@
       "94-checks.md",
       "96-api-integrations.md"
     ],
-    "totalBytes": 164464
+    "totalBytes": 165983
   },
   "screens": [
     {
@@ -1667,6 +1667,7 @@
     "\"How do I switch between companies?\"",
     "\"How do I give my accountant access to my books?\"",
     "\"Can my firm staff manage a client's Team page or settings without being the owner?\"",
+    "\"Why can't my staff member see a taxpayer in the Tax Estimator?\"",
     "\"How do I connect my bank account?\"",
     "\"What file types can I attach to transactions?\"",
     "\"How does AI categorization work?\"",

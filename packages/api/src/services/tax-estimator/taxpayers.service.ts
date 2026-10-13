@@ -90,6 +90,7 @@ function toTaxpayerDTO(r: TaxpayerRow): TaxpayerDTO {
     residentState: r.residentState ? r.residentState.trim() : null,
     safeHarborOverride: r.safeHarborOverride as SafeHarborOverride | null,
     portalShows: r.portalShows as PortalShows | null,
+    showOnCompanyDashboard: r.showOnCompanyDashboard === true,
     isActive: r.isActive, createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -242,6 +243,7 @@ export async function updateTaxpayer(scope: FirmScope, actor: Actor, id: string,
     if (input.residentState !== undefined) patch.residentState = input.residentState;
     if (input.safeHarborOverride !== undefined) patch.safeHarborOverride = input.safeHarborOverride;
     if (input.portalShows !== undefined) patch.portalShows = input.portalShows;
+    if (input.showOnCompanyDashboard !== undefined) patch.showOnCompanyDashboard = input.showOnCompanyDashboard;
     const [row] = await tx.update(taxEstTaxpayers).set(patch)
       .where(and(eq(taxEstTaxpayers.id, id), eq(taxEstTaxpayers.firmId, scope.firmId))).returning();
     if (!row) throw taxpayerNotFound();

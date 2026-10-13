@@ -1,0 +1,14 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
+--
+-- Tax Estimator Q54 (Kurt, 2026-10-13): per-taxpayer switch "Show on linked company dashboards".
+-- When false (the default for EVERY existing and new taxpayer) the taxpayer's Q52 company
+-- dashboard cards (GET /api/v1/dashboard/tax-estimates) never appear, for staff and the owner
+-- audience alike. The firm-wide Tax Estimator home cards are not affected. Shipped as its own
+-- migration 0215_tax_est_company_dashboard_switch (0214 is taken by a parallel branch). Additive only.
+--
+-- The rest of Q54 (strict taxpayer visibility, the "Tax Estimator: view taxpayers" firm
+-- capability) needs no schema change: capabilities live in firm_users.capabilities (0173),
+-- absent keys read as false.
+ALTER TABLE tax_est_taxpayers ADD COLUMN IF NOT EXISTS show_on_company_dashboard BOOLEAN NOT NULL DEFAULT false;

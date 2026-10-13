@@ -192,8 +192,15 @@ the right they need — *Team management*, *Integrations & payments*, *Check sig
 *Screen share admin*. It applies on client companies the firm manages and that the member
 already has access to (grant access first under **Tenant access**). *Tenant operations* and
 *User support* additionally open Admin → Tenants / Admin → Users limited to the firm's own
-clients. Read-only firm members can't hold rights, and on the Default Practice firm only a
-super admin can change them.
+clients. Read-only firm members can hold only *Tax Estimator: view taxpayers*, and on the
+Default Practice firm only a super admin can change rights.
+
+### "Why can't my staff member see a taxpayer in the Tax Estimator?"
+Since Q54, client access alone does not show Tax Estimator taxpayers. A firm admin either
+turns on **Tax Estimator: view taxpayers** for them (**Firm → Staff → Access rights**; they
+then see taxpayers without a "Who can see this taxpayer" list that are linked to clients they
+can access) or adds them to the taxpayer's "Who can see this taxpayer" list. A taxpayer with a
+list is visible only to the people on it and super admins — firm admins included.
 
 ### "How do I connect my bank account?"
 Go to **Banking → Bank Connections →** and click **Connect Bank**. If Plaid is
