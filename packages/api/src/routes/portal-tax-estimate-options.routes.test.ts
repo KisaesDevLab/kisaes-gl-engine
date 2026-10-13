@@ -38,6 +38,7 @@ import { updateTaxpayer } from '../services/tax-estimator/taxpayers.service.js';
 import { createScenario } from '../services/tax-estimator/scenarios.service.js';
 import { createSnapshot } from '../services/tax-estimator/estimate-snapshots.service.js';
 import { resolveForContact } from '../services/tax-estimator/portal-estimates.service.js';
+import { replaceStateRows } from '../services/tax-estimator/state-rows.service.js';
 import * as portalAuth from '../services/portal-auth.service.js';
 import { pdfDrawnText } from '../services/tax-estimator/pdf-text.test-fixtures.js';
 import { portalTaxEstimatesPublicRouter } from './portal-tax-estimates-public.routes.js';
@@ -456,4 +457,51 @@ describe('taxpayer page (firm side)', () => {
     await db.delete(portalContacts).where(eq(portalContacts.id, contacts['spouse']!));
     expect(await db.select().from(taxEstPortalContactOptions).where(eq(taxEstPortalContactOptions.portalContactId, contacts['spouse']!))).toEqual([]);
   });
+});
+
+describe('Q53 x Q51: a rate-schedule (brackets) estimate never shows the portal a rate', () => {
+  it('state rows on the rate schedule: the portal JSON and the portal-safe PDF carry only whole-dollar state tax', async () => {
+    await setOpts('good', { calculationSummary: true, quarterlyEstimates: true, pdfDownload: true });
+    await replaceStateRows(fx.scopeA, fx.actor, fx.baseScenarioId, { rows: [
+      { residency: 'resident', state: 'MO', effectiveRate: 0.04, rateMode: 'brackets', base: 'federal_agi', sourcedManual: false },
+      { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, rateMode: 'brackets', nonresidentMode: 'ratio', base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000' },
+    ] });
+    try {
+      // The staff result really is a bracket-mode estimate (schedule detail, ratio, bracket traces).
+      const resolved = await resolveForContact({ contactId: contacts['good']!, tenantId: fx.T.schc, companyId: null }, fx.taxpayerId, 2026);
+      const rows = resolved.result!.state!.rows;
+      const mo = rows.find((x) => x.state === 'MO')!;
+      const ar = rows.find((x) => x.state === 'AR')!;
+      expect(mo).toMatchObject({ rateMode: 'brackets', method: 'resident' });
+      expect(mo.schedule).toBeTruthy();
+      expect(ar).toMatchObject({ rateMode: 'brackets', method: 'nonresident_ratio' });
+      expect(ar.schedule?.ratio).toBeTruthy();
+
+      const r = await detail('good');
+      expect(r.status).toBe(200);
+      const s = r.json.estimate.calculationSummary;
+      expect(s).toBeTruthy();
+      expect([...paths(s, 'estimate.calculationSummary')].filter((p) => !SUMMARY_PATHS.has(p))).toEqual([]);
+      expect(s.states.map((x: { state: string }) => x.state).sort()).toEqual(['AR', 'MO']);
+      for (const x of s.states) expect(x.amount).toMatch(/^-?\d+$/);
+      const text = r.raw.toString('utf8');
+      for (const banned of [
+        'rateMode', 'nonresidentMode', 'schedule', 'Schedule', 'bracket', 'Bracket', 'ratio', 'scheduleLabel', 'scheduleTax',
+        'startingPoint', 'standardDeduction', 'capitalGainExclusion', 'federalTaxDeduction', 'effectiveRate', 'marginal', 'trace', '%',
+        mo.schedule!.scheduleLabel, String(ar.schedule!.ratio),
+      ]) expect(text, banned).not.toContain(banned);
+
+      const pdf = await getPdf('good');
+      expect(pdf.status).toBe(200);
+      const pdfTxt = pdfText(pdf.raw);
+      for (const banned of [...PDF_BANNED, 'bracket', 'Bracket', 'rate schedule', 'Rate schedule', 'ratio', mo.schedule!.scheduleLabel]) {
+        expect(pdfTxt, banned).not.toContain(banned);
+      }
+    } finally {
+      await replaceStateRows(fx.scopeA, fx.actor, fx.baseScenarioId, { rows: [
+        { residency: 'resident', state: 'MO', effectiveRate: 0.04, rateMode: 'effective', base: 'federal_agi', sourcedManual: false },
+        { residency: 'nonresident', state: 'AR', effectiveRate: 0.039, rateMode: 'effective', base: 'federal_agi', sourcedManual: true, sourcedIncome: '8000' },
+      ] });
+    }
+  }, 180_000);
 });

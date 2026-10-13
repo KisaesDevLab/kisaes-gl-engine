@@ -87,6 +87,36 @@ describe('buildPortalCalcSummary (Q51)', () => {
     ]) expect(text, banned).not.toContain(banned);
   });
 
+  it('Q53: a rate-schedule (brackets) estimate — schedule detail, ratio and bracket traces never leak', () => {
+    const SCHEDULE_LABEL = 'Missouri 2026 rate schedule (4.7% top bracket)';
+    const bracketResult = {
+      ...result,
+      state: {
+        rows: [
+          {
+            rowId: 'r1', state: 'MO', residency: 'resident', method: 'resident', rateMode: 'brackets', rateModeRequested: 'brackets', netTax: '4321.6', effectiveRate: '0.0399',
+            schedule: { startingPoint: 'federal_agi', start: '125988', capitalGainExclusion: '7777', federalTaxDeduction: '5555', standardDeduction: '32200', exemptions: '0', taxableIncome: '80456', scheduleTax: '4321.6', scheduleLabel: SCHEDULE_LABEL, capitalGainsTreatment: 'exclusion 100%', ratio: null, fullYearTax: null },
+          },
+          {
+            rowId: 'r2', state: 'AR', residency: 'nonresident', method: 'nonresident_ratio', rateMode: 'brackets', nonresidentMode: 'ratio', netTax: '211.4',
+            schedule: { startingPoint: 'state_specific', start: '125988', capitalGainExclusion: '0', federalTaxDeduction: '0', standardDeduction: '4680', exemptions: '58', taxableIncome: '121308', scheduleTax: '3333.3', scheduleLabel: 'Arkansas 2026 brackets', capitalGainsTreatment: null, ratio: '0.063498', fullYearTax: '3329.1' },
+          },
+        ],
+        stateTotal: '4533',
+        trace: [{ id: 'state.MO.schedule.bracket.3', formula: 'BRACKET-TRACE-SENTINEL' }],
+      },
+      summary: { ...(result as unknown as { summary: object }).summary, stateTotal: '4533', total: '14073.6' },
+    } as unknown as EstimateResultDTO;
+    const s = buildPortalCalcSummary(bracketResult);
+    expect(s.states).toEqual([{ state: 'MO', label: 'Missouri', amount: '4322' }, { state: 'AR', label: 'Arkansas', amount: '211' }]);
+    for (const b of s.states) expect(Object.keys(b).sort()).toEqual(['amount', 'label', 'state']);
+    const text = JSON.stringify(s);
+    for (const banned of [
+      SCHEDULE_LABEL, 'Arkansas 2026 brackets', '4.7', '0.0399', '0.063498', '3329', '3333', '7777', '5555', '80456', '121308', '4680',
+      'BRACKET-TRACE-SENTINEL', 'bracket', 'schedule', 'ratio', 'rateMode', 'nonresident', 'exclusion', '%',
+    ]) expect(text, banned).not.toContain(banned);
+  });
+
   it('a result missing fields (an older snapshot) still builds, with zeros', () => {
     const s = buildPortalCalcSummary({ federal: { entities: [] }, summary: { total: '10' } } as unknown as EstimateResultDTO);
     expect(s.total).toBe('10');
