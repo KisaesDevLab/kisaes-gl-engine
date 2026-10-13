@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import {
   putAccountTreatmentsSchema, putTransactionFlagsSchema, taxEstEntityParamsSchema, taxEstEntityYearParamsSchema,
-  taxEstListQuerySchema, taxEstReadinessQuerySchema, taxEstTaxBasisPlQuerySchema, upsertEntitySettingsSchema,
+  taxEstEntityYearQuerySchema, taxEstListQuerySchema, taxEstReadinessQuerySchema, taxEstTaxBasisPlQuerySchema, upsertEntitySettingsSchema,
   upsertEntityYearInputsSchema,
 } from '@kis-books/shared';
 import { getScope, requireTaxEstimatorWrite } from '../../middleware/tax-estimator-scope.js';
@@ -29,13 +29,16 @@ const BASE = '/:tenantId/:companyId';
 
 entitiesRouter.get(`${BASE}/settings`, async (req, res) => {
   const { tenantId, companyId } = taxEstEntityParamsSchema.parse(req.params);
-  res.json({ data: await entitySettingsService.getEntitySettings(getScope(req), tenantId, companyId) });
+  // Q49: ?taxYear= resolves the entity type for that year (its per-year override applies).
+  const { taxYear } = taxEstEntityYearQuerySchema.parse(req.query);
+  res.json({ data: await entitySettingsService.getEntitySettings(getScope(req), tenantId, companyId, taxYear) });
 });
 
 entitiesRouter.put(`${BASE}/settings`, requireTaxEstimatorWrite, async (req, res) => {
   const { tenantId, companyId } = taxEstEntityParamsSchema.parse(req.params);
   const input = upsertEntitySettingsSchema.parse(req.body);
-  res.json({ data: await entitySettingsService.upsertEntitySettings(getScope(req), tenantId, companyId, input, req.userId) });
+  const { taxYear } = taxEstEntityYearQuerySchema.parse(req.query);
+  res.json({ data: await entitySettingsService.upsertEntitySettings(getScope(req), tenantId, companyId, input, req.userId, taxYear) });
 });
 
 entitiesRouter.get(`${BASE}/year-inputs/:taxYear`, async (req, res) => {
@@ -64,7 +67,8 @@ entitiesRouter.put(`${BASE}/treatments`, requireTaxEstimatorWrite, async (req, r
 // Suggestions only — the client confirms each one through PUT /treatments.
 entitiesRouter.get(`${BASE}/treatment-suggestions`, async (req, res) => {
   const { tenantId, companyId } = taxEstEntityParamsSchema.parse(req.params);
-  res.json(pageOf(await treatmentsService.suggestTreatments(getScope(req), tenantId, companyId), listPageQuerySchema.parse(req.query)));
+  const { taxYear } = taxEstEntityYearQuerySchema.parse({ taxYear: req.query['taxYear'] });
+  res.json(pageOf(await treatmentsService.suggestTreatments(getScope(req), tenantId, companyId, taxYear), listPageQuerySchema.parse(req.query)));
 });
 
 entitiesRouter.get(`${BASE}/transaction-flags`, async (req, res) => {

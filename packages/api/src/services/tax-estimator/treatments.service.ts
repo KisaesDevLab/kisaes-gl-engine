@@ -23,15 +23,15 @@
 // firm is that firm's mapping: this firm sees it without the foreign ids
 // (`targetOtherFirm`) and cannot re-point or delete it (409 TE_TREATMENT_OTHER_FIRM).
 
-import { and, count, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type {
   AccountTreatment, AccountTreatmentDto, AccountTreatmentInput, EntityTaxType, PagedList, PutTransactionFlagsInput,
   TaxCodeRef, TransactionFlagDto, TreatmentSuggestion,
 } from '@kis-books/shared';
-import { TREATMENT_ACCOUNT_TYPES, TREATMENT_ENTITY_TYPES, allowsPersonTarget, personRequiredFor } from '@kis-books/shared';
+import { ENTITY_TAX_TYPES, TREATMENT_ACCOUNT_TYPES, TREATMENT_ENTITY_TYPES, allowsPersonTarget, personRequiredFor } from '@kis-books/shared';
 import { db } from '../../db/index.js';
 import {
-  accounts, taxEstAccountTreatments, taxEstPersons, taxEstTaxpayers, taxEstTransactionFlags, transactions,
+  accounts, taxEstAccountTreatments, taxEstEntityYearInputs, taxEstPersons, taxEstTaxpayers, taxEstTransactionFlags, transactions,
 } from '../../db/schema/index.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
@@ -149,9 +149,18 @@ async function validatePaymentTargets(scope: FirmScope, inputs: AccountTreatment
 }
 
 /** Account-type, entity-type and person-target rules (R1 F1, F9, F10). Exported for tests. */
+/**
+ * `alsoTypes` (Q49): entity types the business takes in some tax year through the per-year
+ * override. Treatments are not per year, so one that fits ANY of the entity's types is accepted;
+ * in a year whose type it does not fit the provider ignores it with TE_TREATMENT_NOT_FOR_ENTITY
+ * (a warning — the estimate still computes).
+ */
 export function validateTreatmentRules(
   inputs: AccountTreatmentInput[], accountTypes: Map<string, string>, entityType: EntityTaxType | null,
+  alsoTypes: readonly EntityTaxType[] = [],
 ): void {
+  const candidates = [...new Set([entityType, ...alsoTypes].filter((x): x is EntityTaxType => !!x))];
+  const label = candidates.length ? candidates.join(' / ') : 'not set';
   for (const i of inputs) {
     const t = i.treatment;
     if (!t) continue;
@@ -164,13 +173,15 @@ export function validateTreatmentRules(
       );
     }
     const allowedEntities = TREATMENT_ENTITY_TYPES[t];
-    if (allowedEntities && (!entityType || !allowedEntities.includes(entityType))) {
+    if (allowedEntities && !candidates.some((c) => allowedEntities.includes(c))) {
       throw AppError.unprocessableEntity(
-        `The ${t} treatment applies to ${allowedEntities.join(' / ')} entities only (this entity: ${entityType ?? 'not set'})`,
+        `The ${t} treatment applies to ${allowedEntities.join(' / ')} entities only (this entity: ${label})`,
         'TE_TREATMENT_NOT_FOR_ENTITY', { accountId: i.accountId, treatment: t, entityType },
       );
     }
-    if (personRequiredFor(t, entityType) && !i.paymentPersonId) {
+    const fitting = candidates.filter((c) => !allowedEntities || allowedEntities.includes(c));
+    const needsPerson = fitting.length ? fitting.some((c) => personRequiredFor(t, c)) : personRequiredFor(t, entityType);
+    if (needsPerson && !i.paymentPersonId) {
       throw AppError.unprocessableEntity(
         t === 'guaranteed_payment'
           ? 'A guaranteed payment needs the partner it is paid to'
@@ -179,6 +190,16 @@ export function validateTreatmentRules(
       );
     }
   }
+}
+
+/** Q49: the distinct per-year override types of one entity (any tax year). */
+async function overrideTypesOf(tenantId: string, companyId: string): Promise<EntityTaxType[]> {
+  const rows = await db.selectDistinct({ v: taxEstEntityYearInputs.entityTypeOverride }).from(taxEstEntityYearInputs)
+    .where(and(
+      eq(taxEstEntityYearInputs.tenantId, tenantId), eq(taxEstEntityYearInputs.companyId, companyId),
+      isNotNull(taxEstEntityYearInputs.entityTypeOverride),
+    ));
+  return rows.map((r) => r.v).filter((v): v is EntityTaxType => !!v && (ENTITY_TAX_TYPES as readonly string[]).includes(v));
 }
 
 export async function putTreatments(
@@ -191,7 +212,10 @@ export async function putTreatments(
   const found = await db.select({ id: accounts.id, accountType: accounts.accountType }).from(accounts)
     .where(and(companyAccountCond(tenantId, companyId), inArray(accounts.id, accountIds)));
   if (found.length !== accountIds.length) throw new AppError(404, 'Account not found', 'TE_ACCOUNT_NOT_FOUND');
-  validateTreatmentRules(inputs, new Map(found.map((a) => [a.id, a.accountType])), (await resolveForCompany(company)).entityType);
+  validateTreatmentRules(
+    inputs, new Map(found.map((a) => [a.id, a.accountType])), (await resolveForCompany(company)).entityType,
+    await overrideTypesOf(tenantId, companyId),
+  );
   await validatePaymentTargets(scope, inputs);
 
   await db.transaction(async (tx) => {
@@ -411,9 +435,10 @@ export function suggestFromCode(
   };
 }
 
-export async function suggestTreatments(scope: FirmScope, tenantId: string, companyId: string): Promise<TreatmentSuggestion[]> {
+/** `taxYear` (Q49): suggest for that year's effective entity type (its override applies). */
+export async function suggestTreatments(scope: FirmScope, tenantId: string, companyId: string, taxYear?: number | null): Promise<TreatmentSuggestion[]> {
   const company = await assertEntityInScope(scope, tenantId, companyId);
-  const resolved = await resolveForCompany(company);
+  const resolved = await resolveForCompany(company, taxYear);
   const [accts, existing, assignments] = await Promise.all([
     db.select({
       id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name, accountType: accounts.accountType,

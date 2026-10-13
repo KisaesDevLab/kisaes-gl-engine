@@ -3,7 +3,8 @@
 // Free for small businesses; see LICENSE for terms.
 
 // Estimator-owned entity tax fields (tax_est_entity_settings) and per-year
-// inputs (tax_est_entity_year_inputs: W-2 wage override + UBIA, D8).
+// inputs (tax_est_entity_year_inputs: W-2 wage override + UBIA, D8; projection method, Q46;
+// per-year entity type override, Q49).
 // Every function runs the D1 scope guard first; writes are audited against
 // the BOOKS tenant (the tenant whose company the row describes).
 
@@ -48,6 +49,7 @@ function toYearDto(tenantId: string, companyId: string, taxYear: number, row: Ye
     ubia: row?.ubia ?? null,
     includeSehiInW2Wages: row?.includeSehiInW2Wages ?? false,
     projectionMethod: (row?.projectionMethod as ProjectionMethod | undefined) ?? DEFAULT_PROJECTION_METHOD,
+    entityTypeOverride: (row?.entityTypeOverride as EntityTaxType | null | undefined) ?? null,
     updatedAt: row?.updatedAt ? row.updatedAt.toISOString() : null,
   };
 }
@@ -59,14 +61,18 @@ async function loadSettingsRow(tenantId: string, companyId: string): Promise<Set
   return row;
 }
 
-export async function getEntitySettings(scope: FirmScope, tenantId: string, companyId: string): Promise<EntitySettingsResponse> {
+/**
+ * `taxYear` (Q49): resolve the entity type for that tax year, so the entity year's override (when
+ * set) decides it. Omitted = the year-less D3 resolution (no override applies).
+ */
+export async function getEntitySettings(scope: FirmScope, tenantId: string, companyId: string, taxYear?: number | null): Promise<EntitySettingsResponse> {
   const company = await assertEntityInScope(scope, tenantId, companyId);
   const row = await loadSettingsRow(tenantId, companyId);
-  return { settings: toSettingsDto(tenantId, companyId, row), resolved: await resolveForCompany(company) };
+  return { settings: toSettingsDto(tenantId, companyId, row), resolved: await resolveForCompany(company, taxYear) };
 }
 
 export async function upsertEntitySettings(
-  scope: FirmScope, tenantId: string, companyId: string, input: UpsertEntitySettingsInput, userId?: string,
+  scope: FirmScope, tenantId: string, companyId: string, input: UpsertEntitySettingsInput, userId?: string, taxYear?: number | null,
 ): Promise<EntitySettingsResponse> {
   scope = baseScope(scope); // D18: entity writes never use a staff-list widening
   const company = await assertEntityInScope(scope, tenantId, companyId);
@@ -94,7 +100,7 @@ export async function upsertEntitySettings(
     await auditLog(tenantId, before ? 'update' : 'create', 'tax_est_entity_settings', after!.id, before ?? null, after, userId, tx);
   });
   const row = await loadSettingsRow(tenantId, companyId);
-  return { settings: toSettingsDto(tenantId, companyId, row), resolved: await resolveForCompany(company) };
+  return { settings: toSettingsDto(tenantId, companyId, row), resolved: await resolveForCompany(company, taxYear) };
 }
 
 export async function getYearInputs(scope: FirmScope, tenantId: string, companyId: string, taxYear: number): Promise<EntityYearInputsDto> {
@@ -114,12 +120,18 @@ export async function upsertYearInputs(
 ): Promise<EntityYearInputsDto> {
   scope = baseScope(scope); // D18
   const company = await assertEntityInScope(scope, tenantId, companyId);
+  // Q49: the switches below are checked against the EFFECTIVE entity type for this year — the
+  // override this request sets (or clears), else the one already stored, else the D3 precedence.
+  const effectiveType = async (): Promise<EntityTaxType | null> => {
+    if (input.entityTypeOverride !== undefined && input.entityTypeOverride !== null) return input.entityTypeOverride;
+    return (await resolveForCompany(company, input.entityTypeOverride === null ? null : taxYear)).entityType;
+  };
   // QA2-03: the >2% shareholder health switch exists only for S corporations (Q41).
-  if (input.includeSehiInW2Wages === true && (await resolveForCompany(company)).entityType !== 's_corp') {
+  if (input.includeSehiInW2Wages === true && (await effectiveType()) !== 's_corp') {
     throw new AppError(422, 'Including >2% shareholder health insurance in W-2 wages applies to S corporations only', 'TE_SEHI_W2_S_CORP_ONLY');
   }
   // Q46: prior-year trend methods are for individual-path entities (a C corporation keeps the run rate).
-  if (input.projectionMethod && input.projectionMethod !== DEFAULT_PROJECTION_METHOD && (await resolveForCompany(company)).entityType === 'c_corp') {
+  if (input.projectionMethod && input.projectionMethod !== DEFAULT_PROJECTION_METHOD && (await effectiveType()) === 'c_corp') {
     throw new AppError(422, 'Prior-year trend projection applies to pass-through and Schedule C / F businesses only, not C corporations', 'TE_PROJECTION_METHOD_NOT_SUPPORTED');
   }
   const after = await db.transaction(async (tx) => {
@@ -144,6 +156,7 @@ export async function upsertYearInputs(
       ...(input.ubia !== undefined ? { ubia: input.ubia } : {}),
       ...(input.includeSehiInW2Wages !== undefined ? { includeSehiInW2Wages: input.includeSehiInW2Wages } : {}),
       ...(input.projectionMethod !== undefined ? { projectionMethod: input.projectionMethod } : {}),
+      ...(input.entityTypeOverride !== undefined ? { entityTypeOverride: input.entityTypeOverride } : {}),
       updatedBy: userId ?? null,
       updatedAt: new Date(),
     };

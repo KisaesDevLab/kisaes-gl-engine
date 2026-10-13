@@ -124,7 +124,23 @@ export interface EntitySettingsDto {
   updatedAt: string | null;
 }
 
-export type EntityTypeSource = 'tb_profile' | 'estimator_setting' | 'company_entity_type' | 'none';
+/** Q49: 'estimator_override' = the entity year's "Override entity type for <year>" (wins over everything). */
+export type EntityTypeSource = 'estimator_override' | 'tb_profile' | 'estimator_setting' | 'company_entity_type' | 'none';
+/** The source the D3 precedence would have used without the per-year override. */
+export type BaseEntityTypeSource = Exclude<EntityTypeSource, 'estimator_override'>;
+
+/**
+ * Q49: present only when the per-year override decides the entity type — the year, the type it
+ * chose, and what the type would otherwise have been (for the "TB profile says 1065" display).
+ */
+export interface EntityTypeOverrideInfo {
+  taxYear: number;
+  overrideType: EntityTaxType;
+  baseEntityType: EntityTaxType | null;
+  baseEntityTypeSource: BaseEntityTypeSource;
+  /** TB return form when a profile exists (1040 | 1065 | 1120S | 1120). */
+  tbReturnForm: string | null;
+}
 export type TaxMethodSource = 'estimator_setting' | 'company_accounting_method';
 
 export interface ResolvedEntityTax {
@@ -144,6 +160,8 @@ export interface ResolvedEntityTax {
   /** companies.lock_date (TB5 closing date), ISO date. */
   closingDate: string | null;
   warnings: TaxEstimatorWarning[];
+  /** Q49 (optional, additive): set only when the entity year's override decided `entityType`. */
+  entityTypeOverride?: EntityTypeOverrideInfo;
 }
 
 export interface EntitySettingsResponse {
@@ -171,6 +189,12 @@ export interface EntityYearInputsDto {
    * entities only; C corporations keep the run rate).
    */
   projectionMethod: ProjectionMethod;
+  /**
+   * Q49: the entity type for THIS tax year when it should differ from the Trial Balance tax profile
+   * (e.g. an LLC filing 1065 that elected S corporation status). null = use the D3 precedence (TB
+   * profile → estimator setting → company entity type). Wins over everything; the TB profile is unchanged.
+   */
+  entityTypeOverride: EntityTaxType | null;
   updatedAt: string | null;
 }
 

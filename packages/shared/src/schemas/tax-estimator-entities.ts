@@ -50,6 +50,8 @@ export const upsertEntityYearInputsSchema = z.object({
   includeSehiInW2Wages: z.boolean().optional(),
   /** Q46: projection of the ordinary character for this entity year (default run_rate). */
   projectionMethod: z.enum(PROJECTION_METHODS).optional(),
+  /** Q49: per-year entity type override (null clears it = use the TB profile / D3 precedence). */
+  entityTypeOverride: z.enum(ENTITY_TAX_TYPES).nullable().optional(),
 }).strict().refine(
   (v) => !v.w2WagesOverride || (v.w2WagesOverrideReason ?? '').trim().length > 0,
   { message: 'A reason is required when overriding W-2 wages', path: ['w2WagesOverrideReason'] },
@@ -125,4 +127,9 @@ export const taxEstReadinessQuerySchema = z.object({
 export const taxEstTaxBasisPlQuerySchema = z.object({
   taxYear: z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR),
   through: z.string().regex(MONTH_RE).optional(),
+});
+
+/** Q49: GET/PUT .../settings and .../treatment-suggestions resolve the entity type for this tax year (its override). */
+export const taxEstEntityYearQuerySchema = z.object({
+  taxYear: z.coerce.number().int().min(MIN_TAX_YEAR).max(MAX_TAX_YEAR).optional(),
 });

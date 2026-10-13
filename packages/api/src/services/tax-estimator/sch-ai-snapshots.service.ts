@@ -150,7 +150,7 @@ export async function captureSnapshots(
     let entityType: string | null = null;
     let name: string | null = c.companyName;
     try {
-      const es = await getEntitySettings(scope, c.tenantId, c.companyId);
+      const es = await getEntitySettings(scope, c.tenantId, c.companyId, taxYear); // Q49: the year's type
       entityType = es.resolved.entityType;
       name = es.resolved.companyName ?? name;
     } catch (err) {

@@ -51,12 +51,16 @@ export async function getReadiness(
 ): Promise<BooksReadiness> {
   // D1: scope guard BEFORE any books query.
   const company = await assertEntityInScope(scope, req.tenantId, req.companyId);
-  const resolved = await resolveForCompany(company);
   const { tenantId, companyId } = req;
   const today = opts.today ?? new Date();
+  // Q49: the entity type is resolved for the tax year (its per-year override applies). Without a
+  // requested year, the year-less type picks the year first (C corp fiscal year), then that year's
+  // type is resolved.
+  let resolved = req.taxYear != null ? await resolveForCompany(company, req.taxYear) : await resolveForCompany(company);
   const fy = resolved.entityType === 'c_corp' ? resolved.fiscalYearStartMonth : 1;
   const taxYear = req.taxYear
     ?? taxYearOf(`${req.throughMonth ?? lastCompleteMonth(today)}-01`, fy);
+  if (req.taxYear == null) resolved = await resolveForCompany(company, taxYear);
   const window = taxYearWindow(taxYear, resolved.entityType, resolved.fiscalYearStartMonth);
   const choice = await chooseThroughMonth(tenantId, companyId, window, req.throughMonth, today);
   const throughMonth = choice.throughMonth;

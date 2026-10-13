@@ -21,7 +21,7 @@
 //     carries only opaque ids.
 // Audit: tenant = the caller's active tenant, firm id in the after-data.
 
-import { and, asc, desc, eq, ilike, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, isNotNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import type {
   CreateTaxpayerInput, UpdateTaxpayerInput, ListTaxpayersQuery, UpsertPersonInput, UpsertLinkInput, UpsertDependentInput,
   DependentDTO, DependentListDTO, DependentKind, DependentRelationship,
@@ -40,7 +40,7 @@ import {
 } from '../../db/schema/tax-estimator-taxpayers.js';
 import { companies } from '../../db/schema/company.js';
 import { tenants } from '../../db/schema/auth.js';
-import { tenantFirmAssignments } from '../../db/schema/index.js';
+import { taxEstEntityYearInputs, tenantFirmAssignments } from '../../db/schema/index.js';
 import { companyTaxProfiles } from '../../db/schema/tb.js';
 import { portalContacts, portalContactCompanies } from '../../db/schema/portal-contacts.js';
 import { auditLog } from '../../middleware/audit.js';
@@ -586,9 +586,42 @@ export async function removeOutsideEntityYear(scope: FirmScope, actor: Actor, ta
 
 // ── entity resolution ──────────────────────────────────────────────────
 
-/** Entity kind of a company: TB return form first (D3), then companies.entity_type. */
+/** Q49: link entity kind of a per-year entity type override. */
+const OVERRIDE_KIND: Readonly<Record<string, LinkEntityKind>> = {
+  sch_c: 'sole', sch_f: 'sole', s_corp: 's_corp', partnership: 'partnership', c_corp: 'c_corp',
+};
+
+/** Q49: per-year entity type overrides for (tenant, company, year) triples, keyed `tenant|company|year`. */
+async function overrideKinds(
+  pairs: Array<{ tenantId: string; companyId: string; taxYear: number }>, exec: DbOrTx = db,
+): Promise<Map<string, LinkEntityKind>> {
+  const out = new Map<string, LinkEntityKind>();
+  if (pairs.length === 0) return out;
+  const rows = await exec.select({
+    tenantId: taxEstEntityYearInputs.tenantId, companyId: taxEstEntityYearInputs.companyId,
+    taxYear: taxEstEntityYearInputs.taxYear, v: taxEstEntityYearInputs.entityTypeOverride,
+  }).from(taxEstEntityYearInputs)
+    .where(and(
+      inArray(taxEstEntityYearInputs.companyId, [...new Set(pairs.map((p) => p.companyId))]),
+      inArray(taxEstEntityYearInputs.taxYear, [...new Set(pairs.map((p) => p.taxYear))]),
+      isNotNull(taxEstEntityYearInputs.entityTypeOverride),
+    ));
+  const wanted = new Set(pairs.map((p) => `${p.tenantId}|${p.companyId}|${p.taxYear}`));
+  for (const r of rows) {
+    const k = `${r.tenantId}|${r.companyId}|${r.taxYear}`;
+    const kind = r.v ? OVERRIDE_KIND[r.v] : undefined;
+    if (wanted.has(k) && kind) out.set(k, kind);
+  }
+  return out;
+}
+
+/**
+ * Entity kind of a company: TB return form first (D3), then companies.entity_type. With `taxYear`
+ * (Q49) the entity year's entity type override wins, so an LLC filing 1065 that elected S corp
+ * for that year takes officer links.
+ */
 export async function resolveEntityKind(
-  tenantId: string, companyId: string, exec: DbOrTx = db,
+  tenantId: string, companyId: string, exec: DbOrTx = db, taxYear?: number,
 ): Promise<{ kind: LinkEntityKind | null; returnForm: string | null; exists: boolean }> {
   const [row] = await exec.select({ entityType: companies.entityType, returnForm: companyTaxProfiles.returnForm })
     .from(companies)
@@ -597,7 +630,10 @@ export async function resolveEntityKind(
     .where(and(eq(companies.id, companyId), eq(companies.tenantId, tenantId)))
     .limit(1);
   if (!row) return { kind: null, returnForm: null, exists: false };
-  const kind = (row.returnForm ? RETURN_FORM_KIND[row.returnForm] : undefined) ?? COMPANY_ENTITY_KIND[row.entityType] ?? null;
+  const overridden = taxYear != null
+    ? (await overrideKinds([{ tenantId, companyId, taxYear }], exec)).get(`${tenantId}|${companyId}|${taxYear}`)
+    : undefined;
+  const kind = overridden ?? (row.returnForm ? RETURN_FORM_KIND[row.returnForm] : undefined) ?? COMPANY_ENTITY_KIND[row.entityType] ?? null;
   return { kind, returnForm: row.returnForm ?? null, exists: true };
 }
 
@@ -662,9 +698,14 @@ async function companyMeta(scope: FirmScope, pairs: Array<{ tenantId: string; co
   return out;
 }
 
-function toLinkDTO(scope: FirmScope, l: LinkRow, roleByPerson: Map<string, PersonRole>, meta: Map<string, CompanyMeta>): LinkDTO {
+function toLinkDTO(
+  scope: FirmScope, l: LinkRow, roleByPerson: Map<string, PersonRole>, meta: Map<string, CompanyMeta>, overrides: Map<string, LinkEntityKind>,
+): LinkDTO {
   const outOfScope = !isTenantInScope(scope, l.tenantId);
-  const m = outOfScope ? undefined : meta.get(`${l.tenantId}|${l.companyId}`);
+  const base = outOfScope ? undefined : meta.get(`${l.tenantId}|${l.companyId}`);
+  // Q49: the link year's entity type override decides the kind shown (and validated).
+  const ov = base ? overrides.get(`${l.tenantId}|${l.companyId}|${l.taxYear}`) : undefined;
+  const m = base && ov ? { ...base, kind: ov } : base;
   return {
     id: l.id, taxpayerId: l.taxpayerId, personId: l.personId, personRole: roleByPerson.get(l.personId) ?? 'primary',
     taxYear: l.taxYear, tenantId: l.tenantId, companyId: l.companyId,
@@ -683,7 +724,9 @@ async function hydrateLinks(scope: FirmScope, taxpayerId: string, rows: LinkRow[
   const persons = await db.select().from(taxEstPersons).where(eq(taxEstPersons.taxpayerId, taxpayerId));
   const roleByPerson = new Map(persons.map((p) => [p.id, p.role as PersonRole]));
   const meta = await companyMeta(scope, rows.map((r) => ({ tenantId: r.tenantId, companyId: r.companyId })));
-  return rows.map((r) => toLinkDTO(scope, r, roleByPerson, meta));
+  const overrides = await overrideKinds(rows.filter((r) => isTenantInScope(scope, r.tenantId))
+    .map((r) => ({ tenantId: r.tenantId, companyId: r.companyId, taxYear: r.taxYear })));
+  return rows.map((r) => toLinkDTO(scope, r, roleByPerson, meta, overrides));
 }
 
 export async function listLinks(scope: FirmScope, taxpayerId: string, taxYear: number): Promise<LinkListDTO> {
@@ -717,7 +760,7 @@ export async function upsertLink(scope: FirmScope, actor: Actor, taxpayerId: str
     const person = persons.find((p) => p.role === input.personRole);
     if (!person) throw new AppError(404, 'Person not found', 'TE_PERSON_NOT_FOUND');
 
-    const entity = await resolveEntityKind(input.tenantId, input.companyId, tx);
+    const entity = await resolveEntityKind(input.tenantId, input.companyId, tx, input.taxYear);
     if (!entity.exists) throw new AppError(404, 'Company not found', 'TE_COMPANY_NOT_FOUND');
     validateLinkFlags(input, entity.kind);
 

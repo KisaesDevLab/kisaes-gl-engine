@@ -28,7 +28,7 @@ import type {
   FarmerYearGross, FarmerGrossYearDTO, FederalEngineInput, FederalResult, JurisdictionEstimate, LinkDTO, ParameterUse, PersonDTO, DependentDTO,
   SchAiPeriodSourceDTO, StateResult, StateRuleUse, StateRulesDTO, TaxBasisPl, TaxEstimatorWarning, EntitySettingsResponse,
   StateGateInputs, TaxMethod, EstimateAdjustmentSummaryDTO, EstimateEntityReclassDTO, FirmSettingsDTO, PortalShows, OutsideEntityDTO,
-  ProjectionMethod,
+  ProjectionMethod, EntityTaxType,
 } from '@kis-books/shared';
 import {
   computeFederal, computeState, computeFederalEstimates, computeStateEstimates, computeCcorp, computeFarmer,
@@ -72,7 +72,8 @@ type DecJs = InstanceType<typeof Decimal>;
 // v4 (2026-10-12): entities carry their owners (PDF "Businesses included").
 // v5 (Q45): businesses outside MyBooks (entities carry `source` / `outside`).
 // v6 (Q46): projection method + prior-year trend figures per company (entity results carry `projection`).
-const CACHE_VERSION = 'te-estimate-v6';
+// v7 (Q49): per-year entity type override (resolved per tax year; `eto` in the key; entities may carry `entityTypeOverride`).
+const CACHE_VERSION = 'te-estimate-v7';
 const FEDERAL = 'federal';
 const MONTHS_PER_YEAR = 12;
 const MAX_ADJUSTMENTS = 500;
@@ -261,7 +262,8 @@ async function gather(scope: FirmScope, req: EstimateRequest): Promise<Gathered>
   const companies: CompanyInputs[] = [];
   for (const c of inScopeCompanies(scope, links)) {
     const [settings, glVersionStamp, configVersion, yearInputs] = await Promise.all([
-      getEntitySettings(scope, c.tenantId, c.companyId),
+      // Q49: resolved for the tax year (the entity year's override decides the type when set).
+      getEntitySettings(scope, c.tenantId, c.companyId, req.taxYear),
       getGlVersionStamp(c.tenantId, c.companyId),
       loadConfigVersion(c.tenantId, c.companyId, req.taxYear),
       getYearInputs(scope, c.tenantId, c.companyId, req.taxYear),
@@ -308,7 +310,8 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
     filingStatus: g.taxpayerFilingStatus, year: g.year, persons: g.persons, dependents: g.dependents, links: g.links,
     // Q45: any change to an outside business or its year amounts re-keys the live estimate.
     outside: g.outside,
-    companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings, pm: c.projectionMethod, py: c.priorYear })),
+    // Q49: the per-year entity type override (and its effective type) is part of the key.
+    companies: g.companies.map((c) => ({ t: c.tenantId, c: c.companyId, stamp: c.glVersionStamp, cfg: c.configVersion, s: c.settings, pm: c.projectionMethod, py: c.priorYear, eto: c.settings.resolved.entityTypeOverride ?? null })),
     adjustments: g.adjustments, types: g.types, stateRows: g.stateRows, params: g.paramsDto, stateRules: g.stateRules,
     payments: g.ledger.payments, snapshots: [...g.snapshots.entries()],
     // Phase 12: the disclaimer / portal default / safe-harbor default land on the result.
@@ -318,6 +321,40 @@ function inputsHash(scope: FirmScope, req: EstimateRequest, g: Gathered, today: 
 }
 
 // ── Assembly ────────────────────────────────────────────────────────────
+
+/** Q49: the estimate DTO marks an entity whose type the entity year's override decided (absent otherwise). */
+function entityTypeOverrideOf(c: CompanyInputs): Pick<EstimateEntityDTO, 'entityTypeSource' | 'entityTypeOverride'> {
+  const o = c.settings.resolved.entityTypeOverride;
+  return o ? { entityTypeSource: 'estimator_override', entityTypeOverride: o } : {};
+}
+
+/**
+ * Q49: owner inputs saved for another entity type once the entity year's override changed the type —
+ * officer / limited-partner link flags (the engine ignores them: SE and officer rules follow the
+ * entity type) and owner-targeted W-2 wages on a non-S corp. Warnings, never a failed estimate.
+ */
+function staleOwnerInputWarnings(g: Pick<Gathered, 'links'>, c: CompanyInputs, pl: TaxBasisPl): TaxEstimatorWarning[] {
+  const entityType = pl.entityType!;
+  const companyName = pl.companyName;
+  const own = g.links.filter((l) => l.tenantId === c.tenantId && l.companyId === c.companyId);
+  const out: TaxEstimatorWarning[] = [];
+  // Officer W-2 wages (w2_wages treatment targeted at an owner) still reach the owner's W-2 wages.
+  if (entityType !== 's_corp' && entityType !== 'c_corp' && pl.w2Wages.byPerson.length > 0) {
+    out.push({ code: 'TE_OFFICER_WAGES_NOT_S_CORP', severity: 'warning', message: `${companyName}: W-2 wages are assigned to an owner (officer wages), but the entity type for this year is ${ENTITY_TYPE_NAME[entityType]}; they are still counted as that owner's W-2 wages. Re-treat them (e.g. guaranteed payments for a partnership) if that is what they are.`, details: { companyId: c.companyId, personIds: pl.w2Wages.byPerson.map((w) => w.personId) } });
+  }
+  const officer = own.filter((l) => l.isOfficer && entityType !== 's_corp');
+  if (officer.length) {
+    out.push({ code: 'TE_LINK_FLAG_NOT_FOR_ENTITY', severity: 'warning', message: `${companyName}: an owner link is marked officer, which applies to S corporations only; the entity type for this year is ${ENTITY_TYPE_NAME[entityType]}, so the flag is ignored.`, details: { companyId: c.companyId, flag: 'isOfficer', linkIds: officer.map((l) => l.id) } });
+  }
+  const limited = own.filter((l) => l.partnerSeStatus === 'limited' && entityType !== 'partnership');
+  if (limited.length) {
+    out.push({ code: 'TE_LINK_FLAG_NOT_FOR_ENTITY', severity: 'warning', message: `${companyName}: an owner link is marked limited partner, which applies to partnerships only; the entity type for this year is ${ENTITY_TYPE_NAME[entityType]}, so the flag is ignored.`, details: { companyId: c.companyId, flag: 'partnerSeStatus', linkIds: limited.map((l) => l.id) } });
+  }
+  return out;
+}
+const ENTITY_TYPE_NAME: Record<EntityTaxType, string> = {
+  sch_c: 'Schedule C', sch_f: 'Schedule F', s_corp: 'S corporation', partnership: 'partnership', c_corp: 'C corporation',
+};
 
 interface EntityRun {
   company: CompanyInputs;
@@ -351,12 +388,15 @@ async function runEntities(scope: FirmScope, req: EstimateRequest, g: Gathered, 
       includeSehiInW2Wages: pl.w2Wages.includeSehiInW2Wages ?? false,
       // Q46: only a non-default method is marked (run-rate DTOs unchanged).
       ...(c.projectionMethod !== 'run_rate' ? { projectionMethod: c.projectionMethod } : {}),
+      // Q49: only an overridden entity type is marked (DTOs without an override unchanged).
+      ...entityTypeOverrideOf(c),
     };
     if (!pl.entityType) {
       warnings.push({ code: 'TE_ENTITY_TYPE_MISSING', severity: 'warning', message: `${pl.companyName} has no tax entity type (no TB profile and no estimator setting); left out of the estimate.`, details: { companyId: c.companyId } });
       out.push({ company: c, pl, dto: { ...dto, skippedReason: 'No tax entity type' }, engine: null });
       continue;
     }
+    if (c.settings.resolved.entityTypeOverride) warnings.push(...staleOwnerInputWarnings(g, c, pl));
     if (pl.entityType === 'c_corp') {
       if (c.projectionMethod !== 'run_rate') {
         warnings.push({ code: 'TE_PY_TREND_FALLBACK', severity: 'warning', message: `${pl.companyName}: ${PROJECTION_METHOD_LABELS[c.projectionMethod]} could not be used (${PY_TREND_FALLBACK_LABELS.not_supported_entity}); the run rate was used.`, details: { companyId: c.companyId, method: c.projectionMethod, reason: 'not_supported_entity' } });
@@ -455,7 +495,7 @@ async function adjustmentMonths(
     let basis: TaxMethod | undefined = run?.pl?.basis;
     if (!basis) {
       try {
-        const settings = await getEntitySettings(scope, a.tenantId, a.companyId);
+        const settings = await getEntitySettings(scope, a.tenantId, a.companyId, req.taxYear);
         basis = settings.resolved.taxMethod;
       } catch (err) {
         // R3-10: a deleted / unreadable company degrades this ONE adjustment to its manual

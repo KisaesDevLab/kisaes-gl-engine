@@ -10,7 +10,10 @@
 // field of the DTO; the only arithmetic is the YTD column's sum of the entity's YTD characters
 // and an owner's YTD share (entity YTD × allocated %). Q45 outside businesses: see the income block.
 // Q46: an entity with a prior-year trend method carries the method sub-label and comparison chips.
+// Q49: a business whose entity year overrides the entity type carries an info review chip
+// ("Entity type overridden: S corp (TB profile says 1065)"); a client deliverable drops it.
 import type { EstimateResultDTO } from './estimate-api.js';
+import { entityTypeOverrideText } from './entity-type-override.js';
 
 const num = (v: unknown): number => {
   const n = Number(v);
@@ -118,6 +121,7 @@ export function buildCalcSections(r: EstimateResultDTO): CalcSection[] {
       });
     }
     const chips = projectionChips(e.projection);
+    if (dto?.entityTypeOverride) chips.unshift({ text: entityTypeOverrideText(dto.entityTypeOverride), tone: 'info', review: true });
     const lines: CalcLine[] = [{
       key: `inc.${e.companyId}`, label: e.companyName,
       sub: [calcEntityTypeLabel(e.entityType), activity, 'Entity total (100%)', enteredSub, projectionSub(e.projection)].filter(Boolean).join(' · '),

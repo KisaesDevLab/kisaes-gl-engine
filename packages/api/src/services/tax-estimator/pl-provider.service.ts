@@ -114,16 +114,19 @@ const INCOME_TYPES = new Set(['revenue', 'other_revenue']);
 const ALL_ACCOUNT_TYPES = ['asset', 'liability', 'equity', ...PL_TYPES];
 const FARM_ACTIVITIES = new Set(['farm', 'farm_rental']);
 // v2: R1 DTO (GPs, per-person owner level, W-2 projection, through source).
-const CACHE_VERSION = 'v2';
+// v3: Q49 — the entity type is resolved per tax year (override); new TE_ENTITY_TYPE_SETTING_IGNORED text.
+const CACHE_VERSION = 'v3';
 
 export interface CacheKeyParts {
   tenantId: string; companyId: string; taxYear: number; basis: TaxMethod;
   throughMonth: string; glVersionStamp: number; configVersion: string;
+  /** Q49: only when the entity type was resolved for another year than `taxYear` (absent = key unchanged). */
+  entityTypeKey?: string;
 }
 
 /** TB1/TB6 pattern: the GL stamp + estimator config version make invalidation exact. */
 export function taxBasisCacheKey(p: CacheKeyParts): string {
-  return `te:pl:${CACHE_VERSION}:${p.tenantId}:${p.companyId}:${p.taxYear}:${p.basis}:${p.throughMonth}:${p.glVersionStamp}:${p.configVersion}`;
+  return `te:pl:${CACHE_VERSION}:${p.tenantId}:${p.companyId}:${p.taxYear}:${p.basis}:${p.throughMonth}:${p.glVersionStamp}:${p.configVersion}${p.entityTypeKey ? `:et=${p.entityTypeKey}` : ''}`;
 }
 
 // ── TB code identity (R1 F1, F3, F6) — see the table in the header ──
@@ -429,12 +432,24 @@ export interface TaxBasisPlRequest {
   throughMonth?: string;
 }
 
-export interface TaxBasisPlOptions { skipCache?: boolean; today?: Date }
+export interface TaxBasisPlOptions {
+  skipCache?: boolean;
+  today?: Date;
+  /**
+   * Q49: resolve the entity type for THIS tax year instead of `req.taxYear` (the prior-year trend
+   * reads the prior year's books with the current year's type). The cache key then carries the
+   * resolved type, since the config version covers only `req.taxYear`'s year inputs.
+   */
+  entityTypeYear?: number;
+}
 
 export async function getTaxBasisPl(scope: FirmScope, req: TaxBasisPlRequest, opts: TaxBasisPlOptions = {}): Promise<TaxBasisPl> {
   // D1: scope guard BEFORE any books query.
   const company = await assertEntityInScope(scope, req.tenantId, req.companyId);
-  const resolved = await resolveForCompany(company);
+  // Q49: the entity type of the tax year read (its per-year override applies), unless the caller
+  // reads one year with ANOTHER year's type (the prior-year trend reads taxYear-1 as this year's type).
+  const typeYear = opts.entityTypeYear ?? req.taxYear;
+  const resolved = await resolveForCompany(company, typeYear);
   const today = opts.today ?? new Date();
   const window = taxYearWindow(req.taxYear, resolved.entityType, resolved.fiscalYearStartMonth);
   const choice = await chooseThroughMonth(req.tenantId, req.companyId, window, req.throughMonth, today);
@@ -446,6 +461,7 @@ export async function getTaxBasisPl(scope: FirmScope, req: TaxBasisPlRequest, op
   const key = taxBasisCacheKey({
     tenantId: req.tenantId, companyId: req.companyId, taxYear: req.taxYear, basis: resolved.taxMethod,
     throughMonth, glVersionStamp, configVersion,
+    ...(typeYear !== req.taxYear ? { entityTypeKey: `${typeYear}:${resolved.entityType ?? 'none'}:${resolved.entityTypeSource}` } : {}),
   });
   let result: TaxBasisPl | null = null;
   if (!opts.skipCache) {
