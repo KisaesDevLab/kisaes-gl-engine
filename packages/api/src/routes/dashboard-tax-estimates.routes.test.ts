@@ -466,9 +466,14 @@ describe('owner card × Q51 portal options', () => {
       const t = await ownerCard();
       expect(t.source).toBe('snapshot');
       expect(t.asOf).toBe(base.createdAt);
-      // Staff cards are unchanged by this rule (newest finalized snapshot of the year).
+      // Kurt 2026-10-13: staff cards are Base-only too — the newer what-if snapshot is never used.
       const staff = await companyCardsForStaff(adminScope, fx.T.schc, fx.C.schc, { today: TODAY });
-      expect(staff!.taxpayers.find((x) => x.taxpayerId === fx.taxpayerId)).toBeDefined();
+      const st = staff!.taxpayers.find((x) => x.taxpayerId === fx.taxpayerId)!;
+      if (st.source === 'snapshot') expect(st.asOf).toBe(base.createdAt);
+      expect(st.asOf).not.toBe(wi.createdAt);
+      const firm = await firmDashboard(adminScope, { today: TODAY });
+      const asOfs = [...(firm?.vouchersDue ?? []), ...(firm?.behind ?? [])].filter((r) => r.taxpayerId === fx.taxpayerId).map((r) => r.asOf);
+      expect(asOfs).not.toContain(wi.createdAt);
     } finally {
       await updateTaxpayer(fx.scopeA, fx.actor, fx.taxpayerId, { portalShows: null });
     }

@@ -147,8 +147,11 @@ async function latestFinalized(firmId: string, taxpayerIds: readonly string[], y
     .where(and(
       eq(taxEstSnapshots.firmId, firmId), inArray(taxEstSnapshots.taxpayerId, [...taxpayerIds]),
       inArray(taxEstSnapshots.taxYear, [...years]), inArray(taxEstSnapshots.reason, FINALIZED_REASONS),
-      // Q51 / Q52: the owner card reads Base's own snapshot only (what the portal shows by default).
-      ...(scenarioId ? [eq(taxEstSnapshots.scenarioId, scenarioId)] : []),
+      // Q51 / Q52 (Kurt 2026-10-13): every dashboard card reads Base snapshots only — a finalized
+      // what-if never stands in for the estimate (owner and staff alike).
+      scenarioId
+        ? eq(taxEstSnapshots.scenarioId, scenarioId)
+        : inArray(taxEstSnapshots.scenarioId, db.select({ id: taxEstScenarios.id }).from(taxEstScenarios).where(eq(taxEstScenarios.isBase, true))),
     ))
     .orderBy(taxEstSnapshots.taxpayerId, taxEstSnapshots.taxYear, desc(taxEstSnapshots.createdAt), desc(taxEstSnapshots.id));
   for (const r of rows) out.set(`${r.taxpayerId}|${r.taxYear}`, { id: r.id, createdAt: r.createdAt, tenantIds: r.tenantIds });
@@ -177,19 +180,19 @@ async function peek(scope: FirmScope, taxpayerId: string, taxYear: number, scena
 }
 
 /**
- * Staff + owner: cached live → latest finalized snapshot → none. `baseSnapshotOnly` (owner):
- * the snapshot must be the Base scenario's (Q51: the portal shows Base by default).
+ * Staff + owner: cached live → latest finalized snapshot → none, Base scenario only (Kurt
+ * 2026-10-13: dashboards always reflect Base; what-ifs stay on the taxpayer page).
  */
 async function figuresFor(
   scope: FirmScope, taxpayerId: string, taxYear: number,
-  opts: { today: Date; paymentsAsOf?: string; liveAllowed: boolean; baseSnapshotOnly?: boolean },
+  opts: { today: Date; paymentsAsOf?: string; liveAllowed: boolean },
 ): Promise<{ figures: Figures | null; snapshot: { total: string; at: string } | null }> {
   let live: EstimateResultDTO | null = null;
-  const base = opts.liveAllowed || opts.baseSnapshotOnly ? await baseScenarioId(taxpayerId, taxYear) : null;
-  if (opts.liveAllowed && base) live = await peek(scope, taxpayerId, taxYear, base, opts);
-  // R4-06: without a Base scenario the portal shows nothing; the owner card follows it.
-  if (opts.baseSnapshotOnly && !base) return { figures: null, snapshot: null };
-  const snapMeta = (await latestFinalized(scope.firmId, [taxpayerId], [taxYear], opts.baseSnapshotOnly ? base! : undefined)).get(`${taxpayerId}|${taxYear}`);
+  const base = await baseScenarioId(taxpayerId, taxYear);
+  // R4-06: without a Base scenario the portal shows nothing; every dashboard card follows it (Q52, Base only).
+  if (!base) return { figures: null, snapshot: null };
+  if (opts.liveAllowed) live = await peek(scope, taxpayerId, taxYear, base, opts);
+  const snapMeta = (await latestFinalized(scope.firmId, [taxpayerId], [taxYear], base)).get(`${taxpayerId}|${taxYear}`);
   const snap = snapMeta ? await readSnapshot(scope, snapMeta.id) : null;
   const snapshot = snap ? { total: snap.result.summary.total, at: snap.createdAt } : null;
   if (live) return { figures: { result: live, source: 'live', asOf: live.computedAt }, snapshot };
@@ -308,7 +311,7 @@ export async function companyCardsForOwner(userId: string, tenantId: string, com
     if (taxYear == null) continue;
     const shows: PortalShows = (t.portalShows as PortalShows | null) ?? firm.portalShows;
     // QA D13 as-of semantics, exactly the portal's live request (same cache entry).
-    const { figures, snapshot } = await figuresFor(scope, t.id, taxYear, { today: now, paymentsAsOf: today, liveAllowed: shows === 'live', baseSnapshotOnly: true });
+    const { figures, snapshot } = await figuresFor(scope, t.id, taxYear, { today: now, paymentsAsOf: today, liveAllowed: shows === 'live' });
     if (!figures) continue; // the owner never sees "not computed"
     taxpayers.push(card({ id: t.id, displayName: t.displayName }, taxYear, figures, snapshot, today, false, options.quarterlyEstimates));
   }
