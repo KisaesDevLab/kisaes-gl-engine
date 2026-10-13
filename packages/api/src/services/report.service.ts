@@ -13,6 +13,7 @@ import {
   COST_TYPES,
   formatDetailTypeLabel,
   type AccountType,
+  type ReconProof,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { transactions, journalLines, accounts, contacts } from '../db/schema/index.js';
@@ -23,6 +24,7 @@ import {
   getReportFooter,
 } from './tenant-report-settings.service.js';
 import { loadGapDismissals, missingMonthsBetween } from './bank-statements.service.js';
+import { buildReconciliationProof, type ReconciliationProofOptions } from './reconciliation-proof.service.js';
 import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
 import { getLeadsheetMap, groupByLeadsheet } from './report-leadsheets.js';
 
@@ -1819,7 +1821,23 @@ export interface ReconSummaryStaleCheck {
 // outstanding-checks sub-list (uncleared check payments older than 90
 // days). Uses the same uncleared derivation as reconciliation start():
 // posted lines on the account not cleared by any COMPLETED reconciliation.
-export async function buildBankReconciliationSummary(tenantId: string, accountId: string, companyId: string | null = null) {
+export interface BankReconciliationSummaryOptions extends ReconciliationProofOptions {
+  /** Summarize this one reconciliation (its account only) instead of each account's latest completed one. */
+  reconciliationId?: string;
+}
+
+export async function buildBankReconciliationSummary(
+  tenantId: string,
+  accountId: string,
+  companyId: string | null = null,
+  opts: BankReconciliationSummaryOptions = {},
+) {
+  // One-reconciliation mode: the proof drives which account is shown.
+  let focusProof: ReconProof | null = null;
+  if (opts.reconciliationId) {
+    focusProof = await buildReconciliationProof(tenantId, opts.reconciliationId, opts);
+    accountId = focusProof.accountId;
+  }
   const bankDetailList = sql.join(BANK_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
   const creditDetailList = sql.join(RECONCILABLE_LIABILITY_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
   const accountCond = accountId ? sql`AND a.id = ${accountId}` : sql``;
@@ -1839,19 +1857,23 @@ export async function buildBankReconciliationSummary(tenantId: string, accountId
   `);
   const bankAccounts = accountRows.rows as Array<{ id: string; account_number: string | null; name: string }>;
   if (bankAccounts.length === 0) {
-    return { title: 'Bank Reconciliation Summary', accounts: [] as ReconSummaryAccountRow[], staleChecks: [] as ReconSummaryStaleCheck[] };
+    return {
+      title: 'Bank Reconciliation Summary', accounts: [] as ReconSummaryAccountRow[],
+      staleChecks: [] as ReconSummaryStaleCheck[], proofs: focusProof ? [focusProof] : [] as ReconProof[],
+      reconciliationId: opts.reconciliationId ?? null,
+    };
   }
   const idList = sql.join(bankAccounts.map((a) => sql`${a.id}::uuid`), sql`, `);
 
   // Last completed reconciliation per account.
   const recRows = await db.execute(sql`
-    SELECT DISTINCT ON (account_id) account_id, statement_date, statement_ending_balance
+    SELECT DISTINCT ON (account_id) id, account_id, statement_date, statement_ending_balance
     FROM reconciliations
     WHERE tenant_id = ${tenantId} AND status = 'complete' AND account_id IN (${idList})
     ORDER BY account_id, statement_date DESC
   `);
   const lastRecByAccount = new Map(
-    (recRows.rows as Array<{ account_id: string; statement_date: string; statement_ending_balance: string }>)
+    (recRows.rows as Array<{ id: string; account_id: string; statement_date: string; statement_ending_balance: string }>)
       .map((r) => [r.account_id, r]),
   );
 
@@ -1941,14 +1963,28 @@ export async function buildBankReconciliationSummary(tenantId: string, accountId
     };
   });
 
+  // Bank-to-books proof per account: the focused reconciliation, or each
+  // account's latest COMPLETED reconciliation.
+  const proofs: ReconProof[] = [];
+  if (focusProof) proofs.push(focusProof);
+  else {
+    for (const a of bankAccounts) {
+      const r = lastRecByAccount.get(a.id);
+      if (r) proofs.push(await buildReconciliationProof(tenantId, r.id, opts));
+    }
+  }
+
   const footer = await getReportFooter(tenantId);
-  return { title: 'Bank Reconciliation Summary', footer, accounts: accountsOut, staleChecks };
+  return {
+    title: 'Bank Reconciliation Summary', footer, accounts: accountsOut, staleChecks, proofs,
+    reconciliationId: opts.reconciliationId ?? null,
+  };
 }
 
 // Completed-reconciliation detail: header (account, dates, balances,
 // completed by, linked statement), cleared lines, uncleared-as-of-
 // statement-date lines, and totals.
-export async function buildReconciliationDetail(tenantId: string, reconciliationId: string) {
+export async function buildReconciliationDetail(tenantId: string, reconciliationId: string, opts: ReconciliationProofOptions = {}) {
   const recRows = await db.execute(sql`
     SELECT r.*, a.name AS account_name, a.account_number, u.display_name AS completed_by_name, u.email AS completed_by_email
     FROM reconciliations r
@@ -2031,6 +2067,8 @@ export async function buildReconciliationDetail(tenantId: string, reconciliation
     } : null,
     cleared,
     uncleared,
+    // Professional bank-to-books reconciliation (Sections A–E).
+    proof: await buildReconciliationProof(tenantId, reconciliationId, opts),
     totals: {
       clearedPayments: sumOf(cleared, 'payment'),
       clearedDeposits: sumOf(cleared, 'deposit'),

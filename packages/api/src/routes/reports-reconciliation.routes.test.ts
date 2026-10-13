@@ -12,12 +12,16 @@
 //   GET /reports/reconciliation-detail?reconciliation_id=
 //     - header + cleared/uncleared line lists + totals
 //     - 400 without reconciliation_id, CSV export 200
+//     - the professional bank-to-books reconciliation (proof) in JSON, CSV
+//       and — when Chrome is available — the real PDF, Section A in order
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import 'express-async-errors';
 import express from 'express';
 import http from 'http';
 import type { AddressInfo, Server } from 'net';
+import { existsSync } from 'fs';
+import { extractTextLayer } from '../services/extraction/pdf-detect.service.js';
 import { sql, eq, and } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
 import { accounts, transactions, bankStatements, reconciliationLines } from '../db/schema/index.js';
@@ -81,6 +85,29 @@ function get(path: string): Promise<RawResponse> {
     r.end();
   });
 }
+
+function getBuffer(path: string): Promise<{ status: number; contentType: string; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const r = http.request({
+      method: 'GET', hostname: '127.0.0.1', port, path: `/api/v1/reports${path}`,
+      headers: { Authorization: `Bearer ${token}` },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode!, contentType: String(res.headers['content-type'] || ''), body: Buffer.concat(chunks) }));
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+async function chromeAvailable(): Promise<boolean> {
+  try {
+    const exe: string = process.env['PUPPETEER_EXECUTABLE_PATH'] || await (await import('puppeteer')).default.executablePath();
+    return !!exe && existsSync(exe);
+  } catch { return false; }
+}
+const HAS_CHROME = await chromeAvailable();
 
 beforeAll(async () => {
   await cleanDb();
@@ -193,6 +220,23 @@ describe('GET /reports/bank-reconciliation-summary', () => {
     expect(check.amount).toBe(40);
   });
 
+  it('includes each account\'s latest completed reconciliation carried to the books', async () => {
+    const res = await get('/bank-reconciliation-summary');
+    const data = JSON.parse(res.body);
+    const p = data.proofs.find((x: { accountName: string }) => x.accountName === 'Report Checking');
+    expect(p.reconciliationId).toBe(reconId);
+    expect(p.summary.bookBalance).toBe(100);
+    expect(p.summary.reconciledToBooks).toBe(true);
+  });
+
+  it('summarizes one reconciliation when reconciliation_id is given', async () => {
+    const res = await get(`/bank-reconciliation-summary?reconciliation_id=${reconId}&format=csv`);
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('Balance per bank statement, 01/31/2026');
+    expect(res.body).toContain('Balance per books (general ledger), 01/31/2026');
+    expect(res.body).toContain('Book-side discrepancy');
+  });
+
   it('exports CSV with the account table and the stale-checks section', async () => {
     const res = await get('/bank-reconciliation-summary?format=csv');
     expect(res.status).toBe(200);
@@ -227,16 +271,71 @@ describe('GET /reports/reconciliation-detail', () => {
     expect(data.totals.unclearedPayments).toBe(40);
   });
 
-  it('exports CSV with both sections', async () => {
+  it('carries the bank-to-books reconciliation: the stale check is outstanding and the books tie', async () => {
+    const res = await get(`/reconciliation-detail?reconciliation_id=${reconId}`);
+    const data = JSON.parse(res.body);
+    const p = data.proof;
+    expect(p.summary.statementBalance).toBe(140);
+    expect(p.summary.decreases).toEqual({ count: 1, total: 40 });
+    expect(p.summary.adjustedStatementBalance).toBe(100);
+    expect(p.summary.bookBalance).toBe(100);
+    expect(p.summary.unreconciledDifference).toBe(0);
+    expect(p.summary.reconciledToBooks).toBe(true);
+    expect(p.schedules.decreases.items[0].flag).toBe('stale_dated');
+    expect(p.schedules.decreases.items[0].number).toBe('101');
+    expect(p.bookProof.ties).toBe(true);
+  });
+
+  it('exports CSV with the reconciliation summary, schedules and the cleared list', async () => {
     const res = await get(`/reconciliation-detail?reconciliation_id=${reconId}&format=csv`);
     expect(res.status).toBe(200);
     expect(res.contentType).toContain('text/csv');
-    expect(res.body).toContain('Cleared Transactions');
-    expect(res.body).toContain('Uncleared as of 2026-01-31');
+    const body = res.body;
+    const order = [
+      'Balance per bank statement, 01/31/2026', 'Add: Deposits in transit (0)',
+      'Less: Outstanding checks and payments (1)', 'Adjusted bank balance',
+      'Balance per books (general ledger), 01/31/2026', 'Adjusted book balance', 'Unreconciled difference',
+      'Cleared Transactions (1)', 'Register balance as of', 'Book-side discrepancy', 'Prepared by',
+    ];
+    let at = -1;
+    for (const needle of order) {
+      const i = body.indexOf(needle, at + 1);
+      expect(i, `missing/out of order: ${needle}`).toBeGreaterThan(at);
+      at = i;
+    }
+    expect(body).toContain('"Adjusted bank balance","","","","","","","100.00"');
+    expect(body).toContain('Stale-dated');
   });
 
   it('404s for an unknown reconciliation', async () => {
     const res = await get('/reconciliation-detail?reconciliation_id=00000000-0000-0000-0000-000000000000');
     expect(res.status).toBe(404);
   });
+});
+
+describe.skipIf(!HAS_CHROME)('reconciliation report PDFs (real render)', () => {
+  it('prints Section A in order on the detail PDF', async () => {
+    const r = await getBuffer(`/reconciliation-detail?reconciliation_id=${reconId}&format=pdf`);
+    expect(r.status).toBe(200);
+    expect(r.contentType).toContain('application/pdf');
+    const text = (await extractTextLayer(r.body)).map((p) => p.text).join('\n').replace(/\s+/g, ' ');
+    const order = ['Balance per bank statement', 'Outstanding checks and payments', 'Adjusted bank balance',
+      'Balance per books', 'Adjusted book balance', 'Unreconciled difference', 'Reconciled to books',
+      'Cleared transactions', 'Register balance', 'Book-side proof', 'Prepared by', 'Reviewed by'];
+    let at = -1;
+    for (const needle of order) {
+      const i = text.indexOf(needle, at + 1);
+      expect(i, `missing/out of order: ${needle}`).toBeGreaterThan(at);
+      at = i;
+    }
+    expect(text).toContain('(40.00)');
+  }, 60_000);
+
+  it('prints the bank-to-books summary on the summary PDF', async () => {
+    const r = await getBuffer(`/bank-reconciliation-summary?reconciliation_id=${reconId}&format=pdf`);
+    expect(r.status).toBe(200);
+    const text = (await extractTextLayer(r.body)).map((p) => p.text).join('\n');
+    expect(text).toContain('Adjusted bank balance');
+    expect(text).toContain('Balance per books');
+  }, 60_000);
 });

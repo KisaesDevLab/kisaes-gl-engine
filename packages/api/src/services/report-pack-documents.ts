@@ -16,12 +16,13 @@
 
 import { sql } from 'drizzle-orm';
 import { PDFDocument, StandardFonts, type PDFFont } from 'pdf-lib';
-import { formatIsoUS, type ReportPackItemOptions } from '@kis-books/shared';
+import { formatIsoUS, reconMoney, type ReportPackItemOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { log } from '../utils/logger.js';
 import { readAttachmentBytes } from './attachment.service.js';
 import { buildReportPackSectionHtml, escapeHtml } from './report-export.service.js';
 import { buildReconciliationDetail } from './report.service.js';
+import { renderProofHtml } from './reconciliation-proof-render.js';
 import { appendFramedPdf, appendPdf, stampCaption } from './pdf-merge.util.js';
 import { generateTransactionRangeReportPdf, planTransactionRangeReport } from './transaction-report.service.js';
 import { renderPackSection, resolvePackScopeForUser } from './tax-estimator/estimate-documents.service.js';
@@ -216,22 +217,6 @@ async function loadAttachment(tenantId: string, attachmentId: string): Promise<F
   };
 }
 
-function linesTable(rows: Array<{ txnDate: string; txnType: string; txnNumber: string | null; description: string | null; payment: number | null; deposit: number | null }>, totals: { payments: number; deposits: number }): string {
-  if (rows.length === 0) return '<p class="muted">None.</p>';
-  return `<table>
-    <thead><tr><th>Date</th><th>Type</th><th>Number</th><th>Description</th><th class="amount">Payment</th><th class="amount">Deposit</th></tr></thead>
-    <tbody>${rows.map((l) => `<tr>
-      <td>${escapeHtml(formatIsoUS(l.txnDate))}</td>
-      <td>${escapeHtml(l.txnType.replace(/_/g, ' '))}</td>
-      <td>${escapeHtml(l.txnNumber ?? '')}</td>
-      <td>${escapeHtml(l.description ?? '')}</td>
-      <td class="amount">${l.payment ? money(l.payment) : ''}</td>
-      <td class="amount">${l.deposit ? money(l.deposit) : ''}</td>
-    </tr>`).join('')}
-    <tr class="total-row"><td colspan="4">Total</td><td class="amount">${money(totals.payments)}</td><td class="amount">${money(totals.deposits)}</td></tr>
-    </tbody></table>`;
-}
-
 const renderBankReconciliations: DocumentSectionRenderer = async (ctx) => {
   const includeStatements = !ctx.options.omitStatements;
   const recs = await listCompletedReconciliations(ctx.tenantId, ctx.companyId, ctx.rangeStart, ctx.rangeEnd);
@@ -246,17 +231,19 @@ const renderBankReconciliations: DocumentSectionRenderer = async (ctx) => {
   const details = [];
   for (const r of recs) details.push(await buildReconciliationDetail(ctx.tenantId, r.id));
 
-  // Summary page: one row per reconciliation.
+  // Summary page: one row per reconciliation, carried through to the books.
   const summary = `<table>
-    <thead><tr><th>Account</th><th>Statement date</th><th class="amount">Beginning</th><th class="amount">Ending</th><th class="amount">Difference</th><th>Completed</th></tr></thead>
+    <thead><tr><th>Account</th><th>Statement date</th><th class="amount">Statement balance</th><th class="amount">Adjusted bank balance</th><th class="amount">Balance per books</th><th class="amount">Unreconciled</th><th>Completed</th></tr></thead>
     <tbody>${details.map((d) => `<tr>
       <td>${escapeHtml(accountLabel(d.reconciliation.accountName, d.reconciliation.accountNumber))}</td>
       <td>${escapeHtml(formatIsoUS(d.reconciliation.statementDate))}</td>
-      <td class="amount">${money(d.reconciliation.beginningBalance)}</td>
-      <td class="amount">${money(d.reconciliation.statementEndingBalance)}</td>
-      <td class="amount">${money(d.reconciliation.difference ?? 0)}</td>
+      <td class="amount">${reconMoney(d.proof.summary.statementBalance)}</td>
+      <td class="amount">${reconMoney(d.proof.summary.adjustedStatementBalance)}</td>
+      <td class="amount">${reconMoney(d.proof.summary.bookBalance)}</td>
+      <td class="amount">${d.proof.summary.reconciledToBooks ? '0.00' : `<span class="warn">${reconMoney(d.proof.summary.unreconciledDifference)}</span>`}</td>
       <td>${d.reconciliation.completedAt ? escapeHtml(formatIsoUS(new Date(d.reconciliation.completedAt).toISOString())) : ''}${d.reconciliation.completedBy ? ` — ${escapeHtml(d.reconciliation.completedBy)}` : ''}</td>
     </tr>`).join('')}</tbody></table>
+    <p class="muted">Credit card and other liability accounts show balances as amounts owed.</p>
     ${includeStatements && !ctx.allowAttachments ? `<p class="muted">${ATTACHMENTS_DENIED}</p>` : ''}`;
   await appendPdf(out, await ctx.renderHtml(sectionHtml(ctx, 'Bank Reconciliations', summary)));
 
@@ -275,22 +262,15 @@ const renderBankReconciliations: DocumentSectionRenderer = async (ctx) => {
       }
     }
     const stmt = d.statement;
-    const body = `
-      <div class="kv">
-        <div><span class="k">Account:</span> ${escapeHtml(label)}</div>
-        <div><span class="k">Statement date:</span> ${escapeHtml(formatIsoUS(rec.statementDate))}</div>
-        <div><span class="k">Beginning balance:</span> ${money(rec.beginningBalance)}</div>
-        <div><span class="k">Statement ending balance:</span> ${money(rec.statementEndingBalance)}</div>
-        <div><span class="k">Cleared balance:</span> ${money(rec.clearedBalance)}</div>
-        <div><span class="k">Difference:</span> ${money(rec.difference ?? 0)}</div>
-        <div><span class="k">Completed:</span> ${rec.completedAt ? escapeHtml(formatIsoUS(new Date(rec.completedAt).toISOString())) : ''}${rec.completedBy ? ` by ${escapeHtml(rec.completedBy)}` : ''}</div>
-        ${stmt ? `<div><span class="k">Statement period:</span> ${escapeHtml(periodLabel(stmt.periodStart, stmt.periodEnd))}${stmt.institutionName ? ` — ${escapeHtml(stmt.institutionName)}` : ''}${stmt.maskedAccountNumber ? ` ${escapeHtml(stmt.maskedAccountNumber)}` : ''}</div>` : ''}
-        ${includeStatements ? `<div style="grid-column:1/-1"><span class="k">Statement file:</span> ${fileStatus(file, noFile)}</div>` : ''}
-      </div>
-      <h3>Cleared transactions (${d.cleared.length})</h3>
-      ${linesTable(d.cleared, { payments: d.totals.clearedPayments, deposits: d.totals.clearedDeposits })}
-      <h3>Uncleared as of ${escapeHtml(formatIsoUS(rec.statementDate))} (${d.uncleared.length})</h3>
-      ${linesTable(d.uncleared, { payments: d.totals.unclearedPayments, deposits: d.totals.unclearedDeposits })}`;
+    // The professional reconciliation (summary to books, schedules, cleared
+    // list, subsequent activity, book-side proof, sign-off) — the same
+    // renderer as the Reconciliation Detail PDF.
+    const body = renderProofHtml(d.proof, {
+      mode: 'detail',
+      cleared: d.cleared,
+      clearedTotals: { payments: d.totals.clearedPayments, deposits: d.totals.clearedDeposits },
+      statementFileNote: includeStatements ? `Statement file: ${fileStatus(file, noFile)}` : undefined,
+    });
     await appendPdf(out, await ctx.renderHtml(sectionHtml(ctx, `Reconciliation — ${label} — ${formatIsoUS(rec.statementDate)}`, body)));
     if (file) {
       await appendPrepared(ctx, out, file, `Statement — ${label} — ${stmt ? periodLabel(stmt.periodStart, stmt.periodEnd) : formatIsoUS(rec.statementDate)}`, font);

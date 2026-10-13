@@ -22,6 +22,7 @@ import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
+import { buildReconciliationProof } from '../services/reconciliation-proof.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
 import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/check-payee-backfill.service.js';
@@ -528,6 +529,15 @@ bankingRouter.post('/feed/backfill-check-payees', async (req, res) => {
     req.userId,
   );
   res.json(report);
+});
+
+// Professional bank-to-books reconciliation (statement → adjusted bank
+// balance → balance per books → unreconciled difference, schedules, book-side
+// proof). The Reconcile screen polls this alongside the worksheet so the
+// panel updates live while items are cleared.
+bankingRouter.get('/reconciliations/:id/proof', async (req, res) => {
+  const proof = await buildReconciliationProof(req.tenantId, req.params['id']!);
+  res.json({ proof });
 });
 
 bankingRouter.get('/reconciliations/:id', async (req, res) => {

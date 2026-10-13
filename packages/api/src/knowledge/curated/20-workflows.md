@@ -105,6 +105,42 @@ write a bank RULE, which is visible and editable, rather than rely on invisible 
    are never voided automatically.
 4. **Complete** — locks in the cleared state for that statement.
 
+**Bank-to-books reconciliation (professional format).** The Reconcile screen
+shows, live while clearing, the standard CPA reconciliation: Balance per bank
+statement + Deposits in transit − Outstanding checks and payments = **Adjusted
+bank balance**; Balance per books (the account's GL balance at the statement
+date — every posted transaction dated on/before it, cleared or not, voids
+excluded) ± Unrecorded bank items (in-progress recs with an imported
+statement only: statement lines with no matching book transaction) =
+**Adjusted book balance**; **Unreconciled difference** = adjusted bank −
+adjusted book (0.00 → "Reconciled to books"). Credit cards / lines of credit
+use the same layout in amount-owed terms ("Charges recorded in books, not yet
+on statement" / "Payments and credits recorded in books, not yet on
+statement"). Aged-item flags: outstanding check/payment > 90 days *Stale*,
+> 180 days *Stale-dated — review / void / escheat*; deposit in transit > 10
+days *Investigate*; card item > 30 days *Investigate*.
+
+**Reconciliation discrepancies (book-side proof).** Checks beginning balance
++ cleared on this reconciliation + outstanding items = balance per books. When
+it doesn't tie, a red banner on the Reconcile screen ("Show discrepancy
+details") and the reports explain why: changes to previously reconciled
+transactions (each earlier reconciliation's cleared total at completion vs
+now, with the deleted / voided / moved / re-dated / audit-log-edited items
+listed and linked); reconciled items re-dated after the statement date; items
+cleared on this reconciliation dated after the statement date, voided or
+moved; or a beginning balance the prior reconciliations don't support
+(opening balance / changed prior rec). Fix: restore the original entry, or
+undo and redo the affected reconciliation.
+
+**Reports.** Reconciliation Detail (History → Report) = bank-to-books summary,
+cleared-activity roll, supporting schedules (date, type, number, payee, age,
+amount, flag), cleared list, subsequent activity (after the statement date +
+today's register balance), book-side proof, sign-off (prepared/reviewed by,
+statement file). Bank Reconciliation Summary (Reports → Banking, or History →
+Summary for one rec) = the same per account for its latest completed rec, with
+schedule totals and the oldest items. PDF, CSV and the Report Pack's Bank
+Reconciliations section use the same layout.
+
 If the difference is off by a small amount like $0.01, it's almost always a
 rounding mismatch on a journal entry. Common causes: tax calculation rounding,
 foreign currency conversion, or a bill paid for slightly more than its total.

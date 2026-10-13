@@ -3,15 +3,16 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
 import { db } from '../db/index.js';
 import {
   tenants, accounts, companies, auditLog, transactions, journalLines, attachments,
-  reconciliations, bankStatements,
+  reconciliations, reconciliationLines, bankStatements,
 } from '../db/schema/index.js';
 import * as attachmentService from './attachment.service.js';
 import * as ledger from './ledger.service.js';
+import * as reconciliation from './reconciliation.service.js';
 import { REPORT_PACK_DOCUMENT_RENDERERS, type DocumentSectionContext } from './report-pack-documents.js';
 
 let tenantId = '';
@@ -25,6 +26,10 @@ let expenseId = '';
 async function wipe(id: string) {
   if (!id) return;
   await db.delete(bankStatements).where(eq(bankStatements.tenantId, id));
+  await db.delete(reconciliationLines).where(inArray(
+    reconciliationLines.reconciliationId,
+    db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, id)),
+  ));
   await db.delete(reconciliations).where(eq(reconciliations.tenantId, id));
   await db.delete(attachments).where(eq(attachments.tenantId, id));
   await db.delete(journalLines).where(eq(journalLines.tenantId, id));
@@ -151,6 +156,47 @@ describe('report-pack-documents', () => {
       const { ctx, html } = ctxFor();
       expect(await pages(await REPORT_PACK_DOCUMENT_RENDERERS['bank-reconciliations']!(ctx))).toBe(2);
       expect(html[1]).toContain('broken.pdf — could not be included');
+    });
+
+    it('prints each reconciliation in the professional bank-to-books layout', async () => {
+      // A real month: deposit 1,000 cleared, check 250 outstanding.
+      const dep = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-07-03', memo: 'July deposit',
+        lines: [{ accountId: checkingId, debit: '1000.00', credit: '0' }, { accountId: expenseId, debit: '0', credit: '1000.00' }],
+      }, undefined, companyId);
+      await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-07-28', memo: 'July check',
+        lines: [{ accountId: expenseId, debit: '250.00', credit: '0' }, { accountId: checkingId, debit: '0', credit: '250.00' }],
+      }, undefined, companyId);
+      const r = await reconciliation.start(tenantId, checkingId, '2026-07-31', '1000.00');
+      const depLine = (await db.select().from(journalLines).where(eq(journalLines.transactionId, dep.id)))
+        .find((l) => l.accountId === checkingId)!;
+      await reconciliation.updateLines(tenantId, r.id, [{ journalLineId: depLine.id, isCleared: true }]);
+      await reconciliation.complete(tenantId, r.id);
+
+      const { ctx, html } = ctxFor({ omitStatements: true });
+      await REPORT_PACK_DOCUMENT_RENDERERS['bank-reconciliations']!(ctx);
+      // Summary page carries the books column.
+      expect(html[0]).toContain('Balance per books');
+      expect(html[0]).toContain('750.00');
+      const text = html[1]!.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      const order = [
+        'Balance per bank statement, 07/31/2026 1,000.00',
+        'Less: Outstanding checks and payments (1) (250.00)',
+        'Adjusted bank balance 750.00',
+        'Balance per books (general ledger), 07/31/2026 750.00',
+        'Unreconciled difference 0.00',
+        'Reconciled to books',
+        'Cleared transactions (1)',
+        'Book-side proof',
+        'Prepared by',
+      ];
+      let at = -1;
+      for (const needle of order) {
+        const i = text.indexOf(needle, at + 1);
+        expect(i, `missing/out of order: ${needle}`).toBeGreaterThan(at);
+        at = i;
+      }
     });
 
     it('is one page saying so when nothing was reconciled', async () => {

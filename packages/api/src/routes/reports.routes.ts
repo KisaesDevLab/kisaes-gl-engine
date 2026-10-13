@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router, type Request } from 'express';
-import { formatDetailTypeLabel, formatIsoUS } from '@kis-books/shared';
+import { formatDetailTypeLabel, formatIsoUS, reconMoney } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { AppError } from '../utils/errors.js';
 import { requirePermission } from '../middleware/permission.js';
@@ -12,6 +12,7 @@ import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
+import { renderProofHtml, proofCsvRows, PROOF_CSV_COLUMNS } from '../services/reconciliation-proof-render.js';
 import * as comparisonService from '../services/report-comparison.service.js';
 import * as tbReports from '../services/tb/tb-reports.service.js';
 import { parseActivityView, type TbViewFilters } from '../services/tb/activity-view.service.js';
@@ -900,10 +901,14 @@ async function respond(res: any, reportData: any, format: string | undefined) {
   }
   if (format === 'pdf') {
     const { rows, columns } = extractDataAndColumns(reportData);
-    const dateLabel = reportData.startDate && reportData.endDate
+    const dateLabel = typeof reportData._dateLabel === 'string' ? reportData._dateLabel
+      : reportData.startDate && reportData.endDate
       ? `${formatIsoUS(reportData.startDate)} to ${formatIsoUS(reportData.endDate)}`
       : reportData.asOfDate ? `As of ${formatIsoUS(reportData.asOfDate)}` : '';
-    const tableHtml = buildHtmlTable(rows, columns);
+    // A report with its own print layout (the bank reconciliation's
+    // statement-style sections) supplies the finished body HTML; everything
+    // user-controlled in it is escaped by its renderer.
+    const tableHtml = typeof reportData._pdfBodyHtml === 'string' ? reportData._pdfBodyHtml : buildHtmlTable(rows, columns);
 
     let companyName = 'Company';
     try {
@@ -1475,92 +1480,101 @@ reportsRouter.get('/bank-balances', async (req, res) => {
 });
 
 reportsRouter.get('/bank-reconciliation-summary', async (req, res) => {
-  const data = await reportService.buildBankReconciliationSummary(req.tenantId, (req.query['account_id'] as string) || '', resolveCompanyScope(req));
-  // Export mirrors the on-screen shape: the per-account summary table,
-  // then a stale-outstanding-checks section (legacy '---' section marker —
-  // rendered as a full-width band in PDF and a label row in CSV).
-  const exportRows: Array<Record<string, unknown>> = data.accounts.map((a) => ({
-    account: a.accountNumber ? `${a.accountNumber} · ${a.name}` : a.name,
-    last_reconciled: a.lastReconciledDate ?? '',
-    reconciled_balance: a.lastReconciledBalance,
-    latest_statement: a.latestStatementEnd ?? '',
-    gap_months: a.statementGapCount,
-    uncleared_items: a.unclearedCount,
-    oldest_uncleared: a.oldestUnclearedDate ?? '',
-  }));
+  const reconciliationId = (req.query['reconciliation_id'] as string | undefined) || undefined;
+  const format = req.query['format'] as string | undefined;
+  const data = await reportService.buildBankReconciliationSummary(
+    req.tenantId, (req.query['account_id'] as string) || '', resolveCompanyScope(req), { reconciliationId },
+  );
+  // Export: the per-account overview (last rec, statement coverage, uncleared
+  // items), the stale-outstanding-checks list, then the bank-to-books
+  // reconciliation (Section A, cleared roll, schedule totals with the oldest
+  // items, subsequent activity, book-side proof, sign-off) per account.
+  const overviewRows: Array<Record<string, unknown>> = [
+    { line: '--- Account overview ---' },
+    ...data.accounts.map((a) => ({
+      line: a.accountNumber ? `${a.accountNumber} · ${a.name}` : a.name,
+      date: a.lastReconciledDate ?? '',
+      description: `Last reconciled balance; latest statement ${a.latestStatementEnd ?? 'none'}; missing months ${a.statementGapCount}; uncleared items ${a.unclearedCount}${a.oldestUnclearedDate ? ` (oldest ${a.oldestUnclearedDate})` : ''}`,
+      amount: a.lastReconciledBalance,
+    })),
+  ];
   if (data.staleChecks.length > 0) {
-    exportRows.push({ account: '--- Stale Outstanding Checks (older than 90 days) ---' });
+    overviewRows.push({ line: '--- Stale Outstanding Checks (older than 90 days) ---' });
     for (const c of data.staleChecks) {
-      exportRows.push({
-        account: c.accountName,
-        last_reconciled: c.txnDate,
-        latest_statement: `Check #${c.checkNumber ?? '?'}${c.payee ? ` — ${c.payee}` : ''}`,
-        reconciled_balance: c.amount,
+      overviewRows.push({
+        line: c.accountName, date: c.txnDate, type: 'check', number: c.checkNumber ?? '',
+        description: c.payee ?? '', amount: c.amount,
       });
     }
   }
+  const proofRows = data.proofs.flatMap((p) => proofCsvRows(p, { mode: 'summary' }));
+  const single = data.proofs.length === 1 && reconciliationId ? data.proofs[0]! : null;
+  const pdfBody = format === 'pdf' ? summaryPdfHtml(data) : undefined;
   await respond(res, {
     ...data,
-    data: exportRows,
-    _exportColumns: [
-      { key: 'account', label: 'Account' },
-      { key: 'last_reconciled', label: 'Last Reconciled / Check Date' },
-      { key: 'reconciled_balance', label: 'Balance / Amount', align: 'right' },
-      { key: 'latest_statement', label: 'Latest Statement / Check' },
-      // No `align: right` on count columns — right-aligned export cells run
-      // through fmtNum, which would render the integer counts as "1.00".
-      { key: 'gap_months', label: 'Missing Months' },
-      { key: 'uncleared_items', label: 'Uncleared Items' },
-      { key: 'oldest_uncleared', label: 'Oldest Uncleared' },
-    ],
-  }, req.query['format'] as string);
+    title: single
+      ? `Bank Reconciliation Summary - ${single.accountName} ${single.statementDate}`
+      : 'Bank Reconciliation Summary',
+    data: [...overviewRows, ...proofRows],
+    _exportColumns: PROOF_CSV_COLUMNS,
+    _pdfBodyHtml: pdfBody,
+    _dateLabel: single ? `Statement date ${formatIsoUS(single.statementDate)}` : `As of ${formatIsoUS(new Date().toISOString().slice(0, 10))}`,
+  }, format);
 });
 
-// Completed-reconciliation detail report. Requires ?reconciliation_id= —
-// linked from the Reconciliation History page (not the reports landing
-// page, which has no reconciliation picker).
+function summaryPdfHtml(data: Awaited<ReturnType<typeof reportService.buildBankReconciliationSummary>>): string {
+  const esc = exportService.escapeHtml;
+  const m = (v: number | null) => (v == null ? '' : reconMoney(v));
+  const overview = `<table>
+    <thead><tr><th>Account</th><th>Last reconciled</th><th class="amount">Reconciled balance</th><th>Latest statement</th><th class="amount">Missing months</th><th class="amount">Uncleared items</th><th>Oldest uncleared</th><th class="amount">Stale checks</th></tr></thead>
+    <tbody>${data.accounts.map((a) => `<tr>
+      <td>${esc(a.accountNumber ? `${a.accountNumber} · ${a.name}` : a.name)}</td>
+      <td>${esc(a.lastReconciledDate ? formatIsoUS(a.lastReconciledDate) : '—')}</td>
+      <td class="amount">${m(a.lastReconciledBalance)}</td>
+      <td>${esc(a.latestStatementEnd ? formatIsoUS(a.latestStatementEnd) : '—')}</td>
+      <td class="amount">${a.statementGapCount}</td>
+      <td class="amount">${a.unclearedCount}</td>
+      <td>${esc(a.oldestUnclearedDate ? formatIsoUS(a.oldestUnclearedDate) : '—')}</td>
+      <td class="amount">${a.staleCheckCount}</td>
+    </tr>`).join('')}</tbody></table>`;
+  const stale = data.staleChecks.length === 0 ? '' : `<h3 style="font-size:13px;margin:18px 0 6px 0">Stale Outstanding Checks (older than 90 days)</h3><table>
+    <thead><tr><th>Account</th><th>Date</th><th>Check #</th><th>Payee</th><th class="amount">Amount</th></tr></thead>
+    <tbody>${data.staleChecks.map((c) => `<tr><td>${esc(c.accountName)}</td><td>${esc(formatIsoUS(c.txnDate))}</td><td>${esc(c.checkNumber ?? '')}</td><td>${esc(c.payee ?? '')}</td><td class="amount">${m(c.amount)}</td></tr>`).join('')}</tbody></table>`;
+  const proofs = data.proofs.map((p) => `<div style="page-break-before:always">
+    <div style="font-size:15px;font-weight:600;margin:0 0 4px 0">${esc(p.accountNumber ? `${p.accountNumber} ${p.accountName}` : p.accountName)} — reconciliation as of ${esc(formatIsoUS(p.statementDate))}</div>
+    ${renderProofHtml(p, { mode: 'summary' })}</div>`).join('');
+  const none = data.proofs.length === 0 ? '<p style="color:#6b7280;font-size:11px">No completed reconciliations yet — the bank-to-books reconciliation appears once an account has one.</p>' : '';
+  return overview + stale + none + proofs;
+}
+
+// Reconciliation detail report. Requires ?reconciliation_id= — linked from
+// the Reconciliation History page and the Reconcile screen (not the reports
+// landing page, which has no reconciliation picker). Shows the professional
+// bank-to-books reconciliation: summary, supporting schedules (with aged-item
+// flags), the cleared list, subsequent activity, book-side proof, sign-off.
 reportsRouter.get('/reconciliation-detail', async (req, res) => {
   const reconciliationId = req.query['reconciliation_id'] as string | undefined;
   if (!reconciliationId) {
     res.status(400).json({ error: { message: 'reconciliation_id is required', code: 'VALIDATION_ERROR' } });
     return;
   }
+  const format = req.query['format'] as string | undefined;
   const data = await reportService.buildReconciliationDetail(req.tenantId, reconciliationId);
-  const lineRow = (l: typeof data.cleared[number]) => ({
-    txn_date: l.txnDate,
-    txn_type: l.txnType,
-    txn_number: l.txnNumber ?? '',
-    description: l.description ?? '',
-    payment: l.payment,
-    deposit: l.deposit,
-  });
-  const exportRows: Array<Record<string, unknown>> = [
-    { txn_date: `--- Cleared Transactions (${data.cleared.length}) ---` },
-    ...data.cleared.map(lineRow),
-    {
-      txn_date: 'Total Cleared', payment: data.totals.clearedPayments, deposit: data.totals.clearedDeposits, _total: true,
-    },
-    { txn_date: `--- Uncleared as of ${data.reconciliation.statementDate} (${data.uncleared.length}) ---` },
-    ...data.uncleared.map(lineRow),
-    {
-      txn_date: 'Total Uncleared', payment: data.totals.unclearedPayments, deposit: data.totals.unclearedDeposits, _total: true,
-    },
-  ];
+  const renderOpts = {
+    mode: 'detail' as const,
+    cleared: data.cleared,
+    clearedTotals: { payments: data.totals.clearedPayments, deposits: data.totals.clearedDeposits },
+  };
   await respond(res, {
     ...data,
     // ASCII-only title: it feeds the Content-Disposition filename, where a
     // non-Latin-1 character (em dash) makes res.setHeader throw.
     title: `Reconciliation Detail - ${data.reconciliation.accountName} ${data.reconciliation.statementDate}`,
-    data: exportRows,
-    _exportColumns: [
-      { key: 'txn_date', label: 'Date' },
-      { key: 'txn_type', label: 'Type' },
-      { key: 'txn_number', label: 'Number' },
-      { key: 'description', label: 'Description' },
-      { key: 'payment', label: 'Payment', align: 'right' },
-      { key: 'deposit', label: 'Deposit', align: 'right' },
-    ],
-  }, req.query['format'] as string);
+    data: proofCsvRows(data.proof, renderOpts),
+    _exportColumns: PROOF_CSV_COLUMNS,
+    _pdfBodyHtml: format === 'pdf' ? renderProofHtml(data.proof, renderOpts) : undefined,
+    _dateLabel: `Statement date ${formatIsoUS(data.reconciliation.statementDate)}`,
+  }, format);
 });
 
 reportsRouter.get('/deposit-detail', async (req, res) => {
