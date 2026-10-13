@@ -454,8 +454,13 @@ bank or credit-card line opens that account's register.
 ### "Can I type a calculation into an amount field, like 145.15-50?"
 Yes. Every amount and number field works like a calculator: type the math and
 press Enter, Tab or click away, and the field shows the result (145.15-50 →
-95.15). It supports + - * / (also x, ×, ÷), parentheses, and % as "divide by 100"
-(200*15% → 30.00); $ signs, thousands commas and a leading = are ignored. A
+95.15). It supports + - * / (also x, ×, ÷), parentheses and %. Percent works
+like a calculator: adding or subtracting a percent takes that percent OF the
+amount before it (200+15% → 230.00, 200-15% → 170.00, (100+50)+10% → 165.00);
+with * or / or on its own, % just means "divide by 100" (200*15% → 30.00,
+200/50% → 400.00, 15% → 0.15). The "percent of" rule applies only when the
+percent is the whole term being added/subtracted: 200+10*15% → 201.50 and
+200+(15%) → 200.15. $ signs, thousands commas and a leading = are ignored. A
 "= result" preview shows while you type. Money rounds to the cent. Enter only
 works out the math — it does not save the form; press Enter or the save
 shortcut again. Invalid math (a typo, dividing by zero) turns the field red and

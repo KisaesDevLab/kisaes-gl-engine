@@ -41,10 +41,36 @@ describe('evaluateExpression — arithmetic', () => {
     expect(money('--4')).toBe('4.00');
     expect(money('+4')).toBe('4.00');
   });
-  it('treats % as a postfix /100', () => {
+  it('treats % as literal /100 standalone and with * and /', () => {
     expect(money('200*15%')).toBe('30.00');
     expect(money('15%')).toBe('0.15');
     expect(money('1000*7.25%')).toBe('72.50');
+    expect(money('200/50%')).toBe('400.00');
+    expect(money('15%*200')).toBe('30.00');
+  });
+  it('calculator-style percent: + / − with a %-term on the right means percent OF the left', () => {
+    expect(money('200+15%')).toBe('230.00');
+    expect(money('200-15%')).toBe('170.00');
+    expect(money('(100+50)+10%')).toBe('165.00');
+    expect(money('100+50+10%')).toBe('165.00'); // left-assoc: (100+50)+10%
+    expect(money('200+15%+10')).toBe('240.00');
+    expect(money('200+15%-10%')).toBe('207.00'); // 230 - 23
+    expect(money('1,000 + 7.25%')).toBe('1072.50');
+  });
+  it('calculator-style percent with negatives', () => {
+    expect(money('-200+15%')).toBe('-230.00');
+    expect(money('-200-15%')).toBe('-170.00');
+    expect(money('200+-15%')).toBe('170.00');
+    expect(money('200--15%')).toBe('230.00');
+    expect(money('200-(-15%)')).toBe('200.15'); // parenthesised → literal
+  });
+  it('percent rule applies only at the + / − node whose right child is the %-term', () => {
+    expect(money('200+10*15%')).toBe('201.50'); // product → literal 1.5
+    expect(money('200+(15%)')).toBe('200.15'); // parens → literal
+    expect(money('(200+15%)*2')).toBe('460.00'); // nested parens
+    expect(money('((50+50)+20%)-10%')).toBe('108.00');
+    expect(money('2*(100-25%)')).toBe('150.00');
+    expect(money('15%+200')).toBe('200.15'); // % on the LEFT is literal
   });
   it('accepts $, thousands separators, whitespace and a leading =', () => {
     expect(money('$1,234.50 + 0.50')).toBe('1235.00');

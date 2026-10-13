@@ -14,6 +14,14 @@
 //   unary   := ('-' | '+' | '−') unary | postfix
 //   postfix := primary '%'*                      (n% = n / 100)
 //   primary := number | '(' expr ')'
+//
+// Calculator-style percent (Kurt): when the RIGHT operand of a binary + or −
+// is a %-postfixed term, it means that percent OF the left operand —
+// 200+15% = 230, 200-15% = 170, (100+50)+10% = 165, 200+-15% = 170.
+// Everywhere else % is literal /100: 15% = 0.15, 200*15% = 30,
+// 200/50% = 400. The rule looks only at the + / − node's right child: a
+// product there is literal (200+10*15% = 200 + 1.5 = 201.5), and so is a
+// parenthesised group (200+(15%) = 200.15).
 //   number  := '$'? digits-with-optional-1,000-grouping ('.' digits)?
 
 export const EXPRESSION_MAX_LENGTH = 200;
@@ -89,6 +97,10 @@ function tokenize(src: string): Tok[] {
   return out;
 }
 
+// `pct` marks a term whose outermost operator is a postfix % (optionally
+// under unary signs), which + / − then read as "percent of the left side".
+interface Term { v: Rational; pct: boolean }
+
 class Parser {
   private pos = 0;
   private depth = 0;
@@ -107,25 +119,30 @@ class Parser {
   }
 
   private expr(): Rational {
-    let left = this.term();
+    let left = this.term().v;
     for (;;) {
       const op = this.peekOp();
       if (op !== '+' && op !== '-') return left;
       this.pos++;
-      const right = this.term();
+      const t = this.term();
+      // 200+15% → 200 + (200 × 0.15)
+      const right = t.pct ? norm(left.n * t.v.n, left.d * t.v.d) : t.v;
       left = op === '+'
         ? norm(left.n * right.d + right.n * left.d, left.d * right.d)
         : norm(left.n * right.d - right.n * left.d, left.d * right.d);
     }
   }
 
-  private term(): Rational {
-    let left = this.unary();
+  private term(): Term {
+    const first = this.unary();
+    let left = first.v;
+    let sawOp = false;
     for (;;) {
       const op = this.peekOp();
-      if (op !== '*' && op !== '/') return left;
+      if (op !== '*' && op !== '/') return { v: left, pct: first.pct && !sawOp };
+      sawOp = true;
       this.pos++;
-      const right = this.unary();
+      const right = this.unary().v;
       if (op === '*') {
         left = norm(left.n * right.n, left.d * right.d);
       } else {
@@ -135,25 +152,27 @@ class Parser {
     }
   }
 
-  private unary(): Rational {
+  private unary(): Term {
     const op = this.peekOp();
     if (op === '-' || op === '+') {
       this.pos++;
       this.enter();
-      const v = this.unary();
+      const t = this.unary();
       this.depth--;
-      return op === '-' ? { n: -v.n, d: v.d } : v;
+      return op === '-' ? { v: { n: -t.v.n, d: t.v.d }, pct: t.pct } : t;
     }
     return this.postfix();
   }
 
-  private postfix(): Rational {
+  private postfix(): Term {
     let v = this.primary();
+    let pct = false;
     while (this.peekOp() === '%') {
       this.pos++;
+      pct = true;
       v = norm(v.n, v.d * 100n);
     }
-    return v;
+    return { v, pct };
   }
 
   private primary(): Rational {
