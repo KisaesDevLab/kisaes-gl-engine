@@ -786,6 +786,10 @@ export interface SetStatusResult {
   pdfRendered: boolean;
   pdfError: string | null;
   version: number;
+  /** True only when this call moved the instance INTO published (first
+   *  publish or republish from archived) — not a no-op or a PDF retry.
+   *  Drives the opt-in client notice so a retry never re-emails. */
+  newlyPublished?: boolean;
   /** Present when publishing a snapshot that contains errored blocks —
    *  one entry per affected block so the bookkeeper can fix + republish.
    *  Publish is NOT blocked; the PDF renders those sections as
@@ -967,6 +971,7 @@ export async function setStatus(
     pdfRendered,
     pdfError,
     version: nextVersion,
+    newlyPublished: status === 'published' && before.status !== 'published',
     ...(warnings ? { warnings } : {}),
   };
 }

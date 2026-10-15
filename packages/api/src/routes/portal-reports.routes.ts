@@ -10,6 +10,7 @@ import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import * as svc from '../services/portal-reports.service.js';
 import * as portalSettings from '../services/portal-contact.service.js';
+import * as reportNotice from '../services/portal-report-notice.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 16 + 17 — Report Builder admin.
 
@@ -280,10 +281,33 @@ portalReportsRouter.patch(
 
 const statusSchema = z.object({
   status: z.enum(['draft', 'review', 'published', 'archived']),
+  // Opt-in "your report is ready" email to the portal contacts who can see
+  // it (Financials access on the report's company). Sent only when this
+  // call actually publishes — never on a no-op or a PDF retry.
+  notifyClients: z.boolean().optional(),
 });
 portalReportsRouter.post('/instances/:id/status', validate(statusSchema), async (req, res) => {
   const result = await svc.setStatus(req.tenantId, req.params['id']!, req.userId, req.body.status);
+  if (req.body.notifyClients === true && result.newlyPublished) {
+    // The publish already committed; a mail failure must not turn it into
+    // an error response, so it is reported alongside instead.
+    try {
+      const notice = await reportNotice.sendReportPublishedNotice(req.tenantId, req.params['id']!, req.userId);
+      res.json({ ...result, notice });
+    } catch (err) {
+      res.json({ ...result, notice: { results: [], error: err instanceof Error ? err.message : String(err) } });
+    }
+    return;
+  }
   res.json(result);
+});
+
+// Who the publish notice would go to — listed next to the checkbox.
+portalReportsRouter.get('/instances/:id/notice-recipients', async (req, res) => {
+  const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+  if (!params.success) throw AppError.badRequest('Invalid report id');
+  const recipients = await reportNotice.listReportNoticeRecipients(req.tenantId, params.data.id);
+  res.json({ recipients });
 });
 
 // Mint (idempotent) an anonymous share link for a PUBLISHED instance.
