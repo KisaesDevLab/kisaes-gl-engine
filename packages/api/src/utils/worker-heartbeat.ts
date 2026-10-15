@@ -205,7 +205,7 @@ export interface WorkerHeartbeatStatus {
 export async function readHeartbeats(): Promise<WorkerHeartbeatStatus> {
   // Without Redis there is no separate worker to watch (desktop mode
   // forces EXPECT_WORKER=false, so /health ignores this result).
-  if (!redisEnabled()) return { ok: false, count: 0, lastHeartbeatMs: null, error: 'redis disabled' };
+  if (!redisEnabled()) return { ok: false, count: 0, lastHeartbeatMs: null };
   const client = getReadClient();
   if (!client) {
     return { ok: false, count: 0, lastHeartbeatMs: null, error: 'heartbeat clients are closing' };

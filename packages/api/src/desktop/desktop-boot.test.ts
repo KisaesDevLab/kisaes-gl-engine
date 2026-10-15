@@ -214,7 +214,7 @@ describe('desktop engine on port 0', () => {
 
   beforeAll(async () => {
     if (!dbReady) return;
-    e = spawnEngine({ DATABASE_URL: urlFor(DB_NAME) }, { logFile: true });
+    e = spawnEngine({ DATABASE_URL: urlFor(DB_NAME), ENGINE_COMMIT: 'abc1234def' }, { logFile: true });
     const r = await e.ready;
     if (!('port' in r)) {
       throw new Error(`engine did not start (exit ${r.exitCode}):\n${e.stderr.slice(-30).join('\n')}`);
@@ -237,6 +237,34 @@ describe('desktop engine on port 0', () => {
     if (!dbReady) return;
     expect((await call(port, '/api/v1/ping')).status).toBe(200);
     expect((await call(port, '/api/v1/ping', { token: null })).status).toBe(401);
+  });
+
+  it('/health: 200 without Redis, v2 fields, and it needs the token too', async () => {
+    if (!dbReady) return;
+    const journal = JSON.parse(
+      readFileSync(path.join(API_ROOT, 'src', 'db', 'migrations', 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: Array<{ tag: string }> };
+    for (const p of ['/health', '/api/health', '/api/v1/health']) {
+      const r = await call(port, p);
+      expect(r.status, p).toBe(200);
+      expect(r.json).toMatchObject({
+        status: 'ok',
+        db: 'ok',
+        redis: 'disabled',
+        queue: 'ok',
+        workers: 'ok',
+        mode: 'desktop',
+        engineCommit: 'abc1234def',
+        schemaVersion: journal.entries.length,
+        schemaTag: journal.entries[journal.entries.length - 1]!.tag,
+        queueBackend: 'none',
+        online: null,
+        lastOnlineCheck: null,
+      });
+      expect(typeof r.json.version).toBe('string');
+      expect(typeof r.json.checks.db.superuser).toBe('boolean');
+      expect((await call(port, p, { token: null })).status).toBe(401);
+    }
   });
 
   it('logs to CL_LOG_FILE and scrubs the launch token from file and console', async () => {

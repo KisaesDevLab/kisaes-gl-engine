@@ -110,7 +110,7 @@ export const app = express();
 // Desktop mode (CL_MODE=desktop): the launch-token gate is the FIRST
 // middleware so it covers every route below, including the raw-body
 // webhook routers and /health. Not mounted for the server appliance.
-import { isDesktop } from './desktop/profile.js';
+import { isDesktop, desktopProfile } from './desktop/profile.js';
 import { desktopGate } from './middleware/desktop-gate.js';
 import { serverOnly as serverOnlyFor, mountDesktopUnavailable } from './desktop/features.js';
 if (isDesktop()) {
@@ -380,6 +380,10 @@ app.use('/api/v1/', (_req, res, next) => {
 // appliance health probe read; the `checks.*` block keeps latency /
 // error detail for human debugging.
 //
+// v2 appends mode, version, engineCommit, schemaVersion, schemaTag,
+// queueBackend, online, lastOnlineCheck and checks.db.superuser; redis is
+// 'disabled' for installs without Redis (utils/health.ts).
+//
 // `queue: 'ok'` mirrors `redis: 'ok'` for now — BullMQ queues aren't
 // wired yet (worker schedulers run via Postgres advisory locks), so
 // "queue infra is up" === "Redis is up". When BullMQ ships, deepen
@@ -394,6 +398,10 @@ import { sql } from 'drizzle-orm';
 import { db as _dbForHealth } from './db/index.js';
 import { redisPing } from './utils/health-redis.js';
 import { readHeartbeats } from './utils/worker-heartbeat.js';
+import { computeHealth } from './utils/health.js';
+import { readSchemaInfo } from './startup/schema-info.js';
+import { readDbSuperuser } from './startup/db-role.js';
+import { getCurrentVersion } from './services/updates.service.js';
 
 const healthHandler = async (_req: express.Request, res: express.Response) => {
   const t0 = Date.now();
@@ -417,8 +425,6 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     }
   })();
 
-  const [db, redisRaw, workersRaw] = await Promise.all([dbProbe, redisPing(), readHeartbeats()]);
-
   // Same code-only treatment as the DB probe: ioredis messages carry the
   // internal host:port ("connect ECONNREFUSED 172.18.0.3:6379") and this
   // endpoint is unauthenticated. Detail goes to the server log.
@@ -427,44 +433,27 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     console.warn(`[health] ${name} check failed:`, c.error);
     return { ...c, error: 'unavailable' };
   };
-  const redis = redactErr('redis', redisRaw);
-  const workers = redactErr('workers', workersRaw);
 
-  // Queue health rides on Redis until BullMQ wiring lands.
-  const queue = { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
+  // Body assembly lives in utils/health.ts (v2 fields; see there). Workers
+  // sub-check is gated on EXPECT_WORKER: default true matches standalone
+  // docker-compose (which always runs the worker service); api-only
+  // deployments set EXPECT_WORKER=false so a missing heartbeat doesn't drag
+  // the overall status to degraded.
+  const { httpStatus, body } = await computeHealth({
+    probeDb: () => dbProbe,
+    redisPing,
+    readHeartbeats,
+    schemaInfo: () => readSchemaInfo(),
+    dbSuperuser: () => readDbSuperuser(),
+    redactErr,
+    expectWorker: env.EXPECT_WORKER,
+    mode: desktopProfile().mode,
+    queueBackend: desktopProfile().queueBackend,
+    version: getCurrentVersion(),
+    engineCommit: env.ENGINE_COMMIT ?? null,
+  });
 
-  // Workers sub-check is gated on EXPECT_WORKER. Default true matches
-  // standalone docker-compose (which always runs the worker service);
-  // operators on api-only deployments set EXPECT_WORKER=false so a
-  // missing heartbeat doesn't drag the overall status to degraded.
-  const workersCheckActive = env.EXPECT_WORKER;
-  const workersOk = workersCheckActive ? workers.ok : true;
-
-  const allOk = db.ok && redis.ok && queue.ok && workersOk;
-  const status = allOk ? 'ok' : 'degraded';
-
-  const body = {
-    status,
-    db: db.ok ? 'ok' : 'fail',
-    redis: redis.ok ? 'ok' : 'fail',
-    queue: queue.ok ? 'ok' : 'fail',
-    workers: workersOk ? 'ok' : 'fail',
-    timestamp: new Date().toISOString(),
-    checks: {
-      db,
-      redis,
-      queue,
-      workers: {
-        ...workers,
-        // Make the EXPECT_WORKER gating visible in the response body
-        // so operators inspecting /health output understand why a
-        // missing heartbeat isn't tripping degraded status.
-        expected: workersCheckActive,
-      },
-    },
-  };
-
-  if (allOk) {
+  if (httpStatus === 200) {
     res.json(body);
   } else {
     res.status(503).json(body);
