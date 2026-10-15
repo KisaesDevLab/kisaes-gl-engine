@@ -84,7 +84,52 @@ describe('app.ts in desktop mode', () => {
   }, 120_000);
 });
 
+describe('app.ts desktop feature profile', () => {
+  it('every left-out family answers 404 NOT_AVAILABLE_IN_DESKTOP; setup status stays', async () => {
+    const app = await loadApp('desktop');
+    const { setDesktopBoundAddress } = await import('../middleware/desktop-gate.js');
+    const { DESKTOP_UNMOUNTED } = await import('./features.js');
+    await withServer(app, async (port) => {
+      setDesktopBoundAddress('127.0.0.1', port);
+      const get = (p: string, method = 'GET') =>
+        fetch(`http://127.0.0.1:${port}${p}`, { method, headers: { 'x-cl-token': TOKEN } });
+      for (const f of DESKTOP_UNMOUNTED) {
+        for (const p of [f.prefix, `${f.prefix}/anything/below`]) {
+          for (const method of ['GET', 'POST']) {
+            const r = await get(p, method);
+            const body = (await r.json()) as { error?: { code?: string } };
+            expect(r.status, `${method} ${p}`).toBe(404);
+            expect(body.error?.code, `${method} ${p}`).toBe('NOT_AVAILABLE_IN_DESKTOP');
+          }
+        }
+      }
+      // The one setup route the desktop app may use is still routed.
+      const status = await get('/api/setup/status');
+      const statusBody = (await status.json()) as { error?: { code?: string } };
+      expect(statusBody.error?.code).not.toBe('NOT_AVAILABLE_IN_DESKTOP');
+      // Non-API paths: JSON 404, never the SPA or HTML.
+      const other = await get('/index.html');
+      expect(other.status).toBe(404);
+      expect(other.headers.get('content-type')).toMatch(/application\/json/);
+      // Core bookkeeping routes are still mounted (401 = reached auth, not 404).
+      expect((await get('/api/v1/accounts')).status).toBe(401);
+    });
+  }, 120_000);
+});
+
 describe('app.ts in server mode (CL_MODE unset)', () => {
+  it('mounts every family the desktop edition leaves out', async () => {
+    const app = await loadApp('server');
+    const { DESKTOP_UNMOUNTED } = await import('./features.js');
+    await withServer(app, async (port) => {
+      for (const f of DESKTOP_UNMOUNTED) {
+        const r = await fetch(`http://127.0.0.1:${port}${f.prefix}/anything/below`, { method: 'POST' });
+        const text = await r.text();
+        expect(text, f.prefix).not.toContain('NOT_AVAILABLE_IN_DESKTOP');
+      }
+    });
+  }, 120_000);
+
   it('does not mount the gate and needs no X-CL-Token', async () => {
     const app = await loadApp('server');
     expect(stackOf(app).some((l) => l.name === 'clDesktopGate')).toBe(false);

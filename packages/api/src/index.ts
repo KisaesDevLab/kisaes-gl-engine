@@ -25,6 +25,7 @@ import type { AddressInfo } from 'net';
 import { isDesktop, desktopProfile, type DesktopBind } from './desktop/profile.js';
 import { setDesktopBoundAddress } from './middleware/desktop-gate.js';
 import { desktopFatal } from './desktop/fatal.js';
+import { schedulerEnabled } from './desktop/features.js';
 
 // Graceful shutdown deadline. After SIGTERM we stop accepting new
 // connections and wait up to this long for in-flight requests to drain
@@ -230,25 +231,27 @@ async function start() {
       .then((m) => m.getRawConfig())
       .catch(() => undefined)
       .finally(() => registerMybooksTaskClasses());
-    startBackupScheduler();
-    startRecurringScheduler();
-    startFingerprintScheduler();
+    // Desktop mode starts only the schedulers in DESKTOP_SCHEDULERS
+    // (desktop/features.ts); the server starts all of them.
+    if (schedulerEnabled('backup')) startBackupScheduler();
+    if (schedulerEnabled('recurring')) startRecurringScheduler();
+    if (schedulerEnabled('fingerprint')) startFingerprintScheduler();
     // The worker container (when present) also starts these two; the
     // Postgres advisory lock in each scheduler's cycle ensures only
     // one process does a given tick. Single-container installs
     // (docker-compose.prod.yml has no worker service) rely on these
     // calls to fire the tunnel-health audit and the monthly backup
     // integrity check.
-    startCloudflaredAlerter();
-    startBackupVerifier();
+    if (schedulerEnabled('cloudflaredAlerter')) startCloudflaredAlerter();
+    if (schedulerEnabled('backupVerifier')) startBackupVerifier();
     // RECURRING_DOC_REQUESTS_V1 — calendar-cadence issuance scheduler.
     // Advisory-locked so the worker container can also run it without
     // double-firing.
-    startRecurringDocRequestScheduler();
+    if (schedulerEnabled('recurringDocRequests')) startRecurringDocRequestScheduler();
     // AI data retention purge (ai_jobs + old chat). Advisory-locked so
     // the worker container can also boot it without double-purging.
-    startAiRetentionScheduler();
-    startShareSweeper();
+    if (schedulerEnabled('aiRetention')) startAiRetentionScheduler();
+    if (schedulerEnabled('shareSweeper')) startShareSweeper();
   };
 
   // Start server

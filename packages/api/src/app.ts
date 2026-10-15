@@ -112,9 +112,16 @@ export const app = express();
 // webhook routers and /health. Not mounted for the server appliance.
 import { isDesktop } from './desktop/profile.js';
 import { desktopGate } from './middleware/desktop-gate.js';
+import { serverOnly as serverOnlyFor, mountDesktopUnavailable } from './desktop/features.js';
 if (isDesktop()) {
   app.use(desktopGate());
+  // Route families the desktop edition leaves out (desktop/features.ts)
+  // answer 404 NOT_AVAILABLE_IN_DESKTOP before any other router sees them.
+  mountDesktopUnavailable(app);
 }
+// Mounts listed in DESKTOP_UNMOUNTED go through this; on the server it is
+// plain app.use / app.post.
+const serverOnly = serverOnlyFor(app);
 
 // Middleware
 // Helmet defaults are tuned for HTTPS public sites. Vibe MyBooks is a
@@ -215,19 +222,19 @@ app.use(compression());
 
 // Stripe webhook route MUST be mounted BEFORE express.json() — raw body needed for signature verification
 import { stripeWebhookRouter } from './routes/stripe-webhook.routes.js';
-app.use('/api/v1/stripe', stripeWebhookRouter);
+serverOnly.use('/api/v1/stripe', stripeWebhookRouter);
 
 // Plaid webhook — same raw-body requirement. Plaid signs the exact
 // bytes it sent, so the handler must see those bytes, not a re-
 // stringified parsed object. Mounted here before express.json().
 import { plaidWebhookRouter } from './routes/plaid-webhook.routes.js';
-app.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
+serverOnly.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
 
 // DOC_REQUEST_SMS_V1 — inbound SMS webhooks. Mounted before
 // express.json() so the router can decode form-urlencoded bodies and
 // verify HMAC signatures against the raw-form representation.
 import { smsInboundRouter } from './routes/sms-inbound.routes.js';
-app.use('/api/sms/inbound', smsInboundRouter);
+serverOnly.use('/api/sms/inbound', smsInboundRouter);
 
 // CSP violation collector — mounted before the JSON limiter so it can use
 // its own tiny body parser and its own limiter. Browsers POST reports here
@@ -485,11 +492,11 @@ app.get('/api/v1/ping', pingHandler);
 
 // Setup routes (no auth required — self-destructs after setup)
 import { setupRouter } from './routes/setup.routes.js';
-app.use('/api/setup', setupRouter);
+serverOnly.use('/api/setup', setupRouter);
 
 // Public invoice routes (no auth required — customer-facing payment links)
 import { publicInvoiceRouter } from './routes/public-invoice.routes.js';
-app.use('/api/v1/public/invoices', publicInvoiceRouter);
+serverOnly.use('/api/v1/public/invoices', publicInvoiceRouter);
 
 // Financial-statement preview fonts (bundled OFL files; no auth — see route).
 import { fsFontsPublicRouter } from './routes/fs-fonts-public.routes.js';
@@ -498,7 +505,7 @@ app.use('/api/v1/fs-fonts', fsFontsPublicRouter);
 // Public report share links (no auth required — anonymous client-facing
 // view of a PUBLISHED financial report via a 160-bit share token)
 import { publicReportsRouter } from './routes/reports-public.routes.js';
-app.use('/api/reports/public', publicReportsRouter);
+serverOnly.use('/api/reports/public', publicReportsRouter);
 
 // Routes
 app.use('/api/v1/auth', authRouter);
@@ -534,12 +541,12 @@ app.use('/api/v1/duplicates', duplicatesRouter);
 app.use('/api/v1/budgets', budgetsRouter);
 app.use('/api/v1/backup', backupRouter);
 app.use('/api/v1/tenant-export', tenantExportRouter);
-app.use('/api/v1/remote-backup', remoteBackupRouter);
+serverOnly.use('/api/v1/remote-backup', remoteBackupRouter);
 app.use('/api/v1/export', exportRouter);
 app.use('/api/v1/downloads', downloadsRouter);
 app.use('/api/v1/audit-log', auditRouter);
 app.use('/api/v1/admin', adminRouter);
-app.use('/api/v1/admin/tailscale', authenticate, requireSuperAdmin, tailscaleRouter);
+serverOnly.use('/api/v1/admin/tailscale', authenticate, requireSuperAdmin, tailscaleRouter);
 app.use('/api/v1/api-keys', apiKeysRouter);
 app.use('/api/v1/tenant-settings', tenantSettingsRouter);
 app.use('/api/v1/users/me/tfa', tfaRouter);
@@ -568,15 +575,15 @@ app.put('/api/v1/users/me/login-preference', authMw, sessionOnlyMw, async (req, 
   res.json({ updated: true });
 });
 app.use('/api/v1/auth/magic-link', magicLinkRouter);
-app.use('/api/v1/plaid', plaidRouter);
+serverOnly.use('/api/v1/plaid', plaidRouter);
 app.use('/api/v1/ai', aiRouter);
-app.use('/api/v1/share', shareRouter);
+serverOnly.use('/api/v1/share', shareRouter);
 app.use('/api/v1/chat', chatRouter);
 // /oauth lives outside the /api prefix and previously had NO rate limit
 // (token/revoke endpoints hit the DB per call). Reuse the global limiter
 // so anonymous callers get the same 300/min/IP budget as everything else.
-app.use('/oauth', globalLimiter, oauthRouter);
-app.use('/api/v1/settings/storage', storageRouter);
+serverOnly.use('/oauth', globalLimiter, oauthRouter);
+serverOnly.use('/api/v1/settings/storage', storageRouter);
 app.use('/api/v1/payroll-import', payrollImportRouter);
 app.use('/api/v1/imports', importsRouter);
 app.use('/api/v1/extractions', extractionRouter);
@@ -612,38 +619,38 @@ app.use('/api/v1/practice/receipts', portalReceiptsRouter);
 app.use('/api/v1/practice', recurringDocRequestsRouter);
 
 // Public portal API — note no /v1, no JWT auth. Rate-limited per route.
-app.use('/api/portal', portalAuthRouter);
-app.use('/api/portal/questions', portalQuestionsPublicRouter);
-app.use('/api/portal/financials', portalFinancialsPublicRouter);
+serverOnly.use('/api/portal', portalAuthRouter);
+serverOnly.use('/api/portal/questions', portalQuestionsPublicRouter);
+serverOnly.use('/api/portal/financials', portalFinancialsPublicRouter);
 // TAX_ESTIMATOR_V1 — read-only tax estimate for the contact's linked taxpayers (Phase 13).
-app.use('/api/portal/tax-estimates', portalTaxEstimatesPublicRouter);
+serverOnly.use('/api/portal/tax-estimates', portalTaxEstimatesPublicRouter);
 // Tracking pixel + click wrapper — public, no auth.
-app.use('/api/portal', portalTrackingRouter);
+serverOnly.use('/api/portal', portalTrackingRouter);
 // Public W-9 form — token in URL is the auth.
-app.use('/api/w9', portalW9PublicRouter);
+serverOnly.use('/api/w9', portalW9PublicRouter);
 // Public bank-connect invites (client connects their bank via Plaid Link
 // from an emailed/texted link, no login) — token in URL is the auth.
-app.use('/api/bank-connect', bankConnectPublicRouter);
+serverOnly.use('/api/bank-connect', bankConnectPublicRouter);
 // Portal-side receipt upload (signed-in contact).
-app.use('/api/portal/receipts', portalReceiptsPublicRouter);
+serverOnly.use('/api/portal/receipts', portalReceiptsPublicRouter);
 // Portal-side outstanding-doc-requests list — drives the "Documents
 // requested" panel on the portal dashboard.
-app.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
+serverOnly.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
 // PORTAL_BANKING_V1 — read-only bank/card balances + registers.
 // Connection repair first: its paths live under /banking/connections and
 // must not fall into the read-only banking router.
-app.use('/api/portal/banking/connections', portalBankRepairPublicRouter);
-app.use('/api/portal/banking', portalBankingPublicRouter);
-app.use('/api/portal/categorize', portalCategorizePublicRouter);
+serverOnly.use('/api/portal/banking/connections', portalBankRepairPublicRouter);
+serverOnly.use('/api/portal/banking', portalBankingPublicRouter);
+serverOnly.use('/api/portal/categorize', portalCategorizePublicRouter);
 // PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.
-app.use('/api/portal/bills', portalBillsPublicRouter);
-app.use('/api/portal/bill-captures', portalBillCapturesPublicRouter);
+serverOnly.use('/api/portal/bills', portalBillsPublicRouter);
+serverOnly.use('/api/portal/bill-captures', portalBillCapturesPublicRouter);
 // Vibe Practice Management peer API — signed server-to-server tokens,
 // re-mounts the portal routers for a linked client (docs/vibe-pm-integration.md).
-app.use('/api/peer/pm', peerPmRouter);
+serverOnly.use('/api/peer/pm', peerPmRouter);
 
 // MCP Server endpoint
-app.post('/mcp', async (req, res) => {
+serverOnly.post('/mcp', async (req, res) => {
   const { handleMcpRequest } = await import('./mcp/server.js');
   await handleMcpRequest(req, res);
 });
@@ -680,7 +687,7 @@ app.use('/api/v2', apiV2Router);
 // reach the Express error handler via express-async-errors instead of
 // leaking as unhandled promise rejections.
 import { authenticate as swaggerAuth, requireSuperAdmin as swaggerRequireSuperAdmin } from './middleware/auth.js';
-app.use('/api/docs',
+serverOnly.use('/api/docs',
   async (req: any, res: any, next: any) => {
     if (env.NODE_ENV !== 'production') return next();
     await swaggerAuth(req, res, (err?: unknown) => {
@@ -701,7 +708,8 @@ app.use('/api/docs',
 
 // Serve frontend static files in production
 import path from 'path';
-if (env.NODE_ENV === 'production') {
+// Never in desktop mode: there is no web bundle and no browser client.
+if (env.NODE_ENV === 'production' && !isDesktop()) {
   const webDistPath = path.resolve('packages/web/dist');
   app.use(express.static(webDistPath));
   // SPA fallback: serve index.html for any non-API route
@@ -722,6 +730,14 @@ app.use('/api', (_req, res) => {
     error: { message: 'Not found', code: 'NOT_FOUND' },
   });
 });
+
+// Desktop: JSON 404 for non-/api paths too (the server leaves those to
+// the SPA fallback). Nothing in desktop mode answers with HTML.
+if (isDesktop()) {
+  app.use((_req, res) => {
+    res.status(404).json({ error: { message: 'Not found', code: 'NOT_FOUND' } });
+  });
+}
 
 // Error handler (must be last)
 app.use(errorHandler);
