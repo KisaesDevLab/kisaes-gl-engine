@@ -81,6 +81,11 @@ export async function retryWithBackoff<T>(
       // so spinning inside it just delays the error reaching the caller.
       if (err instanceof TimeoutError) throw err;
 
+      // Desktop: "offline" and "blocked by the egress guard" are settled
+      // answers (utils/offline.ts); retrying would only break the 2 s
+      // fast-fail. Neither code occurs on the server.
+      if (err?.code === 'OFFLINE_UNAVAILABLE' || err?.code === 'EGRESS_BLOCKED') throw err;
+
       // Check for rate limit (429)
       const retryAfter = extractRetryAfter(err);
       if (retryAfter !== null) {

@@ -53,6 +53,7 @@ export const DESKTOP_UNMOUNTED: readonly UnmountedFamily[] = [
   // rotate boot secrets on disk. The desktop app keeps secrets in the OS
   // keychain and owns install identity (services also refuse the writes).
   { prefix: '/api/v1/admin/security', reason: 'appliance recovery key, recovery file and installation id' },
+  { prefix: '/api/v1/admin/updates', reason: 'GitHub release check; the desktop app has its own update check' },
   { prefix: '/api/v1/remote-backup', reason: 'cloud backup targets; the desktop app owns backups' },
   {
     prefix: '/api/v1/backup',

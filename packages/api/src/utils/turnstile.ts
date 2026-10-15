@@ -16,6 +16,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { recordSecurityEvent } from './security-audit.js';
+import { isDesktop } from '../desktop/profile.js';
 
 const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const SITEVERIFY_TIMEOUT_MS = 3000;
@@ -72,6 +73,10 @@ export interface TurnstileResult {
  * code paths in callers.
  */
 export async function verifyTurnstile(token: string | null | undefined, remoteIp?: string): Promise<TurnstileResult> {
+  // Desktop mode: no browser widget and no outbound call to Cloudflare
+  // (the transport is the loopback launch-token gate). Even a secret that
+  // arrived in restored settings is ignored.
+  if (isDesktop()) return { allow: true, skipped: 'disabled' };
   const secret = await resolveSecret();
   if (!secret || secret === 'disabled') {
     return { allow: true, skipped: 'disabled' };

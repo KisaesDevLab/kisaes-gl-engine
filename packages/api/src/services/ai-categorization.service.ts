@@ -602,6 +602,8 @@ export async function categorize(tenantId: string, feedItemId: string) {
         code,
       );
     }
+    // Desktop offline (503 OFFLINE_UNAVAILABLE): close the job, keep the error.
+    if (err.code === 'OFFLINE_UNAVAILABLE') await orchestrator.failJob(job.id, err.message);
     throw err;
   }
 }

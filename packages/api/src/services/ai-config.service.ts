@@ -843,6 +843,9 @@ export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResul
     const disabledNote = exec.enabled ? '' : ' — note: this function is currently DISABLED in Admin → AI, so production calls will not run';
     return { success: true, provider, durationMs, modelInfo: `${result.provider} / ${result.model}${disabledNote}` };
   } catch (err) {
+    // Desktop: offline answers 503 OFFLINE_UNAVAILABLE like every other
+    // online feature, instead of a failed test result.
+    if ((err as { code?: unknown })?.code === 'OFFLINE_UNAVAILABLE') throw err;
     const durationMs = Date.now() - start;
     const e = err as { providerErrors?: string[]; message?: string };
     const detail = Array.isArray(e.providerErrors) && e.providerErrors.length > 0

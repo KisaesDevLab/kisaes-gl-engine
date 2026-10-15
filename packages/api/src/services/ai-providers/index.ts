@@ -12,6 +12,14 @@ import { DigitalOceanProvider } from './digitalocean.provider.js';
 import { decrypt } from '../../utils/encryption.js';
 import { retryWithBackoff, abortableTimeout, withTimeout, TimeoutError } from '../../utils/retry.js';
 import { routeFor, routerOn, routerProvider, type RouterSettings } from './vibe-router.provider.js';
+import { isDesktop } from '../../desktop/profile.js';
+import {
+  classifyNetworkError,
+  ensureOnline,
+  isOfflineUnavailable,
+  targetFromUrl,
+  type NetTarget,
+} from '../../utils/offline.js';
 
 export type { AiProvider, CompletionParams, CompletionResult } from './ai-provider.interface.js';
 export type { VisionParams } from './ai-provider.interface.js';
@@ -93,7 +101,77 @@ export function getProvider(
   return buildDirect(providerName, config, model);
 }
 
+// --- offline fast-fail (desktop) -----------------------------------------
+//
+// Cloud providers the desktop edition offers. Their SDKs read the base URL
+// from these env vars, so the connectivity probe targets the same host the
+// SDK will use. Ollama (and other self-hosted endpoints) are not wrapped:
+// they are local or LAN, and their errors keep their meaning.
+const CLOUD_AI_BASE_URLS: Record<string, { env: string; fallback: string }> = {
+  anthropic: { env: 'ANTHROPIC_BASE_URL', fallback: 'https://api.anthropic.com' },
+  openai: { env: 'OPENAI_BASE_URL', fallback: 'https://api.openai.com' },
+};
+
+/** Host:port a cloud provider connects to, or null for local providers. */
+export function cloudAiTarget(providerName: string): NetTarget | null {
+  const entry = CLOUD_AI_BASE_URLS[providerName];
+  if (!entry) return null;
+  const raw = process.env[entry.env];
+  return targetFromUrl(raw && raw.trim() !== '' ? raw.trim() : entry.fallback);
+}
+
+/**
+ * Desktop only: before every call, check that the provider's host is
+ * reachable (utils/offline.ts: 1.5 s probe, CL_OFFLINE=on fails at once),
+ * and map network errors from the SDK to OfflineUnavailableError (HTTP 503
+ * OFFLINE_UNAVAILABLE). Covers complete(), completeWithImage() (the OCR
+ * and vision callers that bypass executeWithFallback), testConnection()
+ * and listModels().
+ */
+class OfflineAwareProvider implements AiProvider {
+  readonly name: string;
+  readonly supportsVision: boolean;
+  listModels?: (signal?: AbortSignal) => Promise<string[]>;
+  private readonly feature: string;
+  constructor(private readonly inner: AiProvider, private readonly target: NetTarget) {
+    this.name = inner.name;
+    this.supportsVision = inner.supportsVision;
+    this.feature = `ai:${inner.name}`;
+    if (inner.listModels) {
+      const list = inner.listModels.bind(inner);
+      this.listModels = (signal?: AbortSignal) => this.guard(() => list(signal));
+    }
+  }
+  private async guard<T>(fn: () => Promise<T>): Promise<T> {
+    await ensureOnline(this.feature, this.target);
+    try {
+      return await fn();
+    } catch (err) {
+      throw classifyNetworkError(err, this.feature) ?? err;
+    }
+  }
+  complete(params: CompletionParams): Promise<CompletionResult> {
+    return this.guard(() => this.inner.complete(params));
+  }
+  completeWithImage(params: import('./ai-provider.interface.js').VisionParams): Promise<CompletionResult> {
+    return this.guard(() => this.inner.completeWithImage(params));
+  }
+  testConnection(signal?: AbortSignal) {
+    return this.guard(() => this.inner.testConnection(signal));
+  }
+  estimateCost(inputTokens: number, outputTokens: number): number {
+    return this.inner.estimateCost(inputTokens, outputTokens);
+  }
+}
+
 function buildDirect(providerName: string, config: AiConfigRow, model?: string): AiProvider {
+  const provider = buildProvider(providerName, config, model);
+  if (!isDesktop()) return provider;
+  const target = cloudAiTarget(providerName);
+  return target ? new OfflineAwareProvider(provider, target) : provider;
+}
+
+function buildProvider(providerName: string, config: AiConfigRow, model?: string): AiProvider {
   switch (providerName) {
     case 'anthropic':
       if (!config.anthropicApiKeyEncrypted) throw new Error('Anthropic API key not configured');
@@ -224,9 +302,29 @@ export async function executeWithFallback(
     return attempt(routerProvider(), params, timeoutMs);
   }
 
+  // Desktop offline handling (utils/offline.ts). Once one cloud provider
+  // reports OFFLINE_UNAVAILABLE, the other cloud providers in this call are
+  // skipped (each would spend its own probe budget to learn the same
+  // thing) while local providers (Ollama) are still tried. When every
+  // attempt failed only because of that, the caller gets the typed 503
+  // instead of the aggregate error. Never set on the server.
+  let offlineErr: Error | null = null;
+  let otherFailures = 0;
+  const skipOffline = (providerName: string): boolean => {
+    if (!offlineErr || !isDesktop() || !cloudAiTarget(providerName)) return false;
+    errors.push(`${providerName}: offline (skipped)`);
+    return true;
+  };
+
   // Tag timeout errors with the provider name so the combined error
   // message at the bottom shows operators which upstream stalled.
   const recordError = (providerName: string, err: any) => {
+    if (isOfflineUnavailable(err)) {
+      offlineErr ??= err;
+      errors.push(`${providerName}: offline`);
+      return;
+    }
+    otherFailures++;
     if (err instanceof TimeoutError) {
       errors.push(`${providerName}: timeout after ${timeoutMs}ms`);
     } else {
@@ -257,8 +355,8 @@ export async function executeWithFallback(
       // A stale per-function model override (e.g. a retired model id left
       // over from a local-Ollama era) must not strand an otherwise-healthy
       // provider: retry the SAME provider once with its default model
-      // before walking the fallback chain.
-      if (preferredModel) {
+      // before walking the fallback chain. (Not when it was unreachable.)
+      if (preferredModel && !skipOffline(preferredProvider)) {
         try {
           const provider = getProvider(preferredProvider, config);
           return await attempt(provider, params, timeoutMs);
@@ -276,6 +374,7 @@ export async function executeWithFallback(
       errors.push(`${providerName}: no credentials configured`);
       continue;
     }
+    if (skipOffline(providerName)) continue;
     try {
       const provider = getProvider(providerName, config);
       return await attempt(provider, params, timeoutMs);
@@ -290,6 +389,8 @@ export async function executeWithFallback(
   // otherwise `ai_all_providers_failed` masks the real cause.
   // eslint-disable-next-line no-console
   console.warn('[ai] all providers failed:', errors.join('; '));
+
+  if (offlineErr && otherFailures === 0) throw offlineErr;
 
   // Typed error so callers can route on `code` rather than regex-match
   // the message. Carries the per-provider error list as a property for

@@ -31,7 +31,7 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `PLAID_ENCRYPTION_KEY` | required | Unchanged. The desktop app supplies them from the OS keychain. In desktop mode the engine never writes them to disk: the routes that would are not mounted, and the recovery-file, sentinel and `.env` writers throw. |
 | `REDIS_URL` | ignored | Required only when something uses Redis: `QUEUE_BACKEND=bullmq` (the server default), `RATE_LIMIT_REDIS=1` or `SHARE_ENABLED`. |
 
-Desktop mode also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=<pgboss unless none was asked for>` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
+Desktop mode skips Cloudflare Turnstile verification (no browser widget, no outbound call). It also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=<pgboss unless none was asked for>` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
 
 ## Startup sequence
 
@@ -161,6 +161,7 @@ A static test (`desktop/users-insert-sites.test.ts`) lists every place that inse
 | `/api/v1/share` | Peer screen share (needs Redis) |
 | `/api/v1/admin/tailscale` | Tailscale remote access |
 | `/api/v1/admin/security` | Appliance recovery key, recovery file, installation id and credential re-encryption. They write or rotate boot secrets on disk. |
+| `/api/v1/admin/updates` | GitHub release check; the desktop app has its own update check |
 | `/api/v1/remote-backup` | Cloud backup targets; the desktop app owns backups |
 | `/api/v1/backup` (except `/passphrase-strength`) | The desktop app owns backups; this restore writes into the current tenant without taking a backup first |
 | `/api/v1/tenant-export` | `.vmx` export and import; the desktop app uses tenant archives |
@@ -302,6 +303,8 @@ Online-only features (cloud AI, sending email) check the network before they con
 | `auto` (default) | Before the first use, and again after 30 s, open a TCP connection to the feature's own host (the one the owner turned on; DNS lookup included) with a 1.5 s budget, then close it without sending anything. A failure is remembered for 5 s, so a retry or a fallback provider does not wait again. Network errors from the real call (`ENOTFOUND`, `EAI_AGAIN`, `ENETUNREACH`, `EHOSTUNREACH`, `ECONNREFUSED` off loopback, connect timeouts) are mapped the same way. |
 | `on` | Online features fail at once. Nothing is probed. `/health` shows `online: false`. |
 | `off` | No checks; errors pass through unchanged. |
+
+**AI.** In desktop mode the Anthropic and OpenAI providers are wrapped (`ai-providers/index.ts`): every `complete`, `completeWithImage`, `testConnection` and `listModels` call checks the provider's host first (`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, else the public API host) and maps network errors. Offline errors are not retried. In a fallback chain, once one cloud provider is offline the other cloud providers are skipped, and local Ollama is still tried; if nothing else failed, the caller gets 503 `OFFLINE_UNAVAILABLE` instead of `ai_all_providers_failed`. The per-function AI test returns the 503 too.
 
 **Email.** Every SMTP transport is built by `utils/mail-transport.ts` (`createMailTransport`). In desktop mode it sets connection and greeting timeouts of 10 s and a socket timeout of 30 s (unless the caller sets its own), and `sendMail`/`verify` run the check above first. The SMTP test endpoints answer 503 `OFFLINE_UNAVAILABLE` instead of `{success:false}` when offline. On the server the factory is plain `nodemailer.createTransport` with nodemailer's default timeouts.
 
