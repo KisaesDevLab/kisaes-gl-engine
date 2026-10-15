@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
+import pg from 'pg';
 
 const counts = vi.hoisted(() => ({ redis: 0, queue: 0 }));
 
@@ -81,6 +82,10 @@ import {
   makeRedisConnection,
 } from '../services/extraction/queue.js';
 import { QueueUnavailableError } from '../queue/none.adapter.js';
+import { PgBossQueue } from '../queue/pgboss.adapter.js';
+import { JOB_SPECS } from '../queue/specs.js';
+import { _setJobQueueForTests } from '../queue/index.js';
+import type { JobData } from '../queue/job-queue.js';
 
 const ID = '00000000-0000-4000-8000-000000000001';
 
@@ -91,6 +96,8 @@ describe('desktop mode touches no Redis', () => {
       CL_TOKEN: 'n'.repeat(48),
       CL_BIND: '127.0.0.1:0',
       CL_DATA_DIR: path.join(os.tmpdir(), 'cl-no-redis-test'),
+      // The fail-fast backend; the pg-boss default is covered below.
+      QUEUE_BACKEND: 'none',
     });
     counts.redis = 0;
     counts.queue = 0;
@@ -161,6 +168,57 @@ describe('desktop mode touches no Redis', () => {
 
   it('makeRedisConnection refuses instead of dialing', () => {
     expect(() => makeRedisConnection()).toThrow(QueueUnavailableError);
+  });
+
+  it('constructed no ioredis client and no BullMQ queue', () => {
+    expect(counts).toEqual({ redis: 0, queue: 0 });
+  });
+});
+
+describe('desktop default backend (pg-boss) touches no Redis', () => {
+  const SCHEMA = 'pgboss_no_redis_test';
+  let queue: PgBossQueue<JobData>;
+
+  async function dropSchema(): Promise<void> {
+    const c = new pg.Client({ connectionString: process.env['DATABASE_URL'] });
+    await c.connect();
+    try {
+      await c.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    } finally {
+      await c.end();
+    }
+  }
+
+  beforeAll(() => {
+    _resetDesktopProfileForTests();
+    loadDesktopProfile({
+      CL_MODE: 'desktop',
+      CL_TOKEN: 'p'.repeat(48),
+      CL_BIND: '127.0.0.1:0',
+      CL_DATA_DIR: path.join(os.tmpdir(), 'cl-no-redis-test'),
+    });
+    queue = new PgBossQueue(JOB_SPECS, { connectionString: process.env['DATABASE_URL']!, schema: SCHEMA });
+    _setJobQueueForTests(queue, 'pgboss');
+    counts.redis = 0;
+    counts.queue = 0;
+  });
+  afterAll(async () => {
+    await queue.close();
+    _setJobQueueForTests(null, 'pgboss');
+    _resetDesktopProfileForTests();
+    await dropSchema();
+  });
+
+  it('every producer enqueues durably and fast, and queue health answers', async () => {
+    const started = Date.now();
+    await enqueueRender({ jobId: ID, tenantId: ID });
+    await enqueueExtract({ jobId: ID, tenantId: ID, pageNo: 1 });
+    await enqueueStatementParse({ jobId: ID, tenantId: ID, attachmentId: ID });
+    await enqueueReportPack({ runId: ID, tenantId: ID });
+    await enqueueBillCapture({ captureId: ID, tenantId: ID, attempt: 1 });
+    await enqueueTaxParamAiCheck({ runId: ID });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(await getReportPackQueueHealth()).toEqual({ redisReachable: true, workerRunning: false });
   });
 
   it('constructed no ioredis client and no BullMQ queue', () => {

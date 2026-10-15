@@ -24,7 +24,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 export type EngineMode = 'server' | 'desktop';
-export type QueueBackend = 'bullmq' | 'none';
+export type QueueBackend = 'bullmq' | 'pgboss' | 'none';
 export type OfflineSetting = 'auto' | 'on' | 'off';
 
 export interface DesktopBind {
@@ -75,10 +75,10 @@ let rawTokenForScrubber: string | null = null;
 function parseQueueBackend(raw: string | undefined, fallback: QueueBackend): QueueBackend {
   const v = (raw ?? '').trim().toLowerCase();
   if (v === '') return fallback;
-  if (v === 'bullmq' || v === 'none') return v;
+  if (v === 'bullmq' || v === 'pgboss' || v === 'none') return v;
   throw new DesktopConfigError(
     'QUEUE_BACKEND_INVALID',
-    `QUEUE_BACKEND must be "bullmq" or "none" (got "${raw}").`,
+    `QUEUE_BACKEND must be "bullmq", "pgboss" or "none" (got "${raw}").`,
   );
 }
 
@@ -214,7 +214,8 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
   if ((env['VIBE_AI_MODE'] ?? '').trim() === 'router') {
     throw new DesktopConfigError('CL_ENV_CONFLICT', 'VIBE_AI_MODE=router is not supported in desktop mode.');
   }
-  const queueBackend = parseQueueBackend(env['QUEUE_BACKEND'], 'none');
+  // Durable Postgres-backed jobs by default; `none` stays available.
+  const queueBackend = parseQueueBackend(env['QUEUE_BACKEND'], 'pgboss');
   if (queueBackend === 'bullmq') {
     throw new DesktopConfigError('CL_ENV_CONFLICT', 'QUEUE_BACKEND=bullmq needs Redis and is not supported in desktop mode.');
   }

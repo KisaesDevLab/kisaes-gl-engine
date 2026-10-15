@@ -6,10 +6,10 @@ Everything here is gated by `CL_MODE=desktop` or by an option that defaults to t
 
 - `env.ts` parses a server environment to the same values.
 - The Express route table is identical.
-- BullMQ stays the default queue backend.
+- BullMQ stays the default queue backend, with the same queues, job options, workers and log lines.
 - `/health` returns exactly the v1 body with the same 200/503 logic. The v2 fields are desktop-only.
 
-The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `routes/desktop.routes.ts`, `queue/none.adapter.ts` and `utils/health.ts`. The only schema change is the additive `tenants.is_workspace` column (migration `0216`), which the server never sets.
+The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `routes/desktop.routes.ts`, `queue/` and `utils/health.ts`. The only schema change is the additive `tenants.is_workspace` column (migration `0216`), which the server never sets.
 
 ## Environment contract
 
@@ -25,12 +25,12 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `CL_OFFLINE` | optional | `auto` (default), `on` or `off`. Recorded in the profile and in `/api/v1/desktop/info`. Connectivity probing comes in a later change, so for now `online` on `/health` is always `null`. |
 | `CL_LAN` | optional | `1` is refused with a fatal `CL_LAN_UNSUPPORTED` until LAN mode gets TLS (ClientLedger P33). The engine speaks plain HTTP, so a LAN bind would send the launch token, passwords and books in clear text. P33 will accept only private literals (RFC 1918, IPv6 ULA `fc00::/7`, link-local), never `0.0.0.0`, `::` or a public address. Other values are ignored. |
 | `CL_REQUIRE_NON_SUPERUSER` | optional | `1` refuses to start when the database role is a superuser (see Database role). Off by default: the engine only warns. |
-| `QUEUE_BACKEND` | generic | `bullmq` (server default) or `none`. Desktop defaults to `none`, and `bullmq` is refused there. |
+| `QUEUE_BACKEND` | generic | `bullmq` (server default), `pgboss` or `none`. Desktop defaults to `pgboss`, and `bullmq` is refused there (see Background jobs). |
 | `ENGINE_COMMIT` | generic | Source commit reported on `/health` (`null` when unset). Set it at build time. |
 | `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `PLAID_ENCRYPTION_KEY` | required | Unchanged. The desktop app supplies them from the OS keychain. In desktop mode the engine never writes them to disk: the routes that would are not mounted, and the recovery-file, sentinel and `.env` writers throw. |
 | `REDIS_URL` | ignored | Required only when something uses Redis: `QUEUE_BACKEND=bullmq` (the server default), `RATE_LIMIT_REDIS=1` or `SHARE_ENABLED`. |
 
-Desktop mode also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=none` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
+Desktop mode also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=<pgboss unless none was asked for>` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
 
 ## Startup sequence
 
@@ -193,8 +193,31 @@ The static web bundle and SPA fallback are never served. Any non-API path return
 | Cloudflared alerter | off | Tunnel health is appliance only |
 | Share sweeper | off | Screen share is off |
 | Recurring document requests | off | Portal feature; sends email/SMS to portal contacts |
+| Balance validation (worker-only) | on | Database only, advisory-locked, daily |
+| Report-pack artifact sweep (worker-only) | on | Deletes expired pack files through the tenant's storage provider (local on desktop, under `CL_DATA_DIR`) |
+| Classification-state backfill (worker-only, one-shot) | on | Database only, advisory-locked |
+| Tag backfill sweep (worker-only, one-shot) | on | Database only, advisory-locked |
+| Plaid sync (worker-only) | off | Online bank feeds; Plaid is not mounted |
+| Portal recurring requests (worker-only) | off | Portal is not mounted; sends email/SMS |
+| Portal reminders (worker-only) | off | Same |
 
-The worker package is not part of desktop mode. Worker-only schedulers and durable background jobs arrive with the Postgres-backed queue backend.
+The worker package is not part of desktop mode. The engine runs its job consumers and the enabled worker-only schedulers in-process (`queue/in-process-worker.ts`, see Background jobs). Every scheduler is an interval loop under a Postgres advisory lock; none of them uses the job queue.
+
+## Background jobs
+
+The six background job types (`doc-render`, `doc-extract`, `statement-parse`, `bill-capture`, `report-pack`, `tax-param-ai-check`) go through one `JobQueue` interface (`queue/job-queue.ts`) with three backends:
+
+| `QUEUE_BACKEND` | Where | Behavior |
+|---|---|---|
+| `bullmq` | server default | Redis-backed BullMQ, exactly as before: the worker container consumes, one BullMQ worker per queue. |
+| `pgboss` | desktop default; optional on a server | Postgres-backed [pg-boss](https://github.com/timgit/pg-boss) (MIT) in its own schema `pgboss`, created and migrated by pg-boss on start. Needs only `CREATE` on the database (the owner role), no superuser and no extension. Own pool of 3 connections. Jobs survive an engine restart. |
+| `none` | optional | No queue. Every enqueue rejects at once with `QueueUnavailableError` and producers run the work in-process. |
+
+Per-job retries, retention and concurrency come from one table, `queue/specs.ts`, which every backend maps (BullMQ job options; pg-boss `retryLimit`/`retryDelay`/`retryBackoff`/`expireInSeconds`). pg-boss keeps finished jobs for 7 days instead of BullMQ's newest-N counts. What each job does lives in `queue/handlers.ts`, shared by the worker package and the in-process worker.
+
+Enqueue is idempotent on every backend: the producer's job id (`stmt-<id>`, `pack-<id>`, …) maps to a fixed pg-boss UUID (UUIDv5), and sending an id that still exists is a no-op, like BullMQ. A pg-boss enqueue that cannot reach Postgres fails within the connect timeout (5 s) with `QUEUE_UNAVAILABLE`, so the producer falls back to in-process work; it never waits forever the way a BullMQ producer without Redis can.
+
+In desktop mode, `startInProcessWorker()` runs after the HTTP server listens. It consumes all six job types (`doc-render`/`doc-extract` only with `DOCUMENT_EXTRACTION_V1`, as in the worker container) and starts the worker-only schedulers enabled above. Shutdown order: stop HTTP, stop the in-process worker (in-flight jobs finish, up to 20 s), stop the schedulers, close the job queue, close the DB pool.
 
 ## No Redis
 
@@ -209,7 +232,7 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
 | `utils/peer-jti-store` | Fails closed |
 | `services/tb/tb-redis` | Cache off |
 | `services/share/share-redis` | Refuses |
-| `services/extraction/queue` | With `QUEUE_BACKEND=none`, every `enqueue*` rejects immediately with `QueueUnavailableError` (`queue/none.adapter.ts`), so producers run their in-process fallback. No BullMQ queue is ever built. |
+| `services/extraction/queue` | Enqueues go to pg-boss (desktop default) or, with `QUEUE_BACKEND=none`, reject immediately with `QueueUnavailableError` so producers run their in-process fallback. The BullMQ module is loaded only for `QUEUE_BACKEND=bullmq`, so no BullMQ queue is ever built. |
 
 ## `/health` v2 (desktop only)
 
@@ -220,7 +243,7 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
   "status": "ok" | "degraded",
   "db": "ok" | "fail",
   "redis": "ok" | "fail" | "disabled",
-  "queue": "ok" | "fail",          // bullmq: mirrors redis; none: "ok"
+  "queue": "ok" | "fail",          // bullmq: mirrors redis; pgboss: its schema answers; none: "ok"
   "workers": "ok" | "fail",
   "timestamp": "ISO-8601",
   "checks": { "db": { "ok", "latencyMs", "superuser", "role": { "dangerous": [], "warnings": [] } }, "redis": {}, "queue": {}, "workers": {} },
@@ -229,7 +252,7 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
   "engineCommit": "13ebd2ba…" | null,
   "schemaVersion": 216 | null,       // applied migrations
   "schemaTag": "0215_…" | null,      // newest applied migration (journal tag)
-  "queueBackend": "bullmq" | "none",
+  "queueBackend": "bullmq" | "pgboss" | "none",
   "online": null,                    // no connectivity probe yet
   "lastOnlineCheck": null
 }
@@ -239,7 +262,7 @@ The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades 
 
 ## Database role
 
-The engine only needs to own its database: no migration creates extensions or needs superuser rights. Run it as a `NOSUPERUSER NOCREATEDB NOCREATEROLE` role that owns the database.
+The engine only needs to own its database: no migration creates extensions or needs superuser rights, and pg-boss creates its `pgboss` schema with the owner's `CREATE` privilege. Run it as a `NOSUPERUSER NOCREATEDB NOCREATEROLE` role that owns the database.
 
 Desktop preflight checks `current_user` (`startup/db-role.ts`):
 
@@ -285,7 +308,6 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 
 These come as separate changes:
 
-- a durable Postgres-backed queue backend and in-process worker;
 - the connectivity probe and outbound-connection guard (`online`, `OFFLINE_UNAVAILABLE`);
 - the OpenAPI export;
 - tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`);

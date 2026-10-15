@@ -41,7 +41,15 @@ describe('schedulers', () => {
 
   it('desktop follows the table', () => {
     loadDesktop();
-    expect(names.filter((n) => schedulerEnabled(n)).sort()).toEqual(['aiRetention', 'fingerprint', 'recurring']);
+    expect(names.filter((n) => schedulerEnabled(n)).sort()).toEqual([
+      'aiRetention',
+      'balanceValidation',
+      'classificationStateBackfill',
+      'fingerprint',
+      'recurring',
+      'reportPackSweep',
+      'tagBackfill',
+    ]);
   });
 });
 

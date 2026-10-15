@@ -100,9 +100,9 @@ describe('desktop mode', () => {
     expect(env['HIBP_DISABLED']).toBe('1');
     expect(env['EXPECT_WORKER']).toBe('false');
     expect(env['SHARE_ENABLED']).toBe('false');
-    expect(env['QUEUE_BACKEND']).toBe('none');
+    expect(env['QUEUE_BACKEND']).toBe('pgboss');
     expect(env['PORT']).toBe('0');
-    expect(p.queueBackend).toBe('none');
+    expect(p.queueBackend).toBe('pgboss');
     expect(redisEnabled()).toBe(false);
   });
 
@@ -119,7 +119,7 @@ describe('desktop mode', () => {
     expect(r.success).toBe(true);
     if (r.success) {
       expect(r.data.REDIS_URL).toBeUndefined();
-      expect(r.data.QUEUE_BACKEND).toBe('none');
+      expect(r.data.QUEUE_BACKEND).toBe('pgboss');
       expect(r.data.EXPECT_WORKER).toBe(false);
       expect(r.data.SHARE_ENABLED).toBe(false);
       expect(r.data.HIBP_DISABLED).toBe('1');
@@ -204,6 +204,8 @@ describe('desktop mode', () => {
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ VIBE_AI_MODE: 'router' })))).toBe('CL_ENV_CONFLICT');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ QUEUE_BACKEND: 'bullmq' })))).toBe('CL_ENV_CONFLICT');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ QUEUE_BACKEND: 'kafka' })))).toBe('QUEUE_BACKEND_INVALID');
+    // `none` stays selectable on desktop.
+    expect(loadDesktopProfile(desktopEnv({ QUEUE_BACKEND: 'none' })).queueBackend).toBe('none');
   });
 
   it('validates CL_OFFLINE and log settings', () => {

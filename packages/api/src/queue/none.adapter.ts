@@ -11,9 +11,9 @@
  * there). Producers that already catch enqueue failures then run the work
  * in-process, exactly as they do on a server whose Redis is down.
  *
- * Used by desktop mode (CL_MODE=desktop) and by api-only server installs
- * that set QUEUE_BACKEND=none. A durable Postgres-backed backend replaces
- * this for desktop in a later change; the server default stays BullMQ.
+ * Used by api-only server installs that set QUEUE_BACKEND=none, and by
+ * desktop mode when asked for explicitly (desktop defaults to the durable
+ * pg-boss backend, queue/pgboss.adapter.ts). The server default stays BullMQ.
  */
 
 import { queueBackend } from '../desktop/profile.js';

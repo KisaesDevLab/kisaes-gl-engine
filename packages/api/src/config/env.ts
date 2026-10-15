@@ -15,18 +15,18 @@ export const envSchema = z.object({
   ),
   // Required whenever something actually uses Redis: the BullMQ queue
   // backend (the server default), the Redis rate-limit store, or screen
-  // share. Desktop mode (CL_MODE=desktop) sets QUEUE_BACKEND=none and
-  // refuses the other two, so it never needs it. Enforced in superRefine
+  // share. Desktop mode (CL_MODE=desktop) uses QUEUE_BACKEND=pgboss (or
+  // none) and refuses the other two, so it never needs it. Enforced in superRefine
   // below so the server appliance still fails fast when it is missing.
   REDIS_URL: z.string().url().refine(
     (v) => /^rediss?:\/\//i.test(v),
     { message: 'REDIS_URL must start with redis:// or rediss://' },
   ).optional(),
   // Background job backend. `bullmq` (default) is today's Redis-backed
-  // queue. `none` makes every enqueue fail fast so producers use their
-  // in-process fallback (api-only installs, desktop mode). See
-  // docs/DESKTOP.md.
-  QUEUE_BACKEND: z.enum(['bullmq', 'none']).default('bullmq'),
+  // queue. `pgboss` is a durable Postgres-only queue (desktop default; no
+  // Redis). `none` makes every enqueue fail fast so producers use their
+  // in-process fallback (api-only installs). See docs/DESKTOP.md.
+  QUEUE_BACKEND: z.enum(['bullmq', 'pgboss', 'none']).default('bullmq'),
   // Source commit of this build, reported on /health. Optional; set by the
   // image/bundle build. Unset = null on /health.
   ENGINE_COMMIT: z.string().trim().max(80).optional(),
