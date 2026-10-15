@@ -8,6 +8,7 @@ import multer from 'multer';
 import { AppError } from '../utils/errors.js';
 import { isDesktop } from '../desktop/profile.js';
 import { errorSummaryForLog } from '../utils/log-safe.js';
+import { OfflineUnavailableError } from '../utils/offline.js';
 
 // Body-parser throws a custom error with `.type === 'entity.too.large'`
 // when a request exceeds express.json()'s `limit`. Without this case
@@ -30,6 +31,9 @@ export function errorHandler(
       error: {
         message: err.message,
         code: err.code,
+        // OFFLINE_UNAVAILABLE (503) names the online feature that could
+        // not run (e.g. `ai:anthropic`, `smtp`) so a client can word it.
+        ...(err instanceof OfflineUnavailableError ? { feature: err.feature } : {}),
         // Only included when the thrower attached context. Enables
         // clients to read structured payloads (e.g., tag-usage counts
         // on a TAG_IN_USE 409) without parsing the message string.

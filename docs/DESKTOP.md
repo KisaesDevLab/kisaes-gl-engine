@@ -22,7 +22,7 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `CL_LOG_FILE` | optional | Absolute path (`CL_LOG_FILE_INVALID` otherwise). Append scrubbed stdout/stderr to this file (see Logging). |
 | `CL_LOG_MAX_BYTES` | optional | Rotation size. Default 10 MiB. |
 | `CL_LOG_KEEP` | optional | Rotated files kept (`file.1` … `file.N`). Default 5. |
-| `CL_OFFLINE` | optional | `auto` (default), `on` or `off`. Recorded in the profile and in `/api/v1/desktop/info`. Connectivity probing comes in a later change, so for now `online` on `/health` is always `null`. |
+| `CL_OFFLINE` | optional | `auto` (default), `on` or `off`. How online-only features behave without a network (see Offline). Also reported by `/api/v1/desktop/info`. |
 | `CL_LAN` | optional | `1` is refused with a fatal `CL_LAN_UNSUPPORTED` until LAN mode gets TLS (ClientLedger P33). The engine speaks plain HTTP, so a LAN bind would send the launch token, passwords and books in clear text. P33 will accept only private literals (RFC 1918, IPv6 ULA `fc00::/7`, link-local), never `0.0.0.0`, `::` or a public address. Other values are ignored. |
 | `CL_REQUIRE_NON_SUPERUSER` | optional | `1` refuses to start when the database role is a superuser (see Database role). Off by default: the engine only warns. |
 | `QUEUE_BACKEND` | generic | `bullmq` (server default), `pgboss` or `none`. Desktop defaults to `pgboss`, and `bullmq` is refused there (see Background jobs). |
@@ -253,12 +253,30 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
   "schemaVersion": 216 | null,       // applied migrations
   "schemaTag": "0215_…" | null,      // newest applied migration (journal tag)
   "queueBackend": "bullmq" | "pgboss" | "none",
-  "online": null,                    // no connectivity probe yet
-  "lastOnlineCheck": null
+  "online": true | false | null,     // last connectivity probe (see Offline); null = never probed
+  "lastOnlineCheck": "ISO-8601" | null
 }
 ```
 
 The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades the status. On desktop, `/health` returns 200 when the database is up.
+
+## Offline
+
+Online-only features (cloud AI, sending email) check the network before they connect, through `utils/offline.ts`. When the computer is offline they fail within 2 seconds with HTTP 503:
+
+```json
+{ "error": { "code": "OFFLINE_UNAVAILABLE", "message": "…needs an internet connection…", "feature": "ai:anthropic" } }
+```
+
+`feature` is `ai:<provider>` or `smtp`. `CL_OFFLINE` decides how the check works:
+
+| `CL_OFFLINE` | Behavior |
+|---|---|
+| `auto` (default) | Before the first use, and again after 30 s, open a TCP connection to the feature's own host (the one the owner turned on; DNS lookup included) with a 1.5 s budget, then close it without sending anything. A failure is remembered for 5 s, so a retry or a fallback provider does not wait again. Network errors from the real call (`ENOTFOUND`, `EAI_AGAIN`, `ENETUNREACH`, `EHOSTUNREACH`, `ECONNREFUSED` off loopback, connect timeouts) are mapped the same way. |
+| `on` | Online features fail at once. Nothing is probed. `/health` shows `online: false`. |
+| `off` | No checks; errors pass through unchanged. |
+
+There is no general "is the internet up" check and nothing is contacted on a timer: the only probe goes to the host the feature is about to use. `/health` reports `online` (`null` until the first probe) and `lastOnlineCheck`. The server appliance never probes: there, `CL_OFFLINE` is always `off`, these fields stay `null`, and errors are unchanged.
 
 ## Database role
 
@@ -308,7 +326,7 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 
 These come as separate changes:
 
-- the connectivity probe and outbound-connection guard (`online`, `OFFLINE_UNAVAILABLE`);
+- the outbound-connection guard;
 - the OpenAPI export;
 - tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`);
 - per-session AI and SMTP secrets.
