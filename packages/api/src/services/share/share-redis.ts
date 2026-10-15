@@ -23,9 +23,16 @@ type RedisClient = InstanceType<typeof Redis>;
 let cmdClient: RedisClient | null = null;
 let subClient: RedisClient | null = null;
 
+// env.ts requires REDIS_URL whenever SHARE_ENABLED is on, so this only
+// throws when share code runs with the feature off.
+function shareRedisUrl(): string {
+  if (!env.REDIS_URL) throw new Error('Screen share needs REDIS_URL');
+  return env.REDIS_URL;
+}
+
 export function shareRedis(): RedisClient {
   if (!cmdClient) {
-    cmdClient = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 2, lazyConnect: false });
+    cmdClient = new Redis(shareRedisUrl(), { maxRetriesPerRequest: 2, lazyConnect: false });
     cmdClient.on('error', (err: Error) => {
       log.warn({ component: 'share-redis', event: 'redis_error', message: err.message });
     });
@@ -35,7 +42,7 @@ export function shareRedis(): RedisClient {
 
 export function shareRedisSub(): RedisClient {
   if (!subClient) {
-    subClient = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 2, lazyConnect: false });
+    subClient = new Redis(shareRedisUrl(), { maxRetriesPerRequest: 2, lazyConnect: false });
     subClient.on('error', (err: Error) => {
       log.warn({ component: 'share-redis', event: 'redis_sub_error', message: err.message });
     });

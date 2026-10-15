@@ -43,6 +43,21 @@ const REQUIRED_ENV_VARS = [
 ] as const;
 
 async function main(): Promise<void> {
+  // --- Desktop profile (CL_MODE) ----------------------------------------
+  // Must run before anything reads directory variables or env.ts: it fills
+  // DATA_DIR/UPLOAD_DIR/... under CL_DATA_DIR and removes CL_TOKEN from
+  // the environment. With CL_MODE unset this is a no-op (server appliance).
+  const { loadDesktopProfile, DesktopConfigError, EXIT_CONFIG } = await import('./desktop/profile.js');
+  try {
+    loadDesktopProfile();
+  } catch (err) {
+    if (err instanceof DesktopConfigError) {
+      process.stderr.write(`${JSON.stringify({ event: 'fatal', code: err.code, message: err.message })}\n`);
+      process.exit(EXIT_CONFIG);
+    }
+    throw err;
+  }
+
   // --- Phase B: env pre-check ------------------------------------------
   const missing = REQUIRED_ENV_VARS.filter((k) => !process.env[k] || process.env[k]!.trim() === '');
 

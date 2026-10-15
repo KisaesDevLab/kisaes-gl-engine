@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 
-const envSchema = z.object({
+export const envSchema = z.object({
   // Require the postgres(ql):// scheme explicitly. z.string().url() accepts
   // any valid URL (including http://), so a typo in the .env file would
   // pass validation and fail later with an opaque driver error.
@@ -12,10 +12,23 @@ const envSchema = z.object({
     (v) => /^postgres(ql)?:\/\//i.test(v),
     { message: 'DATABASE_URL must start with postgres:// or postgresql://' },
   ),
+  // Required whenever something actually uses Redis: the BullMQ queue
+  // backend (the server default), the Redis rate-limit store, or screen
+  // share. Desktop mode (CL_MODE=desktop) sets QUEUE_BACKEND=none and
+  // refuses the other two, so it never needs it. Enforced in superRefine
+  // below so the server appliance still fails fast when it is missing.
   REDIS_URL: z.string().url().refine(
     (v) => /^rediss?:\/\//i.test(v),
     { message: 'REDIS_URL must start with redis:// or rediss://' },
-  ),
+  ).optional(),
+  // Background job backend. `bullmq` (default) is today's Redis-backed
+  // queue. `none` makes every enqueue fail fast so producers use their
+  // in-process fallback (api-only installs, desktop mode). See
+  // docs/DESKTOP.md.
+  QUEUE_BACKEND: z.enum(['bullmq', 'none']).default('bullmq'),
+  // Source commit of this build, reported on /health. Optional; set by the
+  // image/bundle build. Unset = null on /health.
+  ENGINE_COMMIT: z.string().trim().max(80).optional(),
   JWT_SECRET: z.string().min(20, 'JWT_SECRET must be at least 20 characters for security'),
   JWT_ACCESS_EXPIRY: z.string().default('15m'),
   JWT_REFRESH_EXPIRY: z.string().default('7d'),
@@ -409,9 +422,27 @@ const envSchema = z.object({
   SHARE_MAX_CONCURRENT_PER_TENANT: z.coerce.number().int().positive().default(10),
   SHARE_MAX_BYTES_PER_SESSION: z.coerce.number().int().positive().default(52_428_800),
   SHARE_AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(1095),
+}).superRefine((v, ctx) => {
+  if (v.REDIS_URL) return;
+  const needs: string[] = [];
+  if (v.QUEUE_BACKEND === 'bullmq') needs.push('QUEUE_BACKEND=bullmq');
+  if (v.RATE_LIMIT_REDIS === '1') needs.push('RATE_LIMIT_REDIS=1');
+  if (v.SHARE_ENABLED) needs.push('SHARE_ENABLED');
+  if (needs.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['REDIS_URL'],
+      message: `Required (needed by ${needs.join(', ')})`,
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
+
+/** Parse an environment without exiting — exported for tests. */
+export function parseEnv(input: NodeJS.ProcessEnv) {
+  return envSchema.safeParse(input);
+}
 
 function loadEnv(): Env {
   // QA-R2 L3 — ALLOWED_ORIGIN alias. The appliance manifest declares
