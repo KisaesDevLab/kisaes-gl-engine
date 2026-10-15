@@ -25,7 +25,7 @@ function deps(over: {
         ? { ok: false, count: 0, lastHeartbeatMs: null }
         : { ok: true, count: 1, lastHeartbeatMs: 1000 },
     schemaInfo: async () => ({ version: 216, tag: '0215_last' }),
-    dbSuperuser: async () => false,
+    dbRole: async () => ({ superuser: false, dangerous: [], warnings: ['createrole'] }),
     redactErr: (_n, c) => (c.error ? { ...c, error: 'unavailable' } : c),
     expectWorker: over.expectWorker ?? true,
     mode: over.mode ?? 'server',
@@ -65,9 +65,9 @@ describe('computeHealth — server mode keeps the exact v1 body', () => {
       calls += 1;
       return { version: 1, tag: 'x' };
     };
-    d.dbSuperuser = async () => {
+    d.dbRole = async () => {
       calls += 1;
-      return true;
+      return { superuser: true, dangerous: ['superuser'], warnings: [] };
     };
     const { body } = await computeHealth(d);
     expect(calls).toBe(0);
@@ -110,7 +110,12 @@ describe('computeHealth — desktop (v2, token-gated)', () => {
       online: null,
       lastOnlineCheck: null,
     });
-    expect((body['checks'] as { db: unknown }).db).toEqual({ ok: true, latencyMs: 3, superuser: false });
+    expect((body['checks'] as { db: unknown }).db).toEqual({
+      ok: true,
+      latencyMs: 3,
+      superuser: false,
+      role: { dangerous: [], warnings: ['createrole'] },
+    });
   });
 
   it('Redis disabled and no worker: 200 ok with redis "disabled"', async () => {

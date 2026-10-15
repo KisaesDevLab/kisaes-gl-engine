@@ -9,8 +9,13 @@ import path from 'node:path';
 // The DB role is mocked so the test does not depend on how the test
 // database user was created; the migration step runs for real.
 const superuser = { value: false };
+const role = { dangerous: [] as string[], warnings: [] as string[] };
 vi.mock('./db-role.js', () => ({
-  readDbSuperuser: vi.fn(async () => superuser.value),
+  readDbRole: vi.fn(async () => ({
+    superuser: superuser.value,
+    dangerous: superuser.value ? ['superuser', ...role.dangerous] : role.dangerous,
+    warnings: role.warnings,
+  })),
   cachedDbSuperuser: () => superuser.value,
   _resetDbRoleCacheForTests: () => undefined,
 }));
@@ -36,6 +41,9 @@ beforeEach(() => {
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
 afterEach(() => {
+  superuser.value = false;
+  role.dangerous = [];
+  role.warnings = [];
   warnSpy.mockRestore();
   _resetDesktopProfileForTests();
   _resetSecretScrubberForTests();
@@ -66,6 +74,31 @@ describe('runDesktopPreflight', () => {
     const r = await runDesktopPreflight();
     expect(r.status).toBe('blocked');
     if (r.status === 'blocked') expect(r.code).toBe('DB_SUPERUSER_FORBIDDEN');
+  });
+
+  it('server-file role membership is dangerous too: warned, and blocked under CL_REQUIRE_NON_SUPERUSER=1', async () => {
+    loadDesktop();
+    role.dangerous = ['pg_write_server_files'];
+    const r = await runDesktopPreflight();
+    expect(r).toEqual({ status: 'ok', dbSuperuser: false });
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('DB_SUPERUSER'));
+    expect(warned).toContain('pg_write_server_files');
+
+    _resetDesktopProfileForTests();
+    loadDesktop({ CL_REQUIRE_NON_SUPERUSER: '1' });
+    const blocked = await runDesktopPreflight();
+    expect(blocked).toMatchObject({ status: 'blocked', code: 'DB_SUPERUSER_FORBIDDEN' });
+    if (blocked.status === 'blocked') expect(blocked.details).toContain('pg_write_server_files');
+  });
+
+  it('createrole / replication / bypassrls only warn, even under CL_REQUIRE_NON_SUPERUSER=1', async () => {
+    loadDesktop({ CL_REQUIRE_NON_SUPERUSER: '1' });
+    role.warnings = ['createrole', 'replication', 'bypassrls'];
+    const r = await runDesktopPreflight();
+    expect(r).toEqual({ status: 'ok', dbSuperuser: false });
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('DB_ROLE_ATTRIBUTES'));
+    expect(JSON.parse(warned!)).toMatchObject({ event: 'warning', code: 'DB_ROLE_ATTRIBUTES' });
+    expect(warned).toContain('createrole, replication, bypassrls');
   });
 });
 

@@ -28,7 +28,7 @@ import {
 } from './installation-validator.js';
 import { sentinelAudit } from './sentinel-audit.js';
 import { restoreIntentExists } from '../services/restore-intent.service.js';
-import { readDbSuperuser } from './db-role.js';
+import { readDbRole, type DbRoleReport } from './db-role.js';
 import { desktopProfile } from '../desktop/profile.js';
 import { desktopWarning } from '../desktop/fatal.js';
 
@@ -360,9 +360,9 @@ export async function runDesktopPreflight(): Promise<DesktopPreflightResult> {
     return { status: 'blocked', code: migrationBlock.code, details: migrationBlock.details };
   }
 
-  let superuser: boolean;
+  let role: DbRoleReport;
   try {
-    superuser = await readDbSuperuser();
+    role = await readDbRole();
   } catch (err) {
     return {
       status: 'blocked',
@@ -370,23 +370,32 @@ export async function runDesktopPreflight(): Promise<DesktopPreflightResult> {
       details: `cannot read the database role: ${(err as Error).message}`,
     };
   }
-  if (superuser) {
+  // Dangerous: superuser, member of a superuser role, or member of a
+  // server-file role (startup/db-role.ts). Same code and exit as before.
+  if (role.dangerous.length > 0) {
     if (desktopProfile().requireNonSuperuser) {
       return {
         status: 'blocked',
         code: 'DB_SUPERUSER_FORBIDDEN',
         details:
-          'The database role is a superuser and CL_REQUIRE_NON_SUPERUSER=1. ' +
-          'Connect as a NOSUPERUSER role that owns the database.',
+          `The database role is too powerful (${role.dangerous.join(', ')}) and CL_REQUIRE_NON_SUPERUSER=1. ` +
+          'Connect as a NOSUPERUSER role that owns the database and is not a member of superuser or server-file roles.',
       };
     }
     desktopWarning(
       'DB_SUPERUSER',
-      'The database role is a superuser. Run the engine as a NOSUPERUSER role that owns its database.',
+      `The database role is too powerful (${role.dangerous.join(', ')}). ` +
+        'Run the engine as a NOSUPERUSER role that owns its database.',
+    );
+  }
+  if (role.warnings.length > 0) {
+    desktopWarning(
+      'DB_ROLE_ATTRIBUTES',
+      `The database role has ${role.warnings.join(', ')}; the engine does not need them.`,
     );
   }
   console.log('[preflight] desktop preflight ok');
-  return { status: 'ok', dbSuperuser: superuser };
+  return { status: 'ok', dbSuperuser: role.superuser };
 }
 
 // Reference `env` so the import is not tree-shaken. Preflight does not use

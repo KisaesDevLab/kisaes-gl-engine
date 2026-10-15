@@ -20,13 +20,15 @@
  *   online          null until a connectivity probe exists (never probed)
  *   lastOnlineCheck null, same
  *
- * and checks.db.superuser. `redis` is 'disabled' when the install runs
+ * and checks.db.superuser + checks.db.role {dangerous, warnings} (see
+ * startup/db-role.ts). `redis` is 'disabled' when the install runs
  * without Redis by design (desktop); a disabled Redis never degrades the
  * status, and with QUEUE_BACKEND=none there is no queue to check.
  */
 
 import type { RedisPingResult } from './health-redis.js';
 import type { WorkerHeartbeatStatus } from './worker-heartbeat.js';
+import type { DbRoleReport } from '../startup/db-role.js';
 
 export interface ProbeResult {
   ok: boolean;
@@ -39,7 +41,7 @@ export interface HealthDeps {
   redisPing: () => Promise<RedisPingResult>;
   readHeartbeats: () => Promise<WorkerHeartbeatStatus>;
   schemaInfo: () => Promise<{ version: number; tag: string | null } | null>;
-  dbSuperuser: () => Promise<boolean | null>;
+  dbRole: () => Promise<DbRoleReport | null>;
   /** Same redaction app.ts has always applied (log detail, return a code). */
   redactErr: <T extends { ok: boolean; error?: string }>(name: string, c: T) => T;
   expectWorker: boolean;
@@ -70,10 +72,10 @@ export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200
   const status = allOk ? 'ok' : 'degraded';
 
   const v2 = deps.mode === 'desktop';
-  const [schema, superuser] = v2
+  const [schema, role] = v2
     ? await Promise.all([
       db.ok ? deps.schemaInfo().catch(() => null) : Promise.resolve(null),
-      db.ok ? deps.dbSuperuser().catch(() => null) : Promise.resolve(null),
+      db.ok ? deps.dbRole().catch(() => null) : Promise.resolve(null),
     ])
     : [null, null];
 
@@ -85,7 +87,13 @@ export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200
     workers: workersOk ? 'ok' : 'fail',
     timestamp: (deps.now ? deps.now() : new Date()).toISOString(),
     checks: {
-      db: v2 ? { ...db, superuser } : db,
+      db: v2
+        ? {
+          ...db,
+          superuser: role ? role.superuser : null,
+          role: role ? { dangerous: role.dangerous, warnings: role.warnings } : null,
+        }
+        : db,
       redis,
       queue,
       workers: {

@@ -80,7 +80,7 @@ Mounted at `/api/v1/desktop` in desktop mode only. On the server they return 404
 | Method | Path | Body / response |
 |---|---|---|
 | POST | `/initialize` | Body: `{"admin":{"email","displayName","password"(≥12)},"company"?:{"name","businessType"?,"entityType"?,"industry"?}}`. Response: 201 `{"workspaceTenantId","userId","companyTenantId"(or null),"warnings":[]}`; see "First run" below. Writes no `.env` and no sentinel; only the non-secret `CONFIG_DIR/.initialized` marker (`{"via","workspaceTenantId"}`). Errors: 409 `ALREADY_INITIALIZED` once a user exists, 409 `TENANTS_WITHOUT_USERS` for restored data with no users, 409 `SETUP_BUSY` while another run holds the setup lock, 400 `VALIDATION_ERROR`, 400 for an unknown `businessType` (nothing is written). |
-| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","initialized","workspaceTenantId"}`. `workspaceTenantId` is `null` before first run. |
+| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","dbRole":{"dangerous","warnings"},"initialized","workspaceTenantId"}`. `workspaceTenantId` is `null` before first run. |
 
 `/api/setup/*` is not available in desktop mode, except `GET /api/setup/status`.
 
@@ -198,7 +198,7 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
 
 ## `/health` v2 (desktop only)
 
-`/health`, `/api/health` and `/api/v1/health` (token required). The server appliance answers anonymous callers, so it keeps the exact v1 body (the first seven fields, `checks.db` without `superuser`) and never reveals the version, commit, schema or database role.
+`/health`, `/api/health` and `/api/v1/health` (token required). The server appliance answers anonymous callers, so it keeps the exact v1 body (the first seven fields, `checks.db` without `superuser` and `role`) and never reveals the version, commit, schema or database role.
 
 ```jsonc
 {
@@ -208,7 +208,7 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
   "queue": "ok" | "fail",          // bullmq: mirrors redis; none: "ok"
   "workers": "ok" | "fail",
   "timestamp": "ISO-8601",
-  "checks": { "db": { "ok", "latencyMs", "superuser" }, "redis": {}, "queue": {}, "workers": {} },
+  "checks": { "db": { "ok", "latencyMs", "superuser", "role": { "dangerous": [], "warnings": [] } }, "redis": {}, "queue": {}, "workers": {} },
   "mode": "server" | "desktop",
   "version": "v0.9.231" | "unknown", // VIBE_MYBOOKS_VERSION, VIBE_MYBOOKS_TAG
   "engineCommit": "13ebd2ba…" | null,
@@ -226,7 +226,16 @@ The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades 
 
 The engine only needs to own its database: no migration creates extensions or needs superuser rights. Run it as a `NOSUPERUSER NOCREATEDB NOCREATEROLE` role that owns the database.
 
-Desktop preflight reads `rolsuper` for `current_user`. A superuser role logs `{"event":"warning","code":"DB_SUPERUSER",…}`. With `CL_REQUIRE_NON_SUPERUSER=1`, it is a fatal `DB_SUPERUSER_FORBIDDEN` instead. `/health` (`checks.db.superuser`) and `/api/v1/desktop/info` report the value.
+Desktop preflight checks `current_user` (`startup/db-role.ts`):
+
+| Finding | Kind |
+|---|---|
+| `superuser`: the role has `rolsuper` | dangerous |
+| `member_of_superuser`: the role is a member, directly or through other roles, of a superuser role | dangerous |
+| `pg_execute_server_program`, `pg_read_server_files`, `pg_write_server_files`: membership (also transitive) | dangerous |
+| `createrole`, `replication`, `bypassrls` | warning |
+
+Any dangerous finding logs `{"event":"warning","code":"DB_SUPERUSER",…}` naming the findings. With `CL_REQUIRE_NON_SUPERUSER=1` it is a fatal `DB_SUPERUSER_FORBIDDEN` (exit 78) instead. Warning-only attributes log `DB_ROLE_ATTRIBUTES` and never stop the engine. `/health` (`checks.db.superuser`, `checks.db.role`) and `/api/v1/desktop/info` (`dbSuperuser`, `dbRole`) report the result; `superuser` is true for `rolsuper` or superuser membership.
 
 ## Logging
 

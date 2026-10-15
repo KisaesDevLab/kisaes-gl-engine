@@ -26,7 +26,7 @@ import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import { desktopProfile } from '../desktop/profile.js';
-import { readDbSuperuser } from '../startup/db-role.js';
+import { readDbRole } from '../startup/db-role.js';
 import * as setupService from '../services/setup.service.js';
 import * as authService from '../services/auth.service.js';
 import * as accountsService from '../services/accounts.service.js';
@@ -122,10 +122,13 @@ desktopRouter.post('/initialize', validate(desktopInitializeSchema), async (req,
 desktopRouter.get('/info', async (_req, res) => {
   const p = desktopProfile();
   let dbSuperuser: boolean | null = null;
+  let dbRole: { dangerous: string[]; warnings: string[] } | null = null;
   let initialized: boolean | null = null;
   let workspaceTenantId: string | null = null;
   try {
-    dbSuperuser = await readDbSuperuser();
+    const role = await readDbRole();
+    dbSuperuser = role.superuser;
+    dbRole = { dangerous: role.dangerous, warnings: role.warnings };
     initialized = (await setupService.countTenantsAndUsers()).users > 0;
     workspaceTenantId = await getWorkspaceTenantId();
   } catch {
@@ -140,6 +143,7 @@ desktopRouter.get('/info', async (_req, res) => {
     lan: p.lan,
     dataDirExists: p.dataDir ? fs.existsSync(p.dataDir) : false,
     dbSuperuser,
+    dbRole,
     initialized,
     workspaceTenantId,
   });

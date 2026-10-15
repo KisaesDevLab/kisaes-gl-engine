@@ -382,7 +382,7 @@ app.use('/api/v1/', (_req, res, next) => {
 //
 // Desktop mode (token-gated) gets v2: mode, version, engineCommit,
 // schemaVersion, schemaTag, queueBackend, online, lastOnlineCheck and
-// checks.db.superuser are appended. The server keeps the exact v1 body —
+// checks.db.superuser/role are appended. The server keeps the exact v1 body —
 // this endpoint is unauthenticated there. redis is 'disabled' for installs
 // without Redis (utils/health.ts).
 //
@@ -402,7 +402,7 @@ import { redisPing } from './utils/health-redis.js';
 import { readHeartbeats } from './utils/worker-heartbeat.js';
 import { computeHealth } from './utils/health.js';
 import { readSchemaInfo } from './startup/schema-info.js';
-import { readDbSuperuser } from './startup/db-role.js';
+import { readDbRole } from './startup/db-role.js';
 import { getCurrentVersion } from './services/updates.service.js';
 
 const healthHandler = async (_req: express.Request, res: express.Response) => {
@@ -446,7 +446,7 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     redisPing,
     readHeartbeats,
     schemaInfo: () => readSchemaInfo(),
-    dbSuperuser: () => readDbSuperuser(),
+    dbRole: () => readDbRole(),
     redactErr,
     expectWorker: env.EXPECT_WORKER,
     mode: desktopProfile().mode,
