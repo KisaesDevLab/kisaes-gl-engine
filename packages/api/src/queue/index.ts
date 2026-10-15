@@ -9,6 +9,7 @@
  * does not use (desktop never loads bullmq; the server never loads pg-boss).
  */
 
+import { env } from '../config/env.js';
 import { queueBackend } from '../desktop/profile.js';
 import type { JobQueue, QueueBackendName } from './job-queue.js';
 import { NoneQueue } from './none.adapter.js';
@@ -23,6 +24,10 @@ async function create(backend: QueueBackendName): Promise<JobQueue> {
     case 'bullmq': {
       const { BullMqQueue } = await import('./bullmq.adapter.js');
       return new BullMqQueue(JOB_SPECS);
+    }
+    case 'pgboss': {
+      const { PgBossQueue } = await import('./pgboss.adapter.js');
+      return new PgBossQueue(JOB_SPECS, { connectionString: env.DATABASE_URL });
     }
     default: {
       const never: never = backend;

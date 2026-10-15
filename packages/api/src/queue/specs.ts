@@ -103,4 +103,14 @@ export const JOB_SPECS: JobSpecTable<JobData> = {
   },
 };
 
+/**
+ * pg-boss keeps finished jobs (completed or failed) for this long, then
+ * deletes them. BullMQ keeps the newest N instead (keepCompleted/keepFailed);
+ * pg-boss has no count-based retention, so 7 days (its own default) stands in
+ * for it. Within this window an enqueue of the same producer id is a no-op,
+ * which matches BullMQ's "id already exists" behavior for any realistic
+ * desktop volume.
+ */
+export const PGBOSS_KEEP_SECONDS = 7 * 24 * HOUR;
+
 export type { JobSpec };

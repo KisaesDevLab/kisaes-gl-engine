@@ -83,7 +83,7 @@ export interface JobData {
   'tax-param-ai-check': TaxParamAiCheckJobData;
 }
 
-export type QueueBackendName = 'bullmq' | 'none';
+export type QueueBackendName = 'bullmq' | 'pgboss' | 'none';
 
 /**
  * How one job type is queued and consumed. Every backend maps the same row;
