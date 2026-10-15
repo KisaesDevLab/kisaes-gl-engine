@@ -149,6 +149,18 @@ describe('app.ts in server mode (CL_MODE unset)', () => {
     });
   }, 120_000);
 
+  it('anonymous /health keeps the exact v1 body (no version, commit, schema or role)', async () => {
+    const app = await loadApp('server');
+    await withServer(app, async (port) => {
+      for (const p of ['/health', '/api/health', '/api/v1/health']) {
+        const r = await fetch(`http://127.0.0.1:${port}${p}`);
+        const body = (await r.json()) as Record<string, unknown> & { checks: { db: Record<string, unknown> } };
+        expect(Object.keys(body), p).toEqual(['status', 'db', 'redis', 'queue', 'workers', 'timestamp', 'checks']);
+        expect(Object.keys(body.checks.db).sort(), p).toEqual(['latencyMs', 'ok']);
+      }
+    });
+  }, 120_000);
+
   it('has no desktop-only routes', async () => {
     const app = await loadApp('server');
     await withServer(app, async (port) => {

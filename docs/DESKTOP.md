@@ -7,7 +7,7 @@ Everything here is gated by `CL_MODE=desktop` or by an option that defaults to t
 - `env.ts` parses a server environment to the same values.
 - The Express route table is identical.
 - BullMQ stays the default queue backend.
-- `/health` keeps every field and its 200/503 logic.
+- `/health` returns exactly the v1 body with the same 200/503 logic. The v2 fields are desktop-only.
 
 The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `routes/desktop.routes.ts`, `queue/none.adapter.ts` and `utils/health.ts`. The only schema change is the additive `tenants.is_workspace` column (migration `0216`), which the server never sets.
 
@@ -195,9 +195,9 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
 | `services/share/share-redis` | Refuses |
 | `services/extraction/queue` | With `QUEUE_BACKEND=none`, every `enqueue*` rejects immediately with `QueueUnavailableError` (`queue/none.adapter.ts`), so producers run their in-process fallback. No BullMQ queue is ever built. |
 
-## `/health` v2 (all modes)
+## `/health` v2 (desktop only)
 
-`/health`, `/api/health` and `/api/v1/health` (token required in desktop mode):
+`/health`, `/api/health` and `/api/v1/health` (token required). The server appliance answers anonymous callers, so it keeps the exact v1 body (the first seven fields, `checks.db` without `superuser`) and never reveals the version, commit, schema or database role.
 
 ```jsonc
 {

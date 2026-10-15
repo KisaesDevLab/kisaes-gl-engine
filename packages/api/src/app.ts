@@ -380,9 +380,11 @@ app.use('/api/v1/', (_req, res, next) => {
 // appliance health probe read; the `checks.*` block keeps latency /
 // error detail for human debugging.
 //
-// v2 appends mode, version, engineCommit, schemaVersion, schemaTag,
-// queueBackend, online, lastOnlineCheck and checks.db.superuser; redis is
-// 'disabled' for installs without Redis (utils/health.ts).
+// Desktop mode (token-gated) gets v2: mode, version, engineCommit,
+// schemaVersion, schemaTag, queueBackend, online, lastOnlineCheck and
+// checks.db.superuser are appended. The server keeps the exact v1 body —
+// this endpoint is unauthenticated there. redis is 'disabled' for installs
+// without Redis (utils/health.ts).
 //
 // `queue: 'ok'` mirrors `redis: 'ok'` for now — BullMQ queues aren't
 // wired yet (worker schedulers run via Postgres advisory locks), so

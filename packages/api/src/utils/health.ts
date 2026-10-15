@@ -3,8 +3,13 @@
 // Free for small businesses; see LICENSE for terms.
 
 /**
- * /health body (v2). Pure: app.ts injects the real probes, tests inject
- * fakes. Every v1 field keeps its meaning and position; v2 appends:
+ * /health body. Pure: app.ts injects the real probes, tests inject fakes.
+ *
+ * Server mode returns the v1 body exactly as before: /health is
+ * unauthenticated on the appliance, so it must not reveal the version,
+ * commit, schema or database role to anonymous callers. Desktop mode
+ * (every request already carried the launch token) returns v2: every v1
+ * field keeps its meaning and position, and v2 appends:
  *
  *   mode            'server' | 'desktop'
  *   version         image/bundle version (VIBE_MYBOOKS_VERSION, ...)
@@ -64,10 +69,13 @@ export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200
   const allOk = db.ok && (redisDisabled || redis.ok) && queue.ok && workersOk;
   const status = allOk ? 'ok' : 'degraded';
 
-  const [schema, superuser] = await Promise.all([
-    db.ok ? deps.schemaInfo().catch(() => null) : Promise.resolve(null),
-    db.ok ? deps.dbSuperuser().catch(() => null) : Promise.resolve(null),
-  ]);
+  const v2 = deps.mode === 'desktop';
+  const [schema, superuser] = v2
+    ? await Promise.all([
+      db.ok ? deps.schemaInfo().catch(() => null) : Promise.resolve(null),
+      db.ok ? deps.dbSuperuser().catch(() => null) : Promise.resolve(null),
+    ])
+    : [null, null];
 
   const body: Record<string, unknown> = {
     status,
@@ -77,7 +85,7 @@ export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200
     workers: workersOk ? 'ok' : 'fail',
     timestamp: (deps.now ? deps.now() : new Date()).toISOString(),
     checks: {
-      db: { ...db, superuser },
+      db: v2 ? { ...db, superuser } : db,
       redis,
       queue,
       workers: {
@@ -88,14 +96,18 @@ export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200
         expected: workersCheckActive,
       },
     },
-    mode: deps.mode,
-    version: deps.version,
-    engineCommit: deps.engineCommit,
-    schemaVersion: schema?.version ?? null,
-    schemaTag: schema?.tag ?? null,
-    queueBackend: deps.queueBackend,
-    online: null,
-    lastOnlineCheck: null,
   };
+  if (v2) {
+    Object.assign(body, {
+      mode: deps.mode,
+      version: deps.version,
+      engineCommit: deps.engineCommit,
+      schemaVersion: schema?.version ?? null,
+      schemaTag: schema?.tag ?? null,
+      queueBackend: deps.queueBackend,
+      online: null,
+      lastOnlineCheck: null,
+    });
+  }
   return { httpStatus: allOk ? 200 : 503, body };
 }

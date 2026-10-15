@@ -36,33 +36,42 @@ function deps(over: {
   };
 }
 
-describe('computeHealth — server mode keeps v1 semantics', () => {
-  it('all ok: 200, v1 fields first and unchanged, v2 fields appended', async () => {
+describe('computeHealth — server mode keeps the exact v1 body', () => {
+  it('all ok: 200, only the v1 fields, values unchanged', async () => {
     const { httpStatus, body } = await computeHealth(deps({}));
     expect(httpStatus).toBe(200);
-    expect(Object.keys(body)).toEqual([...V1_KEYS, ...V2_KEYS]);
-    expect(body).toMatchObject({
+    expect(Object.keys(body)).toEqual(V1_KEYS);
+    expect(body).toEqual({
       status: 'ok',
       db: 'ok',
       redis: 'ok',
       queue: 'ok',
       workers: 'ok',
       timestamp: '2026-10-15T12:00:00.000Z',
-      mode: 'server',
-      version: 'v0.9.231',
-      engineCommit: '13ebd2ba',
-      schemaVersion: 216,
-      schemaTag: '0215_last',
-      queueBackend: 'bullmq',
-      online: null,
-      lastOnlineCheck: null,
+      checks: {
+        db: { ok: true, latencyMs: 3 },
+        redis: { ok: true, latencyMs: 1 },
+        queue: { ok: true, latencyMs: 1, error: undefined },
+        workers: { ok: true, count: 1, lastHeartbeatMs: 1000, expected: true },
+      },
     });
-    expect(body['checks']).toEqual({
-      db: { ok: true, latencyMs: 3, superuser: false },
-      redis: { ok: true, latencyMs: 1 },
-      queue: { ok: true, latencyMs: 1, error: undefined },
-      workers: { ok: true, count: 1, lastHeartbeatMs: 1000, expected: true },
-    });
+    for (const k of V2_KEYS) expect(body, k).not.toHaveProperty(k);
+  });
+
+  it('never reads the schema or the database role (unauthenticated endpoint)', async () => {
+    const d = deps({});
+    let calls = 0;
+    d.schemaInfo = async () => {
+      calls += 1;
+      return { version: 1, tag: 'x' };
+    };
+    d.dbSuperuser = async () => {
+      calls += 1;
+      return true;
+    };
+    const { body } = await computeHealth(d);
+    expect(calls).toBe(0);
+    expect(JSON.stringify(body)).not.toMatch(/superuser|schema|v0\.9\.231|13ebd2ba/);
   });
 
   it('redis down: 503 degraded, redis+queue fail (queue mirrors redis on bullmq)', async () => {
@@ -77,32 +86,32 @@ describe('computeHealth — server mode keeps v1 semantics', () => {
     expect((await computeHealth(deps({ workersOk: false, expectWorker: false }))).httpStatus).toBe(200);
   });
 
-  it('db down: 503 and no schema/superuser lookups', async () => {
-    const d = deps({ db: { ok: false, latencyMs: 2000, error: 'unavailable' } });
-    let schemaCalls = 0;
-    d.schemaInfo = async () => {
-      schemaCalls += 1;
-      return { version: 1, tag: null };
-    };
-    const { httpStatus, body } = await computeHealth(d);
+  it('db down: 503', async () => {
+    const { httpStatus, body } = await computeHealth(deps({ db: { ok: false, latencyMs: 2000, error: 'unavailable' } }));
     expect(httpStatus).toBe(503);
-    expect(body).toMatchObject({ db: 'fail', schemaVersion: null, schemaTag: null });
-    expect(schemaCalls).toBe(0);
-  });
-
-  it('a failing schema read reports null and does not degrade', async () => {
-    const d = deps({});
-    d.schemaInfo = async () => {
-      throw new Error('boom');
-    };
-    const { httpStatus, body } = await computeHealth(d);
-    expect(httpStatus).toBe(200);
-    expect(body['schemaVersion']).toBeNull();
+    expect(body).toMatchObject({ status: 'degraded', db: 'fail' });
   });
 });
 
-describe('computeHealth — desktop (no Redis)', () => {
+describe('computeHealth — desktop (v2, token-gated)', () => {
   const desktop = { mode: 'desktop' as const, queueBackend: 'none' as const, expectWorker: false };
+
+  it('v1 fields first and unchanged, v2 fields appended', async () => {
+    const { httpStatus, body } = await computeHealth(deps({ ...desktop, redis: { ok: true, latencyMs: 0, disabled: true } }));
+    expect(httpStatus).toBe(200);
+    expect(Object.keys(body)).toEqual([...V1_KEYS, ...V2_KEYS]);
+    expect(body).toMatchObject({
+      mode: 'desktop',
+      version: 'v0.9.231',
+      engineCommit: '13ebd2ba',
+      schemaVersion: 216,
+      schemaTag: '0215_last',
+      queueBackend: 'none',
+      online: null,
+      lastOnlineCheck: null,
+    });
+    expect((body['checks'] as { db: unknown }).db).toEqual({ ok: true, latencyMs: 3, superuser: false });
+  });
 
   it('Redis disabled and no worker: 200 ok with redis "disabled"', async () => {
     const { httpStatus, body } = await computeHealth(
@@ -120,10 +129,26 @@ describe('computeHealth — desktop (no Redis)', () => {
     });
   });
 
-  it('db down still degrades', async () => {
-    const { httpStatus } = await computeHealth(
-      deps({ ...desktop, db: { ok: false, latencyMs: 2000, error: 'unavailable' }, redis: { ok: true, latencyMs: 0, disabled: true } }),
-    );
+  it('db down still degrades, and skips the schema/role lookups', async () => {
+    const d = deps({ ...desktop, db: { ok: false, latencyMs: 2000, error: 'unavailable' }, redis: { ok: true, latencyMs: 0, disabled: true } });
+    let schemaCalls = 0;
+    d.schemaInfo = async () => {
+      schemaCalls += 1;
+      return { version: 1, tag: null };
+    };
+    const { httpStatus, body } = await computeHealth(d);
     expect(httpStatus).toBe(503);
+    expect(body).toMatchObject({ db: 'fail', schemaVersion: null, schemaTag: null });
+    expect(schemaCalls).toBe(0);
+  });
+
+  it('a failing schema read reports null and does not degrade', async () => {
+    const d = deps({ ...desktop, redis: { ok: true, latencyMs: 0, disabled: true } });
+    d.schemaInfo = async () => {
+      throw new Error('boom');
+    };
+    const { httpStatus, body } = await computeHealth(d);
+    expect(httpStatus).toBe(200);
+    expect(body['schemaVersion']).toBeNull();
   });
 });
