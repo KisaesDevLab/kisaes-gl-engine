@@ -16,6 +16,7 @@ import { setRefreshCookie, clearRefreshCookie, readRefreshCookie } from '../util
 import { requireTurnstile } from '../utils/turnstile.js';
 import { isRegistrationEnabled } from '../services/auth-availability.service.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
+import { notInDesktop } from '../desktop/features.js';
 
 // Per-IP limiter — the existing loose bound (10 requests / minute from
 // the same IP across any auth endpoint). Redis-backed when
@@ -133,7 +134,7 @@ async function requireRegistrationEnabled(
   next();
 }
 
-authRouter.post('/register', authLimiter, requireRegistrationEnabled, requireTurnstile(), validate(registerSchema), async (req, res) => {
+authRouter.post('/register', notInDesktop('self-registration; the desktop app creates the owner at first run'), authLimiter, requireRegistrationEnabled, requireTurnstile(), validate(registerSchema), async (req, res) => {
   const result = await authService.register(req.body);
   setRefreshCookie(res, result.tokens.refreshToken);
   res.status(201).json({
@@ -416,7 +417,7 @@ authRouter.get('/create-tenant/eligibility', authenticate, async (req, res) => {
   res.json(await authService.getTenantCreationEligibility(req.userId, req.userRole));
 });
 
-authRouter.post('/create-client', authenticate, requireSessionAuth, validate(createClientSchema), async (req, res) => {
+authRouter.post('/create-client', notInDesktop('practice client companies; use /api/v1/auth/create-tenant'), authenticate, requireSessionAuth, validate(createClientSchema), async (req, res) => {
   // Only accountants, bookkeepers, and super admins can create client tenants
   if (req.userRole !== 'accountant' && req.userRole !== 'bookkeeper' && !req.isSuperAdmin) {
     res.status(403).json({ error: { message: 'Only accountants and super admins can create client companies' } });

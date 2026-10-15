@@ -286,6 +286,8 @@ describe('desktop first run: info and initialize', () => {
   let e: Engine | undefined;
   let port = 0;
   const owner = { email: 'owner@example.com', displayName: 'Pat Owner', password: 'correct horse battery' };
+  let workspaceTenantId = '';
+  let companyTenantId = '';
 
   beforeAll(async () => {
     if (!dbReady) return;
@@ -310,6 +312,7 @@ describe('desktop first run: info and initialize', () => {
       lan: false,
       dataDirExists: true,
       initialized: false,
+      workspaceTenantId: null,
     });
     expect(typeof r.json.dbSuperuser).toBe('boolean');
   });
@@ -322,18 +325,25 @@ describe('desktop first run: info and initialize', () => {
     });
     expect(r.status).toBe(400);
     expect(r.json.error.code).toBe('VALIDATION_ERROR');
-    const noCompany = await call(port, '/api/v1/desktop/initialize', { method: 'POST', body: { admin: owner } });
-    expect(noCompany.status).toBe(400);
+    const noAdmin = await call(port, '/api/v1/desktop/initialize', { method: 'POST', body: { company: { name: 'Acme' } } });
+    expect(noAdmin.status).toBe(400);
   });
 
-  it('creates the owner and first company, writes no secrets, then refuses a second run', async () => {
+  it('creates the workspace, the owner and the first company, writes no secrets, then refuses a second run', async () => {
     if (!dbReady) return;
     const r = await call(port, '/api/v1/desktop/initialize', {
       method: 'POST',
       body: { admin: owner, company: { name: 'Acme Plumbing LLC' } },
     });
     expect(r.status).toBe(201);
-    expect(r.json).toEqual({ tenantId: expect.any(String), userId: expect.any(String) });
+    expect(r.json).toEqual({
+      workspaceTenantId: expect.any(String),
+      userId: expect.any(String),
+      companyTenantId: expect.any(String),
+      warnings: [],
+    });
+    workspaceTenantId = r.json.workspaceTenantId;
+    companyTenantId = r.json.companyTenantId;
 
     // No .env and no installation sentinel; only the non-secret marker.
     expect(existsSync(path.join(e!.dataDir, 'config', '.env'))).toBe(false);
@@ -342,21 +352,29 @@ describe('desktop first run: info and initialize', () => {
 
     const again = await call(port, '/api/v1/desktop/initialize', {
       method: 'POST',
-      body: { admin: { ...owner, email: 'other@example.com' }, company: { name: 'Other' } },
+      body: { admin: { ...owner, email: 'other@example.com' } },
     });
     expect(again.status).toBe(409);
     expect(again.json.error.code).toBe('ALREADY_INITIALIZED');
-    expect((await call(port, '/api/v1/desktop/info')).json.initialized).toBe(true);
+    const info = (await call(port, '/api/v1/desktop/info')).json;
+    expect(info).toMatchObject({ initialized: true, workspaceTenantId });
   });
 
-  it('the owner can sign in and read the seeded chart of accounts (token + JWT)', async () => {
+  it('the owner signs in to the workspace, opens the company and reads its chart of accounts (token + JWT)', async () => {
     if (!dbReady) return;
     const login = await call(port, '/api/v1/auth/login', {
       method: 'POST',
       body: { email: owner.email, password: owner.password },
     });
     expect(login.status).toBe(200);
-    const jwt = login.json.tokens.accessToken as string;
+    const wsJwt = login.json.tokens.accessToken as string;
+    const sw = await call(port, '/api/v1/auth/switch-tenant', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${wsJwt}` },
+      body: { tenantId: companyTenantId },
+    });
+    expect(sw.status).toBe(200);
+    const jwt = sw.json.tokens.accessToken as string;
     const accounts = await call(port, '/api/v1/accounts', { headers: { authorization: `Bearer ${jwt}` } });
     expect(accounts.status).toBe(200);
     // The JWT alone is not enough: the transport token is still required.

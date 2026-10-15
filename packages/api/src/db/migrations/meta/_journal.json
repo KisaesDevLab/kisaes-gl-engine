@@ -1513,6 +1513,13 @@
       "when": 1784800000370,
       "tag": "0215_tax_est_company_dashboard_switch",
       "breakpoints": true
+    },
+    {
+      "idx": 216,
+      "version": "7",
+      "when": 1784800000380,
+      "tag": "0216_tenants_is_workspace",
+      "breakpoints": true
     }
   ]
 }

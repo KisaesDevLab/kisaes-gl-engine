@@ -7,13 +7,17 @@
  * request has already passed the launch-token gate; there is no user yet
  * when /initialize runs, so these routes do not use authenticate().
  *
- *   POST /initialize  first-run: create the owner account and first company.
- *                     Replaces the appliance's /api/setup/initialize, which
- *                     writes a .env with secrets and an installation
- *                     sentinel — the desktop app keeps secrets in the OS
- *                     keychain and owns install identity, so this writes
- *                     neither. 409 once any user exists.
- *   GET  /info        mode, queue backend, data dir, DB role, initialized.
+ *   POST /initialize  first-run: create the hidden workspace tenant, the
+ *                     owner account (super admin, homed in the workspace)
+ *                     and, optionally, the first company. Replaces the
+ *                     appliance's /api/setup/initialize, which writes a .env
+ *                     with secrets and an installation sentinel and joins
+ *                     the appliance firm — the desktop app keeps secrets in
+ *                     the OS keychain, owns install identity and has no
+ *                     firms, so this writes none of them. 409 once any user
+ *                     exists.
+ *   GET  /info        mode, queue backend, data dir, DB role, initialized,
+ *                     workspaceTenantId.
  */
 
 import { Router } from 'express';
@@ -24,6 +28,10 @@ import { AppError } from '../utils/errors.js';
 import { desktopProfile } from '../desktop/profile.js';
 import { readDbSuperuser } from '../startup/db-role.js';
 import * as setupService from '../services/setup.service.js';
+import * as authService from '../services/auth.service.js';
+import * as accountsService from '../services/accounts.service.js';
+import { createWorkspaceWithOwner, getWorkspaceTenantId } from '../desktop/workspace.js';
+import { desktopWarning } from '../desktop/fatal.js';
 import { env } from '../config/env.js';
 import { getCurrentVersion } from '../services/updates.service.js';
 
@@ -36,21 +44,33 @@ export const desktopInitializeSchema = z.object({
     // Platform-wide password policy is 12 characters (see auth.service).
     password: z.string().min(12, 'Password must be at least 12 characters').max(1024),
   }),
-  // The first company is required: the engine creates the owner account
-  // inside it (setup.service createAdminUser).
+  // Optional first company. Zero companies is a valid state: the caller can
+  // create one later with POST /api/v1/auth/create-tenant.
   company: z.object({
     name: z.string().trim().min(1, 'Company name is required').max(255),
     businessType: z.string().trim().max(120).optional(),
     entityType: z.string().trim().max(60).optional(),
     industry: z.string().trim().max(120).optional(),
-  }),
+  }).optional(),
 });
 
 type DesktopInitializeInput = z.infer<typeof desktopInitializeSchema>;
 
+export interface DesktopInitializeResult {
+  workspaceTenantId: string;
+  userId: string;
+  companyTenantId: string | null;
+  warnings: string[];
+}
+
 desktopRouter.post('/initialize', validate(desktopInitializeSchema), async (req, res) => {
   const input = req.body as DesktopInitializeInput;
-  let created: { tenantId: string; userId: string };
+  // An unknown chart-of-accounts template is a bad request: refuse before
+  // anything is written.
+  if (input.company) {
+    await accountsService.assertTemplateExists(input.company.businessType || 'default');
+  }
+  let created: DesktopInitializeResult;
   try {
     created = await setupService.withSetupLock(async () => {
       const counts = await setupService.countTenantsAndUsers();
@@ -63,18 +83,29 @@ desktopRouter.post('/initialize', validate(desktopInitializeSchema), async (req,
           'TENANTS_WITHOUT_USERS',
         );
       }
-      const result = await setupService.createAdminUser({
-        email: input.admin.email,
-        password: input.admin.password,
-        displayName: input.admin.displayName,
-        companyName: input.company.name,
-        businessType: input.company.businessType,
-        entityType: input.company.entityType,
-        industry: input.company.industry,
-      });
+      const owner = await createWorkspaceWithOwner(input.admin);
       // Non-secret marker under CONFIG_DIR (= CL_DATA_DIR/config) so
       // /api/setup/status reports the install as set up.
-      setupService.markInitialized({ via: 'desktop/initialize', tenantId: result.tenantId });
+      setupService.markInitialized({ via: 'desktop/initialize', workspaceTenantId: owner.workspaceTenantId });
+
+      const result: DesktopInitializeResult = { ...owner, companyTenantId: null, warnings: [] };
+      if (input.company) {
+        try {
+          const company = await authService.createDesktopCompany(owner.userId, {
+            companyName: input.company.name,
+            businessType: input.company.businessType,
+            entityType: input.company.entityType,
+            industry: input.company.industry,
+          });
+          result.companyTenantId = company.tenantId;
+        } catch (err) {
+          // The workspace and the owner stay: zero companies is valid, and
+          // the caller retries with POST /api/v1/auth/create-tenant.
+          const code = err instanceof AppError ? err.code : (err as { code?: string } | null)?.code;
+          desktopWarning('COMPANY_NOT_CREATED', `first company could not be created (${code ?? 'error'})`);
+          result.warnings.push('COMPANY_NOT_CREATED');
+        }
+      }
       return result;
     });
   } catch (err) {
@@ -85,16 +116,18 @@ desktopRouter.post('/initialize', validate(desktopInitializeSchema), async (req,
     }
     throw err;
   }
-  res.status(201).json({ tenantId: created.tenantId, userId: created.userId });
+  res.status(201).json(created);
 });
 
 desktopRouter.get('/info', async (_req, res) => {
   const p = desktopProfile();
   let dbSuperuser: boolean | null = null;
   let initialized: boolean | null = null;
+  let workspaceTenantId: string | null = null;
   try {
     dbSuperuser = await readDbSuperuser();
     initialized = (await setupService.countTenantsAndUsers()).users > 0;
+    workspaceTenantId = await getWorkspaceTenantId();
   } catch {
     /* database unavailable: report unknown */
   }
@@ -108,5 +141,6 @@ desktopRouter.get('/info', async (_req, res) => {
     dataDirExists: p.dataDir ? fs.existsSync(p.dataDir) : false,
     dbSuperuser,
     initialized,
+    workspaceTenantId,
   });
 });

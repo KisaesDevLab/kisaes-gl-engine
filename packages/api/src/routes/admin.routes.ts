@@ -83,6 +83,8 @@ import {
 import { eq } from 'drizzle-orm';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { tailscaleRouter } from './tailscale.routes.js';
+import { isDesktop } from '../desktop/profile.js';
+import { guardAdminTenantRoute, requireWorkspaceTenantId } from '../desktop/workspace.js';
 
 export const adminRouter = Router();
 adminRouter.use(authenticate);
@@ -278,6 +280,8 @@ delegable.get(userSupport, '/users', async (req, res) => {
 delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), async (req, res) => {
   const { email: rawEmail, password, displayName, tenantId, role } = req.body;
   assertTenantInScope(req, tenantId);
+  // Desktop: the target must be a company; the user is homed in the workspace.
+  await guardAdminTenantRoute(tenantId);
   // Normalize to lowercase; users.email is treated case-insensitively
   // elsewhere in the auth path, so storing mixed-case here would create a
   // row that no normal login flow can find.
@@ -305,11 +309,12 @@ delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), as
   }
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+  const workspaceId = isDesktop() ? await requireWorkspaceTenantId() : null;
 
   try {
     const user = await db.transaction(async (tx) => {
       const [u] = await tx.insert(users).values({
-        tenantId,
+        tenantId: workspaceId ?? tenantId,
         email,
         passwordHash,
         displayName: displayName || null,
@@ -321,6 +326,9 @@ delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), as
         tenantId,
         role,
       }).onConflictDoNothing();
+      if (workspaceId) {
+        await tx.insert(userTenantAccess).values({ userId: u.id, tenantId: workspaceId, role: 'readonly' }).onConflictDoNothing();
+      }
       return u;
     });
 

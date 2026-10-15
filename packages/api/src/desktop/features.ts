@@ -75,13 +75,24 @@ export function schedulerEnabled(name: SchedulerName): boolean {
   return !isDesktop() || DESKTOP_SCHEDULERS[name];
 }
 
-function notAvailable(res: Response, f: UnmountedFamily): void {
+function notAvailable(res: Response, f: Pick<UnmountedFamily, 'reason'>): void {
   res.status(404).json({
     error: {
       message: `Not available in the desktop edition (${f.reason}).`,
       code: 'NOT_AVAILABLE_IN_DESKTOP',
     },
   });
+}
+
+/**
+ * Route-level refusal for single routes inside a mounted family: desktop
+ * answers 404 NOT_AVAILABLE_IN_DESKTOP, the server passes straight through.
+ */
+export function notInDesktop(reason: string): RequestHandler {
+  return function clNotInDesktop(_req, res, next) {
+    if (isDesktop()) notAvailable(res, { reason });
+    else next();
+  };
 }
 
 /** The listed family a mount path belongs to (the prefix itself or below it). */

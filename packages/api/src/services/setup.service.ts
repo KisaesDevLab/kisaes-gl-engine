@@ -29,6 +29,7 @@ import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 import { generateRecoveryKey } from './recovery-key.service.js';
 import { writeRecoveryFile } from './env-recovery.service.js';
 import { clearRestoreIntent } from './restore-intent.service.js';
+import { isDesktop } from '../desktop/profile.js';
 
 // Resolved per call (not at import) so the diagnostic app, tests and the
 // CLI scripts all honour a CONFIG_DIR set after this module was first loaded.
@@ -731,6 +732,12 @@ export interface CreateAdminUserInput {
  * and granted owner access to every tenant. Nothing is seeded.
  */
 export async function createAdminUser(input: CreateAdminUserInput) {
+  // Desktop mode creates the owner through /api/v1/desktop/initialize (homed
+  // in the workspace tenant, no firm). This path would home the admin in a
+  // company and join the appliance firm, so it is refused there.
+  if (isDesktop()) {
+    throw new Error('createAdminUser is not available in desktop mode; use /api/v1/desktop/initialize.');
+  }
   // Defense-in-depth: refuse to initialize if the database already contains
   // users, or tenants we were not told to adopt. Even if the route guard and
   // the status check are bypassed somehow, this check prevents a setup run
@@ -818,6 +825,9 @@ export async function createAdminUser(input: CreateAdminUserInput) {
 }
 
 async function adoptRestoredTenants(input: CreateAdminUserInput, passwordHash: string) {
+  if (isDesktop()) {
+    throw new Error('adoptRestoredTenants is not available in desktop mode.');
+  }
   const restored = await db.select({ id: tenants.id, name: tenants.name })
     .from(tenants)
     .orderBy(asc(tenants.createdAt), asc(tenants.id));
@@ -885,6 +895,52 @@ async function adoptRestoredTenants(input: CreateAdminUserInput, passwordHash: s
  * Precondition (checked by the caller): the DB held no tenants and no users
  * before this setup run, so every tenant-scoped row belongs to this run.
  */
+type SetupTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Delete every tenant_id-scoped row of `tenantId` (except users and access rows), then the tenant. */
+async function deleteTenantScopedRows(tx: SetupTx, tenantId: string): Promise<void> {
+  const tablesResult = await tx.execute(sql`
+    SELECT c.table_name
+    FROM information_schema.columns c
+    JOIN information_schema.tables t
+      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+    WHERE c.column_name = 'tenant_id'
+      AND c.table_schema = 'public'
+      AND t.table_type = 'BASE TABLE'
+      AND c.table_name NOT IN ('tenants', 'users', 'user_tenant_access')
+    ORDER BY c.table_name
+  `);
+  for (const row of tablesResult.rows as { table_name: string }[]) {
+    if (!IDENT_RE.test(row.table_name)) continue;
+    await tx.execute(sql`DELETE FROM ${sql.identifier(row.table_name)} WHERE tenant_id = ${tenantId}`);
+  }
+  await tx.delete(tenants).where(sql`${tenants.id} = ${tenantId}`);
+}
+
+/**
+ * Desktop: remove a company tenant whose provisioning failed part-way (the
+ * first company of /api/v1/desktop/initialize). Refuses a workspace tenant and
+ * a tenant with users homed in it; best-effort like rollbackPartialSetup.
+ */
+export async function discardPartialTenant(tenantId: string): Promise<void> {
+  try {
+    await db.transaction(async (tx) => {
+      const guard = await tx.execute(sql`
+        SELECT
+          (SELECT COUNT(*)::int FROM tenants WHERE id = ${tenantId} AND is_workspace) AS ws,
+          (SELECT COUNT(*)::int FROM users WHERE tenant_id = ${tenantId}) AS homed
+      `);
+      const g = guard.rows[0] as { ws: number; homed: number } | undefined;
+      if (!g || g.ws > 0 || g.homed > 0) return;
+      await tx.delete(userTenantAccess).where(sql`${userTenantAccess.tenantId} = ${tenantId}`);
+      await deleteTenantScopedRows(tx, tenantId);
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[setup] cleanup of a partially-created company FAILED — manual cleanup may be required:', err instanceof Error ? err.message : err);
+  }
+}
+
 export async function rollbackPartialSetup(tenantId: string, userId: string): Promise<void> {
   try {
     await db.transaction(async (tx) => {
@@ -892,22 +948,7 @@ export async function rollbackPartialSetup(tenantId: string, userId: string): Pr
       await tx.execute(sql`DELETE FROM firms WHERE created_by_user_id = ${userId}`);
       await tx.delete(userTenantAccess).where(sql`${userTenantAccess.tenantId} = ${tenantId}`);
       await tx.delete(users).where(sql`${users.id} = ${userId}`);
-      const tablesResult = await tx.execute(sql`
-        SELECT c.table_name
-        FROM information_schema.columns c
-        JOIN information_schema.tables t
-          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-        WHERE c.column_name = 'tenant_id'
-          AND c.table_schema = 'public'
-          AND t.table_type = 'BASE TABLE'
-          AND c.table_name NOT IN ('tenants', 'users', 'user_tenant_access')
-        ORDER BY c.table_name
-      `);
-      for (const row of tablesResult.rows as { table_name: string }[]) {
-        if (!IDENT_RE.test(row.table_name)) continue;
-        await tx.execute(sql`DELETE FROM ${sql.identifier(row.table_name)} WHERE tenant_id = ${tenantId}`);
-      }
-      await tx.delete(tenants).where(sql`${tenants.id} = ${tenantId}`);
+      await deleteTenantScopedRows(tx, tenantId);
     });
     // eslint-disable-next-line no-console
     console.warn(`[setup] rolled back partially-created tenant ${tenantId} after a provisioning failure`);
