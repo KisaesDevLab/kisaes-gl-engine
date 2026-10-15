@@ -168,15 +168,23 @@ describe('desktop mode', () => {
     expect('CL_TOKEN' in env).toBe(false);
   });
 
-  it('bind: required, loopback only unless CL_LAN=1', () => {
+  it('bind: required, loopback only', () => {
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: undefined })))).toBe('CL_BIND_REQUIRED');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: 'localhost:3001' })))).toBe('CL_BIND_INVALID');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '0.0.0.0:0' })))).toBe('CL_BIND_NOT_LOOPBACK');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '192.168.1.5:3001' })))).toBe('CL_BIND_NOT_LOOPBACK');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '[::]:0' })))).toBe('CL_BIND_NOT_LOOPBACK');
-    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '0.0.0.0:0', CL_LAN: '1' })))).toBe('NO_ERROR');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '[::1]:4000' })))).toBe('NO_ERROR');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '127.0.0.2:4000' })))).toBe('NO_ERROR');
+  });
+
+  it('CL_LAN=1 is refused (no TLS yet), whatever the address', () => {
+    for (const bind of ['0.0.0.0:0', '[::]:0', '8.8.8.8:3001', '192.168.1.5:3001', '[fd00::1]:0', '127.0.0.1:0']) {
+      expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: bind, CL_LAN: '1' }))), bind).toBe('CL_LAN_UNSUPPORTED');
+    }
+    // Any other value is not LAN mode: loopback rules apply.
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '0.0.0.0:0', CL_LAN: '0' })))).toBe('CL_BIND_NOT_LOOPBACK');
+    expect(loadDesktopProfile(desktopEnv({ CL_LAN: '0' })).lan).toBe(false);
   });
 
   it('parseBind handles v4, v6, port range', () => {

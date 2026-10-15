@@ -57,9 +57,10 @@ export function hostAllowed(hostHeader: string | undefined): boolean {
   const h = hostHeader.trim().toLowerCase();
   const port = String(bound.port);
   if (isUnspecified(bound.host)) {
-    // CL_LAN=1 bound to all interfaces: clients may use any name or
-    // address of this machine, so only the port is checked. Origin
-    // rejection and the token still apply.
+    // Bound to all interfaces: clients may use any name or address of
+    // this machine, so only the port is checked. Origin rejection and the
+    // token still apply. Unreachable today: the profile refuses CL_LAN=1
+    // (CL_LAN_UNSUPPORTED) and every non-loopback bind; revisit with P33.
     return h.endsWith(`:${port}`);
   }
   const literal = bound.host.includes(':') ? `[${bound.host}]` : bound.host;

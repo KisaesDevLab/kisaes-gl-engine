@@ -173,7 +173,7 @@ afterAll(async () => {
 // --- startup refusals (no database needed) --------------------------------
 
 describe('desktop startup refusals', () => {
-  it('refuses a non-loopback bind without CL_LAN: one fatal JSON line, exit 78', async () => {
+  it('refuses a non-loopback bind: one fatal JSON line, exit 78', async () => {
     const e = spawnEngine({ CL_BIND: '0.0.0.0:0', DATABASE_URL: urlFor('unused') });
     try {
       const r = await e.ready;
@@ -454,13 +454,11 @@ describe('database role (non-superuser owner)', () => {
 });
 
 describe('CL_LAN=1', () => {
-  it('allows binding all interfaces', async () => {
-    if (!dbReady) return;
-    const e = spawnEngine({ DATABASE_URL: urlFor(DB_NAME), CL_BIND: '0.0.0.0:0', CL_LAN: '1' });
+  it('is refused until LAN mode has TLS: one fatal JSON line, exit 78', async () => {
+    const e = spawnEngine({ DATABASE_URL: urlFor('unused'), CL_BIND: '0.0.0.0:0', CL_LAN: '1' });
     try {
-      const r = await e.ready;
-      expect(r).toMatchObject({ host: '0.0.0.0' });
-      if ('port' in r) expect((await call(r.port, '/api/v1/ping')).status).toBe(200);
+      expect(await e.ready).toEqual({ exitCode: 78 });
+      expect(fatalLine(e)).toMatchObject({ event: 'fatal', code: 'CL_LAN_UNSUPPORTED' });
     } finally {
       await stopEngine(e);
     }

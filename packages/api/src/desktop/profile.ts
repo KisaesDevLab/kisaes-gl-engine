@@ -176,11 +176,22 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
     throw new DesktopConfigError('CL_BIND_REQUIRED', 'CL_BIND is required in desktop mode (e.g. 127.0.0.1:0).');
   }
   const bind = parseBind(bindRaw);
-  const lan = env['CL_LAN'] === '1';
-  if (!isLoopback(bind.host) && !lan) {
+  // LAN mode is refused until P33 adds TLS: the engine speaks plain HTTP,
+  // so a LAN bind would put the launch token, passwords and books on the
+  // wire in clear text. When P33 lands, CL_LAN=1 will accept only private
+  // literals (RFC 1918 10/8, 172.16/12, 192.168/16; IPv6 ULA fc00::/7;
+  // link-local 169.254/16 and fe80::/10) — never 0.0.0.0, :: or a public
+  // address — and only with TLS configured.
+  if (env['CL_LAN'] === '1') {
+    throw new DesktopConfigError(
+      'CL_LAN_UNSUPPORTED',
+      'CL_LAN=1 is not supported yet: LAN mode needs TLS. Bind to a loopback address.',
+    );
+  }
+  if (!isLoopback(bind.host)) {
     throw new DesktopConfigError(
       'CL_BIND_NOT_LOOPBACK',
-      `CL_BIND ${bindRaw} is not a loopback address; set CL_LAN=1 to allow network access.`,
+      `CL_BIND ${bindRaw} is not a loopback address (127.0.0.0/8 or ::1).`,
     );
   }
 
@@ -242,7 +253,8 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
     logMaxBytes,
     logKeep,
     offline: offlineRaw,
-    lan,
+    // Always false until P33 (CL_LAN=1 is refused above).
+    lan: false,
     requireNonSuperuser: env['CL_REQUIRE_NON_SUPERUSER'] === '1',
   };
   return current;
