@@ -28,16 +28,15 @@ import {
 } from './installation-validator.js';
 import { sentinelAudit } from './sentinel-audit.js';
 import { restoreIntentExists } from '../services/restore-intent.service.js';
+import { readDbSuperuser } from './db-role.js';
+import { desktopProfile } from '../desktop/profile.js';
+import { desktopWarning } from '../desktop/fatal.js';
 
 /**
- * Preflight — runs migrations, gathers DB / sentinel / host-id state, calls
- * the pure validator, and either regenerates the sentinel (Case 3 / new-host
- * restore) or returns a cached ValidationResult so the caller can start the
- * diagnostic app instead of the normal app.
- *
- * Called by bootstrap.ts before anything else.
+ * Step 1 of preflight, shared by the server and desktop paths. Returns a
+ * blocked result, or null when the schema is current.
  */
-export async function runPreflight(): Promise<ValidationResult> {
+async function runMigrationStep(): Promise<Extract<ValidationResult, { status: 'blocked' }> | null> {
   // Step 1: migrations must run so `system_settings` is guaranteed to exist.
   // This is a no-op on an already-migrated DB.
   //
@@ -110,6 +109,20 @@ export async function runPreflight(): Promise<ValidationResult> {
     }
     console.log(`[preflight] migrations up to date (${status.applied}/${status.total})`);
   }
+  return null;
+}
+
+/**
+ * Preflight — runs migrations, gathers DB / sentinel / host-id state, calls
+ * the pure validator, and either regenerates the sentinel (Case 3 / new-host
+ * restore) or returns a cached ValidationResult so the caller can start the
+ * diagnostic app instead of the normal app.
+ *
+ * Called by bootstrap.ts before anything else.
+ */
+export async function runPreflight(): Promise<ValidationResult> {
+  const migrationBlock = await runMigrationStep();
+  if (migrationBlock) return migrationBlock;
 
   // Step 2: gather the current DB installation_id.
   let dbInstallationId: string | null = null;
@@ -327,6 +340,53 @@ function blockedEvent(
     default:
       return 'installation.mismatch_detected';
   }
+}
+
+export type DesktopPreflightResult =
+  | { status: 'ok'; dbSuperuser: boolean }
+  | { status: 'blocked'; code: string; details: string };
+
+/**
+ * Desktop preflight (CL_MODE=desktop). Runs the same migration step as the
+ * server, then checks the database role. It skips the sentinel / host-id
+ * installation checks: the desktop app owns install identity and restores
+ * its own database cluster, so those appliance guards would only block a
+ * legitimate restore (and their fallback apps are never started on
+ * desktop).
+ */
+export async function runDesktopPreflight(): Promise<DesktopPreflightResult> {
+  const migrationBlock = await runMigrationStep();
+  if (migrationBlock) {
+    return { status: 'blocked', code: migrationBlock.code, details: migrationBlock.details };
+  }
+
+  let superuser: boolean;
+  try {
+    superuser = await readDbSuperuser();
+  } catch (err) {
+    return {
+      status: 'blocked',
+      code: 'DB_ROLE_UNREADABLE',
+      details: `cannot read the database role: ${(err as Error).message}`,
+    };
+  }
+  if (superuser) {
+    if (desktopProfile().requireNonSuperuser) {
+      return {
+        status: 'blocked',
+        code: 'DB_SUPERUSER_FORBIDDEN',
+        details:
+          'The database role is a superuser and CL_REQUIRE_NON_SUPERUSER=1. ' +
+          'Connect as a NOSUPERUSER role that owns the database.',
+      };
+    }
+    desktopWarning(
+      'DB_SUPERUSER',
+      'The database role is a superuser. Run the engine as a NOSUPERUSER role that owns its database.',
+    );
+  }
+  console.log('[preflight] desktop preflight ok');
+  return { status: 'ok', dbSuperuser: superuser };
 }
 
 // Reference `env` so the import is not tree-shaken. Preflight does not use

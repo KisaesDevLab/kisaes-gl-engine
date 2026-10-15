@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { desktopFatal } from '../desktop/fatal.js';
 
 export const envSchema = z.object({
   // Require the postgres(ql):// scheme explicitly. z.string().url() accepts
@@ -458,6 +459,13 @@ function loadEnv(): Env {
 
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
+    if (process.env['CL_MODE']?.trim().toLowerCase() === 'desktop') {
+      // Field names and messages only — never values.
+      const fields = Object.entries(result.error.flatten().fieldErrors)
+        .map(([k, msgs]) => `${k}: ${(msgs ?? []).join('; ')}`)
+        .join(', ');
+      desktopFatal('ENV_INVALID', `Invalid environment variables: ${fields}`);
+    }
     console.error('Invalid environment variables:', result.error.flatten().fieldErrors);
     process.exit(1);
   }

@@ -21,6 +21,8 @@ import * as coaTemplatesService from './services/coa-templates.service.js';
 import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import { seedDefaultPrompts } from './services/ai-prompt.service.js';
 import type { Server } from 'http';
+import { isDesktop } from './desktop/profile.js';
+import { desktopFatal } from './desktop/fatal.js';
 
 // Graceful shutdown deadline. After SIGTERM we stop accepting new
 // connections and wait up to this long for in-flight requests to drain
@@ -240,6 +242,9 @@ async function start() {
 }
 
 start().catch((err) => {
+  if (isDesktop()) {
+    desktopFatal('STARTUP_FAILED', err instanceof Error ? err.message : String(err), 1);
+  }
   console.error('Failed to start server:', err);
   process.exit(1);
 });
