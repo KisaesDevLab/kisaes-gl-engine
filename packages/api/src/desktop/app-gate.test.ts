@@ -148,4 +148,13 @@ describe('app.ts in server mode (CL_MODE unset)', () => {
       expect(statuses.has(429)).toBe(true);
     });
   }, 120_000);
+
+  it('has no desktop-only routes', async () => {
+    const app = await loadApp('server');
+    await withServer(app, async (port) => {
+      const info = await fetch(`http://127.0.0.1:${port}/api/v1/desktop/info`);
+      expect(info.status).toBe(404);
+      expect(((await info.json()) as { error: { code: string } }).error.code).toBe('NOT_FOUND');
+    });
+  }, 120_000);
 });

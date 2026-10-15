@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -252,6 +252,155 @@ describe('desktop engine on port 0', () => {
     expect(e!.stdout.join(' ')).not.toContain(TOKEN);
     expect(e!.stderr.join(' ')).not.toContain(TOKEN);
   });
+});
+
+describe('desktop first run: info and initialize', () => {
+  let e: Engine | undefined;
+  let port = 0;
+  const owner = { email: 'owner@example.com', displayName: 'Pat Owner', password: 'correct horse battery' };
+
+  beforeAll(async () => {
+    if (!dbReady) return;
+    e = spawnEngine({ DATABASE_URL: urlFor(DB_NAME) });
+    const r = await e.ready;
+    if (!('port' in r)) throw new Error(`engine did not start (exit ${r.exitCode}): ${e.stderr.slice(-30).join(' | ')}`);
+    port = r.port;
+  }, BOOT_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await stopEngine(e);
+  }, 60_000);
+
+  it('info reports a fresh desktop install', async () => {
+    if (!dbReady) return;
+    const r = await call(port, '/api/v1/desktop/info');
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({
+      mode: 'desktop',
+      queueBackend: 'none',
+      offline: 'auto',
+      lan: false,
+      dataDirExists: true,
+      initialized: false,
+    });
+    expect(typeof r.json.dbSuperuser).toBe('boolean');
+  });
+
+  it('rejects an invalid first-run body', async () => {
+    if (!dbReady) return;
+    const r = await call(port, '/api/v1/desktop/initialize', {
+      method: 'POST',
+      body: { admin: { ...owner, password: 'short' }, company: { name: 'Acme' } },
+    });
+    expect(r.status).toBe(400);
+    expect(r.json.error.code).toBe('VALIDATION_ERROR');
+    const noCompany = await call(port, '/api/v1/desktop/initialize', { method: 'POST', body: { admin: owner } });
+    expect(noCompany.status).toBe(400);
+  });
+
+  it('creates the owner and first company, writes no secrets, then refuses a second run', async () => {
+    if (!dbReady) return;
+    const r = await call(port, '/api/v1/desktop/initialize', {
+      method: 'POST',
+      body: { admin: owner, company: { name: 'Acme Plumbing LLC' } },
+    });
+    expect(r.status).toBe(201);
+    expect(r.json).toEqual({ tenantId: expect.any(String), userId: expect.any(String) });
+
+    // No .env and no installation sentinel; only the non-secret marker.
+    expect(existsSync(path.join(e!.dataDir, 'config', '.env'))).toBe(false);
+    expect(existsSync(path.join(e!.dataDir, '.sentinel'))).toBe(false);
+    expect(existsSync(path.join(e!.dataDir, 'config', '.initialized'))).toBe(true);
+
+    const again = await call(port, '/api/v1/desktop/initialize', {
+      method: 'POST',
+      body: { admin: { ...owner, email: 'other@example.com' }, company: { name: 'Other' } },
+    });
+    expect(again.status).toBe(409);
+    expect(again.json.error.code).toBe('ALREADY_INITIALIZED');
+    expect((await call(port, '/api/v1/desktop/info')).json.initialized).toBe(true);
+  });
+
+  it('the owner can sign in and read the seeded chart of accounts (token + JWT)', async () => {
+    if (!dbReady) return;
+    const login = await call(port, '/api/v1/auth/login', {
+      method: 'POST',
+      body: { email: owner.email, password: owner.password },
+    });
+    expect(login.status).toBe(200);
+    const jwt = login.json.tokens.accessToken as string;
+    const accounts = await call(port, '/api/v1/accounts', { headers: { authorization: `Bearer ${jwt}` } });
+    expect(accounts.status).toBe(200);
+    // The JWT alone is not enough: the transport token is still required.
+    const noToken = await call(port, '/api/v1/accounts', { token: null, headers: { authorization: `Bearer ${jwt}` } });
+    expect(noToken.status).toBe(401);
+    expect(noToken.json.error.code).toBe('DESKTOP_TOKEN_REQUIRED');
+  });
+
+  it('the appliance setup wizard is not available', async () => {
+    if (!dbReady) return;
+    const r = await call(port, '/api/setup/initialize', { method: 'POST', body: {} });
+    expect(r.status).toBe(404);
+    expect(r.json.error.code).toBe('NOT_AVAILABLE_IN_DESKTOP');
+  });
+});
+
+describe('database role (non-superuser owner)', () => {
+  const role = { name: `cl_np_${process.pid}`, password: crypto.randomBytes(12).toString('hex') };
+  const npDb = `cl_np_db_${process.pid}_${Date.now()}`;
+  let roleReady = false;
+
+  beforeAll(async () => {
+    if (!dbReady) return;
+    try {
+      await admin(async (c) => {
+        await c.query(`CREATE ROLE ${role.name} LOGIN PASSWORD '${role.password}' NOSUPERUSER NOCREATEDB NOCREATEROLE`);
+        await c.query(`CREATE DATABASE ${npDb} OWNER ${role.name}`);
+      });
+      roleReady = true;
+    } catch (err) {
+      console.warn(`[desktop-boot] skipping non-superuser boot: ${(err as Error).message}`);
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    if (!roleReady) return;
+    await admin(async (c) => {
+      await c.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`, [npDb]);
+      await c.query(`DROP DATABASE IF EXISTS ${npDb}`);
+      await c.query(`DROP ROLE IF EXISTS ${role.name}`);
+    }).catch(() => undefined);
+  }, 60_000);
+
+  it('a NOSUPERUSER database owner migrates a fresh database and boots under CL_REQUIRE_NON_SUPERUSER=1', async () => {
+    if (!roleReady) return;
+    const e = spawnEngine({ DATABASE_URL: urlFor(npDb, role), CL_REQUIRE_NON_SUPERUSER: '1' });
+    try {
+      const r = await e.ready;
+      if (!('port' in r)) throw new Error(`engine did not start (exit ${r.exitCode}): ${e.stderr.slice(-30).join(' | ')}`);
+      const info = await call(r.port, '/api/v1/desktop/info');
+      expect(info.json.dbSuperuser).toBe(false);
+      expect(e.stderr.join(' ')).not.toContain('DB_SUPERUSER');
+      expect(e.stderr.join(' ')).not.toContain(role.password);
+    } finally {
+      await stopEngine(e);
+    }
+  }, BOOT_TIMEOUT_MS);
+
+  it('a superuser role is refused under CL_REQUIRE_NON_SUPERUSER=1 (and only warned about otherwise)', async () => {
+    if (!dbReady) return;
+    const isSuper = await admin(async (c) =>
+      (await c.query('SELECT rolsuper FROM pg_roles WHERE rolname = current_user')).rows[0]?.rolsuper === true,
+    );
+    if (!isSuper) return; // the test role is not a superuser: nothing to refuse
+    const e = spawnEngine({ DATABASE_URL: urlFor(DB_NAME), CL_REQUIRE_NON_SUPERUSER: '1' });
+    try {
+      expect(await e.ready).toEqual({ exitCode: 78 });
+      expect(fatalLine(e)?.code).toBe('DB_SUPERUSER_FORBIDDEN');
+    } finally {
+      await stopEngine(e);
+    }
+  }, BOOT_TIMEOUT_MS);
 });
 
 describe('CL_LAN=1', () => {

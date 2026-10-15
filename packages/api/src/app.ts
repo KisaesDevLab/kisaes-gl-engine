@@ -507,6 +507,13 @@ app.use('/api/v1/fs-fonts', fsFontsPublicRouter);
 import { publicReportsRouter } from './routes/reports-public.routes.js';
 serverOnly.use('/api/reports/public', publicReportsRouter);
 
+// Desktop-only first-run and info routes (token-gated; see
+// routes/desktop.routes.ts). Not mounted for the server appliance.
+import { desktopRouter } from './routes/desktop.routes.js';
+if (isDesktop()) {
+  app.use('/api/v1/desktop', desktopRouter);
+}
+
 // Routes
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/company', companyRouter);
