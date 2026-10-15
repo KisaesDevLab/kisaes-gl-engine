@@ -109,14 +109,14 @@ function shapeArAgingForPdf(data: ArAgingSummaryData): unknown {
 export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
   'profit-loss': async (tenantId, companyId, params, opts) => {
     // Comparative mode mirrors the standalone report's Compare selector
-    // (previous period / previous year / multi-period trend, same 6-month
-    // default the screen uses). buildComparativePL doesn't take a tag
+    // (previous period / previous year / multi-period trend — one column
+    // per month of the pack range, as on screen). buildComparativePL doesn't take a tag
     // filter, same as the standalone route.
     const mode = compareModeOf(opts);
     const data = mode
       ? await comparisonService.buildComparativePL(
           tenantId, params['start_date']!, params['end_date']!, opts.basis,
-          mode, 6, 'month', companyId, opts.groupBy,
+          mode, null, 'month', companyId, opts.groupBy,
         )
       : await reportService.buildProfitAndLoss(
           tenantId, params['start_date']!, params['end_date']!, opts.basis, companyId, opts.tagId, opts.groupBy,

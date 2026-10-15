@@ -206,6 +206,41 @@ function getMultiPeriodRanges(endDate: string, periods: number, periodType: Peri
   return ranges;
 }
 
+// Multi-period columns spanning the selected range: one column per
+// month / calendar quarter / fiscal year from the period containing
+// startDate through the one containing endDate. The first and last
+// columns are clipped to the range so the Total column equals the
+// standard P&L for the same dates. Capped at MAX_RANGE_PERIODS columns
+// (the most recent ones are kept) — each column is a full P&L query.
+const MAX_RANGE_PERIODS = 60;
+export function getRangePeriods(startDate: string, endDate: string, periodType: PeriodType, fyStartMonth: number = 1): DateRange[] {
+  const start = new Date(startDate + 'T00:00:00Z');
+  const end = new Date(endDate + 'T00:00:00Z');
+  if (!(start.getTime() <= end.getTime())) return getMultiPeriodRanges(endDate, 1, periodType, fyStartMonth);
+  // Start of the period containing `start`.
+  let cursor: Date;
+  if (periodType === 'month') {
+    cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  } else if (periodType === 'quarter') {
+    cursor = new Date(Date.UTC(start.getUTCFullYear(), Math.floor(start.getUTCMonth() / 3) * 3, 1));
+  } else {
+    let fyY = start.getUTCFullYear();
+    if (start.getUTCMonth() + 1 < fyStartMonth) fyY--;
+    cursor = new Date(Date.UTC(fyY, fyStartMonth - 1, 1));
+  }
+  const step = periodType === 'month' ? 1 : periodType === 'quarter' ? 3 : 12;
+  const iso = (d: Date) => d.toISOString().split('T')[0]!;
+  const ranges: DateRange[] = [];
+  while (cursor.getTime() <= end.getTime()) {
+    const pEnd = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + step, 0));
+    const s = cursor.getTime() < start.getTime() ? start : cursor;
+    const e = pEnd.getTime() > end.getTime() ? end : pEnd;
+    ranges.push({ startDate: iso(s), endDate: iso(e), label: formatLabel(cursor, pEnd) });
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + step, 1));
+  }
+  return ranges.slice(-MAX_RANGE_PERIODS);
+}
+
 function formatLabel(start: Date, end: Date): string {
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   // UTC getters — these Dates are always UTC-midnight calendar days.
@@ -221,7 +256,10 @@ function formatLabelStr(startDate: string, endDate: string): string {
 
 export async function buildComparativePL(
   tenantId: string, startDate: string, endDate: string, basis: Basis,
-  compareMode: CompareMode, periods: number = 6, periodType: PeriodType = 'month',
+  // periods: explicit column count walked back from endDate; null =
+  // one column per period across startDate..endDate (the screen's
+  // Monthly Breakdown — it must show every month in the chosen range).
+  compareMode: CompareMode, periods: number | null = null, periodType: PeriodType = 'month',
   companyId: string | null = null,
   // Optional grouping mode (?group_by=detail_type) -- additive `groups`
   // field per section; existing comparative shape untouched.
@@ -232,7 +270,9 @@ export async function buildComparativePL(
     const fyStartMonth = periodType === 'year'
       ? await reportService.getFiscalYearStart(tenantId, companyId)
       : 1;
-    const ranges = getMultiPeriodRanges(endDate, periods, periodType, fyStartMonth);
+    const ranges = periods && periods > 0
+      ? getMultiPeriodRanges(endDate, periods, periodType, fyStartMonth)
+      : getRangePeriods(startDate, endDate, periodType, fyStartMonth);
     const columns = ranges.map((r) => ({ label: r.label, startDate: r.startDate, endDate: r.endDate }));
     columns.push({ label: 'Total', startDate: '', endDate: '' });
 

@@ -67,7 +67,7 @@ describe('REPORT_PACK_RENDERERS profit-loss', () => {
     );
     expect(buildProfitAndLoss).not.toHaveBeenCalled();
     expect(buildComparativePL).toHaveBeenCalledWith(
-      TENANT, '2026-01-01', '2026-03-31', 'cash', 'previous_period', 6, 'month', COMPANY, 'detail_type',
+      TENANT, '2026-01-01', '2026-03-31', 'cash', 'previous_period', null, 'month', COMPANY, 'detail_type',
     );
     // showPct rides along so the export gains the % companion columns.
     expect(out).toEqual({ kind: 'cmp-pl', showPct: true });

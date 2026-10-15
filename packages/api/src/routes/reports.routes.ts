@@ -1027,12 +1027,15 @@ reportsRouter.get('/profit-loss', async (req, res) => {
     const data = await comparisonService.buildComparativePL(
       req.tenantId, sd, ed, b,
       compare as any,
-      parseInt(periods || '6'),
+      periods ? parseInt(periods, 10) || null : null,
       (period_type as any) || 'month',
       companyId,
       readGroupBy(req),
     );
-    await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
+    // A full-year Monthly Breakdown is 13 amount columns — too wide for
+    // portrait letter, so the PDF goes landscape past a handful of columns.
+    const wide = Array.isArray(data.columns) && data.columns.length > 7;
+    await respond(res, { ...data, ...(wide ? { _landscape: true } : {}), ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   } else {
     const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
     await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
