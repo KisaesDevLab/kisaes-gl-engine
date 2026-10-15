@@ -6,6 +6,7 @@ import RedisPkg from 'ioredis';
 import { RedisStore, type SendCommandFn } from 'rate-limit-redis';
 import { MemoryStore, type Store, type Options, type ClientRateLimitInfo } from 'express-rate-limit';
 import { recordSecurityEvent } from './security-audit.js';
+import { redisEnabled } from '../desktop/profile.js';
 
 // ioredis v5 ships a CommonJS default export; TS sees it as a
 // namespace through node's interop. Unwrap to the constructor and
@@ -181,6 +182,8 @@ class ResilientStore implements Store {
 
 export function getRateLimitStore(prefix: string): Store | undefined {
   if (process.env['RATE_LIMIT_REDIS'] !== '1') return undefined;
+  // Desktop refuses RATE_LIMIT_REDIS=1 at startup; belt and braces.
+  if (!redisEnabled()) return undefined;
   const client = getClient();
   // The ioredis `call` signature and rate-limit-redis's
   // `sendCommand` expectation agree at runtime but the TS types don't

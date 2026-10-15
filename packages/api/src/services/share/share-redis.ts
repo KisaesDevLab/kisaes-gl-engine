@@ -12,6 +12,7 @@ import RedisPkg from 'ioredis';
 import { randomBytes } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { log } from '../../utils/logger.js';
+import { redisEnabled } from '../../desktop/profile.js';
 
 const Redis = (RedisPkg as unknown as { default?: typeof import('ioredis').default }).default
   ?? (RedisPkg as unknown as typeof import('ioredis').default);
@@ -26,6 +27,9 @@ let subClient: RedisClient | null = null;
 // env.ts requires REDIS_URL whenever SHARE_ENABLED is on, so this only
 // throws when share code runs with the feature off.
 function shareRedisUrl(): string {
+  // Desktop forces SHARE_ENABLED=false and never mounts the share routes;
+  // refuse rather than dial a Redis that is not there.
+  if (!redisEnabled()) throw new Error('Screen share is not available without Redis');
   if (!env.REDIS_URL) throw new Error('Screen share needs REDIS_URL');
   return env.REDIS_URL;
 }
