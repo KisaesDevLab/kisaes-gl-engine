@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import nodemailer from 'nodemailer';
+import { createMailTransport } from '../utils/mail-transport.js';
 import { getSmtpSettings, getBranding } from './admin.service.js';
 
 /** White-label app name for email subjects/bodies (falls back to the default). */
@@ -53,7 +53,7 @@ async function createTransport() {
 
   return {
     from: buildFrom(smtp.smtpFrom, smtp.smtpFromName),
-    transport: nodemailer.createTransport({
+    transport: createMailTransport({
       host: smtp.smtpHost,
       port: smtp.smtpPort,
       secure: smtp.smtpPort === 465,

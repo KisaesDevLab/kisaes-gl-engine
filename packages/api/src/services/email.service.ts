@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import nodemailer from 'nodemailer';
+import { createMailTransport } from '../utils/mail-transport.js';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { companies, contacts, transactions } from '../db/schema/index.js';
@@ -27,6 +27,9 @@ export async function sendOrThrow(
   try {
     await transport.sendMail(mail);
   } catch (err) {
+    // Already actionable (e.g. 503 OFFLINE_UNAVAILABLE from the desktop
+    // transport in utils/mail-transport.ts): pass it through unchanged.
+    if (err instanceof AppError) throw err;
     const code = (err as { code?: string })?.code;
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[email] send to ${mail.to} failed:`, message);
@@ -78,7 +81,7 @@ async function createTransport(tenantId: string, companyId?: string) {
 
   return {
     from,
-    transport: nodemailer.createTransport({
+    transport: createMailTransport({
       host: smtp.smtpHost,
       port: smtp.smtpPort,
       secure: smtp.smtpPort === 465,

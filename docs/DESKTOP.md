@@ -303,6 +303,8 @@ Online-only features (cloud AI, sending email) check the network before they con
 | `on` | Online features fail at once. Nothing is probed. `/health` shows `online: false`. |
 | `off` | No checks; errors pass through unchanged. |
 
+**Email.** Every SMTP transport is built by `utils/mail-transport.ts` (`createMailTransport`). In desktop mode it sets connection and greeting timeouts of 10 s and a socket timeout of 30 s (unless the caller sets its own), and `sendMail`/`verify` run the check above first. The SMTP test endpoints answer 503 `OFFLINE_UNAVAILABLE` instead of `{success:false}` when offline. On the server the factory is plain `nodemailer.createTransport` with nodemailer's default timeouts.
+
 There is no general "is the internet up" check and nothing is contacted on a timer: the only probe goes to the host the feature is about to use. `/health` reports `online` (`null` until the first probe) and `lastOnlineCheck`. The server appliance never probes: there, `CL_OFFLINE` is always `off`, these fields stay `null`, and errors are unchanged.
 
 ## Database role

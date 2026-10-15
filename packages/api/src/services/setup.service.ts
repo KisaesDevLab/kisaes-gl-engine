@@ -8,7 +8,7 @@ import path from 'path';
 import net from 'net';
 import pg from 'pg';
 import bcrypt from 'bcrypt';
-import nodemailer from 'nodemailer';
+import { createMailTransport } from '../utils/mail-transport.js';
 import { db, pool } from '../db/index.js';
 import { tenants, users, companies, userTenantAccess } from '../db/schema/index.js';
 import { sql, asc } from 'drizzle-orm';
@@ -536,6 +536,11 @@ export interface SmtpConfig {
 }
 
 export async function testSmtpConnection(config: SmtpConfig, testEmail?: string): Promise<{ success: boolean; error?: string }> {
+  // Desktop: answer 503 OFFLINE_UNAVAILABLE within 2 s when offline,
+  // before the host check below spends its DNS lookup. No-op on the server.
+  const { ensureOnline, isOfflineUnavailable } = await import('../utils/offline.js');
+  const { smtpTarget } = await import('../utils/mail-transport.js');
+  await ensureOnline('smtp', smtpTarget({ host: config.host, port: config.port, secure: config.port === 465 }));
   try {
     // The host is tenant/operator supplied and this call opens a TCP
     // connection from inside the appliance. LAN relays are legitimate;
@@ -543,7 +548,7 @@ export async function testSmtpConnection(config: SmtpConfig, testEmail?: string)
     // metadata endpoint never are.
     const { assertHostSafe } = await import('../utils/url-safety.js');
     await assertHostSafe(config.host, 'SMTP host', { allowPrivate: true });
-    const transport = nodemailer.createTransport({
+    const transport = createMailTransport({
       host: config.host,
       port: config.port,
       secure: config.port === 465,
@@ -567,6 +572,7 @@ export async function testSmtpConnection(config: SmtpConfig, testEmail?: string)
 
     return { success: true };
   } catch (err) {
+    if (isOfflineUnavailable(err)) throw err;
     return { success: false, error: err instanceof Error ? err.message : 'SMTP test failed' };
   }
 }

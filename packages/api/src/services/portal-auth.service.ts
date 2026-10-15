@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import crypto from 'node:crypto';
-import nodemailer from 'nodemailer';
+import { createMailTransport } from '../utils/mail-transport.js';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import jwt from 'jsonwebtoken';
@@ -93,7 +93,7 @@ async function ensureSmtpTransport(): Promise<{
       },
     };
   }
-  const transport = nodemailer.createTransport({
+  const transport = createMailTransport({
     host: smtp.smtpHost,
     port: smtp.smtpPort,
     secure: smtp.smtpPort === 465,
