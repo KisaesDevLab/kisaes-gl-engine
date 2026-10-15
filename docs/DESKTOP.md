@@ -262,7 +262,7 @@ The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades 
 
 ## Database role
 
-The engine only needs to own its database: no migration creates extensions or needs superuser rights, and pg-boss creates its `pgboss` schema with the owner's `CREATE` privilege. Run it as a `NOSUPERUSER NOCREATEDB NOCREATEROLE` role that owns the database.
+The engine only needs to own its database: no migration creates extensions or needs superuser rights, and pg-boss creates its `pgboss` schema with the owner's `CREATE` privilege. Run it as a `NOSUPERUSER NOCREATEDB NOCREATEROLE` role that owns the database; `desktop/pgboss-owner-role.test.ts` boots the engine that way, pg-boss schema and a job round trip included.
 
 Desktop preflight checks `current_user` (`startup/db-role.ts`):
 
