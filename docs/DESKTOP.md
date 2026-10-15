@@ -23,6 +23,7 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `CL_LOG_MAX_BYTES` | optional | Rotation size. Default 10 MiB. |
 | `CL_LOG_KEEP` | optional | Rotated files kept (`file.1` … `file.N`). Default 5. |
 | `CL_OFFLINE` | optional | `auto` (default), `on` or `off`. How online-only features behave without a network (see Offline). Also reported by `/api/v1/desktop/info`. |
+| `CL_EGRESS_ALLOW` | optional | Comma-separated `host[:port]` (IPv6 as `[addr]:port`) added to the outbound allowlist at launch, e.g. a LAN Ollama server. Invalid entries are a fatal `CL_EGRESS_ALLOW_INVALID`. See Outbound connections. |
 | `CL_LAN` | optional | `1` is refused with a fatal `CL_LAN_UNSUPPORTED` until LAN mode gets TLS (ClientLedger P33). The engine speaks plain HTTP, so a LAN bind would send the launch token, passwords and books in clear text. P33 will accept only private literals (RFC 1918, IPv6 ULA `fc00::/7`, link-local), never `0.0.0.0`, `::` or a public address. Other values are ignored. |
 | `CL_REQUIRE_NON_SUPERUSER` | optional | `1` refuses to start when the database role is a superuser (see Database role). Off by default: the engine only warns. |
 | `QUEUE_BACKEND` | generic | `bullmq` (server default), `pgboss` or `none`. Desktop defaults to `pgboss`, and `bullmq` is refused there (see Background jobs). |
@@ -260,6 +261,32 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
 
 The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades the status. On desktop, `/health` returns 200 when the database is up.
 
+## Outbound connections (egress guard)
+
+In desktop mode, `bootstrap.ts` installs `desktop/egress-guard.ts` right after the profile loads, before any other engine module. It denies every outbound connection by default:
+
+- `net.Socket#connect` (covers `net`, `tls`, `http`, `https`, `http2` and global `fetch`);
+- `dns.lookup`, `dns.lookupService`, every `dns.resolve*` and `reverse`, in their callback, promise and `Resolver` forms, so a blocked name is never sent to a DNS server;
+- UDP (`dgram`) `send` and `connect`.
+
+Allowed destinations:
+
+| Destination | How |
+|---|---|
+| Loopback | `127.0.0.0/8`, `::1`, `::ffff:127.0.0.0/104`, `localhost` |
+| Local IPC | Unix sockets and Windows named pipes |
+| The database | `DATABASE_URL` host, on its port |
+| Launch allowlist | `CL_EGRESS_ALLOW` |
+| Features the owner turned on | Registered at runtime with `setEgressAllowance(source, [{host, port}])`, e.g. an AI provider or SMTP server once its key or password is supplied for the session |
+
+Matching is by host (and port when the entry has one), never by request context, because connection pools open sockets from any context. IP literals are matched exactly; an allowed name does not allow its IP address or other spellings of it.
+
+A blocked connection fails like a refused one: the socket gets an `EGRESS_BLOCKED` error on the next tick, before any DNS query or packet. The guard logs `{"component":"egress-guard","event":"blocked","host":…}` at warn level, at most once a minute per host, with no port or payload. Removing an allowance stops new connections; an open keep-alive socket can be reused until it idles out.
+
+Not covered: child processes (`pdftoppm`, `tesseract`, Chromium for PDFs, CLI tools). Desktop mode does not run the features that start network tools (tunnels, Tailscale). The invoice and portal PDF renderers block network requests from the page; the report PDF export (`report-export.service.ts`) does not yet, so a remote URL inside report HTML could be fetched by Chromium (follow-up).
+
+The server appliance never installs the guard.
+
 ## Offline
 
 Online-only features (cloud AI, sending email) check the network before they connect, through `utils/offline.ts`. When the computer is offline they fail within 2 seconds with HTTP 503:
@@ -326,7 +353,6 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 
 These come as separate changes:
 
-- the outbound-connection guard;
 - the OpenAPI export;
 - tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`);
 - per-session AI and SMTP secrets.

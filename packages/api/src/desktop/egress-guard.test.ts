@@ -1,0 +1,308 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
+
+// desktop/egress-guard.ts: default-deny outbound connections. Every test
+// installs the guard and the afterEach restores the patched builtins, since
+// the suite runs all files in one process. Blocked destinations are never
+// contacted (that is the point), so the file needs no internet; allowed
+// destinations are loopback test servers.
+
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import net from 'node:net';
+import tls from 'node:tls';
+import http from 'node:http';
+import dns from 'node:dns';
+import dgram from 'node:dgram';
+import type { AddressInfo } from 'node:net';
+import pg from 'pg';
+import {
+  EgressBlockedError,
+  _uninstallEgressGuardForTests,
+  clearEgressAllowance,
+  egressAllowlist,
+  installEgressGuard,
+  isEgressAllowed,
+  isEgressGuardInstalled,
+  isLoopbackHost,
+  parseAllowList,
+  setEgressAllowance,
+} from './egress-guard.js';
+import { DesktopConfigError } from './profile.js';
+
+const ORIGINAL_CONNECT = net.Socket.prototype.connect;
+const ORIGINAL_LOOKUP = dns.lookup;
+
+let lookupSpy: unknown;
+
+function install(allow?: string) {
+  installEgressGuard({ databaseUrl: 'postgresql://u:p@db.internal:5544/books', allow });
+}
+
+beforeEach(() => {
+  // Spy BEFORE install so the guard wraps the spy: a call that reaches the
+  // spy is a lookup that would have gone to the resolver.
+  lookupSpy = vi.spyOn(dns, 'lookup');
+});
+
+afterEach(() => {
+  _uninstallEgressGuardForTests();
+  vi.restoreAllMocks();
+});
+
+function socketError(s: net.Socket): Promise<NodeJS.ErrnoException> {
+  return new Promise((resolve, reject) => {
+    s.once('error', resolve);
+    s.once('connect', () => {
+      s.destroy();
+      reject(new Error('connected, expected EGRESS_BLOCKED'));
+    });
+  });
+}
+
+async function server(): Promise<{ port: number; close: () => Promise<void> }> {
+  const srv = http.createServer((_req, res) => res.end('ok'));
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  return {
+    port: (srv.address() as AddressInfo).port,
+    close: () => new Promise<void>((r) => { srv.closeAllConnections(); srv.close(() => r()); }),
+  };
+}
+
+// Resolves every name to loopback without DNS, in both lookup styles net uses.
+const fakeLookup = ((_h: string, opts: unknown, cb: (...a: unknown[]) => void) => {
+  if (opts && typeof opts === 'object' && (opts as { all?: boolean }).all) cb(null, [{ address: '127.0.0.1', family: 4 }]);
+  else cb(null, '127.0.0.1', 4);
+}) as unknown as net.LookupFunction;
+
+describe('blocked destinations (no allowance)', () => {
+  it('net.connect to a hostname: EGRESS_BLOCKED, no DNS lookup', async () => {
+    install();
+    const err = await socketError(net.connect(443, 'example.com'));
+    expect(err).toBeInstanceOf(EgressBlockedError);
+    expect(err.code).toBe('EGRESS_BLOCKED');
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it('tls.connect: EGRESS_BLOCKED', async () => {
+    install();
+    const err = await socketError(tls.connect({ host: 'example.com', port: 443, servername: 'example.com' }));
+    expect(err.code).toBe('EGRESS_BLOCKED');
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it('http.get: request error EGRESS_BLOCKED', async () => {
+    install();
+    const err = await new Promise<NodeJS.ErrnoException>((resolve) => {
+      http.get('http://example.com/', () => resolve(new Error('unexpected response'))).on('error', resolve);
+    });
+    expect(err.code).toBe('EGRESS_BLOCKED');
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it('global fetch (undici): rejects with EGRESS_BLOCKED as the cause', async () => {
+    install();
+    const err = await fetch('https://api.github.com/repos/x/y/releases/latest').then(
+      () => null,
+      (e: unknown) => e as { cause?: { code?: string } },
+    );
+    expect(err?.cause?.code).toBe('EGRESS_BLOCKED');
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it('IP literals that are not loopback, and odd numeric forms, are blocked', async () => {
+    install();
+    for (const host of ['93.184.215.14', '10.0.0.5', '2130706433', '0x7f.1', '2606:2800:21f:cb07:6820:80da:af6b:8b2c']) {
+      const err = await socketError(net.connect({ host, port: 443 }));
+      expect(err.code, host).toBe('EGRESS_BLOCKED');
+    }
+  });
+
+  it('dns.lookup / dns.promises.lookup / dns/promises named import: blocked, never resolved', async () => {
+    install();
+    const cbErr = await new Promise<NodeJS.ErrnoException | null>((r) => dns.lookup('example.com', (e) => r(e)));
+    expect(cbErr?.code).toBe('EGRESS_BLOCKED');
+    await expect(dns.promises.lookup('example.com')).rejects.toMatchObject({ code: 'EGRESS_BLOCKED' });
+    const ns = await import('node:dns/promises');
+    await expect(ns.lookup('example.com')).rejects.toMatchObject({ code: 'EGRESS_BLOCKED' });
+    const named = await import('node:dns');
+    const viaNamed = await new Promise<NodeJS.ErrnoException | null>((r) => named.lookup('example.com', (e) => r(e)));
+    expect(viaNamed?.code).toBe('EGRESS_BLOCKED');
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it('dns.lookup of an IP literal answers locally (server listen on 0.0.0.0 needs it)', async () => {
+    install();
+    const r = await dns.promises.lookup('0.0.0.0');
+    expect(r).toEqual({ address: '0.0.0.0', family: 4 });
+    const srv = net.createServer();
+    await new Promise<void>((res, rej) => { srv.once('error', rej); srv.listen(0, '0.0.0.0', () => res()); });
+    await new Promise<void>((res) => srv.close(() => res()));
+    // ...while a connection to a non-loopback literal stays blocked.
+    const err = await socketError(net.connect(443, '0.0.0.0'));
+    expect(err.code).toBe('EGRESS_BLOCKED');
+  });
+
+  it('dns.resolve*, Resolver and reverse: blocked (no query sent)', async () => {
+    install();
+    const viaCb = await new Promise<NodeJS.ErrnoException | null>((r) => dns.resolve4('example.com', (e) => r(e)));
+    expect(viaCb?.code).toBe('EGRESS_BLOCKED');
+    const viaResolve = await new Promise<NodeJS.ErrnoException | null>((r) => dns.resolve('example.com', 'TXT', (e) => r(e)));
+    expect(viaResolve?.code).toBe('EGRESS_BLOCKED');
+    await expect(dns.promises.resolveTxt('example.com')).rejects.toMatchObject({ code: 'EGRESS_BLOCKED' });
+    const resolver = new dns.Resolver();
+    const viaResolver = await new Promise<NodeJS.ErrnoException | null>((r) => resolver.resolveMx('example.com', (e) => r(e)));
+    expect(viaResolver?.code).toBe('EGRESS_BLOCKED');
+    await expect(new dns.promises.Resolver().resolve6('example.com')).rejects.toMatchObject({ code: 'EGRESS_BLOCKED' });
+    await expect(dns.promises.reverse('8.8.8.8')).rejects.toMatchObject({ code: 'EGRESS_BLOCKED' });
+  });
+
+  it('UDP send to a non-loopback address is blocked', async () => {
+    install();
+    const sock = dgram.createSocket('udp4');
+    try {
+      const err = await new Promise<Error | null>((r) => sock.send(Buffer.from('x'), 53, '192.0.2.1', (e) => r(e)));
+      expect((err as NodeJS.ErrnoException | null)?.code).toBe('EGRESS_BLOCKED');
+    } finally {
+      sock.close();
+    }
+  });
+
+  it('logs the host only, once per minute per host', async () => {
+    install();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await socketError(net.connect(8443, 'blocked.example'));
+    await socketError(net.connect(8443, 'blocked.example'));
+    const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('egress-guard'));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toEqual({ level: 'warn', component: 'egress-guard', event: 'blocked', host: 'blocked.example' });
+    expect(lines[0]).not.toContain('8443');
+  });
+});
+
+describe('allowed destinations', () => {
+  it('loopback by address and by name, including fetch through the undici pool', async () => {
+    install();
+    const s = await server();
+    try {
+      for (const host of ['127.0.0.1', 'localhost']) {
+        const sock = net.connect(s.port, host);
+        await new Promise<void>((res, rej) => { sock.once('connect', () => res()); sock.once('error', rej); });
+        sock.destroy();
+      }
+      const r = await fetch(`http://127.0.0.1:${s.port}/`);
+      expect(await r.text()).toBe('ok');
+    } finally {
+      await s.close();
+    }
+    expect(isLoopbackHost('127.8.9.10')).toBe(true);
+    expect(isLoopbackHost('::1')).toBe(true);
+    expect(isLoopbackHost('0:0:0:0:0:0:0:1')).toBe(true);
+    expect(isLoopbackHost('::ffff:127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('[::1]')).toBe(true);
+    expect(isLoopbackHost('LOCALHOST.')).toBe(true);
+    expect(isLoopbackHost('128.0.0.1')).toBe(false);
+    expect(isLoopbackHost('localhost.example.com')).toBe(false);
+  });
+
+  it('IPC paths (Unix sockets / named pipes) are not network egress', () => {
+    install();
+    expect(isEgressAllowed('', null)).toBe(true);
+    // connectTarget is internal; a pipe path never reaches the host check.
+    const path = process.platform === 'win32' ? '\\\\.\\pipe\\cl-egress-test-none' : '/tmp/cl-egress-test-none.sock';
+    const s = net.connect({ path });
+    return new Promise<void>((resolve) => {
+      s.once('error', (e: NodeJS.ErrnoException) => {
+        expect(e.code).not.toBe('EGRESS_BLOCKED');
+        resolve();
+      });
+    });
+  });
+
+  it('the DATABASE_URL host is allowed on its port only; its name may be resolved', () => {
+    install();
+    expect(isEgressAllowed('db.internal', 5544)).toBe(true);
+    expect(isEgressAllowed('DB.Internal.', 5544)).toBe(true);
+    expect(isEgressAllowed('db.internal', 22)).toBe(false);
+    expect(isEgressAllowed('db.internal', null)).toBe(true);
+  });
+
+  it('the real pg driver connects to the test database through the guard', async () => {
+    installEgressGuard({ databaseUrl: process.env['DATABASE_URL'] });
+    const client = new pg.Client({ connectionString: process.env['DATABASE_URL'] });
+    await client.connect();
+    try {
+      const r = await client.query('SELECT 1 AS one');
+      expect(r.rows[0]).toEqual({ one: 1 });
+    } finally {
+      await client.end();
+    }
+  });
+
+  it('CL_EGRESS_ALLOW entries (host, host:port, [v6]:port)', () => {
+    install('ollama.lan:11434, smtp.example.org ,[fd00::5]:8080');
+    expect(isEgressAllowed('ollama.lan', 11434)).toBe(true);
+    expect(isEgressAllowed('ollama.lan', 80)).toBe(false);
+    expect(isEgressAllowed('smtp.example.org', 587)).toBe(true);
+    expect(isEgressAllowed('fd00:0:0:0:0:0:0:5', 8080)).toBe(true);
+    expect(isEgressAllowed('fd00::6', 8080)).toBe(false);
+  });
+
+  it('an invalid CL_EGRESS_ALLOW is a desktop configuration error', () => {
+    expect(() => parseAllowList('good.example, bad host')).toThrow(DesktopConfigError);
+    expect(() => parseAllowList('x.example:70000')).toThrow(DesktopConfigError);
+    expect(parseAllowList(undefined)).toEqual([]);
+  });
+
+  it('runtime allowance: blocked before, allowed after, blocked again when cleared', async () => {
+    install();
+    const s = await server();
+    try {
+      // agent:false: a fresh socket per request. A revoked allowance governs
+      // NEW connections; an already-open keep-alive socket is not cut.
+      const get = () =>
+        new Promise<{ code?: string; body?: string }>((resolve) => {
+          http
+            .get({ host: 'ai.provider.test', port: s.port, path: '/', lookup: fakeLookup, agent: false }, (res) => {
+              let body = '';
+              res.on('data', (c) => (body += c));
+              res.on('end', () => resolve({ body }));
+            })
+            .on('error', (e: NodeJS.ErrnoException) => resolve({ code: e.code }));
+        });
+
+      expect(await get()).toEqual({ code: 'EGRESS_BLOCKED' });
+
+      setEgressAllowance('ai.test', [{ host: 'ai.provider.test', port: s.port }]);
+      expect(egressAllowlist()).toContainEqual({ source: 'ai.test', host: 'ai.provider.test', port: s.port });
+      expect(await get()).toEqual({ body: 'ok' });
+
+      // Port-scoped: another port on the same host stays blocked.
+      expect(isEgressAllowed('ai.provider.test', s.port + 1)).toBe(false);
+
+      clearEgressAllowance('ai.test');
+      expect(await get()).toEqual({ code: 'EGRESS_BLOCKED' });
+
+      setEgressAllowance('ai.test', [{ host: 'ai.provider.test' }]);
+      expect(isEgressAllowed('ai.provider.test', 1234)).toBe(true);
+      setEgressAllowance('ai.test', []);
+      expect(isEgressAllowed('ai.provider.test', 1234)).toBe(false);
+    } finally {
+      await s.close();
+    }
+  });
+});
+
+describe('install / uninstall', () => {
+  it('is idempotent and the test hook restores the builtins', () => {
+    install();
+    install();
+    expect(isEgressGuardInstalled()).toBe(true);
+    expect(net.Socket.prototype.connect).not.toBe(ORIGINAL_CONNECT);
+    _uninstallEgressGuardForTests();
+    expect(isEgressGuardInstalled()).toBe(false);
+    expect(net.Socket.prototype.connect).toBe(ORIGINAL_CONNECT);
+    vi.restoreAllMocks();
+    expect(dns.lookup).toBe(ORIGINAL_LOOKUP);
+  });
+});
