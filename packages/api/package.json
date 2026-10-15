@@ -16,7 +16,9 @@
     "tb:perf": "tsx src/scripts/tb-perf.ts",
     "backfill:firm-context": "tsx src/scripts/backfill-firm-context.ts",
     "rotate:encryption-keys": "tsx src/scripts/rotate-encryption-keys.ts",
-    "generate-knowledge": "tsx src/scripts/generate-knowledge.ts"
+    "generate-knowledge": "tsx src/scripts/generate-knowledge.ts",
+    "openapi:export": "tsx src/scripts/openapi-export.ts",
+    "openapi:check": "tsx src/scripts/openapi-export.ts --check"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
@@ -85,6 +87,7 @@
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "zod-to-json-schema": "^3.25.2"
   }
 }

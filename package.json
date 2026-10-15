@@ -22,6 +22,8 @@
     "license:sbom": "bash scripts/generate-sbom.sh",
     "migrations:check": "bash scripts/check-migration-policy.sh",
     "any:check": "bash scripts/check-any-baseline.sh",
+    "openapi:export": "npm run openapi:export --workspace=@kis-books/api",
+    "openapi:check": "npm run openapi:check --workspace=@kis-books/api",
     "prepare": "husky || true",
     "test:tax-oracle": "python3 -I features/tax-estimator/docs/reference-calc/rivera_fixture.py > /dev/null && python3 -I features/tax-estimator/docs/reference-calc/scenarios_fixture.py > /dev/null && python3 -I features/tax-estimator/docs/reference-calc/scenarios2_fixture.py > /dev/null && python3 -I features/tax-estimator/docs/reference-calc/dependents_fixture.py > /dev/null && python3 -I features/tax-estimator/docs/reference-calc/outside_fixture.py > /dev/null && python3 -I features/tax-estimator/docs/reference-calc/pytrend_fixture.py > /dev/null && python3 -I features/tax-estimator/docs/reference-calc/state_brackets_fixture.py > /dev/null && git diff --exit-code -- features/tax-estimator/docs/reference-calc/rivera_expected.json features/tax-estimator/docs/reference-calc/scenarios_expected.json features/tax-estimator/docs/reference-calc/scenarios2_expected.json features/tax-estimator/docs/reference-calc/dependents_expected.json features/tax-estimator/docs/reference-calc/outside_expected.json features/tax-estimator/docs/reference-calc/pytrend_expected.json features/tax-estimator/docs/reference-calc/state_brackets_expected.json"
   },
