@@ -29,7 +29,7 @@ import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 import { generateRecoveryKey } from './recovery-key.service.js';
 import { writeRecoveryFile } from './env-recovery.service.js';
 import { clearRestoreIntent } from './restore-intent.service.js';
-import { isDesktop } from '../desktop/profile.js';
+import { isDesktop, assertNoSecretWriteInDesktop } from '../desktop/profile.js';
 
 // Resolved per call (not at import) so the diagnostic app, tests and the
 // CLI scripts all honour a CONFIG_DIR set after this module was first loaded.
@@ -607,6 +607,7 @@ export interface WriteEnvFileOptions {
 }
 
 export function writeEnvFile(config: SetupConfig, options: WriteEnvFileOptions = {}): string {
+  assertNoSecretWriteInDesktop('The .env file');
   const dbUrl = buildDatabaseUrl(config.db);
   const redisUrl = config.redis.password
     ? `redis://:${encodeURIComponent(config.redis.password)}@${config.redis.host}:${config.redis.port}`

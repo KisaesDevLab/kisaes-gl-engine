@@ -292,6 +292,18 @@ export function verifyDesktopToken(header: string | string[] | undefined): boole
   return crypto.timingSafeEqual(candidate, tokenDigest);
 }
 
+/**
+ * Desktop mode never writes boot secrets (the recovery file, the sentinel,
+ * a .env): the desktop app keeps them in the OS keychain. The appliance
+ * writers call this first so a route or code path that was missed in the
+ * feature profile still cannot put them on disk. No-op on the server.
+ */
+export function assertNoSecretWriteInDesktop(what: string): void {
+  if (desktopProfile().mode === 'desktop') {
+    throw new Error(`${what} is not written in desktop mode (the desktop app keeps secrets in the OS keychain).`);
+  }
+}
+
 /** The raw launch token, for registration with the secret scrubber only. */
 export function desktopTokenForScrubber(): string | null {
   return rawTokenForScrubber;

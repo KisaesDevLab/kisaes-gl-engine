@@ -8,6 +8,7 @@ import path from 'path';
 import { canonicalize } from '../utils/canonical-json.js';
 import { crc32 } from '../utils/crc32.js';
 import { writeAtomicSync } from '../utils/atomic-write.js';
+import { assertNoSecretWriteInDesktop } from '../desktop/profile.js';
 
 /**
  * Installation sentinel file — a tamper-evident record that proves this
@@ -212,6 +213,7 @@ function parseFile(buf: Buffer): ParsedFile {
 
 /** Create and atomically write a sentinel file. Throws on any failure. */
 export function createSentinel(input: CreateSentinelInput, encryptionKey: string): void {
+  assertNoSecretWriteInDesktop('The installation sentinel');
   const header: SentinelHeader = {
     v: 1,
     installationId: input.installationId,

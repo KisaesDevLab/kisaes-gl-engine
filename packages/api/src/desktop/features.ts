@@ -48,6 +48,10 @@ export const DESKTOP_UNMOUNTED: readonly UnmountedFamily[] = [
   { prefix: '/oauth', reason: 'OAuth provider for third-party apps' },
   { prefix: '/api/v1/share', reason: 'peer screen share (needs Redis)' },
   { prefix: '/api/v1/admin/tailscale', reason: 'Tailscale remote access' },
+  // Appliance recovery file, installation id and sentinel: they write or
+  // rotate boot secrets on disk. The desktop app keeps secrets in the OS
+  // keychain and owns install identity (services also refuse the writes).
+  { prefix: '/api/v1/admin/security', reason: 'appliance recovery key, recovery file and installation id' },
   { prefix: '/api/v1/remote-backup', reason: 'cloud backup targets; the desktop app owns backups' },
   {
     prefix: '/api/v1/backup',

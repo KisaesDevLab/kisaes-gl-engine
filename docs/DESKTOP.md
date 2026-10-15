@@ -27,7 +27,7 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `CL_REQUIRE_NON_SUPERUSER` | optional | `1` refuses to start when the database role is a superuser (see Database role). Off by default: the engine only warns. |
 | `QUEUE_BACKEND` | generic | `bullmq` (server default) or `none`. Desktop defaults to `none`, and `bullmq` is refused there. |
 | `ENGINE_COMMIT` | generic | Source commit reported on `/health` (`null` when unset). Set it at build time. |
-| `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `PLAID_ENCRYPTION_KEY` | required | Unchanged. The desktop app supplies them from the OS keychain. In desktop mode the engine never writes them to disk. |
+| `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `PLAID_ENCRYPTION_KEY` | required | Unchanged. The desktop app supplies them from the OS keychain. In desktop mode the engine never writes them to disk: the routes that would are not mounted, and the recovery-file, sentinel and `.env` writers throw. |
 | `REDIS_URL` | ignored | Required only when something uses Redis: `QUEUE_BACKEND=bullmq` (the server default), `RATE_LIMIT_REDIS=1` or `SHARE_ENABLED`. |
 
 Desktop mode also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=none` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
@@ -157,6 +157,7 @@ A static test (`desktop/users-insert-sites.test.ts`) lists every place that inse
 | `/oauth` | OAuth provider for third-party apps |
 | `/api/v1/share` | Peer screen share (needs Redis) |
 | `/api/v1/admin/tailscale` | Tailscale remote access |
+| `/api/v1/admin/security` | Appliance recovery key, recovery file, installation id and credential re-encryption. They write or rotate boot secrets on disk. |
 | `/api/v1/remote-backup` | Cloud backup targets; the desktop app owns backups |
 | `/api/v1/backup` (except `/passphrase-strength`) | The desktop app owns backups; this restore writes into the current tenant without taking a backup first |
 | `/api/v1/tenant-export` | `.vmx` export and import; the desktop app uses tenant archives |

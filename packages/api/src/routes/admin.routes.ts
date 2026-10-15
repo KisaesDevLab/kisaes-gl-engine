@@ -1763,6 +1763,10 @@ async function verifyCallerPassword(userId: string, password: string): Promise<b
   return bcrypt.compare(password, row.password_hash);
 }
 
+// Desktop mode: every /security/* route below is unmounted (404
+// NOT_AVAILABLE_IN_DESKTOP, desktop/features.ts) and the recovery-file /
+// sentinel writers refuse there — the engine never writes boot secrets in
+// desktop mode.
 adminRouter.get('/security/status', async (_req, res) => {
   let sentinelHeader = null;
   if (sentinelExists()) {

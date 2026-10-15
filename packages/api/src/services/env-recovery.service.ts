@@ -7,6 +7,7 @@ import path from 'path';
 import { encryptWithPassphrase, decryptWithPassphrase } from './portable-encryption.service.js';
 import { recoveryKeyToPassphrase, parseRecoveryKey } from './recovery-key.service.js';
 import { writeAtomicSync } from '../utils/atomic-write.js';
+import { assertNoSecretWriteInDesktop } from '../desktop/profile.js';
 
 /**
  * Encrypted backup of the three env values that cannot be reconstructed
@@ -71,6 +72,7 @@ export function sourceRecoveryFileExists(): boolean {
  * key (already parsed into canonical form) and the env values to protect.
  */
 export function writeRecoveryFile(recoveryKey: string, values: RecoveryEnvValues, installationId: string | null): void {
+  assertNoSecretWriteInDesktop('The recovery file');
   const parsed = parseRecoveryKey(recoveryKey);
   const passphrase = recoveryKeyToPassphrase(parsed);
 
@@ -96,6 +98,7 @@ export function writeRecoveryFile(recoveryKey: string, values: RecoveryEnvValues
  * keeps the operator's original recovery key valid instead of rotating it.
  */
 export function writeRecoveryFileRaw(raw: Buffer): void {
+  assertNoSecretWriteInDesktop('The recovery file');
   const magic = Buffer.from('VMBP', 'ascii');
   if (raw.length < 64 || !raw.subarray(0, magic.length).equals(magic)) {
     throw new Error('not a valid recovery file: VMBP header missing');
