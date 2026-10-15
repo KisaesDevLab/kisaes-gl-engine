@@ -140,7 +140,15 @@ interface BatchRow {
   // service-layer default-tag resolver still gets a chance to fill it
   // from item/vendor/bank-rule sources.
   tagId?: string | null;
+  // Picked in the grid — preferred over the name lookup when present.
+  accountId?: string | null;
+  contactId?: string | null;
 }
+
+// Types that post against the bank / credit-card account chosen at the
+// top of the grid. Without it the create calls below would hit a
+// null pay-from / deposit-to account.
+const CONTEXT_ACCOUNT_TYPES = new Set(['expense', 'deposit', 'credit_card_charge', 'credit_card_credit', 'customer_payment']);
 
 interface RowResult {
   rowNumber: number;
@@ -154,6 +162,10 @@ interface RowResult {
 export async function validateBatch(tenantId: string, txnType: string, contextAccountId: string | null, rows: BatchRow[]): Promise<{ validCount: number; invalidCount: number; rows: RowResult[] }> {
   const results: RowResult[] = [];
   let validCount = 0, invalidCount = 0;
+
+  if (CONTEXT_ACCOUNT_TYPES.has(txnType) && !contextAccountId) {
+    throw AppError.badRequest('Choose the bank or credit card account at the top of the batch first.');
+  }
 
   // Validate context account exists (if required)
   if (contextAccountId) {
@@ -183,8 +195,14 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
       if (d > 0 && c > 0) errors.push({ field: 'debit', message: 'Cannot have both debit and credit' });
     }
 
-    // Resolve account name
-    if (row.accountName) {
+    // Resolve account: the picked id first (tenant-scoped), else by name.
+    if (row.accountId) {
+      const picked = await db.query.accounts.findFirst({
+        where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, row.accountId)),
+      });
+      if (picked) resolvedAccountId = picked.id;
+      else errors.push({ field: 'account_name', message: 'Selected account was not found' });
+    } else if (row.accountName) {
       const resolved = await resolveAccountByName(tenantId, row.accountName);
       if (resolved.match) {
         resolvedAccountId = resolved.match.id;
@@ -198,8 +216,14 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
       errors.push({ field: 'account_name', message: 'Account is required' });
     }
 
-    // Resolve contact name
-    if (row.contactName) {
+    // Resolve contact: the picked id first (tenant-scoped), else by name.
+    if (row.contactId) {
+      const picked = await db.query.contacts.findFirst({
+        where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, row.contactId)),
+      });
+      if (picked) resolvedContactId = picked.id;
+      else errors.push({ field: 'contact_name', message: 'Selected contact was not found' });
+    } else if (row.contactName) {
       const contactTypeForResolve = ['invoice', 'credit_memo', 'customer_payment'].includes(txnType) ? 'customer' : 'vendor';
       const resolved = await resolveContactByName(tenantId, row.contactName, contactTypeForResolve);
       if (resolved.match) {
@@ -311,6 +335,8 @@ export async function saveBatch(
         // does not carry a tagId field.
         txn = await expenseService.createExpense(tenantId, {
           txnDate: row.date!,
+          // Ref No. column (check / receipt #) — was silently dropped.
+          txnNumber: row.refNo?.trim() || undefined,
           contactId: contactId || undefined,
           payFromAccountId: contextAccountId!,
           lines: [{
@@ -327,7 +353,9 @@ export async function saveBatch(
         txn = await depositService.createDeposit(tenantId, {
           txnDate: row.date!,
           depositToAccountId: contextAccountId!,
-          lines: [{ accountId: accountId!, amount, description: row.memo, tagId: row.tagId ?? null }],
+          // Deposits carry the payer per line; the Received From column
+          // was previously dropped on save.
+          lines: [{ accountId: accountId!, amount, description: row.memo, tagId: row.tagId ?? null, contactId: contactId || null }],
           memo: row.memo,
         }, userId, companyId);
         break;
@@ -406,6 +434,7 @@ export async function saveBatch(
         txn = await ledger.postTransaction(tenantId, {
           txnType: 'customer_payment',
           txnDate: row.date!,
+          txnNumber: row.refNo?.trim() || undefined,
           contactId: contactId || undefined,
           memo: row.memo,
           total: amount,
@@ -461,12 +490,13 @@ export async function saveBatch(
   // Audit log for batch
   await auditLog(tenantId, 'create', 'batch', null, null, {
     txnType,
-    savedCount: savedTxns.length,
+    savedCount: new Set(savedTxns.map((t) => t.id)).size,
     createdContacts: createdContacts.length,
   }, userId);
 
   return {
-    savedCount: savedTxns.length,
+    // Transactions, not rows: a journal entry's lines share one id.
+    savedCount: new Set(savedTxns.map((t) => t.id)).size,
     skippedCount: rows.length - savedTxns.length,
     createdContacts,
     transactions: savedTxns,

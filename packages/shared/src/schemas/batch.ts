@@ -21,6 +21,11 @@ export const batchRowSchema = z.object({
   dueDate: z.string().max(40).optional(),
   invoiceNo: z.string().max(80).optional(),
   tagId: z.string().uuid().nullable().optional(),
+  // The grid's pickers hold ids; sending them avoids a lossy id → name →
+  // id round-trip (duplicate names, lists capped at 500). Names remain
+  // the path for CSV / pasted rows.
+  accountId: z.string().uuid().nullable().optional(),
+  contactId: z.string().uuid().nullable().optional(),
 });
 
 // Mirrors the cases handled in batch.service.ts's createOne switch.

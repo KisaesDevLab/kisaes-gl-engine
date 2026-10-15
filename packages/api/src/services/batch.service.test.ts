@@ -231,4 +231,107 @@ describe('Batch Service', () => {
       expect(result.match).toBeTruthy();
     });
   });
+
+  // The Batch Entry grid sends the picked account / contact ids. Every
+  // entry type must save through that path, post a balanced transaction,
+  // and never fall back to a lossy name lookup.
+  describe('grid id path — every entry type', () => {
+    let vendorId = '';
+    let customerId = '';
+    let ccAccountId = '';
+
+    beforeEach(async () => {
+      const [v] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Grid Vendor' }).returning();
+      vendorId = v!.id;
+      const [c] = await db.insert(contacts).values({ tenantId, contactType: 'customer', displayName: 'Grid Customer' }).returning();
+      customerId = c!.id;
+      const cc = await accountsService.create(tenantId, { name: 'Company Visa', accountType: 'liability', detailType: 'credit_card', accountNumber: '2100' });
+      ccAccountId = cc.id;
+      // invoice.service reads the company row for numbering.
+      await db.insert(companies).values({ tenantId, businessName: 'Grid Co', invoicePrefix: 'INV-', invoiceNextNumber: 1, defaultSalesTaxRate: '0' });
+      const ap = await accountsService.create(tenantId, { name: 'Accounts Payable', accountType: 'liability', detailType: 'accounts_payable', accountNumber: '2000' });
+      await db.update(accounts).set({ isSystem: true, systemTag: 'accounts_payable' }).where(eq(accounts.id, ap.id));
+    });
+
+    async function expectBalanced(txnId: string) {
+      const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, txnId));
+      expect(lines.length).toBeGreaterThanOrEqual(2);
+      const dr = lines.reduce((a, l) => a + Number(l.debit), 0);
+      const cr = lines.reduce((a, l) => a + Number(l.credit), 0);
+      expect(dr).toBeCloseTo(cr, 4);
+      expect(dr).toBeGreaterThan(0);
+    }
+
+    const cases: Array<{ type: string; ctx: 'bank' | 'cc' | null; row: () => Record<string, unknown> }> = [
+      { type: 'expense', ctx: 'bank', row: () => ({ accountId: expenseAccountId, contactId: vendorId, amount: 10 }) },
+      { type: 'deposit', ctx: 'bank', row: () => ({ accountId: revenueAccountId, contactId: customerId, amount: 20 }) },
+      { type: 'credit_card_charge', ctx: 'cc', row: () => ({ accountId: expenseAccountId, contactId: vendorId, amount: 30 }) },
+      { type: 'credit_card_credit', ctx: 'cc', row: () => ({ accountId: expenseAccountId, contactId: vendorId, amount: 5 }) },
+      { type: 'invoice', ctx: null, row: () => ({ accountId: revenueAccountId, contactId: customerId, amount: 100 }) },
+      { type: 'bill', ctx: null, row: () => ({ accountId: expenseAccountId, contactId: vendorId, amount: 40, invoiceNo: 'V-1' }) },
+      { type: 'credit_memo', ctx: null, row: () => ({ accountId: revenueAccountId, contactId: customerId, amount: 15 }) },
+      { type: 'customer_payment', ctx: 'bank', row: () => ({ contactId: customerId, amount: 50 }) },
+    ];
+
+    for (const c of cases) {
+      it(`saves ${c.type} from picked ids`, async () => {
+        const ctx = c.ctx === 'bank' ? bankAccountId : c.ctx === 'cc' ? ccAccountId : null;
+        // Names deliberately blank: the grid's name map can miss a pick.
+        const result = await batchService.saveBatch(tenantId, c.type, ctx, [
+          { rowNumber: 1, date: '2026-10-01', contactName: '', accountName: '', ...c.row() },
+        ], { autoCreateContacts: true });
+        expect(result.savedCount).toBe(1);
+        expect(result.createdContacts).toHaveLength(0);
+        await expectBalanced(result.transactions[0]!.id);
+        const txnId = result.transactions[0]!.id;
+        if (c.type === 'deposit') {
+          // Deposits record the payer on the credit line.
+          const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, txnId));
+          expect(lines.some((l) => l.contactId === customerId)).toBe(true);
+        } else {
+          const [txn] = await db.select().from(transactions).where(eq(transactions.id, txnId));
+          expect(txn!.contactId).toBe(c.row()['contactId']);
+        }
+      });
+    }
+
+    it('keeps the Ref No. on an expense', async () => {
+      const result = await batchService.saveBatch(tenantId, 'expense', bankAccountId, [
+        { rowNumber: 1, date: '2026-10-01', refNo: '1042', accountId: expenseAccountId, amount: 9 },
+      ]);
+      const [txn] = await db.select().from(transactions).where(eq(transactions.id, result.transactions[0]!.id));
+      expect(txn!.txnNumber).toBe('1042');
+    });
+
+    it('saves a multi-line journal entry grouped by date + Ref No.', async () => {
+      const result = await batchService.saveBatch(tenantId, 'journal_entry', null, [
+        { rowNumber: 1, date: '2026-10-01', refNo: 'JE-1', accountId: expenseAccountId, debit: 75 },
+        { rowNumber: 2, date: '2026-10-01', refNo: 'JE-1', accountId: bankAccountId, credit: 75 },
+      ]);
+      expect(result.savedCount).toBe(1);
+      await expectBalanced(result.transactions[0]!.id);
+    });
+
+    it('posts to the picked account even when another account shares its name', async () => {
+      const dup = await accountsService.create(tenantId, { name: 'Office Supplies', accountType: 'expense', accountNumber: '6401' });
+      const result = await batchService.saveBatch(tenantId, 'expense', bankAccountId, [
+        { rowNumber: 1, date: '2026-10-01', accountName: 'Office Supplies', accountId: dup.id, amount: 12 },
+      ]);
+      const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, result.transactions[0]!.id));
+      expect(lines.some((l) => l.accountId === dup.id && Number(l.debit) === 12)).toBe(true);
+    });
+
+    it('rejects an id from another tenant', async () => {
+      const v = await batchService.validateBatch(tenantId, 'expense', bankAccountId, [
+        { rowNumber: 1, date: '2026-10-01', accountId: '00000000-0000-4000-8000-000000000000', amount: 1 },
+      ]);
+      expect(v.rows[0]!.status).toBe('invalid');
+    });
+
+    it('explains a missing bank / card account instead of crashing', async () => {
+      await expect(batchService.saveBatch(tenantId, 'expense', null, [
+        { rowNumber: 1, date: '2026-10-01', accountId: expenseAccountId, amount: 1 },
+      ])).rejects.toThrow(/bank or credit card account/);
+    });
+  });
 });
