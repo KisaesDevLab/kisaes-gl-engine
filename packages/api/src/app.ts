@@ -107,6 +107,15 @@ import { swaggerSpec } from './swagger.js';
 
 export const app = express();
 
+// Desktop mode (CL_MODE=desktop): the launch-token gate is the FIRST
+// middleware so it covers every route below, including the raw-body
+// webhook routers and /health. Not mounted for the server appliance.
+import { isDesktop } from './desktop/profile.js';
+import { desktopGate } from './middleware/desktop-gate.js';
+if (isDesktop()) {
+  app.use(desktopGate());
+}
+
 // Middleware
 // Helmet defaults are tuned for HTTPS public sites. Vibe MyBooks is a
 // self-hosted appliance that operators typically reach over plain HTTP
@@ -316,6 +325,10 @@ const globalLimiter = rateLimit({
   // budget would crowd out real client traffic without adding any
   // security value (the endpoints reveal nothing tenant-specific).
   skip: (req) => {
+    // Desktop: every request comes from 127.0.0.1 and already carried the
+    // launch token (desktop gate), so a per-IP ceiling would only throttle
+    // the desktop app itself. Per-route auth limiters still apply.
+    if (req.desktopTrusted) return true;
     const p = req.path;
     // /api/peer/* is server-to-server from one PM IP for every client; it
     // carries its own per-IP and per-client limiters (routes/peer-pm.routes.ts).
