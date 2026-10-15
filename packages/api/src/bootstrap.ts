@@ -156,6 +156,11 @@ async function startDesktop(token: string | null): Promise<void> {
   registerSecret(process.env['ENCRYPTION_KEY']);
   registerSecret(process.env['PLAID_ENCRYPTION_KEY']);
   registerUrlPassword(process.env['DATABASE_URL']);
+  // From here on every stdout/stderr chunk is scrubbed, and copied to
+  // CL_LOG_FILE (rotated) when set.
+  const { installLogTee } = await import('./desktop/log-tee.js');
+  const { desktopProfile } = await import('./desktop/profile.js');
+  installLogTee(desktopProfile());
 
   const missing = REQUIRED_ENV_VARS.filter((k) => !process.env[k] || process.env[k]!.trim() === '');
   if (missing.length > 0) {

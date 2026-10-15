@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,12 +50,14 @@ interface Engine {
   /** Resolves with the ready line, or with the exit when startup fails. */
   ready: Promise<{ host: string; port: number } | { exitCode: number | null }>;
   dataDir: string;
+  logFile?: string;
 }
 
 const PASS_THROUGH = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'];
 
-function spawnEngine(extra: Record<string, string | undefined>): Engine {
+function spawnEngine(extra: Record<string, string | undefined>, opts: { logFile?: boolean } = {}): Engine {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'cl-desktop-boot-'));
+  const logFile = opts.logFile ? path.join(dataDir, 'logs', 'engine.log') : undefined;
   const env: Record<string, string> = {};
   for (const k of PASS_THROUGH) if (process.env[k]) env[k] = process.env[k]!;
   Object.assign(env, {
@@ -69,6 +71,7 @@ function spawnEngine(extra: Record<string, string | undefined>): Engine {
     PLAID_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
     BCRYPT_ROUNDS: '4',
   });
+  if (logFile) env['CL_LOG_FILE'] = logFile;
   for (const [k, v] of Object.entries(extra)) {
     if (v === undefined) delete env[k];
     else env[k] = v;
@@ -102,7 +105,7 @@ function spawnEngine(extra: Record<string, string | undefined>): Engine {
     });
     proc.on('exit', (code) => resolve({ exitCode: code }));
   });
-  return { proc, stdout, stderr, ready, dataDir };
+  return { proc, stdout, stderr, ready, dataDir, logFile };
 }
 
 async function stopEngine(e: Engine | undefined): Promise<void> {
@@ -211,7 +214,7 @@ describe('desktop engine on port 0', () => {
 
   beforeAll(async () => {
     if (!dbReady) return;
-    e = spawnEngine({ DATABASE_URL: urlFor(DB_NAME) });
+    e = spawnEngine({ DATABASE_URL: urlFor(DB_NAME) }, { logFile: true });
     const r = await e.ready;
     if (!('port' in r)) {
       throw new Error(`engine did not start (exit ${r.exitCode}):\n${e.stderr.slice(-30).join('\n')}`);
@@ -234,6 +237,20 @@ describe('desktop engine on port 0', () => {
     if (!dbReady) return;
     expect((await call(port, '/api/v1/ping')).status).toBe(200);
     expect((await call(port, '/api/v1/ping', { token: null })).status).toBe(401);
+  });
+
+  it('logs to CL_LOG_FILE and scrubs the launch token from file and console', async () => {
+    if (!dbReady) return;
+    // The access log prints the URL, so a token in the query string must
+    // come out redacted everywhere.
+    expect((await call(port, `/api/v1/ping?probe=${TOKEN}`)).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 500));
+    const log = readFileSync(e!.logFile!, 'utf8');
+    expect(log).toContain('{"event":"listening"');
+    expect(log).toContain('/api/v1/ping?probe=[redacted]');
+    expect(log).not.toContain(TOKEN);
+    expect(e!.stdout.join(' ')).not.toContain(TOKEN);
+    expect(e!.stderr.join(' ')).not.toContain(TOKEN);
   });
 });
 
