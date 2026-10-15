@@ -19,12 +19,13 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
 import type { Request } from 'express';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, userTenantAccess } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { isDesktop } from './profile.js';
+import { desktopWarning } from './fatal.js';
 
 /**
  * Paths a workspace session may use. An entry ending in `/` matches
@@ -164,4 +165,60 @@ export async function createWorkspaceWithOwner(input: WorkspaceOwnerInput): Prom
   });
   cachedWorkspaceId = created.workspaceTenantId;
   return created;
+}
+
+export interface WorkspaceInvariantReport {
+  ok: boolean;
+  workspaces: number;
+  users: number;
+  usersNotHomed: number;
+  usersWithoutWorkspaceAccess: number;
+  /** Up to 20 offending user ids (ids only, never emails or names). */
+  sampleUserIds: string[];
+}
+
+/**
+ * Boot check (desktop, once initialized): exactly one workspace, and every
+ * user homed there with an active workspace access row. A violation is a
+ * warning with counts and ids only; it never stops the engine. Returns null
+ * when not initialized (no users) or on the server.
+ */
+export async function checkWorkspaceInvariant(): Promise<WorkspaceInvariantReport | null> {
+  if (!isDesktop()) return null;
+  const userCount = Number(((await db.execute(sql`SELECT COUNT(*)::int AS n FROM users`)).rows[0] as { n: number }).n);
+  if (userCount === 0) return null;
+  const wsRows = (await db.execute(sql`SELECT id FROM tenants WHERE is_workspace`)).rows as Array<{ id: string }>;
+  const wsId = wsRows.length === 1 ? wsRows[0]!.id : null;
+  const notHomed = (await db.execute(sql`
+    SELECT id FROM users
+    WHERE ${wsId === null ? sql`true` : sql`tenant_id <> ${wsId}`}
+    ORDER BY id
+  `)).rows as Array<{ id: string }>;
+  const noAccess = (await db.execute(sql`
+    SELECT u.id FROM users u
+    WHERE NOT EXISTS (
+      SELECT 1 FROM user_tenant_access a
+      WHERE a.user_id = u.id AND a.is_active = true
+        AND ${wsId === null ? sql`false` : sql`a.tenant_id = ${wsId}`}
+    )
+    ORDER BY u.id
+  `)).rows as Array<{ id: string }>;
+  const ok = wsRows.length === 1 && notHomed.length === 0 && noAccess.length === 0;
+  const sampleUserIds = [...new Set([...notHomed, ...noAccess].map((r) => r.id))].slice(0, 20);
+  const report: WorkspaceInvariantReport = {
+    ok,
+    workspaces: wsRows.length,
+    users: userCount,
+    usersNotHomed: notHomed.length,
+    usersWithoutWorkspaceAccess: noAccess.length,
+    sampleUserIds,
+  };
+  if (!ok) {
+    desktopWarning(
+      'WORKSPACE_INVARIANT',
+      `workspaces=${report.workspaces} users=${report.users} usersNotHomed=${report.usersNotHomed} `
+        + `usersWithoutWorkspaceAccess=${report.usersWithoutWorkspaceAccess} userIds=${sampleUserIds.join(',')}`,
+    );
+  }
+  return report;
 }

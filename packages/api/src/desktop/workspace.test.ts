@@ -251,11 +251,61 @@ describe('desktop workspace: initialize with a company', () => {
     expect(me.json.companies).toEqual([]);
   });
 
+  it('the workspace fence: books routes are 409 WORKSPACE_TENANT, auth routes pass', async () => {
+    if (!dbReady) return;
+    for (const [method, p] of [
+      ['GET', '/api/v1/accounts'],
+      ['POST', '/api/v1/company/create'],
+      ['PUT', '/api/v1/company'],
+      ['POST', '/api/v1/transactions'],
+      ['GET', '/api/v1/accounts?x=/api/v1/auth/'],
+      ['GET', '/api/v1/auth/../accounts'],
+      ['GET', '/api/v1/tenant-settings'],
+      ['GET', '/api/v2/me'],
+      ['GET', '/api/v1/admin/tenants'],
+    ] as const) {
+      const r = await e.call(p, { method, jwt: wsJwt, body: method === 'GET' ? undefined : {} });
+      expect(r.status, `${method} ${p}`).toBe(409);
+      expect(r.json.error.code, `${method} ${p}`).toBe('WORKSPACE_TENANT');
+    }
+    expect((await e.call('/api/v1/auth/me', { jwt: wsJwt })).status).toBe(200);
+    const prefs = await e.call('/api/v1/auth/me/preferences', { method: 'PUT', jwt: wsJwt, body: { theme: 'dark' } });
+    expect(prefs.status, JSON.stringify(prefs.json)).toBe(200);
+    expect((await e.call('/api/v1/auth/create-tenant/eligibility', { jwt: wsJwt })).json).toMatchObject({ enabled: false, allowed: true });
+  });
+
+  it('the fence covers API keys and download tokens too', async () => {
+    if (!dbReady) return;
+    const { db } = await import('../db/index.js');
+    const { apiKeys } = await import('../db/schema/index.js');
+    const raw = { ws: crypto.randomBytes(24).toString('hex'), co: crypto.randomBytes(24).toString('hex') };
+    const hash = (k: string) => crypto.createHash('sha256').update(k).digest('hex');
+    await db.insert(apiKeys).values([
+      { tenantId: ws, userId: ownerId, name: 'ws', keyPrefix: 'ws', keyHash: hash(raw.ws), role: 'owner' },
+      { tenantId: company, userId: ownerId, name: 'co', keyPrefix: 'co', keyHash: hash(raw.co), role: 'owner' },
+    ]);
+    const wsKey = await e.call('/api/v1/accounts', { headers: { 'x-api-key': raw.ws } });
+    expect(wsKey.status).toBe(409);
+    expect(wsKey.json.error.code).toBe('WORKSPACE_TENANT');
+    expect((await e.call('/api/v1/accounts', { headers: { 'x-api-key': raw.co } })).status).toBe(200);
+
+    const { issueDownloadToken } = await import('../utils/download-token.js');
+    const claims = { userId: ownerId, userRole: 'owner', isSuperAdmin: true, companyId: null };
+    const dlWs = issueDownloadToken({ ...claims, tenantId: ws }).token;
+    const r = await e.call(`/api/v1/accounts?_dl=${dlWs}`);
+    expect(r.status).toBe(409);
+    expect(r.json.error.code).toBe('WORKSPACE_TENANT');
+    const dlCo = issueDownloadToken({ ...claims, tenantId: company }).token;
+    expect((await e.call(`/api/v1/accounts?_dl=${dlCo}`)).status).toBe(200);
+  });
+
   it('after switching to the company the owner reads the chart of accounts', async () => {
     if (!dbReady) return;
     coJwt = await switchTo(e, wsJwt, company);
     const accounts = await e.call('/api/v1/accounts', { jwt: coJwt });
     expect(accounts.status).toBe(200);
+    // Back to the workspace is allowed too (switch-tenant is an auth route).
+    expect((await e.call('/api/v1/accounts', { jwt: await switchTo(e, coJwt, ws) })).status).toBe(409);
   });
 
   it('switch-tenant to a tenant that does not exist is 404 TENANT_NOT_FOUND', async () => {
@@ -336,6 +386,87 @@ describe('desktop workspace: initialize with a company', () => {
     expect(bad.json.error.code).toBe('WORKSPACE_TENANT');
   });
 
+  it('MT20: admin tenant routes refuse the workspace and the destructive ones refuse companies', async () => {
+    if (!dbReady) return;
+    // Bodies pass each route's validation, so the guard is what answers.
+    const bodies: Record<string, unknown> = {
+      firm: { firmId: null },
+      'suspense-consolidation': { accountIds: [crypto.randomUUID()] },
+      'retained-earnings': { accountId: crypto.randomUUID() },
+      'system-accounts/ar': { accountId: null },
+      'apply-coa-template': { templateSlug: 'default' },
+      'delete-transactions-range': { startDate: '2026-01-01', endDate: '2026-01-31' },
+    };
+    const bodyFor = (p: string) => bodies[Object.keys(bodies).find((k) => p.endsWith(`/${k}`)) ?? ''] ?? {};
+    const sub = (id: string): Array<[string, string]> => [
+      ['GET', `/tenants/${id}`],
+      ['POST', `/tenants/${id}/firm`],
+      ['GET', `/tenants/${id}/retained-earnings`],
+      ['POST', `/tenants/${id}/retained-earnings`],
+      ['GET', `/tenants/${id}/system-accounts`],
+      ['PUT', `/tenants/${id}/system-accounts/ar`],
+      ['GET', `/tenants/${id}/suspense-consolidation`],
+      ['POST', `/tenants/${id}/suspense-consolidation`],
+      ['POST', `/tenants/${id}/disable`],
+      ['POST', `/tenants/${id}/enable`],
+      ['POST', `/tenants/${id}/apply-coa-template`],
+      ['DELETE', `/tenants/${id}`],
+      ['DELETE', `/tenants/${id}/chart-of-accounts`],
+      ['DELETE', `/tenants/${id}/transactions`],
+      ['DELETE', `/tenants/${id}/companies/${crypto.randomUUID()}`],
+      ['DELETE', `/tenants/${id}/payroll-import-history`],
+      ['GET', `/tenants/${id}/transactions-range-count?startDate=2026-01-01&endDate=2026-01-31`],
+      ['POST', `/tenants/${id}/delete-transactions-range`],
+    ];
+    for (const [method, p] of sub(ws)) {
+      const r = await e.call(`/api/v1/admin${p}`, { method, jwt: coJwt, body: method === 'GET' ? undefined : bodyFor(p) });
+      expect(r.status, `${method} ${p}`).toBe(409);
+      expect(r.json.error.code, `${method} ${p}`).toBe('WORKSPACE_TENANT');
+    }
+    const expected: Record<string, [number, string]> = {
+      [`DELETE /tenants/${company}`]: [409, 'USE_SAFE_DELETE'],
+      [`POST /tenants/${company}/disable`]: [409, 'USE_SAFE_DELETE'],
+      [`DELETE /tenants/${company}/chart-of-accounts`]: [404, 'NOT_AVAILABLE_IN_DESKTOP'],
+      [`DELETE /tenants/${company}/transactions`]: [404, 'NOT_AVAILABLE_IN_DESKTOP'],
+      [`DELETE /tenants/${company}/payroll-import-history`]: [404, 'NOT_AVAILABLE_IN_DESKTOP'],
+      [`POST /tenants/${company}/delete-transactions-range`]: [404, 'NOT_AVAILABLE_IN_DESKTOP'],
+    };
+    for (const [key, [status, code]] of Object.entries(expected)) {
+      const [method, p] = key.split(' ') as [string, string];
+      const r = await e.call(`/api/v1/admin${p}`, { method, jwt: coJwt, body: method === 'GET' ? undefined : bodyFor(p) });
+      expect(r.status, key).toBe(status);
+      expect(r.json.error.code, key).toBe(code);
+    }
+    const del = await e.call(`/api/v1/admin/tenants/${company}/companies/${crypto.randomUUID()}`, { method: 'DELETE', jwt: coJwt });
+    expect(del.status).toBe(404);
+    expect(del.json.error.code).toBe('NOT_AVAILABLE_IN_DESKTOP');
+    // A read-only company route still works.
+    expect((await e.call(`/api/v1/admin/tenants/${company}`, { jwt: coJwt })).status).toBe(200);
+    // Nothing was disabled or deleted.
+    await onDb(DB.main, async (c) => {
+      expect(Number((await c.query('SELECT COUNT(*) AS n FROM users WHERE is_active = false')).rows[0].n)).toBe(0);
+      expect((await c.query('SELECT 1 FROM tenants WHERE id = $1', [company])).rowCount).toBe(1);
+    });
+  });
+
+  it('MT20: .vmx and /api/v1/backup are unmounted, passphrase-strength stays', async () => {
+    if (!dbReady) return;
+    for (const [method, p] of [
+      ['GET', '/api/v1/tenant-export/export'],
+      ['POST', '/api/v1/tenant-export/import'],
+      ['POST', '/api/v1/backup/create'],
+      ['POST', '/api/v1/backup/restore'],
+      ['GET', '/api/v1/backup'],
+    ] as const) {
+      const r = await e.call(p, { method, jwt: coJwt, body: method === 'GET' ? undefined : {} });
+      expect(r.status, `${method} ${p}`).toBe(404);
+      expect(r.json.error.code, `${method} ${p}`).toBe('NOT_AVAILABLE_IN_DESKTOP');
+    }
+    const s = await e.call('/api/v1/backup/passphrase-strength', { method: 'POST', jwt: coJwt, body: { passphrase: 'short' } });
+    expect(s.status).toBe(200);
+    expect(s.json).toMatchObject({ valid: false });
+  });
+
   it('a second workspace violates the unique index', async () => {
     if (!dbReady) return;
     await onDb(DB.main, async (c) => {
@@ -346,6 +477,17 @@ describe('desktop workspace: initialize with a company', () => {
     });
   });
 
+  it('the boot invariant check passes for this install', async () => {
+    if (!dbReady) return;
+    const { checkWorkspaceInvariant } = await import('./workspace.js');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(await checkWorkspaceInvariant()).toMatchObject({ ok: true, workspaces: 1, users: 3 });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 // --- initialize without a company -----------------------------------------
@@ -381,6 +523,46 @@ describe('desktop workspace: initialize without a company', () => {
     expect(me.json.accessibleTenants.map((t: { tenantId: string }) => t.tenantId)).toEqual([ws]);
   });
 
+  it('one tick of each enabled scheduler runs with zero companies', async () => {
+    if (!dbReady) return;
+    const { schedulerEnabled } = await import('./features.js');
+    expect(['recurring', 'fingerprint', 'aiRetention'].every((n) => schedulerEnabled(n as 'recurring'))).toBe(true);
+    const recurring = await import('../services/recurring.service.js');
+    const fp = await import('../services/db-fingerprint.service.js');
+    const ai = await import('../services/ai-retention.service.js');
+    await expect(recurring.processAllDue()).resolves.toBeDefined();
+    await expect(fp.updateFingerprint()).resolves.toBeDefined();
+    expect(existsSync(fp.getFingerprintPath())).toBe(true);
+    await expect(ai.purgeOldAiJobs(30)).resolves.toBe(0);
+    await expect(ai.purgeOldChatConversations(30)).resolves.toBe(0);
+  });
+
+  it('the boot invariant check warns (counts and ids only) on a user homed in a company', async () => {
+    if (!dbReady) return;
+    const company = crypto.randomUUID();
+    const strayId = crypto.randomUUID();
+    await onDb(DB.empty, async (c) => {
+      await c.query(`INSERT INTO tenants (id, name, slug) VALUES ($1, 'Stray Co', $2)`, [company, `stray-${stamp}`]);
+      await c.query(
+        `INSERT INTO users (id, tenant_id, email, password_hash, display_name) VALUES ($1, $2, 'stray@example.com', 'x', 'Stray Name')`,
+        [strayId, company],
+      );
+    });
+    const { checkWorkspaceInvariant } = await import('./workspace.js');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const report = await checkWorkspaceInvariant();
+      expect(report).toMatchObject({ ok: false, workspaces: 1, users: 2, usersNotHomed: 1, usersWithoutWorkspaceAccess: 1, sampleUserIds: [strayId] });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = JSON.parse(String(warn.mock.calls[0]![0]));
+      expect(line).toMatchObject({ event: 'warning', code: 'WORKSPACE_INVARIANT' });
+      expect(line.message).toContain(strayId);
+      expect(line.message).not.toContain('stray@example.com');
+      expect(line.message).not.toContain('Stray');
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 // --- the first company fails ----------------------------------------------
@@ -464,6 +646,7 @@ describe('workspace helpers on the server (CL_MODE unset)', () => {
       await expect(w.assertNotWorkspace(crypto.randomUUID())).resolves.toBeUndefined();
       await expect(w.guardAdminTenantRoute(crypto.randomUUID(), 'safe-delete')).resolves.toBeUndefined();
       await expect(w.workspaceFence({ tenantId: crypto.randomUUID(), originalUrl: '/api/v1/accounts' } as never)).resolves.toBeUndefined();
+      expect(await w.checkWorkspaceInvariant()).toBeNull();
       expect(select).not.toHaveBeenCalled();
     } finally {
       select.mockRestore();

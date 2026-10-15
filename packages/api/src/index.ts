@@ -222,6 +222,18 @@ async function start() {
     console.error('Failed to sync state rule seeds:', err);
   }
 
+  // Desktop: the workspace invariant (one workspace, every user homed there
+  // with an active workspace access row). A violation is a warning with
+  // counts and ids only, never fatal.
+  if (isDesktop()) {
+    try {
+      const { checkWorkspaceInvariant } = await import('./desktop/workspace.js');
+      await checkWorkspaceInvariant();
+    } catch (err) {
+      console.error('Failed to check the desktop workspace invariant:', err instanceof Error ? err.message : err);
+    }
+  }
+
   // Background work that starts once the HTTP server is listening.
   const startBackground = () => {
     // MIG-2: router mode only; non-blocking with retry — AI features fail

@@ -49,6 +49,12 @@ export const DESKTOP_UNMOUNTED: readonly UnmountedFamily[] = [
   { prefix: '/api/v1/share', reason: 'peer screen share (needs Redis)' },
   { prefix: '/api/v1/admin/tailscale', reason: 'Tailscale remote access' },
   { prefix: '/api/v1/remote-backup', reason: 'cloud backup targets; the desktop app owns backups' },
+  {
+    prefix: '/api/v1/backup',
+    except: ['/passphrase-strength'],
+    reason: 'the desktop app owns backups (company backups are tenant archives)',
+  },
+  { prefix: '/api/v1/tenant-export', reason: '.vmx export and import; the desktop app uses tenant archives' },
   { prefix: '/api/v1/settings/storage', reason: 'cloud file storage providers' },
   { prefix: '/api/docs', reason: 'Swagger UI' },
 ];

@@ -9,7 +9,7 @@ Everything here is gated by `CL_MODE=desktop` or by an option that defaults to t
 - BullMQ stays the default queue backend.
 - `/health` keeps every field and its 200/503 logic.
 
-The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `routes/desktop.routes.ts`, `queue/none.adapter.ts` and `utils/health.ts`.
+The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `routes/desktop.routes.ts`, `queue/none.adapter.ts` and `utils/health.ts`. The only schema change is the additive `tenants.is_workspace` column (migration `0216`), which the server never sets.
 
 ## Environment contract
 
@@ -79,10 +79,61 @@ Mounted at `/api/v1/desktop` in desktop mode only. On the server they return 404
 
 | Method | Path | Body / response |
 |---|---|---|
-| POST | `/initialize` | Body: `{"admin":{"email","displayName","password"(≥12)},"company":{"name","businessType"?,"entityType"?,"industry"?}}`. Response: 201 `{"tenantId","userId"}`. Creates the owner (super admin) and the first company, with the chart of accounts from `businessType` (default `default`). Writes no `.env` and no sentinel; only the non-secret `CONFIG_DIR/.initialized` marker. Errors: 409 `ALREADY_INITIALIZED` once a user exists, 409 `TENANTS_WITHOUT_USERS` for restored data with no users, 409 `SETUP_BUSY` while another run holds the setup lock, 400 `VALIDATION_ERROR`. |
-| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","initialized"}` |
+| POST | `/initialize` | Body: `{"admin":{"email","displayName","password"(≥12)},"company"?:{"name","businessType"?,"entityType"?,"industry"?}}`. Response: 201 `{"workspaceTenantId","userId","companyTenantId"(or null),"warnings":[]}`; see "First run" below. Writes no `.env` and no sentinel; only the non-secret `CONFIG_DIR/.initialized` marker (`{"via","workspaceTenantId"}`). Errors: 409 `ALREADY_INITIALIZED` once a user exists, 409 `TENANTS_WITHOUT_USERS` for restored data with no users, 409 `SETUP_BUSY` while another run holds the setup lock, 400 `VALIDATION_ERROR`, 400 for an unknown `businessType` (nothing is written). |
+| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","initialized","workspaceTenantId"}`. `workspaceTenantId` is `null` before first run. |
 
 `/api/setup/*` is not available in desktop mode, except `GET /api/setup/status`.
+
+### First run
+
+In one transaction (under the setup lock), `/initialize` creates:
+
+1. the **workspace tenant**: name `Workspace`, slug `workspace-<8 hex>`, `is_workspace = true`;
+2. the owner: homed in the workspace (`users.tenant_id`), email trimmed and lower-cased, role `owner`, super admin;
+3. the owner's active workspace access row, role `owner`.
+
+It creates no firm rows (`firms`, `firm_users`, `tenant_firm_assignments`). When `company` is given, the first company is created afterwards as an ordinary tenant: the company row, the chart of accounts from `businessType` (default `default`) and an `owner` access row, with no firm join. If that fails, the workspace and the owner stay (zero companies is a valid state), any half-built company is removed, and the response is still 201 with `"companyTenantId": null, "warnings": ["COMPANY_NOT_CREATED"]`. Retry with `POST /api/v1/auth/create-tenant`.
+
+## Workspace tenant
+
+The workspace holds every user row (the owner and any later users) and no company or books. Each user has an active access row to it: `owner` for the owner, `readonly` for everyone else. Real companies are ordinary tenants reached through `user_tenant_access`. Deleting the last company is allowed; the user is then in the workspace with zero companies. A partial unique index (`uniq_tenants_workspace`) allows at most one workspace.
+
+**Login.** Login prefers the user's home tenant, so a session starts in the workspace. Login, `/auth/me` and switch-tenant still list the workspace in `accessibleTenants`; clients recognize it by `GET /api/v1/desktop/info` -> `workspaceTenantId` and hide it. Open a company with `POST /api/v1/auth/switch-tenant`. Switching to a tenant id that does not exist is 404 `TENANT_NOT_FOUND`.
+
+**Write fence.** `authenticate` (session JWT, API key and download token alike) checks the request path (`req.originalUrl` without the query string) when the request's tenant is the workspace. Only these prefixes pass:
+
+| Prefix | Matches |
+|---|---|
+| `/api/v1/auth/` | everything below (login, me, preferences, switch-tenant, create-tenant, passkeys, ...) |
+| `/api/v1/tenants` | the path and whole segments below it |
+| `/api/v1/tenant-archives` | the path and whole segments below it |
+| `/api/v1/desktop/` | everything below |
+
+Everything else, reads included, is 409 `WORKSPACE_TENANT` ("Open a company first."). Paths with dot segments, encoded separators or backslashes never match. `/health`, `/openapi.json` and `/api/v1/desktop/*` do not run `authenticate`. The list is a constant in `desktop/workspace.ts` and changes only with an engine change.
+
+**Users.** Every desktop user-creation path homes the new user in the workspace:
+
+| Path | Desktop behavior |
+|---|---|
+| `POST /api/v1/desktop/initialize` | the owner, as above |
+| `POST /api/v1/company/invite-user` (new user) | homed in the workspace with a `readonly` workspace row plus the company row with the requested role. Inviting into the workspace is 409 `WORKSPACE_TENANT`. Existing users only get the company row, as before. |
+| `POST /api/v1/admin/users/create` | same homing; `tenantId` must be a company (workspace: 409 `WORKSPACE_TENANT`) |
+| `POST /api/v1/auth/register`, `POST /api/v1/auth/create-client` | 404 `NOT_AVAILABLE_IN_DESKTOP` (no self-registration, no practice firms) |
+| `setup.service` `createAdminUser` / `adoptRestoredTenants` | throw (unreachable: `/api/setup` is not mounted) |
+
+A static test (`desktop/users-insert-sites.test.ts`) lists every place that inserts into `users`; a new one fails it until it is reviewed for desktop mode.
+
+`POST /api/v1/auth/create-tenant` creates a company with an `owner` access row and no firm. On desktop the owner (super admin) is always eligible: the self-service toggle and cap do not apply.
+
+**Admin tenant routes** (`/api/v1/admin/tenants/:id...`). Every one of them refuses the workspace as `:id` (409 `WORKSPACE_TENANT`), and so does `users/create` with the workspace as `tenantId`. For companies:
+
+| Route | Desktop |
+|---|---|
+| `DELETE /tenants/:id`, `POST /tenants/:id/disable` | 409 `USE_SAFE_DELETE` (they take no backup, and disable deactivates every user homed in the tenant) |
+| `DELETE /tenants/:id/chart-of-accounts`, `/transactions`, `/companies/:companyId`, `/payroll-import-history`; `POST /tenants/:id/delete-transactions-range` | 404 `NOT_AVAILABLE_IN_DESKTOP` |
+| every other `/tenants/:id...` route | unchanged |
+
+**Boot check.** After migrations, once there is a user, the engine checks that there is exactly one workspace and that every user is homed there with an active workspace access row. A violation logs one `{"event":"warning","code":"WORKSPACE_INVARIANT",...}` line with counts and user ids only. It is not fatal.
 
 ## Feature profile
 
@@ -107,6 +158,8 @@ Mounted at `/api/v1/desktop` in desktop mode only. On the server they return 404
 | `/api/v1/share` | Peer screen share (needs Redis) |
 | `/api/v1/admin/tailscale` | Tailscale remote access |
 | `/api/v1/remote-backup` | Cloud backup targets; the desktop app owns backups |
+| `/api/v1/backup` (except `/passphrase-strength`) | The desktop app owns backups; this restore writes into the current tenant without taking a backup first |
+| `/api/v1/tenant-export` | `.vmx` export and import; the desktop app uses tenant archives |
 | `/api/v1/settings/storage` | Cloud file storage providers |
 | `/api/docs` | Swagger UI |
 
@@ -196,5 +249,5 @@ These come as separate changes:
 - a durable Postgres-backed queue backend and in-process worker;
 - the connectivity probe and outbound-connection guard (`online`, `OFFLINE_UNAVAILABLE`);
 - the OpenAPI export;
-- tenant archives;
+- tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`);
 - per-session AI and SMTP secrets.

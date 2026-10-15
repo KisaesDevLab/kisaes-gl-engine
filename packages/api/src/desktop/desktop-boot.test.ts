@@ -368,6 +368,10 @@ describe('desktop first run: info and initialize', () => {
     });
     expect(login.status).toBe(200);
     const wsJwt = login.json.tokens.accessToken as string;
+    // The workspace has no books: open a company first.
+    const fenced = await call(port, '/api/v1/accounts', { headers: { authorization: `Bearer ${wsJwt}` } });
+    expect(fenced.status).toBe(409);
+    expect(fenced.json.error.code).toBe('WORKSPACE_TENANT');
     const sw = await call(port, '/api/v1/auth/switch-tenant', {
       method: 'POST',
       headers: { authorization: `Bearer ${wsJwt}` },
