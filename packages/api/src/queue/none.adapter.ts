@@ -17,6 +17,7 @@
  */
 
 import { queueBackend } from '../desktop/profile.js';
+import type { JobQueue, QueueHealth, WorkerHandle } from './job-queue.js';
 
 export class QueueUnavailableError extends Error {
   readonly code = 'QUEUE_UNAVAILABLE';
@@ -36,4 +37,24 @@ export function queueDisabled(): boolean {
 /** Throws QueueUnavailableError when the queue backend is `none`. */
 export function assertQueueEnabled(queue: string): void {
   if (queueDisabled()) throw new QueueUnavailableError(queue);
+}
+
+/** JobQueue for QUEUE_BACKEND=none: enqueue rejects at once, work() consumes nothing. */
+export class NoneQueue implements JobQueue<Record<string, unknown>> {
+  readonly backend = 'none' as const;
+
+  async enqueue(name: string): Promise<void> {
+    throw new QueueUnavailableError(name);
+  }
+
+  async work(): Promise<WorkerHandle> {
+    return { close: async () => undefined };
+  }
+
+  /** Nothing to reach: always ok, never a consumer. */
+  async health(): Promise<QueueHealth> {
+    return { ok: true, consumers: 0, latencyMs: 0 };
+  }
+
+  async close(): Promise<void> {}
 }
