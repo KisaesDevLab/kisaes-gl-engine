@@ -106,6 +106,25 @@ describe('desktop mode', () => {
     expect(redisEnabled()).toBe(false);
   });
 
+  it('removes proxy variables in any letter case (a loopback proxy would bypass the egress guard)', () => {
+    const env = desktopEnv({
+      HTTP_PROXY: 'http://127.0.0.1:3128',
+      https_proxy: 'http://127.0.0.1:3128',
+      All_Proxy: 'socks5://127.0.0.1:1080',
+      no_proxy: '*',
+      NODE_USE_ENV_PROXY: '1',
+      GLOBAL_AGENT_HTTP_PROXY: 'http://127.0.0.1:3128',
+    });
+    loadDesktopProfile(env);
+    for (const k of Object.keys(env)) expect(/proxy/i.test(k), k).toBe(false);
+  });
+
+  it('server mode keeps proxy variables', () => {
+    const env: NodeJS.ProcessEnv = { HTTPS_PROXY: 'http://proxy.example:3128' };
+    loadDesktopProfile(env);
+    expect(env['HTTPS_PROXY']).toBe('http://proxy.example:3128');
+  });
+
   it('keeps explicitly set directories', () => {
     const env = desktopEnv({ UPLOAD_DIR: '/elsewhere/uploads' });
     loadDesktopProfile(env);

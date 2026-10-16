@@ -31,7 +31,7 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `PLAID_ENCRYPTION_KEY` | required | Unchanged. The desktop app supplies them from the OS keychain. In desktop mode the engine never writes them to disk: the routes that would are not mounted, and the recovery-file, sentinel and `.env` writers throw. |
 | `REDIS_URL` | ignored | Required only when something uses Redis: `QUEUE_BACKEND=bullmq` (the server default), `RATE_LIMIT_REDIS=1` or `SHARE_ENABLED`. |
 
-Desktop mode skips Cloudflare Turnstile verification (no browser widget, no outbound call). It also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=<pgboss unless none was asked for>` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
+Desktop mode skips Cloudflare Turnstile verification (no browser widget, no outbound call). It removes proxy variables from the environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, `FTP_PROXY`, `GLOBAL_AGENT_HTTP_PROXY`, any letter case), because a loopback proxy would carry traffic past the egress guard. It also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=<pgboss unless none was asked for>` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
 
 ## Startup sequence
 

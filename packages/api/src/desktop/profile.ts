@@ -66,6 +66,11 @@ const DEFAULT_LOG_KEEP = 5;
 // ≥ 256 bits: 43+ base64url characters (64 hex characters also match).
 const TOKEN_RE = /^[A-Za-z0-9_-]{43,512}$/;
 
+/** Proxy variables removed from the environment in desktop mode (any case). */
+export const PROXY_ENV: ReadonlySet<string> = new Set([
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'NODE_USE_ENV_PROXY', 'FTP_PROXY', 'GLOBAL_AGENT_HTTP_PROXY',
+]);
+
 let current: DesktopProfile | null = null;
 // SHA-256 of the launch token. The raw token never leaves this module's
 // closure except through the secret scrubber registration in bootstrap.
@@ -249,6 +254,12 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
   env['EXPECT_WORKER'] = 'false';
   env['SHARE_ENABLED'] = 'false';
   env['QUEUE_BACKEND'] = queueBackend;
+  // Proxy variables would route outbound traffic through a proxy host,
+  // and a loopback proxy would carry it past the egress guard (which only
+  // sees the connection to the proxy). Removed, in every spelling.
+  for (const key of Object.keys(env)) {
+    if (PROXY_ENV.has(key.toUpperCase())) delete env[key];
+  }
   // env.ts validates PORT; keep it consistent with the bind address.
   env['PORT'] = String(bind.port);
 
