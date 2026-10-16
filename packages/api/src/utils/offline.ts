@@ -86,10 +86,15 @@ interface State {
 let state: State = { online: null, lastOnlineCheck: null };
 const okUntil = new Map<string, number>();
 const failUntil = new Map<string, number>();
-const inflight = new Map<string, Promise<boolean>>();
+const inflight = new Map<string, Promise<'online' | 'offline' | 'inconclusive'>>();
 
 function setting(): OfflineSetting {
   return desktopProfile().offline;
+}
+
+/** CL_OFFLINE=on: online features fail at once and nothing is probed. */
+export function isForcedOffline(): boolean {
+  return setting() === 'on';
 }
 
 function record(online: boolean): void {
@@ -120,18 +125,28 @@ export function _resetConnectivityForTests(): void {
 
 // ─── probe ──────────────────────────────────────────────────────────
 
+type ProbeResult = 'online' | 'offline' | 'inconclusive';
+
 /**
  * Resolve and TCP-connect to `target` (the connect does the DNS lookup)
  * within PROBE_BUDGET_MS, then close the socket without sending anything.
- * Resolves true on connect, false on any error or timeout. Errors raised
- * by the desktop egress guard are rethrown: a host the owner has not
- * turned on is a configuration problem, not "offline".
+ *
+ *   online        connected
+ *   offline       timeout, or a no-network error (same rules as
+ *                 classifyNetworkError)
+ *   inconclusive  any other error, e.g. a refused connection on loopback
+ *                 (a name that resolves to this machine): the machine is
+ *                 not offline, so nothing is recorded or cached and the
+ *                 real call reports its own error
+ *
+ * Errors raised by the desktop egress guard are rethrown: a host the owner
+ * has not turned on is a configuration problem, not "offline".
  */
-function probe(target: NetTarget): Promise<boolean> {
-  return new Promise<boolean>((resolve, reject) => {
+export function _probe(target: NetTarget): Promise<ProbeResult> {
+  return new Promise<ProbeResult>((resolve, reject) => {
     let done = false;
     const socket = net.connect({ host: target.host, port: target.port });
-    const finish = (result: boolean | Error) => {
+    const finish = (result: ProbeResult | Error) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
@@ -139,10 +154,11 @@ function probe(target: NetTarget): Promise<boolean> {
       if (result instanceof Error) reject(result);
       else resolve(result);
     };
-    const timer = setTimeout(() => finish(false), PROBE_BUDGET_MS);
-    socket.once('connect', () => finish(true));
+    const timer = setTimeout(() => finish('offline'), PROBE_BUDGET_MS);
+    socket.once('connect', () => finish('online'));
     socket.once('error', (err: NodeJS.ErrnoException) => {
-      finish(err.code === 'EGRESS_BLOCKED' ? egressNotAllowed(err) : false);
+      if (err.code === 'EGRESS_BLOCKED') finish(egressNotAllowed(err));
+      else finish(offlineCause(err) ? 'offline' : 'inconclusive');
     });
   });
 }
@@ -165,6 +181,9 @@ function egressNotAllowed(cause: Error): AppError {
 export async function ensureOnline(feature: string, target: NetTarget): Promise<void> {
   const mode = setting();
   if (mode === 'off') return;
+  // A service on this machine (e.g. a local mail relay) works offline and
+  // says nothing about the internet: never probed, never recorded.
+  if (isLoopbackAddress(target.host)) return;
   if (mode === 'on') throw new OfflineUnavailableError(feature);
 
   const key = `${target.host.toLowerCase()}:${target.port}`;
@@ -174,11 +193,12 @@ export async function ensureOnline(feature: string, target: NetTarget): Promise<
 
   let p = inflight.get(key);
   if (!p) {
-    p = probe(target).finally(() => inflight.delete(key));
+    p = _probe(target).finally(() => inflight.delete(key));
     inflight.set(key, p);
   }
-  const ok = await p;
-  if (ok) {
+  const result = await p;
+  if (result === 'inconclusive') return;
+  if (result === 'online') {
     okUntil.set(key, Date.now() + ONLINE_CACHE_MS);
     failUntil.delete(key);
     record(true);
@@ -214,8 +234,8 @@ const OFFLINE_CODES = new Set([
 
 function isLoopbackAddress(addr: unknown): boolean {
   if (typeof addr !== 'string') return false;
-  const a = addr.replace(/^::ffff:/i, '');
-  return a === '::1' || a === 'localhost' || /^127\./.test(a);
+  const a = addr.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '');
+  return a === '::1' || a === 'localhost' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a);
 }
 
 function offlineCause(err: unknown, depth = 0): boolean {

@@ -536,18 +536,22 @@ export interface SmtpConfig {
 }
 
 export async function testSmtpConnection(config: SmtpConfig, testEmail?: string): Promise<{ success: boolean; error?: string }> {
-  // Desktop: answer 503 OFFLINE_UNAVAILABLE within 2 s when offline,
-  // before the host check below spends its DNS lookup. No-op on the server.
-  const { ensureOnline, isOfflineUnavailable } = await import('../utils/offline.js');
+  const { ensureOnline, isForcedOffline, isOfflineUnavailable, OfflineUnavailableError } = await import('../utils/offline.js');
   const { smtpTarget } = await import('../utils/mail-transport.js');
-  await ensureOnline('smtp', smtpTarget({ host: config.host, port: config.port, secure: config.port === 465 }));
+  // Desktop with CL_OFFLINE=on: answer 503 at once, with no DNS lookup.
+  // (Never true on the server.)
+  if (isForcedOffline()) throw new OfflineUnavailableError('smtp');
   try {
     // The host is tenant/operator supplied and this call opens a TCP
     // connection from inside the appliance. LAN relays are legitimate;
     // loopback (the api container itself), link-local and the cloud
-    // metadata endpoint never are.
+    // metadata endpoint never are. Checked BEFORE the desktop
+    // connectivity probe below, so the probe never touches such a host.
     const { assertHostSafe } = await import('../utils/url-safety.js');
     await assertHostSafe(config.host, 'SMTP host', { allowPrivate: true });
+    // Desktop: 503 OFFLINE_UNAVAILABLE within 2 s when offline. No-op on
+    // the server.
+    await ensureOnline('smtp', smtpTarget({ host: config.host, port: config.port, secure: config.port === 465 }));
     const transport = createMailTransport({
       host: config.host,
       port: config.port,
@@ -572,7 +576,10 @@ export async function testSmtpConnection(config: SmtpConfig, testEmail?: string)
 
     return { success: true };
   } catch (err) {
-    if (isOfflineUnavailable(err)) throw err;
+    // Desktop answers (503 OFFLINE_UNAVAILABLE, 503 EGRESS_BLOCKED from the
+    // connectivity probe) reach the caller as errors, not as a failed test.
+    const probeBlocked = err instanceof Error && 'statusCode' in err && (err as { code?: unknown }).code === 'EGRESS_BLOCKED';
+    if (isOfflineUnavailable(err) || probeBlocked) throw err;
     return { success: false, error: err instanceof Error ? err.message : 'SMTP test failed' };
   }
 }

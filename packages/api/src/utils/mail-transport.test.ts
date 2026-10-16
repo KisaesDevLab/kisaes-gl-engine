@@ -123,6 +123,29 @@ describe('callers keep OFFLINE_UNAVAILABLE', () => {
     expect(r.success).toBe(false);
   });
 
+  it('SMTP test: the host safety check runs before any connectivity probe', async () => {
+    desktop();
+    const connect = vi.spyOn(net, 'connect');
+    for (const host of ['169.254.169.254', 'localhost', '127.0.0.1']) {
+      const r = await testSmtpConnection({ host, port: 587, from: 'a@example.test' });
+      expect(r.success, host).toBe(false);
+      expect(r.error, host).toMatch(/SMTP host/);
+    }
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('a loopback mail relay is not "offline", even with CL_OFFLINE=on', async () => {
+    desktop('on');
+    const srv = net.createServer();
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const port = (srv.address() as AddressInfo).port;
+    await new Promise<void>((r) => srv.close(() => r()));
+    const t = createMailTransport({ host: '127.0.0.1', port, connectionTimeout: 1_000 });
+    const err = await t.sendMail(MAIL).then(() => null, (e: { code?: string }) => e);
+    expect(err).not.toBeInstanceOf(OfflineUnavailableError);
+    expect((err as { code?: string }).code).toBe('ESOCKET');
+  });
+
   it('smtpTarget follows nodemailer defaults', () => {
     expect(smtpTarget({})).toEqual({ host: 'localhost', port: 587 });
     expect(smtpTarget({ host: 'm.example.test', secure: true })).toEqual({ host: 'm.example.test', port: 465 });

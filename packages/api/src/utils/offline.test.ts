@@ -22,6 +22,7 @@ import {
   classifyNetworkError,
   connectivityState,
   ensureOnline,
+  _probe,
   isOfflineUnavailable,
   targetFromUrl,
 } from './offline.js';
@@ -37,9 +38,20 @@ function desktop(offline?: 'auto' | 'on' | 'off') {
   });
 }
 
+// Loopback targets are never probed, so the probe tests need a reachable
+// non-loopback address: this machine's own LAN address (a server bound to
+// 0.0.0.0 answers on it; nothing leaves the machine).
+function lanAddress(): string | null {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) if (a.family === 'IPv4' && !a.internal) return a.address;
+  }
+  return null;
+}
+const LAN = lanAddress();
+
 async function listening(): Promise<{ port: number; close: () => Promise<void> }> {
   const server = net.createServer((s) => s.destroy());
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  await new Promise<void>((r) => server.listen(0, '0.0.0.0', r));
   return {
     port: (server.address() as AddressInfo).port,
     close: () => new Promise<void>((r) => server.close(() => r())),
@@ -137,16 +149,16 @@ describe('CL_OFFLINE=auto (desktop default)', () => {
     expect(connectivityState()).toEqual({ online: null, lastOnlineCheck: null });
   });
 
-  it('reachable host: passes, records online, caches the success', async () => {
+  it.skipIf(!LAN)('reachable host: passes, records online, caches the success', async () => {
     desktop();
     const s = await listening();
     try {
       const spy = vi.spyOn(net, 'connect');
-      await ensureOnline('smtp', { host: '127.0.0.1', port: s.port });
+      await ensureOnline('smtp', { host: LAN!, port: s.port });
       const st = connectivityState();
       expect(st.online).toBe(true);
       expect(typeof st.lastOnlineCheck).toBe('string');
-      await ensureOnline('smtp', { host: '127.0.0.1', port: s.port });
+      await ensureOnline('smtp', { host: LAN!, port: s.port });
       expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       await s.close();
@@ -173,25 +185,53 @@ describe('CL_OFFLINE=auto (desktop default)', () => {
 
   it('a failed probe is cached briefly so a retry does not pay the budget twice', async () => {
     desktop();
-    const port = await closedPort();
-    await expect(ensureOnline('smtp', { host: '127.0.0.1', port })).rejects.toBeInstanceOf(OfflineUnavailableError);
+    const target = { host: 'smtp.cl-offline.invalid', port: 587 };
+    await expect(ensureOnline('smtp', target)).rejects.toBeInstanceOf(OfflineUnavailableError);
     const spy = vi.spyOn(net, 'connect');
-    const { ms, err } = await timed(() => ensureOnline('smtp', { host: '127.0.0.1', port }));
+    const { ms, err } = await timed(() => ensureOnline('smtp', target));
     expect(err).toBeInstanceOf(OfflineUnavailableError);
     expect(ms).toBeLessThan(50);
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('concurrent callers share one probe', async () => {
+  it.skipIf(!LAN)('concurrent callers share one probe', async () => {
     desktop();
     const s = await listening();
     try {
       const spy = vi.spyOn(net, 'connect');
-      await Promise.all([1, 2, 3].map(() => ensureOnline('smtp', { host: '127.0.0.1', port: s.port })));
+      await Promise.all([1, 2, 3].map(() => ensureOnline('smtp', { host: LAN!, port: s.port })));
       expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       await s.close();
     }
+  });
+});
+
+describe('loopback targets (local services) are never "offline"', () => {
+  it('ensureOnline does not probe or record a loopback target, even with CL_OFFLINE=on', async () => {
+    for (const mode of ['auto', 'on'] as const) {
+      desktop(mode);
+      const spy = vi.spyOn(net, 'connect');
+      const port = await closedPort();
+      for (const host of ['127.0.0.1', 'localhost', '::1', '[::1]', '::ffff:127.0.0.1', '127.8.9.10']) {
+        await ensureOnline('smtp', { host, port });
+      }
+      expect(spy).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+      _resetDesktopProfileForTests();
+    }
+    desktop();
+    expect(connectivityState()).toEqual({ online: null, lastOnlineCheck: null });
+  });
+
+  it('a probe refused on loopback is inconclusive: no offline state, no failure cache', async () => {
+    desktop();
+    const port = await closedPort();
+    // A name that resolves to this machine reaches the probe; model it with
+    // the probe directly (loopback literals are skipped before probing).
+    expect(await _probe({ host: '127.0.0.1', port })).toBe('inconclusive');
+    expect(await _probe({ host: 'cl-offline.invalid', port: 443 })).toBe('offline');
+    expect(connectivityState()).toEqual({ online: null, lastOnlineCheck: null });
   });
 });
 
