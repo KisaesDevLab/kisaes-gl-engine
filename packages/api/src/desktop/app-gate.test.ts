@@ -117,6 +117,60 @@ describe('app.ts desktop feature profile', () => {
   }, 120_000);
 });
 
+/** Every mount path and route path at the app level (global middleware excluded). */
+function mountPaths(app: Express): string[] {
+  const out = new Set<string>();
+  const stack = (app as unknown as { _router: { stack: Array<Layer & { route?: { path: string }; regexp: RegExp & { fast_slash?: boolean } }> } })._router.stack;
+  for (const l of stack) {
+    if (l.route) {
+      out.add(l.route.path);
+      continue;
+    }
+    if (l.regexp.fast_slash) continue;
+    // Express 4 mount regexp source: ^\/api\/v1\/accounts\/?(?=\/|$)
+    const suffix = '\\/?(?=\\/|$)';
+    const src = l.regexp.source;
+    if (!src.startsWith('^') || !src.endsWith(suffix)) throw new Error(`unparsed mount ${src}`);
+    out.add(src.slice(1, -suffix.length).split('\\/').join('/'));
+  }
+  return [...out];
+}
+
+describe('every mount is classified for desktop mode', () => {
+  it('each app-level mount is in DESKTOP_KEPT or DESKTOP_UNMOUNTED (both modes), and DESKTOP_KEPT has no stale entries', async () => {
+    const seen = new Set<string>();
+    for (const mode of ['server', 'desktop'] as const) {
+      const app = await loadApp(mode);
+      const { DESKTOP_KEPT, familyOf } = await import('./features.js');
+      const paths = mountPaths(app);
+      expect(paths.length, mode).toBeGreaterThan(50);
+      const unclassified = paths.filter((p) => !DESKTOP_KEPT.includes(p) && !familyOf(p));
+      // A new route family? Add it to DESKTOP_KEPT after reviewing it for
+      // desktop mode, or to DESKTOP_UNMOUNTED (desktop/features.ts).
+      expect(unclassified, mode).toEqual([]);
+      for (const p of paths) seen.add(p);
+      (await import('./profile.js'))._resetDesktopProfileForTests();
+    }
+    const { DESKTOP_KEPT, familyOf } = await import('./features.js');
+    expect(DESKTOP_KEPT.filter((p) => !seen.has(p)), 'stale DESKTOP_KEPT entries').toEqual([]);
+    expect(DESKTOP_KEPT.filter((p) => familyOf(p)), 'kept and unmounted at once').toEqual([]);
+    expect(new Set(DESKTOP_KEPT).size).toBe(DESKTOP_KEPT.length);
+  }, 240_000);
+
+  it('the online / appliance-only admin routes are all under an unmounted family', async () => {
+    await loadApp('desktop');
+    const { familyOf } = await import('./features.js');
+    const { adminRouter } = await import('../routes/admin.routes.js');
+    const routes = (adminRouter as unknown as { stack: Array<{ route?: { path: string } }> }).stack
+      .filter((l) => l.route)
+      .map((l) => `/api/v1/admin${l.route!.path}`);
+    const online = /^\/api\/v1\/admin\/(plaid\/|backup\/remote-|storage\/system-|updates\/check|tunnel-config|cloudflared\/|mcp\/|tfa\/sms-test|create-client|security\/)/;
+    const listed = routes.filter((p) => online.test(p));
+    expect(listed.length).toBeGreaterThan(30);
+    expect(listed.filter((p) => !familyOf(p))).toEqual([]);
+  }, 120_000);
+});
+
 describe('app.ts in server mode (CL_MODE unset)', () => {
   it('mounts every family the desktop edition leaves out', async () => {
     const app = await loadApp('server');

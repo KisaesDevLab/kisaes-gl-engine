@@ -61,6 +61,66 @@ export const DESKTOP_UNMOUNTED: readonly UnmountedFamily[] = [
   { prefix: '/api/v1/tenant-export', reason: '.vmx export and import; the desktop app uses tenant archives' },
   { prefix: '/api/v1/settings/storage', reason: 'cloud file storage providers' },
   { prefix: '/api/docs', reason: 'Swagger UI' },
+  { prefix: '/api/v1/auth/magic-link', reason: 'email magic-link sign-in' },
+  { prefix: '/api/v1/firms', reason: 'accounting-firm management (no firms on desktop)' },
+  { prefix: '/api/v1/firm-invites', reason: 'accounting-firm invitations' },
+  { prefix: '/api/v1/practice/portal', reason: 'client portal contacts, questions and reminders' },
+  // Single routes inside the admin router (mounted in both modes): online
+  // services and appliance infrastructure. No own mount; the 404 handler
+  // above answers before the admin router sees them.
+  { prefix: '/api/v1/admin/plaid', reason: 'Plaid configuration, connections and webhooks (online)' },
+  { prefix: '/api/v1/admin/backup/remote-config', reason: 'cloud backup targets' },
+  { prefix: '/api/v1/admin/backup/remote-test', reason: 'cloud backup targets' },
+  { prefix: '/api/v1/admin/backup/remote-connect', reason: 'cloud backup OAuth' },
+  { prefix: '/api/v1/admin/backup/remote-callback', reason: 'cloud backup OAuth' },
+  { prefix: '/api/v1/admin/storage/system-config', reason: 'cloud file storage providers' },
+  { prefix: '/api/v1/admin/storage/system-test', reason: 'cloud file storage providers' },
+  { prefix: '/api/v1/admin/storage/system-migrate', reason: 'cloud file storage providers' },
+  { prefix: '/api/v1/admin/updates/check', reason: 'online update check; the desktop app has its own' },
+  { prefix: '/api/v1/admin/tunnel-config', reason: 'Cloudflare Tunnel' },
+  { prefix: '/api/v1/admin/cloudflared', reason: 'Cloudflare Tunnel' },
+  { prefix: '/api/v1/admin/mcp', reason: 'MCP server' },
+  { prefix: '/api/v1/admin/tfa/sms-test', reason: 'SMS sending (online)' },
+  { prefix: '/api/v1/admin/create-client', reason: 'practice client creation (no firms on desktop)' },
+];
+
+/**
+ * Every other mount in app.ts, reviewed for desktop mode and kept there.
+ * desktop/app-gate.test.ts enumerates the real route table in both modes
+ * and fails on any mount that is in neither this list nor
+ * DESKTOP_UNMOUNTED, so a new route family has to be classified here (or
+ * left out above) before it ships. Paths are matched exactly.
+ */
+export const DESKTOP_KEPT: readonly string[] = [
+  // Global middleware scopes (limiter, staff IP allowlist, cache headers, JSON 404).
+  '/api', '/api/v1',
+  // Probes and browser plumbing.
+  '/health', '/api/health', '/api/v1/health', '/ping', '/api/ping', '/api/v1/ping', '/api/v1/csp-report',
+  // Desktop-only first run and info (mounted in desktop mode only).
+  '/api/v1/desktop',
+  // Sign-in, users, tenants.
+  '/api/v1/auth', '/api/v1/auth/methods', '/api/v1/auth/passkeys', '/api/v1/users/me/tfa',
+  '/api/v1/users/me/login-preference', '/api/v1/api-keys', '/api/v1/tenant-settings', '/api/v1/company',
+  '/api/v1/coa-templates/options', '/api/v1/fs-fonts',
+  // Books.
+  '/api/v1/accounts', '/api/v1/contacts', '/api/v1/transactions', '/api/v1/invoices', '/api/v1/bills',
+  '/api/v1/bill-captures', '/api/v1/vendor-credits', '/api/v1/bill-payments', '/api/v1/estimates', '/api/v1/tags',
+  '/api/v1/reports', '/api/v1/banking', '/api/v1/dashboard', '/api/v1/ledger-version', '/api/v1/attachments',
+  '/api/v1/recurring', '/api/v1/batch', '/api/v1/daily-sales', '/api/v1/je-templates', '/api/v1/items',
+  '/api/v1/payments', '/api/v1/checks', '/api/v1/check-signatures', '/api/v1/duplicates', '/api/v1/budgets',
+  '/api/v1/export', '/api/v1/downloads', '/api/v1/audit-log', '/api/v1/payroll-import', '/api/v1/imports',
+  '/api/v1/extractions', '/api/v1/knowledge', '/api/v1/feature-flags', '/api/v1/tb', '/api/v1/tax-estimator',
+  // AI with the owner's own key or a local model (online only when configured).
+  '/api/v1/ai', '/api/v1/chat',
+  // Administration (online/appliance-only admin routes are unmounted above).
+  '/api/v1/admin', '/api/v1/admin/tb', '/api/v1/admin/tax-parameters', '/api/v1/admin/tax-state-rules',
+  '/api/v1/admin/tax-param-ai-checks', '/api/v1/admin/feature-flags',
+  // Practice tools that work on the local books.
+  '/api/v1/practice', '/api/v1/practice/uncategorized', '/api/v1/practice/classification',
+  '/api/v1/practice/settings', '/api/v1/practice/conditional-rules', '/api/v1/practice/checks',
+  '/api/v1/practice/accruals', '/api/v1/practice/1099', '/api/v1/practice/reports', '/api/v1/practice/receipts',
+  // Public API v2 (API-key callers; still behind the launch token on desktop).
+  '/api/v2',
 ];
 
 export const DESKTOP_SCHEDULERS = {

@@ -163,8 +163,21 @@ A static test (`desktop/users-insert-sites.test.ts`) lists every place that inse
 | `/api/v1/tenant-export` | `.vmx` export and import; the desktop app uses tenant archives |
 | `/api/v1/settings/storage` | Cloud file storage providers |
 | `/api/docs` | Swagger UI |
+| `/api/v1/auth/magic-link` | Email magic-link sign-in |
+| `/api/v1/firms`, `/api/v1/firm-invites` | Accounting-firm management; there are no firms on desktop |
+| `/api/v1/practice/portal` (incl. `/questions`, `/reminders`) | Client portal contacts, questions and reminders |
+| `/api/v1/admin/plaid` (incl. `/test`, `/webhooks/*`) | Plaid configuration, connections and webhooks |
+| `/api/v1/admin/backup/remote-config`, `remote-test`, `remote-connect`, `remote-callback` | Cloud backup targets and their OAuth |
+| `/api/v1/admin/storage/system-config`, `system-test`, `system-migrate` | Cloud file storage providers |
+| `/api/v1/admin/updates/check` | Online update check; the desktop app has its own |
+| `/api/v1/admin/tunnel-config`, `/api/v1/admin/cloudflared` | Cloudflare Tunnel |
+| `/api/v1/admin/mcp` | MCP server configuration and log |
+| `/api/v1/admin/tfa/sms-test` | Sends an SMS |
+| `/api/v1/admin/create-client` | Practice client creation (no firms) |
 
 The static web bundle and SPA fallback are never served. Any non-API path returns a JSON 404.
+
+**Every other mount is listed too.** `DESKTOP_KEPT` in `desktop/features.ts` names every app-level mount that stays in desktop mode. `desktop/app-gate.test.ts` reads the real route table in both modes and fails on any mount that is in neither list, so a new route family must be reviewed for desktop mode before it ships. It also checks that the online and appliance-only admin routes are all covered.
 
 **Schedulers.** Each `start*` function was checked for outbound calls and `DATA_DIR` use:
 
