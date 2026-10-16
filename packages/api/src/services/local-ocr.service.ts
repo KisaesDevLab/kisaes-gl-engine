@@ -22,6 +22,7 @@
 // that case rather than a boot failure.
 
 import { execFile } from 'node:child_process';
+import { childProcessEnv } from '../desktop/child-env.js';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -52,7 +53,7 @@ async function pdftotextExtract(buffer: Buffer): Promise<string> {
   const outPath = path.join(workDir, 'out.txt');
   try {
     await writeFile(inputPath, buffer);
-    await execFileAsync('pdftotext', ['-layout', inputPath, outPath], { timeout: PDFTOTEXT_TIMEOUT_MS });
+    await execFileAsync('pdftotext', ['-layout', inputPath, outPath], { timeout: PDFTOTEXT_TIMEOUT_MS, env: childProcessEnv() });
     return (await readFile(outPath, 'utf8')).trim();
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);

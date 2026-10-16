@@ -209,11 +209,20 @@ describe('desktop mode', () => {
   it('validates CL_OFFLINE and log settings', () => {
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_OFFLINE: 'maybe' })))).toBe('CL_ENV_INVALID');
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LOG_MAX_BYTES: '-1' })))).toBe('CL_ENV_INVALID');
-    const p = loadDesktopProfile(desktopEnv({ CL_OFFLINE: 'on', CL_LOG_FILE: 'engine.log', CL_LOG_KEEP: '3' }));
+    const logFile = path.join(DATA_DIR, 'logs', 'engine.log');
+    const p = loadDesktopProfile(desktopEnv({ CL_OFFLINE: 'on', CL_LOG_FILE: logFile, CL_LOG_KEEP: '3' }));
     expect(p.offline).toBe('on');
-    expect(p.logFile).toBe(path.resolve('engine.log'));
+    expect(p.logFile).toBe(path.resolve(logFile));
     expect(p.logKeep).toBe(3);
     expect(p.logMaxBytes).toBe(10 * 1024 * 1024);
+  });
+
+  it('CL_DATA_DIR and CL_LOG_FILE must be absolute paths', () => {
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_DATA_DIR: 'data' })))).toBe('CL_DATA_DIR_INVALID');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_DATA_DIR: './data' })))).toBe('CL_DATA_DIR_INVALID');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LOG_FILE: 'engine.log' })))).toBe('CL_LOG_FILE_INVALID');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LOG_FILE: '../engine.log' })))).toBe('CL_LOG_FILE_INVALID');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LOG_FILE: '' })))).toBe('NO_ERROR');
   });
 
   it('CL_REQUIRE_NON_SUPERUSER is off unless set to 1', () => {

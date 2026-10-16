@@ -200,7 +200,12 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
   if (!dataDirRaw || dataDirRaw.trim() === '') {
     throw new DesktopConfigError('CL_DATA_DIR_REQUIRED', 'CL_DATA_DIR is required in desktop mode.');
   }
-  const dataDir = path.resolve(dataDirRaw);
+  // Absolute only: a relative path would depend on the engine's working
+  // directory, which the desktop app does not promise.
+  if (!path.isAbsolute(dataDirRaw.trim())) {
+    throw new DesktopConfigError('CL_DATA_DIR_INVALID', 'CL_DATA_DIR must be an absolute path.');
+  }
+  const dataDir = path.resolve(dataDirRaw.trim());
 
   // --- conflicting server-only switches ---------------------------------------
   if (env['RATE_LIMIT_REDIS'] === '1') {
@@ -221,7 +226,11 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
 
   const logMaxBytes = parsePositiveInt('CL_LOG_MAX_BYTES', env['CL_LOG_MAX_BYTES'], DEFAULT_LOG_MAX_BYTES);
   const logKeep = parsePositiveInt('CL_LOG_KEEP', env['CL_LOG_KEEP'], DEFAULT_LOG_KEEP);
-  const logFile = env['CL_LOG_FILE'] && env['CL_LOG_FILE'].trim() !== '' ? path.resolve(env['CL_LOG_FILE']) : null;
+  const logFileRaw = (env['CL_LOG_FILE'] ?? '').trim();
+  if (logFileRaw !== '' && !path.isAbsolute(logFileRaw)) {
+    throw new DesktopConfigError('CL_LOG_FILE_INVALID', 'CL_LOG_FILE must be an absolute path.');
+  }
+  const logFile = logFileRaw !== '' ? path.resolve(logFileRaw) : null;
 
   // --- env mutations (documented in docs/DESKTOP.md) -----------------------------
   const setDefault = (key: string, value: string) => {

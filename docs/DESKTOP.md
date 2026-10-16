@@ -18,8 +18,8 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `CL_MODE` | `desktop` | Unset or `server` means server mode. Any other value is a fatal `CL_MODE_INVALID`. |
 | `CL_BIND` | required | `<ipv4>:<port>` or `[<ipv6>]:<port>`, IP literals only. Port `0` lets the OS pick; the real port is in the ready line. A non-loopback address is refused (`CL_BIND_NOT_LOOPBACK`). Loopback means 127.0.0.0/8 or `::1`. |
 | `CL_TOKEN` | required | Launch token: at least 43 base64url characters or 64 hex (≥ 256 bits). Read once. Only its SHA-256 digest is kept for comparison, and it is deleted from `process.env`, so child processes (e.g. `pdftoppm`) never inherit it. Pass it in the environment, never on the command line. |
-| `CL_DATA_DIR` | required | Defaults the following when they are not set explicitly: `DATA_DIR` (= `CL_DATA_DIR`), `UPLOAD_DIR` (`uploads`), `BACKUP_DIR` (`backups`), `CONFIG_DIR` (`config`), `STORAGE_CACHE_DIR` (`cache`), `CL_ARCHIVE_DIR` (`archives`). |
-| `CL_LOG_FILE` | optional | Append scrubbed stdout/stderr to this file (see Logging). |
+| `CL_DATA_DIR` | required | Absolute path (`CL_DATA_DIR_INVALID` otherwise). Defaults the following when they are not set explicitly: `DATA_DIR` (= `CL_DATA_DIR`), `UPLOAD_DIR` (`uploads`), `BACKUP_DIR` (`backups`), `CONFIG_DIR` (`config`), `STORAGE_CACHE_DIR` (`cache`), `CL_ARCHIVE_DIR` (`archives`). |
+| `CL_LOG_FILE` | optional | Absolute path (`CL_LOG_FILE_INVALID` otherwise). Append scrubbed stdout/stderr to this file (see Logging). |
 | `CL_LOG_MAX_BYTES` | optional | Rotation size. Default 10 MiB. |
 | `CL_LOG_KEEP` | optional | Rotated files kept (`file.1` … `file.N`). Default 5. |
 | `CL_OFFLINE` | optional | `auto` (default), `on` or `off`. Recorded in the profile and in `/api/v1/desktop/info`. Connectivity probing comes in a later change, so for now `online` on `/health` is always `null`. |
@@ -56,7 +56,7 @@ Any startup problem produces one JSON line on stderr and an exit code:
 
 | Exit | Meaning | Codes |
 |---|---|---|
-| 78 (`EX_CONFIG`) | Configuration or preflight problem. Restarting will not help. | `CL_MODE_INVALID`, `CL_TOKEN_REQUIRED`, `CL_TOKEN_INVALID`, `CL_BIND_REQUIRED`, `CL_BIND_INVALID`, `CL_BIND_NOT_LOOPBACK`, `CL_LAN_UNSUPPORTED`, `CL_DATA_DIR_REQUIRED`, `CL_ENV_INVALID`, `CL_ENV_CONFLICT`, `QUEUE_BACKEND_INVALID`, `ENV_MISSING`, `ENV_INVALID`, `MIGRATIONS_PENDING`, `DATABASE_AHEAD`, `UNKNOWN` (migration failure), `DB_ROLE_UNREADABLE`, `DB_SUPERUSER_FORBIDDEN` |
+| 78 (`EX_CONFIG`) | Configuration or preflight problem. Restarting will not help. | `CL_MODE_INVALID`, `CL_TOKEN_REQUIRED`, `CL_TOKEN_INVALID`, `CL_BIND_REQUIRED`, `CL_BIND_INVALID`, `CL_BIND_NOT_LOOPBACK`, `CL_LAN_UNSUPPORTED`, `CL_DATA_DIR_REQUIRED`, `CL_DATA_DIR_INVALID`, `CL_LOG_FILE_INVALID`, `CL_ENV_INVALID`, `CL_ENV_CONFLICT`, `QUEUE_BACKEND_INVALID`, `ENV_MISSING`, `ENV_INVALID`, `MIGRATIONS_PENDING`, `DATABASE_AHEAD`, `UNKNOWN` (migration failure), `DB_ROLE_UNREADABLE`, `DB_SUPERUSER_FORBIDDEN` |
 | 1 | Runtime failure. A retry may help. | `BIND_FAILED` (e.g. port in use), `STARTUP_FAILED` |
 
 Messages are scrubbed and name variables, never values.
@@ -83,6 +83,8 @@ Mounted at `/api/v1/desktop` in desktop mode only. On the server they return 404
 | GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","dbRole":{"dangerous","warnings"},"initialized","workspaceTenantId"}`. `workspaceTenantId` is `null` before first run. |
 
 `/api/setup/*` is not available in desktop mode, except `GET /api/setup/status`.
+
+`/info` answers any holder of the launch token, before and without a user login. Besides the version it reveals `dataDirExists`, `dbSuperuser`/`dbRole` and `workspaceTenantId`. That is acceptable because the token holder is the desktop app itself, but the host must treat the token as the key to the whole engine (see Host requirements).
 
 ### First run
 
@@ -268,6 +270,16 @@ It never touches plain numbers, so amounts in log lines survive. To keep persona
 - logs unhandled errors as name, code, a short message and stack frames, never the full error object (which carries drizzle's `params:` and PostgreSQL's `detail`, i.e. amounts, names and memo text).
 
 With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated by size. Retention by age or total size is the desktop app's job: it deletes closed rotated files.
+
+## Host requirements
+
+What the desktop app (ClientLedger's `cl-host`) must do, because the engine cannot enforce it:
+
+- Pass absolute paths for `CL_DATA_DIR` and `CL_LOG_FILE` (the engine refuses relative ones) inside a directory only the owner's account can read.
+- Open, rotate and delete the log files with share-delete semantics on Windows (`FILE_SHARE_DELETE`), and never hold a rotated file open, so the engine's rename-based rotation keeps working while the host tails the log.
+- Keep the launch token secret: environment only, never the command line, a file or a log. Anyone holding it can call `/api/v1/desktop/info` and `/initialize`.
+- **P04 requirement (not implemented):** the host should verify it is talking to its own engine, not to another process that grabbed the port, before sending the token or credentials. Planned: the host sends a random challenge and the engine answers with an HMAC of it keyed by the launch token (e.g. a header on `/health`), so the token itself never has to be sent first.
+- Helper processes started by the engine (poppler `pdftoppm`, `pdftotext`, `pdfimages`) get a minimal environment in desktop mode (`PATH`, temp and locale variables, library and font paths; nothing credential-named), so boot secrets and API keys are not inherited. If the host bundles poppler, its libraries must be findable through `PATH` / `LD_LIBRARY_PATH` / `DYLD_*` or an rpath.
 
 ## Not in desktop mode yet
 

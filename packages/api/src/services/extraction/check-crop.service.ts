@@ -24,6 +24,7 @@ import { mkdtemp, writeFile, readdir, readFile, rm, stat } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { childProcessEnv } from '../../desktop/child-env.js';
 import { promisify } from 'node:util';
 import { log } from '../../utils/logger.js';
 import { parseCheckNumber } from '../../utils/check-number.js';
@@ -75,7 +76,7 @@ export interface CheckCropResult {
  */
 export async function checkPdfimagesAvailable(): Promise<{ available: boolean }> {
   try {
-    await execFileAsync(PDFIMAGES_BIN, ['-v'], { timeout: 10_000 });
+    await execFileAsync(PDFIMAGES_BIN, ['-v'], { timeout: 10_000, env: childProcessEnv() });
     return { available: true };
   } catch (err) {
     // `pdfimages -v` prints its version to stderr and exits 0 on modern
@@ -117,6 +118,7 @@ async function runPdfimages(args: string[]): Promise<{ stdout: string; failed: b
     const { stdout } = await execFileAsync(PDFIMAGES_BIN, args, {
       timeout: EXTRACT_TIMEOUT_MS,
       maxBuffer: 16 * 1024 * 1024,
+      env: childProcessEnv(),
     });
     return { stdout, failed: false };
   } catch (err) {
