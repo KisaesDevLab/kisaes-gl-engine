@@ -254,6 +254,16 @@ function patch(target: object | undefined, key: string, make: (orig: AnyFn) => A
 type ConnectTarget = { kind: 'ipc' } | { kind: 'tcp'; host: string; port: number | null };
 
 /** Read the destination from the argument forms Socket#connect accepts. */
+/** Not a valid hostname: never on the allowlist, so the connect is blocked. */
+const INVALID_HOST = '[invalid-host]';
+
+/**
+ * Read the destination from the argument forms Socket#connect accepts,
+ * using Node's own rules (lib/net.js normalizeArgs/isPipeName): a string
+ * first argument is a pipe path only when `!(Number(arg) >= 0)`, so `'0x1f90'`
+ * or `'8080.0'` are ports. Anything Node would not read as a host string is
+ * treated as blocked rather than defaulting to localhost.
+ */
 function connectTarget(args: unknown[]): ConnectTarget {
   let first = args[0];
   // net.connect() hands Socket#connect its normalized `[options, cb]`.
@@ -261,11 +271,15 @@ function connectTarget(args: unknown[]): ConnectTarget {
   if (first && typeof first === 'object') {
     const o = first as { path?: unknown; host?: unknown; port?: unknown };
     if (typeof o.path === 'string' && o.path !== '') return { kind: 'ipc' };
-    const host = typeof o.host === 'string' && o.host !== '' ? o.host : 'localhost';
+    if (o.path !== undefined && o.path !== null && o.path !== '') return { kind: 'tcp', host: INVALID_HOST, port: null };
+    let host: string;
+    if (o.host === undefined || o.host === null || o.host === '') host = 'localhost';
+    else if (typeof o.host === 'string') host = o.host;
+    else host = INVALID_HOST;
     const port = o.port === undefined || o.port === null ? null : Number(o.port);
     return { kind: 'tcp', host, port: Number.isFinite(port) ? port : null };
   }
-  if (typeof first === 'string' && !/^\s*\d+\s*$/.test(first)) return { kind: 'ipc' };
+  if (typeof first === 'string' && !(Number(first) >= 0)) return { kind: 'ipc' };
   const host = typeof args[1] === 'string' && args[1] !== '' ? args[1] : 'localhost';
   const port = Number(first);
   return { kind: 'tcp', host, port: Number.isFinite(port) ? port : null };

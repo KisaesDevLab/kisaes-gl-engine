@@ -118,6 +118,41 @@ describe('blocked destinations (no allowance)', () => {
     }
   });
 
+  it('string ports in any form Node accepts (hex, decimal with .0, padded) are ports, not pipe paths', async () => {
+    install();
+    const s = await server();
+    try {
+      // 192.0.2.1 (TEST-NET-1) would never answer; the guard must refuse before
+      // trying. A pipe-path misread would instead give ENOENT or EACCES.
+      for (const port of ['0x' + s.port.toString(16), `${s.port}.0`, ` ${s.port} `, `${s.port}e0`]) {
+        const err = await socketError(new net.Socket().connect(port as unknown as number, '192.0.2.1'));
+        expect(err.code, port).toBe('EGRESS_BLOCKED');
+      }
+      // Control: the same forms against loopback really are ports.
+      const ok = new net.Socket().connect(('0x' + s.port.toString(16)) as unknown as number, '127.0.0.1');
+      await new Promise<void>((res, rej) => { ok.once('connect', () => res()); ok.once('error', rej); });
+      ok.destroy();
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a non-string host option is blocked, not read as localhost', async () => {
+    install();
+    for (const host of [{ toString: () => '192.0.2.1' }, 3232235521, ['192.0.2.1']]) {
+      const sock = new net.Socket();
+      const err = await new Promise<NodeJS.ErrnoException>((resolve) => {
+        sock.once('error', resolve);
+        try {
+          sock.connect({ host: host as unknown as string, port: 80 });
+        } catch (e) {
+          resolve(e as NodeJS.ErrnoException);
+        }
+      });
+      expect(err.code, String(host)).toBe('EGRESS_BLOCKED');
+    }
+  });
+
   it('dns.lookup / dns.promises.lookup / dns/promises named import: blocked, never resolved', async () => {
     install();
     const cbErr = await new Promise<NodeJS.ErrnoException | null>((r) => dns.lookup('example.com', (e) => r(e)));
