@@ -23,6 +23,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import { z } from 'zod';
+import { PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
 import { desktopProfile } from '../desktop/profile.js';
@@ -41,8 +42,11 @@ export const desktopInitializeSchema = z.object({
   admin: z.object({
     email: z.string().trim().email('A valid email is required').max(320),
     displayName: z.string().trim().min(1, 'Name is required').max(255),
-    // Platform-wide password policy is 12 characters (see auth.service).
-    password: z.string().min(12, 'Password must be at least 12 characters').max(1024),
+    // Platform-wide minimum (shared password policy). bcrypt only uses the
+    // first 72 bytes, so longer passwords would silently be truncated.
+    password: z.string()
+      .min(PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE)
+      .refine((p) => Buffer.byteLength(p, 'utf8') <= 72, 'Password must be at most 72 bytes (UTF-8)'),
   }),
   // Optional first company. Zero companies is a valid state: the caller can
   // create one later with POST /api/v1/auth/create-tenant.
