@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { sendOrThrow } from './email.service.js';
 import { AppError } from '../utils/errors.js';
 
@@ -34,6 +34,20 @@ describe('sendOrThrow', () => {
   it('maps other transport failures to SMTP_SEND_FAILED', async () => {
     await expect(sendOrThrow(failingTransport(new Error('Connection closed unexpectedly')), mail))
       .rejects.toMatchObject({ code: 'SMTP_SEND_FAILED' });
+  });
+
+  it('logs the failure without the recipient address', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const err = Object.assign(new Error('550 5.1.1 <b@example.com>: Recipient address rejected'), { code: 'EENVELOPE' });
+      await expect(sendOrThrow(failingTransport(err), mail)).rejects.toMatchObject({ code: 'SMTP_SEND_FAILED' });
+      const logged = spy.mock.calls.map((c) => c.join(' ')).join(' | ');
+      expect(logged).toContain('EENVELOPE');
+      expect(logged).toContain('Recipient address rejected');
+      expect(logged).not.toContain('b@example.com');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('throws AppError instances (not raw nodemailer errors)', async () => {

@@ -32,7 +32,9 @@ export async function sendOrThrow(
     if (err instanceof AppError) throw err;
     const code = (err as { code?: string })?.code;
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[email] send to ${mail.to} failed:`, message);
+    // No recipient in the log (PII): not mail.to, and addresses that SMTP
+    // servers echo in their replies are masked.
+    console.error(`[email] send failed${code ? ` (${code})` : ''}:`, message.replace(/[^\s<>"'@]+@[^\s<>"'@]+/g, '[address]'));
     if (code === 'EAUTH' || message.includes('535')) {
       throw AppError.badRequest(
         'Email could not be sent: the SMTP username or password was rejected by the mail server. Check Settings → Email (Gmail requires an App Password).',
