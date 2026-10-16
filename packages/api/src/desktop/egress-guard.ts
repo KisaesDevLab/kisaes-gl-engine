@@ -24,7 +24,8 @@
  *
  * Allowed destinations:
  *
- *   - loopback: 127.0.0.0/8, ::1, ::ffff:127.0.0.0/104, `localhost`;
+ *   - loopback: 127.0.0.0/8, ::1, ::ffff:127.0.0.0/104, and exactly
+ *     `localhost` (not `localhost.`, which a resolver may send to DNS);
  *   - local IPC (Unix sockets, Windows named pipes);
  *   - the DATABASE_URL host (and port);
  *   - CL_EGRESS_ALLOW (comma-separated `host[:port]`, set by the desktop
@@ -145,8 +146,11 @@ function guardCore(cfg: CoreConfig, m: CoreModules, install: boolean): CoreHandl
   }
 
   function isLoopback(host: string): boolean {
-    const h = normalize(host);
+    let h = String(host).trim().toLowerCase();
+    // Exactly `localhost`: `localhost.` is a fully qualified name that a
+    // resolver may send to a DNS server.
     if (h === 'localhost') return true;
+    if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
     const family = m.net.isIP(h);
     try {
       if (family === 4) return loopback.check(h, 'ipv4');

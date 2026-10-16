@@ -117,6 +117,14 @@ describe('blocked destinations (no allowance)', () => {
     expect(lookupSpy).not.toHaveBeenCalled();
   });
 
+  it('localhost. (trailing dot) is a DNS name, not loopback: blocked without a lookup', async () => {
+    install();
+    const err = await socketError(net.connect(80, 'localhost.'));
+    expect(err.code).toBe('EGRESS_BLOCKED');
+    await expect(dns.promises.lookup('localhost.')).rejects.toMatchObject({ code: 'EGRESS_BLOCKED' });
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
   it('IP literals that are not loopback, and odd numeric forms, are blocked', async () => {
     install();
     for (const host of ['93.184.215.14', '10.0.0.5', '2130706433', '0x7f.1', '2606:2800:21f:cb07:6820:80da:af6b:8b2c']) {
@@ -242,7 +250,8 @@ describe('allowed destinations', () => {
     expect(isLoopbackHost('0:0:0:0:0:0:0:1')).toBe(true);
     expect(isLoopbackHost('::ffff:127.0.0.1')).toBe(true);
     expect(isLoopbackHost('[::1]')).toBe(true);
-    expect(isLoopbackHost('LOCALHOST.')).toBe(true);
+    expect(isLoopbackHost('LOCALHOST')).toBe(true);
+    expect(isLoopbackHost('localhost.')).toBe(false);
     expect(isLoopbackHost('128.0.0.1')).toBe(false);
     expect(isLoopbackHost('localhost.example.com')).toBe(false);
   });

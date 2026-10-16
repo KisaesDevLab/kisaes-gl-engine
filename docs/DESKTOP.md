@@ -275,7 +275,7 @@ Allowed destinations:
 
 | Destination | How |
 |---|---|
-| Loopback | `127.0.0.0/8`, `::1`, `::ffff:127.0.0.0/104`, `localhost` |
+| Loopback | `127.0.0.0/8`, `::1`, `::ffff:127.0.0.0/104`, exactly `localhost` (not `localhost.`, a DNS name) |
 | Local IPC | Unix sockets and Windows named pipes |
 | The database | `DATABASE_URL` host, on its port |
 | Launch allowlist | `CL_EGRESS_ALLOW` |
