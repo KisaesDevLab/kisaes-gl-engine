@@ -11,6 +11,8 @@
  * options, same nodemailer default timeouts, same errors.
  *
  * Desktop mode (CL_MODE=desktop) adds:
+ *   - requireTLS (STARTTLS mandatory) unless the server is on loopback or
+ *     the caller says otherwise;
  *   - bounded timeouts (connection 10 s, greeting 10 s, socket 30 s)
  *     unless the caller set its own, so a dead mail server cannot hold a
  *     request for nodemailer's default two minutes;
@@ -22,13 +24,14 @@
 
 import nodemailer from 'nodemailer';
 import { isDesktop } from '../desktop/profile.js';
-import { classifyNetworkError, ensureOnline, type NetTarget } from './offline.js';
+import { classifyNetworkError, ensureOnline, isLoopbackAddress, type NetTarget } from './offline.js';
 
 export interface MailTransportOptions {
   host?: string;
   port?: number;
   secure?: boolean;
   auth?: { user?: string; pass?: string };
+  requireTLS?: boolean;
   connectionTimeout?: number;
   greetingTimeout?: number;
   socketTimeout?: number;
@@ -77,8 +80,16 @@ function guard<A extends unknown[]>(
 export function createMailTransport(opts: MailTransportOptions) {
   if (!isDesktop()) return nodemailer.createTransport(opts);
 
-  const transport = nodemailer.createTransport({ ...DESKTOP_SMTP_TIMEOUTS, ...opts });
   const target = smtpTarget(opts);
+  // Desktop default: never send the owner's SMTP password or mail in clear
+  // text over the network. Port 465 is TLS from the start; on other ports
+  // STARTTLS is required, except for a relay on this machine. A caller's
+  // explicit requireTLS wins.
+  const transport = nodemailer.createTransport({
+    ...DESKTOP_SMTP_TIMEOUTS,
+    requireTLS: !isLoopbackAddress(target.host),
+    ...opts,
+  });
   const t = transport as unknown as Record<string, unknown>;
   for (const method of ['sendMail', 'verify'] as const) {
     const orig = t[method];

@@ -232,7 +232,8 @@ const OFFLINE_CODES = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
 ]);
 
-function isLoopbackAddress(addr: unknown): boolean {
+/** 127.0.0.0/8, ::1 (also bracketed / IPv4-mapped) or exactly `localhost`. */
+export function isLoopbackAddress(addr: unknown): boolean {
   if (typeof addr !== 'string') return false;
   const a = addr.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '');
   return a === '::1' || a === 'localhost' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a);

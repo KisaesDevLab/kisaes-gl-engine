@@ -43,6 +43,7 @@ describe('server mode (CL_MODE unset)', () => {
     const opts = { host: 'smtp.example.test', port: 587, secure: false, auth: { user: 'u', pass: 'p' } };
     const t = createMailTransport(opts);
     expect(spy).toHaveBeenCalledTimes(1);
+    // Exactly the caller's options: no timeouts, no requireTLS.
     expect(spy.mock.calls[0]![0]).toEqual(opts);
     // Not wrapped: sendMail is nodemailer's own prototype method.
     expect(Object.prototype.hasOwnProperty.call(t, 'sendMail')).toBe(false);
@@ -57,6 +58,16 @@ describe('desktop mode', () => {
     expect(spy.mock.calls[0]![0]).toMatchObject(DESKTOP_SMTP_TIMEOUTS);
     createMailTransport({ host: 'smtp.example.test', port: 587, socketTimeout: 5_000 });
     expect(spy.mock.calls[1]![0]).toMatchObject({ connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 5_000 });
+  });
+
+  it('requires TLS by default, except for a loopback relay; a caller value wins', () => {
+    desktop();
+    const spy = vi.spyOn(nodemailer, 'createTransport');
+    createMailTransport({ host: 'smtp.example.test', port: 587 });
+    createMailTransport({ host: '127.0.0.1', port: 25 });
+    createMailTransport({ host: 'localhost', port: 25 });
+    createMailTransport({ host: 'smtp.example.test', port: 587, requireTLS: false });
+    expect(spy.mock.calls.map((c) => (c[0] as { requireTLS?: boolean }).requireTLS)).toEqual([true, false, false, false]);
   });
 
   it('CL_OFFLINE=on: sendMail and verify fail with OFFLINE_UNAVAILABLE at once, no socket', async () => {
