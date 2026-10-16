@@ -281,6 +281,8 @@ Allowed destinations:
 | Launch allowlist | `CL_EGRESS_ALLOW` |
 | Features the owner turned on | Registered at runtime with `setEgressAllowance(source, [{host, port}])`, e.g. an AI provider or SMTP server once its key or password is supplied for the session |
 
+With `CL_OFFLINE=on` only loopback, IPC and the database are allowed: `CL_EGRESS_ALLOW` and runtime allowances are ignored (in worker threads too).
+
 Matching is by host (and port when the entry has one), never by request context, because connection pools open sockets from any context. IP literals are matched exactly; an allowed name does not allow its IP address or other spellings of it.
 
 A blocked connection fails like a refused one: the socket gets an `EGRESS_BLOCKED` error on the next tick, before any DNS query or packet. The guard logs `{"component":"egress-guard","event":"blocked","host":…}` at warn level, at most once a minute per host, with no port or payload. Removing an allowance stops new connections; an open keep-alive socket can be reused until it idles out.

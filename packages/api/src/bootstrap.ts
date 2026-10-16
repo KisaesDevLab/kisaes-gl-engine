@@ -70,7 +70,12 @@ async function main(): Promise<void> {
     // their own host at runtime once the owner enables them.
     try {
       const { installEgressGuard } = await import('./desktop/egress-guard.js');
-      installEgressGuard({ databaseUrl: process.env['DATABASE_URL'], allow: process.env['CL_EGRESS_ALLOW'] });
+      installEgressGuard({
+        databaseUrl: process.env['DATABASE_URL'],
+        allow: process.env['CL_EGRESS_ALLOW'],
+        // CL_OFFLINE=on: only loopback, IPC and the database.
+        offline: profile.offline === 'on',
+      });
     } catch (err) {
       if (err instanceof DesktopConfigError) desktopFatal(err.code, err.message);
       throw err;

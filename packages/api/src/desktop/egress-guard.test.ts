@@ -299,6 +299,18 @@ describe('allowed destinations', () => {
     expect(isEgressAllowed('fd00::6', 8080)).toBe(false);
   });
 
+  it('CL_OFFLINE=on: only loopback and the database; CL_EGRESS_ALLOW and runtime allowances are ignored', async () => {
+    installEgressGuard({ databaseUrl: 'postgresql://u:p@db.internal:5544/books', allow: 'ollama.lan:11434', offline: true });
+    setEgressAllowance('ai.anthropic', [{ host: 'api.anthropic.com', port: 443 }]);
+    expect(isEgressAllowed('db.internal', 5544)).toBe(true);
+    expect(isEgressAllowed('127.0.0.1', 80)).toBe(true);
+    expect(isEgressAllowed('ollama.lan', 11434)).toBe(false);
+    expect(isEgressAllowed('api.anthropic.com', 443)).toBe(false);
+    // Workers inherit the same rule.
+    const r = await runWorker(() => new Worker(CONNECT_CODE, { eval: true, workerData: { host: 'api.anthropic.com', port: 443, fakeLookup: true } }));
+    expect(r).toBe('EGRESS_BLOCKED');
+  });
+
   it('an invalid CL_EGRESS_ALLOW is a desktop configuration error', () => {
     expect(() => parseAllowList('good.example, bad host')).toThrow(DesktopConfigError);
     expect(() => parseAllowList('x.example:70000')).toThrow(DesktopConfigError);

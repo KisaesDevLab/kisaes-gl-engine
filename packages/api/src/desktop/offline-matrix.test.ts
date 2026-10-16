@@ -55,7 +55,7 @@ async function loadDesktopApp(offline: 'on' | 'auto'): Promise<Loaded> {
   });
   // Same order as bootstrap.ts: the guard goes in before the app loads.
   const guard = await import('./egress-guard.js');
-  guard.installEgressGuard({ databaseUrl: process.env['DATABASE_URL'] });
+  guard.installEgressGuard({ databaseUrl: process.env['DATABASE_URL'], offline: offline === 'on' });
   const { app } = await import('../app.js');
   const server = http.createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
