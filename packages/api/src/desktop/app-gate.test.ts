@@ -65,6 +65,19 @@ describe('app.ts in desktop mode', () => {
     expect(stack.filter((l) => l.name === 'clDesktopGate')).toHaveLength(1);
   }, 120_000);
 
+  it('trust proxy is off, even with TRUST_PROXY set; the server default stays loopback', async () => {
+    const saved = process.env['TRUST_PROXY'];
+    process.env['TRUST_PROXY'] = 'true';
+    try {
+      expect((await loadApp('desktop')).get('trust proxy')).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env['TRUST_PROXY'];
+      else process.env['TRUST_PROXY'] = saved;
+    }
+    (await import('./profile.js'))._resetDesktopProfileForTests();
+    if (process.env['TRUST_PROXY'] === undefined) expect((await loadApp('server')).get('trust proxy')).toBe('loopback');
+  }, 120_000);
+
   it('the global limiter does not throttle token-authenticated requests', async () => {
     const app = await loadApp('desktop');
     const { setDesktopBoundAddress } = await import('../middleware/desktop-gate.js');

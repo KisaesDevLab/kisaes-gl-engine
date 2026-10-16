@@ -205,7 +205,12 @@ app.use(
 // Without any TRUST_PROXY the tunnel's X-Forwarded-For header is ignored
 // and every request appears to come from the cloudflared sidecar.
 const trustProxyRaw = process.env['TRUST_PROXY'];
-if (!trustProxyRaw) {
+if (isDesktop()) {
+  // Desktop: nothing sits in front of the engine (loopback only, every
+  // request carries the launch token), so X-Forwarded-* is never honored,
+  // whatever TRUST_PROXY says.
+  app.set('trust proxy', false);
+} else if (!trustProxyRaw) {
   app.set('trust proxy', 'loopback');
 } else if (trustProxyRaw === 'true' || trustProxyRaw === '1') {
   app.set('trust proxy', true);
