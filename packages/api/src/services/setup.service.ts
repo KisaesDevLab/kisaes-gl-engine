@@ -9,7 +9,7 @@ import net from 'net';
 import pg from 'pg';
 import bcrypt from 'bcrypt';
 import nodemailer from 'nodemailer';
-import { db } from '../db/index.js';
+import { db, pool } from '../db/index.js';
 import { tenants, users, companies, userTenantAccess } from '../db/schema/index.js';
 import { sql, asc } from 'drizzle-orm';
 import { env } from '../config/env.js';
@@ -330,24 +330,40 @@ export async function getSetupStatus(): Promise<SetupStatus> {
  * Wrap a setup operation in a Postgres advisory lock so concurrent
  * `/initialize` calls can't both proceed. Throws if the lock cannot be
  * acquired. Release happens in `finally` regardless of outcome.
+ *
+ * A session-level advisory lock belongs to the connection that took it, so
+ * lock and unlock run on ONE pinned pool client. (Through `db.execute` the
+ * pool could hand lock and unlock to different connections: the unlock
+ * then failed silently and the lock stayed held by an idle pooled
+ * connection, so the next setup call on another connection was refused as
+ * "already in progress" until that connection was recycled.) `fn` itself
+ * still uses the pool as before. If the unlock fails, the pinned
+ * connection is destroyed, which releases the lock.
  */
 export async function withSetupLock<T>(fn: () => Promise<T>): Promise<T> {
-  const lockRes = await db.execute(
-    sql`SELECT pg_try_advisory_lock(${SETUP_ADVISORY_LOCK_KEY}) as locked`,
-  );
-  const locked = (lockRes.rows as LockedRow[])[0]?.locked === true;
-  if (!locked) {
-    throw new Error('Another setup operation is already in progress. Please wait a moment and retry.');
-  }
+  const client = await pool.connect();
+  let destroyed = false;
   try {
-    return await fn();
-  } finally {
-    try {
-      await db.execute(sql`SELECT pg_advisory_unlock(${SETUP_ADVISORY_LOCK_KEY})`);
-    } catch {
-      // If the unlock fails we log nothing — the session will release the
-      // lock when it ends, so subsequent calls won't deadlock.
+    const lockRes = await client.query<LockedRow>(
+      'SELECT pg_try_advisory_lock($1::bigint) AS locked',
+      [SETUP_ADVISORY_LOCK_KEY],
+    );
+    if (lockRes.rows[0]?.locked !== true) {
+      throw new Error('Another setup operation is already in progress. Please wait a moment and retry.');
     }
+    try {
+      return await fn();
+    } finally {
+      try {
+        await client.query('SELECT pg_advisory_unlock($1::bigint)', [SETUP_ADVISORY_LOCK_KEY]);
+      } catch (err) {
+        // Ending the session releases the lock.
+        client.release(err instanceof Error ? err : new Error(String(err)));
+        destroyed = true;
+      }
+    }
+  } finally {
+    if (!destroyed) client.release();
   }
 }
 

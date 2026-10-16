@@ -27,7 +27,7 @@ const TOKEN = 'wstest_' + 'z'.repeat(44);
 const baseUrl = process.env['DATABASE_URL'] || 'postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test';
 const stamp = `${process.pid}_${Date.now()}`;
 const TEMPLATE = `cl_ws_tmpl_${stamp}`;
-const DB = { main: `cl_ws_main_${stamp}`, empty: `cl_ws_empty_${stamp}`, fail: `cl_ws_fail_${stamp}` };
+const DB = { main: `cl_ws_main_${stamp}`, empty: `cl_ws_empty_${stamp}`, fail: `cl_ws_fail_${stamp}`, conc: `cl_ws_conc_${stamp}` };
 const OWNER = { email: 'Owner@Example.com', displayName: 'Pat Owner', password: 'correct horse battery' };
 
 function urlFor(db: string): string {
@@ -491,6 +491,48 @@ describe('desktop workspace: initialize with a company', () => {
 });
 
 // --- initialize without a company -----------------------------------------
+
+describe('desktop workspace: concurrent initialize', () => {
+  let e: Engine;
+
+  beforeAll(async () => {
+    if (!dbReady) return;
+    e = await startDesktop(DB.conc);
+  }, 120_000);
+
+  afterAll(async () => {
+    if (e) await e.close();
+  });
+
+  it('exactly one of several simultaneous calls creates the owner; the setup lock is not left behind', async () => {
+    if (!dbReady) return;
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        e.call('/api/v1/desktop/initialize', {
+          method: 'POST',
+          body: { admin: { ...OWNER, email: `owner${i}@example.com` } },
+        }),
+      ),
+    );
+    const statuses = results.map((r) => r.status).sort();
+    expect(statuses.filter((s) => s === 201), JSON.stringify(results.map((r) => r.json))).toHaveLength(1);
+    for (const r of results.filter((x) => x.status !== 201)) {
+      expect(r.status).toBe(409);
+      expect(['SETUP_BUSY', 'ALREADY_INITIALIZED']).toContain(r.json?.error?.code);
+    }
+    await onDb(DB.conc, async (c) => {
+      expect(Number((await c.query('SELECT COUNT(*) AS n FROM users')).rows[0].n)).toBe(1);
+      expect(Number((await c.query('SELECT COUNT(*) AS n FROM tenants WHERE is_workspace')).rows[0].n)).toBe(1);
+      // No pooled connection still holds the session lock.
+      const free = (await c.query('SELECT pg_try_advisory_lock(4242424242::bigint) AS locked')).rows[0].locked;
+      expect(free).toBe(true);
+      await c.query('SELECT pg_advisory_unlock(4242424242::bigint)');
+    });
+    // A later call is answered by the emptiness check, not by a stuck lock.
+    const again = await e.call('/api/v1/desktop/initialize', { method: 'POST', body: { admin: OWNER } });
+    expect(again.json?.error?.code).toBe('ALREADY_INITIALIZED');
+  });
+});
 
 describe('desktop workspace: initialize without a company', () => {
   let e: Engine;
