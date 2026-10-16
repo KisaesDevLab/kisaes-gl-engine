@@ -205,8 +205,18 @@ describe('computeHealth — connectivity fields', () => {
     expect(body).toMatchObject({ status: 'ok', online: false, lastOnlineCheck: '2026-10-15T11:59:00.000Z' });
   });
 
-  it('without a connectivity source both fields are null (server default)', async () => {
-    const { body } = await computeHealth(deps({}));
+  it('without a connectivity source both fields are null (desktop)', async () => {
+    const { body } = await computeHealth(
+      deps({ mode: 'desktop', queueBackend: 'none', expectWorker: false, redis: { ok: true, latencyMs: 0, disabled: true } }),
+    );
     expect(body).toMatchObject({ online: null, lastOnlineCheck: null });
+  });
+
+  it('the server keeps the v1 body: no connectivity fields, even with a source', async () => {
+    const d = deps({});
+    d.connectivity = () => ({ online: false, lastOnlineCheck: '2026-10-15T11:59:00.000Z' });
+    const { body } = await computeHealth(d);
+    expect(body).not.toHaveProperty('online');
+    expect(body).not.toHaveProperty('lastOnlineCheck');
   });
 });
