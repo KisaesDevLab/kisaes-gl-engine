@@ -463,6 +463,18 @@ describe('worker threads', () => {
 });
 
 describe('install / uninstall', () => {
+  it('refuses to install when a critical patch cannot be applied, and leaves nothing patched', () => {
+    const desc = Object.getOwnPropertyDescriptor(dns, 'lookup')!;
+    Object.defineProperty(dns, 'lookup', { ...desc, writable: false });
+    try {
+      expect(() => install()).toThrow(/could not patch/);
+      expect(isEgressGuardInstalled()).toBe(false);
+      expect(net.Socket.prototype.connect).toBe(ORIGINAL_CONNECT);
+    } finally {
+      Object.defineProperty(dns, 'lookup', desc);
+    }
+  });
+
   it('is idempotent and the test hook restores the builtins', async () => {
     install();
     install();

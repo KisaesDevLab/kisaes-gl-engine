@@ -280,7 +280,7 @@ interface Engine {
   connectLog: string;
 }
 
-function spawnEngine(extra: Record<string, string>): Engine {
+function spawnEngine(extra: Record<string, string>, entry = 'src/bootstrap.ts'): Engine {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'cl-offline-matrix-'));
   const connectLog = path.join(dataDir, 'connects.jsonl');
   const env: Record<string, string> = {};
@@ -299,7 +299,7 @@ function spawnEngine(extra: Record<string, string>): Engine {
     ...extra,
   });
   const recorder = pathToFileURL(path.join(API_ROOT, 'src', 'desktop', '__fixtures__', 'connect-recorder.mjs')).href;
-  const proc = spawn(process.execPath, ['--import', recorder, '--import', 'tsx', 'src/bootstrap.ts'], {
+  const proc = spawn(process.execPath, ['--import', recorder, '--import', 'tsx', entry], {
     cwd: API_ROOT,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -365,6 +365,19 @@ describe('spawned engine (bootstrap.ts)', () => {
       await stopEngine(e);
     }
   }, 60_000);
+
+  it('index.ts refuses to start in desktop mode without the egress guard', async () => {
+    if (!dbReady) return;
+    // The env bootstrap would derive (index.ts is started directly here).
+    const e = spawnEngine({ PORT: '0', QUEUE_BACKEND: 'none', EXPECT_WORKER: 'false', HIBP_DISABLED: '1', SHARE_ENABLED: 'false' }, 'src/index.ts');
+    try {
+      expect(await e.ready).toEqual({ exitCode: 78 });
+      const fatal = e.stderr.find((l) => l.startsWith('{"event":"fatal"'));
+      expect(JSON.parse(fatal!)).toMatchObject({ code: 'EGRESS_GUARD_MISSING' });
+    } finally {
+      await stopEngine(e);
+    }
+  }, BOOT_TIMEOUT_MS);
 
   it(`boot + ${Math.round(IDLE_MS / 1000)} s idle: no connection beyond loopback and the database; /health online null`, async () => {
     if (!dbReady) return;

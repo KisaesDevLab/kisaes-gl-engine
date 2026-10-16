@@ -201,7 +201,13 @@ function guardCore(cfg: CoreConfig, m: CoreModules, install: boolean): CoreHandl
     const orig = t[key];
     if (typeof orig !== 'function') return;
     saved.push({ target: t, key, value: orig });
-    t[key] = make(orig as Fn);
+    try {
+      t[key] = make(orig as Fn);
+    } catch {
+      // Read-only property: leave it; the check after patching decides
+      // whether the guard can run without it.
+      saved.pop();
+    }
   }
 
   function callbackOf(args: unknown[]): Fn | null {
@@ -286,6 +292,10 @@ function guardCore(cfg: CoreConfig, m: CoreModules, install: boolean): CoreHandl
     restore,
   };
   if (!install) return handle;
+
+  const origConnect = m.net.Socket.prototype.connect;
+  const origLookup = m.dns.lookup;
+  const origWorker = m.worker_threads.Worker;
 
   // --- TCP -----------------------------------------------------------------
   patch(m.net.Socket.prototype, 'connect', (orig) =>
@@ -405,6 +415,15 @@ function guardCore(cfg: CoreConfig, m: CoreModules, install: boolean): CoreHandl
   // only see the patched functions after a sync.
   m.module.syncBuiltinESMExports();
 
+  // The guard is only as good as these three patches: verify they took.
+  const applied = m.net.Socket.prototype.connect !== origConnect
+    && m.dns.lookup !== origLookup
+    && (m.worker_threads.Worker as unknown) === GuardedWorker
+    && (m.worker_threads.Worker as unknown) !== origWorker;
+  if (!applied) {
+    restore();
+    throw new Error('egress guard: could not patch net.Socket#connect, dns.lookup and worker_threads.Worker');
+  }
   return handle;
 }
 
