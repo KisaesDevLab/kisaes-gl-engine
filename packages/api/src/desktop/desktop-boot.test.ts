@@ -269,13 +269,14 @@ describe('desktop engine on port 0', () => {
 
   it('logs to CL_LOG_FILE and scrubs the launch token from file and console', async () => {
     if (!dbReady) return;
-    // The access log prints the URL, so a token in the query string must
-    // come out redacted everywhere.
+    // Desktop access log prints the path only, so the query string (and a
+    // token in it) never reaches the log.
     expect((await call(port, `/api/v1/ping?probe=${TOKEN}`)).status).toBe(200);
     await new Promise((r) => setTimeout(r, 500));
     const log = readFileSync(e!.logFile!, 'utf8');
     expect(log).toContain('{"event":"listening"');
-    expect(log).toContain('/api/v1/ping?probe=[redacted]');
+    expect(log).toContain('GET /api/v1/ping HTTP');
+    expect(log).not.toContain('probe=');
     expect(log).not.toContain(TOKEN);
     expect(e!.stdout.join(' ')).not.toContain(TOKEN);
     expect(e!.stderr.join(' ')).not.toContain(TOKEN);
