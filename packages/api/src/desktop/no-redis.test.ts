@@ -78,6 +78,7 @@ import {
   enqueueBillCapture,
   enqueueTaxParamAiCheck,
   getReportPackQueueHealth,
+  makeRedisConnection,
 } from '../services/extraction/queue.js';
 import { QueueUnavailableError } from '../queue/none.adapter.js';
 
@@ -156,6 +157,10 @@ describe('desktop mode touches no Redis', () => {
     for (const a of attempts) await expect(a).rejects.toBeInstanceOf(QueueUnavailableError);
     expect(Date.now() - started).toBeLessThan(500);
     expect(await getReportPackQueueHealth()).toEqual({ redisReachable: false, workerRunning: false });
+  });
+
+  it('makeRedisConnection refuses instead of dialing', () => {
+    expect(() => makeRedisConnection()).toThrow(QueueUnavailableError);
   });
 
   it('constructed no ioredis client and no BullMQ queue', () => {

@@ -14,7 +14,8 @@
 
 import { Queue, type ConnectionOptions, type JobsOptions } from 'bullmq';
 import RedisPkg from 'ioredis';
-import { assertQueueEnabled, queueDisabled } from '../../queue/none.adapter.js';
+import { assertQueueEnabled, queueDisabled, QueueUnavailableError } from '../../queue/none.adapter.js';
+import { redisEnabled } from '../../desktop/profile.js';
 
 const Redis = (RedisPkg as unknown as { default?: typeof import('ioredis').default }).default
   ?? (RedisPkg as unknown as typeof import('ioredis').default);
@@ -66,6 +67,10 @@ export interface ExtractJobData {
 // blocking commands (BRPOPLPUSH etc.). Each Worker should get its OWN
 // connection; the shared one here backs the Queue producers only.
 export function makeRedisConnection(): RedisClient {
+  // Never dial Redis when the install runs without it (desktop mode, or a
+  // server with QUEUE_BACKEND=none and no REDIS_URL): fail fast instead of
+  // a connection that retries forever (maxRetriesPerRequest: null).
+  if (!redisEnabled()) throw new QueueUnavailableError('redis');
   const url = process.env['REDIS_URL'] || 'redis://redis:6379';
   return new Redis(url, { maxRetriesPerRequest: null });
 }
