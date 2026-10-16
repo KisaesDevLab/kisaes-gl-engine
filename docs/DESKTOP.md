@@ -294,6 +294,17 @@ Not covered:
 
 The server appliance never installs the guard.
 
+### Rules for features that open egress (session secrets, E6)
+
+`setEgressAllowance()` is the only way a feature reaches the network. Code that calls it must follow these rules (security review of the guard, 2026-10-15):
+
+- **AI hosts come from a fixed provider table** (Anthropic → `api.anthropic.com:443`, OpenAI → `api.openai.com:443`), never from a URL in a request body or a stored setting.
+- **SMTP:** the host must pass `assertHostSafe` (no loopback, link-local or metadata names or addresses) before it is allowed, and only ports 25, 465, 587 and 2525 may be allowed.
+- **Ollama / OpenAI-compatible base URLs** (local or LAN) must be validated before their host is allowed: `http`/`https` only, no credentials in the URL, no link-local or metadata addresses, and a host other than loopback only by an explicit owner choice. Not validated yet (review item L-6).
+- **Only the owner role** may add an allowance, and it is removed when the feature is turned off or its secret is cleared.
+- **Never widen the guard for everyone** with `CL_EGRESS_ALLOW` to make a feature work; that variable is for launch-time, install-specific hosts chosen by the desktop app.
+- Removing an allowance stops new connections; a keep-alive socket that is already open may be reused until it idles out (review item L-8, accepted and documented above).
+
 ### OCR language data (no download)
 
 tesseract.js downloads `eng.traineddata` from `cdn.jsdelivr.net` by default. The engine never lets it in desktop mode:
