@@ -54,6 +54,12 @@ describe('scrubSecrets', () => {
     expect(scrubSecrets('password hunter2hunter2 rejected')).toBe('password [redacted] rejected');
   });
 
+  it('replaces email addresses (personal data) but not user@host connection strings', () => {
+    expect(scrubSecrets('invite email to Jane.Doe+books@example.co.uk failed: 550 <jane@x.org> rejected'))
+      .toBe('invite email to [email] failed: 550 <[email]> rejected');
+    expect(scrubSecrets('connecting as kisbooks@127.0.0.1:5434')).toBe('connecting as kisbooks@127.0.0.1:5434');
+  });
+
   it('never touches amounts, dates, uuids or words that merely contain "sk-"', () => {
     const line = 'posted 1234567.8900 and -0.0001 on 2026-10-15 for 3f2b8c1e-1d2a-4c3b-9e8f-0a1b2c3d4e5f task-abcdefghijk';
     expect(scrubSecrets(line)).toBe(line);

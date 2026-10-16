@@ -246,9 +246,13 @@ In desktop mode, `desktop/log-tee.ts` wraps stdout and stderr. Every chunk goes 
 - `sk-…` / `sk-ant-…` API keys;
 - JWTs;
 - passwords in `scheme://user:password@` URLs;
-- `X-CL-Token` header dumps.
+- `X-CL-Token` header dumps;
+- email addresses (replaced with `[email]`).
 
-It never touches plain numbers, so amounts in log lines survive.
+It never touches plain numbers, so amounts in log lines survive. To keep personal and financial data out of the log in the first place, desktop mode also:
+
+- logs request paths without the query string (morgan);
+- logs unhandled errors as name, code, a short message and stack frames, never the full error object (which carries drizzle's `params:` and PostgreSQL's `detail`, i.e. amounts, names and memo text).
 
 With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated by size. Retention by age or total size is the desktop app's job: it deletes closed rotated files.
 

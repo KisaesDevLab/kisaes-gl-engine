@@ -65,6 +65,9 @@ const PATTERNS: Array<[RegExp, string]> = [
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g, REDACTED],
   // scheme://user:password@host
   [/\b([a-z][a-z0-9+.-]*:\/\/[^:/\s@]*:)[^@\s/]+@/gi, `$1${REDACTED}@`],
+  // Email addresses (personal data; e.g. SMTP errors echo the recipient).
+  // Needs a dot and a letter TLD, so user@127.0.0.1 style strings survive.
+  [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g, '[email]'],
 ];
 
 export function scrubSecrets(text: string): string {

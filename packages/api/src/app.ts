@@ -287,13 +287,12 @@ app.use(express.json({ limit: '10mb' }));
 // Access log with bearer-ish query parameters redacted: magic-link
 // verify (?token=), download tokens (?_dl=), portal/W-9/bank-connect
 // tokens all travel in the URL and must not land in stdout/log shipping.
+// Desktop mode logs the path only: search terms, emails and amounts
+// travel in query strings and the log file sits on the owner's disk.
+import { accessLogUrl } from './utils/log-safe.js';
 morgan.token('url', (req) => {
   const raw = (req as unknown as { originalUrl?: string }).originalUrl ?? req.url ?? '';
-  return raw
-    // query-string credentials
-    .replace(/([?&](?:token|_dl|code|state|access_token|refresh_token|passphrase|claimToken|claim_token)=)[^&#]*/gi, '$1[redacted]')
-    // path-segment tokens: public invoice / published report / W-9 / bank-connect links
-    .replace(/^(\/api\/(?:v1\/public\/invoices|reports\/public|w9|bank-connect)\/)[^/?#]+/i, '$1[redacted]');
+  return accessLogUrl(raw, isDesktop());
 });
 app.use(morgan('short'));
 

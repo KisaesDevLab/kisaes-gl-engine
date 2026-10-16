@@ -353,7 +353,7 @@ delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), as
       sourceEntityType: 'user', sourceEntityId: user.id, actorUserId: req.userId,
     })).catch((err) => {
       // eslint-disable-next-line no-console
-      console.warn(`[admin.routes] account-created email to ${user.email} failed:`, err?.message ?? err);
+      console.warn(`[admin.routes] account-created email to user ${user.id} failed:`, err?.message ?? err);
     });
 
     res.status(201).json({ user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role } });

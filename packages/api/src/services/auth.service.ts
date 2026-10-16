@@ -1019,7 +1019,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
       sourceEntityType: 'user', sourceEntityId: existing.id, ...(inviterUserId ? { actorUserId: inviterUserId } : {}),
     })).catch((err) => {
       // eslint-disable-next-line no-console
-      console.warn(`[auth.service] access-granted email to ${existing.email} failed:`, err?.message ?? err);
+      console.warn(`[auth.service] access-granted email to user ${existing.id} failed:`, err?.message ?? err);
     });
 
     return { user: existing, temporaryPassword: null, existingUser: true };
@@ -1068,7 +1068,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
     sourceEntityType: 'user', sourceEntityId: user.id, ...(inviterUserId ? { actorUserId: inviterUserId } : {}),
   })).catch((err) => {
     // eslint-disable-next-line no-console
-    console.warn(`[auth.service] invite email to ${user.email} failed:`, err?.message ?? err);
+    console.warn(`[auth.service] invite email to user ${user.id} failed:`, err?.message ?? err);
   });
 
   return { user, temporaryPassword, existingUser: false };
