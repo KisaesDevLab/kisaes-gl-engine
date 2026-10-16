@@ -268,7 +268,8 @@ In desktop mode, `bootstrap.ts` installs `desktop/egress-guard.ts` right after t
 
 - `net.Socket#connect` (covers `net`, `tls`, `http`, `https`, `http2` and global `fetch`);
 - `dns.lookup`, `dns.lookupService`, every `dns.resolve*` and `reverse`, in their callback, promise and `Resolver` forms, so a blocked name is never sent to a DNS server;
-- UDP (`dgram`) `send` and `connect`.
+- UDP (`dgram`) `send` and `connect`;
+- worker threads: `worker_threads.Worker` is replaced so every worker runs the same guard code before its own code (a file worker is started as an `eval` worker that first installs the guard and then loads the file). A worker gets the allowlist as it was when the worker started; later changes do not reach running workers. Workers started by workers are guarded the same way. `data:` and other non-`file:` worker URLs are refused.
 
 Allowed destinations:
 
@@ -284,9 +285,26 @@ Matching is by host (and port when the entry has one), never by request context,
 
 A blocked connection fails like a refused one: the socket gets an `EGRESS_BLOCKED` error on the next tick, before any DNS query or packet. The guard logs `{"component":"egress-guard","event":"blocked","host":…}` at warn level, at most once a minute per host, with no port or payload. Removing an allowance stops new connections; an open keep-alive socket can be reused until it idles out.
 
-Not covered: child processes (`pdftoppm`, `tesseract`, Chromium for PDFs, CLI tools). Desktop mode does not run the features that start network tools (tunnels, Tailscale). The invoice and portal PDF renderers block network requests from the page; the report PDF export (`report-export.service.ts`) does not yet, so a remote URL inside report HTML could be fetched by Chromium (follow-up).
+Not covered:
+
+- worker threads in the single-executable (SEA) build: the guard prelude is tested from source on Windows only; treat it as unverified in the SEA runtime until the 4-OS engine smoke covers it;
+- child processes (`pdftoppm`, Chromium for PDFs, CLI tools). Desktop mode does not run the features that start network tools (tunnels, Tailscale). The invoice and portal PDF renderers block network requests from the page; the report PDF export (`report-export.service.ts`) does not yet, so a remote URL inside report HTML could be fetched by Chromium (follow-up).
 
 The server appliance never installs the guard.
+
+### OCR language data (no download)
+
+tesseract.js downloads `eng.traineddata` from `cdn.jsdelivr.net` by default. The engine never lets it in desktop mode:
+
+| Setting | Meaning |
+|---|---|
+| `OCR_LANG_PATH` | Directory with `eng.traineddata` (or `eng.traineddata.gz`). Any mode; on the server it is opt-in, and without it nothing changes. |
+| desktop default | `<CL_DATA_DIR>/tessdata`; cache in `<CL_DATA_DIR>/cache/tesseract` |
+| `OCR_WORKER_PATH` | Optional path to the tesseract.js worker script (`tesseract.js/src/worker-script/node/index.js`) when `node_modules` is not next to the engine. |
+
+When the data file is missing, OCR fails with 503 `OCR_DATA_MISSING` and no worker is started, so nothing is downloaded (and the guard would block it anyway).
+
+**Packaging (ClientLedger xtask / installer):** ship `eng.traineddata` (tessdata `4.0.0_best_int`, LSTM; license Apache-2.0, list it in ATTRIBUTION.md) and point `OCR_LANG_PATH` at it, or copy it to `<CL_DATA_DIR>/tessdata` on first run. The SEA bundle does not contain the tesseract.js worker script or the `tesseract.js-core` WASM files; ship `tesseract.js` and `tesseract.js-core` on disk next to the engine and set `OCR_WORKER_PATH`, or OCR is unavailable. A corrupt data file makes tesseract.js throw from its own worker event handler (an upstream tesseract.js behavior); keep the shipped file checksum-verified.
 
 ## Offline
 

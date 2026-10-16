@@ -368,7 +368,8 @@ describe('spawned engine (bootstrap.ts)', () => {
 
   it(`boot + ${Math.round(IDLE_MS / 1000)} s idle: no connection beyond loopback and the database; /health online null`, async () => {
     if (!dbReady) return;
-    const e = spawnEngine({});
+    // The recorder also starts one worker thread that tries 192.0.2.1:9.
+    const e = spawnEngine({ CL_TEST_WORKER_PROBE: '1' });
     try {
       const r = await e.ready;
       expect(r).toHaveProperty('port');
@@ -379,15 +380,23 @@ describe('spawned engine (bootstrap.ts)', () => {
       await new Promise((res) => setTimeout(res, IDLE_MS));
 
       const entries = existsSync(e.connectLog)
-        ? readFileSync(e.connectLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { kind: string; host?: unknown })
+        ? readFileSync(e.connectLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { kind: string; host?: unknown; thread?: string; code?: string; guarded?: boolean })
         : [];
-      // The recorder sits under the guard, so it proves the allowed traffic
-      // was local; it must have seen at least the database connection.
+      // The recorder sits under the guard (main thread and workers), so it
+      // proves the allowed traffic was local; it must have seen at least
+      // the database connection.
       expect(entries.some((x) => x.kind === 'tcp')).toBe(true);
-      const nonLocal = entries.filter((x) => x.kind !== 'ipc' && !LOCAL(x.host));
+      const nonLocal = entries.filter((x) => (x.kind === 'tcp' || x.kind === 'dns') && !LOCAL(x.host));
       expect(nonLocal).toEqual([]);
-      // ...and nothing was even attempted and blocked.
-      expect(e.stderr.filter((l) => l.includes('"component":"egress-guard"'))).toEqual([]);
+      // Worker threads are watched too: the probe worker ran with the
+      // recorder and was refused by the guard inside the worker.
+      expect(entries.some((x) => x.kind === 'thread-start' && x.thread === 'worker')).toBe(true);
+      expect(entries.filter((x) => x.kind === 'worker-probe')).toEqual([{ kind: 'worker-probe', code: 'EGRESS_BLOCKED', guarded: true }]);
+      // ...and nothing else was even attempted and blocked.
+      const blockedHosts = e.stderr
+        .filter((l) => l.includes('"component":"egress-guard"'))
+        .map((l) => (JSON.parse(l.slice(l.indexOf('{'))) as { host: string }).host);
+      expect(blockedHosts).toEqual(['192.0.2.1']);
     } finally {
       await stopEngine(e);
     }

@@ -14,6 +14,11 @@ import tls from 'node:tls';
 import http from 'node:http';
 import dns from 'node:dns';
 import dgram from 'node:dgram';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { pathToFileURL } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import pg from 'pg';
 import {
@@ -21,6 +26,7 @@ import {
   _uninstallEgressGuardForTests,
   clearEgressAllowance,
   egressAllowlist,
+  egressWorkerPrelude,
   installEgressGuard,
   isEgressAllowed,
   isEgressGuardInstalled,
@@ -31,6 +37,7 @@ import {
 import { DesktopConfigError } from './profile.js';
 
 const ORIGINAL_CONNECT = net.Socket.prototype.connect;
+const ORIGINAL_WORKER = Worker;
 const ORIGINAL_LOOKUP = dns.lookup;
 
 let lookupSpy: unknown;
@@ -328,8 +335,135 @@ describe('allowed destinations', () => {
   });
 });
 
+// A non-loopback IPv4 address of this machine: a server bound to 0.0.0.0
+// answers on it, so a connect that is not blocked really succeeds, while
+// nothing leaves the machine.
+function lanAddress(): string | null {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) if (a.family === 'IPv4' && !a.internal) return a.address;
+  }
+  return null;
+}
+
+async function anyInterfaceServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  const srv = net.createServer((s) => { s.on('error', () => undefined); s.end(); });
+  await new Promise<void>((r) => srv.listen(0, '0.0.0.0', r));
+  return { port: (srv.address() as AddressInfo).port, close: () => new Promise<void>((r) => srv.close(() => r())) };
+}
+
+const CONNECT_CODE = `
+const { parentPort, workerData } = require('node:worker_threads');
+const net = require('node:net');
+const opts = { host: workerData.host, port: workerData.port };
+if (workerData.fakeLookup) opts.lookup = (h, o, cb) => (o && o.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4));
+const s = net.connect(opts);
+s.on('connect', () => { parentPort.postMessage('CONNECTED'); s.destroy(); });
+s.on('error', (e) => parentPort.postMessage(e.code || 'ERROR'));
+`;
+
+function runWorker(make: () => Worker): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const w = make();
+    w.once('message', (msg) => { resolve(String(msg)); void w.terminate(); });
+    w.once('error', reject);
+    w.once('exit', (code) => resolve(`exit ${code}`));
+  });
+}
+
+const lan = lanAddress();
+
+describe('worker threads', () => {
+  it.skipIf(!lan)('control: without the guard a worker reaches the LAN address', async () => {
+    const s = await anyInterfaceServer();
+    try {
+      const r = await runWorker(() => new Worker(CONNECT_CODE, { eval: true, workerData: { host: lan, port: s.port } }));
+      expect(r).toBe('CONNECTED');
+    } finally {
+      await s.close();
+    }
+  });
+
+  it.skipIf(!lan)('an eval worker cannot connect to the LAN address', async () => {
+    const s = await anyInterfaceServer();
+    try {
+      install();
+      const r = await runWorker(() => new Worker(CONNECT_CODE, { eval: true, workerData: { host: lan, port: s.port } }));
+      expect(r).toBe('EGRESS_BLOCKED');
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a file worker (CommonJS and .mjs) runs its own code under the guard', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-egress-worker-'));
+    const cjs = path.join(dir, 'w.cjs');
+    const mjs = path.join(dir, 'w.mjs');
+    fs.writeFileSync(cjs, CONNECT_CODE);
+    fs.writeFileSync(mjs, `import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\n${CONNECT_CODE}`);
+    const s = await server();
+    try {
+      install();
+      for (const file of [cjs, mjs]) {
+        expect(await runWorker(() => new Worker(file, { workerData: { host: '192.0.2.1', port: 80 } })), file).toBe('EGRESS_BLOCKED');
+        // Loopback still works, so the worker's own code ran normally.
+        expect(await runWorker(() => new Worker(file, { workerData: { host: '127.0.0.1', port: s.port } })), file).toBe('CONNECTED');
+      }
+      // A file: URL works the same way.
+      expect(await runWorker(() => new Worker(pathToFileURL(cjs), { workerData: { host: '192.0.2.1', port: 80 } }))).toBe('EGRESS_BLOCKED');
+    } finally {
+      await s.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('DNS inside a worker is guarded too', async () => {
+    install();
+    const r = await runWorker(() => new Worker(
+      "require('node:dns').lookup('example.com', (e) => require('node:worker_threads').parentPort.postMessage(e ? e.code : 'RESOLVED'));",
+      { eval: true },
+    ));
+    expect(r).toBe('EGRESS_BLOCKED');
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it('a worker started by a worker is guarded as well', async () => {
+    install();
+    const nested = `
+      const { Worker, parentPort } = require('node:worker_threads');
+      const inner = new Worker(${JSON.stringify(CONNECT_CODE)}, { eval: true, workerData: { host: '192.0.2.1', port: 80 } });
+      inner.on('message', (m) => parentPort.postMessage(m));
+    `;
+    expect(await runWorker(() => new Worker(nested, { eval: true }))).toBe('EGRESS_BLOCKED');
+  });
+
+  it('a worker gets the allowlist as it was when it started', async () => {
+    install();
+    const s = await server();
+    try {
+      setEgressAllowance('ai.test', [{ host: 'ai.provider.test', port: s.port }]);
+      const data = { host: 'ai.provider.test', port: s.port, fakeLookup: true };
+      expect(await runWorker(() => new Worker(CONNECT_CODE, { eval: true, workerData: data }))).toBe('CONNECTED');
+      clearEgressAllowance('ai.test');
+      expect(await runWorker(() => new Worker(CONNECT_CODE, { eval: true, workerData: data }))).toBe('EGRESS_BLOCKED');
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('URL schemes other than file: are refused', () => {
+    install();
+    expect(() => new Worker(new URL('data:text/javascript,1'))).toThrow(EgressBlockedError);
+  });
+
+  it('the prelude is self-contained JavaScript', () => {
+    install();
+    // Compiles as a script without the engine's modules in scope.
+    expect(() => new Function('require', egressWorkerPrelude())).not.toThrow();
+  });
+});
+
 describe('install / uninstall', () => {
-  it('is idempotent and the test hook restores the builtins', () => {
+  it('is idempotent and the test hook restores the builtins', async () => {
     install();
     install();
     expect(isEgressGuardInstalled()).toBe(true);
@@ -337,6 +471,7 @@ describe('install / uninstall', () => {
     _uninstallEgressGuardForTests();
     expect(isEgressGuardInstalled()).toBe(false);
     expect(net.Socket.prototype.connect).toBe(ORIGINAL_CONNECT);
+    expect((await import('node:worker_threads')).Worker).toBe(ORIGINAL_WORKER);
     vi.restoreAllMocks();
     expect(dns.lookup).toBe(ORIGINAL_LOOKUP);
   });

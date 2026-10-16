@@ -27,7 +27,10 @@ import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { log } from '../utils/logger.js';
+import { AppError } from '../utils/errors.js';
+import { desktopProfile } from '../desktop/profile.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -144,21 +147,77 @@ export interface OcrResult {
 }
 
 // Cached Tesseract worker — starting one is expensive (WASM load +
-// traineddata download) so we keep it alive for the lifetime of the
+// traineddata load) so we keep it alive for the lifetime of the
 // process. Only one OCR job can run on it at a time; the orchestrator's
 // semaphore already serializes AI jobs globally so that's fine.
 let _worker: any = null;
 let _workerPromise: Promise<any> | null = null;
 
+export interface TesseractWorkerOptions {
+  langPath?: string;
+  cachePath?: string;
+  gzip?: boolean;
+  workerPath?: string;
+}
+
+/**
+ * Where Tesseract gets its English language data.
+ *
+ * By default tesseract.js downloads `eng.traineddata` from
+ * cdn.jsdelivr.net on first use and caches it in the working directory.
+ * That is a phone-home and fails offline, so:
+ *
+ *   - OCR_LANG_PATH (any mode): a local directory holding
+ *     `eng.traineddata` or `eng.traineddata.gz`; used instead of the CDN.
+ *   - Desktop mode (CL_MODE=desktop): local data is required. The default
+ *     directory is `<CL_DATA_DIR>/tessdata`; the cache goes to
+ *     `<CL_DATA_DIR>/cache/tesseract`. When the file is missing, OCR fails
+ *     with OCR_DATA_MISSING (503) instead of downloading anything.
+ *   - OCR_WORKER_PATH (optional): tesseract.js worker script on disk, for
+ *     single-executable builds where node_modules is not next to the code.
+ *
+ * Server appliance without OCR_LANG_PATH: `null`, i.e. createWorker('eng')
+ * exactly as before.
+ */
+export function tesseractWorkerOptions(env: NodeJS.ProcessEnv = process.env): TesseractWorkerOptions | null {
+  const profile = desktopProfile();
+  const desktop = profile.mode === 'desktop';
+  const configured = env['OCR_LANG_PATH']?.trim();
+  if (!configured && !desktop) return null;
+  const dataDir = profile.dataDir ?? env['DATA_DIR'] ?? process.cwd();
+  const langPath = path.resolve(configured || path.join(dataDir, 'tessdata'));
+  let gzip: boolean;
+  if (existsSync(path.join(langPath, 'eng.traineddata'))) gzip = false;
+  else if (existsSync(path.join(langPath, 'eng.traineddata.gz'))) gzip = true;
+  else {
+    throw new AppError(
+      503,
+      'Text recognition (OCR) is not installed: the English language data file is missing. Reinstall the app to restore it.',
+      'OCR_DATA_MISSING',
+    );
+  }
+  const opts: TesseractWorkerOptions = {
+    langPath,
+    cachePath: path.join(desktop ? dataDir : langPath, desktop ? path.join('cache', 'tesseract') : '.'),
+    gzip,
+  };
+  const workerPath = env['OCR_WORKER_PATH']?.trim();
+  if (workerPath) opts.workerPath = path.resolve(workerPath);
+  return opts;
+}
+
 async function getWorker(): Promise<any> {
   if (_worker) return _worker;
   if (!_workerPromise) {
     _workerPromise = (async () => {
+      const opts = tesseractWorkerOptions();
       const { createWorker } = await import('tesseract.js');
-      const w = await createWorker('eng');
+      const w = opts ? await createWorker('eng', undefined, opts) : await createWorker('eng');
       _worker = w;
       return w;
     })();
+    // A failed start (e.g. OCR_DATA_MISSING) must not stick: retry next time.
+    _workerPromise.catch(() => { _workerPromise = null; });
   }
   return _workerPromise;
 }
