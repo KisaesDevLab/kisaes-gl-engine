@@ -290,7 +290,7 @@ A blocked connection fails like a refused one: the socket gets an `EGRESS_BLOCKE
 Not covered:
 
 - worker threads in the single-executable (SEA) build: the guard prelude is tested from source on Windows only; treat it as unverified in the SEA runtime until the 4-OS engine smoke covers it;
-- child processes (`pdftoppm`, Chromium for PDFs, CLI tools). Desktop mode does not run the features that start network tools (tunnels, Tailscale). The invoice and portal PDF renderers block network requests from the page; the report PDF export (`report-export.service.ts`) does not yet, so a remote URL inside report HTML could be fetched by Chromium (follow-up).
+- child processes (`pdftoppm`, Chromium for PDFs, CLI tools). Desktop mode does not run the features that start network tools (tunnels, Tailscale). The PDF renderers block network requests from the page (invoices and portal: `data:`, `about:`, `file:`; report export: `data:` and `about:` only, with JavaScript off and `--disable-background-networking`).
 
 The server appliance never installs the guard.
 
