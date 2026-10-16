@@ -150,12 +150,14 @@ async function main(): Promise<void> {
  */
 async function startDesktop(token: string | null): Promise<void> {
   const { desktopFatal } = await import('./desktop/fatal.js');
-  const { registerSecret, registerUrlPassword } = await import('./utils/secret-scrubber.js');
+  const { registerSecret, registerUrlPassword, registerEnvSecrets } = await import('./utils/secret-scrubber.js');
   registerSecret(token);
   registerSecret(process.env['JWT_SECRET']);
   registerSecret(process.env['ENCRYPTION_KEY']);
   registerSecret(process.env['PLAID_ENCRYPTION_KEY']);
   registerUrlPassword(process.env['DATABASE_URL']);
+  // Any other credential-named variable (…_API_KEY, SMTP_PASS, …_TOKEN).
+  registerEnvSecrets(process.env);
   // From here on every stdout/stderr chunk is scrubbed, and copied to
   // CL_LOG_FILE (rotated) when set.
   const { installLogTee } = await import('./desktop/log-tee.js');

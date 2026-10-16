@@ -254,9 +254,9 @@ Any dangerous finding logs `{"event":"warning","code":"DB_SUPERUSER",…}` namin
 
 In desktop mode, `desktop/log-tee.ts` wraps stdout and stderr. Every chunk goes through `utils/secret-scrubber.ts` before it is written anywhere, both to the console and to the file. The scrubber removes:
 
-- registered values: the launch token and the boot secrets;
-- `Bearer …` tokens;
-- `sk-…` / `sk-ant-…` API keys;
+- registered values: the launch token, the boot secrets and the value of every environment variable whose name contains `KEY`, `SECRET`, `PASS` or `TOKEN` (plain numbers and booleans skipped), each also in its JSON-escaped form;
+- `Bearer …` tokens (any case);
+- `sk-…` / `sk-ant-…`, Stripe `sk_live_`/`rk_live_`, Google `AIza…`, AWS `AKIA…`/`ASIA…`, Slack `xox?-…` and GitHub `ghp_…`/`github_pat_…` keys;
 - JWTs;
 - passwords in `scheme://user:password@` URLs;
 - `X-CL-Token` header dumps;

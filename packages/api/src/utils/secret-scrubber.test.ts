@@ -8,6 +8,7 @@ import {
   registerSecret,
   unregisterSecret,
   registerUrlPassword,
+  registerEnvSecrets,
   _resetSecretScrubberForTests,
 } from './secret-scrubber.js';
 
@@ -58,6 +59,46 @@ describe('scrubSecrets', () => {
     expect(scrubSecrets('invite email to Jane.Doe+books@example.co.uk failed: 550 <jane@x.org> rejected'))
       .toBe('invite email to [email] failed: 550 <[email]> rejected');
     expect(scrubSecrets('connecting as kisbooks@127.0.0.1:5434')).toBe('connecting as kisbooks@127.0.0.1:5434');
+  });
+
+  it('matches Bearer in any case', () => {
+    expect(scrubSecrets('authorization: bearer abc.def-ghi')).toBe('authorization: bearer [redacted]');
+    expect(scrubSecrets('AUTHORIZATION: BEARER abc.def-ghi')).toBe('AUTHORIZATION: BEARER [redacted]');
+  });
+
+  it('redacts common provider key shapes', () => {
+    const keys = [
+      'AIzaSyA1234567890abcdefghijklmnopqrstuv', // Google
+      'AKIAIOSFODNN7EXAMPLE', // AWS
+      'ASIAIOSFODNN7EXAMPLE',
+      'xoxb-123456789012-1234567890123-AbCdEfGhIjKl', // Slack
+      'ghp_' + 'a1B2'.repeat(9), // GitHub classic
+      'github_pat_' + '11ABCDEFG0'.repeat(3), // GitHub fine-grained
+      'sk_live_' + 'a1B2c3D4e5F6g7H8', // Stripe
+      'rk_test_' + 'a1B2c3D4e5F6g7H8',
+    ];
+    for (const k of keys) expect(scrubSecrets(`key=${k} end`), k).toBe('key=[redacted] end');
+  });
+
+  it('redacts the JSON-escaped form of a registered secret', () => {
+    registerSecret('pa"ss\word-12345');
+    const body = JSON.stringify({ smtpPass: 'pa"ss\word-12345' });
+    expect(scrubSecrets(body)).toBe('{"smtpPass":"[redacted]"}');
+    expect(scrubSecrets('raw pa"ss\word-12345')).toBe('raw [redacted]');
+  });
+
+  it('registers credential-named environment variables, skipping numbers and flags', () => {
+    registerEnvSecrets({
+      ANTHROPIC_API_KEY: 'anthr-0123456789abcdef',
+      SMTP_PASS: 'smtp-password-123',
+      SOME_TOKEN: 'tok-abcdefghijkl',
+      client_secret: 'lower-case-secret-1',
+      TOKEN_TTL_MS: '86400000',
+      PASSKEY_ENABLED: 'true',
+      DATA_DIR: '/var/lib/books-data',
+    });
+    const line = 'anthr-0123456789abcdef smtp-password-123 tok-abcdefghijkl lower-case-secret-1 86400000 /var/lib/books-data';
+    expect(scrubSecrets(line)).toBe('[redacted] [redacted] [redacted] [redacted] 86400000 /var/lib/books-data');
   });
 
   it('never touches amounts, dates, uuids or words that merely contain "sk-"', () => {
