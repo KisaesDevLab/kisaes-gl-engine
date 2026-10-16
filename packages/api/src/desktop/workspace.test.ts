@@ -363,6 +363,30 @@ describe('desktop workspace: initialize with a company', () => {
       .rejects.toMatchObject({ statusCode: 409, code: 'WORKSPACE_TENANT' });
   });
 
+  it('refresh in the workspace keeps the workspace role (readonly), not the company role', async () => {
+    if (!dbReady) return;
+    const auth = await import('../services/auth.service.js');
+    const invited = await auth.inviteUser(company, { email: 'accountant@example.com', displayName: 'Acc', role: 'accountant' });
+    const l = await auth.login({ email: 'accountant@example.com', password: invited.temporaryPassword! } as Parameters<typeof auth.login>[0]);
+    const roleOf = (jwt: string) => JSON.parse(Buffer.from(jwt.split('.')[1]!, 'base64url').toString()).role as string;
+    expect(roleOf(l.tokens.accessToken)).toBe('readonly');
+    const t = await auth.refresh(l.tokens.refreshToken);
+    expect(roleOf(t.accessToken)).toBe('readonly');
+    // The owner keeps owner in the workspace.
+    const o = await auth.login({ email: OWNER.email, password: OWNER.password } as Parameters<typeof auth.login>[0]);
+    expect(roleOf((await auth.refresh(o.tokens.refreshToken)).accessToken)).toBe('owner');
+  });
+
+  it('attachment download from a workspace session is fenced (409 WORKSPACE_TENANT)', async () => {
+    if (!dbReady) return;
+    const r = await e.call(`/api/v1/attachments/${crypto.randomUUID()}/download`, { jwt: wsJwt });
+    expect(r.status, JSON.stringify(r.json)).toBe(409);
+    expect(r.json.error.code).toBe('WORKSPACE_TENANT');
+    // From the company it is an ordinary lookup (404: no such attachment).
+    const co = await e.call(`/api/v1/attachments/${crypto.randomUUID()}/download`, { jwt: coJwt });
+    expect(co.status).toBe(404);
+  });
+
   it('admin create-user homes the user in the workspace; the workspace is not a valid target', async () => {
     if (!dbReady) return;
     const ok = await e.call('/api/v1/admin/users/create', {
@@ -482,7 +506,7 @@ describe('desktop workspace: initialize with a company', () => {
     const { checkWorkspaceInvariant } = await import('./workspace.js');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      expect(await checkWorkspaceInvariant()).toMatchObject({ ok: true, workspaces: 1, users: 3 });
+      expect(await checkWorkspaceInvariant()).toMatchObject({ ok: true, workspaces: 1, users: 4 }); // owner, bookkeeper, accountant, admin-created clerk
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();

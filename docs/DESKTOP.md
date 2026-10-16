@@ -109,7 +109,7 @@ The workspace holds every user row (the owner and any later users) and no compan
 | `/api/v1/tenant-archives` | the path and whole segments below it |
 | `/api/v1/desktop/` | everything below |
 
-Everything else, reads included, is 409 `WORKSPACE_TENANT` ("Open a company first."). Paths with dot segments, encoded separators or backslashes never match. `/health`, `/openapi.json` and `/api/v1/desktop/*` do not run `authenticate`. The list is a constant in `desktop/workspace.ts` and changes only with an engine change.
+Everything else, reads included, is 409 `WORKSPACE_TENANT` ("Open a company first."). `GET /api/v1/attachments/:id/download`, which authenticates by hand, applies the same fence. A refresh in the workspace issues the workspace access row's role (`readonly` for everyone but the owner), as login does, never the company role stored in `users.role`. Paths with dot segments, encoded separators or backslashes never match. `/health`, `/openapi.json` and `/api/v1/desktop/*` do not run `authenticate`. The list is a constant in `desktop/workspace.ts` and changes only with an engine change. `desktop/app-gate.test.ts` lists every handler mounted under these prefixes; a new one (including the first route under `/api/v1/tenants` or `/api/v1/tenant-archives`) fails it until reviewed.
 
 **Users.** Every desktop user-creation path homes the new user in the workspace:
 

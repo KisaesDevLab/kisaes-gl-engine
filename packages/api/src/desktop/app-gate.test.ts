@@ -171,6 +171,55 @@ describe('every mount is classified for desktop mode', () => {
   }, 120_000);
 });
 
+describe('workspace allowlist (desktop/workspace.ts WORKSPACE_ALLOWED_PREFIXES)', () => {
+  // Everything a workspace session can reach. A new mount under an allowed
+  // prefix is reachable from the workspace (which has no books) without any
+  // other check, so it must be reviewed and added here. /api/v1/tenants and
+  // /api/v1/tenant-archives have nothing mounted yet: the first route there
+  // fails this test until it is reviewed.
+  const REVIEWED = [
+    '/api/v1/auth -> authRouter',
+    '/api/v1/auth/magic-link -> NOT_AVAILABLE_IN_DESKTOP',
+    '/api/v1/auth/methods -> GET route',
+    '/api/v1/auth/passkeys -> passkeyRouter',
+    '/api/v1/desktop -> desktopRouter',
+  ];
+
+  it('each allowlisted prefix maps to exactly the reviewed handlers', async () => {
+    const app = await loadApp('desktop');
+    const { WORKSPACE_ALLOWED_PREFIXES, isWorkspacePathAllowed } = await import('./workspace.js');
+    const { authRouter } = await import('../routes/auth.routes.js');
+    const { passkeyRouter } = await import('../routes/passkey.routes.js');
+    const { desktopRouter } = await import('../routes/desktop.routes.js');
+    const { familyOf } = await import('./features.js');
+    expect(WORKSPACE_ALLOWED_PREFIXES).toEqual(['/api/v1/auth/', '/api/v1/tenants', '/api/v1/tenant-archives', '/api/v1/desktop/']);
+
+    const suffix = '\\/?(?=\\/|$)';
+    const found: string[] = [];
+    for (const l of stackOf(app) as Array<Layer & { handle: unknown; route?: { path: string; methods: Record<string, boolean> }; regexp: RegExp & { fast_slash?: boolean } }>) {
+      let p: string;
+      if (l.route) p = l.route.path;
+      else if (l.regexp.fast_slash) continue;
+      else p = l.regexp.source.slice(1, -suffix.length).split('\\/').join('/');
+      if (!isWorkspacePathAllowed(p) && !isWorkspacePathAllowed(`${p}/`)) continue;
+      let what: string;
+      // express-async-errors wraps every handle but copies the router's own
+      // properties, so a router is recognized by its `stack` array.
+      const stackOfHandle = (l.handle as { stack?: unknown }).stack;
+      const isRouter = (r: unknown) => stackOfHandle !== undefined && stackOfHandle === (r as { stack: unknown }).stack;
+      if (l.route) what = `${Object.keys(l.route.methods).join(',').toUpperCase()} route`;
+      else if (isRouter(authRouter)) what = 'authRouter';
+      else if (isRouter(passkeyRouter)) what = 'passkeyRouter';
+      else if (isRouter(desktopRouter)) what = 'desktopRouter';
+      else if (familyOf(p)?.prefix === p) what = 'NOT_AVAILABLE_IN_DESKTOP';
+      else what = `UNREVIEWED ${l.name}`;
+      found.push(`${p} -> ${what}`);
+    }
+    expect(found.sort()).toEqual(REVIEWED);
+    expect(found.some((f) => f.startsWith('/api/v1/tenants') || f.startsWith('/api/v1/tenant-archives'))).toBe(false);
+  }, 120_000);
+});
+
 describe('app.ts in server mode (CL_MODE unset)', () => {
   it('mounts every family the desktop edition leaves out', async () => {
     const app = await loadApp('server');

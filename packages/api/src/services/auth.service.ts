@@ -788,6 +788,17 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
     }
   }
 
+  // Desktop: the home tenant is the workspace, and users.role is the role
+  // the user was created with for a company. In the workspace the role is
+  // the workspace access row's (readonly for everyone but the owner), as
+  // login reports it; without an active row, readonly.
+  if (isDesktop() && effectiveTenantId === user.tenantId) {
+    const wsAccess = await db.query.userTenantAccess.findFirst({
+      where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, user.tenantId)),
+    });
+    effectiveRole = wsAccess?.isActive ? (wsAccess.role || 'readonly') : 'readonly';
+  }
+
   // Preserve the chain's original authentication time (pre-0157 rows fall
   // back to the row's createdAt) so auth_time never resets on refresh.
   const chainAuthTime = session.authTime ?? session.createdAt ?? new Date();
