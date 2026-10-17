@@ -70,6 +70,14 @@ describe('env.ts server defaults (CL_MODE unset)', () => {
     expect(parseEnv({ ...noRedis, QUEUE_BACKEND: 'none', SHARE_ENABLED: 'true' }).success).toBe(false);
   });
 
+  it('QUEUE_BACKEND=pgboss needs no REDIS_URL either', () => {
+    const { REDIS_URL: _drop, ...noRedis } = SERVER_INPUT;
+    void _drop;
+    const r = parseEnv({ ...noRedis, QUEUE_BACKEND: 'pgboss' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.QUEUE_BACKEND).toBe('pgboss');
+  });
+
   it('rejects an unknown QUEUE_BACKEND', () => {
     expect(parseEnv({ ...SERVER_INPUT, QUEUE_BACKEND: 'kafka' }).success).toBe(false);
   });

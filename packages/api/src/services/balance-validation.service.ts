@@ -91,6 +91,9 @@ export async function runBalanceValidationCycle(): Promise<{ tenantsChecked: num
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const INITIAL_DELAY_MS = 10 * 60 * 1000; // 10 minutes after boot
 
+let initialTimer: ReturnType<typeof setTimeout> | null = null;
+let intervalTimer: ReturnType<typeof setInterval> | null = null;
+
 export function startBalanceValidationScheduler(): void {
   console.log('[Balance Validation] Registered (daily, first run in 10 min)');
   const runCycle = async () => {
@@ -101,6 +104,14 @@ export function startBalanceValidationScheduler(): void {
       console.error('[Balance Validation] cycle failed:', err);
     }
   };
-  setTimeout(() => { runCycle(); }, INITIAL_DELAY_MS);
-  setInterval(() => { runCycle(); }, CHECK_INTERVAL_MS);
+  initialTimer = setTimeout(() => { runCycle(); }, INITIAL_DELAY_MS);
+  intervalTimer = setInterval(() => { runCycle(); }, CHECK_INTERVAL_MS);
+}
+
+/** Stop future cycles (desktop in-process worker shutdown). A running cycle finishes. */
+export function stopBalanceValidationScheduler(): void {
+  if (initialTimer) clearTimeout(initialTimer);
+  if (intervalTimer) clearInterval(intervalTimer);
+  initialTimer = null;
+  intervalTimer = null;
 }

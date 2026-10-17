@@ -257,7 +257,7 @@ describe('desktop engine on port 0', () => {
         engineCommit: 'abc1234def',
         schemaVersion: journal.entries.length,
         schemaTag: journal.entries[journal.entries.length - 1]!.tag,
-        queueBackend: 'none',
+        queueBackend: 'pgboss',
         online: null,
         lastOnlineCheck: null,
       });
@@ -308,7 +308,7 @@ describe('desktop first run: info and initialize', () => {
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({
       mode: 'desktop',
-      queueBackend: 'none',
+      queueBackend: 'pgboss',
       offline: 'auto',
       lan: false,
       dataDirExists: true,

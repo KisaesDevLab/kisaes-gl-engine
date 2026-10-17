@@ -15,7 +15,8 @@ function deps(over: {
   workersOk?: boolean;
   expectWorker?: boolean;
   mode?: 'server' | 'desktop';
-  queueBackend?: 'bullmq' | 'none';
+  queueBackend?: 'bullmq' | 'pgboss' | 'none';
+  queueProbe?: ProbeResult;
 }): HealthDeps {
   return {
     probeDb: async () => over.db ?? { ok: true, latencyMs: 3 },
@@ -30,6 +31,7 @@ function deps(over: {
     expectWorker: over.expectWorker ?? true,
     mode: over.mode ?? 'server',
     queueBackend: over.queueBackend ?? 'bullmq',
+    queueProbe: async () => over.queueProbe ?? { ok: true, latencyMs: 2 },
     version: 'v0.9.231',
     engineCommit: '13ebd2ba',
     now: () => new Date('2026-10-15T12:00:00.000Z'),
@@ -155,5 +157,41 @@ describe('computeHealth — desktop (v2, token-gated)', () => {
     const { httpStatus, body } = await computeHealth(d);
     expect(httpStatus).toBe(200);
     expect(body['schemaVersion']).toBeNull();
+  });
+});
+
+describe('computeHealth — desktop on the pg-boss queue', () => {
+  const desktop = {
+    mode: 'desktop' as const,
+    queueBackend: 'pgboss' as const,
+    expectWorker: false,
+    redis: { ok: true, latencyMs: 0, disabled: true as const },
+  };
+
+  it('queue ok when the job queue answers: 200', async () => {
+    const { httpStatus, body } = await computeHealth(deps(desktop));
+    expect(httpStatus).toBe(200);
+    expect(body).toMatchObject({ status: 'ok', redis: 'disabled', queue: 'ok', queueBackend: 'pgboss' });
+    expect((body['checks'] as Record<string, unknown>)['queue']).toEqual({ ok: true, latencyMs: 2 });
+  });
+
+  it('an unreachable job queue degrades with a redacted error', async () => {
+    const { httpStatus, body } = await computeHealth(
+      deps({ ...desktop, queueProbe: { ok: false, latencyMs: 2000, error: 'connect ECONNREFUSED 10.0.0.5:5432' } }),
+    );
+    expect(httpStatus).toBe(503);
+    expect(body).toMatchObject({ status: 'degraded', queue: 'fail' });
+    expect((body['checks'] as Record<string, { error?: string }>)['queue']!.error).toBe('unavailable');
+  });
+
+  it('the server (bullmq) never calls the queue probe', async () => {
+    let called = false;
+    const d = deps({});
+    d.queueProbe = async () => {
+      called = true;
+      return { ok: false, latencyMs: 0 };
+    };
+    await computeHealth(d);
+    expect(called).toBe(false);
   });
 });

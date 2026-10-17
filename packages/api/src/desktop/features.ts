@@ -11,7 +11,8 @@
  *     request under one of these prefixes gets a JSON 404 with code
  *     NOT_AVAILABLE_IN_DESKTOP (mounted right after the desktop gate, so it
  *     wins over any broader router mounted later).
- *   - DESKTOP_SCHEDULERS: which background schedulers index.ts starts.
+ *   - DESKTOP_SCHEDULERS: which background schedulers index.ts and the
+ *     in-process worker (queue/in-process-worker.ts) start.
  *
  * app.ts mounts every listed family through serverOnly(), which refuses
  * prefixes missing from the table, so the table and the mounts cannot
@@ -136,6 +137,17 @@ export const DESKTOP_SCHEDULERS = {
   // Portal document requests and reminders: the portal is not mounted and
   // the scheduler sends outbound email/SMS to portal contacts.
   recurringDocRequests: false,
+  // Worker-only schedulers: on the server only the worker container starts
+  // them; on desktop the in-process worker does. Database only (the sweep
+  // deletes expired pack files through the local storage provider).
+  balanceValidation: true,
+  reportPackSweep: true,
+  classificationStateBackfill: true,
+  tagBackfill: true,
+  // Online bank feeds (Plaid is not mounted) and portal outreach.
+  plaidSync: false,
+  portalRecurring: false,
+  portalReminders: false,
 } as const;
 
 export type SchedulerName = keyof typeof DESKTOP_SCHEDULERS;

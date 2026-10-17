@@ -408,6 +408,13 @@ import { computeHealth } from './utils/health.js';
 import { readSchemaInfo } from './startup/schema-info.js';
 import { readDbRole } from './startup/db-role.js';
 import { getCurrentVersion } from './services/updates.service.js';
+import { getJobQueue } from './queue/index.js';
+
+// QUEUE_BACKEND=pgboss: the queue check asks the job queue itself (bounded).
+async function jobQueueProbe(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+  const h = await (await getJobQueue()).health({ timeoutMs: 2000 });
+  return h.ok ? { ok: true, latencyMs: h.latencyMs } : { ok: false, latencyMs: h.latencyMs, error: 'job queue unreachable' };
+}
 
 const healthHandler = async (_req: express.Request, res: express.Response) => {
   const t0 = Date.now();
@@ -455,6 +462,7 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     expectWorker: env.EXPECT_WORKER,
     mode: desktopProfile().mode,
     queueBackend: desktopProfile().queueBackend,
+    queueProbe: jobQueueProbe,
     version: getCurrentVersion(),
     engineCommit: env.ENGINE_COMMIT ?? null,
   });

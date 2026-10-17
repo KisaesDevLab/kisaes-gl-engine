@@ -22,7 +22,8 @@ import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import { seedDefaultPrompts } from './services/ai-prompt.service.js';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
-import { isDesktop, desktopProfile, type DesktopBind } from './desktop/profile.js';
+import { isDesktop, desktopProfile, queueBackend, type DesktopBind } from './desktop/profile.js';
+import type { InProcessWorker } from './queue/in-process-worker.js';
 import { setDesktopBoundAddress } from './middleware/desktop-gate.js';
 import { desktopFatal } from './desktop/fatal.js';
 import { schedulerEnabled } from './desktop/features.js';
@@ -32,6 +33,24 @@ import { schedulerEnabled } from './desktop/features.js';
 // before force-closing. 25s leaves 5s of slack under Docker's default
 // 30s stop-grace-period.
 const SHUTDOWN_DEADLINE_MS = 25_000;
+// Desktop: how long shutdown waits for in-flight background jobs before it
+// moves on (the job queue then gets the rest of the deadline).
+const IN_PROCESS_WORKER_STOP_MS = 15_000;
+
+// Desktop only: the in-process worker (job consumers + worker-only
+// schedulers), started after listen. Resolves to null if it failed to start.
+let inProcessWorker: Promise<InProcessWorker | null> | null = null;
+
+function startDesktopWorker(): void {
+  inProcessWorker = import('./queue/in-process-worker.js')
+    .then((m) => m.startInProcessWorker())
+    .catch((err: unknown) => {
+      // Producers still work: an enqueue that cannot reach the queue falls
+      // back to running the job in-process. /health reports the queue.
+      console.error('[in-process-worker] failed to start:', err instanceof Error ? err.message : String(err));
+      return null;
+    });
+}
 
 function installShutdownHandlers(server: Server): void {
   let shuttingDown = false;
@@ -49,6 +68,16 @@ function installShutdownHandlers(server: Server): void {
 
     // Stop accepting new HTTP connections; existing ones finish.
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Desktop: stop consuming background jobs (in-flight ones finish, up to
+    // IN_PROCESS_WORKER_STOP_MS) and the worker-only schedulers, before the
+    // API schedulers, the job queue and the DB pool go away.
+    if (inProcessWorker) {
+      const w = await inProcessWorker;
+      await Promise.race([
+        w?.stop(),
+        new Promise((r) => setTimeout(r, IN_PROCESS_WORKER_STOP_MS).unref?.()),
+      ]);
+    }
     // Halt the interval-based schedulers so they don't try to run
     // a tick against a closing pool. Ticks that are already in
     // flight drain via the advisory lock's existing timeout.
@@ -63,6 +92,17 @@ function installShutdownHandlers(server: Server): void {
       flushAllSuggestionNotices().catch(() => undefined),
       new Promise((r) => setTimeout(r, 10_000)),
     ]);
+    // A Postgres-backed (or no) job queue closes its own pool before the
+    // engine pool. The BullMQ path is unchanged (its producers are not closed
+    // here, as before).
+    if (queueBackend() !== 'bullmq') {
+      try {
+        const { closeJobQueues } = await import('./queue/index.js');
+        await closeJobQueues();
+      } catch (err) {
+        console.error('[shutdown] job queue close error:', err);
+      }
+    }
     try {
       await pool.end();
       console.log('[shutdown] DB pool closed, exiting cleanly');
@@ -264,6 +304,9 @@ async function start() {
     // the worker container can also boot it without double-purging.
     if (schedulerEnabled('aiRetention')) startAiRetentionScheduler();
     if (schedulerEnabled('shareSweeper')) startShareSweeper();
+    // Desktop has no worker container: consume the background job queues
+    // and run the enabled worker-only schedulers in this process.
+    if (isDesktop()) startDesktopWorker();
   };
 
   // Start server

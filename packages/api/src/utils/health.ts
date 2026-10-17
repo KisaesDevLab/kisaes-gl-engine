@@ -16,14 +16,15 @@
  *   engineCommit    ENGINE_COMMIT or null
  *   schemaVersion   number of applied migrations, null if unreadable
  *   schemaTag       journal tag of the newest applied migration
- *   queueBackend    'bullmq' | 'none'
+ *   queueBackend    'bullmq' | 'pgboss' | 'none'
  *   online          null until a connectivity probe exists (never probed)
  *   lastOnlineCheck null, same
  *
  * and checks.db.superuser + checks.db.role {dangerous, warnings} (see
  * startup/db-role.ts). `redis` is 'disabled' when the install runs
  * without Redis by design (desktop); a disabled Redis never degrades the
- * status, and with QUEUE_BACKEND=none there is no queue to check.
+ * status, and with QUEUE_BACKEND=none there is no queue to check. With
+ * QUEUE_BACKEND=pgboss the queue check is the job queue's own probe.
  */
 
 import type { RedisPingResult } from './health-redis.js';
@@ -46,24 +47,36 @@ export interface HealthDeps {
   redactErr: <T extends { ok: boolean; error?: string }>(name: string, c: T) => T;
   expectWorker: boolean;
   mode: 'server' | 'desktop';
-  queueBackend: 'bullmq' | 'none';
+  queueBackend: 'bullmq' | 'pgboss' | 'none';
+  /** pgboss only: bounded reachability probe of the job queue. */
+  queueProbe?: () => Promise<ProbeResult>;
   version: string;
   engineCommit: string | null;
   now?: () => Date;
 }
 
 export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200 | 503; body: Record<string, unknown> }> {
-  const [db, redisRaw, workersRaw] = await Promise.all([deps.probeDb(), deps.redisPing(), deps.readHeartbeats()]);
+  const [db, redisRaw, workersRaw, queueRaw] = await Promise.all([
+    deps.probeDb(),
+    deps.redisPing(),
+    deps.readHeartbeats(),
+    deps.queueBackend === 'pgboss'
+      ? (deps.queueProbe ?? (async () => ({ ok: false, latencyMs: 0, error: 'no queue probe' })))()
+      : Promise.resolve(null),
+  ]);
 
   const redis = deps.redactErr('redis', redisRaw);
   const workers = deps.redactErr('workers', workersRaw);
   const redisDisabled = redis.disabled === true;
 
-  // BullMQ: queue health rides on Redis (unchanged). none: nothing to check.
+  // BullMQ: queue health rides on Redis (unchanged). pgboss: its own probe.
+  // none: nothing to check.
   const queue =
     deps.queueBackend === 'none'
       ? { ok: true, latencyMs: 0 }
-      : { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
+      : queueRaw
+        ? deps.redactErr('queue', queueRaw)
+        : { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
 
   const workersCheckActive = deps.expectWorker;
   const workersOk = workersCheckActive ? workers.ok : true;
