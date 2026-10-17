@@ -6,6 +6,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import multer from 'multer';
 import { AppError } from '../utils/errors.js';
+import { isDesktop } from '../desktop/profile.js';
+import { errorSummaryForLog } from '../utils/log-safe.js';
 
 // Body-parser throws a custom error with `.type === 'entity.too.large'`
 // when a request exceeds express.json()'s `limit`. Without this case
@@ -82,7 +84,12 @@ export function errorHandler(
     return;
   }
 
-  console.error('Unhandled error:', err);
+  // Desktop: name, code, short message and stack frames only. The full
+  // object would print drizzle's `params:` and pg's `detail`, i.e. amounts,
+  // names and memo text, into the owner's log file. The server keeps the
+  // full dump for its operators.
+  if (isDesktop()) console.error(`Unhandled error: ${errorSummaryForLog(err)}`);
+  else console.error('Unhandled error:', err);
   res.status(500).json({
     error: {
       message: 'Internal server error',

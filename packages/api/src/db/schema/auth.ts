@@ -19,6 +19,10 @@ export const tenants = pgTable('tenants', {
   // allowInboundCrossFirm?: boolean }. `enabled` null/absent inherits the
   // global SHARE_ENABLED flag.
   shareSettings: jsonb('share_settings'),
+  // Desktop mode only (migration 0216): the one hidden workspace tenant that
+  // holds every user row and no company. Partial unique index
+  // uniq_tenants_workspace allows at most one. Always false on the server.
+  isWorkspace: boolean('is_workspace').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });

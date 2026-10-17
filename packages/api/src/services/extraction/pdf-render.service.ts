@@ -16,6 +16,7 @@
 // container's doc-render processor.
 
 import { execFile } from 'node:child_process';
+import { childProcessEnv } from '../../desktop/child-env.js';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -76,7 +77,7 @@ export interface PdftoppmStatus {
 export async function checkPdftoppmAvailable(): Promise<PdftoppmStatus> {
   try {
     // `pdftoppm -v` prints "pdftoppm version X.Y.Z" to stderr, exits 0.
-    const { stdout, stderr } = await execFileAsync(PDFTOPPM_BIN, ['-v'], { timeout: 10_000 });
+    const { stdout, stderr } = await execFileAsync(PDFTOPPM_BIN, ['-v'], { timeout: 10_000, env: childProcessEnv() });
     const line = (stderr || stdout || '').split('\n')[0]?.trim();
     return { available: true, ...(line ? { version: line } : {}) };
   } catch (err) {
@@ -102,7 +103,7 @@ export async function renderPdfToPngPages(pdf: Buffer, opts: RenderOptions = {})
     const args = ['-png', '-r', String(dpi)];
     if (grayscale) args.push('-gray');
     args.push(inputPath, outPrefix);
-    await execFileAsync(PDFTOPPM_BIN, args, { timeout: RENDER_TIMEOUT_MS });
+    await execFileAsync(PDFTOPPM_BIN, args, { timeout: RENDER_TIMEOUT_MS, env: childProcessEnv() });
 
     // pdftoppm writes `page-<n>.png`, zero-padded to the digit width of the
     // last page (page-1.png for ≤9 pages, page-01.png for 10–99, etc.).

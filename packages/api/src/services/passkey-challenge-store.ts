@@ -4,6 +4,7 @@
 
 import RedisPkg from 'ioredis';
 import { recordSecurityEvent } from '../utils/security-audit.js';
+import { redisEnabled } from '../desktop/profile.js';
 
 // ─── Passkey WebAuthn challenge store (Redis-backed) ───────────
 //
@@ -129,6 +130,9 @@ async function ensureReady(client: RedisClient): Promise<void> {
 }
 
 async function redis(): Promise<RedisClient> {
+  // No Redis (desktop): every caller falls back to the in-memory map,
+  // which is exact for a single process.
+  if (!redisEnabled()) throw new Error('redis disabled');
   const client = getClient();
   await ensureReady(client);
   return client;

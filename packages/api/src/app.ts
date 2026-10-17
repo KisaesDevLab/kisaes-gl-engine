@@ -107,6 +107,22 @@ import { swaggerSpec } from './swagger.js';
 
 export const app = express();
 
+// Desktop mode (CL_MODE=desktop): the launch-token gate is the FIRST
+// middleware so it covers every route below, including the raw-body
+// webhook routers and /health. Not mounted for the server appliance.
+import { isDesktop, desktopProfile } from './desktop/profile.js';
+import { desktopGate } from './middleware/desktop-gate.js';
+import { serverOnly as serverOnlyFor, mountDesktopUnavailable } from './desktop/features.js';
+if (isDesktop()) {
+  app.use(desktopGate());
+  // Route families the desktop edition leaves out (desktop/features.ts)
+  // answer 404 NOT_AVAILABLE_IN_DESKTOP before any other router sees them.
+  mountDesktopUnavailable(app);
+}
+// Mounts listed in DESKTOP_UNMOUNTED go through this; on the server it is
+// plain app.use / app.post.
+const serverOnly = serverOnlyFor(app);
+
 // Middleware
 // Helmet defaults are tuned for HTTPS public sites. Vibe MyBooks is a
 // self-hosted appliance that operators typically reach over plain HTTP
@@ -189,7 +205,12 @@ app.use(
 // Without any TRUST_PROXY the tunnel's X-Forwarded-For header is ignored
 // and every request appears to come from the cloudflared sidecar.
 const trustProxyRaw = process.env['TRUST_PROXY'];
-if (!trustProxyRaw) {
+if (isDesktop()) {
+  // Desktop: nothing sits in front of the engine (loopback only, every
+  // request carries the launch token), so X-Forwarded-* is never honored,
+  // whatever TRUST_PROXY says.
+  app.set('trust proxy', false);
+} else if (!trustProxyRaw) {
   app.set('trust proxy', 'loopback');
 } else if (trustProxyRaw === 'true' || trustProxyRaw === '1') {
   app.set('trust proxy', true);
@@ -206,19 +227,19 @@ app.use(compression());
 
 // Stripe webhook route MUST be mounted BEFORE express.json() — raw body needed for signature verification
 import { stripeWebhookRouter } from './routes/stripe-webhook.routes.js';
-app.use('/api/v1/stripe', stripeWebhookRouter);
+serverOnly.use('/api/v1/stripe', stripeWebhookRouter);
 
 // Plaid webhook — same raw-body requirement. Plaid signs the exact
 // bytes it sent, so the handler must see those bytes, not a re-
 // stringified parsed object. Mounted here before express.json().
 import { plaidWebhookRouter } from './routes/plaid-webhook.routes.js';
-app.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
+serverOnly.use('/api/v1/plaid/webhooks', plaidWebhookRouter);
 
 // DOC_REQUEST_SMS_V1 — inbound SMS webhooks. Mounted before
 // express.json() so the router can decode form-urlencoded bodies and
 // verify HMAC signatures against the raw-form representation.
 import { smsInboundRouter } from './routes/sms-inbound.routes.js';
-app.use('/api/sms/inbound', smsInboundRouter);
+serverOnly.use('/api/sms/inbound', smsInboundRouter);
 
 // CSP violation collector — mounted before the JSON limiter so it can use
 // its own tiny body parser and its own limiter. Browsers POST reports here
@@ -271,13 +292,12 @@ app.use(express.json({ limit: '10mb' }));
 // Access log with bearer-ish query parameters redacted: magic-link
 // verify (?token=), download tokens (?_dl=), portal/W-9/bank-connect
 // tokens all travel in the URL and must not land in stdout/log shipping.
+// Desktop mode logs the path only: search terms, emails and amounts
+// travel in query strings and the log file sits on the owner's disk.
+import { accessLogUrl } from './utils/log-safe.js';
 morgan.token('url', (req) => {
   const raw = (req as unknown as { originalUrl?: string }).originalUrl ?? req.url ?? '';
-  return raw
-    // query-string credentials
-    .replace(/([?&](?:token|_dl|code|state|access_token|refresh_token|passphrase|claimToken|claim_token)=)[^&#]*/gi, '$1[redacted]')
-    // path-segment tokens: public invoice / published report / W-9 / bank-connect links
-    .replace(/^(\/api\/(?:v1\/public\/invoices|reports\/public|w9|bank-connect)\/)[^/?#]+/i, '$1[redacted]');
+  return accessLogUrl(raw, isDesktop());
 });
 app.use(morgan('short'));
 
@@ -316,6 +336,10 @@ const globalLimiter = rateLimit({
   // budget would crowd out real client traffic without adding any
   // security value (the endpoints reveal nothing tenant-specific).
   skip: (req) => {
+    // Desktop: every request comes from 127.0.0.1 and already carried the
+    // launch token (desktop gate), so a per-IP ceiling would only throttle
+    // the desktop app itself. Per-route auth limiters still apply.
+    if (req.desktopTrusted) return true;
     const p = req.path;
     // /api/peer/* is server-to-server from one PM IP for every client; it
     // carries its own per-IP and per-client limiters (routes/peer-pm.routes.ts).
@@ -360,6 +384,12 @@ app.use('/api/v1/', (_req, res, next) => {
 // appliance health probe read; the `checks.*` block keeps latency /
 // error detail for human debugging.
 //
+// Desktop mode (token-gated) gets v2: mode, version, engineCommit,
+// schemaVersion, schemaTag, queueBackend, online, lastOnlineCheck and
+// checks.db.superuser/role are appended. The server keeps the exact v1 body —
+// this endpoint is unauthenticated there. redis is 'disabled' for installs
+// without Redis (utils/health.ts).
+//
 // `queue: 'ok'` mirrors `redis: 'ok'` for now — BullMQ queues aren't
 // wired yet (worker schedulers run via Postgres advisory locks), so
 // "queue infra is up" === "Redis is up". When BullMQ ships, deepen
@@ -374,6 +404,10 @@ import { sql } from 'drizzle-orm';
 import { db as _dbForHealth } from './db/index.js';
 import { redisPing } from './utils/health-redis.js';
 import { readHeartbeats } from './utils/worker-heartbeat.js';
+import { computeHealth } from './utils/health.js';
+import { readSchemaInfo } from './startup/schema-info.js';
+import { readDbRole } from './startup/db-role.js';
+import { getCurrentVersion } from './services/updates.service.js';
 
 const healthHandler = async (_req: express.Request, res: express.Response) => {
   const t0 = Date.now();
@@ -397,8 +431,6 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     }
   })();
 
-  const [db, redisRaw, workersRaw] = await Promise.all([dbProbe, redisPing(), readHeartbeats()]);
-
   // Same code-only treatment as the DB probe: ioredis messages carry the
   // internal host:port ("connect ECONNREFUSED 172.18.0.3:6379") and this
   // endpoint is unauthenticated. Detail goes to the server log.
@@ -407,44 +439,27 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     console.warn(`[health] ${name} check failed:`, c.error);
     return { ...c, error: 'unavailable' };
   };
-  const redis = redactErr('redis', redisRaw);
-  const workers = redactErr('workers', workersRaw);
 
-  // Queue health rides on Redis until BullMQ wiring lands.
-  const queue = { ok: redis.ok, latencyMs: redis.latencyMs, error: redis.error };
+  // Body assembly lives in utils/health.ts (v2 fields; see there). Workers
+  // sub-check is gated on EXPECT_WORKER: default true matches standalone
+  // docker-compose (which always runs the worker service); api-only
+  // deployments set EXPECT_WORKER=false so a missing heartbeat doesn't drag
+  // the overall status to degraded.
+  const { httpStatus, body } = await computeHealth({
+    probeDb: () => dbProbe,
+    redisPing,
+    readHeartbeats,
+    schemaInfo: () => readSchemaInfo(),
+    dbRole: () => readDbRole(),
+    redactErr,
+    expectWorker: env.EXPECT_WORKER,
+    mode: desktopProfile().mode,
+    queueBackend: desktopProfile().queueBackend,
+    version: getCurrentVersion(),
+    engineCommit: env.ENGINE_COMMIT ?? null,
+  });
 
-  // Workers sub-check is gated on EXPECT_WORKER. Default true matches
-  // standalone docker-compose (which always runs the worker service);
-  // operators on api-only deployments set EXPECT_WORKER=false so a
-  // missing heartbeat doesn't drag the overall status to degraded.
-  const workersCheckActive = env.EXPECT_WORKER;
-  const workersOk = workersCheckActive ? workers.ok : true;
-
-  const allOk = db.ok && redis.ok && queue.ok && workersOk;
-  const status = allOk ? 'ok' : 'degraded';
-
-  const body = {
-    status,
-    db: db.ok ? 'ok' : 'fail',
-    redis: redis.ok ? 'ok' : 'fail',
-    queue: queue.ok ? 'ok' : 'fail',
-    workers: workersOk ? 'ok' : 'fail',
-    timestamp: new Date().toISOString(),
-    checks: {
-      db,
-      redis,
-      queue,
-      workers: {
-        ...workers,
-        // Make the EXPECT_WORKER gating visible in the response body
-        // so operators inspecting /health output understand why a
-        // missing heartbeat isn't tripping degraded status.
-        expected: workersCheckActive,
-      },
-    },
-  };
-
-  if (allOk) {
+  if (httpStatus === 200) {
     res.json(body);
   } else {
     res.status(503).json(body);
@@ -472,11 +487,11 @@ app.get('/api/v1/ping', pingHandler);
 
 // Setup routes (no auth required — self-destructs after setup)
 import { setupRouter } from './routes/setup.routes.js';
-app.use('/api/setup', setupRouter);
+serverOnly.use('/api/setup', setupRouter);
 
 // Public invoice routes (no auth required — customer-facing payment links)
 import { publicInvoiceRouter } from './routes/public-invoice.routes.js';
-app.use('/api/v1/public/invoices', publicInvoiceRouter);
+serverOnly.use('/api/v1/public/invoices', publicInvoiceRouter);
 
 // Financial-statement preview fonts (bundled OFL files; no auth — see route).
 import { fsFontsPublicRouter } from './routes/fs-fonts-public.routes.js';
@@ -485,7 +500,14 @@ app.use('/api/v1/fs-fonts', fsFontsPublicRouter);
 // Public report share links (no auth required — anonymous client-facing
 // view of a PUBLISHED financial report via a 160-bit share token)
 import { publicReportsRouter } from './routes/reports-public.routes.js';
-app.use('/api/reports/public', publicReportsRouter);
+serverOnly.use('/api/reports/public', publicReportsRouter);
+
+// Desktop-only first-run and info routes (token-gated; see
+// routes/desktop.routes.ts). Not mounted for the server appliance.
+import { desktopRouter } from './routes/desktop.routes.js';
+if (isDesktop()) {
+  app.use('/api/v1/desktop', desktopRouter);
+}
 
 // Routes
 app.use('/api/v1/auth', authRouter);
@@ -519,14 +541,14 @@ app.use('/api/v1/checks', checksRouter);
 app.use('/api/v1/check-signatures', checkSignaturesRouter);
 app.use('/api/v1/duplicates', duplicatesRouter);
 app.use('/api/v1/budgets', budgetsRouter);
-app.use('/api/v1/backup', backupRouter);
-app.use('/api/v1/tenant-export', tenantExportRouter);
-app.use('/api/v1/remote-backup', remoteBackupRouter);
+serverOnly.use('/api/v1/backup', backupRouter);
+serverOnly.use('/api/v1/tenant-export', tenantExportRouter);
+serverOnly.use('/api/v1/remote-backup', remoteBackupRouter);
 app.use('/api/v1/export', exportRouter);
 app.use('/api/v1/downloads', downloadsRouter);
 app.use('/api/v1/audit-log', auditRouter);
 app.use('/api/v1/admin', adminRouter);
-app.use('/api/v1/admin/tailscale', authenticate, requireSuperAdmin, tailscaleRouter);
+serverOnly.use('/api/v1/admin/tailscale', authenticate, requireSuperAdmin, tailscaleRouter);
 app.use('/api/v1/api-keys', apiKeysRouter);
 app.use('/api/v1/tenant-settings', tenantSettingsRouter);
 app.use('/api/v1/users/me/tfa', tfaRouter);
@@ -554,16 +576,16 @@ app.put('/api/v1/users/me/login-preference', authMw, sessionOnlyMw, async (req, 
   await db.update(users).set(updates).where(eq(users.id, req.userId));
   res.json({ updated: true });
 });
-app.use('/api/v1/auth/magic-link', magicLinkRouter);
-app.use('/api/v1/plaid', plaidRouter);
+serverOnly.use('/api/v1/auth/magic-link', magicLinkRouter);
+serverOnly.use('/api/v1/plaid', plaidRouter);
 app.use('/api/v1/ai', aiRouter);
-app.use('/api/v1/share', shareRouter);
+serverOnly.use('/api/v1/share', shareRouter);
 app.use('/api/v1/chat', chatRouter);
 // /oauth lives outside the /api prefix and previously had NO rate limit
 // (token/revoke endpoints hit the DB per call). Reuse the global limiter
 // so anonymous callers get the same 300/min/IP budget as everything else.
-app.use('/oauth', globalLimiter, oauthRouter);
-app.use('/api/v1/settings/storage', storageRouter);
+serverOnly.use('/oauth', globalLimiter, oauthRouter);
+serverOnly.use('/api/v1/settings/storage', storageRouter);
 app.use('/api/v1/payroll-import', payrollImportRouter);
 app.use('/api/v1/imports', importsRouter);
 app.use('/api/v1/extractions', extractionRouter);
@@ -581,13 +603,13 @@ app.use('/api/v1/practice/classification', practiceClassificationRouter);
 app.use('/api/v1/practice/classification', matchActionsRouter);
 app.use('/api/v1/practice/settings', practiceSettingsRouter);
 app.use('/api/v1/practice/conditional-rules', conditionalRulesRouter);
-app.use('/api/v1/firms', firmsRouter);
-app.use('/api/v1/firm-invites', firmInvitesRouter);
+serverOnly.use('/api/v1/firms', firmsRouter);
+serverOnly.use('/api/v1/firm-invites', firmInvitesRouter);
 app.use('/api/v1/practice/checks', reviewChecksRouter);
 app.use('/api/v1/practice/accruals', practiceAccrualsRouter);
-app.use('/api/v1/practice/portal', portalContactsRouter);
-app.use('/api/v1/practice/portal/questions', portalQuestionsRouter);
-app.use('/api/v1/practice/portal/reminders', portalRemindersRouter);
+serverOnly.use('/api/v1/practice/portal', portalContactsRouter);
+serverOnly.use('/api/v1/practice/portal/questions', portalQuestionsRouter);
+serverOnly.use('/api/v1/practice/portal/reminders', portalRemindersRouter);
 app.use('/api/v1/practice/1099', portal1099Router);
 app.use('/api/v1/practice/reports', portalReportsRouter);
 app.use('/api/v1/practice/receipts', portalReceiptsRouter);
@@ -599,38 +621,38 @@ app.use('/api/v1/practice/receipts', portalReceiptsRouter);
 app.use('/api/v1/practice', recurringDocRequestsRouter);
 
 // Public portal API — note no /v1, no JWT auth. Rate-limited per route.
-app.use('/api/portal', portalAuthRouter);
-app.use('/api/portal/questions', portalQuestionsPublicRouter);
-app.use('/api/portal/financials', portalFinancialsPublicRouter);
+serverOnly.use('/api/portal', portalAuthRouter);
+serverOnly.use('/api/portal/questions', portalQuestionsPublicRouter);
+serverOnly.use('/api/portal/financials', portalFinancialsPublicRouter);
 // TAX_ESTIMATOR_V1 — read-only tax estimate for the contact's linked taxpayers (Phase 13).
-app.use('/api/portal/tax-estimates', portalTaxEstimatesPublicRouter);
+serverOnly.use('/api/portal/tax-estimates', portalTaxEstimatesPublicRouter);
 // Tracking pixel + click wrapper — public, no auth.
-app.use('/api/portal', portalTrackingRouter);
+serverOnly.use('/api/portal', portalTrackingRouter);
 // Public W-9 form — token in URL is the auth.
-app.use('/api/w9', portalW9PublicRouter);
+serverOnly.use('/api/w9', portalW9PublicRouter);
 // Public bank-connect invites (client connects their bank via Plaid Link
 // from an emailed/texted link, no login) — token in URL is the auth.
-app.use('/api/bank-connect', bankConnectPublicRouter);
+serverOnly.use('/api/bank-connect', bankConnectPublicRouter);
 // Portal-side receipt upload (signed-in contact).
-app.use('/api/portal/receipts', portalReceiptsPublicRouter);
+serverOnly.use('/api/portal/receipts', portalReceiptsPublicRouter);
 // Portal-side outstanding-doc-requests list — drives the "Documents
 // requested" panel on the portal dashboard.
-app.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
+serverOnly.use('/api/portal/document-requests', portalDocumentRequestsPublicRouter);
 // PORTAL_BANKING_V1 — read-only bank/card balances + registers.
 // Connection repair first: its paths live under /banking/connections and
 // must not fall into the read-only banking router.
-app.use('/api/portal/banking/connections', portalBankRepairPublicRouter);
-app.use('/api/portal/banking', portalBankingPublicRouter);
-app.use('/api/portal/categorize', portalCategorizePublicRouter);
+serverOnly.use('/api/portal/banking/connections', portalBankRepairPublicRouter);
+serverOnly.use('/api/portal/banking', portalBankingPublicRouter);
+serverOnly.use('/api/portal/categorize', portalCategorizePublicRouter);
 // PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.
-app.use('/api/portal/bills', portalBillsPublicRouter);
-app.use('/api/portal/bill-captures', portalBillCapturesPublicRouter);
+serverOnly.use('/api/portal/bills', portalBillsPublicRouter);
+serverOnly.use('/api/portal/bill-captures', portalBillCapturesPublicRouter);
 // Vibe Practice Management peer API — signed server-to-server tokens,
 // re-mounts the portal routers for a linked client (docs/vibe-pm-integration.md).
-app.use('/api/peer/pm', peerPmRouter);
+serverOnly.use('/api/peer/pm', peerPmRouter);
 
 // MCP Server endpoint
-app.post('/mcp', async (req, res) => {
+serverOnly.post('/mcp', async (req, res) => {
   const { handleMcpRequest } = await import('./mcp/server.js');
   await handleMcpRequest(req, res);
 });
@@ -667,7 +689,7 @@ app.use('/api/v2', apiV2Router);
 // reach the Express error handler via express-async-errors instead of
 // leaking as unhandled promise rejections.
 import { authenticate as swaggerAuth, requireSuperAdmin as swaggerRequireSuperAdmin } from './middleware/auth.js';
-app.use('/api/docs',
+serverOnly.use('/api/docs',
   async (req: any, res: any, next: any) => {
     if (env.NODE_ENV !== 'production') return next();
     await swaggerAuth(req, res, (err?: unknown) => {
@@ -688,7 +710,8 @@ app.use('/api/docs',
 
 // Serve frontend static files in production
 import path from 'path';
-if (env.NODE_ENV === 'production') {
+// Never in desktop mode: there is no web bundle and no browser client.
+if (env.NODE_ENV === 'production' && !isDesktop()) {
   const webDistPath = path.resolve('packages/web/dist');
   app.use(express.static(webDistPath));
   // SPA fallback: serve index.html for any non-API route
@@ -709,6 +732,14 @@ app.use('/api', (_req, res) => {
     error: { message: 'Not found', code: 'NOT_FOUND' },
   });
 });
+
+// Desktop: JSON 404 for non-/api paths too (the server leaves those to
+// the SPA fallback). Nothing in desktop mode answers with HTML.
+if (isDesktop()) {
+  app.use((_req, res) => {
+    res.status(404).json({ error: { message: 'Not found', code: 'NOT_FOUND' } });
+  });
+}
 
 // Error handler (must be last)
 app.use(errorHandler);

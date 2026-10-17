@@ -20,6 +20,8 @@ import { checkPasswordBreached } from '../utils/hibp.js';
 import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.service.js';
 import { assignTenantToApplianceFirm, resolveFirmForNewClient } from './firm-provisioning.service.js';
 import * as tenantFirmAssignmentService from './tenant-firm-assignment.service.js';
+import { isDesktop } from '../desktop/profile.js';
+import { assertNotWorkspace, requireWorkspaceTenantId } from '../desktop/workspace.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
 // user. Oldest refresh token is revoked when the limit is exceeded —
@@ -131,8 +133,11 @@ async function createSession(
  *  flags. Access rows and firm membership are the caller's business —
  *  that's what distinguishes a practice client tenant from a
  *  self-service owned tenant. */
-async function provisionTenant(input: { companyName: string; businessType?: string; systemAccountsOnly?: boolean }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
+async function provisionTenant(input: { companyName: string; businessType?: string; systemAccountsOnly?: boolean; tenantId?: string }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
   const [tenant] = await db.insert(tenants).values({
+    // A caller-chosen id lets the caller clean up a half-provisioned tenant
+    // (desktop first company); everyone else gets the column default.
+    ...(input.tenantId ? { id: input.tenantId } : {}),
     name: input.companyName,
     slug: generateSlug(input.companyName),
   }).returning();
@@ -234,6 +239,13 @@ export async function getTenantCreationEligibility(userId: string, currentRole: 
   const used = owned.length;
   const base = { enabled, used, limit };
 
+  // Desktop: the owner (super admin) is always allowed — ClientLedger has no
+  // instance toggle or cap for the owner's own companies.
+  if (isDesktop()) {
+    const u = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (u && u.isActive !== false && u.isSuperAdmin) return { ...base, allowed: true };
+  }
+
   if (!enabled) return { ...base, allowed: false, reason: 'Creating additional businesses is disabled by your administrator.' };
 
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -307,6 +319,39 @@ export async function createOwnedTenant(creatorUserId: string, currentRole: stri
   }
 
   return provisioned;
+}
+
+/**
+ * Desktop only: the first company created by /api/v1/desktop/initialize.
+ * Same as createOwnedTenant's internals — provisionTenant plus an `owner`
+ * access row, no firm join — without the eligibility check (the caller is
+ * the brand-new owner). On failure every row of the half-built tenant is
+ * removed, so no unreachable tenant is left behind, and the error is
+ * rethrown.
+ */
+export async function createDesktopCompany(
+  ownerUserId: string,
+  input: { companyName: string; businessType?: string; entityType?: string; industry?: string },
+): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
+  if (!isDesktop()) throw new Error('createDesktopCompany is desktop-only');
+  const tenantId = crypto.randomUUID();
+  try {
+    const provisioned = await provisionTenant({ companyName: input.companyName, businessType: input.businessType, tenantId });
+    if (input.entityType || input.industry) {
+      await db.update(companies)
+        .set({
+          ...(input.entityType ? { entityType: input.entityType } : {}),
+          ...(input.industry ? { industry: input.industry } : {}),
+        })
+        .where(eq(companies.tenantId, tenantId));
+    }
+    await db.insert(userTenantAccess).values({ userId: ownerUserId, tenantId, role: 'owner' });
+    return provisioned;
+  } catch (err) {
+    const { discardPartialTenant } = await import('./setup.service.js');
+    await discardPartialTenant(tenantId);
+    throw err;
+  }
 }
 
 export async function register(input: RegisterInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens }> {
@@ -431,6 +476,8 @@ const DUMMY_PASSWORD_HASH =
   '$2b$12$CwTycUXWue0Thq9StjUM0uJ8lGwkE1dKtDSpFQNshLQ4uMRGjB3sC';
 
 const SUPER_ADMIN_LOCK_MINUTES = 30;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function login(input: LoginInput): Promise<{ user: typeof users.$inferSelect; tokens: AuthTokens; accessibleTenants: any[] }> {
   const MAX_LOGIN_ATTEMPTS = 5;
@@ -571,6 +618,14 @@ export async function switchTenant(
 ): Promise<AuthTokens> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
+
+  // Desktop: a super admin may switch into any tenant, so make sure the
+  // target still exists (a deleted company must not become a session).
+  if (isDesktop()) {
+    const exists = typeof targetTenantId === 'string' && UUID_RE.test(targetTenantId)
+      && !!(await db.query.tenants.findFirst({ where: eq(tenants.id, targetTenantId), columns: { id: true } }));
+    if (!exists) throw new AppError(404, 'That company does not exist.', 'TENANT_NOT_FOUND');
+  }
 
   // Verify access to the target tenant
   const access = await db.query.userTenantAccess.findFirst({
@@ -731,6 +786,17 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
       effectiveTenantId = user.tenantId;
       effectiveRole = user.role;
     }
+  }
+
+  // Desktop: the home tenant is the workspace, and users.role is the role
+  // the user was created with for a company. In the workspace the role is
+  // the workspace access row's (readonly for everyone but the owner), as
+  // login reports it; without an active row, readonly.
+  if (isDesktop() && effectiveTenantId === user.tenantId) {
+    const wsAccess = await db.query.userTenantAccess.findFirst({
+      where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, user.tenantId)),
+    });
+    effectiveRole = wsAccess?.isActive ? (wsAccess.role || 'readonly') : 'readonly';
   }
 
   // Preserve the chain's original authentication time (pre-0157 rows fall
@@ -924,6 +990,9 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
   const userType = input.userType === 'client' ? 'client' : 'staff';
   const email = normalizeEmail(input.email);
 
+  // Desktop: users are invited into companies, never into the workspace.
+  if (isDesktop()) await assertNotWorkspace(tenantId);
+
   // Check if user already exists
   const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
 
@@ -961,7 +1030,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
       sourceEntityType: 'user', sourceEntityId: existing.id, ...(inviterUserId ? { actorUserId: inviterUserId } : {}),
     })).catch((err) => {
       // eslint-disable-next-line no-console
-      console.warn(`[auth.service] access-granted email to ${existing.email} failed:`, err?.message ?? err);
+      console.warn(`[auth.service] access-granted email to user ${existing.id} failed:`, err?.message ?? err);
     });
 
     return { user: existing, temporaryPassword: null, existingUser: true };
@@ -971,8 +1040,12 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
   const temporaryPassword = crypto.randomBytes(8).toString('hex');
   const passwordHash = await bcrypt.hash(temporaryPassword, env.BCRYPT_ROUNDS);
 
+  // Desktop: every user is homed in the workspace (readonly access there)
+  // and reaches the inviting company through its access row.
+  const workspaceId = isDesktop() ? await requireWorkspaceTenantId() : null;
+
   const [user] = await db.insert(users).values({
-    tenantId,
+    tenantId: workspaceId ?? tenantId,
     email,
     passwordHash,
     displayName: input.displayName,
@@ -982,7 +1055,14 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
 
   if (!user) throw AppError.internal('Failed to create user');
 
-  await db.insert(userTenantAccess).values({ userId: user.id, tenantId, role });
+  if (workspaceId) {
+    await db.insert(userTenantAccess).values([
+      { userId: user.id, tenantId: workspaceId, role: 'readonly' },
+      { userId: user.id, tenantId, role },
+    ]);
+  } else {
+    await db.insert(userTenantAccess).values({ userId: user.id, tenantId, role });
+  }
   await auditLog(tenantId, 'create', 'user', user.id, null, { email: user.email, role }, undefined);
 
   // Send invite email with temporary credentials. Fire-and-forget but
@@ -999,7 +1079,7 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
     sourceEntityType: 'user', sourceEntityId: user.id, ...(inviterUserId ? { actorUserId: inviterUserId } : {}),
   })).catch((err) => {
     // eslint-disable-next-line no-console
-    console.warn(`[auth.service] invite email to ${user.email} failed:`, err?.message ?? err);
+    console.warn(`[auth.service] invite email to user ${user.id} failed:`, err?.message ?? err);
   });
 
   return { user, temporaryPassword, existingUser: false };

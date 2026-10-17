@@ -83,6 +83,8 @@ import {
 import { eq } from 'drizzle-orm';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { tailscaleRouter } from './tailscale.routes.js';
+import { isDesktop } from '../desktop/profile.js';
+import { guardAdminTenantRoute, requireWorkspaceTenantId } from '../desktop/workspace.js';
 
 export const adminRouter = Router();
 adminRouter.use(authenticate);
@@ -170,6 +172,7 @@ delegable.get(tenantOps, '/tenants', async (req, res) => {
 
 delegable.get(tenantOps, '/tenants/:id', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   const detail = await adminService.getTenantDetail(req.params['id']!, { hideSuperAdmins: isDelegatedAdmin(req) });
   res.json(detail);
 });
@@ -179,6 +182,7 @@ delegable.get(tenantOps, '/tenants/:id', async (req, res) => {
 // every gate there, the appliance firm included).
 delegable.post(tenantOps, '/tenants/:id/firm', validate(adminSetTenantFirmSchema), async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   await assertMayReassignTenantFirm(req, req.params['id']!, req.body.firmId ?? null);
   res.json(await adminService.setTenantFirm(req.params['id']!, req.body.firmId, req.userId));
 });
@@ -192,11 +196,13 @@ delegable.get(tenantOps, '/firms', async (req, res) => {
 // from, and a POST to (re)designate one when the system RE account was deleted.
 delegable.get(tenantOps, '/tenants/:id/retained-earnings', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   res.json(await adminService.getRetainedEarningsInfo(req.params['id']!));
 });
 
 delegable.post(tenantOps, '/tenants/:id/retained-earnings', validate(adminDesignateRetainedEarningsSchema), async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   res.json(await adminService.designateRetainedEarnings(req.params['id']!, req.body.accountId, req.userId));
 });
 
@@ -208,11 +214,13 @@ delegable.post(tenantOps, '/tenants/:id/retained-earnings', validate(adminDesign
 // account atomically) or clears the mapping with accountId: null.
 delegable.get(tenantOps, '/tenants/:id/system-accounts', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   res.json(await adminService.getSystemAccountsInfo(req.params['id']!));
 });
 
 delegable.put(tenantOps, '/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   res.json(await adminService.assignSystemAccount(
     req.params['id']!, req.params['tag']!, req.body.accountId, req.userId,
     { balanceAction: req.body.balanceAction },
@@ -230,6 +238,7 @@ delegable.put(tenantOps, '/tenants/:id/system-accounts/:tag', validate(adminAssi
 // are skipped and reported, never forced.
 delegable.get(tenantOps, '/tenants/:id/suspense-consolidation', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   res.json(await systemAccountsService.previewSuspenseConsolidation(req.params['id']!));
 });
 
@@ -242,6 +251,7 @@ delegable.post(
   validate(consolidateSuspenseSchema),
   async (req, res) => {
     assertTenantInScope(req, req.params['id']!);
+    await guardAdminTenantRoute(req.params['id']);
     res.json(await systemAccountsService.consolidateIntoSuspense(
       req.params['id']!, req.body.accountIds, req.userId,
     ));
@@ -250,12 +260,14 @@ delegable.post(
 
 delegable.post(tenantOps, '/tenants/:id/disable', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id'], 'safe-delete');
   await adminService.disableTenant(req.params['id']!, req.userId);
   res.json({ message: 'Tenant disabled' });
 });
 
 delegable.post(tenantOps, '/tenants/:id/enable', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   await adminService.enableTenant(req.params['id']!, req.userId);
   res.json({ message: 'Tenant enabled' });
 });
@@ -264,6 +276,7 @@ delegable.post(tenantOps, '/tenants/:id/enable', async (req, res) => {
 // (delete-COA first if a wrong template was seeded).
 delegable.post(tenantOps, '/tenants/:id/apply-coa-template', async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
+  await guardAdminTenantRoute(req.params['id']);
   const { z } = await import('zod');
   const { templateSlug } = z.object({ templateSlug: z.string().min(1).max(100) }).parse(req.body);
   const result = await adminService.applyCoaTemplate(req.params['id']!, templateSlug, req.userId);
@@ -278,6 +291,8 @@ delegable.get(userSupport, '/users', async (req, res) => {
 delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), async (req, res) => {
   const { email: rawEmail, password, displayName, tenantId, role } = req.body;
   assertTenantInScope(req, tenantId);
+  // Desktop: the target must be a company; the user is homed in the workspace.
+  await guardAdminTenantRoute(tenantId);
   // Normalize to lowercase; users.email is treated case-insensitively
   // elsewhere in the auth path, so storing mixed-case here would create a
   // row that no normal login flow can find.
@@ -305,11 +320,12 @@ delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), as
   }
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+  const workspaceId = isDesktop() ? await requireWorkspaceTenantId() : null;
 
   try {
     const user = await db.transaction(async (tx) => {
       const [u] = await tx.insert(users).values({
-        tenantId,
+        tenantId: workspaceId ?? tenantId,
         email,
         passwordHash,
         displayName: displayName || null,
@@ -321,6 +337,9 @@ delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), as
         tenantId,
         role,
       }).onConflictDoNothing();
+      if (workspaceId) {
+        await tx.insert(userTenantAccess).values({ userId: u.id, tenantId: workspaceId, role: 'readonly' }).onConflictDoNothing();
+      }
       return u;
     });
 
@@ -334,7 +353,7 @@ delegable.post(userSupport, '/users/create', validate(adminCreateUserSchema), as
       sourceEntityType: 'user', sourceEntityId: user.id, actorUserId: req.userId,
     })).catch((err) => {
       // eslint-disable-next-line no-console
-      console.warn(`[admin.routes] account-created email to ${user.email} failed:`, err?.message ?? err);
+      console.warn(`[admin.routes] account-created email to user ${user.id} failed:`, err?.message ?? err);
     });
 
     res.status(201).json({ user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role } });
@@ -671,6 +690,7 @@ adminRouter.put('/settings/application', validate(adminApplicationSettingsSchema
 // safety logic. Requires super admin (already enforced by the
 // requireSuperAdmin middleware applied to the whole router).
 adminRouter.delete('/tenants/:id', async (req, res) => {
+  await guardAdminTenantRoute(req.params['id'], 'safe-delete');
   const result = await adminService.deleteTenant(req.params['id']!, req.userId);
   res.json({ message: 'Tenant deleted', ...result });
 });
@@ -680,6 +700,7 @@ adminRouter.delete('/tenants/:id', async (req, res) => {
 // wrong COA template on a fresh tenant, then re-seed. Super-admin gated
 // by the router-level requireSuperAdmin.
 adminRouter.delete('/tenants/:id/chart-of-accounts', async (req, res) => {
+  await guardAdminTenantRoute(req.params['id'], 'unavailable');
   const result = await adminService.deleteChartOfAccounts(req.params['id']!, req.userId);
   res.json({ message: 'Chart of accounts deleted', ...result });
 });
@@ -688,6 +709,7 @@ adminRouter.delete('/tenants/:id/chart-of-accounts', async (req, res) => {
 // contacts, companies, users, settings; resets bank-feed matches and
 // account balances. Destructive; type-to-confirm in the UI.
 adminRouter.delete('/tenants/:id/transactions', async (req, res) => {
+  await guardAdminTenantRoute(req.params['id'], 'unavailable');
   const result = await adminService.deleteAllTransactions(req.params['id']!, req.userId);
   res.json({ message: 'All transactions deleted', ...result });
 });
@@ -695,6 +717,7 @@ adminRouter.delete('/tenants/:id/transactions', async (req, res) => {
 // Hard-delete a single company (and all its company-scoped data) from a
 // tenant. Irreversible; the tenant and its other companies are untouched.
 adminRouter.delete('/tenants/:id/companies/:companyId', async (req, res) => {
+  await guardAdminTenantRoute(req.params['id'], 'unavailable');
   const result = await adminService.deleteCompany(req.params['id']!, req.params['companyId']!, req.userId);
   res.json({ message: 'Company deleted', ...result });
 });
@@ -702,6 +725,7 @@ adminRouter.delete('/tenants/:id/companies/:companyId', async (req, res) => {
 // Purge a tenant's payroll import history (record-only — posted journal
 // entries are left in the ledger).
 adminRouter.delete('/tenants/:id/payroll-import-history', async (req, res) => {
+  await guardAdminTenantRoute(req.params['id'], 'unavailable');
   const result = await adminService.deletePayrollImportHistory(req.params['id']!, req.userId);
   res.json({ message: 'Payroll import history deleted', ...result });
 });
@@ -709,6 +733,7 @@ adminRouter.delete('/tenants/:id/payroll-import-history', async (req, res) => {
 // Preview what a date-range transaction delete would remove — read-only
 // count used by the confirm dialog. Same super-admin gate as the delete.
 adminRouter.get('/tenants/:id/transactions-range-count', async (req, res) => {
+  await guardAdminTenantRoute(req.params['id']);
   const { z } = await import('zod');
   const { startDate, endDate } = z.object({
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -724,6 +749,7 @@ adminRouter.get('/tenants/:id/transactions-range-count', async (req, res) => {
 // range; account balances are recomputed from surviving lines.
 // Destructive; type-to-confirm + preview in the UI.
 adminRouter.post('/tenants/:id/delete-transactions-range', async (req, res) => {
+  await guardAdminTenantRoute(req.params['id'], 'unavailable');
   const { z } = await import('zod');
   const { startDate, endDate } = z.object({
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD'),
@@ -1737,6 +1763,10 @@ async function verifyCallerPassword(userId: string, password: string): Promise<b
   return bcrypt.compare(password, row.password_hash);
 }
 
+// Desktop mode: every /security/* route below is unmounted (404
+// NOT_AVAILABLE_IN_DESKTOP, desktop/features.ts) and the recovery-file /
+// sentinel writers refuse there — the engine never writes boot secrets in
+// desktop mode.
 adminRouter.get('/security/status', async (_req, res) => {
   let sentinelHeader = null;
   if (sentinelExists()) {

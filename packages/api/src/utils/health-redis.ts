@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import RedisPkg from 'ioredis';
+import { redisEnabled } from '../desktop/profile.js';
 
 // Lazy Redis client dedicated to the health-probe path. We deliberately
 // do NOT reuse the rate-limit-store client because:
@@ -48,6 +49,8 @@ export interface RedisPingResult {
   ok: boolean;
   latencyMs: number;
   error?: string;
+  /** Present (and true) when this install runs without Redis (desktop). */
+  disabled?: true;
 }
 
 /**
@@ -56,6 +59,9 @@ export interface RedisPingResult {
  * has a bounded worst-case duration.
  */
 export async function redisPing(): Promise<RedisPingResult> {
+  // No Redis by design (desktop mode / QUEUE_BACKEND=none without
+  // REDIS_URL): nothing to probe, and nothing is wrong.
+  if (!redisEnabled()) return { ok: true, latencyMs: 0, disabled: true };
   const t0 = Date.now();
   try {
     const client = getClient();

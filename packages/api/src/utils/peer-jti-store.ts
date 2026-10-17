@@ -4,6 +4,7 @@
 
 import RedisPkg from 'ioredis';
 import { recordSecurityEvent } from './security-audit.js';
+import { redisEnabled } from '../desktop/profile.js';
 
 // ─── Peer-token jti replay store ────────────────────────────────
 //
@@ -37,6 +38,9 @@ let lastErrorLog = 0;
 
 async function getClient(): Promise<JtiRedisLike> {
   if (override) return override;
+  // No Redis (desktop): fail closed — consumeJti turns this into
+  // JtiStoreUnavailableError and the peer token is rejected.
+  if (!redisEnabled()) throw new Error('redis disabled');
   if (sharedClient) {
     // lazyConnect + no offline queue: the very first command would fail
     // before the socket is up. Connect explicitly once; after that a

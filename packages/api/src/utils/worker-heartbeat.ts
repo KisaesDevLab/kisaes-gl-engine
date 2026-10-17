@@ -25,6 +25,7 @@
 import RedisPkg from 'ioredis';
 import { hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { redisEnabled } from '../desktop/profile.js';
 
 const Redis = (RedisPkg as unknown as { default?: typeof import('ioredis').default }).default
   ?? (RedisPkg as unknown as typeof import('ioredis').default);
@@ -74,13 +75,13 @@ function makeClient(): RedisClient {
 }
 
 function getWriteClient(): RedisClient | null {
-  if (closing) return null;
+  if (closing || !redisEnabled()) return null;
   if (!writeClient) writeClient = makeClient();
   return writeClient;
 }
 
 function getReadClient(): RedisClient | null {
-  if (closing) return null;
+  if (closing || !redisEnabled()) return null;
   if (!readClient) readClient = makeClient();
   return readClient;
 }
@@ -202,6 +203,9 @@ export interface WorkerHeartbeatStatus {
  * but the wire payload would be unbounded.
  */
 export async function readHeartbeats(): Promise<WorkerHeartbeatStatus> {
+  // Without Redis there is no separate worker to watch (desktop mode
+  // forces EXPECT_WORKER=false, so /health ignores this result).
+  if (!redisEnabled()) return { ok: false, count: 0, lastHeartbeatMs: null };
   const client = getReadClient();
   if (!client) {
     return { ok: false, count: 0, lastHeartbeatMs: null, error: 'heartbeat clients are closing' };

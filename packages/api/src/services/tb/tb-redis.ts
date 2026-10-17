@@ -9,6 +9,7 @@
 
 import { Redis } from 'ioredis';
 import { log } from '../../utils/logger.js';
+import { redisEnabled } from '../../desktop/profile.js';
 
 const TTL_SECONDS = 6 * 60 * 60;
 
@@ -17,6 +18,11 @@ let disabled = false;
 
 function getClient(): Redis | null {
   if (disabled) return null;
+  // No Redis (desktop): cache off, every read computes fresh.
+  if (!redisEnabled()) {
+    disabled = true;
+    return null;
+  }
   if (client) return client;
   const url = process.env['REDIS_URL'];
   if (!url) {

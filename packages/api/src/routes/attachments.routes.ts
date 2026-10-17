@@ -19,6 +19,7 @@ import * as ocrService from '../services/ocr.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
 import { log } from '../utils/logger.js';
+import { workspaceFence } from '../desktop/workspace.js';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -170,6 +171,11 @@ attachmentsRouter.get('/:id/download', async (req, res) => {
     }
     tenantId = payload.tenantId;
   }
+
+  // Desktop: this route authenticates by hand, so apply the workspace
+  // fence that authenticate() would (a workspace session has no books).
+  req.tenantId = tenantId!;
+  await workspaceFence(req);
 
   const { stream, attachment } = await attachmentService.download(tenantId!, req.params['id']!);
   res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');

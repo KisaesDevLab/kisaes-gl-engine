@@ -14,6 +14,9 @@
  * safe to load.
  *
  * Order:
+ *   0. load the desktop profile (desktop/profile.ts). With CL_MODE=desktop
+ *      the rest of this list is replaced by startDesktop() below: no
+ *      fallback apps, one JSON fatal line + exit code on any problem.
  *   1. read process.env for DATABASE_URL, JWT_SECRET, ENCRYPTION_KEY
  *   2. if any is missing:
  *      - read the sentinel header (no DB, no env required)
@@ -43,6 +46,26 @@ const REQUIRED_ENV_VARS = [
 ] as const;
 
 async function main(): Promise<void> {
+  // --- Desktop profile (CL_MODE) ----------------------------------------
+  // Must run before anything reads directory variables or env.ts: it fills
+  // DATA_DIR/UPLOAD_DIR/... under CL_DATA_DIR and removes CL_TOKEN from
+  // the environment. With CL_MODE unset this is a no-op (server appliance).
+  // All of these modules are env-free.
+  const { loadDesktopProfile, DesktopConfigError, desktopTokenForScrubber } = await import('./desktop/profile.js');
+  const { desktopFatal } = await import('./desktop/fatal.js');
+  let profile;
+  try {
+    profile = loadDesktopProfile();
+  } catch (err) {
+    if (err instanceof DesktopConfigError) desktopFatal(err.code, err.message);
+    throw err;
+  }
+
+  if (profile.mode === 'desktop') {
+    await startDesktop(desktopTokenForScrubber());
+    return;
+  }
+
   // --- Phase B: env pre-check ------------------------------------------
   const missing = REQUIRED_ENV_VARS.filter((k) => !process.env[k] || process.env[k]!.trim() === '');
 
@@ -120,7 +143,47 @@ async function main(): Promise<void> {
   await import('./index.js');
 }
 
-main().catch((err) => {
+/**
+ * Desktop startup (CL_MODE=desktop). No env-missing or diagnostic fallback
+ * apps — those listen on every interface without auth. Any startup problem
+ * becomes one JSON line on stderr and a non-zero exit (desktop/fatal.ts).
+ */
+async function startDesktop(token: string | null): Promise<void> {
+  const { desktopFatal } = await import('./desktop/fatal.js');
+  const { registerSecret, registerUrlPassword, registerEnvSecrets } = await import('./utils/secret-scrubber.js');
+  registerSecret(token);
+  registerSecret(process.env['JWT_SECRET']);
+  registerSecret(process.env['ENCRYPTION_KEY']);
+  registerSecret(process.env['PLAID_ENCRYPTION_KEY']);
+  registerUrlPassword(process.env['DATABASE_URL']);
+  // Any other credential-named variable (…_API_KEY, SMTP_PASS, …_TOKEN).
+  registerEnvSecrets(process.env);
+  // From here on every stdout/stderr chunk is scrubbed, and copied to
+  // CL_LOG_FILE (rotated) when set.
+  const { installLogTee } = await import('./desktop/log-tee.js');
+  const { desktopProfile } = await import('./desktop/profile.js');
+  installLogTee(desktopProfile());
+
+  const missing = REQUIRED_ENV_VARS.filter((k) => !process.env[k] || process.env[k]!.trim() === '');
+  if (missing.length > 0) {
+    desktopFatal('ENV_MISSING', `missing required environment variables: ${missing.join(', ')}`);
+  }
+
+  // env.ts reports its own validation failure as a fatal line in desktop mode.
+  await import('./config/env.js');
+  const { runDesktopPreflight } = await import('./startup/preflight.js');
+  const result = await runDesktopPreflight();
+  if (result.status === 'blocked') {
+    desktopFatal(result.code, result.details);
+  }
+  await import('./index.js');
+}
+
+main().catch(async (err) => {
+  if (process.env['CL_MODE']?.trim().toLowerCase() === 'desktop') {
+    const { desktopFatal } = await import('./desktop/fatal.js');
+    desktopFatal('STARTUP_FAILED', err instanceof Error ? err.message : String(err), 1);
+  }
   console.error('[bootstrap] fatal error during startup:', err);
   process.exit(1);
 });

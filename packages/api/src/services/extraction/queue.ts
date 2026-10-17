@@ -14,6 +14,8 @@
 
 import { Queue, type ConnectionOptions, type JobsOptions } from 'bullmq';
 import RedisPkg from 'ioredis';
+import { assertQueueEnabled, queueDisabled, QueueUnavailableError } from '../../queue/none.adapter.js';
+import { redisEnabled } from '../../desktop/profile.js';
 
 const Redis = (RedisPkg as unknown as { default?: typeof import('ioredis').default }).default
   ?? (RedisPkg as unknown as typeof import('ioredis').default);
@@ -65,6 +67,10 @@ export interface ExtractJobData {
 // blocking commands (BRPOPLPUSH etc.). Each Worker should get its OWN
 // connection; the shared one here backs the Queue producers only.
 export function makeRedisConnection(): RedisClient {
+  // Never dial Redis when the install runs without it (desktop mode, or a
+  // server with QUEUE_BACKEND=none and no REDIS_URL): fail fast instead of
+  // a connection that retries forever (maxRetriesPerRequest: null).
+  if (!redisEnabled()) throw new QueueUnavailableError('redis');
   const url = process.env['REDIS_URL'] || 'redis://redis:6379';
   return new Redis(url, { maxRetriesPerRequest: null });
 }
@@ -168,6 +174,7 @@ function getReportPackQueue(): Queue<ReportPackJobData> {
 
 /** Enqueue a statement parse. jobId as the BullMQ job id makes it idempotent. */
 export async function enqueueStatementParse(data: StatementParseJobData): Promise<void> {
+  assertQueueEnabled(STATEMENT_PARSE_QUEUE);
   await getStatementParseQueue().add('parse', data, { jobId: queueJobIds.statementParse(data.jobId) });
 }
 
@@ -183,6 +190,7 @@ function getBillCaptureQueue(): Queue<BillCaptureJobData> {
 
 /** Enqueue a Bill Capture extraction. captureId+attempt as the BullMQ job id. */
 export async function enqueueBillCapture(data: BillCaptureJobData): Promise<void> {
+  assertQueueEnabled(BILL_CAPTURE_QUEUE);
   await getBillCaptureQueue().add('extract', data, { jobId: queueJobIds.billCapture(data.captureId, data.attempt) });
 }
 
@@ -200,11 +208,13 @@ function getTaxParamAiCheckQueue(): Queue<TaxParamAiCheckJobData> {
 
 /** Enqueue an AI parameter check run. runId as the BullMQ job id ('-' only, never ':') makes it idempotent. */
 export async function enqueueTaxParamAiCheck(data: TaxParamAiCheckJobData): Promise<void> {
+  assertQueueEnabled(TAX_PARAM_AI_CHECK_QUEUE);
   await getTaxParamAiCheckQueue().add('check', data, { jobId: queueJobIds.taxParamAiCheck(data.runId) });
 }
 
 /** Enqueue a report-pack render. runId as the BullMQ job id makes it idempotent. */
 export async function enqueueReportPack(data: ReportPackJobData): Promise<void> {
+  assertQueueEnabled(REPORT_PACK_QUEUE);
   await getReportPackQueue().add('render', data, { jobId: queueJobIds.reportPack(data.runId) });
 }
 
@@ -216,6 +226,8 @@ export async function enqueueReportPack(data: ReportPackJobData): Promise<void> 
 export async function getReportPackQueueHealth(
   timeoutMs = 2000,
 ): Promise<{ redisReachable: boolean; workerRunning: boolean }> {
+  // QUEUE_BACKEND=none: there is no queue to ask (and no Redis to dial).
+  if (queueDisabled()) return { redisReachable: false, workerRunning: false };
   try {
     const workers = await Promise.race([
       getReportPackQueue().getWorkers(),
@@ -232,6 +244,7 @@ export async function getReportPackQueueHealth(
 
 /** Enqueue the render step for a freshly-created job. */
 export async function enqueueRender(data: RenderJobData): Promise<void> {
+  assertQueueEnabled(DOC_RENDER_QUEUE);
   // jobId as the BullMQ job id makes the enqueue idempotent — re-enqueuing
   // the same document won't create a duplicate render job.
   await getRenderQueue().add('render', data, { jobId: queueJobIds.render(data.jobId) });
@@ -239,6 +252,7 @@ export async function enqueueRender(data: RenderJobData): Promise<void> {
 
 /** Enqueue the extract step for one rendered page. */
 export async function enqueueExtract(data: ExtractJobData): Promise<void> {
+  assertQueueEnabled(DOC_EXTRACT_QUEUE);
   await getExtractQueue().add('extract', data, {
     jobId: queueJobIds.extract(data.jobId, data.pageNo),
   });

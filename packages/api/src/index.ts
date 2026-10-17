@@ -21,6 +21,11 @@ import * as coaTemplatesService from './services/coa-templates.service.js';
 import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import { seedDefaultPrompts } from './services/ai-prompt.service.js';
 import type { Server } from 'http';
+import type { AddressInfo } from 'net';
+import { isDesktop, desktopProfile, type DesktopBind } from './desktop/profile.js';
+import { setDesktopBoundAddress } from './middleware/desktop-gate.js';
+import { desktopFatal } from './desktop/fatal.js';
+import { schedulerEnabled } from './desktop/features.js';
 
 // Graceful shutdown deadline. After SIGTERM we stop accepting new
 // connections and wait up to this long for in-flight requests to drain
@@ -121,6 +126,26 @@ function logBootSummary(): void {
   }
 }
 
+/**
+ * Desktop listen: bind exactly CL_BIND (loopback unless CL_LAN=1, checked
+ * by the profile loader), tell the desktop gate the resolved address, and
+ * print ONE ready line on stdout, {"event":"listening","host":...,"port":N},
+ * so the supervisor can use port 0 without a pick-then-bind race.
+ */
+function listenDesktop(bind: DesktopBind, onListening: () => void): Server {
+  const server = app.listen(bind.port, bind.host);
+  server.once('error', (err) => {
+    desktopFatal('BIND_FAILED', `cannot listen on ${bind.host}:${bind.port}: ${err.message}`, 1);
+  });
+  server.once('listening', () => {
+    const port = (server.address() as AddressInfo).port;
+    setDesktopBoundAddress(bind.host, port);
+    process.stdout.write(`${JSON.stringify({ event: 'listening', host: bind.host, port })}\n`);
+    onListening();
+  });
+  return server;
+}
+
 async function start() {
   logBootSummary();
 
@@ -197,9 +222,20 @@ async function start() {
     console.error('Failed to sync state rule seeds:', err);
   }
 
-  // Start server
-  const server = app.listen(env.PORT, () => {
-    console.log(`Vibe MyBooks API listening on port ${env.PORT}`);
+  // Desktop: the workspace invariant (one workspace, every user homed there
+  // with an active workspace access row). A violation is a warning with
+  // counts and ids only, never fatal.
+  if (isDesktop()) {
+    try {
+      const { checkWorkspaceInvariant } = await import('./desktop/workspace.js');
+      await checkWorkspaceInvariant();
+    } catch (err) {
+      console.error('Failed to check the desktop workspace invariant:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  // Background work that starts once the HTTP server is listening.
+  const startBackground = () => {
     // MIG-2: router mode only; non-blocking with retry — AI features fail
     // closed at the router until registration lands, which is correct.
     // Load the Admin -> AI router connection (overrides env) before registering.
@@ -207,26 +243,40 @@ async function start() {
       .then((m) => m.getRawConfig())
       .catch(() => undefined)
       .finally(() => registerMybooksTaskClasses());
-    startBackupScheduler();
-    startRecurringScheduler();
-    startFingerprintScheduler();
+    // Desktop mode starts only the schedulers in DESKTOP_SCHEDULERS
+    // (desktop/features.ts); the server starts all of them.
+    if (schedulerEnabled('backup')) startBackupScheduler();
+    if (schedulerEnabled('recurring')) startRecurringScheduler();
+    if (schedulerEnabled('fingerprint')) startFingerprintScheduler();
     // The worker container (when present) also starts these two; the
     // Postgres advisory lock in each scheduler's cycle ensures only
     // one process does a given tick. Single-container installs
     // (docker-compose.prod.yml has no worker service) rely on these
     // calls to fire the tunnel-health audit and the monthly backup
     // integrity check.
-    startCloudflaredAlerter();
-    startBackupVerifier();
+    if (schedulerEnabled('cloudflaredAlerter')) startCloudflaredAlerter();
+    if (schedulerEnabled('backupVerifier')) startBackupVerifier();
     // RECURRING_DOC_REQUESTS_V1 — calendar-cadence issuance scheduler.
     // Advisory-locked so the worker container can also run it without
     // double-firing.
-    startRecurringDocRequestScheduler();
+    if (schedulerEnabled('recurringDocRequests')) startRecurringDocRequestScheduler();
     // AI data retention purge (ai_jobs + old chat). Advisory-locked so
     // the worker container can also boot it without double-purging.
-    startAiRetentionScheduler();
-    startShareSweeper();
-  });
+    if (schedulerEnabled('aiRetention')) startAiRetentionScheduler();
+    if (schedulerEnabled('shareSweeper')) startShareSweeper();
+  };
+
+  // Start server
+  let server: Server;
+  const profile = desktopProfile();
+  if (profile.mode === 'desktop' && profile.bind) {
+    server = listenDesktop(profile.bind, startBackground);
+  } else {
+    server = app.listen(env.PORT, () => {
+      console.log(`Vibe MyBooks API listening on port ${env.PORT}`);
+      startBackground();
+    });
+  }
   // Peer screen share WS gateway rides the same HTTP server (Phase 5.1);
   // no-ops entirely when SHARE_ENABLED is off.
   if (env.SHARE_ENABLED) {
@@ -240,6 +290,9 @@ async function start() {
 }
 
 start().catch((err) => {
+  if (isDesktop()) {
+    desktopFatal('STARTUP_FAILED', err instanceof Error ? err.message : String(err), 1);
+  }
   console.error('Failed to start server:', err);
   process.exit(1);
 });

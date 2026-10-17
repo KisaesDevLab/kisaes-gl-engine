@@ -1,7 +1,17 @@
-# Gitleaks configuration — extends the default ruleset with a docs allowlist.
+# Gitleaks configuration — extends the default ruleset with a docs and test-fixture allowlist.
 [extend]
 useDefault = true
 
 [allowlist]
 description = "In-app help documentation shows illustrative curl examples with placeholder credentials (YOUR_API_KEY, truncated eyJhbG...). Real secrets never live in this file. Tax-estimator parameter seeds are `key: '<dotted.parameter.name>'` rows (e.g. care.phase1.min_rate) that the generic-api-key rule misreads; they hold public tax amounts only."
-paths = ['''packages/web/src/features/help/articles\.ts''', '''packages/api/src/db/seeds/tax-estimator/.*\.ts''']
+paths = [
+  '''packages/web/src/features/help/articles\.ts''',
+  '''packages/api/src/db/seeds/tax-estimator/.*\.ts''',
+  # Desktop-mode tests plant fake, credential-shaped canaries on purpose to prove
+  # the secret scrubber, the env defaults and the launch-token handling work.
+  # They are not real secrets; keep this list to exactly these test files.
+  '''packages/api/src/utils/secret-scrubber\.test\.ts''',
+  '''packages/api/src/config/env\.server-defaults\.test\.ts''',
+  '''packages/api/src/config/__fixtures__/env-server-baseline\.json''',
+  '''packages/api/src/desktop/profile\.test\.ts''',
+]

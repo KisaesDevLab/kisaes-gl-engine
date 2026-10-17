@@ -12,6 +12,8 @@ import { db } from '../db/index.js';
 import { users } from '../db/schema/index.js';
 import { apiKeyAuth } from './api-key-auth.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
+import { isDesktop } from '../desktop/profile.js';
+import { workspaceFence } from '../desktop/workspace.js';
 
 declare global {
   namespace Express {
@@ -64,7 +66,15 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   }
 
   if (hasApiKey) {
-    return apiKeyAuth(req, res, next);
+    if (!isDesktop()) return apiKeyAuth(req, res, next);
+    // Desktop: the workspace fence runs once the key's tenant is known.
+    return apiKeyAuth(req, res, (err?: unknown) => {
+      if (err) {
+        next(err);
+        return;
+      }
+      workspaceFence(req).then(() => next(), next);
+    });
   }
 
   // Preferred URL-auth path for direct-navigation exports (open PDF in new
@@ -94,6 +104,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     if (payload.companyId && !req.headers['x-company-id']) {
       req.headers['x-company-id'] = payload.companyId;
     }
+    if (isDesktop()) await workspaceFence(req);
     next();
     return;
   }
@@ -144,10 +155,16 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.tokenIssuedAt = typeof payload.iat === 'number' ? payload.iat : undefined;
     req.authTime = typeof payload.auth_time === 'number' ? payload.auth_time : undefined;
     req.authKind = 'session';
-    next();
+    if (!isDesktop()) next();
   } catch (err) {
     if (err instanceof AppError) throw err;
     throw AppError.unauthorized('Invalid or expired token');
+  }
+  // Desktop: the workspace fence runs outside the token try/catch so a
+  // database error is not reported as an invalid token.
+  if (isDesktop()) {
+    await workspaceFence(req);
+    next();
   }
 }
 
