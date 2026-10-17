@@ -195,3 +195,28 @@ describe('computeHealth — desktop on the pg-boss queue', () => {
     expect(called).toBe(false);
   });
 });
+
+describe('computeHealth — connectivity fields', () => {
+  it('reports the injected connectivity state and never degrades on offline', async () => {
+    const d = deps({ mode: 'desktop', queueBackend: 'none', expectWorker: false, redis: { ok: true, latencyMs: 0, disabled: true } });
+    d.connectivity = () => ({ online: false, lastOnlineCheck: '2026-10-15T11:59:00.000Z' });
+    const { httpStatus, body } = await computeHealth(d);
+    expect(httpStatus).toBe(200);
+    expect(body).toMatchObject({ status: 'ok', online: false, lastOnlineCheck: '2026-10-15T11:59:00.000Z' });
+  });
+
+  it('without a connectivity source both fields are null (desktop)', async () => {
+    const { body } = await computeHealth(
+      deps({ mode: 'desktop', queueBackend: 'none', expectWorker: false, redis: { ok: true, latencyMs: 0, disabled: true } }),
+    );
+    expect(body).toMatchObject({ online: null, lastOnlineCheck: null });
+  });
+
+  it('the server keeps the v1 body: no connectivity fields, even with a source', async () => {
+    const d = deps({});
+    d.connectivity = () => ({ online: false, lastOnlineCheck: '2026-10-15T11:59:00.000Z' });
+    const { body } = await computeHealth(d);
+    expect(body).not.toHaveProperty('online');
+    expect(body).not.toHaveProperty('lastOnlineCheck');
+  });
+});

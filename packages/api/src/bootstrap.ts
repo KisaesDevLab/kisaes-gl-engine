@@ -15,6 +15,7 @@
  *
  * Order:
  *   0. load the desktop profile (desktop/profile.ts). With CL_MODE=desktop
+ *      the egress guard is installed next (desktop/egress-guard.ts), and
  *      the rest of this list is replaced by startDesktop() below: no
  *      fallback apps, one JSON fatal line + exit code on any problem.
  *   1. read process.env for DATABASE_URL, JWT_SECRET, ENCRYPTION_KEY
@@ -62,6 +63,23 @@ async function main(): Promise<void> {
   }
 
   if (profile.mode === 'desktop') {
+    // Default-deny egress guard (desktop/egress-guard.ts) BEFORE any other
+    // engine module loads, so no module can open a connection to a host
+    // the owner did not turn on — not even at import time. Allowed:
+    // loopback, the DATABASE_URL host and CL_EGRESS_ALLOW; features add
+    // their own host at runtime once the owner enables them.
+    try {
+      const { installEgressGuard } = await import('./desktop/egress-guard.js');
+      installEgressGuard({
+        databaseUrl: process.env['DATABASE_URL'],
+        allow: process.env['CL_EGRESS_ALLOW'],
+        // CL_OFFLINE=on: only loopback, IPC and the database.
+        offline: profile.offline === 'on',
+      });
+    } catch (err) {
+      if (err instanceof DesktopConfigError) desktopFatal(err.code, err.message);
+      throw err;
+    }
     await startDesktop(desktopTokenForScrubber());
     return;
   }

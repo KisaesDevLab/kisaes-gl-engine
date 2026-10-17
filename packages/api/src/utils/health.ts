@@ -17,8 +17,11 @@
  *   schemaVersion   number of applied migrations, null if unreadable
  *   schemaTag       journal tag of the newest applied migration
  *   queueBackend    'bullmq' | 'pgboss' | 'none'
- *   online          null until a connectivity probe exists (never probed)
- *   lastOnlineCheck null, same
+ *   online          result of the last connectivity probe of an online
+ *                   feature (utils/offline.ts); null until the first one,
+ *                   always null on the server (no probes), false with
+ *                   CL_OFFLINE=on
+ *   lastOnlineCheck ISO time of that probe, or null
  *
  * and checks.db.superuser + checks.db.role {dangerous, warnings} (see
  * startup/db-role.ts). `redis` is 'disabled' when the install runs
@@ -52,6 +55,8 @@ export interface HealthDeps {
   queueProbe?: () => Promise<ProbeResult>;
   version: string;
   engineCommit: string | null;
+  /** utils/offline.ts connectivityState(); absent → both fields null. */
+  connectivity?: () => { online: boolean | null; lastOnlineCheck: string | null };
   now?: () => Date;
 }
 
@@ -92,6 +97,8 @@ export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200
     ])
     : [null, null];
 
+  const connectivity = deps.connectivity ? deps.connectivity() : { online: null, lastOnlineCheck: null };
+
   const body: Record<string, unknown> = {
     status,
     db: db.ok ? 'ok' : 'fail',
@@ -126,8 +133,8 @@ export async function computeHealth(deps: HealthDeps): Promise<{ httpStatus: 200
       schemaVersion: schema?.version ?? null,
       schemaTag: schema?.tag ?? null,
       queueBackend: deps.queueBackend,
-      online: null,
-      lastOnlineCheck: null,
+      online: connectivity.online,
+      lastOnlineCheck: connectivity.lastOnlineCheck,
     });
   }
   return { httpStatus: allOk ? 200 : 503, body };

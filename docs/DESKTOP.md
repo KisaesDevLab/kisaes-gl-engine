@@ -22,7 +22,8 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `CL_LOG_FILE` | optional | Absolute path (`CL_LOG_FILE_INVALID` otherwise). Append scrubbed stdout/stderr to this file (see Logging). |
 | `CL_LOG_MAX_BYTES` | optional | Rotation size. Default 10 MiB. |
 | `CL_LOG_KEEP` | optional | Rotated files kept (`file.1` … `file.N`). Default 5. |
-| `CL_OFFLINE` | optional | `auto` (default), `on` or `off`. Recorded in the profile and in `/api/v1/desktop/info`. Connectivity probing comes in a later change, so for now `online` on `/health` is always `null`. |
+| `CL_OFFLINE` | optional | `auto` (default), `on` or `off`. How online-only features behave without a network (see Offline). Also reported by `/api/v1/desktop/info`. |
+| `CL_EGRESS_ALLOW` | optional | Comma-separated `host[:port]` (IPv6 as `[addr]:port`) added to the outbound allowlist at launch, e.g. a LAN Ollama server. Invalid entries are a fatal `CL_EGRESS_ALLOW_INVALID`. See Outbound connections. |
 | `CL_LAN` | optional | `1` is refused with a fatal `CL_LAN_UNSUPPORTED` until LAN mode gets TLS (ClientLedger P33). The engine speaks plain HTTP, so a LAN bind would send the launch token, passwords and books in clear text. P33 will accept only private literals (RFC 1918, IPv6 ULA `fc00::/7`, link-local), never `0.0.0.0`, `::` or a public address. Other values are ignored. |
 | `CL_REQUIRE_NON_SUPERUSER` | optional | `1` refuses to start when the database role is a superuser (see Database role). Off by default: the engine only warns. |
 | `QUEUE_BACKEND` | generic | `bullmq` (server default), `pgboss` or `none`. Desktop defaults to `pgboss`, and `bullmq` is refused there (see Background jobs). |
@@ -30,7 +31,7 @@ The code lives in `packages/api/src/desktop/`, `middleware/desktop-gate.ts`, `ro
 | `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `PLAID_ENCRYPTION_KEY` | required | Unchanged. The desktop app supplies them from the OS keychain. In desktop mode the engine never writes them to disk: the routes that would are not mounted, and the recovery-file, sentinel and `.env` writers throw. |
 | `REDIS_URL` | ignored | Required only when something uses Redis: `QUEUE_BACKEND=bullmq` (the server default), `RATE_LIMIT_REDIS=1` or `SHARE_ENABLED`. |
 
-Desktop mode also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=<pgboss unless none was asked for>` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
+Desktop mode skips Cloudflare Turnstile verification (no browser widget, no outbound call). It removes proxy variables from the environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY`, `FTP_PROXY`, `GLOBAL_AGENT_HTTP_PROXY`, any letter case), because a loopback proxy would carry traffic past the egress guard. It also forces `HIBP_DISABLED=1`, `EXPECT_WORKER=false`, `SHARE_ENABLED=false`, `QUEUE_BACKEND=<pgboss unless none was asked for>` and `PORT=<CL_BIND port>`. It refuses `RATE_LIMIT_REDIS=1` and `VIBE_AI_MODE=router` (`CL_ENV_CONFLICT`). Set `NODE_ENV=production`.
 
 ## Startup sequence
 
@@ -160,6 +161,7 @@ A static test (`desktop/users-insert-sites.test.ts`) lists every place that inse
 | `/api/v1/share` | Peer screen share (needs Redis) |
 | `/api/v1/admin/tailscale` | Tailscale remote access |
 | `/api/v1/admin/security` | Appliance recovery key, recovery file, installation id and credential re-encryption. They write or rotate boot secrets on disk. |
+| `/api/v1/admin/updates` | GitHub release check; the desktop app has its own update check |
 | `/api/v1/remote-backup` | Cloud backup targets; the desktop app owns backups |
 | `/api/v1/backup` (except `/passphrase-strength`) | The desktop app owns backups; this restore writes into the current tenant without taking a backup first |
 | `/api/v1/tenant-export` | `.vmx` export and import; the desktop app uses tenant archives |
@@ -253,12 +255,93 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
   "schemaVersion": 216 | null,       // applied migrations
   "schemaTag": "0215_…" | null,      // newest applied migration (journal tag)
   "queueBackend": "bullmq" | "pgboss" | "none",
-  "online": null,                    // no connectivity probe yet
-  "lastOnlineCheck": null
+  "online": true | false | null,     // last connectivity probe (see Offline); null = never probed
+  "lastOnlineCheck": "ISO-8601" | null
 }
 ```
 
 The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades the status. On desktop, `/health` returns 200 when the database is up.
+
+## Outbound connections (egress guard)
+
+In desktop mode, `bootstrap.ts` installs `desktop/egress-guard.ts` right after the profile loads, before any other engine module. It denies every outbound connection by default:
+
+- `net.Socket#connect` (covers `net`, `tls`, `http`, `https`, `http2` and global `fetch`);
+- `dns.lookup`, `dns.lookupService`, every `dns.resolve*` and `reverse`, in their callback, promise and `Resolver` forms, so a blocked name is never sent to a DNS server;
+- UDP (`dgram`) `send` and `connect`;
+- worker threads: `worker_threads.Worker` is replaced so every worker runs the same guard code before its own code (a file worker is started as an `eval` worker that first installs the guard and then loads the file). A worker gets the allowlist as it was when the worker started; later changes do not reach running workers. Workers started by workers are guarded the same way. `data:` and other non-`file:` worker URLs are refused.
+
+Allowed destinations:
+
+| Destination | How |
+|---|---|
+| Loopback | `127.0.0.0/8`, `::1`, `::ffff:127.0.0.0/104`, exactly `localhost` (not `localhost.`, a DNS name) |
+| Local IPC | Unix sockets and Windows named pipes |
+| The database | `DATABASE_URL` host, on its port |
+| Launch allowlist | `CL_EGRESS_ALLOW` |
+| Features the owner turned on | Registered at runtime with `setEgressAllowance(source, [{host, port}])`, e.g. an AI provider or SMTP server once its key or password is supplied for the session |
+
+With `CL_OFFLINE=on` only loopback, IPC and the database are allowed: `CL_EGRESS_ALLOW` and runtime allowances are ignored (in worker threads too).
+
+Matching is by host (and port when the entry has one), never by request context, because connection pools open sockets from any context. IP literals are matched exactly; an allowed name does not allow its IP address or other spellings of it.
+
+A blocked connection fails like a refused one: the socket gets an `EGRESS_BLOCKED` error on the next tick, before any DNS query or packet. The guard logs `{"component":"egress-guard","event":"blocked","host":…}` at warn level, at most once a minute per host, with no port or payload. Removing an allowance stops new connections; an open keep-alive socket can be reused until it idles out.
+
+Not covered:
+
+- worker threads in the single-executable (SEA) build: the guard prelude is tested from source on Windows only; treat it as unverified in the SEA runtime until the 4-OS engine smoke covers it;
+- child processes (`pdftoppm`, Chromium for PDFs, CLI tools). Desktop mode does not run the features that start network tools (tunnels, Tailscale). The PDF renderers block network requests from the page (invoices and portal: `data:`, `about:`, `file:`; report export: `data:` and `about:` only, with JavaScript off and `--disable-background-networking`).
+
+The server appliance never installs the guard.
+
+### Rules for features that open egress (session secrets, E6)
+
+`setEgressAllowance()` is the only way a feature reaches the network. Code that calls it must follow these rules (security review of the guard, 2026-10-15):
+
+- **AI hosts come from a fixed provider table** (Anthropic → `api.anthropic.com:443`, OpenAI → `api.openai.com:443`), never from a URL in a request body or a stored setting.
+- **SMTP:** the host must pass `assertHostSafe` (no loopback, link-local or metadata names or addresses) before it is allowed, and only ports 25, 465, 587 and 2525 may be allowed.
+- **Ollama / OpenAI-compatible base URLs** (local or LAN) must be validated before their host is allowed: `http`/`https` only, no credentials in the URL, no link-local or metadata addresses, and a host other than loopback only by an explicit owner choice. Not validated yet (review item L-6).
+- **Only the owner role** may add an allowance, and it is removed when the feature is turned off or its secret is cleared.
+- **Never widen the guard for everyone** with `CL_EGRESS_ALLOW` to make a feature work; that variable is for launch-time, install-specific hosts chosen by the desktop app.
+- Removing an allowance stops new connections; a keep-alive socket that is already open may be reused until it idles out (review item L-8, accepted and documented above).
+
+### OCR language data (no download)
+
+tesseract.js downloads `eng.traineddata` from `cdn.jsdelivr.net` by default. The engine never lets it in desktop mode:
+
+| Setting | Meaning |
+|---|---|
+| `OCR_LANG_PATH` | Directory with `eng.traineddata` (or `eng.traineddata.gz`). Any mode; on the server it is opt-in, and without it nothing changes. |
+| desktop default | `<CL_DATA_DIR>/tessdata`; cache in `<CL_DATA_DIR>/cache/tesseract` |
+| `OCR_WORKER_PATH` | Optional path to the tesseract.js worker script (`tesseract.js/src/worker-script/node/index.js`) when `node_modules` is not next to the engine. |
+
+When the data file is missing, OCR fails with 503 `OCR_DATA_MISSING` and no worker is started, so nothing is downloaded (and the guard would block it anyway).
+
+**Packaging (ClientLedger xtask / installer):** ship `eng.traineddata` (tessdata `4.0.0_best_int`, LSTM; license Apache-2.0, list it in ATTRIBUTION.md) and point `OCR_LANG_PATH` at it, or copy it to `<CL_DATA_DIR>/tessdata` on first run. The SEA bundle does not contain the tesseract.js worker script or the `tesseract.js-core` WASM files; ship `tesseract.js` and `tesseract.js-core` on disk next to the engine and set `OCR_WORKER_PATH`, or OCR is unavailable. A corrupt data file makes tesseract.js throw from its own worker event handler (an upstream tesseract.js behavior); keep the shipped file checksum-verified.
+
+## Offline
+
+Online-only features (cloud AI, sending email) check the network before they connect, through `utils/offline.ts`. When the computer is offline they fail within 2 seconds with HTTP 503:
+
+```json
+{ "error": { "code": "OFFLINE_UNAVAILABLE", "message": "…needs an internet connection…", "feature": "ai:anthropic" } }
+```
+
+`feature` is `ai:<provider>` or `smtp`. `CL_OFFLINE` decides how the check works:
+
+| `CL_OFFLINE` | Behavior |
+|---|---|
+| `auto` (default) | Before the first use, and again after 30 s, open a TCP connection to the feature's own host (the one the owner turned on; DNS lookup included) with a 1.5 s budget, then close it without sending anything. A failure is remembered for 5 s, so a retry or a fallback provider does not wait again. Network errors from the real call (`ENOTFOUND`, `EAI_AGAIN`, `ENETUNREACH`, `EHOSTUNREACH`, `ECONNREFUSED` off loopback, connect timeouts) are mapped the same way. |
+| `on` | Online features fail at once. Nothing is probed. `/health` shows `online: false`. |
+| `off` | No checks; errors pass through unchanged. |
+
+**AI.** In desktop mode the Anthropic and OpenAI providers are wrapped (`ai-providers/index.ts`): every `complete`, `completeWithImage`, `testConnection` and `listModels` call checks the provider's host first (`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, else the public API host) and maps network errors. Offline errors are not retried. In a fallback chain, once one cloud provider is offline the other cloud providers are skipped, and local Ollama is still tried; if nothing else failed, the caller gets 503 `OFFLINE_UNAVAILABLE` instead of `ai_all_providers_failed`. The per-function AI test returns the 503 too.
+
+**Email.** Every SMTP transport is built by `utils/mail-transport.ts` (`createMailTransport`). In desktop mode it requires TLS (`requireTLS`: STARTTLS on ports other than 465) unless the server is on loopback, sets connection and greeting timeouts of 10 s and a socket timeout of 30 s (a caller's own values win), and `sendMail`/`verify` run the check above first. The SMTP test endpoints answer 503 `OFFLINE_UNAVAILABLE` instead of `{success:false}` when offline. On the server the factory is plain `nodemailer.createTransport` with nodemailer's default timeouts.
+
+Loopback targets (a local mail relay, Ollama on this machine) are never probed and never make the machine "offline", even with `CL_OFFLINE=on`. A probe that ends in anything other than a timeout or a no-network error (for example a refused connection on a name that resolves to this machine) is inconclusive: nothing is recorded or cached and the real call reports its own error. The SMTP test runs the SMTP host safety check (no loopback, link-local or metadata hosts) before any probe.
+
+There is no general "is the internet up" check and nothing is contacted on a timer: the only probe goes to the host the feature is about to use. `/health` reports `online` (`null` until the first probe) and `lastOnlineCheck`. The server appliance never probes: there, `CL_OFFLINE` is always `off`, these fields stay `null`, and errors are unchanged.
 
 ## Database role
 
@@ -308,7 +391,6 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 
 These come as separate changes:
 
-- the connectivity probe and outbound-connection guard (`online`, `OFFLINE_UNAVAILABLE`);
 - the OpenAPI export;
 - tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`);
 - per-session AI and SMTP secrets.

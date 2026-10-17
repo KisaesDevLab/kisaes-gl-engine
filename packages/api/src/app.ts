@@ -409,6 +409,7 @@ import { readSchemaInfo } from './startup/schema-info.js';
 import { readDbRole } from './startup/db-role.js';
 import { getCurrentVersion } from './services/updates.service.js';
 import { getJobQueue } from './queue/index.js';
+import { connectivityState } from './utils/offline.js';
 
 // QUEUE_BACKEND=pgboss: the queue check asks the job queue itself (bounded).
 async function jobQueueProbe(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -465,6 +466,7 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
     queueProbe: jobQueueProbe,
     version: getCurrentVersion(),
     engineCommit: env.ENGINE_COMMIT ?? null,
+    connectivity: connectivityState,
   });
 
   if (httpStatus === 200) {

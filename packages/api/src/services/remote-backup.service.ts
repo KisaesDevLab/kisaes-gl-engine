@@ -150,8 +150,8 @@ async function testEmailConnection(config: EmailConfig): Promise<{ success: bool
   }
 
   try {
-    const nodemailer = await import('nodemailer');
-    const transporter = nodemailer.default.createTransport({
+    const { createMailTransport } = await import('../utils/mail-transport.js');
+    const transporter = createMailTransport({
       host: smtpHost,
       port: Number(process.env['SMTP_PORT'] || 587),
       auth: {
@@ -314,8 +314,8 @@ async function uploadEmail(
   }
 
   try {
-    const nodemailer = await import('nodemailer');
-    const transporter = nodemailer.default.createTransport({
+    const { createMailTransport } = await import('../utils/mail-transport.js');
+    const transporter = createMailTransport({
       host: process.env['SMTP_HOST'],
       port: Number(process.env['SMTP_PORT'] || 587),
       auth: {

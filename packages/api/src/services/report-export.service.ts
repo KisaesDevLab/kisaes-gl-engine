@@ -155,11 +155,28 @@ export async function toPdf(html: string, options: ToPdfOptions = {}): Promise<B
   const puppeteer = await import('puppeteer');
   const browser = await puppeteer.default.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    // --disable-background-networking: no component updates, safe-browsing
+    // lists or other Chromium phone-homes while rendering.
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-background-networking'],
     executablePath: process.env['PUPPETEER_EXECUTABLE_PATH'] || undefined,
   });
   try {
     const page = await browser.newPage();
+    // Same hardening as pdf.service.ts / pdf-merge.util.ts, stricter: report
+    // HTML is built server-side with no scripts, images or stylesheets from
+    // elsewhere, so nothing but the injected document (about:/data:) may
+    // load. A stray remote URL in report data can neither run nor be
+    // fetched (no phone-home, no exfiltration while rendering).
+    await page.setJavaScriptEnabled(false);
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const url = req.url();
+      if (url.startsWith('data:') || url.startsWith('about:')) {
+        void req.continue();
+      } else {
+        void req.abort();
+      }
+    });
     await page.setContent(html, { waitUntil: 'load' });
     const pdf = await page.pdf({
       format: 'Letter',

@@ -44,7 +44,7 @@ import {
   isValidFormBox,
   type FormBox,
 } from './portal-1099.boxes.js';
-import nodemailer from 'nodemailer';
+import { createMailTransport } from '../utils/mail-transport.js';
 import { escapeHtml } from '../utils/html-escape.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 14 + 15 — 1099 / W-9.
@@ -996,7 +996,7 @@ async function getMailer(): Promise<MailerHandle> {
       },
     };
   }
-  const transport = nodemailer.createTransport({
+  const transport = createMailTransport({
     host: smtp.smtpHost,
     port: smtp.smtpPort,
     secure: smtp.smtpPort === 465,

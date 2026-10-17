@@ -2,6 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+// Must stay the first import: see the module header.
+import './desktop/require-egress-guard.js';
 import { flushAllSuggestionNotices } from './services/suggestion-notice-coalescer.service.js';
 import { registerMybooksTaskClasses } from './services/ai-providers/index.js';
 import { app } from './app.js';

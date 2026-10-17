@@ -13,7 +13,7 @@
 // multiple institutions until it expires or is revoked.
 
 import crypto from 'crypto';
-import nodemailer from 'nodemailer';
+import { createMailTransport } from '../utils/mail-transport.js';
 import { eq, and, or, desc, count, gt, gte, lt, inArray, ilike, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { bankConnectInvites, users, tenants, companies, portalSettingsPerPractice, plaidItems } from '../db/schema/index.js';
@@ -58,7 +58,7 @@ async function getMailer(): Promise<MailerHandle> {
       },
     };
   }
-  const transport = nodemailer.createTransport({
+  const transport = createMailTransport({
     host: smtp.smtpHost,
     port: smtp.smtpPort,
     secure: smtp.smtpPort === 465,

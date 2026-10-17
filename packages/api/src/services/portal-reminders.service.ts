@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import nodemailer from 'nodemailer';
+import { createMailTransport } from '../utils/mail-transport.js';
 import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -96,7 +96,7 @@ export async function getMailer(): Promise<MailerHandle> {
       },
     };
   }
-  const transport = nodemailer.createTransport({
+  const transport = createMailTransport({
     host: smtp.smtpHost,
     port: smtp.smtpPort,
     secure: smtp.smtpPort === 465,
