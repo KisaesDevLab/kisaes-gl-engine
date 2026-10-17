@@ -2,6 +2,8 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+// Must stay the first import: see the module header.
+import './desktop/require-egress-guard.js';
 import { flushAllSuggestionNotices } from './services/suggestion-notice-coalescer.service.js';
 import { registerMybooksTaskClasses } from './services/ai-providers/index.js';
 import { app } from './app.js';
@@ -27,14 +29,6 @@ import type { InProcessWorker } from './queue/in-process-worker.js';
 import { setDesktopBoundAddress } from './middleware/desktop-gate.js';
 import { desktopFatal } from './desktop/fatal.js';
 import { schedulerEnabled } from './desktop/features.js';
-import { isEgressGuardInstalled } from './desktop/egress-guard.js';
-
-// Desktop mode never runs without the egress guard (bootstrap.ts installs
-// it first). Reaching this point without it means the engine was started
-// some other way: refuse rather than run with open egress.
-if (isDesktop() && !isEgressGuardInstalled()) {
-  desktopFatal('EGRESS_GUARD_MISSING', 'desktop mode requires the egress guard; start the engine through bootstrap.');
-}
 
 // Graceful shutdown deadline. After SIGTERM we stop accepting new
 // connections and wait up to this long for in-flight requests to drain

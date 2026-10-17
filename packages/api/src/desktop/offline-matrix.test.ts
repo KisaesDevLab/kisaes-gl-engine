@@ -371,7 +371,9 @@ describe('spawned engine (bootstrap.ts)', () => {
     // The env bootstrap would derive (index.ts is started directly here).
     const e = spawnEngine({ PORT: '0', QUEUE_BACKEND: 'none', EXPECT_WORKER: 'false', HIBP_DISABLED: '1', SHARE_ENABLED: 'false' }, 'src/index.ts');
     try {
-      expect(await e.ready).toEqual({ exitCode: 78 });
+      const r = await e.ready;
+      // Show the child's stderr when the exit code is not the contract's 78.
+      expect({ ...r, stderr: 'exitCode' in r && r.exitCode !== 78 ? e.stderr.slice(-20) : undefined }).toEqual({ exitCode: 78, stderr: undefined });
       const fatal = e.stderr.find((l) => l.startsWith('{"event":"fatal"'));
       expect(JSON.parse(fatal!)).toMatchObject({ code: 'EGRESS_GUARD_MISSING' });
     } finally {
