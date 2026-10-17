@@ -48,6 +48,11 @@ jobs:
         # occurrences and this step fails the build if the count grows.
         # Debt paydown is expected (the script prints "update BASELINE_*").
         run: npm run any:check
+      - name: OpenAPI spec is current
+        # Regenerates openapi.json from the route registrations (no DB or
+        # Redis needed) and fails if the committed file differs. Fix with
+        # `npm run openapi:export` and commit the result.
+        run: npm run openapi:check
 
   test:
     runs-on: ubuntu-latest

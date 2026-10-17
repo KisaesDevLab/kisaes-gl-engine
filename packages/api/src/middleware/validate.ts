@@ -4,10 +4,16 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import type { ZodSchema } from 'zod';
+import { attachOpenApiMeta } from './describe.js';
 
 export function validate(schema: ZodSchema) {
-  return (req: Request, _res: Response, next: NextFunction) => {
-    req.body = schema.parse(req.body);
-    next();
-  };
+  // The attached metadata is read only by the OpenAPI export; request
+  // handling is unchanged.
+  return attachOpenApiMeta(
+    (req: Request, _res: Response, next: NextFunction) => {
+      req.body = schema.parse(req.body);
+      next();
+    },
+    { body: schema },
+  );
 }
