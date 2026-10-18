@@ -19,6 +19,7 @@
 import { VibeAiClient, VibeAiError, type ChatMessage } from './vibe-ai-client.js';
 import type { AiProvider, CompletionParams, CompletionResult, VisionParams } from './ai-provider.interface.js';
 import { extractJsonForResult } from './json-utils.js';
+import { isDesktop } from '../../desktop/profile.js';
 
 export type AiMode = 'direct' | 'router';
 
@@ -137,6 +138,9 @@ function legacyEnvRouter(cfg: RouterSettings | null | undefined): boolean {
 
 /** The router is switched on at all (UI setting, or the legacy env switch). */
 export function routerOn(cfg: RouterSettings | null | undefined): boolean {
+  // Desktop mode offers no router: a routed call would leave the machine
+  // for a server the session-secrets rules never allowed (review M4).
+  if (isDesktop()) return false;
   if (!routerAvailable()) return false;
   return cfg?.routerEnabled === true || legacyEnvRouter(cfg);
 }

@@ -19,6 +19,7 @@ import {
 } from './index.js';
 import { OllamaProvider } from './ollama.provider.js';
 import { AnthropicProvider } from './anthropic.provider.js';
+import { routerOn, routerAvailable, setRouterConnectionOverride } from './vibe-router.provider.js';
 
 const TOKEN = 'credtest_' + 'c'.repeat(40);
 const SESSION_KEY = 'sk-ant-api03-session-' + 'S'.repeat(40);
@@ -77,6 +78,16 @@ describe('desktop mode', () => {
     expect(hasCredentials(name, STORED)).toBe(false);
     expect(() => assertDesktopProvider(name)).toThrow(expect.objectContaining({ code: 'AI_PROVIDER_NOT_AVAILABLE', statusCode: 400 }));
     expect(() => getProvider(name, STORED)).toThrow(expect.objectContaining({ code: 'AI_PROVIDER_NOT_AVAILABLE' }));
+  });
+
+  it('the router is never on in desktop mode, even with a saved connection and routerEnabled', () => {
+    setRouterConnectionOverride('http://10.0.0.5:8080', 'router-token-' + 't'.repeat(20));
+    try {
+      expect(routerAvailable()).toBe(true);
+      expect(routerOn({ routerEnabled: true, routerFeatures: { mybooks_chat: 'router' } })).toBe(false);
+    } finally {
+      setRouterConnectionOverride(null, null);
+    }
   });
 
   it('filters the fallback chain to the allowlist', () => {

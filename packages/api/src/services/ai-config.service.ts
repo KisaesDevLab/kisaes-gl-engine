@@ -227,8 +227,33 @@ const PROVIDER_FIELDS = [
   'categorizationProvider', 'ocrProvider', 'documentClassificationProvider', 'chatProvider',
 ] as const satisfies ReadonlyArray<keyof AiConfigUpdateInput>;
 
+// Fields that configure providers the desktop edition does not offer (the
+// Vibe AI Router, OpenAI-compatible servers, DigitalOcean, GLM-OCR). Any
+// attempt to set them is 400 AI_PROVIDER_NOT_AVAILABLE; clearing values
+// ('' / null / false) passes so a restored server database can be cleaned.
+const UNAVAILABLE_PROVIDER_FIELDS = [
+  'routerUrl', 'routerEnabled', 'routerFeatures', 'routerStatementsOnBox',
+  'openaiCompatBaseUrl', 'openaiCompatModel', 'openaiCompatMode',
+  'digitaloceanModel', 'digitaloceanBaseUrl',
+  'glmOcrEnabled', 'glmOcrBaseUrl', 'glmOcrModel', 'glmOcrPrompt', 'glmOcrTimeoutMs', 'glmOcrConcurrency', 'glmOcrForceOcr', 'glmOcrRenderDpi',
+] as const satisfies ReadonlyArray<keyof AiConfigUpdateInput>;
+
+function isClearingValue(v: unknown): boolean {
+  if (v === undefined || v === null || v === '' || v === false) return true;
+  if (typeof v === 'object' && Object.keys(v as object).length === 0) return true;
+  return false;
+}
+
 function assertDesktopConfigInput(input: AiConfigUpdateInput): void {
   if (!isDesktop()) return;
+  for (const field of UNAVAILABLE_PROVIDER_FIELDS) {
+    if (!isClearingValue(input[field])) {
+      throw AppError.badRequest(
+        `${field} configures a provider that is not available in the desktop edition. Choose Anthropic, OpenAI or a local Ollama model.`,
+        'AI_PROVIDER_NOT_AVAILABLE',
+      );
+    }
+  }
   for (const field of CREDENTIAL_FIELDS) {
     const v = input[field];
     if (v === undefined || v === '') continue;

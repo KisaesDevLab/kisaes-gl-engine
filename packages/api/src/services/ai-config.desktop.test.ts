@@ -72,6 +72,33 @@ describe('updateConfig in desktop mode', () => {
       .rejects.toMatchObject({ statusCode: 400, code: 'AI_PROVIDER_NOT_AVAILABLE' });
   });
 
+  it.each([
+    [{ routerUrl: 'http://10.0.0.5:8080' }],
+    [{ routerEnabled: true }],
+    [{ routerFeatures: { mybooks_chat: 'router' } }],
+    [{ routerStatementsOnBox: true }],
+    [{ openaiCompatBaseUrl: 'http://localhost:11434/v1' }],
+    [{ openaiCompatModel: 'qwen3' }],
+    [{ openaiCompatMode: 'native' }],
+    [{ digitaloceanModel: 'llama' }],
+    [{ digitaloceanBaseUrl: 'https://inference.do-ai.run' }],
+    [{ glmOcrEnabled: true }],
+    [{ glmOcrBaseUrl: 'http://localhost:8012' }],
+    [{ glmOcrModel: 'glm' }],
+  ])('refuses provider fields the desktop edition does not offer: %o', async (input) => {
+    await expect(aiConfigService.updateConfig(input as Parameters<typeof aiConfigService.updateConfig>[0]))
+      .rejects.toMatchObject({ statusCode: 400, code: 'AI_PROVIDER_NOT_AVAILABLE' });
+  });
+
+  it('clearing those fields passes (a database restored from a server can be cleaned)', async () => {
+    const cfg = await aiConfigService.updateConfig({
+      routerUrl: '', routerEnabled: false, routerFeatures: {}, openaiCompatBaseUrl: '', openaiCompatModel: null,
+      digitaloceanModel: null, digitaloceanBaseUrl: '', glmOcrEnabled: false, glmOcrBaseUrl: '', glmOcrModel: null,
+    });
+    expect(cfg.openaiCompatBaseUrl).toBeNull();
+    expect(cfg.router.enabled).toBe(false);
+  });
+
   it('refuses a public Ollama base URL (OLLAMA_HOST_NOT_LOCAL) and link-local ones; accepts local-network ones', async () => {
     await expect(aiConfigService.updateConfig({ ollamaBaseUrl: 'https://ollama.example.com' }))
       .rejects.toMatchObject({ statusCode: 400, code: 'OLLAMA_HOST_NOT_LOCAL' });
