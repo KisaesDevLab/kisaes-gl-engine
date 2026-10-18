@@ -81,9 +81,42 @@ Mounted at `/api/v1/desktop` in desktop mode only. On the server they return 404
 | Method | Path | Body / response |
 |---|---|---|
 | POST | `/initialize` | Body: `{"admin":{"email","displayName","password"(12 characters to 72 UTF-8 bytes; bcrypt ignores anything longer)},"company"?:{"name","businessType"?,"entityType"?,"industry"?}}`. Response: 201 `{"workspaceTenantId","userId","companyTenantId"(or null),"warnings":[]}`; see "First run" below. Writes no `.env` and no sentinel; only the non-secret `CONFIG_DIR/.initialized` marker (`{"via","workspaceTenantId"}`). Errors: 409 `ALREADY_INITIALIZED` once a user exists, 409 `TENANTS_WITHOUT_USERS` for restored data with no users, 409 `SETUP_BUSY` while another run holds the setup lock, 400 `VALIDATION_ERROR`, 400 for an unknown `businessType` (nothing is written). |
-| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","dbRole":{"dangerous","warnings"},"initialized","workspaceTenantId"}`. `workspaceTenantId` is `null` before first run. |
+| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","dbRole":{"dangerous","warnings"},"initialized","workspaceTenantId","capabilities"}`. `workspaceTenantId` is `null` before first run. `capabilities` is the append-only list of contracts this engine advertises (`desktop/capabilities.ts`): `session-secrets-v1`, `ai-desktop-v1`, `smtp-session-v1`; a client gates a feature on the name and treats a missing array as none. |
+| PUT | `/session-secrets` | Launch token **and** a signed-in super admin (the owner; a workspace session works). Body: `{"ai"?:{"anthropic"?:{"apiKey"},"openai"?:{"apiKey"},"ollama"?:{"baseUrl","model"?}},"smtp"?:{"password"?,"host"?,"port"?}}` (strict; keys 8–512 characters, password 1–512, `smtp` needs `password` or `host`). Partial: only the named entries change. Response: the GET body. Errors: 400 `VALIDATION_ERROR` (names the key, never the value), 400 `OLLAMA_URL_INVALID`, 400 `SMTP_HOST_BLOCKED`; a refused body applies nothing. See "Session secrets". |
+| GET | `/session-secrets` | Same auth. `{"ai.anthropic":{"present","fingerprint"?},"ai.openai":{…},"ai.ollama.baseUrl":{…},"smtp.password":{…}}`; `fingerprint` is `sha256:` + 8 hex of the value. Values are never returned. |
+| DELETE | `/session-secrets/{name}` | Same auth. Forgets one value and removes its egress allowance; 404 for an unknown name; 200 with the GET body otherwise (also when it was absent). |
 
 `/api/setup/*` is not available in desktop mode, except `GET /api/setup/status`.
+
+### Session secrets (AI keys, Ollama endpoint, SMTP password)
+
+The desktop app keeps the owner's AI keys and SMTP password in the OS keychain and hands them to the engine for the life of the process (`desktop/session-secrets.ts`, U-09/U-11/U-13). They live in one in-memory map: never in `ai_config`, `companies.smtp_pass`, `system_settings`, files or logs; graceful shutdown clears them. Each value is registered with the secret scrubber when set (and stays registered after a delete, so a late error is still redacted); the Ollama base URL is not a secret and is not registered.
+
+What setting each name does:
+
+| Name | Stored as | Egress opened (source) | Used by |
+|---|---|---|---|
+| `ai.anthropic` | the key | `api.anthropic.com:443` (`ai.anthropic`), from a fixed table | `resolveCredential('anthropic')` |
+| `ai.openai` | the key | `api.openai.com:443` (`ai.openai`) | `resolveCredential('openai')` |
+| `ai.ollama.baseUrl` (+ `model`) | normalized server root (trailing `/` and `/v1` removed) | the URL's host and port (`ai.ollama`) when it is not loopback; nothing for loopback | `resolveCredential('ollama')`; the session endpoint and model stand in for `ai_config.ollama_base_url` and the provider default, a caller's explicit model still wins |
+| `smtp.password` (+ `host`, `port`) | the password | `host:port` (`smtp`) after the SMTP host check; `port` defaults to 587 | every mail transport (`utils/mail-transport.ts`) |
+
+Validation before anything is allowed: an Ollama base URL must be `http`/`https`, carry no credentials and not point at a link-local or metadata address (loopback and LAN are the owner's choice); an SMTP host must pass `assertHostSafe` (no loopback, link-local or metadata names or addresses; LAN relays allowed) and the port must be 25, 465, 587 or 2525. A loopback relay needs no allowance and is accepted as-is. A mail server the owner did not name in this request stays `EGRESS_BLOCKED`, whatever `/company/smtp` or the system settings say. One mail server per session: a new `host` replaces the previous allowance.
+
+**AI in desktop mode** (`ai-providers/index.ts`, `ai-config.service.ts`):
+
+- `resolveCredential(provider, config)` is the only credential source. Desktop: the session store; the `ai_config` key columns are ignored even when a database restored from a server holds them. Server: the stored, encrypted columns, unchanged.
+- Providers offered: `anthropic`, `openai`, `ollama` (Q-33). Any other provider name — in a provider field, a fallback chain, task options, `/ai/admin/test/{provider}` or `/ai/admin/models/{provider}` — is 400 `AI_PROVIDER_NOT_AVAILABLE`; fallback chains are filtered to the three at run time and in `GET /ai/admin/config`.
+- `PUT /ai/admin/config` refuses every credential field (`anthropicApiKey`, `openaiApiKey`, `geminiApiKey`, `openaiCompatApiKey`, `digitaloceanApiKey`, `glmOcrApiKey`, `routerToken`) with 400 `DESKTOP_KEYS_NOT_STORED`; `''` is still the "no change" sentinel. Provider choices, models, toggles and budgets are stored as before. `hasAnthropicKey`/`hasOpenaiKey` report the session store; `hasGeminiKey` is always false.
+- Without a session key, `hasCredentials()` is false: no SDK client is built and no call is made. Cloud calls still require `isEnabled`, the system disclosure and company consent exactly as on the server.
+- Egress backstop: text sent to a cloud provider passes the strict PII sanitizer on top of the caller's own sanitization (`complete()` and the text of `completeWithImage()`), so a caller cannot send bank, card or tax-id data off the machine by omission. Images cannot be text-redacted; the cloud-vision gate (`cloud_vision_enabled` + permissive mode) remains the control. Only the detected PII types are logged, at debug.
+- Provider errors are scrubbed of registered and key-shaped secrets before the fallback aggregate, the warn line, `ai_jobs.error_message` and HTTP bodies (`/ai/admin/test/*`, `/ai/admin/models/*`, `/ai/admin/test-function/*`). This also applies on the server.
+- The tax-parameter AI check (`/admin/tax-param-ai-checks`) reports `available: false` in desktop mode.
+- Usage: `POST /ai/categorize`, `POST /ai/ocr/receipt` and `POST /ai/classify` responses carry `usage: {provider, model, inputTokens, outputTokens}`; `GET /ai/usage/summary?from&to` (tenant session; ISO dates or date-times, `to` exclusive, default the current month to now) returns `{from, to, totals:{calls,inputTokens,outputTokens}, rows:[{provider,model,jobType,calls,inputTokens,outputTokens}]}`. Tokens are integers end to end; no dollar figures.
+- Monthly token cap (U-29): `ai_config.monthly_token_limit` (`monthlyTokenLimit` in the config API; migration 0218) is an integer per-tenant cap on input + output tokens per calendar month, checked in `createJob` beside the dollar cap; `0` blocks every call, `null` is off. Exceeding it is 400 `ai_token_limit_exceeded`.
+- Consent audit rows (`ai_config_system_disclosure`, `company_ai_consent_accepted`) record `provider`, `providers` and `disclosureVersion` (U-30).
+
+**SMTP in desktop mode** (U-13): whenever a mail server needs a login (`smtp_user` set), the transport uses the `smtp.password` session secret and answers 400 `SMTP_NOT_CONFIGURED` when there is none; a stored `companies.smtp_pass`, a system `smtp_pass` setting or the password in a `/smtp/test` body is never used. `PUT /company/smtp` and `PUT /admin/settings` refuse to store or clear a password (400 `DESKTOP_KEYS_NOT_STORED`); `passwordConfigured` reflects the session store. A server without a login needs no password. The SMTP test and sends answer 400 `SMTP_HOST_BLOCKED`, 503 `EGRESS_BLOCKED` or 503 `OFFLINE_UNAVAILABLE` as before.
 
 `/info` answers any holder of the launch token, before and without a user login. Besides the version it reveals `dataDirExists`, `dbSuperuser`/`dbRole` and `workspaceTenantId`. That is acceptable because the token holder is the desktop app itself, but the host must treat the token as the key to the whole engine (see Host requirements).
 
@@ -300,8 +333,8 @@ The server appliance never installs the guard.
 
 - **AI hosts come from a fixed provider table** (Anthropic → `api.anthropic.com:443`, OpenAI → `api.openai.com:443`), never from a URL in a request body or a stored setting.
 - **SMTP:** the host must pass `assertHostSafe` (no loopback, link-local or metadata names or addresses) before it is allowed, and only ports 25, 465, 587 and 2525 may be allowed.
-- **Ollama / OpenAI-compatible base URLs** (local or LAN) must be validated before their host is allowed: `http`/`https` only, no credentials in the URL, no link-local or metadata addresses, and a host other than loopback only by an explicit owner choice. Not validated yet (review item L-6).
-- **Only the owner role** may add an allowance, and it is removed when the feature is turned off or its secret is cleared.
+- **Ollama base URLs** (local or LAN) must be validated before their host is allowed: `http`/`https` only, no credentials in the URL, no link-local or metadata addresses, and a host other than loopback only by an explicit owner choice. Implemented by `session-secrets.validateOllamaBaseUrl` (review item L-6, closed); `openai_compat` is not offered in desktop mode.
+- **Only the owner role** may add an allowance (the session-secrets routes require a super admin), and it is removed when the feature is turned off or its secret is cleared. An allowance is never derived from a stored setting at send time: the owner names the mail server together with the password.
 - **Never widen the guard for everyone** with `CL_EGRESS_ALLOW` to make a feature work; that variable is for launch-time, install-specific hosts chosen by the desktop app.
 - Removing an allowance stops new connections; a keep-alive socket that is already open may be reused until it idles out (review item L-8, accepted and documented above).
 
@@ -335,7 +368,7 @@ Online-only features (cloud AI, sending email) check the network before they con
 | `on` | Online features fail at once. Nothing is probed. `/health` shows `online: false`. |
 | `off` | No checks; errors pass through unchanged. |
 
-**AI.** In desktop mode the Anthropic and OpenAI providers are wrapped (`ai-providers/index.ts`): every `complete`, `completeWithImage`, `testConnection` and `listModels` call checks the provider's host first (`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, else the public API host) and maps network errors. Offline errors are not retried. In a fallback chain, once one cloud provider is offline the other cloud providers are skipped, and local Ollama is still tried; if nothing else failed, the caller gets 503 `OFFLINE_UNAVAILABLE` instead of `ai_all_providers_failed`. The per-function AI test returns the 503 too.
+**AI.** In desktop mode the Anthropic and OpenAI providers are wrapped (`ai-providers/index.ts`; the same wrapper applies the strict sanitizer backstop and scrubs errors, see "Session secrets"): every `complete`, `completeWithImage`, `testConnection` and `listModels` call checks the provider's host first (`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, else the public API host) and maps network errors. Offline errors are not retried. In a fallback chain, once one cloud provider is offline the other cloud providers are skipped, and local Ollama is still tried; if nothing else failed, the caller gets 503 `OFFLINE_UNAVAILABLE` instead of `ai_all_providers_failed`. The per-function AI test returns the 503 too.
 
 **Email.** Every SMTP transport is built by `utils/mail-transport.ts` (`createMailTransport`). In desktop mode it requires TLS (`requireTLS`: STARTTLS on ports other than 465) unless the server is on loopback, sets connection and greeting timeouts of 10 s and a socket timeout of 30 s (a caller's own values win), and `sendMail`/`verify` run the check above first. The SMTP test endpoints answer 503 `OFFLINE_UNAVAILABLE` instead of `{success:false}` when offline. On the server the factory is plain `nodemailer.createTransport` with nodemailer's default timeouts.
 
@@ -383,7 +416,7 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 
 - Pass absolute paths for `CL_DATA_DIR` and `CL_LOG_FILE` (the engine refuses relative ones) inside a directory only the owner's account can read.
 - Open, rotate and delete the log files with share-delete semantics on Windows (`FILE_SHARE_DELETE`), and never hold a rotated file open, so the engine's rename-based rotation keeps working while the host tails the log.
-- Keep the launch token secret: environment only, never the command line, a file or a log. Anyone holding it can call `/api/v1/desktop/info` and `/initialize`.
+- Keep the launch token secret: environment only, never the command line, a file or a log. Anyone holding it can call `/api/v1/desktop/info` and `/initialize`; with the owner's session it can also set the session secrets.
 - **P04 requirement (not implemented):** the host should verify it is talking to its own engine, not to another process that grabbed the port, before sending the token or credentials. Planned: the host sends a random challenge and the engine answers with an HMAC of it keyed by the launch token (e.g. a header on `/health`), so the token itself never has to be sent first.
 - Helper processes started by the engine (poppler `pdftoppm`, `pdftotext`, `pdfimages`) get a minimal environment in desktop mode (`PATH`, temp and locale variables, library and font paths; nothing credential-named), so boot secrets and API keys are not inherited. If the host bundles poppler, its libraries must be findable through `PATH` / `LD_LIBRARY_PATH` / `DYLD_*` or an rpath.
 
@@ -391,6 +424,5 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 
 These come as separate changes:
 
-- the OpenAPI export;
-- tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`);
-- per-session AI and SMTP secrets.
+- the OpenAPI export (the desktop-only routes are not in `openapi.json`, which is exported in server mode);
+- tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`).
