@@ -417,9 +417,17 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 
 `POST /api/v1/auth/switch-tenant` and `/api/v2/tenants/switch` refuse a tenant whose `tenant_archive_imports.scratch` is true with 403 `SCRATCH_TENANT`, super admins included.
 
+**`host` is opaque.** The manifest's `host` object is stored and echoed exactly as the exporting client sent it (≤ 16 KiB) and the engine never interprets it. On import it comes from the archive, so a client must treat it as untrusted input (validate shape and size before use), the same as the rest of a file an owner picked from disk.
+
+**Path imports** (`{path}`, desktop without LAN) accept an absolute local path to a regular `.zip`/`.clbackup` file; UNC and other network paths are refused (400 `VALIDATION_ERROR`), and a missing file, a directory or a wrong extension all answer the same 400 `FILE_NOT_FOUND`. Import passphrases must be at least 12 characters (an export never accepts fewer). Before writing files the import checks the upload volume's free space against the bundled file bytes plus a 256 MiB margin (507 `INSUFFICIENT_STORAGE`). Archive files are created `0600` in `0700` directories, uploads are `0600`, and a zip with more than 1,000,000 entries is refused before its envelope is read. Job and download routes need an interactive session (no API key or download token).
+
 ### Known gaps
 
 - **Audit rows written before `0218` keep their secrets in the live database.** The export strips them at read time and `auditLog()` strips new rows, but no migration rewrites existing `audit_log` rows: on a server appliance that is a full rewrite of a very large table. An operator who wants the live rows cleaned can run `UPDATE audit_log SET before_data = mybooks_strip_secret_keys(before_data, '<pattern>'), after_data = mybooks_strip_secret_keys(after_data, '<pattern>')` with the pattern from `utils/secret-keys.ts` during a maintenance window.
+- **No free-space check before an export.** The archive size is not known until the snapshot has been streamed; a full disk fails the export (the `.partial` is removed) rather than being refused up front.
+- **File modes are advisory on Windows.** `0600`/`0700` are applied where files are created; NTFS ignores them, so the host must keep the data directory readable by the owner's account only (see "Host requirements").
+- **Polymorphic references are not verified on import.** `attachable_id`, `entity_id` and the other polymorphic uuid columns have no single target table; every engine lookup of them is tenant-scoped, so a crafted value is a dangling pointer, not a cross-tenant read.
+- **Skipped users leave ghost references.** When a non-super-admin caller imports, rows of unmatched archived users (`created_by`, `audit_log.user_id`) keep a user id that has no `users` row until a super admin imports the same archive and creates the user with that id.
 
 ## Not in desktop mode yet
 

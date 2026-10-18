@@ -16,7 +16,7 @@ import archiver from 'archiver';
 import { db } from '../../db/index.js';
 import { ArchiveZipWriter, sha256File } from './archive-container.js';
 import { createEnvelope, encryptEntryBuffer, NoncePrefixRegistry } from './archive-crypto.js';
-import { ArchiveReader } from './archive-reader.js';
+import { ArchiveReader, ARCHIVE_MAX_ENTRIES } from './archive-reader.js';
 import {
   ARCHIVE_FORMAT, ARCHIVE_FORMAT_VERSION, ENVELOPE_ENTRY, IDENTITY_ENTRIES, MANIFEST_ENTRY, filePartName, tablePartName, zipEntryName,
   type ArchiveManifest, type ManifestTable,
@@ -42,6 +42,7 @@ interface Spec {
   extraEntries?: Array<{ name: string; bytes: Buffer }>;
   mutateManifest?: (m: ArchiveManifest) => void;
   passphrase?: string;
+  sourceName?: string;
 }
 
 /** Builds a small but complete archive. */
@@ -76,7 +77,7 @@ async function buildArchive(name: string, spec: Spec): Promise<{ filePath: strin
     engine: { version: 'test', commit: null },
     schema: { version: spec.schemaVersion ?? 218, tag: null },
     createdAt: new Date().toISOString(),
-    source: { tenantId: crypto.randomUUID(), name: 'Src', ledgerVersion: '0' },
+    source: { tenantId: crypto.randomUUID(), name: spec.sourceName ?? 'Src', ledgerVersion: '0' },
     options: { includeAttachments: true, includeAudit: true },
     host: spec.host ?? {},
     tables,
@@ -235,6 +236,14 @@ describe('container', () => {
     expect((await ArchiveReader.open(cl, PASS)).manifest.host).toEqual({ app: 'ClientLedger' });
     const huge = await buildArchive('hugehost.zip', { host: { pad: 'x'.repeat(17 * 1024) } });
     await expectCode(ArchiveReader.open(huge.filePath, PASS), 'ARCHIVE_CORRUPT');
+    // source.name becomes the restored label: bounded and free of control characters.
+    const longName = await buildArchive('longname.zip', { sourceName: 'n'.repeat(256) });
+    await expectCode(ArchiveReader.open(longName.filePath, PASS), 'ARCHIVE_CORRUPT');
+    const ctl = await buildArchive('ctlname.zip', { sourceName: 'Acme\u0007 Co' });
+    await expectCode(ArchiveReader.open(ctl.filePath, PASS), 'ARCHIVE_CORRUPT');
+    const ok = await buildArchive('okname.zip', { sourceName: 'Ärger & Söhne (2026) — books' });
+    expect((await ArchiveReader.open(ok.filePath, PASS)).manifest.source.name).toBe('Ärger & Söhne (2026) — books');
+    expect(ARCHIVE_MAX_ENTRIES).toBe(1_000_000);
   }, 60_000);
 
   it('a declared size smaller than the real part is a corruption (bounded read)', async () => {

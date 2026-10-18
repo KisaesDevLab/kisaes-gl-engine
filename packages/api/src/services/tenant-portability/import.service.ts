@@ -83,6 +83,30 @@ interface PendingFile {
   cleanup: () => Promise<void>;
 }
 
+/** Headroom kept free beyond the bundled files (the rows go to the database, whose free space the engine cannot see). */
+const FREE_SPACE_MARGIN_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Refuses an import whose bundled files would not fit on the upload volume
+ * (507 INSUFFICIENT_STORAGE) before anything is written. Unknown free space
+ * (an unsupported platform or a missing directory) never blocks.
+ */
+export function assertFreeDiskSpace(dir: string, neededBytes: number, statfs: (p: string) => { bsize: number; bavail: number } = (p) => fs.statfsSync(p)): void {
+  let free: number;
+  try {
+    const s = statfs(fs.existsSync(dir) ? dir : path.dirname(dir));
+    free = Number(s.bsize) * Number(s.bavail);
+  } catch {
+    return;
+  }
+  if (!Number.isFinite(free) || free <= 0) return;
+  if (free < neededBytes + FREE_SPACE_MARGIN_BYTES) {
+    throw new ArchiveError('INSUFFICIENT_STORAGE', 'There is not enough free disk space to restore the files in this archive.', {
+      neededBytes: neededBytes + FREE_SPACE_MARGIN_BYTES, freeBytes: free,
+    });
+  }
+}
+
 function restoredName(source: string): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -131,13 +155,16 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   const step = (s: string, p: number) => progress?.set(s, p);
   step('verify-archive', 1);
   const reader = await ArchiveReader.open(options.filePath, options.passphrase);
-  await reader.verifyAll((done, total) => step('verify-archive', 1 + Math.round((done / total) * 15)));
+  // The file hash overlaps the decrypt-and-hash pass instead of a second read afterwards.
+  const [, archiveSha256] = await Promise.all([
+    reader.verifyAll((done, total) => step('verify-archive', 1 + Math.round((done / total) * 15))),
+    sha256File(options.filePath),
+  ]);
   const manifest = reader.manifest;
   const plan = await getPortabilityPlan();
   const schema = await readSchemaInfo();
   const compat: CompatResult = checkSchemaCompatibility(manifest.tables, plan, manifest.schema.version, schema.version);
   const warnings: string[] = [...compat.warnings];
-  const archiveSha256 = await sha256File(options.filePath);
 
   // Only a super admin creates user rows (H1): decided from the caller's own
   // row, never from the request, so the service enforces it in every mode.
@@ -179,6 +206,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   };
   const workspaceTenantId = await getWorkspaceTenantId();
   const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
+  assertFreeDiskSpace(uploadDir, reader.declaredFileBytes());
   let provider: StorageProvider | null = null;
   const providerFor = async () => provider ?? (provider = await getProviderForTenant(newTenantId));
 

@@ -32,6 +32,7 @@ import {
   SECRET_COLUMNS,
   NEVER_REMAPPED_UUIDS,
   ARCHIVE_AUDIT_ENTITY_TYPE,
+  identityProjectionSql,
   type PortabilityPlan,
   type DbLike,
 } from './plan.js';
@@ -312,6 +313,16 @@ describe('rule 5: secrets and jsonb config', () => {
     const smtp = companies.archive.find((c) => c.name === 'smtp_pass')!;
     expect(smtp.redacted).toBe(true);
     expect(smtp.select).toMatch(/^NULL::/);
+  });
+
+  it('the identity section uses the plan projection (redaction rules apply to tenants and access rows)', () => {
+    const t = identityProjectionSql(plan, 'tenants', 't', ['is_workspace']);
+    expect(t).toContain('t."id"');
+    expect(t).toContain('t."report_settings"');
+    expect(t).not.toContain('is_workspace');
+    const a = identityProjectionSql(plan, 'user_tenant_access', 'a');
+    expect(a.split(', ').every((s) => /^a\."[a-z_]+"$/.test(s))).toBe(true); // no secret column today: raw columns
+    expect(() => identityProjectionSql(plan, 'nope', 'x')).toThrow(PortabilityPlanError);
   });
 
   it('strips secret keys from the audit row images and refuses an unclassified *_after_data json column (rule 5c, H3)', async () => {

@@ -659,6 +659,29 @@ export const STRIPPED_JSON_COLUMNS: Record<string, string> = {
   'audit_log.after_data': 'secret-looking keys stripped from the audited row image (utils/secret-keys.ts)',
 };
 
+/**
+ * The identity-section projection of an identity table (`tenants`,
+ * `user_tenant_access`) over alias `alias`: every live column except
+ * `exclude`, with the same secret and json-config redaction the archived
+ * tables get, so a credential column added to an identity table later is
+ * redacted (or fails the plan) instead of travelling.
+ */
+export function identityProjectionSql(plan: PortabilityPlan, table: string, alias: string, exclude: readonly string[] = []): string {
+  const live = plan.live.tables.get(table);
+  if (!live) throw new PortabilityPlanError('UNKNOWN_TABLE', table);
+  return live.columns
+    .filter((c) => !c.generated && !exclude.includes(c.name))
+    .map((c) => {
+      const k = key(table, c.name);
+      const sec = SECRET_COLUMNS[k];
+      if (sec?.action === 'redact') return `${sec.replacement ?? 'NULL'}::${c.type} AS "${c.name}"`;
+      if (sec?.action === 'reencrypt') return `NULL::${c.type} AS "${c.name}"`;
+      if (JSON_CONFIG_COLUMNS[k] === 'secret') return `NULL::${c.type} AS "${c.name}"`;
+      return `${alias}."${c.name}"`;
+    })
+    .join(', ');
+}
+
 /** The SQL expression that strips secret keys from a json column of alias `a` (H3). */
 export function stripSecretKeysSql(column: string, type: string): string {
   return `mybooks_strip_secret_keys(a."${column}"::jsonb, '${SECRET_KEY_PATTERN}')::${type} AS "${column}"`;

@@ -253,7 +253,14 @@ describe('lifecycle routes', () => {
     expect(relative.status).toBe(400);
     const dir = await call('POST', '/api/v1/tenant-archives/import', { path: path.dirname(archivePath), passphrase: PASS });
     expect(dir.status).toBe(400);
+    expect((dir.json['error'] as { code: string }).code).toBe('FILE_NOT_FOUND');
     expect(JSON.stringify(dir.json)).not.toContain(PASS);
+    const unc = await call('POST', '/api/v1/tenant-archives/import', { path: '\\\\server\\share\\backup.zip', passphrase: PASS });
+    expect(unc.status).toBe(400);
+    expect((unc.json['error'] as { code: string }).code).toBe('VALIDATION_ERROR');
+    const shortPass = await call('POST', '/api/v1/tenant-archives/import', { path: archivePath, passphrase: 'short' });
+    expect(shortPass.status).toBe(400);
+    expect(JSON.stringify(shortPass.json)).not.toContain('short"');
 
     const byPath = await call('POST', '/api/v1/tenant-archives/import', { path: archivePath, passphrase: PASS, name: `Restored by path ${stamp}` });
     expect(byPath.status).toBe(202);

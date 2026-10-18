@@ -32,6 +32,8 @@ export const ARCHIVE_ERROR_STATUS = {
   IMPORT_NEEDS_SUPER_ADMIN: 403,
   /** Too many wrong passphrases from this user in the window (M3). */
   PASSPHRASE_RATE_LIMITED: 429,
+  /** The bundled files would not fit on the upload volume. */
+  INSUFFICIENT_STORAGE: 507,
 } as const;
 
 export type ArchiveErrorCode = keyof typeof ARCHIVE_ERROR_STATUS;

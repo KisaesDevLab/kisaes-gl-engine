@@ -23,6 +23,9 @@ const ENVELOPE_MAX_BYTES = 64 * 1024;
 const MANIFEST_MAX_BYTES = 256 * 1024 * 1024;
 /** Hard cap on the declared plaintext of one archive (parts + files). */
 export const ARCHIVE_MAX_PLAINTEXT_BYTES = 64 * 1024 * 1024 * 1024;
+/** Hard cap on zip entries, checked before the envelope is read (a central directory is attacker-controlled). */
+export const ARCHIVE_MAX_ENTRIES = 1_000_000;
+const SOURCE_NAME_MAX = 255;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA_RE = /^[0-9a-f]{64}$/;
 const TABLE_RE = /^[a-z_][a-z0-9_]*$/;
@@ -76,6 +79,8 @@ export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): Archi
   if (!isObject(schema) || !Number.isInteger(schema['version'])) throw corrupt('manifest schema');
   const source = raw['source'];
   if (!isObject(source) || typeof source['tenantId'] !== 'string' || !UUID_RE.test(source['tenantId']) || typeof source['name'] !== 'string') throw corrupt('manifest source');
+  // The name becomes the restored tenant's label: bounded, printable, no control characters.
+  if (source['name'].length > SOURCE_NAME_MAX || /[\u0000-\u001f\u007f]/.test(source['name'])) throw corrupt('manifest source.name');
   const options = raw['options'];
   if (!isObject(options) || typeof options['includeAttachments'] !== 'boolean' || typeof options['includeAudit'] !== 'boolean') throw corrupt('manifest options');
   const host = raw['host'];
@@ -128,6 +133,7 @@ export class ArchiveReader {
    */
   static async open(filePath: string, passphrase: string): Promise<ArchiveReader> {
     const list = await openArchiveZip(filePath);
+    if (list.length > ARCHIVE_MAX_ENTRIES) throw new ArchiveError('ARCHIVE_TOO_LARGE', 'The archive holds more entries than this engine accepts.');
     const entries = new Map<string, ZipEntry>();
     for (const e of list) {
       if (entries.has(e.name)) throw corrupt('duplicate entry');

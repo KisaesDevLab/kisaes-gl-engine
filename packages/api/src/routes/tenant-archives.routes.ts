@@ -55,7 +55,7 @@ const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => {
       const dir = importsDir();
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       cb(null, dir);
     },
     filename: (_req, _file, cb) => cb(null, `${crypto.randomUUID()}.upload.zip`),
@@ -66,7 +66,7 @@ const upload = multer({
 export const tenantArchivesRouter = Router();
 tenantArchivesRouter.use(authenticate);
 
-tenantArchivesRouter.get('/jobs/:jobId', describe({
+tenantArchivesRouter.get('/jobs/:jobId', requireSessionAuth, describe({
   summary: 'State of an archive export or import job',
   tags: ['tenant-archives'],
   params: z.object({ jobId: z.string().uuid() }),
@@ -106,7 +106,7 @@ async function locateArchive(fileName: string, req: Parameters<typeof assertTena
   throw AppError.notFound('Archive not found');
 }
 
-tenantArchivesRouter.get('/:fileName/download', describe({
+tenantArchivesRouter.get('/:fileName/download', requireSessionAuth, describe({
   summary: 'Download an archive file (encrypted bytes; writes no audit row)',
   tags: ['tenant-archives'],
   params: z.object({ fileName: z.string().regex(FILE_NAME_RE) }),
@@ -134,7 +134,8 @@ tenantArchivesRouter.get('/:fileName/download', describe({
 });
 
 export const importArchiveSchema = z.object({
-  passphrase: z.string().min(1).max(1024),
+  /** An export never accepts fewer than 12 characters (PASSPHRASE_TOO_WEAK), so a shorter one cannot open any archive. */
+  passphrase: z.string().min(12).max(1024),
   name: z.string().trim().min(1).max(255).optional(),
   scratch: z.boolean().optional(),
   /** Desktop (CL_LAN != 1) only: absolute path of a local .zip / .clbackup, opened read-only. */
@@ -144,16 +145,21 @@ export const importArchiveSchema = z.object({
 /** Validates a desktop path import: absolute, a regular file, .zip/.clbackup, within the size cap. */
 export function resolveImportPath(raw: string): string {
   if (!path.isAbsolute(raw) || raw.includes('\0')) throw AppError.badRequest('path must be an absolute path to an archive file', 'VALIDATION_ERROR');
+  // UNC and other network paths are refused: the engine never opens a share on the owner's behalf.
+  if (/^[\\/]{2}/.test(raw)) throw AppError.badRequest('Network paths are not supported; copy the archive to a local disk first.', 'VALIDATION_ERROR');
+  // One answer for a missing file, a directory, a symlink elsewhere or a wrong extension: nothing about the file system leaks.
+  const notFound = () => AppError.badRequest('The archive file was not found or is not a .zip/.clbackup file.', 'FILE_NOT_FOUND');
   let real: string;
   try {
     real = fs.realpathSync(raw);
   } catch {
-    throw AppError.badRequest('The archive file was not found.', 'FILE_NOT_FOUND');
+    throw notFound();
   }
   const ext = path.extname(real).toLowerCase();
-  if (ext !== '.zip' && ext !== '.clbackup') throw AppError.badRequest('The archive must be a .zip or .clbackup file.', 'VALIDATION_ERROR');
+  if (ext !== '.zip' && ext !== '.clbackup') throw notFound();
+  if (/^[\\/]{2}/.test(real)) throw notFound();
   const stat = fs.statSync(real);
-  if (!stat.isFile()) throw AppError.badRequest('The archive file was not found.', 'FILE_NOT_FOUND');
+  if (!stat.isFile()) throw notFound();
   if (stat.size > ARCHIVE_MAX_FILE_BYTES) throw new ArchiveError('ARCHIVE_TOO_LARGE', 'The archive exceeds the size this engine accepts.');
   return real;
 }
@@ -195,6 +201,9 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   if (uploaded) {
     filePath = uploaded.path;
     temporary = true;
+    try {
+      fs.chmodSync(filePath, 0o600); // owner-only while it waits for its job (no-op on Windows)
+    } catch { /* best effort */ }
   } else if (body.path !== undefined) {
     if (!isDesktop() || desktopProfile().lan) {
       throw AppError.badRequest('Path imports are only available on the desktop without LAN mode; upload the file instead.', 'VALIDATION_ERROR');

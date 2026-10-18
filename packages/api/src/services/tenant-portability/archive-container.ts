@@ -38,7 +38,7 @@ export class ArchiveZipWriter {
   private failure: Error | null = null;
 
   constructor(filePath: string, private readonly key: Buffer, private readonly archiveId: string) {
-    this.out = fs.createWriteStream(filePath, { flags: 'wx' });
+    this.out = fs.createWriteStream(filePath, { flags: 'wx', mode: 0o600 });
     this.done = new Promise<void>((resolve, reject) => {
       this.out.on('close', resolve);
       this.out.on('error', reject);
