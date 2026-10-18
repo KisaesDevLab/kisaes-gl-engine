@@ -19,8 +19,8 @@ import { ArchiveError } from './errors.js';
 import { TYPE_CHANGES, isAllowedWidening, type PortabilityPlan, type TablePlan } from './plan.js';
 import type { ManifestTable } from './format.js';
 
-/** Schema version (applied migration count) at which E5 landed; older non-additive migrations need no entry. */
-export const COMPAT_BASELINE_SCHEMA_VERSION = 218;
+/** Schema version (applied migration count) at which E5 landed (0218 included); older non-additive migrations need no entry. */
+export const COMPAT_BASELINE_SCHEMA_VERSION = 219;
 
 /** Archive tables that no longer exist live: skipped with a warning when the archive predates `droppedIn`. */
 export const DROPPED_TABLES: Record<string, { droppedIn: number }> = {};
