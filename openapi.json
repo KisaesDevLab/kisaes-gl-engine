@@ -62292,6 +62292,9 @@
                     "maxLength": 255,
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "systemAccountsOnly": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
