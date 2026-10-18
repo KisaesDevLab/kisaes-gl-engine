@@ -24,12 +24,14 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
 import multer from 'multer';
 import { z } from 'zod';
 import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
+import { errorSummaryForLog } from '../utils/log-safe.js';
 import { isDesktop, desktopProfile } from '../desktop/profile.js';
 import { getJob, jobView, startJob } from '../services/tenant-portability/jobs.js';
 import { archiveDir } from '../services/tenant-portability/export.service.js';
@@ -115,7 +117,20 @@ tenantArchivesRouter.get('/:fileName/download', describe({
   res.setHeader('Content-Length', String(stat.size));
   res.setHeader('Content-Disposition', `attachment; filename="${path.basename(full)}"`);
   res.setHeader('Cache-Control', 'no-store');
-  fs.createReadStream(full).pipe(res);
+  // pipeline (not pipe): a read error or a client that goes away destroys
+  // both sides and closes the file descriptor instead of leaving a stream
+  // open and the response hanging (M4).
+  const source = fs.createReadStream(full);
+  await new Promise<void>((resolve) => {
+    pipeline(source, res, (err) => {
+      if (err && !res.headersSent) {
+        res.status(500).json({ error: { message: 'The archive could not be read.', code: 'ARCHIVE_READ_FAILED' } });
+      } else if (err) {
+        console.warn(`[tenant-archive] download aborted: ${errorSummaryForLog(err)}`);
+      }
+      resolve();
+    });
+  });
 });
 
 export const importArchiveSchema = z.object({

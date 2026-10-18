@@ -212,6 +212,16 @@ describe('lifecycle routes', () => {
     expect(dl.status).toBe(200);
     expect(dl.headers.get('content-type')).toBe('application/zip');
     expect(dl.bytes!.equals(fs.readFileSync(archivePath))).toBe(true);
+    // M4: a client that goes away mid-download leaves no open stream or hanging response behind; the next download works.
+    await new Promise<void>((resolve) => {
+      const aborted = http.get({ host: '127.0.0.1', port, path: `/api/v1/tenant-archives/${fileName}/download`, headers: { 'x-cl-token': TOKEN, authorization: `Bearer ${ownerJwt}` } }, (res) => {
+        res.once('data', () => { aborted.destroy(); resolve(); });
+      });
+      aborted.on('error', () => resolve());
+    });
+    const again = await call('GET', `/api/v1/tenant-archives/${fileName}/download`);
+    expect(again.status).toBe(200);
+    expect(again.bytes!.equals(fs.readFileSync(archivePath))).toBe(true);
     expect((await call('GET', `/api/v1/tenant-archives/${crypto.randomUUID()}.zip/download`)).status).toBe(404);
     // An encoded separator never matches a file; the workspace fence refuses it first (409), a company session gets 404.
     expect([404, 409]).toContain((await call('GET', `/api/v1/tenant-archives/..%2Fx.zip/download`)).status);
