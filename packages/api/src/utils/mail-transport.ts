@@ -22,7 +22,10 @@
  *     OFFLINE_UNAVAILABLE);
  *   - the password comes from the session store (U-13): when `auth.user`
  *     is set, `auth.pass` is replaced by the `smtp.password` session
- *     secret, and 400 SMTP_NOT_CONFIGURED is thrown when there is none.
+ *     secret, but only for the mail server the owner named with it
+ *     (host and port, case-insensitive); 400 SMTP_NOT_CONFIGURED when
+ *     there is no session password, 400 SMTP_HOST_MISMATCH for any other
+ *     server, so a stored setting cannot redirect the password elsewhere.
  *     Whatever the caller passed (a stored companies.smtp_pass, a test
  *     body) is never used, so the engine never needs the password at rest.
  */
@@ -84,6 +87,12 @@ function guard<A extends unknown[]>(
   };
 }
 
+/** Host names compared after trimming, lowercasing, and removing brackets and a trailing dot. */
+function sameHost(a: string, b: string): boolean {
+  const norm = (h: string) => h.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  return norm(a) === norm(b);
+}
+
 export function createMailTransport(opts: MailTransportOptions) {
   if (!isDesktop()) return nodemailer.createTransport(opts);
 
@@ -93,7 +102,8 @@ export function createMailTransport(opts: MailTransportOptions) {
   // required, `none` = clear text (only to a local-network host; checked
   // when it was set and again here).
   const session = getSessionSmtpServer();
-  if (session && session.host.toLowerCase() === target.host.toLowerCase() && session.port === target.port) {
+  const isSessionServer = session !== null && sameHost(session.host, target.host) && session.port === target.port;
+  if (session && isSessionServer) {
     if (session.security === 'tls') opts = { ...opts, secure: true, requireTLS: false };
     else if (session.security === 'starttls') opts = { ...opts, secure: false, requireTLS: true };
     else if (isLocalNetworkHost(target.host)) opts = { ...opts, secure: false, requireTLS: false };
@@ -104,6 +114,12 @@ export function createMailTransport(opts: MailTransportOptions) {
       throw AppError.badRequest(
         'The email password for this session has not been provided. Enter it in Settings → Email.',
         'SMTP_NOT_CONFIGURED',
+      );
+    }
+    if (!isSessionServer) {
+      throw AppError.badRequest(
+        'The email password for this session was provided for a different mail server. Enter it again in Settings → Email.',
+        'SMTP_HOST_MISMATCH',
       );
     }
     opts = { ...opts, auth: { user: opts.auth.user, pass } };

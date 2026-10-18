@@ -32,9 +32,10 @@ beforeEach(() => { mocks.created.length = 0; secrets.clearAllSessionSecrets(); }
 afterEach(() => { secrets.clearAllSessionSecrets(); _resetDesktopProfileForTests(); });
 
 describe('desktop mail transport password', () => {
-  it('replaces a stored password with the session secret', async () => {
+  it('replaces a stored password with the session secret, for the named server only', async () => {
     desktop();
     secrets.setSmtpPassword('session-pw-123456');
+    await secrets.allowSmtpEgress({ host: 'SMTP.example.test.', port: 587 });
     const t = createMailTransport({ host: 'smtp.example.test', port: 587, auth: { user: 'owner', pass: 'db-stored-pw' } });
     expect(mocks.created[0]!['auth']).toEqual({ user: 'owner', pass: 'session-pw-123456' });
     expect(JSON.stringify(mocks.created[0])).not.toContain('db-stored-pw');
@@ -48,6 +49,22 @@ describe('desktop mail transport password', () => {
     expect(mocks.created).toHaveLength(0);
   });
 
+  it('refuses to send the password to a server other than the one named with it', async () => {
+    desktop();
+    secrets.setSmtpPassword('session-pw-123456');
+    await secrets.allowSmtpEgress({ host: '10.0.0.25', port: 587 });
+    for (const target of [{ host: 'smtp.evil.test', port: 587 }, { host: '10.0.0.25', port: 465 }, { host: '10.0.0.26', port: 587 }]) {
+      expect(() => createMailTransport({ ...target, auth: { user: 'owner', pass: 'db-stored-pw' } }))
+        .toThrow(expect.objectContaining({ statusCode: 400, code: 'SMTP_HOST_MISMATCH' }));
+    }
+    expect(mocks.created).toHaveLength(0);
+    // No server named at all: the password is not handed to anyone.
+    secrets.deleteSessionSecret('smtp.password');
+    secrets.setSmtpPassword('session-pw-123456');
+    expect(() => createMailTransport({ host: '10.0.0.25', port: 587, auth: { user: 'owner' } }))
+      .toThrow(expect.objectContaining({ code: 'SMTP_HOST_MISMATCH' }));
+  });
+
   it('a server without a login needs no password', () => {
     desktop();
     createMailTransport({ host: '127.0.0.1', port: 1025 });
@@ -56,9 +73,10 @@ describe('desktop mail transport password', () => {
     expect(mocks.created).toHaveLength(2);
   });
 
-  it('clearing the session password takes effect on the next transport', () => {
+  it('clearing the session password takes effect on the next transport', async () => {
     desktop();
     secrets.setSmtpPassword('session-pw-123456');
+    await secrets.allowSmtpEgress({ host: 'smtp.example.test', port: 587 });
     createMailTransport({ host: 'smtp.example.test', port: 587, auth: { user: 'owner' } });
     secrets.deleteSessionSecret('smtp.password');
     expect(() => createMailTransport({ host: 'smtp.example.test', port: 587, auth: { user: 'owner' } }))
