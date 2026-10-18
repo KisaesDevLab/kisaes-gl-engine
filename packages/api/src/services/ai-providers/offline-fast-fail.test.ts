@@ -17,6 +17,7 @@ import type { AddressInfo } from 'node:net';
 import { loadDesktopProfile, _resetDesktopProfileForTests } from '../../desktop/profile.js';
 import { OfflineUnavailableError, _resetConnectivityForTests } from '../../utils/offline.js';
 import { encrypt } from '../../utils/encryption.js';
+import * as secrets from '../../desktop/session-secrets.js';
 import { AnthropicProvider } from './anthropic.provider.js';
 import { cloudAiTarget, executeWithFallback, getProvider } from './index.js';
 
@@ -30,7 +31,15 @@ function desktop(offline?: 'auto' | 'on' | 'off') {
     CL_DATA_DIR: path.join(os.tmpdir(), 'cl-ai-offline-test'),
     ...(offline ? { CL_OFFLINE: offline } : {}),
   });
+  // E6: desktop keys are per session; the stored columns in config() only
+  // matter for the server-mode block.
+  secrets.setAnthropicKey('sk-ant-test-not-a-real-key');
+  secrets.setOpenaiKey('sk-test-not-a-real-key');
 }
+
+afterEach(() => {
+  secrets.clearAllSessionSecrets();
+});
 
 function config(extra: Record<string, unknown> = {}) {
   return {

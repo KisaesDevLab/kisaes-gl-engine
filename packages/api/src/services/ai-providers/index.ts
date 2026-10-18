@@ -15,6 +15,9 @@ import { routeFor, routerOn, routerProvider, type RouterSettings } from './vibe-
 import { isDesktop } from '../../desktop/profile.js';
 import { getSessionSecret, getSessionOllamaModel } from '../../desktop/session-secrets.js';
 import { AppError } from '../../utils/errors.js';
+import { scrubSecrets } from '../../utils/secret-scrubber.js';
+import { log } from '../../utils/logger.js';
+import { sanitize } from '../pii-sanitizer.service.js';
 import {
   classifyNetworkError,
   ensureOnline,
@@ -213,12 +216,48 @@ export function cloudAiTarget(providerName: string): NetTarget | null {
 }
 
 /**
+ * Scrub a provider error in place (OpenAI echoes `sk-…` in 401 bodies,
+ * SDKs quote request headers): the message is what reaches logs,
+ * ai_jobs.error_message and HTTP responses. Returns the same error.
+ */
+export function scrubProviderError<T>(err: T): T {
+  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    try {
+      (err as { message: string }).message = scrubSecrets((err as { message: string }).message);
+    } catch {
+      /* read-only message: leave it */
+    }
+  }
+  return err;
+}
+
+/**
+ * Desktop egress backstop (E6): text sent to a CLOUD provider gets the
+ * strict PII sanitizer on top of whatever the caller applied, so a caller
+ * that forgot (or chose a looser mode) cannot send bank, card or tax
+ * numbers off the machine. Images cannot be text-redacted; the cloud-vision
+ * gate (assertCloudVisionAllowed) is the control there. Only the detected
+ * PII types are logged, at debug.
+ */
+function desktopStrictText<T extends CompletionParams>(provider: string, params: T): T {
+  const sys = sanitize(params.systemPrompt, 'strict');
+  const user = sanitize(params.userPrompt, 'strict');
+  const detected = [...new Set([...sys.detected, ...user.detected])];
+  if (detected.length > 0) {
+    log.debug({ component: 'ai-egress', event: 'strict_backstop_redacted', provider, types: detected });
+  }
+  return { ...params, systemPrompt: sys.text, userPrompt: user.text };
+}
+
+/**
  * Desktop only: before every call, check that the provider's host is
  * reachable (utils/offline.ts: 1.5 s probe, CL_OFFLINE=on fails at once),
  * and map network errors from the SDK to OfflineUnavailableError (HTTP 503
  * OFFLINE_UNAVAILABLE). Covers complete(), completeWithImage() (the OCR
  * and vision callers that bypass executeWithFallback), testConnection()
- * and listModels().
+ * and listModels(). Text leaving through complete()/completeWithImage()
+ * passes the strict sanitizer backstop, and every error is scrubbed of
+ * secrets before it leaves the wrapper.
  */
 class OfflineAwareProvider implements AiProvider {
   readonly name: string;
@@ -239,14 +278,14 @@ class OfflineAwareProvider implements AiProvider {
     try {
       return await fn();
     } catch (err) {
-      throw classifyNetworkError(err, this.feature) ?? err;
+      throw classifyNetworkError(err, this.feature) ?? scrubProviderError(err);
     }
   }
   complete(params: CompletionParams): Promise<CompletionResult> {
-    return this.guard(() => this.inner.complete(params));
+    return this.guard(() => this.inner.complete(desktopStrictText(this.name, params)));
   }
   completeWithImage(params: import('./ai-provider.interface.js').VisionParams): Promise<CompletionResult> {
-    return this.guard(() => this.inner.completeWithImage(params));
+    return this.guard(() => this.inner.completeWithImage(desktopStrictText(this.name, params)));
   }
   testConnection(signal?: AbortSignal) {
     return this.guard(() => this.inner.testConnection(signal));
@@ -355,6 +394,9 @@ async function attempt(
   // cascade-cancel attempt N's still-running fetch (which never happens
   // — attempts are serial — but the contract is clearer this way).
   const { signal, cancel } = abortableTimeout(timeoutMs);
+  // Desktop cloud providers are wrapped (buildDirect -> OfflineAwareProvider),
+  // which applies the strict sanitizer backstop to the prompts of this call
+  // and scrubs secrets from any error it raises.
   try {
     const inner = retryWithBackoff(
       () => provider.complete({ ...params, signal }),
@@ -428,7 +470,9 @@ export async function executeWithFallback(
     if (err instanceof TimeoutError) {
       errors.push(`${providerName}: timeout after ${timeoutMs}ms`);
     } else {
-      errors.push(`${providerName}: ${err?.message ?? String(err)}`);
+      // Never let a provider echo a credential into the aggregate message,
+      // the warn line, ai_jobs.error_message or an HTTP response.
+      errors.push(`${providerName}: ${scrubSecrets(String(err?.message ?? err))}`);
     }
   };
 

@@ -8928,6 +8928,18 @@
                       "null"
                     ]
                   },
+                  "monthlyTokenLimit": {
+                    "anyOf": [
+                      {
+                        "maximum": 2000000000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ocrModel": {
                     "type": [
                       "string",
@@ -11370,6 +11382,144 @@
             "ApiKeyAuth": []
           }
         ],
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/api/v1/ai/usage/summary": {
+      "get": {
+        "operationId": "get_api_v1_ai_usage_summary",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "rows": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "calls": {
+                            "type": "integer"
+                          },
+                          "inputTokens": {
+                            "type": "integer"
+                          },
+                          "jobType": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "outputTokens": {
+                            "type": "integer"
+                          },
+                          "provider": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "model",
+                          "jobType",
+                          "calls",
+                          "inputTokens",
+                          "outputTokens"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "totals": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "calls": {
+                          "type": "integer"
+                        },
+                        "inputTokens": {
+                          "type": "integer"
+                        },
+                        "outputTokens": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "calls",
+                        "inputTokens",
+                        "outputTokens"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to",
+                    "totals",
+                    "rows"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "AI token usage per provider, model and job type for a date range",
         "tags": [
           "ai"
         ]

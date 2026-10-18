@@ -16,6 +16,7 @@ import { AppError } from '../utils/errors.js';
 import * as aiConsent from './ai-consent.service.js';
 import { resolveTaskParams, resolveTaskExec } from './ai-task-options.js';
 import { isDesktop } from '../desktop/profile.js';
+import { scrubSecrets } from '../utils/secret-scrubber.js';
 import { hasSessionSecret } from '../desktop/session-secrets.js';
 import { assertDesktopProvider, desktopFallbackChain } from './ai-providers/index.js';
 
@@ -116,6 +117,8 @@ export async function getConfig() {
     maxConcurrentJobs: config.maxConcurrentJobs || 5,
     trackUsage: config.trackUsage ?? true,
     monthlyBudgetLimit: config.monthlyBudgetLimit ? parseFloat(config.monthlyBudgetLimit) : null,
+    // Integer token cap per tenant per month (U-29, migration 0218); null = off.
+    monthlyTokenLimit: config.monthlyTokenLimit ?? null,
     // Per-function settings overlay (AI_FUNCTION_SETTINGS_PLAN.md).
     // Stored as JSONB keyed by function; absent/null keys resolve to the
     // built-in default at call time via resolveTaskParams/resolveTaskExec.
@@ -338,6 +341,7 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   if (input.maxConcurrentJobs !== undefined) updates.maxConcurrentJobs = input.maxConcurrentJobs;
   if (input.trackUsage !== undefined) updates.trackUsage = input.trackUsage;
   if (input.monthlyBudgetLimit !== undefined) updates.monthlyBudgetLimit = input.monthlyBudgetLimit != null ? String(input.monthlyBudgetLimit) : null;
+  if (input.monthlyTokenLimit !== undefined) updates.monthlyTokenLimit = input.monthlyTokenLimit;
   // Chat support
   if (input.chatSupportEnabled !== undefined) updates.chatSupportEnabled = input.chatSupportEnabled;
   if (input.chatProvider !== undefined) updates.chatProvider = input.chatProvider || null;
@@ -547,7 +551,7 @@ export async function listProviderModels(providerName: string): Promise<Provider
     }
   } catch (err) {
     if (err instanceof AppError && err.code === 'AI_PROVIDER_NOT_AVAILABLE') throw err;
-    return { models: [], error: err instanceof Error ? err.message : String(err) };
+    return { models: [], error: scrubSecrets(err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -625,7 +629,7 @@ export async function testProvider(
   } catch (err) {
     // Desktop: a provider outside the allowlist is a typed 400, not a test result.
     if (err instanceof AppError && err.code === 'AI_PROVIDER_NOT_AVAILABLE') throw err;
-    const result: TestProviderResult = { success: false, error: err instanceof Error ? err.message : String(err) };
+    const result: TestProviderResult = { success: false, error: scrubSecrets(err instanceof Error ? err.message : String(err)) };
     await recordTestResult(providerName, result);
     return result;
   }
@@ -655,10 +659,12 @@ export async function testProvider(
     const isAbort = err instanceof TimeoutError || name.toLowerCase().includes('abort');
     result = isAbort
       ? { success: false, error: `Test timed out after ${TEST_PROVIDER_TIMEOUT_MS / 1000}s — provider did not respond` }
-      : { success: false, error: err instanceof Error ? err.message : String(err) };
+      : { success: false, error: scrubSecrets(err instanceof Error ? err.message : String(err)) };
   } finally {
     cancel();
   }
+  // A provider's own `{ success:false, error }` may quote the request too.
+  if (result.error) result = { ...result, error: scrubSecrets(result.error) };
   await recordTestResult(providerName, result);
   return result;
 }
@@ -901,7 +907,7 @@ export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResul
     const detail = Array.isArray(e.providerErrors) && e.providerErrors.length > 0
       ? e.providerErrors.join('; ')
       : (e.message ?? String(err));
-    return { success: false, provider, durationMs, error: detail };
+    return { success: false, provider, durationMs, error: scrubSecrets(detail) };
   }
 }
 

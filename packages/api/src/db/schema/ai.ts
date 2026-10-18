@@ -71,6 +71,9 @@ export const aiConfig = pgTable('ai_config', {
   // Cost tracking
   trackUsage: boolean('track_usage').default(true),
   monthlyBudgetLimit: decimal('monthly_budget_limit', { precision: 19, scale: 4 }),
+  // Integer token cap per tenant per month (migration 0218). Checked in
+  // ai-orchestrator.createJob beside the dollar cap; NULL = no cap.
+  monthlyTokenLimit: integer('monthly_token_limit'),
   // Chat support feature (see AI_CHAT_SUPPORT_PLAN.md §2.1)
   chatSupportEnabled: boolean('chat_support_enabled').default(false),
   chatProvider: varchar('chat_provider', { length: 30 }),

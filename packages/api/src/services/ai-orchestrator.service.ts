@@ -12,6 +12,10 @@ import { executeWithFallback, getProvider } from './ai-providers/index.js';
 import type { CompletionParams, CompletionResult, VisionParams } from './ai-providers/index.js';
 import { pickMode, type SanitizerMode } from './pii-sanitizer.service.js';
 import { checkTenantTaskConsent, type AiTaskKey } from './ai-consent.service.js';
+import { scrubSecrets } from '../utils/secret-scrubber.js';
+
+// Per-call usage for API responses (U-09) lives in ai-providers/usage.ts.
+export { usageOf, type AiUsage } from './ai-providers/usage.js';
 
 export type AiTask =
   | 'categorize'
@@ -207,6 +211,27 @@ export async function createJob(
     }
   }
 
+  // Integer token cap (U-29), beside the dollar cap and per tenant the same
+  // way. Tokens are exact end to end (ai_usage_log.input_tokens/output_tokens),
+  // so this limit needs no float arithmetic. 0 means "no AI calls".
+  if (config.monthlyTokenLimit != null) {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const used = await db.execute(sql`
+      SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0)::bigint AS total
+      FROM ai_usage_log
+      WHERE tenant_id = ${tenantId} AND created_at >= ${monthStart.toISOString()}
+    `);
+    const usedTokens = Number((used.rows[0] as { total?: string | number } | undefined)?.total ?? 0);
+    if (usedTokens >= config.monthlyTokenLimit) {
+      throw AppError.badRequest(
+        'Monthly AI token limit reached. Raise the limit in the AI settings to continue.',
+        'ai_token_limit_exceeded',
+      );
+    }
+  }
+
   const [job] = await db.insert(aiJobs).values({
     tenantId,
     jobType,
@@ -270,7 +295,7 @@ export async function setStage(jobId: string, stage: string, patch: Record<strin
 // unlike failJob(), which re-queues to 'pending' until maxRetries.
 export async function failJobTerminal(jobId: string, error: string) {
   await db.update(aiJobs)
-    .set({ status: 'failed', stage: 'failed', errorMessage: error, processingCompletedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'failed', stage: 'failed', errorMessage: scrubSecrets(error), processingCompletedAt: new Date(), updatedAt: new Date() })
     .where(eq(aiJobs.id, jobId));
 }
 
@@ -366,7 +391,7 @@ export async function failJob(jobId: string, error: string, usage?: FailJobUsage
   // Mark every failure terminal, matching failJobTerminal (statement pipeline).
   // retryCount is still incremented for observability.
   await db.update(aiJobs).set({
-    status: 'failed', retryCount, errorMessage: error,
+    status: 'failed', retryCount, errorMessage: scrubSecrets(error),
     processingCompletedAt: new Date(), updatedAt: new Date(),
   }).where(eq(aiJobs.id, jobId));
 
@@ -419,6 +444,57 @@ export async function executeCompletion(tenantId: string, params: CompletionPara
     const rawConfig = await aiConfigService.getRawConfig();
     return executeWithFallback(params, rawConfig, config.fallbackChain);
   });
+}
+
+export interface UsageSummaryRow {
+  provider: string;
+  model: string;
+  jobType: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface UsageSummaryByRange {
+  from: string;
+  to: string;
+  totals: { calls: number; inputTokens: number; outputTokens: number };
+  rows: UsageSummaryRow[];
+}
+
+/**
+ * Integer token totals per provider/model/job type between `from`
+ * (inclusive) and `to` (exclusive) for one tenant — no dollar figures (the
+ * cost estimate is a float; see getUsageSummary). Ordered for stable output.
+ */
+export async function getUsageSummaryByRange(tenantId: string, from: Date, to: Date): Promise<UsageSummaryByRange> {
+  const rows = await db.execute(sql`
+    SELECT provider, model, job_type,
+      COUNT(*)::bigint AS calls,
+      COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+      COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+    FROM ai_usage_log
+    WHERE tenant_id = ${tenantId} AND created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}
+    GROUP BY provider, model, job_type
+    ORDER BY provider, model, job_type
+  `);
+  const out: UsageSummaryRow[] = [];
+  const totals = { calls: 0, inputTokens: 0, outputTokens: 0 };
+  for (const r of rows.rows as Array<Record<string, string | number | null>>) {
+    const row: UsageSummaryRow = {
+      provider: String(r['provider']),
+      model: String(r['model']),
+      jobType: String(r['job_type']),
+      calls: Number(r['calls'] ?? 0),
+      inputTokens: Number(r['input_tokens'] ?? 0),
+      outputTokens: Number(r['output_tokens'] ?? 0),
+    };
+    totals.calls += row.calls;
+    totals.inputTokens += row.inputTokens;
+    totals.outputTokens += row.outputTokens;
+    out.push(row);
+  }
+  return { from: from.toISOString(), to: to.toISOString(), totals, rows: out };
 }
 
 export async function getUsageSummary(tenantId: string, months: number = 1) {
