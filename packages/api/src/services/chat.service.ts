@@ -15,6 +15,7 @@ import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import { MYBOOKS_TASK_CLASSES } from './ai-providers/vibe-router.provider.js';
 import { executeWithFallback, getProvider } from './ai-providers/index.js';
+import { assertWithinUsageCaps } from './ai-usage-caps.js';
 import type { CompletionParams, CompletionResult } from './ai-providers/index.js';
 import { getKnowledgePrompt } from './chat-knowledge.service.js';
 
@@ -288,6 +289,9 @@ export async function sendMessage(
     ...(chatParams.thinking ? { thinking: chatParams.thinking } : {}),
     ...(chatParams.numCtx ? { numCtx: chatParams.numCtx } : {}),
   };
+
+  // Chat does not go through createJob: apply the monthly caps here.
+  await assertWithinUsageCaps(tenantId);
 
   let result: CompletionResult;
   try {

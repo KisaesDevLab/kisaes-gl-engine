@@ -30,6 +30,10 @@ export interface CompletionParams {
   taskClass?: string;
   userId?: string | null;
   companyRef?: string | null;
+  /** Tenant the call is billed to. Desktop mode checks the monthly caps
+   *  inside executeWithFallback / completeVisionWithFallback against it;
+   *  absent = the sum over every tenant (never more permissive). */
+  tenantId?: string | null;
 }
 
 export interface VisionParams extends CompletionParams {

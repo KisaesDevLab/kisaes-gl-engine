@@ -9,11 +9,16 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, aiConfig, aiJobs, aiUsageLog, auditLog, companies } from '../db/schema/index.js';
 import { registerSecret, _resetSecretScrubberForTests } from '../utils/secret-scrubber.js';
 import * as orchestrator from './ai-orchestrator.service.js';
+import { assertWithinUsageCaps } from './ai-usage-caps.js';
+import { executeWithFallback } from './ai-providers/index.js';
+import { completeVisionWithFallback } from './ai-vision-fallback.js';
+import { loadDesktopProfile, _resetDesktopProfileForTests } from '../desktop/profile.js';
 import * as aiConsent from './ai-consent.service.js';
 import * as companyService from './company.service.js';
 
@@ -87,6 +92,35 @@ describe('monthly token cap (U-29)', () => {
     const other = await orchestrator.createJob(otherTenantId, 'token_cap_probe', 'test', crypto.randomUUID());
     expect(other.tenantId).toBe(otherTenantId);
     await db.delete(aiJobs).where(eq(aiJobs.tenantId, otherTenantId));
+  });
+
+  it('assertWithinUsageCaps: per tenant, or the sum over every tenant for a null tenant', async () => {
+    await setConfig({ monthlyTokenLimit: 100 });
+    await usage(tenantId, 60, 0);
+    await usage(otherTenantId, 60, 0);
+    await expect(assertWithinUsageCaps(tenantId)).resolves.toBeUndefined();
+    await expect(assertWithinUsageCaps(null)).rejects.toMatchObject({ code: 'ai_token_limit_exceeded' });
+    await setConfig({ monthlyBudgetLimit: '0.5000' });
+    await db.insert(aiUsageLog).values({ tenantId, provider: 'anthropic', model: 'm', jobType: 'categorize', inputTokens: 1, outputTokens: 1, estimatedCost: '0.6000' });
+    await expect(assertWithinUsageCaps(tenantId)).rejects.toThrow(/Monthly AI budget exceeded/);
+    await expect(assertWithinUsageCaps(otherTenantId)).resolves.toBeUndefined();
+  });
+
+  it('desktop: executeWithFallback and completeVisionWithFallback apply the cap before any provider', async () => {
+    loadDesktopProfile({ CL_MODE: 'desktop', CL_TOKEN: 'cap_' + 'c'.repeat(44), CL_BIND: '127.0.0.1:0', CL_DATA_DIR: os.tmpdir(), CL_OFFLINE: 'off' });
+    try {
+      await setConfig({ monthlyTokenLimit: 10 });
+      await usage(tenantId, 10, 0);
+      const params = { systemPrompt: 's', userPrompt: 'u', tenantId };
+      await expect(executeWithFallback(params, {}, ['ollama'], 'ollama')).rejects.toMatchObject({ code: 'ai_token_limit_exceeded' });
+      await expect(completeVisionWithFallback({ ...params, images: [] }, { rawConfig: {}, ocrProvider: 'ollama', primaryModel: 'llava' }))
+        .rejects.toMatchObject({ code: 'ai_token_limit_exceeded' });
+      // Another tenant is still allowed through to the providers (fails later for want of a server, not on the cap).
+      const other = await executeWithFallback({ ...params, tenantId: otherTenantId }, { ollamaBaseUrl: 'http://127.0.0.1:1' }, ['ollama'], 'ollama').catch((e: { code?: string }) => e);
+      expect((other as { code?: string }).code).toBe('ai_all_providers_failed');
+    } finally {
+      _resetDesktopProfileForTests();
+    }
   });
 
   it('a null limit means no cap; 0 means no calls', async () => {

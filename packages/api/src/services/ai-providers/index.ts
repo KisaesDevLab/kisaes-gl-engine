@@ -428,6 +428,9 @@ export async function executeWithFallback(
 ): Promise<CompletionResult> {
   const errors: string[] = [];
   const timeoutMs = options?.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+  // Desktop: the monthly caps are checked here too, so a caller that does
+  // not go through createJob cannot bypass them (review M3).
+  if (isDesktop()) await (await import('../ai-usage-caps.js')).assertWithinUsageCaps(params.tenantId ?? null);
   // Desktop: only the allowlisted providers are ever tried (Q-33). A
   // preferred provider outside it is recorded, not attempted.
   if (isDesktop() && preferredProvider && !isDesktopProvider(preferredProvider)) {

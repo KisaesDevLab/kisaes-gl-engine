@@ -14,4 +14,6 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'ai-desktop-v1',
   /** SMTP password from the session store (U-13, E6). */
   'smtp-session-v1',
+  /** Integer monthly token cap, applied to every AI call in desktop mode (U-29, E6). */
+  'ai-token-cap-v1',
 ];

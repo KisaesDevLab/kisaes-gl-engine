@@ -13,6 +13,7 @@ import type { CompletionParams, CompletionResult, VisionParams } from './ai-prov
 import { pickMode, type SanitizerMode } from './pii-sanitizer.service.js';
 import { checkTenantTaskConsent, type AiTaskKey } from './ai-consent.service.js';
 import { scrubSecrets } from '../utils/secret-scrubber.js';
+import { assertWithinUsageCaps } from './ai-usage-caps.js';
 
 // Per-call usage for API responses (U-09) lives in ai-providers/usage.ts.
 export { usageOf, type AiUsage } from './ai-providers/usage.js';
@@ -190,47 +191,12 @@ export async function createJob(
     }
   }
 
-  // Budget check. NOTE: this limit is enforced PER-TENANT — the SUM below is
-  // scoped to `tenant_id = ${tenantId}`, so each tenant may independently
-  // spend up to `monthlyBudgetLimit`. This is deliberate (a self-hosted
-  // appliance is usually single-tenant, and a shared install shouldn't let one
-  // busy tenant starve the others). It is NOT a global cap across all tenants.
-  if (config.monthlyBudgetLimit != null) {
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-
-    const usage = await db.execute(sql`
-      SELECT COALESCE(SUM(estimated_cost::numeric), 0) as total
-      FROM ai_usage_log
-      WHERE tenant_id = ${tenantId} AND created_at >= ${monthStart.toISOString()}
-    `);
-    const currentCost = parseFloat((usage.rows[0] as any)?.total || '0');
-    if (currentCost >= config.monthlyBudgetLimit) {
-      throw AppError.badRequest('Monthly AI budget exceeded. Contact your administrator to increase the limit.');
-    }
-  }
-
-  // Integer token cap (U-29), beside the dollar cap and per tenant the same
-  // way. Tokens are exact end to end (ai_usage_log.input_tokens/output_tokens),
-  // so this limit needs no float arithmetic. 0 means "no AI calls".
-  if (config.monthlyTokenLimit != null) {
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    const used = await db.execute(sql`
-      SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0)::bigint AS total
-      FROM ai_usage_log
-      WHERE tenant_id = ${tenantId} AND created_at >= ${monthStart.toISOString()}
-    `);
-    const usedTokens = Number((used.rows[0] as { total?: string | number } | undefined)?.total ?? 0);
-    if (usedTokens >= config.monthlyTokenLimit) {
-      throw AppError.badRequest(
-        'Monthly AI token limit reached. Raise the limit in the AI settings to continue.',
-        'ai_token_limit_exceeded',
-      );
-    }
-  }
+  // Budget checks (dollar estimate and integer token cap, U-29). Enforced
+  // PER-TENANT: each tenant may independently spend up to the limits; this
+  // is deliberate (a self-hosted appliance is usually single-tenant, and a
+  // shared install shouldn't let one busy tenant starve the others). The
+  // same function guards the callers that do not go through createJob.
+  await assertWithinUsageCaps(tenantId);
 
   const [job] = await db.insert(aiJobs).values({
     tenantId,

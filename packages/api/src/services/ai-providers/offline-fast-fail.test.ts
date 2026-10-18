@@ -8,7 +8,9 @@
 // fail with OFFLINE_UNAVAILABLE within 2 s, while a local Ollama (a
 // loopback stub here) keeps working. No request leaves the machine.
 
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { db } from '../../db/index.js';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
@@ -97,6 +99,13 @@ describe('server mode is unchanged', () => {
   });
 });
 
+// The desktop cap check (review M3) reads ai_config and ai_usage_log before
+// answering; the engine's pool is warm by then (authenticate ran), so warm
+// it here too instead of timing a cold connection.
+beforeAll(async () => {
+  await db.execute(sql`select 1`);
+});
+
 describe('desktop, CL_OFFLINE=on', () => {
   it('cloud calls fail at once with OFFLINE_UNAVAILABLE and open no socket', async () => {
     desktop('on');
@@ -104,7 +113,9 @@ describe('desktop, CL_OFFLINE=on', () => {
     const { ms, err } = await timed(() => executeWithFallback(PARAMS, config(), ['anthropic', 'openai'], 'anthropic', 'claude-x'));
     expect(err).toBeInstanceOf(OfflineUnavailableError);
     expect((err as OfflineUnavailableError).feature).toBe('ai:anthropic');
-    expect(ms).toBeLessThan(200);
+    // Two local database reads (the monthly-cap check, review M3) precede
+    // the offline answer; no probe, no socket.
+    expect(ms).toBeLessThan(1_000);
     expect(connect).not.toHaveBeenCalled();
   });
 
