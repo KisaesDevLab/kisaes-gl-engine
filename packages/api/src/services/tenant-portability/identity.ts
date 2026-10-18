@@ -72,6 +72,13 @@ export interface IdentityResult {
   created: string[];
   /** Archived user ids (lower-cased) skipped because the caller may not create users. */
   skipped: string[];
+  /**
+   * The ids under which skipped users appear in the imported rows: the
+   * archived id, or a fresh one when that id belongs to an existing user,
+   * so a dangling reference never lands on someone else. No users row
+   * exists for them.
+   */
+  ghostIds: string[];
   /** row_to_json of every matched user before the import (verified unchanged afterwards). */
   matchedRowsBefore: Record<string, string>;
   accessRows: number;
@@ -145,7 +152,7 @@ export async function userRowJson(client: ArchiveClient, userId: string): Promis
 /** Runs the identity step inside the import transaction. */
 export async function applyIdentity(client: ArchiveClient, input: IdentityInput): Promise<IdentityResult> {
   const { idMap, newTenantId, workspaceTenantId } = input;
-  const result: IdentityResult = { matched: [], created: [], skipped: [], matchedRowsBefore: {}, accessRows: 0, callerAccessAdded: false };
+  const result: IdentityResult = { matched: [], created: [], skipped: [], ghostIds: [], matchedRowsBefore: {}, accessRows: 0, callerAccessAdded: false };
   // Validate every identity row before the first insert (fail closed).
   for (const u of input.users) validateArchivedUser(u);
   for (const a of input.access) validateArchivedAccess(a);
@@ -164,6 +171,8 @@ export async function applyIdentity(client: ArchiveClient, input: IdentityInput)
       // Only a super admin creates users; everyone else restores the books and grants themselves.
       skippedUsers.add(u.id.toLowerCase());
       result.skipped.push(u.id.toLowerCase());
+      const takenByOther = (await client.query('SELECT 1 FROM users WHERE id = $1', [u.id])).rows.length > 0;
+      result.ghostIds.push(takenByOther ? idMap.fresh(u.id) : u.id.toLowerCase());
       continue;
     }
     // Unmatched: the archived id, unless it belongs to a different email.

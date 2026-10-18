@@ -45,6 +45,96 @@ export interface VerifyInput {
   archivedAccess: ArchivedAccess[];
   /** The archived tenants row (after substitution), parsed. */
   archivedTenant: Record<string, unknown>;
+  /** The importing caller: with the matched and created users, the only user ids a row may reference. */
+  callerUserId: string;
+}
+
+/**
+ * Rule M1: after the inserts, every reference column of every imported row
+ * must point inside the new tenant's scope, at an allowed identity, at a
+ * global row, or be NULL. An archive is substituted token by token, so a
+ * uuid it carries that the id map does not know lands verbatim; without
+ * this check a crafted archive could make the new books point at another
+ * tenant's rows (a tag, a contact, a transaction) and read them through
+ * every scoped query that joins on the id.
+ */
+export async function verifyReferences(
+  client: ArchiveClient,
+  plan: PortabilityPlan,
+  newTenantId: string,
+  allowedUserIds: string[],
+  skipped: Set<string>,
+): Promise<Failure[]> {
+  const failures: Failure[] = [];
+  const users = allowedUserIds.map((u) => u.toLowerCase());
+  const count = async (sql: string, params: unknown[]): Promise<number> =>
+    Number(((await client.query(sql, params)).rows[0] as { n: number }).n);
+  for (const t of plan.tables) {
+    if (skipped.has(t.name)) continue;
+    const scope = scopeSql(plan, t.name, 'a');
+    const checks: Array<{ column: string; sql: string; params: unknown[] }> = [];
+    const outside = (column: string, target: string, refColumn: string, isArray: boolean, extra = ''): string => {
+      const ref = isArray ? 'u.v' : `a."${column}"`;
+      const from = isArray ? `FROM "${t.name}" a CROSS JOIN LATERAL unnest(a."${column}") u(v)` : `FROM "${t.name}" a`;
+      return `SELECT count(*)::int AS n ${from} WHERE ${scope} AND ${ref} IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM "${target}" x WHERE x."${refColumn}" = ${ref} AND (${scopeSql(plan, target, 'x')}${extra}))`;
+    };
+    const notIn = (column: string, list: string, isArray: boolean): string => {
+      const ref = isArray ? 'u.v' : `a."${column}"`;
+      const from = isArray ? `FROM "${t.name}" a CROSS JOIN LATERAL unnest(a."${column}") u(v)` : `FROM "${t.name}" a`;
+      return `SELECT count(*)::int AS n ${from} WHERE ${scope} AND ${ref} IS NOT NULL AND ${ref} <> ALL(${list}::uuid[])`;
+    };
+    const notNull = (column: string): string => `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${scope} AND a."${column}" IS NOT NULL`;
+    const seen = new Set<string>();
+    // Real foreign keys (single column).
+    for (const fk of plan.live.fks.filter((f) => f.table === t.name && f.columns.length === 1)) {
+      const column = fk.columns[0]!;
+      if (column === 'tenant_id') {
+        checks.push({ column, sql: `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${scope} AND a."tenant_id" <> $1`, params: [newTenantId] });
+        seen.add(column);
+        continue;
+      }
+      const bucket = plan.bucketOf.get(fk.refTable);
+      if (bucket === 'tenant' || bucket === 'child') {
+        checks.push({ column, sql: outside(column, fk.refTable, fk.refColumns[0]!, false), params: [newTenantId] });
+      } else if (fk.refTable === 'users') {
+        checks.push({ column, sql: notIn(column, '$2', false), params: [newTenantId, users] });
+      } else if (fk.refTable === 'tenants') {
+        checks.push({ column, sql: `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${scope} AND a."${column}" IS NOT NULL AND a."${column}" <> $1`, params: [newTenantId] });
+      } else if (bucket === 'excluded') {
+        checks.push({ column, sql: notNull(column), params: [newTenantId] });
+      }
+      // global: the FK itself guarantees the row exists.
+      seen.add(column);
+    }
+    // Classified soft references.
+    for (const s of t.softRefs) {
+      if (seen.has(s.column)) continue;
+      const target = s.cls.includes(':') ? s.cls.slice(s.cls.indexOf(':') + 1) : null;
+      if (s.cls.startsWith('tenant-ref:')) {
+        checks.push({ column: s.column, sql: outside(s.column, target!, 'id', s.isArray), params: [newTenantId] });
+      } else if (s.cls.startsWith('mixed-ref:')) {
+        checks.push({ column: s.column, sql: outside(s.column, target!, 'id', s.isArray, ' OR x."tenant_id" IS NULL'), params: [newTenantId] });
+      } else if (s.cls.startsWith('global-ref:') && target !== 'null') {
+        const ref = s.isArray ? 'u.v' : `a."${s.column}"`;
+        const from = s.isArray ? `FROM "${t.name}" a CROSS JOIN LATERAL unnest(a."${s.column}") u(v)` : `FROM "${t.name}" a`;
+        checks.push({ column: s.column, sql: `SELECT count(*)::int AS n ${from} WHERE ${scope} AND ${ref} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "${target}" x WHERE x."id" = ${ref})`, params: [newTenantId] });
+      } else if (s.cls === 'global-ref:null' || s.cls.startsWith('excluded-ref:')) {
+        checks.push({ column: s.column, sql: notNull(s.column), params: [newTenantId] });
+      } else if (s.cls === 'identity') {
+        checks.push({ column: s.column, sql: notIn(s.column, '$2', s.isArray), params: [newTenantId, users] });
+      }
+      // polymorphic / opaque: no single target table; every engine lookup of them is tenant-scoped.
+    }
+    if (t.columns.some((c) => c.name === 'tenant_id') && !seen.has('tenant_id')) {
+      checks.push({ column: 'tenant_id', sql: `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${scope} AND a."tenant_id" <> $1`, params: [newTenantId] });
+    }
+    for (const c of checks) {
+      const n = await count(c.sql, c.params);
+      if (n > 0) failures.push({ check: 'reference', table: `${t.name}.${c.column}`, actual: n });
+    }
+  }
+  return failures;
 }
 
 export interface VerificationSummary {
@@ -131,6 +221,10 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
   if (tb.totals.debit !== manifest.trialBalance.totals.debit || tb.totals.credit !== manifest.trialBalance.totals.credit) failures.push({ check: 'trialBalanceTotals' });
   const unbalanced = await countUnbalancedTransactions(client, newTenantId);
   if (unbalanced !== manifest.unbalancedTransactions) failures.push({ check: 'unbalancedTransactions', expected: manifest.unbalancedTransactions, actual: unbalanced });
+
+  // c2. References (M1): every imported row points inside the new scope, at an allowed user or a global row.
+  failures.push(...await verifyReferences(client, plan, newTenantId,
+    [...input.identity.matched, ...input.identity.created, ...input.identity.ghostIds, input.callerUserId], skippedTables));
 
   // d. Files.
   for (const f of input.files) {

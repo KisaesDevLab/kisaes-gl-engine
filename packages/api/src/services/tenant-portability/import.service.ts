@@ -228,7 +228,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         const mt = tablesInOrder[i]!;
         const t = plan.byName.get(mt.name)!;
         step(`insert:${mt.name}`, 25 + Math.round((i / tablesInOrder.length) * 45));
-        await insertTable(client, reader, plan, t, mt, compat, idMap, newTenantId, unresolved, files, { uploadDir, providerFor }, written, deferred);
+        await insertTable(client, reader, plan, t, mt, compat, idMap, newTenantId, unresolved, files, { uploadDir, providerFor }, written, deferred, identity.skipped.length > 0);
       }
       for (const [col, n] of files.notBundled) warnings.push(`FILE_NOT_BUNDLED:${col}:${n}`);
       for (const d of deferred) {
@@ -252,7 +252,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       const verification = await verifyImport({
         client, plan, manifest, compat, idMap, newTenantId,
         files: written.map((f): WrittenFile => ({ table: f.table, column: f.column, rowId: f.rowId, sha256: f.sha256, readBack: f.readBack })),
-        identity, archivedUsers, archivedAccess, archivedTenant,
+        identity, archivedUsers, archivedAccess, archivedTenant, callerUserId: options.callerUserId,
       });
       warnings.push(...verification.warnings);
 
@@ -325,6 +325,7 @@ async function insertTable(
   fileCtx: { uploadDir: string; providerFor: () => Promise<StorageProvider> },
   written: PendingFile[],
   deferred: Array<{ table: string; column: string; id: string; value: string }>,
+  usersSkipped: boolean,
 ): Promise<void> {
   const tc = compat.tables.find((c) => c.table === mt.name)!;
   const archiveCols = new Set(mt.columns.map(([c]) => c));
@@ -346,16 +347,31 @@ async function insertTable(
   let inserted = 0;
   const flush = async () => {
     if (batch.length === 0) return;
-    const r = await client.query(sql, [`[${batch.join(',')}]`]);
+    let r: { rowCount: number | null };
+    try {
+      r = await client.query(sql, [`[${batch.join(',')}]`]);
+    } catch (err) {
+      // A row that belongs to a user this caller could not create (a NOT NULL
+      // FK to users) cannot be restored without creating the user: say so
+      // instead of surfacing the constraint error.
+      const pgErr = err as { code?: string; constraint?: string };
+      if (usersSkipped && pgErr.code === '23503' && /user/.test(pgErr.constraint ?? '')) {
+        throw new ArchiveError('IMPORT_NEEDS_SUPER_ADMIN', `The archive holds rows of users this import could not create (${mt.name}); the owner must restore it.`, { table: mt.name });
+      }
+      throw err;
+    }
     inserted += r.rowCount ?? 0;
     if ((r.rowCount ?? 0) !== batch.length) throw new ArchiveError('ARCHIVE_VERIFY_FAILED', 'Row count mismatch during insert.', { table: mt.name });
     batch = [];
     batchBytes = 0;
   };
+  const hasTenantId = archiveCols.has('tenant_id') && t.columns.some((c) => c.name === 'tenant_id');
   for await (const raw of reader.lines(tablePartName(mt.name))) {
     let line = idMap.substitute(raw);
     const oldPk = t.pkColumn && mt.pk === 'uuid' ? pkOfLine(raw, t.pkColumn) : null;
     const newPk = oldPk ? idMap.get(oldPk)! : null;
+    // Every row belongs to the new tenant, whatever the archive line says (M1).
+    if (hasTenantId) line = rewriteField(line, 'tenant_id', JSON.stringify(newTenantId));
     for (const c of globalCols) {
       const v = fieldString(line, c);
       if (v && unresolved.has(v.toLowerCase())) line = rewriteField(line, c, 'null');

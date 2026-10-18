@@ -27,7 +27,7 @@ import { _importTestHooks, runImport, sweepImportPending } from './import.servic
 import { computeTenantFingerprint, computeTrialBalance, fingerprintDiff } from './fingerprint.js';
 import { ENVELOPE_ENTRY, MANIFEST_ENTRY, tablePartName, zipEntryName, type ArchiveManifest } from './format.js';
 import { buildPortabilityPlan, scopeSql, type PortabilityPlan } from './plan.js';
-import { IdMap } from './remap.js';
+import { IdMap, digestFor } from './remap.js';
 import { applyArchiveSession, withArchiveConnection } from './session.js';
 
 const PASS = 'round trip passphrase 2026!';
@@ -42,6 +42,8 @@ interface Seed {
   tenantId: string;
   ownerId: string;
   lanUserId: string;
+  /** A readonly user with access and no row references (skipped-user cases). */
+  extraUserId: string;
   callerId: string;
   c1: string;
   c2: string;
@@ -90,6 +92,8 @@ async function seedTenant(): Promise<Seed> {
   const lanUserId = await insertUser(tenantId, `RT-Lan-${stamp}-${tenantId.slice(0, 4)}@Example.test`.toLowerCase(), { display_name: 'LAN', role: 'bookkeeper' });
   const callerId = await insertUser(tenantId, `rt-caller-${stamp}-${tenantId.slice(0, 4)}@example.test`, { display_name: 'Caller', is_super_admin: true });
   await q(`INSERT INTO user_tenant_access (user_id, tenant_id, role) VALUES ($1, $2, 'owner'), ($3, $2, 'bookkeeper')`, [ownerId, tenantId, lanUserId]);
+  const extraUserId = await insertUser(tenantId, `rt-extra-${stamp}-${tenantId.slice(0, 4)}@example.test`, { display_name: 'Extra', role: 'readonly' });
+  await q(`INSERT INTO user_tenant_access (user_id, tenant_id, role) VALUES ($1, $2, 'readonly')`, [extraUserId, tenantId]);
   const [c1] = await q<{ id: string }>(`INSERT INTO companies (tenant_id, business_name, entity_type, setup_complete, lock_date, smtp_pass, remote_backup_config, logo_url, check_settings)
     VALUES ($1, 'RT Co One', 'llc', true, '2025-12-31', 'SMTP-CANARY-${stamp}', $2::jsonb, $3, $4::jsonb) RETURNING id`,
   [tenantId, JSON.stringify({ token: `REMOTE-CANARY-${stamp}` }), `/uploads/logos/rt-logo-${stamp}.png`, JSON.stringify({ format: 'voucher', defaultBankAccountId: null, routingNumber: '011000015' })]);
@@ -182,7 +186,7 @@ async function seedTenant(): Promise<Seed> {
   await q(`INSERT INTO audit_log (tenant_id, user_id, action, entity_type, entity_id, after_data) VALUES ($1, $2, 'update', 'company', $3, to_jsonb($4::text))`,
     [tenantId, ownerId, c1!.id, JSON.stringify({ smtp_pass: `AUDIT-CANARY-H-${stamp}`, business_name: 'RT Co One', stripe: { secretKeyEncrypted: `AUDIT-CANARY-I-${stamp}` } })]);
   return {
-    tenantId, ownerId, lanUserId, callerId, c1: c1!.id, c2: c2!.id, cash, sales, ar, customer: customer!.id, vendor: vendor!.id,
+    tenantId, ownerId, lanUserId, extraUserId, callerId, c1: c1!.id, c2: c2!.id, cash, sales, ar, customer: customer!.id, vendor: vendor!.id,
     invoice, draft, attachmentIds, signatureId, signatureBytes, logoName: `rt-logo-${stamp}.png`, logoBytes, reconciliationId: rec!.id,
   };
 }
@@ -357,12 +361,12 @@ describe('export', () => {
     };
     // The main archive was exported by a super admin: the owner and the LAN user travel with their hashes.
     const main = await usersOf(exported.path!);
-    expect(main.map((u) => u.password_hash.startsWith('$2b$12$'))).toEqual([true, true]);
+    expect(main.map((u) => u.password_hash.startsWith('$2b$12$'))).toEqual([true, true, true]);
     // An owner (not a super admin) gets placeholders for everyone, and the manifest says so.
     const byOwner = await runExport(seed.tenantId, seed.ownerId, { passphrase: PASS });
-    expect(byOwner.warnings).toEqual(['PASSWORD_HASHES_OMITTED:2']);
+    expect(byOwner.warnings).toEqual(['PASSWORD_HASHES_OMITTED:3']);
     const owned = await usersOf(byOwner.path!);
-    expect(owned.map((u) => u.password_hash)).toEqual([ARCHIVE_PASSWORD_PLACEHOLDER, ARCHIVE_PASSWORD_PLACEHOLDER]);
+    expect(owned.map((u) => u.password_hash)).toEqual([ARCHIVE_PASSWORD_PLACEHOLDER, ARCHIVE_PASSWORD_PLACEHOLDER, ARCHIVE_PASSWORD_PLACEHOLDER]);
     expect(fs.readFileSync(byOwner.path!).includes('$2b$12$')).toBe(false);
     // A super admin user with access never travels with a hash, even for a super admin caller.
     await q(`INSERT INTO user_tenant_access (user_id, tenant_id, role) VALUES ($1, $2, 'owner')`, [seed.callerId, seed.tenantId]);
@@ -432,7 +436,7 @@ describe('import', () => {
   it('creates a new tenant whose rows, content digests, trial balance and files verify', async () => {
     expect(imported.tenantId).not.toBe(seed.tenantId);
     expect(imported.name).toMatch(/^RT .* \(restored \d{4}-\d{2}-\d{2} \d{2}:\d{2}\)$/);
-    expect(imported.verification).toMatchObject({ contentEqual: true, trialBalanceEqual: true, files: 5, identity: { matched: 2, created: 0 } });
+    expect(imported.verification).toMatchObject({ contentEqual: true, trialBalanceEqual: true, files: 5, identity: { matched: 3, created: 0 } });
     expect(imported.warnings).toEqual([]);
     expect(imported.host).toEqual({ app: 'ClientLedger', kind: 'backup' });
     const reader = await ArchiveReader.open(exported.path!, PASS);
@@ -494,6 +498,7 @@ describe('import', () => {
       { user_id: seed.lanUserId, role: 'bookkeeper' },
       { user_id: seed.ownerId, role: 'owner' },
       { user_id: seed.callerId, role: 'owner' },
+      { user_id: seed.extraUserId, role: 'readonly' },
     ].sort((a, b) => a.role.localeCompare(b.role) || a.user_id.localeCompare(b.user_id)));
     const after = await q<{ j: string }>(`SELECT row_to_json(u)::text AS j FROM users u WHERE id = $1`, [seed.lanUserId]);
     expect(after[0]!.j).toBe(before[0]!.j);
@@ -539,7 +544,7 @@ describe('import', () => {
     }
     sourceIds.add(seed.tenantId);
     expect(sourceIds.size).toBeGreaterThan(40);
-    const allowed = new Set<string>([seed.ownerId, seed.lanUserId, seed.callerId]);
+    const allowed = new Set<string>([seed.ownerId, seed.lanUserId, seed.callerId, seed.extraUserId]);
     for (const [o, n] of idMap.entries()) if (o === n) allowed.add(o);
     const hits: string[] = [];
     for (const t of plan.tables) {
@@ -618,6 +623,59 @@ describe('verification catches wrong-but-balanced data (C)', () => {
       await client.query(`UPDATE journal_lines SET company_id = $2 WHERE tenant_id = $1 AND company_id = $3 AND debit = '7.0000'`, [newTenantId, cos[1]!.id, cos[0]!.id]);
     });
   }, 120_000);
+
+  it("a reference to another tenant's row or to a user outside the archive is a reference failure (M1)", async () => {
+    // A tag of the SOURCE tenant (live, not in the new scope) pointed at by a soft reference without an FK.
+    const [sourceTag] = await q<{ id: string }>(`SELECT id FROM tags WHERE tenant_id = $1`, [seed.tenantId]);
+    let failures: Array<{ check: string; table?: string }> = [];
+    _importTestHooks.beforeVerify = async ({ client, newTenantId }) => {
+      await client.query(`UPDATE transaction_tags SET tag_id = $2 WHERE tenant_id = $1`, [newTenantId, sourceTag!.id]);
+    };
+    const err = await expectCode(runImport({ filePath: exported.path!, passphrase: PASS, callerUserId: seed.ownerId }), 'ARCHIVE_VERIFY_FAILED');
+    failures = (err.details as { failures: Array<{ check: string; table?: string }> }).failures;
+    expect(failures).toContainEqual(expect.objectContaining({ check: 'reference', table: 'transaction_tags.tag_id' }));
+    // An identity reference to a user the archive did not name.
+    const stranger = await insertUser(seed.tenantId, `rt-stranger-${stamp}@example.test`, { display_name: 'Stranger' });
+    _importTestHooks.beforeVerify = async ({ client, newTenantId }) => {
+      await client.query(`UPDATE budgets SET created_by = $2 WHERE tenant_id = $1`, [newTenantId, stranger]);
+    };
+    const err2 = await expectCode(runImport({ filePath: exported.path!, passphrase: PASS, callerUserId: seed.ownerId }), 'ARCHIVE_VERIFY_FAILED');
+    failures = (err2.details as { failures: Array<{ check: string; table?: string }> }).failures;
+    expect(failures).toContainEqual(expect.objectContaining({ check: 'reference', table: 'budgets.created_by' }));
+    expect(JSON.stringify(err2.details)).not.toContain(stranger);
+  }, 180_000);
+
+  it('rows carry the new tenant id whatever the archive line says (M1)', async () => {
+    // Craft transaction_tags lines under a foreign tenant id and recompute the hashes as an attacker would.
+    const reader = await ArchiveReader.open(exported.path!, PASS);
+    const mt = reader.manifest.tables.find((t) => t.name === 'transaction_tags')!;
+    const foreign = crypto.randomUUID();
+    const lines: string[] = [];
+    for await (const l of reader.lines(tablePartName('transaction_tags'))) lines.push(l.replace(seed.tenantId, foreign));
+    expect(lines.length).toBe(2);
+    expect(lines.join('\n')).toContain(foreign);
+    const body = Buffer.from(lines.map((l) => `${l}\n`).join(''), 'utf8');
+    const digest = digestFor(mt.pk);
+    for (const l of lines) digest.add(l);
+    const crafted = path.join(archiveRoot, 'foreign-tenant-id.zip');
+    await rewriteArchive(exported.path!, crafted, (m) => {
+      const t = m.tables.find((x) => x.name === 'transaction_tags')!;
+      t.sha256 = crypto.createHash('sha256').update(body).digest('hex');
+      t.bytes = body.length;
+      t.contentDigest = digest.hex();
+    }, [{ part: tablePartName('transaction_tags'), bytes: body }], [zipEntryName(tablePartName('transaction_tags'))]);
+    let underNew = -1;
+    let underForeign = -1;
+    _importTestHooks.beforeVerify = async ({ client, newTenantId }) => {
+      underNew = Number(((await client.query('SELECT count(*)::int AS n FROM transaction_tags WHERE tenant_id = $1', [newTenantId])).rows[0] as { n: number }).n);
+      underForeign = Number(((await client.query('SELECT count(*)::int AS n FROM transaction_tags WHERE tenant_id = $1', [foreign])).rows[0] as { n: number }).n);
+    };
+    // The rewrite lands every row under the new tenant; the attacker's digest then no longer matches the books.
+    await expectCode(runImport({ filePath: crafted, passphrase: PASS, callerUserId: seed.ownerId }), 'ARCHIVE_VERIFY_FAILED');
+    expect(underNew).toBe(2);
+    expect(underForeign).toBe(0);
+    expect(await q(`SELECT 1 FROM transaction_tags WHERE tenant_id = $1`, [foreign])).toEqual([]);
+  }, 180_000);
 });
 
 describe('integrity and compatibility (D)', () => {
@@ -707,17 +765,36 @@ describe('identity on a different install (G)', () => {
     for await (const l of reader.lines('data/_users.ndjson')) userLines.push(l);
     const accessLines: string[] = [];
     for await (const l of reader.lines('data/_user_tenant_access.ndjson')) accessLines.push(l);
-    /** Rewrites the users part (mapLine) and renames user ids in the access part (idRename: old -> new). */
+    // The only table rows that reference the LAN user: its check-signature grant. A consistent
+    // archive renames the id there too (M1 refuses a row that points at a user the archive did not name).
+    const grantPart = tablePartName('check_signature_users');
+    const grantTable = reader.manifest.tables.find((t) => t.name === 'check_signature_users')!;
+    const grantLines: string[] = [];
+    for await (const l of reader.lines(grantPart)) grantLines.push(l);
+    /** Rewrites the users part (mapLine) and renames user ids in the access and grant parts (idRename: old -> new). */
     const rewriteUsers = async (dst: string, mapLine: (u: Record<string, unknown>) => Record<string, unknown>, idRename: Record<string, string>) => {
+      const rename = (l: string) => l.replace(/[0-9a-f-]{36}/g, (m) => idRename[m] ?? m);
       const users = userLines.map((l) => JSON.stringify(mapLine(JSON.parse(l) as Record<string, unknown>)));
-      const access = accessLines.map((l) => l.replace(/[0-9a-f-]{36}/g, (m) => idRename[m] ?? m));
-      const parts = {
+      const access = accessLines.map(rename);
+      const grants = grantLines.map(rename);
+      const parts: Record<string, Buffer> = {
         'data/_users.ndjson': Buffer.from(users.map((l) => `${l}\n`).join(''), 'utf8'),
         'data/_user_tenant_access.ndjson': Buffer.from(access.map((l) => `${l}\n`).join(''), 'utf8'),
+        [grantPart]: Buffer.from(grants.map((l) => `${l}\n`).join(''), 'utf8'),
       };
+      const grantDigest = digestFor(grantTable.pk);
+      for (const l of grants) grantDigest.add(l);
       await rewriteArchive(exported.path!, dst, (m) => {
         for (const [name, body] of Object.entries(parts)) {
-          m.identity.parts[name] = { sha256: crypto.createHash('sha256').update(body).digest('hex'), bytes: body.length, rows: body.length === 0 ? 0 : body.toString().trim().split('\n').length };
+          const sha256 = crypto.createHash('sha256').update(body).digest('hex');
+          if (name === grantPart) {
+            const t = m.tables.find((x) => x.name === 'check_signature_users')!;
+            t.sha256 = sha256;
+            t.bytes = body.length;
+            t.contentDigest = grantDigest.hex();
+          } else {
+            m.identity.parts[name] = { sha256, bytes: body.length, rows: body.length === 0 ? 0 : body.toString().trim().split('\n').length };
+          }
         }
       }, []);
       const d2 = await unzipper.Open.file(dst);
@@ -741,7 +818,7 @@ describe('identity on a different install (G)', () => {
     await rewriteUsers(archiveA, (u) => (u['id'] === seed.lanUserId ? { ...u, id: freshId, email, is_active: true } : u), { [seed.lanUserId]: freshId });
     const rA = await runImport({ filePath: archiveA, passphrase: PASS, callerUserId: seed.callerId });
     createdTenants.push(rA.tenantId);
-    expect(rA.verification.identity).toEqual({ matched: 1, created: 1 }); // the owner matched; the caller had no access row in the archive
+    expect(rA.verification.identity).toEqual({ matched: 2, created: 1 }); // the owner and the extra user matched; the caller had no access row in the archive
     const created = await q<{ id: string; tenant_id: string; is_super_admin: boolean; tfa_enabled: boolean; is_active: boolean; preferred_login_method: string }>(
       `SELECT id, tenant_id, is_super_admin, tfa_enabled, is_active, preferred_login_method FROM users WHERE email = $1`, [email]);
     createdUsers.push(freshId);
@@ -762,19 +839,28 @@ describe('identity on a different install (G)', () => {
     const access = await q<{ user_id: string; role: string }>(`SELECT user_id, role FROM user_tenant_access WHERE tenant_id = $1 AND role = 'bookkeeper'`, [rB.tenantId]);
     expect(access).toEqual([{ user_id: collided[0]!.id, role: 'bookkeeper' }]);
 
-    // H1: a caller who is not a super admin never creates users; the unmatched
-    // user and its access row are skipped, matched users keep their rows.
+    // H1: a caller who is not a super admin never creates users. The archived
+    // extra (readonly) user is renamed to an email nobody has: skipped, with
+    // its access row; the matched owner and LAN user keep their rows.
     const email3 = `rt-skipped-${stamp}@example.test`;
     const skippedId = crypto.randomUUID();
     const archiveC = path.join(archiveRoot, 'skipped-user.zip');
-    await rewriteUsers(archiveC, (u) => (u['id'] === seed.lanUserId ? { ...u, id: skippedId, email: email3 } : u), { [seed.lanUserId]: skippedId });
+    await rewriteUsers(archiveC, (u) => (u['id'] === seed.extraUserId ? { ...u, id: skippedId, email: email3 } : u), { [seed.extraUserId]: skippedId });
     const rC = await runImport({ filePath: archiveC, passphrase: PASS, callerUserId: seed.ownerId });
     createdTenants.push(rC.tenantId);
-    expect(rC.verification.identity).toEqual({ matched: 1, created: 0 });
+    expect(rC.verification.identity).toEqual({ matched: 2, created: 0 });
     expect(rC.warnings).toContain('USERS_NOT_CREATED:1');
     expect(await q(`SELECT 1 FROM users WHERE email = $1 OR id = $2`, [email3, skippedId])).toHaveLength(0);
     const accessC = await q<{ user_id: string; role: string }>(`SELECT user_id, role FROM user_tenant_access WHERE tenant_id = $1 ORDER BY role`, [rC.tenantId]);
-    expect(accessC).toEqual([{ user_id: seed.ownerId, role: 'owner' }]);
+    expect(accessC).toEqual([{ user_id: seed.lanUserId, role: 'bookkeeper' }, { user_id: seed.ownerId, role: 'owner' }]);
+    // A skipped user who owns rows through a NOT NULL foreign key (the LAN user's signature grant)
+    // cannot be restored by such a caller: a clear refusal, nothing written.
+    const archiveD0 = path.join(archiveRoot, 'skipped-user-fk.zip');
+    const skippedLan = crypto.randomUUID();
+    await rewriteUsers(archiveD0, (u) => (u['id'] === seed.lanUserId ? { ...u, id: skippedLan, email: `rt-skipped-lan-${stamp}@example.test` } : u), { [seed.lanUserId]: skippedLan });
+    const errFk = await expectCode(runImport({ filePath: archiveD0, passphrase: PASS, callerUserId: seed.ownerId }), 'IMPORT_NEEDS_SUPER_ADMIN');
+    expect(errFk.statusCode).toBe(403);
+    expect(await q(`SELECT 1 FROM users WHERE id = $1`, [skippedLan])).toHaveLength(0);
 
     // H1: an archived role or user_type outside the closed lists is refused before any insert.
     for (const [patch, what] of [[{ role: 'superuser' }, 'role'], [{ user_type: 'robot' }, 'user_type']] as const) {

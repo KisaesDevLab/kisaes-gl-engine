@@ -28,6 +28,8 @@ export const ARCHIVE_ERROR_STATUS = {
   SCRATCH_NOT_AVAILABLE: 400,
   SCRATCH_TENANT: 403,
   STALE: 409,
+  /** Rows of the archive belong to users this caller may not create (H1): a super admin must import it. */
+  IMPORT_NEEDS_SUPER_ADMIN: 403,
 } as const;
 
 export type ArchiveErrorCode = keyof typeof ARCHIVE_ERROR_STATUS;
