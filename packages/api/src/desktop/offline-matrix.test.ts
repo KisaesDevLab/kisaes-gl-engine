@@ -57,6 +57,10 @@ async function loadDesktopApp(offline: 'on' | 'auto'): Promise<Loaded> {
   const guard = await import('./egress-guard.js');
   guard.installEgressGuard({ databaseUrl: process.env['DATABASE_URL'], offline: offline === 'on' });
   const { app } = await import('../app.js');
+  // E6: desktop keys are per session (never the ai_config column). The
+  // tests below replace the allowance this opens with their own host.
+  const secrets = await import('./session-secrets.js');
+  secrets.setAnthropicKey('sk-ant-offline-matrix-not-a-key');
   const server = http.createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as AddressInfo).port;
@@ -104,7 +108,6 @@ let savedAi: Record<string, unknown> | null = null;
 async function seed(): Promise<void> {
   const { db } = await import('../db/index.js');
   const { tenants, users, aiConfig } = await import('../db/schema/index.js');
-  const { encrypt } = await import('../utils/encryption.js');
   const [tenant] = await db.insert(tenants).values({ name: 'Offline Matrix', slug: SEED }).returning();
   const [user] = await db.insert(users).values({
     tenantId: tenant!.id,
@@ -125,13 +128,11 @@ async function seed(): Promise<void> {
   savedAi = {
     categorizationProvider: row!.categorizationProvider,
     categorizationModel: row!.categorizationModel,
-    anthropicApiKeyEncrypted: row!.anthropicApiKeyEncrypted,
     fallbackChain: row!.fallbackChain,
   };
   await db.update(aiConfig).set({
     categorizationProvider: 'anthropic',
     categorizationModel: null,
-    anthropicApiKeyEncrypted: encrypt('sk-ant-offline-matrix-not-a-key'),
     fallbackChain: ['anthropic'],
   });
 }
