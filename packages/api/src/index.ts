@@ -70,6 +70,12 @@ function installShutdownHandlers(server: Server): void {
 
     // Stop accepting new HTTP connections; existing ones finish.
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Desktop: the per-session AI keys and SMTP password are memory-only;
+    // drop them (and their egress allowances) before anything else drains.
+    if (isDesktop()) {
+      const { clearAllSessionSecrets } = await import('./desktop/session-secrets.js');
+      clearAllSessionSecrets();
+    }
     // Desktop: stop consuming background jobs (in-flight ones finish, up to
     // IN_PROCESS_WORKER_STOP_MS) and the worker-only schedulers, before the
     // API schedulers, the job queue and the DB pool go away.

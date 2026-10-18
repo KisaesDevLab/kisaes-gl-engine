@@ -17,7 +17,13 @@
  *                     firms, so this writes none of them. 409 once any user
  *                     exists.
  *   GET  /info        mode, queue backend, data dir, DB role, initialized,
- *                     workspaceTenantId.
+ *                     workspaceTenantId, capabilities.
+ *   PUT/GET/DELETE /session-secrets
+ *                     per-session AI keys, Ollama endpoint and SMTP password
+ *                     (desktop/session-secrets.ts). These DO authenticate:
+ *                     the launch token plus a signed-in super admin (the
+ *                     owner). Values are held in memory only and never
+ *                     returned; GET shows presence and a fingerprint.
  */
 
 import { Router } from 'express';
@@ -35,6 +41,10 @@ import { createWorkspaceWithOwner, getWorkspaceTenantId } from '../desktop/works
 import { desktopWarning } from '../desktop/fatal.js';
 import { env } from '../config/env.js';
 import { getCurrentVersion } from '../services/updates.service.js';
+import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
+import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
+import { describe } from '../middleware/describe.js';
+import * as sessionSecrets from '../desktop/session-secrets.js';
 
 export const desktopRouter = Router();
 
@@ -150,5 +160,85 @@ desktopRouter.get('/info', async (_req, res) => {
     dbRole,
     initialized,
     workspaceTenantId,
+    capabilities: [...DESKTOP_CAPABILITIES],
   });
 });
+
+// ─── Session secrets (E6) ───────────────────────────────────────
+//
+// Lengths are capped so an oversize body is a 400 before anything is
+// stored. The schemas are strict: an unknown key is a validation error
+// that names the key, never its value (the error handler echoes Zod
+// issue paths and messages only).
+
+const apiKeySchema = z.object({
+  apiKey: z.string().min(8, 'API key is too short').max(512),
+}).strict();
+
+export const sessionSecretsPutSchema = z.object({
+  ai: z.object({
+    anthropic: apiKeySchema.optional(),
+    openai: apiKeySchema.optional(),
+    ollama: z.object({
+      baseUrl: z.string().trim().min(1).max(512),
+      model: z.string().trim().max(200).optional(),
+    }).strict().optional(),
+  }).strict().optional(),
+  smtp: z.object({
+    password: z.string().min(1).max(512),
+  }).strict().optional(),
+}).strict();
+
+type SessionSecretsPutInput = z.infer<typeof sessionSecretsPutSchema>;
+
+const sessionSecretsResponse = z.record(
+  z.enum(sessionSecrets.SESSION_SECRET_NAMES),
+  z.object({ present: z.boolean(), fingerprint: z.string().optional() }),
+);
+
+const requireOwner = [authenticate, requireSuperAdmin] as const;
+
+desktopRouter.get(
+  '/session-secrets',
+  ...requireOwner,
+  describe({ summary: 'Presence and fingerprint of each session secret (never the value)', response: sessionSecretsResponse }),
+  (_req, res) => {
+    res.json(sessionSecrets.sessionSecretStatus());
+  },
+);
+
+desktopRouter.put(
+  '/session-secrets',
+  ...requireOwner,
+  validate(sessionSecretsPutSchema),
+  describe({ summary: 'Set per-session AI keys, Ollama endpoint and SMTP password (memory only)', response: sessionSecretsResponse }),
+  (req, res) => {
+    const input = req.body as SessionSecretsPutInput;
+    // Validate everything before storing anything, so a bad Ollama URL
+    // does not leave half the body applied.
+    const ollamaBaseUrl = input.ai?.ollama ? sessionSecrets.validateOllamaBaseUrl(input.ai.ollama.baseUrl) : null;
+    if (input.ai?.anthropic) sessionSecrets.setAnthropicKey(input.ai.anthropic.apiKey);
+    if (input.ai?.openai) sessionSecrets.setOpenaiKey(input.ai.openai.apiKey);
+    if (ollamaBaseUrl !== null) sessionSecrets.setOllamaBaseUrl(ollamaBaseUrl, input.ai?.ollama?.model);
+    if (input.smtp) sessionSecrets.setSmtpPassword(input.smtp.password);
+    res.json(sessionSecrets.sessionSecretStatus());
+  },
+);
+
+desktopRouter.delete(
+  '/session-secrets/:name',
+  ...requireOwner,
+  describe({
+    summary: 'Forget one session secret and its egress allowance',
+    params: z.object({ name: z.enum(sessionSecrets.SESSION_SECRET_NAMES) }),
+    response: sessionSecretsResponse,
+  }),
+  (req, res) => {
+    const name = String(req.params['name']);
+    if (!sessionSecrets.isSessionSecretName(name)) {
+      throw AppError.notFound('Unknown session secret name');
+    }
+    sessionSecrets.deleteSessionSecret(name);
+    res.json(sessionSecrets.sessionSecretStatus());
+  },
+);
