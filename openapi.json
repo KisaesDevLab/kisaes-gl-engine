@@ -61489,7 +61489,7 @@
                   },
                   "passphrase": {
                     "maxLength": 1024,
-                    "minLength": 1,
+                    "minLength": 12,
                     "type": "string"
                   },
                   "path": {
