@@ -9,9 +9,9 @@ import { describe, it, expect } from 'vitest';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import {
-  CHUNK_BYTES, EntryDecryptor, EntryEncryptor, NoncePrefixRegistry, KDF_ITERATIONS,
-  createEnvelope, validateEnvelope, openEnvelope, encryptEntryBuffer, decryptEntryBuffer,
-  assertPassphraseStrong, withScrubbedPassphrase,
+  CHUNK_BYTES, EntryDecryptor, EntryEncryptor, NoncePrefixRegistry, KDF_ITERATIONS, SALT_BYTES,
+  createEnvelope, createEnvelopeAsync, validateEnvelope, openEnvelope, openEnvelopeAsync, encryptEntryBuffer, decryptEntryBuffer,
+  deriveArchiveKey, deriveArchiveKeyAsync, assertPassphraseStrong, withScrubbedPassphrase, registerPassphrase, releasePassphrase,
 } from './archive-crypto.js';
 import { scrubSecrets } from '../../utils/secret-scrubber.js';
 import { ArchiveError } from './errors.js';
@@ -239,4 +239,35 @@ describe('passphrase handling', () => {
     });
     expect(scrubSecrets(`passphrase=${canary} ok`)).toContain(canary);
   });
+
+  it('stays scrubbed until the last holder releases it (reference counted, M3)', async () => {
+    const canary = 'shared passphrase 1a2b3c4d';
+    let releaseInner: () => void = () => undefined;
+    const inner = new Promise<void>((r) => { releaseInner = r; });
+    const outer = withScrubbedPassphrase(canary, () => inner);
+    await withScrubbedPassphrase(canary, async () => undefined); // a second, shorter holder comes and goes
+    expect(scrubSecrets(canary)).not.toContain(canary); // the first holder still runs
+    registerPassphrase(canary);
+    releaseInner();
+    await outer;
+    expect(scrubSecrets(canary)).not.toContain(canary); // one explicit holder left
+    releasePassphrase(canary);
+    expect(scrubSecrets(canary)).toContain(canary);
+    releasePassphrase(canary); // over-release is harmless
+    expect(scrubSecrets(canary)).toContain(canary);
+  });
+});
+
+describe('async key derivation (M3)', () => {
+  it('derives the same key as the synchronous path and opens envelopes either way', async () => {
+    const salt = crypto.randomBytes(SALT_BYTES);
+    expect((await deriveArchiveKeyAsync(PASS, salt)).equals(deriveArchiveKey(PASS, salt))).toBe(true);
+    const id = crypto.randomUUID();
+    const a = await createEnvelopeAsync(id, PASS, new NoncePrefixRegistry());
+    expect(openEnvelope(a.envelope, PASS).equals(a.key)).toBe(true);
+    expect((await openEnvelopeAsync(a.envelope, PASS)).equals(a.key)).toBe(true);
+    const s = createEnvelope(id, PASS, new NoncePrefixRegistry());
+    expect((await openEnvelopeAsync(s.envelope, PASS)).equals(s.key)).toBe(true);
+    await expect(openEnvelopeAsync(a.envelope, 'not the passphrase 1')).rejects.toMatchObject({ code: 'ARCHIVE_PASSPHRASE_INVALID' });
+  }, 60_000);
 });

@@ -35,6 +35,8 @@ import { getJob, jobView, startJob } from '../services/tenant-portability/jobs.j
 import { archiveDir } from '../services/tenant-portability/export.service.js';
 import { runImport } from '../services/tenant-portability/import.service.js';
 import { ArchiveError } from '../services/tenant-portability/errors.js';
+import { registerPassphrase, releasePassphrase } from '../services/tenant-portability/archive-crypto.js';
+import { assertPassphraseAttemptAllowed, clearPassphraseFailures, recordPassphraseFailure } from '../services/tenant-portability/passphrase-limiter.js';
 import { getTenantCreationEligibility } from '../services/auth.service.js';
 import { assertTenantOwner } from './tenants.routes.js';
 
@@ -187,11 +189,26 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
     throw AppError.badRequest('Upload the archive as `file` or give its `path`.', 'VALIDATION_ERROR');
   }
   const { userId } = req;
+  // M3: a user who keeps guessing waits before any key derivation runs.
+  try {
+    assertPassphraseAttemptAllowed(userId);
+  } catch (err) {
+    if (temporary) fs.rmSync(filePath, { force: true });
+    throw err;
+  }
+  // The passphrase is scrubbed from logs from here until the job ends.
+  registerPassphrase(body.passphrase);
   const job = startJob('import', null, userId, async (progress) => {
     try {
-      return await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId }, progress);
+      const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId }, progress);
+      clearPassphraseFailures(userId);
+      return result;
+    } catch (err) {
+      if (err instanceof ArchiveError && err.code === 'ARCHIVE_PASSPHRASE_INVALID') recordPassphraseFailure(userId);
+      throw err;
     } finally {
       if (temporary) fs.rmSync(filePath, { force: true });
+      releasePassphrase(body.passphrase);
     }
   }, temporary ? [filePath] : []);
   res.status(202).json({ jobId: job.id });

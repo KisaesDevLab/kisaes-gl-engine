@@ -261,6 +261,19 @@ describe('lifecycle routes', () => {
     const failed = await waitJob(wrong.json['jobId'] as string);
     expect(failed['status']).toBe('failed');
     expect((failed['error'] as { code: string }).code).toBe('ARCHIVE_PASSPHRASE_INVALID');
+    // M3: after the limit of wrong passphrases the user waits (429), before any key derivation; a right one clears it.
+    const limiter = await import('../services/tenant-portability/passphrase-limiter.js');
+    limiter._configurePassphraseLimiterForTests({ maxFailures: 2 });
+    try {
+      const wrong2 = await call('POST', '/api/v1/tenant-archives/import', { path: archivePath, passphrase: 'wrong passphrase 456' });
+      expect((await waitJob(wrong2.json['jobId'] as string))['status']).toBe('failed');
+      const limited = await call('POST', '/api/v1/tenant-archives/import', { path: archivePath, passphrase: 'wrong passphrase 789' });
+      expect(limited.status).toBe(429);
+      expect((limited.json['error'] as { code: string }).code).toBe('PASSPHRASE_RATE_LIMITED');
+      expect(JSON.stringify(limited.json)).not.toContain('wrong passphrase 789');
+    } finally {
+      limiter._resetPassphraseLimiterForTests();
+    }
 
     // A renamed .clbackup imports byte-for-byte, uploaded as multipart.
     const clbackup = path.join(dataDir, 'copy.clbackup');

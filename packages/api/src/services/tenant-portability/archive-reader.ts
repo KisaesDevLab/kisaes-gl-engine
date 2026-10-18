@@ -11,7 +11,7 @@
 
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
-import { EntryDecryptor, openEnvelope, validateEnvelope, type ArchiveEnvelope } from './archive-crypto.js';
+import { EntryDecryptor, openEnvelopeAsync, validateEnvelope, type ArchiveEnvelope } from './archive-crypto.js';
 import { openArchiveZip, readBounded, type ZipEntry } from './archive-container.js';
 import { ArchiveError } from './errors.js';
 import {
@@ -143,7 +143,7 @@ export class ArchiveReader {
       throw new ArchiveError('ARCHIVE_UNSUPPORTED', 'This file is not a tenant archive (envelope unreadable).');
     }
     const envelope = validateEnvelope(rawEnvelope);
-    const key = openEnvelope(envelope, passphrase);
+    const key = await openEnvelopeAsync(envelope, passphrase);
 
     const manifestEntry = entries.get(MANIFEST_ENTRY);
     if (!manifestEntry) throw corrupt('manifest missing');

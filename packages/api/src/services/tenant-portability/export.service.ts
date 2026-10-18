@@ -29,8 +29,9 @@ import { getCurrentVersion } from '../updates.service.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import type { StorageProvider } from '../storage/storage-provider.interface.js';
 import { AppError } from '../../utils/errors.js';
+import { errorSummaryForLog } from '../../utils/log-safe.js';
 import { ArchiveZipWriter, sha256File } from './archive-container.js';
-import { assertPassphraseStrong, createEnvelope, NoncePrefixRegistry, withScrubbedPassphrase } from './archive-crypto.js';
+import { assertPassphraseStrong, createEnvelopeAsync, NoncePrefixRegistry, withScrubbedPassphrase } from './archive-crypto.js';
 import { ArchiveError } from './errors.js';
 import { resolveForExport } from './files.js';
 import { computeTenantFingerprint, computeTrialBalance, countUnbalancedTransactions, ledgerVersionSum } from './fingerprint.js';
@@ -319,7 +320,7 @@ async function exportLocked(
       if (tenantRow.is_workspace) throw new ArchiveError('WORKSPACE_TENANT', 'The workspace is never archived.');
 
       const registry = new NoncePrefixRegistry();
-      const { envelope, key } = createEnvelope(archiveId, o.passphrase, registry);
+      const { envelope, key } = await createEnvelopeAsync(archiveId, o.passphrase, registry);
       writer = new ArchiveZipWriter(partial, key, archiveId);
       await writer.writeEnvelope(envelope);
 
@@ -463,7 +464,7 @@ async function exportLocked(
         await client.query('COMMIT');
       } catch (err) {
         await client.query('ROLLBACK').catch(() => undefined);
-        console.warn(`[tenant-archive] export ${archiveId}: audit row not written (${err instanceof Error ? err.message : String(err)})`);
+        console.warn(`[tenant-archive] export ${archiveId}: audit row not written (${errorSummaryForLog(err)})`);
         resultWarnings.push('AUDIT_NOT_WRITTEN');
       }
       await _exportTestHooks.whileLocked?.({ tenantId });

@@ -11,6 +11,7 @@
 
 import crypto from 'node:crypto';
 import { AppError } from '../../utils/errors.js';
+import { errorSummaryForLog } from '../../utils/log-safe.js';
 import { ArchiveError } from './errors.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
@@ -44,6 +45,8 @@ export interface JobProgress {
 
 const JOB_RETENTION_MS = 24 * 60 * 60 * 1000;
 const jobs = new Map<string, JobState>();
+/** The tail of the per-kind chain: a new job of a kind runs after the previous one of that kind (M3). */
+const tails: Record<JobState['kind'], Promise<void>> = { export: Promise.resolve(), import: Promise.resolve() };
 
 function sweep(): void {
   const cutoff = Date.now() - JOB_RETENTION_MS;
@@ -84,30 +87,32 @@ export function startJob<R>(
       job.resources.add(resource);
     },
   };
-  // Runs on the next tick so the caller can return the id first.
-  setImmediate(() => {
+  // One running job per kind (M3): a job waits, `queued`, for the previous
+  // job of its kind to finish. Exports and imports still overlap each other.
+  // The chain never rejects, so a failed job does not block the next one.
+  const run = async (): Promise<void> => {
     job.status = 'running';
-    runner(progress).then(
-      (result) => {
-        job.status = 'succeeded';
-        job.progress = 100;
-        job.step = 'done';
-        job.result = result;
-        job.finishedAt = Date.now();
-      },
-      (err: unknown) => {
-        job.status = 'failed';
-        job.finishedAt = Date.now();
-        if (err instanceof AppError) {
-          job.error = { code: err.code ?? 'INTERNAL_ERROR', message: err.message, details: err.details };
-        } else {
-          // Never echo arbitrary error text (it may carry file paths or SQL params).
-          job.error = { code: 'INTERNAL_ERROR', message: 'The job failed. See the engine log.' };
-          console.error(`[tenant-archive] ${kind} job ${job.id} failed:`, err instanceof Error ? `${err.name}: ${err.message}` : String(err));
-        }
-      },
-    );
-  });
+    try {
+      const result = await runner(progress);
+      job.status = 'succeeded';
+      job.progress = 100;
+      job.step = 'done';
+      job.result = result;
+    } catch (err: unknown) {
+      job.status = 'failed';
+      if (err instanceof AppError) {
+        job.error = { code: err.code ?? 'INTERNAL_ERROR', message: err.message, details: err.details };
+      } else {
+        // Never echo arbitrary error text (it may carry file paths or SQL params).
+        job.error = { code: 'INTERNAL_ERROR', message: 'The job failed. See the engine log.' };
+        console.error(`[tenant-archive] ${kind} job ${job.id} failed: ${errorSummaryForLog(err)}`);
+      }
+    } finally {
+      job.finishedAt = Date.now();
+    }
+  };
+  // Runs on the next tick at the earliest so the caller can return the id first.
+  tails[kind] = tails[kind].then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(run);
   return job;
 }
 

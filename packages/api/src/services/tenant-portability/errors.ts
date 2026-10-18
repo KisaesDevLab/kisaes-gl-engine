@@ -30,6 +30,8 @@ export const ARCHIVE_ERROR_STATUS = {
   STALE: 409,
   /** Rows of the archive belong to users this caller may not create (H1): a super admin must import it. */
   IMPORT_NEEDS_SUPER_ADMIN: 403,
+  /** Too many wrong passphrases from this user in the window (M3). */
+  PASSPHRASE_RATE_LIMITED: 429,
 } as const;
 
 export type ArchiveErrorCode = keyof typeof ARCHIVE_ERROR_STATUS;

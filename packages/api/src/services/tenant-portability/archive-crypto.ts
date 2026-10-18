@@ -96,6 +96,42 @@ export function deriveArchiveKey(passphrase: string, salt: Buffer): Buffer {
   return derivePackageKey(passphrase, salt);
 }
 
+const KEY_BYTES = 32;
+
+/**
+ * The same derivation as deriveArchiveKey (PBKDF2-SHA512, 600,000
+ * iterations, 32 bytes) on the libuv thread pool, so a job's ~1 s of KDF
+ * never blocks the event loop (M3). The two must stay interchangeable.
+ */
+export async function deriveArchiveKeyAsync(passphrase: string, salt: Buffer): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    crypto.pbkdf2(passphrase, salt, KDF_ITERATIONS, KEY_BYTES, 'sha512', (err, key) => (err ? reject(err) : resolve(key)));
+  });
+}
+
+function envelopeFor(archiveId: string, key: Buffer, salt: Buffer, registry: NoncePrefixRegistry, createdAt: Date): ArchiveEnvelope {
+  const prefix = registry.next();
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce(prefix, 0));
+  cipher.setAAD(aad(archiveId, KEY_CHECK_PATH, 0, true));
+  const ciphertext = Buffer.concat([cipher.update(KEY_CHECK_PLAINTEXT), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    format: ARCHIVE_FORMAT,
+    formatVersion: ARCHIVE_FORMAT_VERSION,
+    archiveId,
+    createdAt: createdAt.toISOString(),
+    encryption: { kdf: KDF, iterations: KDF_ITERATIONS, salt: salt.toString('base64'), cipher: CIPHER, chunkBytes: CHUNK_BYTES },
+    keyCheck: { noncePrefix: prefix.toString('base64'), ciphertext: ciphertext.toString('base64'), tag: tag.toString('base64') },
+  };
+}
+
+/** Async twin of createEnvelope (the export job uses it). */
+export async function createEnvelopeAsync(archiveId: string, passphrase: string, registry: NoncePrefixRegistry, createdAt = new Date()): Promise<{ envelope: ArchiveEnvelope; key: Buffer }> {
+  const salt = crypto.randomBytes(SALT_BYTES);
+  const key = await deriveArchiveKeyAsync(passphrase, salt);
+  return { key, envelope: envelopeFor(archiveId, key, salt, registry, createdAt) };
+}
+
 /** Creates the plaintext envelope and the archive key for a new archive. */
 export function createEnvelope(archiveId: string, passphrase: string, registry: NoncePrefixRegistry, createdAt = new Date()): { envelope: ArchiveEnvelope; key: Buffer } {
   const salt = crypto.randomBytes(SALT_BYTES);
@@ -164,7 +200,15 @@ export function validateEnvelope(raw: unknown): ArchiveEnvelope {
 
 /** Derives the key and proves the passphrase against the envelope's keyCheck (422 ARCHIVE_PASSPHRASE_INVALID). */
 export function openEnvelope(envelope: ArchiveEnvelope, passphrase: string): Buffer {
-  const key = deriveArchiveKey(passphrase, Buffer.from(envelope.encryption.salt, 'base64'));
+  return proveKey(envelope, deriveArchiveKey(passphrase, Buffer.from(envelope.encryption.salt, 'base64')));
+}
+
+/** Async twin of openEnvelope (the reader uses it). */
+export async function openEnvelopeAsync(envelope: ArchiveEnvelope, passphrase: string): Promise<Buffer> {
+  return proveKey(envelope, await deriveArchiveKeyAsync(passphrase, Buffer.from(envelope.encryption.salt, 'base64')));
+}
+
+function proveKey(envelope: ArchiveEnvelope, key: Buffer): Buffer {
   const prefix = Buffer.from(envelope.keyCheck.noncePrefix, 'base64');
   try {
     const d = crypto.createDecipheriv('aes-256-gcm', key, nonce(prefix, 0));
@@ -341,12 +385,35 @@ export function assertPassphraseStrong(passphrase: string): void {
   if (!r.valid) throw new ArchiveError('PASSPHRASE_TOO_WEAK', r.message);
 }
 
+// Reference-counted scrubber registration: two overlapping jobs (or a
+// request and its job) may share one passphrase; it stays registered until
+// the last holder releases it. The passphrase itself is never stored
+// anywhere else.
+const holders = new Map<string, number>();
+
+/** Registers the passphrase with the log scrubber until the matching releasePassphrase(). */
+export function registerPassphrase(passphrase: string): void {
+  const n = holders.get(passphrase) ?? 0;
+  if (n === 0) registerSecret(passphrase);
+  holders.set(passphrase, n + 1);
+}
+
+export function releasePassphrase(passphrase: string): void {
+  const n = holders.get(passphrase) ?? 0;
+  if (n <= 1) {
+    holders.delete(passphrase);
+    if (n === 1) unregisterSecret(passphrase);
+    return;
+  }
+  holders.set(passphrase, n - 1);
+}
+
 /** Registers the passphrase with the log scrubber for the duration of `fn`. It is never stored. */
 export async function withScrubbedPassphrase<T>(passphrase: string, fn: () => Promise<T>): Promise<T> {
-  registerSecret(passphrase);
+  registerPassphrase(passphrase);
   try {
     return await fn();
   } finally {
-    unregisterSecret(passphrase);
+    releasePassphrase(passphrase);
   }
 }

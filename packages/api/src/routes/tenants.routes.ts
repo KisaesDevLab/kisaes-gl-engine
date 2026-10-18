@@ -28,7 +28,7 @@ import { AppError } from '../utils/errors.js';
 import { assertNotWorkspace } from '../desktop/workspace.js';
 import * as authService from '../services/auth.service.js';
 import { runExport } from '../services/tenant-portability/export.service.js';
-import { assertPassphraseStrong } from '../services/tenant-portability/archive-crypto.js';
+import { assertPassphraseStrong, registerPassphrase, releasePassphrase } from '../services/tenant-portability/archive-crypto.js';
 import { startJob } from '../services/tenant-portability/jobs.js';
 import { HOST_MAX_BYTES } from '../services/tenant-portability/format.js';
 
@@ -159,12 +159,20 @@ tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSc
   if (!exists) throw AppError.notFound('Company not found');
   const archiveId = crypto.randomUUID();
   const { userId } = req;
-  const job = startJob('export', tenantId, userId, (progress) => runExport(tenantId, userId, {
-    includeAttachments: body.includeAttachments,
-    includeAudit: body.includeAudit,
-    host: body.host,
-    passphrase: body.passphrase,
-    archiveId,
-  }, progress));
+  // The passphrase is scrubbed from logs from here until the job ends.
+  registerPassphrase(body.passphrase);
+  const job = startJob('export', tenantId, userId, async (progress) => {
+    try {
+      return await runExport(tenantId, userId, {
+        includeAttachments: body.includeAttachments,
+        includeAudit: body.includeAudit,
+        host: body.host,
+        passphrase: body.passphrase,
+        archiveId,
+      }, progress);
+    } finally {
+      releasePassphrase(body.passphrase);
+    }
+  }, [archiveId]);
   res.status(202).json({ jobId: job.id, archiveId });
 });
