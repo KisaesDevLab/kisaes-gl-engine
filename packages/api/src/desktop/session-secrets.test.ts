@@ -126,18 +126,18 @@ describe('SMTP (U-13)', () => {
     expect(allowed('smtp')).toEqual([]);
   });
 
-  it('ensureSmtpEgress allows a validated host on a mail port; the password clear removes it', async () => {
+  it('allowSmtpEgress allows a validated host on a mail port; the password clear removes it', async () => {
     s.setSmtpPassword('hunter2hunter2');
-    await s.ensureSmtpEgress({ host: '10.0.0.25', port: 587 });
+    await s.allowSmtpEgress({ host: '10.0.0.25', port: 587 });
     expect(allowed('smtp')).toEqual([{ host: '10.0.0.25', port: 587 }]);
-    await s.ensureSmtpEgress({ host: '10.0.0.25', port: 465 });
+    await s.allowSmtpEgress({ host: '10.0.0.25', port: 465 });
     expect(allowed('smtp')).toEqual([{ host: '10.0.0.25', port: 465 }]);
     s.deleteSessionSecret('smtp.password');
     expect(allowed('smtp')).toEqual([]);
   });
 
   it('loopback relays need no allowance', async () => {
-    await s.ensureSmtpEgress({ host: '127.0.0.1', port: 1025 });
+    await s.allowSmtpEgress({ host: '127.0.0.1', port: 1025 });
     expect(allowed('smtp')).toEqual([]);
   });
 
@@ -146,8 +146,8 @@ describe('SMTP (U-13)', () => {
     [{ host: '169.254.169.254', port: 587 }, /link-local/],
     [{ host: 'metadata', port: 25 }, /metadata/],
   ])('refuses %o', async (target, re) => {
-    await expect(s.ensureSmtpEgress(target)).rejects.toMatchObject({ code: 'SMTP_HOST_BLOCKED', statusCode: 400 });
-    await expect(s.ensureSmtpEgress(target)).rejects.toThrow(re);
+    await expect(s.allowSmtpEgress(target)).rejects.toMatchObject({ code: 'SMTP_HOST_BLOCKED', statusCode: 400 });
+    await expect(s.allowSmtpEgress(target)).rejects.toThrow(re);
     expect(allowed('smtp')).toEqual([]);
   });
 });

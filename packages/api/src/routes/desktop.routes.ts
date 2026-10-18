@@ -184,9 +184,16 @@ export const sessionSecretsPutSchema = z.object({
       model: z.string().trim().max(200).optional(),
     }).strict().optional(),
   }).strict().optional(),
+  // The SMTP password for the session and, with it, the mail server the
+  // owner wants to reach (validated, mail ports only; omitted = a relay on
+  // this machine or a host in CL_EGRESS_ALLOW).
   smtp: z.object({
-    password: z.string().min(1).max(512),
-  }).strict().optional(),
+    password: z.string().min(1).max(512).optional(),
+    host: z.string().trim().min(1).max(255).optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+  }).strict().refine((v) => v.password !== undefined || v.host !== undefined, {
+    message: 'password or host is required',
+  }).optional(),
 }).strict();
 
 type SessionSecretsPutInput = z.infer<typeof sessionSecretsPutSchema>;
@@ -212,15 +219,18 @@ desktopRouter.put(
   ...requireOwner,
   validate(sessionSecretsPutSchema),
   describe({ summary: 'Set per-session AI keys, Ollama endpoint and SMTP password (memory only)', response: sessionSecretsResponse }),
-  (req, res) => {
+  async (req, res) => {
     const input = req.body as SessionSecretsPutInput;
-    // Validate everything before storing anything, so a bad Ollama URL
-    // does not leave half the body applied.
+    // Validate everything before storing anything, so a bad Ollama URL or
+    // SMTP host does not leave half the body applied.
     const ollamaBaseUrl = input.ai?.ollama ? sessionSecrets.validateOllamaBaseUrl(input.ai.ollama.baseUrl) : null;
+    if (input.smtp?.host) {
+      await sessionSecrets.allowSmtpEgress({ host: input.smtp.host, port: input.smtp.port ?? 587 });
+    }
     if (input.ai?.anthropic) sessionSecrets.setAnthropicKey(input.ai.anthropic.apiKey);
     if (input.ai?.openai) sessionSecrets.setOpenaiKey(input.ai.openai.apiKey);
     if (ollamaBaseUrl !== null) sessionSecrets.setOllamaBaseUrl(ollamaBaseUrl, input.ai?.ollama?.model);
-    if (input.smtp) sessionSecrets.setSmtpPassword(input.smtp.password);
+    if (input.smtp?.password !== undefined) sessionSecrets.setSmtpPassword(input.smtp.password);
     res.json(sessionSecrets.sessionSecretStatus());
   },
 );

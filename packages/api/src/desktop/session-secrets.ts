@@ -18,7 +18,9 @@
  *   - the feature's hosts are added to the egress allowlist, following
  *     docs/DESKTOP.md "Rules for features that open egress": cloud AI hosts
  *     come from a fixed table, an Ollama base URL is validated first, and
- *     an SMTP host is validated at transport time (`ensureSmtpEgress`).
+ *     the SMTP server the owner names with the password is validated
+ *     (`allowSmtpEgress`) before it is allowed. A host the owner did not
+ *     name stays blocked (EGRESS_BLOCKED), whatever the stored settings say.
  *
  * On the server this module is never populated: resolveCredential() and
  * the mail transport only consult it in desktop mode.
@@ -143,18 +145,19 @@ export function setOllamaBaseUrl(raw: string, model?: string | null): string {
 export function setSmtpPassword(password: string): void {
   registerSecret(password);
   store.set('smtp.password', password);
-  // The SMTP host is only known when a transport is built; see
-  // ensureSmtpEgress(). Clearing the password removes that allowance.
+  // The mail server is allowed separately (allowSmtpEgress, from the same
+  // PUT); clearing the password removes that allowance.
 }
 
 /**
- * Allow outbound SMTP to `host:port` for this session. Called by the mail
- * transport in desktop mode right before it connects. The host must pass
- * the SMTP host safety check (no loopback, link-local or metadata names
- * or addresses; LAN relays allowed) and the port must be a mail port.
- * Loopback relays need no allowance and are accepted as-is.
+ * Allow outbound SMTP to `host:port` for this session: the owner's
+ * explicit choice, made in the same request as the password. The host
+ * must pass the SMTP host safety check (no loopback, link-local or
+ * metadata names or addresses; LAN relays allowed) and the port must be
+ * a mail port. Loopback relays need no allowance and are accepted as-is.
+ * Replaces any previous SMTP allowance (one mail server per session).
  */
-export async function ensureSmtpEgress(target: { host: string; port: number }): Promise<void> {
+export async function allowSmtpEgress(target: { host: string; port: number }): Promise<void> {
   if (isLoopbackAddress(target.host)) return;
   if (!SMTP_EGRESS_PORTS.has(target.port)) {
     throw AppError.badRequest(`SMTP port ${target.port} is not allowed (use 25, 465, 587 or 2525)`, 'SMTP_HOST_BLOCKED');

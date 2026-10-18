@@ -19,11 +19,18 @@
  *   - an offline fast-fail: sendMail() and verify() first call
  *     ensureOnline('smtp', host:port) (utils/offline.ts), and network
  *     errors from the send are mapped to OfflineUnavailableError (503
- *     OFFLINE_UNAVAILABLE).
+ *     OFFLINE_UNAVAILABLE);
+ *   - the password comes from the session store (U-13): when `auth.user`
+ *     is set, `auth.pass` is replaced by the `smtp.password` session
+ *     secret, and 400 SMTP_NOT_CONFIGURED is thrown when there is none.
+ *     Whatever the caller passed (a stored companies.smtp_pass, a test
+ *     body) is never used, so the engine never needs the password at rest.
  */
 
 import nodemailer from 'nodemailer';
 import { isDesktop } from '../desktop/profile.js';
+import { getSessionSecret } from '../desktop/session-secrets.js';
+import { AppError } from './errors.js';
 import { classifyNetworkError, ensureOnline, isLoopbackAddress, type NetTarget } from './offline.js';
 
 export interface MailTransportOptions {
@@ -81,6 +88,16 @@ export function createMailTransport(opts: MailTransportOptions) {
   if (!isDesktop()) return nodemailer.createTransport(opts);
 
   const target = smtpTarget(opts);
+  if (opts.auth?.user) {
+    const pass = getSessionSecret('smtp.password');
+    if (!pass) {
+      throw AppError.badRequest(
+        'The email password for this session has not been provided. Enter it in Settings → Email.',
+        'SMTP_NOT_CONFIGURED',
+      );
+    }
+    opts = { ...opts, auth: { user: opts.auth.user, pass } };
+  }
   // Desktop default: never send the owner's SMTP password or mail in clear
   // text over the network. Port 465 is TLS from the start; on other ports
   // STARTTLS is required, except for a relay on this machine. A caller's

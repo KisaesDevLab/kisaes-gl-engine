@@ -209,6 +209,40 @@ describe('desktop session-secrets routes', () => {
     });
   }, 120_000);
 
+  it('smtp: the password and the named mail server are applied together; a refused host applies nothing', async () => {
+    const app = await loadApp('desktop');
+    await withServer(app, async (call) => {
+      const { egressAllowlist } = await import('../desktop/egress-guard.js');
+      const smtp = () => egressAllowlist().filter((e) => e.source === 'smtp').map(({ host, port }) => ({ host, port }));
+
+      const bad = await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { password: 'hunter2hunter2', host: '169.254.169.254', port: 587 } } });
+      expect(bad.status).toBe(400);
+      expect(bad.json.error.code).toBe('SMTP_HOST_BLOCKED');
+      expect(bad.text).not.toContain('hunter2');
+      const secrets = await import('../desktop/session-secrets.js');
+      expect(secrets.hasSessionSecret('smtp.password')).toBe(false);
+      expect(smtp()).toEqual([]);
+
+      const badPort = await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { password: 'hunter2hunter2', host: '10.0.0.25', port: 8025 } } });
+      expect(badPort.json.error.code).toBe('SMTP_HOST_BLOCKED');
+
+      const ok = await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { password: 'hunter2hunter2', host: '10.0.0.25', port: 465 } } });
+      expect(ok.status, ok.text).toBe(200);
+      expect(ok.json['smtp.password'].present).toBe(true);
+      expect(smtp()).toEqual([{ host: '10.0.0.25', port: 465 }]);
+
+      // Host only (a relay without a login) is accepted; port defaults to 587.
+      const hostOnly = await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { host: '10.0.0.26' } } });
+      expect(hostOnly.status, hostOnly.text).toBe(200);
+      expect(smtp()).toEqual([{ host: '10.0.0.26', port: 587 }]);
+      expect((await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: {} } })).status).toBe(400);
+
+      const del = await call(`${P}/smtp.password`, { method: 'DELETE', jwt: adminJwt });
+      expect(del.json['smtp.password']).toEqual({ present: false });
+      expect(smtp()).toEqual([]);
+    });
+  }, 120_000);
+
   it('/info advertises the E6 capabilities', async () => {
     const app = await loadApp('desktop');
     await withServer(app, async (call) => {
