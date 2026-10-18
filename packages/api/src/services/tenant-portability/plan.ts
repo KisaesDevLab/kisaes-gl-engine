@@ -126,7 +126,14 @@ export type TriggerClass =
   | `delete-side-effect:${string}`;
 
 export interface SecretColumnRule {
-  action: 'keep' | 'redact';
+  /**
+   * keep: travels as stored; redact: NULL (or `replacement`) on export;
+   * reencrypt (M5): ciphertext under this install's key is decrypted on
+   * export, travels in plaintext inside the passphrase-encrypted archive,
+   * is encrypted again under the importing install's key, verified by
+   * decrypt-and-compare, and is left out of the content digest.
+   */
+  action: 'keep' | 'redact' | 'reencrypt';
   reason: string;
   /** redact: SQL literal written instead of NULL (for NOT NULL columns without a default). */
   replacement?: string;
@@ -612,8 +619,8 @@ export const SECRET_COLUMNS: Record<string, SecretColumnRule> = {
   'users.tfa_recovery_codes_encrypted': { action: 'redact', reason: 'TFA recovery codes; not in the users projection' },
   'users.tfa_totp_last_step': { action: 'redact', reason: 'TFA replay guard; not in the users projection' },
   'vendor_1099_profile.tin_encrypted': {
-    action: 'keep',
-    reason: 'vendor TIN ciphertext under the install ENCRYPTION_KEY: readable again when restored on the same install, opaque elsewhere (flagged for security review)',
+    action: 'reencrypt',
+    reason: 'vendor TIN: decrypted on export, carried inside the encrypted archive, encrypted again under the importing install key (M5)',
   },
   'w9_requests.magic_link_token_hash': { action: 'redact', reason: 'public W-9 link token', replacement: "repeat('0', 64)" },
 };
@@ -959,6 +966,8 @@ export interface TablePlan {
   nullOnImport: string[];
   /** FK columns that close a nullable FK cycle: inserted as NULL, set after every table is in. */
   deferredColumns: string[];
+  /** Columns decrypted on export and encrypted again on import (SECRET_COLUMNS action `reencrypt`, M5); not in C(T). */
+  reencryptColumns: string[];
   fileColumns: Array<{ column: string; rule: FileColumnRule }>;
   /** Soft references classified for this table. */
   softRefs: Array<{ column: string; cls: SoftRefClass; isArray: boolean }>;
@@ -1342,6 +1351,7 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
     const nulledReferences: TablePlan['nulledReferences'] = [];
     const nullOnImport: string[] = [];
     const regenerate: string[] = [];
+    const reencryptColumns: string[] = [];
     const fileColumns: TablePlan['fileColumns'] = [];
     const nulledOnExport = new Map<string, string>(); // column -> reason/target
 
@@ -1402,6 +1412,10 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
         if (!c.nullable && !c.hasDefault && !sec.replacement) fail('INVALID_SECRET_RULE', `${k}: redact needs a replacement on a NOT NULL column without default`);
         redactedColumns[k] = sec.reason;
       }
+      if (sec?.action === 'reencrypt') {
+        if (!c.nullable || !/^(text|character varying)/.test(c.type)) fail('INVALID_SECRET_RULE', `${k}: reencrypt needs a nullable text column`);
+        reencryptColumns.push(c.name);
+      }
       const jc = JSON_CONFIG_COLUMNS[k];
       if (jc === 'secret') {
         if (!c.nullable && !c.hasDefault) fail('INVALID_SECRET_RULE', `${k}: secret jsonb must be nullable or defaulted`);
@@ -1443,7 +1457,7 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
       }
       return { name: c.name, type: c.type, select, redacted, nulledReference: nulledTarget };
     });
-    const dropFromCanonical = new Set([...regenerate, ...nullOnImport, ...fileColumns.map((f) => f.column)]);
+    const dropFromCanonical = new Set([...regenerate, ...nullOnImport, ...reencryptColumns, ...fileColumns.map((f) => f.column)]);
     if (pk === 'omit-pk' && pkColumn) dropFromCanonical.add(pkColumn);
     const canonical = archive.map((c) => c.name).filter((n) => !dropFromCanonical.has(n));
     const fingerprint = columns.map((c) => c.name).filter((n) => !(key(t, n) in VOLATILE_COLUMNS));
@@ -1451,7 +1465,7 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
     const deferredColumns = deferredFks.filter((f) => f.table === t).flatMap((f) => f.columns);
     return {
       name: t, bucket, pk, pkColumn, columns, archive, canonical, fingerprint, insert, regenerate, nullOnImport,
-      deferredColumns, fileColumns, softRefs, globalFks, nulledReferences,
+      deferredColumns, reencryptColumns, fileColumns, softRefs, globalFks, nulledReferences,
       triggers: live.triggers.filter((g) => g.table === t).map((g) => ({ name: g.name, cls: TRIGGERS[key(t, g.name)]! })),
     };
   };

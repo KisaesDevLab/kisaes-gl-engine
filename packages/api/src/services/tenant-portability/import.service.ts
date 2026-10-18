@@ -25,7 +25,7 @@ import { getWorkspaceTenantId } from '../../desktop/workspace.js';
 import { readSchemaInfo } from '../../startup/schema-info.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import type { StorageProvider } from '../storage/storage-provider.interface.js';
-import { decryptBuffer } from '../../utils/encryption.js';
+import { decryptBuffer, encrypt } from '../../utils/encryption.js';
 import { AppError } from '../../utils/errors.js';
 import { ArchiveReader } from './archive-reader.js';
 import { withScrubbedPassphrase } from './archive-crypto.js';
@@ -40,7 +40,7 @@ import type { JobProgress } from './jobs.js';
 import { NATURAL_KEYS, getPortabilityPlan, type PortabilityPlan, type TablePlan } from './plan.js';
 import { IdMap, fieldString, pkOfLine, rewriteField } from './remap.js';
 import { applyArchiveSession, withArchiveConnection, xactLockTenantExclusive, type ArchiveClient } from './session.js';
-import { verifyImport, type VerificationSummary, type WrittenFile } from './verify.js';
+import { verifyImport, type ReencryptedValue, type VerificationSummary, type WrittenFile } from './verify.js';
 
 export interface ImportOptions {
   filePath: string;
@@ -225,11 +225,12 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
 
       // Tables in FK order.
       const deferred: Array<{ table: string; column: string; id: string; value: string }> = [];
+      const reencrypted: ReencryptedValue[] = [];
       for (let i = 0; i < tablesInOrder.length; i++) {
         const mt = tablesInOrder[i]!;
         const t = plan.byName.get(mt.name)!;
         step(`insert:${mt.name}`, 25 + Math.round((i / tablesInOrder.length) * 45));
-        await insertTable(client, reader, plan, t, mt, compat, idMap, newTenantId, unresolved, files, { uploadDir, providerFor }, written, deferred, identity.skipped.length > 0);
+        await insertTable(client, reader, plan, t, mt, compat, idMap, newTenantId, unresolved, files, { uploadDir, providerFor }, written, deferred, identity.skipped.length > 0, reencrypted);
       }
       for (const [col, n] of files.notBundled) warnings.push(`FILE_NOT_BUNDLED:${col}:${n}`);
       for (const d of deferred) {
@@ -253,7 +254,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       const verification = await verifyImport({
         client, plan, manifest, compat, idMap, newTenantId,
         files: written.map((f): WrittenFile => ({ table: f.table, column: f.column, rowId: f.rowId, sha256: f.sha256, readBack: f.readBack })),
-        identity, archivedUsers, archivedAccess, archivedTenant, callerUserId: options.callerUserId,
+        identity, archivedUsers, archivedAccess, archivedTenant, callerUserId: options.callerUserId, reencrypted,
       });
       warnings.push(...verification.warnings);
 
@@ -327,6 +328,7 @@ async function insertTable(
   written: PendingFile[],
   deferred: Array<{ table: string; column: string; id: string; value: string }>,
   usersSkipped: boolean,
+  reencrypted: ReencryptedValue[],
 ): Promise<void> {
   const tc = compat.tables.find((c) => c.table === mt.name)!;
   const archiveCols = new Set(mt.columns.map(([c]) => c));
@@ -367,12 +369,20 @@ async function insertTable(
     batchBytes = 0;
   };
   const hasTenantId = archiveCols.has('tenant_id') && t.columns.some((c) => c.name === 'tenant_id');
+  const reencryptCols = t.reencryptColumns.filter((c) => archiveCols.has(c));
   for await (const raw of reader.lines(tablePartName(mt.name))) {
     let line = idMap.substitute(raw);
     const oldPk = t.pkColumn && mt.pk === 'uuid' ? pkOfLine(raw, t.pkColumn) : null;
     const newPk = oldPk ? idMap.get(oldPk)! : null;
     // Every row belongs to the new tenant, whatever the archive line says (M1).
     if (hasTenantId) line = rewriteField(line, 'tenant_id', JSON.stringify(newTenantId));
+    // Re-encrypted columns (M5): plaintext inside the archive, ciphertext under this install's key in the row.
+    for (const c of reencryptCols) {
+      const plain = fieldString(line, c);
+      if (plain === null) continue;
+      line = rewriteField(line, c, JSON.stringify(encrypt(plain)));
+      if (newPk) reencrypted.push({ table: mt.name, column: c, pkColumn: t.pkColumn!, rowId: newPk, plain });
+    }
     for (const c of globalCols) {
       const v = fieldString(line, c);
       if (v && unresolved.has(v.toLowerCase())) line = rewriteField(line, c, 'null');

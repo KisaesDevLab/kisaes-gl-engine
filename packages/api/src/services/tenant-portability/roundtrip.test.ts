@@ -15,7 +15,7 @@ import archiver from 'archiver';
 import * as unzipper from 'unzipper';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { encryptBuffer, decryptBuffer } from '../../utils/encryption.js';
+import { encryptBuffer, decryptBuffer, encrypt, decrypt } from '../../utils/encryption.js';
 import { auditLog } from '../../middleware/audit.js';
 import bcrypt from 'bcrypt';
 import { ArchiveReader } from './archive-reader.js';
@@ -116,6 +116,9 @@ async function seedTenant(): Promise<Seed> {
 
   const [customer] = await q<{ id: string }>(`INSERT INTO contacts (tenant_id, company_id, contact_type, display_name, default_expense_account_id) VALUES ($1, $2, 'customer', 'Cust', $3) RETURNING id`, [tenantId, c1!.id, cash]);
   const [vendor] = await q<{ id: string }>(`INSERT INTO contacts (tenant_id, company_id, contact_type, display_name) VALUES ($1, $2, 'vendor', 'Vend') RETURNING id`, [tenantId, c1!.id]);
+  // M5: a vendor TIN encrypted under this install's key, and one this install cannot read.
+  await q(`INSERT INTO vendor_1099_profile (contact_id, tenant_id, tin_encrypted) VALUES ($1, $2, $3)`, [vendor!.id, tenantId, encrypt(`12-${stamp.slice(0, 7)}`)]);
+  await q(`INSERT INTO vendor_1099_profile (contact_id, tenant_id, tin_encrypted) VALUES ($1, $2, 'not:valid:ciphertext')`, [customer!.id, tenantId]);
   const txn = async (company: string, type: string, date: string, status: string, memo: string | null, contact: string | null) =>
     (await q<{ id: string }>(`INSERT INTO transactions (tenant_id, company_id, txn_type, txn_date, status, memo, contact_id, total) VALUES ($1, $2, $3, $4, $5, $6, $7, 100) RETURNING id`, [tenantId, company, type, date, status, memo, contact]))[0]!.id;
   const line = async (t: string, company: string, account: string, debit: string, credit: string, extra = '') =>
@@ -253,6 +256,8 @@ async function expectCode(p: Promise<unknown>, code: string): Promise<ArchiveErr
 
 let seed: Seed;
 let exported: ExportResult;
+/** The customer's vendor_1099_profile row carries a ciphertext this install cannot read (M5). */
+const tinWarning = () => `TIN_UNREADABLE:vendor_1099_profile.tin_encrypted:${seed.customer}`;
 let capturedMap: IdMap | null = null;
 
 beforeAll(async () => {
@@ -292,7 +297,7 @@ describe('export', () => {
   it('writes a verified archive, hashes the file, records a success audit row and leaves the fingerprint unchanged', async () => {
     expect(fs.existsSync(exported.path!)).toBe(true);
     expect(exported.sha256).toBe(crypto.createHash('sha256').update(fs.readFileSync(exported.path!)).digest('hex'));
-    expect(exported.warnings).toEqual([]);
+    expect(exported.warnings).toEqual([tinWarning()]);
     expect(exported.manifestSummary.unbalancedTransactions).toBe(1);
     expect(exported.manifestSummary.files).toBe(5); // 3 attachments, logo, signature
     const audit = await auditRows(seed.tenantId);
@@ -365,7 +370,7 @@ describe('export', () => {
     expect(main.map((u) => u.password_hash.startsWith('$2b$12$'))).toEqual([true, true, true]);
     // An owner (not a super admin) gets placeholders for everyone, and the manifest says so.
     const byOwner = await runExport(seed.tenantId, seed.ownerId, { passphrase: PASS });
-    expect(byOwner.warnings).toEqual(['PASSWORD_HASHES_OMITTED:3']);
+    expect(byOwner.warnings).toEqual(['PASSWORD_HASHES_OMITTED:3', tinWarning()]);
     const owned = await usersOf(byOwner.path!);
     expect(owned.map((u) => u.password_hash)).toEqual([ARCHIVE_PASSWORD_PLACEHOLDER, ARCHIVE_PASSWORD_PLACEHOLDER, ARCHIVE_PASSWORD_PLACEHOLDER]);
     expect(fs.readFileSync(byOwner.path!).includes('$2b$12$')).toBe(false);
@@ -374,7 +379,7 @@ describe('export', () => {
     let bySuper: ExportResult;
     try {
       bySuper = await runExport(seed.tenantId, seed.callerId, { passphrase: PASS });
-      expect(bySuper.warnings).toEqual(['PASSWORD_HASHES_OMITTED:1']);
+      expect(bySuper.warnings).toEqual(['PASSWORD_HASHES_OMITTED:1', tinWarning()]);
       const rows = await usersOf(bySuper.path!);
       expect(rows.find((u) => u.id === seed.callerId)!.password_hash).toBe(ARCHIVE_PASSWORD_PLACEHOLDER);
       expect(rows.filter((u) => u.id !== seed.callerId).every((u) => u.password_hash.startsWith('$2b$12$'))).toBe(true);
@@ -400,7 +405,7 @@ describe('export', () => {
     delete _exportTestHooks.beforeFinalize;
     _exportTestHooks.failAudit = true;
     const r = await runExport(seed.tenantId, seed.callerId, { passphrase: PASS });
-    expect(r.warnings).toEqual(['AUDIT_NOT_WRITTEN']);
+    expect(r.warnings).toEqual([tinWarning(), 'AUDIT_NOT_WRITTEN']);
     await (await ArchiveReader.open(r.path!, PASS)).verifyAll();
     expect(await auditRows(seed.tenantId)).toHaveLength(1);
     fs.rmSync(r.path!);
@@ -520,6 +525,28 @@ describe('import', () => {
     const audit = await q<{ after_data: { i: number } }>(`SELECT after_data FROM audit_log WHERE tenant_id = $1 AND entity_type = 'account' ORDER BY id`, [imported.tenantId]);
     expect(audit.map((a) => a.after_data.i)).toEqual([0, 1, 2, 3, 4]);
   }, 60_000);
+
+  it('the vendor TIN is encrypted again under this install key and an unreadable one became NULL (M5)', async () => {
+    const rows = await q<{ contact_id: string; tin_encrypted: string | null }>(`SELECT contact_id, tin_encrypted FROM vendor_1099_profile WHERE tenant_id = $1`, [imported.tenantId]);
+    expect(rows).toHaveLength(2);
+    const vendorRow = rows.find((r) => r.contact_id === idMap.get(seed.vendor))!;
+    const customerRow = rows.find((r) => r.contact_id === idMap.get(seed.customer))!;
+    expect(decrypt(vendorRow.tin_encrypted!)).toBe(`12-${stamp.slice(0, 7)}`);
+    const [source] = await q<{ tin_encrypted: string }>(`SELECT tin_encrypted FROM vendor_1099_profile WHERE contact_id = $1`, [seed.vendor]);
+    expect(vendorRow.tin_encrypted).not.toBe(source!.tin_encrypted); // a fresh encryption, never the archived plaintext
+    expect(vendorRow.tin_encrypted).not.toBe(`12-${stamp.slice(0, 7)}`);
+    expect(customerRow.tin_encrypted).toBeNull();
+    // Inside the archive the TIN travelled in plaintext; the raw file never shows it.
+    const reader = await ArchiveReader.open(exported.path!, PASS);
+    const part: string[] = [];
+    for await (const l of reader.lines(tablePartName('vendor_1099_profile'))) part.push(l);
+    expect(part.join('\n')).toContain(`"tin_encrypted":"12-${stamp.slice(0, 7)}"`);
+    expect(part.join('\n')).toContain('"tin_encrypted":null');
+    expect(reader.manifest.canonical!['vendor_1099_profile']).not.toContain('tin_encrypted');
+    const raw = fs.readFileSync(exported.path!);
+    expect(raw.includes(`12-${stamp.slice(0, 7)}`)).toBe(false);
+    expect(raw.includes(source!.tin_encrypted)).toBe(false);
+  });
 
   it('bundled files are equal after the round trip, the logo has a new name and the source logo is untouched (MT8)', async () => {
     const [co] = await q<{ logo_url: string }>(`SELECT logo_url FROM companies WHERE tenant_id = $1 AND business_name = 'RT Co One'`, [imported.tenantId]);

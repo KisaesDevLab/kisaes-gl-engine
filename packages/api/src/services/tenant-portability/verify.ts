@@ -12,6 +12,7 @@
  */
 
 import crypto from 'node:crypto';
+import { decrypt } from '../../utils/encryption.js';
 import { ArchiveError } from './errors.js';
 import { computeTrialBalance, countUnbalancedTransactions } from './fingerprint.js';
 import type { ArchiveManifest, TrialBalanceRow } from './format.js';
@@ -47,6 +48,17 @@ export interface VerifyInput {
   archivedTenant: Record<string, unknown>;
   /** The importing caller: with the matched and created users, the only user ids a row may reference. */
   callerUserId: string;
+  /** Values encrypted again under this install's key on insert (M5), verified by decrypt-and-compare. */
+  reencrypted: ReencryptedValue[];
+}
+
+export interface ReencryptedValue {
+  table: string;
+  column: string;
+  pkColumn: string;
+  rowId: string;
+  /** The plaintext as it travelled inside the archive. Held in memory for the verification only. */
+  plain: string;
 }
 
 /**
@@ -225,6 +237,18 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
   // c2. References (M1): every imported row points inside the new scope, at an allowed user or a global row.
   failures.push(...await verifyReferences(client, plan, newTenantId,
     [...input.identity.matched, ...input.identity.created, ...input.identity.ghostIds, input.callerUserId], skippedTables));
+
+  // c3. Re-encrypted values (M5): the stored ciphertext must decrypt to what the archive carried.
+  for (const r of input.reencrypted) {
+    let ok = false;
+    try {
+      const row = (await client.query(`SELECT "${r.column}" AS v FROM "${r.table}" WHERE "${r.pkColumn}" = $1`, [r.rowId])).rows[0] as { v: string | null } | undefined;
+      ok = typeof row?.v === 'string' && row.v !== r.plain && decrypt(row.v) === r.plain;
+    } catch {
+      ok = false;
+    }
+    if (!ok) failures.push({ check: 'reencrypt', table: `${r.table}.${r.column}` });
+  }
 
   // d. Files.
   for (const f of input.files) {

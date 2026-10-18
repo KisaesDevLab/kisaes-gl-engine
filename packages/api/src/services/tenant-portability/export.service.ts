@@ -29,6 +29,7 @@ import { getCurrentVersion } from '../updates.service.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import type { StorageProvider } from '../storage/storage-provider.interface.js';
 import { AppError } from '../../utils/errors.js';
+import { decrypt } from '../../utils/encryption.js';
 import { errorSummaryForLog } from '../../utils/log-safe.js';
 import { ArchiveZipWriter, sha256File } from './archive-container.js';
 import { assertPassphraseStrong, createEnvelopeAsync, NoncePrefixRegistry, withScrubbedPassphrase } from './archive-crypto.js';
@@ -45,7 +46,7 @@ import {
   ARCHIVE_AUDIT_ENTITY_TYPE, EXCLUDED_TENANT_ARCHIVE_TABLES, NATURAL_KEYS, getPortabilityPlan, scopeSql,
   type PortabilityPlan, type TablePlan,
 } from './plan.js';
-import { digestFor, fieldString, pkOfLine } from './remap.js';
+import { digestFor, fieldString, pkOfLine, rewriteField } from './remap.js';
 import { activeJobResources } from './jobs.js';
 import { acquireSharedTenantLock, applyArchiveSession, releaseSharedTenantLock, tryExclusiveTenantLock, withArchiveConnection, type ArchiveClient } from './session.js';
 
@@ -141,6 +142,7 @@ async function writeTable(
   includeAudit: boolean,
   files: FileRef[],
   globals: GlobalRefCollector,
+  warnings: string[],
 ): Promise<ManifestTable> {
   const cursor = `c_${t.name}`;
   await client.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${tableCursorSql(plan, t, includeAudit)}`, [tenantId]);
@@ -165,6 +167,19 @@ async function writeTable(
       if (batch.length === 0) break;
       let chunk = '';
       for (const row of batch) {
+        // Re-encrypted columns (M5): the install-key ciphertext becomes the
+        // plaintext value inside the passphrase-encrypted archive; a value
+        // this install cannot decrypt travels as NULL with a warning.
+        for (const c of t.reencryptColumns) {
+          const v = fieldString(row.line, c);
+          if (v === null) continue;
+          try {
+            row.line = rewriteField(row.line, c, JSON.stringify(decrypt(v)));
+          } catch {
+            row.line = rewriteField(row.line, c, 'null');
+            warnings.push(`TIN_UNREADABLE:${t.name}.${c}:${t.pkColumn ? pkOfLine(row.line, t.pkColumn) : '?'}`);
+          }
+        }
         chunk += `${row.line}\n`;
         digest.add(row.canon);
         rows++;
@@ -354,7 +369,7 @@ async function exportLocked(
       for (let i = 0; i < plan.tables.length; i++) {
         const t = plan.tables[i]!;
         step(`table:${t.name}`, 2 + Math.round((i / plan.tables.length) * 60));
-        const mt = await writeTable(client, writer, plan, t, tenantId, o.includeAudit, files, globals);
+        const mt = await writeTable(client, writer, plan, t, tenantId, o.includeAudit, files, globals, warnings);
         tables.push(mt);
         totalRows += mt.rows;
       }
