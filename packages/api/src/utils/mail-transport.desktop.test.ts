@@ -28,8 +28,13 @@ function desktop(): void {
   loadDesktopProfile({ CL_MODE: 'desktop', CL_TOKEN: 'mail_' + 'm'.repeat(44), CL_BIND: '127.0.0.1:0', CL_DATA_DIR: path.join(os.tmpdir(), 'cl-mail-test'), CL_OFFLINE: 'off' });
 }
 
-beforeEach(() => { mocks.created.length = 0; secrets.clearAllSessionSecrets(); });
-afterEach(() => { secrets.clearAllSessionSecrets(); _resetDesktopProfileForTests(); });
+beforeEach(() => {
+  mocks.created.length = 0;
+  secrets.clearAllSessionSecrets();
+  // Owner-named hosts resolve through a stub, never the network.
+  secrets._setDnsLookupForTests(async () => [{ address: '203.0.113.9' }]);
+});
+afterEach(() => { secrets.clearAllSessionSecrets(); secrets._setDnsLookupForTests(null); _resetDesktopProfileForTests(); });
 
 describe('desktop mail transport password', () => {
   it('replaces a stored password with the session secret, for the named server only', async () => {

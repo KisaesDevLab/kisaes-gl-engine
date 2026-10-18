@@ -300,7 +300,7 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
     // localhost) is a valid target. Metadata endpoints stay blocked.
     // Desktop: only this machine or the owner's own network (400
     // OLLAMA_HOST_NOT_LOCAL / OLLAMA_URL_INVALID); same rule as the session endpoint.
-    if (input.ollamaBaseUrl && isDesktop()) validateOllamaBaseUrl(input.ollamaBaseUrl);
+    if (input.ollamaBaseUrl && isDesktop()) await validateOllamaBaseUrl(input.ollamaBaseUrl);
     if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL', { allowPrivate: true });
     updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
   }

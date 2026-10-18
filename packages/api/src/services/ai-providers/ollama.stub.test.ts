@@ -117,7 +117,7 @@ describe('Ollama adapter (desktop session endpoint)', () => {
   });
 
   it('uses the session base URL and model, with no key and even with CL_OFFLINE=on (local never counts as offline)', async () => {
-    secrets.setOllamaBaseUrl(`${baseUrl}/v1/`, 'qwen3');
+    await secrets.setOllamaBaseUrl(`${baseUrl}/v1/`, 'qwen3');
     expect(hasCredentials('ollama', {})).toBe(true);
     const r = await executeWithFallback({ systemPrompt: 's', userPrompt: 'u', responseFormat: 'json' }, { ollamaBaseUrl: 'http://10.9.9.9:11434' }, ['ollama'], 'ollama');
     expect(r.parsed).toEqual({ ok: true });

@@ -59,10 +59,10 @@ describe('desktop mode', () => {
     expect(resolveCredential('anthropic', {})).toEqual({ apiKey: SESSION_KEY });
   });
 
-  it('Ollama needs no key; the session endpoint and model win over the stored base URL', () => {
+  it('Ollama needs no key; the session endpoint and model win over the stored base URL', async () => {
     expect(hasCredentials('ollama', {})).toBe(true);
     expect(resolveCredential('ollama', STORED)).toEqual({ baseUrl: 'http://10.0.0.9:11434', model: undefined });
-    secrets.setOllamaBaseUrl('http://localhost:11434', 'qwen3');
+    await secrets.setOllamaBaseUrl('http://localhost:11434', 'qwen3');
     expect(resolveCredential('ollama', STORED)).toEqual({ baseUrl: 'http://localhost:11434', model: 'qwen3' });
     const p = getProvider('ollama', STORED);
     expect(p).toBeInstanceOf(OllamaProvider);

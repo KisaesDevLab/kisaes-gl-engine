@@ -32,7 +32,7 @@ import { registerSecret } from '../utils/secret-scrubber.js';
 import { assertExternalUrlSafe, assertHostSafe, classifyIpLiteral } from '../utils/url-safety.js';
 import net from 'node:net';
 import { targetFromUrl, isLoopbackAddress } from '../utils/offline.js';
-import { clearEgressAllowance, setEgressAllowance } from './egress-guard.js';
+import { clearEgressAllowance, exemptDnsLookup, setEgressAllowance } from './egress-guard.js';
 
 export const SESSION_SECRET_NAMES = ['ai.anthropic', 'ai.openai', 'ai.ollama.baseUrl', 'smtp.password'] as const;
 export type SessionSecretName = (typeof SESSION_SECRET_NAMES)[number];
@@ -63,17 +63,50 @@ let ollamaModel: string | null = null;
 // Non-secret companion of smtp.password: the mail server the owner named.
 let smtpServer: SessionSmtpServer | null = null;
 
+const CGNAT_V4 = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./;
+
+/** A loopback, RFC 1918 or IPv6 ULA address (not CGNAT, which is carrier space). */
+export function isLocalNetworkAddress(address: string): boolean {
+  const a = address.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!net.isIP(a)) return false;
+  if (CGNAT_V4.test(a)) return false;
+  const cls = classifyIpLiteral(a);
+  return cls === 'loopback' || cls === 'private';
+}
+
 /**
- * A host on this machine or the owner's own network: loopback, RFC 1918,
- * CGNAT (100.64/10), IPv6 ULA, exactly `localhost`, or a `.local` name.
+ * A host on this machine or the owner's own network by its spelling:
+ * exactly `localhost`, a `.local` name (resolved and checked by
+ * assertLocalNetworkHost before it is accepted), or a local address.
  * Other names cannot be verified without DNS, so they do not count.
  */
 export function isLocalNetworkHost(host: string): boolean {
   const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
   if (h === 'localhost' || h.endsWith('.local')) return true;
-  if (!net.isIP(h)) return false;
-  const cls = classifyIpLiteral(h);
-  return cls === 'loopback' || cls === 'private';
+  return isLocalNetworkAddress(h);
+}
+
+// Resolver for owner-named hosts (bypasses the guard; see exemptDnsLookup).
+let dnsLookup: (host: string) => Promise<Array<{ address: string }>> = exemptDnsLookup;
+
+/** Test hook: replace the resolver (null restores the default). */
+export function _setDnsLookupForTests(fn: ((host: string) => Promise<Array<{ address: string }>>) | null): void {
+  dnsLookup = fn ?? exemptDnsLookup;
+}
+
+/**
+ * Accept `host` as local-network: `localhost` and local addresses as they
+ * are; a `.local` name only when it resolves (every answer loopback or
+ * private, none CGNAT); anything else is refused with `code`.
+ */
+async function assertLocalNetworkHost(host: string, code: string, message: string): Promise<void> {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || isLocalNetworkAddress(h)) return;
+  if (h.endsWith('.local')) {
+    const answers = await dnsLookup(h).catch(() => [] as Array<{ address: string }>);
+    if (answers.length > 0 && answers.every((a) => isLocalNetworkAddress(a.address))) return;
+  }
+  throw AppError.badRequest(message, code);
 }
 
 export function isSessionSecretName(name: string): name is SessionSecretName {
@@ -130,11 +163,11 @@ export function setOpenaiKey(apiKey: string): void {
 
 /**
  * Validate an Ollama base URL for the session: http/https only, no
- * credentials in the URL, no link-local or metadata addresses (loopback
- * and LAN addresses are allowed: the owner chose them). Returns the
- * normalized server root.
+ * credentials in the URL, no link-local or metadata addresses, and a host
+ * on this machine or the owner's own network (a `.local` name is resolved
+ * and every address checked). Returns the normalized server root.
  */
-export function validateOllamaBaseUrl(raw: string): string {
+export async function validateOllamaBaseUrl(raw: string): Promise<string> {
   const trimmed = raw.trim();
   let u: URL;
   try {
@@ -153,18 +186,17 @@ export function validateOllamaBaseUrl(raw: string): string {
   // An Ollama elsewhere is a cloud provider, not a local model: it would
   // bypass consent, the token cap and the redaction backstop. Desktop mode
   // only accepts this machine or the owner's own network.
-  if (!isLocalNetworkHost(u.hostname)) {
-    throw AppError.badRequest(
-      'Ollama base URL must point at this computer or your own network (localhost, a private address or a .local name).',
-      'OLLAMA_HOST_NOT_LOCAL',
-    );
-  }
+  await assertLocalNetworkHost(
+    u.hostname,
+    'OLLAMA_HOST_NOT_LOCAL',
+    'Ollama base URL must point at this computer or your own network (localhost, a private address or a .local name that resolves to one).',
+  );
   return trimmed.replace(/\/+$/, '').replace(/\/v1$/i, '');
 }
 
 /** Set the session Ollama endpoint; validated before its host is allowed. */
-export function setOllamaBaseUrl(raw: string, model?: string | null): string {
-  const baseUrl = validateOllamaBaseUrl(raw);
+export async function setOllamaBaseUrl(raw: string, model?: string | null): Promise<string> {
+  const baseUrl = await validateOllamaBaseUrl(raw);
   store.set('ai.ollama.baseUrl', baseUrl);
   ollamaModel = model && model.trim() !== '' ? model.trim() : null;
   const target = targetFromUrl(baseUrl);
@@ -197,13 +229,13 @@ export function getSessionSmtpServer(): SessionSmtpServer | null {
  */
 export async function allowSmtpEgress(target: { host: string; port: number; security?: SmtpSecurity }): Promise<void> {
   const security: SmtpSecurity = target.security ?? (target.port === 465 ? 'tls' : 'starttls');
-  const local = isLocalNetworkHost(target.host);
   // Clear-text SMTP (no TLS at all) only to this machine or the owner's
   // own network; the password would otherwise cross the internet in clear.
-  if (security === 'none' && !local) {
-    throw AppError.badRequest(
-      'Sending without TLS is only allowed to a mail server on this computer or your own network. Choose TLS or STARTTLS.',
+  if (security === 'none') {
+    await assertLocalNetworkHost(
+      target.host,
       'SMTP_SECURITY_REQUIRED',
+      'Sending without TLS is only allowed to a mail server on this computer or your own network. Choose TLS or STARTTLS.',
     );
   }
   if (!isLoopbackAddress(target.host)) {
@@ -211,7 +243,10 @@ export async function allowSmtpEgress(target: { host: string; port: number; secu
       throw AppError.badRequest(`SMTP port ${target.port} is not allowed (use 25, 465, 587 or 2525)`, 'SMTP_HOST_BLOCKED');
     }
     try {
-      await assertHostSafe(target.host, 'SMTP host', { allowPrivate: true });
+      // A name is resolved past the guard (it is not allowed yet) and must
+      // yield at least one address; link-local, metadata, reserved and
+      // loopback answers are refused like literals.
+      await assertHostSafe(target.host, 'SMTP host', { allowPrivate: true, lookup: dnsLookup, failClosed: true });
     } catch (err) {
       throw AppError.badRequest(err instanceof Error ? err.message : 'SMTP host is not allowed', 'SMTP_HOST_BLOCKED');
     }

@@ -227,13 +227,13 @@ desktopRouter.put(
     const input = req.body as SessionSecretsPutInput;
     // Validate everything before storing anything, so a bad Ollama URL or
     // SMTP host does not leave half the body applied.
-    const ollamaBaseUrl = input.ai?.ollama ? sessionSecrets.validateOllamaBaseUrl(input.ai.ollama.baseUrl) : null;
+    const ollamaBaseUrl = input.ai?.ollama ? await sessionSecrets.validateOllamaBaseUrl(input.ai.ollama.baseUrl) : null;
     if (input.smtp?.host) {
       await sessionSecrets.allowSmtpEgress({ host: input.smtp.host, port: input.smtp.port ?? 587, security: input.smtp.security });
     }
     if (input.ai?.anthropic) sessionSecrets.setAnthropicKey(input.ai.anthropic.apiKey);
     if (input.ai?.openai) sessionSecrets.setOpenaiKey(input.ai.openai.apiKey);
-    if (ollamaBaseUrl !== null) sessionSecrets.setOllamaBaseUrl(ollamaBaseUrl, input.ai?.ollama?.model);
+    if (ollamaBaseUrl !== null) await sessionSecrets.setOllamaBaseUrl(ollamaBaseUrl, input.ai?.ollama?.model);
     if (input.smtp?.password !== undefined) sessionSecrets.setSmtpPassword(input.smtp.password);
     res.json(sessionSecrets.sessionSecretStatus());
   },
