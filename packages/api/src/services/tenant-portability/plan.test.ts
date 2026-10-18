@@ -314,6 +314,19 @@ describe('rule 5: secrets and jsonb config', () => {
     expect(smtp.select).toMatch(/^NULL::/);
   });
 
+  it('strips secret keys from the audit row images and refuses an unclassified *_after_data json column (rule 5c, H3)', async () => {
+    const audit = plan.byName.get('audit_log')!;
+    for (const name of ['before_data', 'after_data']) {
+      const c = audit.archive.find((x) => x.name === name)!;
+      expect(c.select).toMatch(/^mybooks_strip_secret_keys\(a\."(before|after)_data"::jsonb, '/);
+      expect(c.redacted).toBe(false);
+      expect(plan.redactedColumns[`audit_log.${name}`]).toBeDefined();
+      expect(audit.canonical).toContain(name);
+    }
+    const err = await withTempDdl(['ALTER TABLE contacts ADD COLUMN zz_after_data jsonb']);
+    expect(err.code).toBe('UNCLASSIFIED_JSON_PAYLOAD');
+  });
+
   it('a redacted NOT NULL column has a replacement literal', () => {
     for (const t of plan.tables) {
       for (const c of t.archive) {

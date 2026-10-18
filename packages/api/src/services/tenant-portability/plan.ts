@@ -30,6 +30,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { DESKTOP_UNMOUNTED } from '../../desktop/features.js';
+import { SECRET_KEY_PATTERN } from '../../utils/secret-keys.js';
 
 export type DbLike = Pick<typeof db, 'execute'>;
 
@@ -633,6 +634,28 @@ export const JSON_CONFIG_COLUMNS: Record<string, JsonConfigClass> = {
   'tenants.practice_settings': 'plain',
   'tenants.share_settings': 'plain',
 };
+
+/**
+ * Rule 5c (H3). Row-shaped json payloads: the audit log's before/after
+ * images carry whole rows, credentials included (companies.smtp_pass, a
+ * Stripe key, a password hash). On export every secret-looking key
+ * (utils/secret-keys.ts, snake_case and camelCase) is stripped at every
+ * depth by the SQL function mybooks_strip_secret_keys (migration 0218);
+ * middleware/audit.ts strips the same keys when it writes, so the content
+ * digest agrees on both sides. Any json column matching STRIPPED_JSON_RE
+ * must be listed here (fail closed).
+ */
+export const STRIPPED_JSON_RE = /(^|_)(before|after)_data$/;
+
+export const STRIPPED_JSON_COLUMNS: Record<string, string> = {
+  'audit_log.before_data': 'secret-looking keys stripped from the audited row image (utils/secret-keys.ts)',
+  'audit_log.after_data': 'secret-looking keys stripped from the audited row image (utils/secret-keys.ts)',
+};
+
+/** The SQL expression that strips secret keys from a json column of alias `a` (H3). */
+export function stripSecretKeysSql(column: string, type: string): string {
+  return `mybooks_strip_secret_keys(a."${column}"::jsonb, '${SECRET_KEY_PATTERN}')::${type} AS "${column}"`;
+}
 
 /** Rule 7. Columns matching FILE_COLUMN_RE on archived or identity tables, plus explicit extras. */
 export const FILE_COLUMN_RE = /(file_path|storage_key|transient_key|_url|_path)$/;
@@ -1281,6 +1304,7 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
   staleKeys('SOFT_REFS', SOFT_REFS, (t) => classifiedSet.has(t));
   staleKeys('SECRET_COLUMNS', SECRET_COLUMNS, (t, c) => classifiedSet.has(t) && SECRET_COLUMN_RE.test(c));
   staleKeys('JSON_CONFIG_COLUMNS', JSON_CONFIG_COLUMNS, (t, c) => classifiedSet.has(t) && JSON_CONFIG_RE.test(c) && /json/.test(col(t, c)!.type));
+  staleKeys('STRIPPED_JSON_COLUMNS', STRIPPED_JSON_COLUMNS, (t, c) => archivedSet.has(t) && /json/.test(col(t, c)!.type));
   staleKeys('FILE_COLUMNS', FILE_COLUMNS, (t) => classifiedSet.has(t));
   staleKeys('UNIQUE_INDEX_RULES', UNIQUE_INDEX_RULES, (t) => classifiedSet.has(t));
   staleKeys('GLOBAL_FK_RULES', GLOBAL_FK_RULES, (t) => archivedSet.has(t));
@@ -1358,6 +1382,11 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
       }
       if (SECRET_COLUMN_RE.test(c.name) && !SECRET_COLUMNS[k]) fail('UNCLASSIFIED_SECRET', k);
       if (/json/.test(c.type) && JSON_CONFIG_RE.test(c.name) && !JSON_CONFIG_COLUMNS[k]) fail('UNCLASSIFIED_JSON_CONFIG', k);
+      if (/json/.test(c.type) && STRIPPED_JSON_RE.test(c.name) && !STRIPPED_JSON_COLUMNS[k]) fail('UNCLASSIFIED_JSON_PAYLOAD', k);
+      if (STRIPPED_JSON_COLUMNS[k]) {
+        if (!/json/.test(c.type)) fail('INVALID_SECRET_RULE', `${k}: stripped column must be json/jsonb`);
+        redactedColumns[k] = STRIPPED_JSON_COLUMNS[k]!;
+      }
       if (FILE_COLUMN_RE.test(c.name) && !FILE_COLUMNS[k]) fail('UNCLASSIFIED_FILE_COLUMN', k);
       const fr = FILE_COLUMNS[k];
       if (fr) {
@@ -1409,6 +1438,8 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
         redacted = true;
       } else if (nulledTarget) {
         select = `NULL::${c.type} AS "${c.name}"`;
+      } else if (STRIPPED_JSON_COLUMNS[k]) {
+        select = stripSecretKeysSql(c.name, c.type);
       }
       return { name: c.name, type: c.type, select, redacted, nulledReference: nulledTarget };
     });

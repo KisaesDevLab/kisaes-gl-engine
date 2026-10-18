@@ -16,6 +16,7 @@ import * as unzipper from 'unzipper';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { encryptBuffer, decryptBuffer } from '../../utils/encryption.js';
+import { auditLog } from '../../middleware/audit.js';
 import { ArchiveReader } from './archive-reader.js';
 import { encryptEntryBuffer, NoncePrefixRegistry, openEnvelope, validateEnvelope } from './archive-crypto.js';
 import { ArchiveError } from './errors.js';
@@ -167,6 +168,17 @@ async function seedTenant(): Promise<Seed> {
   for (let i = 0; i < 5; i++) {
     await q(`INSERT INTO audit_log (tenant_id, user_id, action, entity_type, entity_id, after_data) VALUES ($1, $2, 'update', 'account', $3, $4::jsonb)`, [tenantId, ownerId, cash, JSON.stringify({ i })]);
   }
+  // H3 canaries: a raw audit row image carrying secrets at several depths (as
+  // older engines wrote them), and one written through auditLog() today.
+  await q(`INSERT INTO audit_log (tenant_id, user_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1, $2, 'update', 'company', $3, $4::jsonb, $5::jsonb)`,
+    [tenantId, ownerId, c1!.id, JSON.stringify({ smtp_pass: `AUDIT-CANARY-A-${stamp}`, business_name: 'RT Co One' }), JSON.stringify({
+      smtpPass: `AUDIT-CANARY-B-${stamp}`, nested: { stripe: { secretKeyEncrypted: `AUDIT-CANARY-C-${stamp}` } }, list: [{ apiKey: `AUDIT-CANARY-D-${stamp}` }, 'x'],
+      remote_backup_config: { token: `AUDIT-CANARY-E-${stamp}` }, kept: 'plain', inputTokens: 12,
+    })]);
+  await auditLog(tenantId, 'update', 'company', c1!.id, { smtpPass: `AUDIT-CANARY-F-${stamp}` }, { smtp_pass: `AUDIT-CANARY-G-${stamp}`, business_name: 'RT Co One' }, ownerId);
+  // A row in the shape auditLog() wrote before it stripped (a JSON string holding the image).
+  await q(`INSERT INTO audit_log (tenant_id, user_id, action, entity_type, entity_id, after_data) VALUES ($1, $2, 'update', 'company', $3, to_jsonb($4::text))`,
+    [tenantId, ownerId, c1!.id, JSON.stringify({ smtp_pass: `AUDIT-CANARY-H-${stamp}`, business_name: 'RT Co One', stripe: { secretKeyEncrypted: `AUDIT-CANARY-I-${stamp}` } })]);
   return {
     tenantId, ownerId, lanUserId, callerId, c1: c1!.id, c2: c2!.id, cash, sales, ar, customer: customer!.id, vendor: vendor!.id,
     invoice, draft, attachmentIds, signatureId, signatureBytes, logoName: `rt-logo-${stamp}.png`, logoBytes, reconciliationId: rec!.id,
@@ -286,7 +298,7 @@ describe('export', () => {
     expect(m.host).toEqual({ app: 'ClientLedger', kind: 'backup' });
     expect(m.source.tenantId).toBe(seed.tenantId);
     expect(m.tables.find((t) => t.name === 'journal_lines')!.rows).toBe(9);
-    expect(m.tables.find((t) => t.name === 'audit_log')!.rows).toBe(5);
+    expect(m.tables.find((t) => t.name === 'audit_log')!.rows).toBe(8);
     expect(m.trialBalance.rows.length).toBeGreaterThan(3);
     expect(m.redactedColumns['companies.smtp_pass']).toBeDefined();
     expect(m.redactedColumns['companies.remote_backup_config']).toBeDefined();
@@ -313,6 +325,25 @@ describe('export', () => {
     expect(users.join('\n')).toContain('$2b$12$');
     expect(users.join('\n')).not.toContain('tenant_id');
     expect(users.join('\n')).not.toContain('tfa_');
+    // H3: audit row images travel without any secret-looking key, at every depth; plain keys survive.
+    expect(raw.includes('AUDIT-CANARY')).toBe(false);
+    const audit: string[] = [];
+    for await (const l of reader.lines(tablePartName('audit_log'))) audit.push(l);
+    const auditText = audit.join('\n');
+    expect(auditText).not.toContain('AUDIT-CANARY');
+    for (const k of ['smtp_pass', 'smtpPass', 'secretKeyEncrypted', 'apiKey', 'remote_backup_config']) expect(auditText, k).not.toContain(k);
+    expect(auditText).toContain('"kept": "plain"');
+    expect(auditText).toContain('"inputTokens": 12');
+    expect(auditText).toContain('"business_name": "RT Co One"');
+    expect(reader.manifest.redactedColumns['audit_log.after_data']).toBeDefined();
+    // auditLog() itself never stored the canary (it keeps writing the image as a JSON string, as before).
+    const live = await q<{ before_data: unknown; after_data: unknown }>(
+      `SELECT before_data, after_data FROM audit_log WHERE tenant_id = $1 AND entity_type = 'company' ORDER BY id`, [seed.tenantId]);
+    expect(live).toHaveLength(3);
+    expect(JSON.parse(live[1]!.before_data as string)).toEqual({});
+    expect(JSON.parse(live[1]!.after_data as string)).toEqual({ business_name: 'RT Co One' });
+    expect(JSON.stringify(live[0])).toContain('AUDIT-CANARY'); // raw rows keep their secrets live; the archive strips them
+    expect(JSON.stringify(live[2])).toContain('AUDIT-CANARY');
   }, 60_000);
 
   it('a failed export leaves no file, no partial and no audit row; an audit failure gives AUDIT_NOT_WRITTEN (MT22)', async () => {
