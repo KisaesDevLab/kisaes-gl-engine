@@ -123,6 +123,13 @@ describe('lifecycle routes', () => {
   let fileName = '';
   let archiveId = '';
 
+  it('advertises the tenant capabilities on /desktop/info', async () => {
+    const info = await call('GET', '/api/v1/desktop/info');
+    expect(info.status).toBe(200);
+    expect(info.json['capabilities']).toEqual(['tenants-list-v1', 'tenant-archive-v1']);
+    expect(info.json['workspaceTenantId']).toBe(workspaceId);
+  });
+
   it('creates and lists companies from the workspace session, never the workspace itself', async () => {
     const before = await call('GET', '/api/v1/tenants');
     expect(before.status).toBe(200);
@@ -139,6 +146,20 @@ describe('lifecycle routes', () => {
     const { sql } = await import('drizzle-orm');
     const firms = await dbm.db.execute(sql`SELECT count(*)::int AS n FROM tenant_firm_assignments WHERE tenant_id = ${companyId}`);
     expect((firms.rows[0] as { n: number }).n).toBe(0);
+  }, 60_000);
+
+  it('seeds only the system accounts when systemAccountsOnly is set', async () => {
+    const created = await call('POST', '/api/v1/tenants', { name: `Routes Sys ${stamp}`, systemAccountsOnly: true });
+    expect(created.status).toBe(201);
+    tenantsToClean.push(created.json['id'] as string);
+    const { sql } = await import('drizzle-orm');
+    const count = async (id: string) => Number(((await dbm.db.execute(sql`SELECT count(*)::int AS n FROM accounts WHERE tenant_id = ${id}`)).rows[0] as { n: number }).n);
+    const full = await count(companyId);
+    const system = await count(created.json['id'] as string);
+    expect(system).toBeGreaterThan(0);
+    expect(system).toBeLessThan(full);
+    const only = await dbm.db.execute(sql`SELECT count(*)::int AS n FROM accounts WHERE tenant_id = ${created.json['id'] as string} AND is_system = false`);
+    expect((only.rows[0] as { n: number }).n).toBe(0);
   }, 60_000);
 
   it('renames with an expectedUpdatedAt check and refuses the workspace', async () => {
@@ -218,6 +239,7 @@ describe('lifecycle routes', () => {
     tenantsToClean.push(result['tenantId'] as string);
     expect(result['name']).toBe(`Restored by path ${stamp}`);
     expect((result['verification'] as Record<string, unknown>)['contentEqual']).toBe(true);
+    expect(result['host']).toEqual({ app: 'ClientLedger', kind: 'backup' });
     expect(fs.existsSync(archivePath)).toBe(true); // a path import never consumes the file
 
     const wrong = await call('POST', '/api/v1/tenant-archives/import', { path: archivePath, passphrase: 'wrong passphrase 123' });
@@ -242,7 +264,7 @@ describe('lifecycle routes', () => {
 
     const list = await call('GET', '/api/v1/tenants');
     expect((list.json as unknown as Array<{ name: string }>).map((t) => t.name).sort()).toEqual([
-      `Restored by path ${stamp}`, `Restored by upload ${stamp}`, `Routes Co renamed ${stamp}`,
+      `Restored by path ${stamp}`, `Restored by upload ${stamp}`, `Routes Co renamed ${stamp}`, `Routes Sys ${stamp}`,
     ]);
   }, 300_000);
 

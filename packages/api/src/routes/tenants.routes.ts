@@ -82,6 +82,8 @@ export const createTenantSchema = z.object({
   businessType: z.string().trim().max(120).optional(),
   /** Alias of businessType (the chart-of-accounts template slug). */
   coaTemplate: z.string().trim().max(120).optional(),
+  /** Seed only the required system accounts (same as auth/create-tenant), e.g. before importing a chart. */
+  systemAccountsOnly: z.boolean().optional(),
 });
 
 tenantsRouter.post('/', requireSessionAuth, validate(createTenantSchema), describe({
@@ -93,6 +95,7 @@ tenantsRouter.post('/', requireSessionAuth, validate(createTenantSchema), descri
   const result = await authService.createOwnedTenant(req.userId, req.userRole, {
     companyName: body.name,
     businessType: body.businessType ?? body.coaTemplate,
+    systemAccountsOnly: body.systemAccountsOnly,
   });
   res.status(201).json({ id: result.tenantId, name: result.tenantName, companyId: result.companyId });
 });
