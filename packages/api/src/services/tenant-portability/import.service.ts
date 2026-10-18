@@ -150,6 +150,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   step('id-map', 17);
   const idMap = new IdMap();
   const newTenantId = idMap.fresh(manifest.source.tenantId);
+  progress?.claim(newTenantId);
   const skipped = new Set(compat.skippedTables);
   const tablesInOrder: ManifestTable[] = [];
   for (const t of plan.tables) {
@@ -437,21 +438,57 @@ async function insertTable(
   if (inserted !== mt.rows) throw new ArchiveError('ARCHIVE_VERIFY_FAILED', 'Row count mismatch during insert.', { table: mt.name, expected: mt.rows, actual: inserted });
 }
 
-/** Removes `.import-pending` upload dirs whose tenant row does not exist (boot sweep). */
+/**
+ * Removes `.import-pending` upload dirs whose tenant row does not exist
+ * (boot and hourly sweep). A running import has no tenant row yet either
+ * (it commits last), so the sweep skips every id an in-process job has
+ * claimed and every tenant id whose advisory lock is held (M2).
+ */
 export async function sweepImportPending(uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads'): Promise<number> {
   if (!fs.existsSync(uploadDir)) return 0;
   const { db } = await import('../../db/index.js');
   const { sql } = await import('drizzle-orm');
+  const { activeJobResources } = await import('./jobs.js');
+  const { tenantLockIsFree } = await import('./export.service.js');
+  const active = activeJobResources();
   let removed = 0;
   for (const d of fs.readdirSync(uploadDir, { withFileTypes: true })) {
     if (!d.isDirectory() || !/^[0-9a-f-]{36}$/.test(d.name)) continue;
+    if (active.has(d.name.toLowerCase())) continue;
     const marker = path.join(uploadDir, d.name, '.import-pending');
     if (!fs.existsSync(marker)) continue;
     const exists = (await db.execute(sql`SELECT 1 FROM tenants WHERE id = ${d.name}`)).rows.length > 0;
     if (exists) continue;
+    if (!(await tenantLockIsFree(d.name))) continue;
     fs.rmSync(path.join(uploadDir, d.name), { recursive: true, force: true });
     fs.rmSync(path.join(uploadDir, 'signatures', d.name), { recursive: true, force: true });
     fs.rmSync(path.join(uploadDir, 'payroll', d.name), { recursive: true, force: true });
+    removed++;
+  }
+  return removed;
+}
+
+/** Uploaded archives are deleted when their job ends; one older than this with no job is a leftover. */
+export const STALE_UPLOAD_MS = 60 * 60 * 1000;
+
+/** Removes `*.upload.zip` files in the imports directory that no job claims and that are older than STALE_UPLOAD_MS. */
+export async function sweepStaleUploads(importsDir: string, now = Date.now()): Promise<number> {
+  if (!fs.existsSync(importsDir)) return 0;
+  const { activeJobResources } = await import('./jobs.js');
+  const active = activeJobResources();
+  let removed = 0;
+  for (const f of fs.readdirSync(importsDir)) {
+    if (!f.endsWith('.upload.zip')) continue;
+    const full = path.join(importsDir, f);
+    if (active.has(full.toLowerCase()) || active.has(path.resolve(full).toLowerCase())) continue;
+    let mtime: number;
+    try {
+      mtime = fs.statSync(full).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (now - mtime < STALE_UPLOAD_MS) continue;
+    fs.rmSync(full, { force: true });
     removed++;
   }
   return removed;

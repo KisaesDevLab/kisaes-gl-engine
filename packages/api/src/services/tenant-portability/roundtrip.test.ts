@@ -23,7 +23,8 @@ import { encryptEntryBuffer, NoncePrefixRegistry, openEnvelope, validateEnvelope
 import { ArchiveError } from './errors.js';
 import { ARCHIVE_PASSWORD_PLACEHOLDER } from './identity.js';
 import { _exportTestHooks, runExport, archiveDir, sweepPartialArchives, type ExportResult } from './export.service.js';
-import { _importTestHooks, runImport, sweepImportPending } from './import.service.js';
+import { _importTestHooks, runImport, sweepImportPending, sweepStaleUploads } from './import.service.js';
+import { startJob, waitForJob } from './jobs.js';
 import { computeTenantFingerprint, computeTrialBalance, fingerprintDiff } from './fingerprint.js';
 import { ENVELOPE_ENTRY, MANIFEST_ENTRY, tablePartName, zipEntryName, type ArchiveManifest } from './format.js';
 import { buildPortabilityPlan, scopeSql, type PortabilityPlan } from './plan.js';
@@ -405,8 +406,61 @@ describe('export', () => {
     fs.rmSync(r.path!);
     // A stray .partial is swept at boot.
     fs.writeFileSync(path.join(dir, 'stray.partial'), 'x');
-    expect(sweepPartialArchives()).toBe(1);
+    expect(await sweepPartialArchives()).toBe(1);
   }, 120_000);
+
+  it('the sweeps leave a running export, a running import and a claimed upload alone (M2)', async () => {
+    const dir = path.join(archiveDir(), seed.tenantId);
+    // A partial of the tenant being exported survives a sweep that runs while the export holds its lock.
+    let sweptDuringExport = -1;
+    let partialSeen = false;
+    _exportTestHooks.beforeFinalize = async () => {
+      fs.writeFileSync(path.join(dir, 'stray-during-export.partial'), 'x');
+      sweptDuringExport = await sweepPartialArchives();
+      partialSeen = fs.existsSync(path.join(dir, 'stray-during-export.partial'));
+    };
+    const r = await runExport(seed.tenantId, seed.callerId, { passphrase: PASS });
+    delete _exportTestHooks.beforeFinalize;
+    expect(sweptDuringExport).toBe(0);
+    expect(partialSeen).toBe(true);
+    expect(await sweepPartialArchives()).toBe(1); // the lock is gone: the stray goes
+    fs.rmSync(r.path!, { force: true });
+    await q(`DELETE FROM audit_log WHERE tenant_id = $1 AND entity_type = 'tenant_archive' AND entity_id = $2`, [seed.tenantId, r.archiveId]);
+    // The pending upload dir of a running import survives a sweep that runs inside its transaction.
+    let sweptDuringImport = -1;
+    let pendingSeen = false;
+    let pendingId = '';
+    _importTestHooks.beforeVerify = async ({ newTenantId }) => {
+      pendingId = newTenantId;
+      sweptDuringImport = await sweepImportPending();
+      pendingSeen = fs.existsSync(path.join(uploadDir, newTenantId, '.import-pending'));
+      throw new ArchiveError('ARCHIVE_VERIFY_FAILED', 'stop here (test)');
+    };
+    await expectCode(runImport({ filePath: exported.path!, passphrase: PASS, callerUserId: seed.callerId }), 'ARCHIVE_VERIFY_FAILED');
+    expect(sweptDuringImport).toBe(0);
+    expect(pendingSeen).toBe(true);
+    expect(fs.existsSync(path.join(uploadDir, pendingId))).toBe(false); // rolled back and cleaned by the import itself
+    // Leftover uploads: an old unclaimed file goes, a fresh one and a claimed one stay.
+    const importsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-imports-'));
+    const old = path.join(importsDir, 'old.upload.zip');
+    const fresh = path.join(importsDir, 'fresh.upload.zip');
+    const claimed = path.join(importsDir, 'claimed.upload.zip');
+    for (const f of [old, fresh, claimed]) fs.writeFileSync(f, 'x');
+    const past = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    fs.utimesSync(old, past, past);
+    fs.utimesSync(claimed, past, past);
+    let release: () => void = () => undefined;
+    const job = startJob('import', null, seed.callerId, () => new Promise<void>((resolve) => { release = resolve; }), [claimed]);
+    await new Promise((r2) => setTimeout(r2, 10));
+    expect(await sweepStaleUploads(importsDir)).toBe(1);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(claimed)).toBe(true);
+    release();
+    await waitForJob(job.id);
+    expect(await sweepStaleUploads(importsDir)).toBe(1);
+    fs.rmSync(importsDir, { recursive: true, force: true });
+  }, 180_000);
 
   it('refuses a weak passphrase, an oversized host object and a missing tenant', async () => {
     await expectCode(runExport(seed.tenantId, seed.ownerId, { passphrase: 'short' }), 'PASSPHRASE_TOO_WEAK');

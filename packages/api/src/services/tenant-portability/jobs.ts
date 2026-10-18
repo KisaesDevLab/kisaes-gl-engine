@@ -28,10 +28,18 @@ export interface JobState<R = unknown> {
   error?: { code: string; message: string; details?: Record<string, unknown> };
   createdAt: number;
   finishedAt?: number;
+  /**
+   * Ids and paths the job is working on (tenant ids, the archive id, an
+   * uploaded file): the sweeps never touch a resource of a queued or
+   * running job (M2).
+   */
+  resources: Set<string>;
 }
 
 export interface JobProgress {
   set(step: string, progress: number): void;
+  /** Registers a resource (tenant id, archive id or file path) the sweeps must leave alone while the job runs. */
+  claim(resource: string): void;
 }
 
 const JOB_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -42,22 +50,38 @@ function sweep(): void {
   for (const [id, j] of jobs) if (j.finishedAt && j.finishedAt < cutoff) jobs.delete(id);
 }
 
-/** Starts a job; the runner reports progress and returns the result. */
+/** Every resource claimed by a queued or running job, plus their tenant ids (lower-cased). */
+export function activeJobResources(): Set<string> {
+  const out = new Set<string>();
+  for (const j of jobs.values()) {
+    if (j.status !== 'queued' && j.status !== 'running') continue;
+    if (j.tenantId) out.add(j.tenantId.toLowerCase());
+    for (const r of j.resources) out.add(r.toLowerCase());
+  }
+  return out;
+}
+
+/** Starts a job; the runner reports progress and returns the result. `resources` are claimed up front. */
 export function startJob<R>(
   kind: JobState['kind'],
   tenantId: string | null,
   userId: string,
   runner: (progress: JobProgress) => Promise<R>,
+  resources: string[] = [],
 ): JobState<R> {
   sweep();
   const job: JobState<R> = {
     id: crypto.randomUUID(), kind, tenantId, userId, status: 'queued', progress: 0, step: 'queued', createdAt: Date.now(),
+    resources: new Set(resources),
   };
   jobs.set(job.id, job);
   const progress: JobProgress = {
     set(step, p) {
       job.step = step;
       job.progress = Math.max(0, Math.min(100, Math.round(p)));
+    },
+    claim(resource) {
+      job.resources.add(resource);
     },
   };
   // Runs on the next tick so the caller can return the id first.

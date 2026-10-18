@@ -45,7 +45,8 @@ import {
   type PortabilityPlan, type TablePlan,
 } from './plan.js';
 import { digestFor, fieldString, pkOfLine } from './remap.js';
-import { acquireSharedTenantLock, applyArchiveSession, releaseSharedTenantLock, withArchiveConnection, type ArchiveClient } from './session.js';
+import { activeJobResources } from './jobs.js';
+import { acquireSharedTenantLock, applyArchiveSession, releaseSharedTenantLock, tryExclusiveTenantLock, withArchiveConnection, type ArchiveClient } from './session.js';
 
 export interface ExportOptions {
   includeAttachments?: boolean;
@@ -297,8 +298,10 @@ async function exportLocked(
 ): Promise<ExportResult> {
   const plan = await getPortabilityPlan();
   const archiveId = o.archiveId;
+  progress?.claim(tenantId);
+  progress?.claim(archiveId);
   const dir = path.join(archiveDir(), tenantId);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const partial = path.join(dir, `${archiveId}.partial`);
   const finalPath = path.join(dir, archiveFileName(archiveId));
   const warnings: string[] = [];
@@ -491,18 +494,46 @@ async function exportLocked(
   });
 }
 
-/** Removes `.partial` archives left by a crash (boot sweep). */
-export function sweepPartialArchives(root = archiveDir()): number {
+/**
+ * True when nobody holds the tenant's advisory lock in any mode right now:
+ * an export (shared session lock) or an import (exclusive transaction
+ * lock) in another process makes the probe fail. The probe's own lock is
+ * released with the rollback.
+ */
+export async function tenantLockIsFree(tenantId: string): Promise<boolean> {
+  if (!UUID_DIR_RE.test(tenantId)) return true;
+  return withArchiveConnection(async (client) => {
+    await client.query('BEGIN');
+    try {
+      return await tryExclusiveTenantLock(client, tenantId);
+    } finally {
+      await client.query('ROLLBACK').catch(() => undefined);
+    }
+  });
+}
+
+const UUID_DIR_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Removes `.partial` archives left by a crash (boot and hourly sweep). A
+ * partial of a running job is never touched (M2): the sweep skips every
+ * tenant id and archive id an in-process job has claimed, and then every
+ * tenant whose advisory lock is held (an export in another process).
+ */
+export async function sweepPartialArchives(root = archiveDir()): Promise<number> {
   let removed = 0;
   if (!fs.existsSync(root)) return 0;
+  const active = activeJobResources();
   for (const tenantDir of fs.readdirSync(root, { withFileTypes: true })) {
     if (!tenantDir.isDirectory()) continue;
+    if (active.has(tenantDir.name.toLowerCase())) continue;
     const dir = path.join(root, tenantDir.name);
-    for (const f of fs.readdirSync(dir)) {
-      if (f.endsWith('.partial')) {
-        fs.rmSync(path.join(dir, f), { force: true });
-        removed++;
-      }
+    const partials = fs.readdirSync(dir).filter((f) => f.endsWith('.partial') && !active.has(f.slice(0, -'.partial'.length).toLowerCase()));
+    if (partials.length === 0) continue;
+    if (!(await tenantLockIsFree(tenantDir.name))) continue;
+    for (const f of partials) {
+      fs.rmSync(path.join(dir, f), { force: true });
+      removed++;
     }
   }
   return removed;

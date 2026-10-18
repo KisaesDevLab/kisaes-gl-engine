@@ -193,6 +193,6 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
     } finally {
       if (temporary) fs.rmSync(filePath, { force: true });
     }
-  });
+  }, temporary ? [filePath] : []);
   res.status(202).json({ jobId: job.id });
 });
