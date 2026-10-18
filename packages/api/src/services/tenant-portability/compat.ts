@@ -88,6 +88,14 @@ export function checkSchemaCompatibility(
       }
       throw new ArchiveError('ARCHIVE_TABLE_UNKNOWN', `The archive holds a table this version does not have: ${mt.name}.`, { table: mt.name });
     }
+    // The pk shape and bucket drive id remapping, file rewriting and scope
+    // on import; an archive may not redefine them (H2).
+    if (mt.pk !== live.pk) {
+      throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (${mt.name}: pk shape ${mt.pk} differs from ${live.pk}).`, { table: mt.name });
+    }
+    if (mt.bucket !== live.bucket) {
+      throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (${mt.name}: bucket ${mt.bucket} differs from ${live.bucket}).`, { table: mt.name });
+    }
     const liveCols = new Map(live.columns.map((c) => [c.name, c]));
     const tc: TableCompat = { table: mt.name, insertColumns: [], skippedColumns: [], backfill: [], defaulted: [], widened: [] };
     const archiveCols = new Set<string>();

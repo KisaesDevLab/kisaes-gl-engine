@@ -25,6 +25,7 @@ import { CHECK_SIGNATURE_MAX_WIDTH, CHECK_SIGNATURE_MAX_HEIGHT, type CheckSignat
 import { encryptBuffer, decryptBuffer } from '../utils/encryption.js';
 import { sniffImageMime, imageDimensions } from '../utils/image-dimensions.js';
 import { writeAtomicSync } from '../utils/atomic-write.js';
+import { resolveInside } from '../utils/contained-path.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -77,8 +78,15 @@ function storeImage(tenantId: string, id: string, buffer: Buffer): string {
   return relPath;
 }
 
-function unlinkQuietly(relPath: string): void {
-  try { fs.unlinkSync(path.join(env.UPLOAD_DIR, relPath)); } catch { /* best-effort */ }
+/** The stored signature path, resolved inside the tenant's own signature folder (H2), or null. */
+function signaturePath(tenantId: string, relPath: string): string | null {
+  return resolveInside(signatureDir(tenantId), path.join(env.UPLOAD_DIR, relPath));
+}
+
+function unlinkQuietly(tenantId: string, relPath: string): void {
+  const full = signaturePath(tenantId, relPath);
+  if (!full) return;
+  try { fs.unlinkSync(full); } catch { /* best-effort */ }
 }
 
 const publicShape = (s: typeof checkSignatures.$inferSelect, sigUsers: CheckSignature['users']): CheckSignature => ({
@@ -194,7 +202,7 @@ export async function replaceImage(tenantId: string, id: string, file: Signature
   const sha256 = crypto.createHash('sha256').update(file.buffer).digest('hex');
   await db.update(checkSignatures).set({ filePath, mimeType: mime, width, height, sha256, updatedAt: new Date() })
     .where(eq(checkSignatures.id, id));
-  unlinkQuietly(sig.filePath);
+  unlinkQuietly(tenantId, sig.filePath);
   await auditLog(tenantId, 'update', 'check_signature', id,
     { width: sig.width, height: sig.height, sha256: sig.sha256 },
     { width, height, sha256 }, userId);
@@ -226,7 +234,7 @@ export async function deleteSignature(tenantId: string, id: string, userId: stri
     await tx.update(checkSignatures).set({ isActive: false, updatedAt: new Date() }).where(eq(checkSignatures.id, id));
     await tx.delete(checkSignatureUsers).where(eq(checkSignatureUsers.signatureId, id));
   });
-  unlinkQuietly(sig.filePath);
+  unlinkQuietly(tenantId, sig.filePath);
   await auditLog(tenantId, 'delete', 'check_signature', id, { label: sig.label }, null, userId);
 }
 
@@ -255,7 +263,9 @@ export interface LoadedSignature {
 /** Decrypt the image into memory (only ever into memory). */
 export async function loadSignatureImage(tenantId: string, signatureId: string): Promise<LoadedSignature> {
   const sig = await getOwned(tenantId, signatureId);
-  const payload = fs.readFileSync(path.join(env.UPLOAD_DIR, sig.filePath), 'utf8');
+  const full = signaturePath(tenantId, sig.filePath);
+  if (!full) throw AppError.badRequest('Stored signature image is missing — re-upload it', 'SIGNATURE_CORRUPT');
+  const payload = fs.readFileSync(full, 'utf8');
   const bytes = decryptBuffer(payload);
   const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
   if (sha256 !== sig.sha256) {

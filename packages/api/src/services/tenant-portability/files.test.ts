@@ -166,6 +166,48 @@ describe('logo-url', () => {
   });
 });
 
+describe('H2: an archived value never reaches a local path column', () => {
+  it('drops a non-bundled value for every local resolver, with a tenant-rooted placeholder', () => {
+    const rowId = crypto.randomUUID();
+    const cases: Array<[string, string]> = [
+      ['check_signatures.file_path', '../../etc/passwd'],
+      ['check_signatures.file_path', `signatures/${OLD_TENANT}/x.enc`],
+      ['payroll_import_sessions.file_path', '/etc/passwd'],
+      ['payroll_import_sessions.companion_file_path', `${uploadDir}/payroll/x.csv`],
+      ['companies.logo_url', '/uploads/logos/../../x'],
+      ['companies.logo_url', '/uploads/logos/legit.png'],
+      ['attachments.storage_key', `${OLD_TENANT}/attachments/a.pdf`],
+      ['attachments.storage_key', '../../../etc/passwd'],
+    ];
+    for (const [col, value] of cases) {
+      const t = resolveForImport(FILE_COLUMNS[col]!, { uploadDir }, NEW_TENANT, rowId, value, false);
+      expect(t.value, `${col} ${value}`).toBeNull();
+      expect(t.nulled, `${col} ${value}`).toBe(true);
+      expect(t.write).toBeUndefined();
+      // Logos live in the shared logos/ folder; every other placeholder sits in the new tenant's folder.
+      if (col !== 'companies.logo_url') expect(t.placeholder, `${col} ${value}`).toContain(NEW_TENANT);
+      else expect(t.placeholder, `${col} ${value}`).toMatch(/^\/uploads\/logos\/[0-9a-f-]{36}\.missing$/);
+      expect(t.placeholder, `${col} ${value}`).toContain(rowId);
+      expect(t.placeholder, `${col} ${value}`).not.toContain('..');
+    }
+    // A NULL archived value is simply NULL (not a dropped value).
+    const n = resolveForImport(FILE_COLUMNS['check_signatures.file_path']!, { uploadDir }, NEW_TENANT, rowId, null, false);
+    expect(n.value).toBeNull();
+    expect(n.nulled).toBeFalsy();
+  });
+
+  it('derives the attachments path mirror from the new key only, never from the archived path', () => {
+    const rowId = crypto.randomUUID();
+    const rule = FILE_COLUMNS['attachments.file_path']!;
+    const withKey = resolveForImport(rule, { uploadDir }, NEW_TENANT, rowId, '/uploads/../../etc/passwd', false, { storage_key: `${NEW_TENANT}/attachments/${rowId}.pdf` });
+    expect(withKey.value).toBe(`/uploads/${NEW_TENANT}/attachments/${rowId}.pdf`);
+    const noKey = resolveForImport(rule, { uploadDir }, NEW_TENANT, rowId, '/uploads/../../etc/passwd', false, { storage_key: null });
+    expect(noKey.value).toBeNull();
+    expect(noKey.nulled).toBe(true);
+    expect(noKey.placeholder).toBe(`/uploads/${NEW_TENANT}/attachments/${rowId}.missing`);
+  });
+});
+
 describe('null, external, not-a-file and containment', () => {
   it('nulls cache columns and keeps opaque values', () => {
     expect(resolveForImport(FILE_COLUMNS['attachments.local_cache_path']!, { uploadDir }, NEW_TENANT, crypto.randomUUID(), '/tmp/x', false).value).toBeNull();

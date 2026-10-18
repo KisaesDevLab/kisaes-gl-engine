@@ -4,15 +4,23 @@
 
 import fs from 'fs';
 import path from 'path';
+import { keyBelongsToTenant } from '../../utils/contained-path.js';
 import type { StorageProvider, FileMetadata, StorageResult, HealthResult } from './storage-provider.interface.js';
 
 export class LocalProvider implements StorageProvider {
   readonly name = 'local';
   readonly requiresOAuth = false;
   private basePath: string;
+  private readonly tenantScope: string | null;
 
-  constructor(basePath: string = '/data/uploads') {
+  /**
+   * `tenantScope`: when set (the factory sets it for a tenant's own local
+   * provider), every key must belong to that tenant's folder as well
+   * (utils/contained-path.ts keyBelongsToTenant).
+   */
+  constructor(basePath: string = '/data/uploads', tenantScope: string | null = null) {
     this.basePath = process.env['UPLOAD_DIR'] || basePath;
+    this.tenantScope = tenantScope;
   }
 
   private resolvePath(key: string): string {
@@ -20,13 +28,15 @@ export class LocalProvider implements StorageProvider {
     // provider goes through here, so a key from ANY caller (attachments,
     // DR restore bundles, exports) is confined to basePath. Absolute keys,
     // NUL bytes, backslashes and any `.` / `..` segment are refused, and
-    // the resolved path must stay inside the root.
+    // the resolved path must stay inside the root. A tenant-scoped
+    // provider additionally refuses another tenant's folder.
     if (typeof key !== 'string' || key.length === 0 || key.includes('\0') || key.includes('\\')) {
       throw new Error('Invalid storage key');
     }
     for (const seg of key.split('/')) {
       if (seg === '.' || seg === '..') throw new Error('Invalid storage key');
     }
+    if (this.tenantScope && !keyBelongsToTenant(key, this.tenantScope)) throw new Error('Storage key is outside the tenant scope');
     const root = path.resolve(this.basePath);
     const full = path.resolve(root, key.replace(/^\/+/, ''));
     if (full !== root && !full.startsWith(root + path.sep)) throw new Error('Invalid storage key');

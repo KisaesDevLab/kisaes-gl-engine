@@ -170,6 +170,12 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   for await (const line of reader.lines(IDENTITY_ENTRIES.tenant)) tenantLinesRaw.push(line);
   if (tenantLinesRaw.length !== 1) throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (tenant row).');
   const fileIndex = new Map(manifest.files.map((f) => [`${f.table}/${f.column}/${f.rowId.toLowerCase()}`, f]));
+  const files: FileRewriteContext = {
+    index: fileIndex,
+    explained: explainedAbsences(manifest),
+    includeAttachments: manifest.options.includeAttachments,
+    notBundled: new Map(),
+  };
   const workspaceTenantId = await getWorkspaceTenantId();
   const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
   let provider: StorageProvider | null = null;
@@ -222,8 +228,9 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         const mt = tablesInOrder[i]!;
         const t = plan.byName.get(mt.name)!;
         step(`insert:${mt.name}`, 25 + Math.round((i / tablesInOrder.length) * 45));
-        await insertTable(client, reader, plan, t, mt, compat, idMap, newTenantId, unresolved, fileIndex, { uploadDir, providerFor }, written, deferred);
+        await insertTable(client, reader, plan, t, mt, compat, idMap, newTenantId, unresolved, files, { uploadDir, providerFor }, written, deferred);
       }
+      for (const [col, n] of files.notBundled) warnings.push(`FILE_NOT_BUNDLED:${col}:${n}`);
       for (const d of deferred) {
         await client.query(`UPDATE "${d.table}" SET "${d.column}" = $2 WHERE id = $1`, [d.id, d.value]);
       }
@@ -284,6 +291,26 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   });
 }
 
+interface FileRewriteContext {
+  /** `table/column/rowId` -> manifest file entry. */
+  index: Map<string, ArchiveManifest['files'][number]>;
+  /** `table.column:rowId` keys whose absence the exporting engine recorded (warnings). */
+  explained: Set<string>;
+  includeAttachments: boolean;
+  /** `table.column` -> rows whose file value was dropped with an explanation. */
+  notBundled: Map<string, number>;
+}
+
+/** The file absences the manifest explains: a missing/mismatched/external file warning, per row. */
+function explainedAbsences(manifest: ArchiveManifest): Set<string> {
+  const out = new Set<string>();
+  for (const w of manifest.warnings) {
+    const m = /^(FILE_MISSING|FILE_SIZE_MISMATCH|EXTERNAL_FILE):([a-z0-9_]+\.[a-z0-9_]+):([0-9a-f-]{36})$/i.exec(w);
+    if (m) out.add(`${m[2]!.toLowerCase()}:${m[3]!.toLowerCase()}`);
+  }
+  return out;
+}
+
 async function insertTable(
   client: ArchiveClient,
   reader: ArchiveReader,
@@ -294,7 +321,7 @@ async function insertTable(
   idMap: IdMap,
   newTenantId: string,
   unresolved: Set<string>,
-  fileIndex: Map<string, ArchiveManifest['files'][number]>,
+  files: FileRewriteContext,
   fileCtx: { uploadDir: string; providerFor: () => Promise<StorageProvider> },
   written: PendingFile[],
   deferred: Array<{ table: string; column: string; id: string; value: string }>,
@@ -341,17 +368,35 @@ async function insertTable(
         line = rewriteField(line, c, 'null');
       }
     }
-    if (fileCols.length > 0 && newPk && oldPk) {
+    // File columns are rewritten on every row, whatever the pk shape (H2): a
+    // row that cannot address a bundled file (no uuid pk) simply has none.
+    if (fileCols.length > 0) {
       const siblings: Record<string, string | null> = {};
+      const rowId = newPk ?? crypto.randomUUID();
       for (const f of fileCols) {
         let oldValue = fieldString(line, f.column);
         // Legacy rows keep the key only in the path column: use it for the extension.
         if (oldValue === null && f.rule.fallbackPathColumn) oldValue = fieldString(raw, f.rule.fallbackPathColumn);
-        const bundled = fileIndex.get(`${mt.name}/${f.column}/${oldPk}`);
-        const target = resolveForImport(f.rule, { uploadDir: fileCtx.uploadDir, provider: fileCtx.providerFor }, newTenantId, newPk, oldValue, bundled !== undefined, siblings);
-        siblings[f.column] = target.value;
-        line = rewriteField(line, f.column, target.value === null ? 'null' : JSON.stringify(target.value));
-        if (bundled && target.write) {
+        const bundled = oldPk ? files.index.get(`${mt.name}/${f.column}/${oldPk}`) : undefined;
+        const target = resolveForImport(f.rule, { uploadDir: fileCtx.uploadDir, provider: fileCtx.providerFor }, newTenantId, rowId, oldValue, bundled !== undefined, siblings);
+        let value = target.value;
+        if (target.nulled) {
+          const key = `${mt.name}.${f.column}`;
+          // A path mirror follows its key column, which was judged just before it.
+          const explained = f.rule.resolver === 'provider-path-mirror'
+            || (mt.name === 'attachments' && !files.includeAttachments)
+            || (oldPk !== null && files.explained.has(`${key}:${oldPk}`));
+          if (!explained) {
+            throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (${key}: a file value without a bundled file).`, { table: mt.name, column: f.column });
+          }
+          const nullable = t.columns.find((c) => c.name === f.column)?.nullable ?? true;
+          value = nullable ? null : (target.placeholder ?? null);
+          if (!nullable && value === null) throw new ArchiveError('FILE_MISSING', `A file of ${mt.name} is missing from the archive.`, { table: mt.name, column: f.column });
+          files.notBundled.set(key, (files.notBundled.get(key) ?? 0) + 1);
+        }
+        siblings[f.column] = value;
+        line = rewriteField(line, f.column, value === null ? 'null' : JSON.stringify(value));
+        if (bundled && target.write && newPk) {
           const value = target.value!;
           const localPath = target.localPath;
           const isSignature = f.rule.resolver === 'upload-encrypted';
@@ -364,7 +409,7 @@ async function insertTable(
             if (f.rule.resolver === 'provider-key') await (await fileCtx.providerFor()).delete(value).catch(() => undefined);
             if (localPath) fs.rmSync(localPath, { force: true });
           };
-          written.push({ part: filePartName(mt.name, f.column, oldPk), bytes: bundled.bytes, sha256: bundled.sha256, table: mt.name, column: f.column, rowId: newPk, write: target.write, readBack, cleanup });
+          written.push({ part: filePartName(mt.name, f.column, oldPk!), bytes: bundled.bytes, sha256: bundled.sha256, table: mt.name, column: f.column, rowId: newPk, write: target.write, readBack, cleanup });
         }
       }
     }

@@ -20,12 +20,21 @@
  *                         new name <randomUUID><ext>
  *   null                  cache or TTL artifact: NULL on import
  *   external / not-a-file value kept, nothing bundled
+ *
+ * On import a local resolver never copies an archived value into the
+ * column (H2): the new value is derived from the new tenant and row id,
+ * so a crafted archive cannot plant `../` paths or another tenant's
+ * folder. A value whose file was not bundled becomes NULL (`nulled`), or
+ * the tenant-rooted `placeholder` when the column is NOT NULL; the import
+ * decides whether the absence is explained by the manifest (warning) or
+ * not (ARCHIVE_CORRUPT). Only http(s) URLs pass through, as external.
  */
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { encryptBuffer, decryptBuffer } from '../../utils/encryption.js';
+import { resolveInside } from '../../utils/contained-path.js';
 import { tenantStorageKey } from '../storage/storage-keys.js';
 import type { StorageProvider } from '../storage/storage-provider.interface.js';
 import { ArchiveError } from './errors.js';
@@ -50,6 +59,10 @@ export interface ImportTarget {
   write?: (bytes: Buffer) => Promise<void>;
   /** Absolute path written on disk (for cleanup on rollback), when local. */
   localPath?: string;
+  /** True when a non-null archived value was dropped because its file was not bundled. */
+  nulled?: boolean;
+  /** Tenant-rooted value to use instead of NULL on a NOT NULL column (names a file that does not exist). */
+  placeholder?: string;
 }
 
 const UPLOADS_PREFIX = '/uploads/';
@@ -57,13 +70,15 @@ const UPLOADS_PREFIX = '/uploads/';
 /** Resolves `candidate` under `root` and refuses anything that escapes it (realpath-based). */
 export function containedPath(root: string, candidate: string): string {
   if (candidate.includes('\0')) throw new ArchiveError('FILE_MISSING', 'invalid file path');
-  const rootReal = fs.existsSync(root) ? fs.realpathSync(root) : path.resolve(root);
-  const full = path.resolve(rootReal, candidate);
-  if (full !== rootReal && !full.startsWith(rootReal + path.sep)) throw new ArchiveError('FILE_MISSING', 'file path escapes the upload directory');
-  if (!fs.existsSync(full)) throw new ArchiveError('FILE_MISSING', 'file not found');
-  const real = fs.realpathSync(full);
-  if (real !== rootReal && !real.startsWith(rootReal + path.sep)) throw new ArchiveError('FILE_MISSING', 'file path escapes the upload directory');
-  if (!fs.statSync(real).isFile()) throw new ArchiveError('FILE_MISSING', 'not a regular file');
+  if (!fs.existsSync(root)) throw new ArchiveError('FILE_MISSING', 'file not found');
+  const real = resolveInside(root, candidate);
+  if (!real) {
+    const rootReal = fs.realpathSync(root);
+    const full = path.resolve(rootReal, candidate);
+    if (full !== rootReal && !full.startsWith(rootReal + path.sep)) throw new ArchiveError('FILE_MISSING', 'file path escapes the upload directory');
+    if (!fs.existsSync(full)) throw new ArchiveError('FILE_MISSING', 'file not found');
+    throw new ArchiveError('FILE_MISSING', fs.statSync(full).isFile() ? 'file path escapes the upload directory' : 'not a regular file');
+  }
   return real;
 }
 
@@ -165,10 +180,15 @@ export function resolveForImport(
   wasBundled: boolean,
   siblings: Record<string, string | null> = {},
 ): ImportTarget {
+  /** A dropped value: NULL, or (NOT NULL columns) a tenant-rooted name of a file that does not exist. */
+  const dropped = (placeholder: string): ImportTarget => ({ value: null, nulled: oldValue !== null && oldValue !== '', placeholder });
   switch (rule.resolver) {
     case 'provider-key': {
-      if (!wasBundled) return { value: oldValue && isHttpUrl(oldValue) ? oldValue : null };
-      const key = tenantStorageKey(newTenantId, rule.domain ?? 'attachments', `${newRowId}${safeExt(oldValue ?? '')}`);
+      const key = tenantStorageKey(newTenantId, rule.domain ?? 'attachments', `${newRowId}${wasBundled ? safeExt(oldValue ?? '') : '.missing'}`);
+      if (!wasBundled) {
+        if (oldValue && isHttpUrl(oldValue)) return { value: oldValue };
+        return dropped(key);
+      }
       return {
         value: key,
         write: async (bytes) => {
@@ -180,36 +200,41 @@ export function resolveForImport(
       };
     }
     case 'provider-path-mirror': {
+      // Always derived from the new key; the archived path is never copied.
       const key = rule.mirrorOf ? siblings[rule.mirrorOf] : null;
-      return { value: key ? `${UPLOADS_PREFIX}${key}` : oldValue };
+      if (key) return { value: `${UPLOADS_PREFIX}${key}` };
+      return dropped(`${UPLOADS_PREFIX}${tenantStorageKey(newTenantId, rule.domain ?? 'attachments', `${newRowId}.missing`)}`);
     }
     case 'upload-encrypted': {
-      if (!wasBundled) return { value: oldValue };
-      const rel = path.join('signatures', newTenantId, `${newRowId}.enc`);
+      const rel = path.join('signatures', newTenantId, `${newRowId}${wasBundled ? '.enc' : '.missing'}`);
+      if (!wasBundled) return dropped(rel);
       const full = path.join(ctx.uploadDir, rel);
       return {
         value: rel,
         localPath: full,
         write: async (bytes) => {
-          await fs.promises.mkdir(path.dirname(full), { recursive: true });
+          await fs.promises.mkdir(path.dirname(full), { recursive: true, mode: 0o700 });
           await fs.promises.writeFile(full, encryptBuffer(bytes), { mode: 0o600 });
         },
       };
     }
     case 'upload-relative': {
-      if (!wasBundled) return { value: oldValue };
-      const full = path.join(path.resolve(ctx.uploadDir), 'payroll', newTenantId, `${newRowId}${safeExt(oldValue ?? '')}`);
+      const full = path.join(path.resolve(ctx.uploadDir), 'payroll', newTenantId, `${newRowId}${wasBundled ? safeExt(oldValue ?? '') : '.missing'}`);
+      if (!wasBundled) return dropped(full);
       return {
         value: full,
         localPath: full,
         write: async (bytes) => {
-          await fs.promises.mkdir(path.dirname(full), { recursive: true });
+          await fs.promises.mkdir(path.dirname(full), { recursive: true, mode: 0o700 });
           await fs.promises.writeFile(full, bytes, { mode: 0o600 });
         },
       };
     }
     case 'logo-url': {
-      if (!wasBundled) return { value: oldValue };
+      if (!wasBundled) {
+        if (oldValue && isHttpUrl(oldValue)) return { value: oldValue };
+        return dropped(`${UPLOADS_PREFIX}logos/${newRowId}.missing`);
+      }
       const name = `${crypto.randomUUID()}${safeExt(oldValue ?? '')}`;
       const full = path.join(ctx.uploadDir, 'logos', name);
       return {

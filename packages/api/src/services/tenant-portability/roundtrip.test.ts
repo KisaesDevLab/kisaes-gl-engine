@@ -195,7 +195,7 @@ async function auditRows(tenantId: string): Promise<Array<{ entity_id: string; a
 }
 
 /** Decrypts the manifest of an archive, applies `mutate`, and writes a new archive with the other entries copied raw. */
-async function rewriteArchive(src: string, dst: string, mutate: (m: ArchiveManifest) => void, extraParts: Array<{ part: string; bytes: Buffer }> = []): Promise<void> {
+async function rewriteArchive(src: string, dst: string, mutate: (m: ArchiveManifest) => void, extraParts: Array<{ part: string; bytes: Buffer }> = [], omitEntries: string[] = []): Promise<void> {
   const d = await unzipper.Open.file(src);
   const envelope = validateEnvelope(JSON.parse((await d.files.find((f) => f.path === ENVELOPE_ENTRY)!.buffer()).toString('utf8')));
   const key = openEnvelope(envelope, PASS);
@@ -211,7 +211,7 @@ async function rewriteArchive(src: string, dst: string, mutate: (m: ArchiveManif
   out.pipe(stream);
   const registry = new NoncePrefixRegistry();
   for (const f of d.files) {
-    if (f.path === MANIFEST_ENTRY) continue;
+    if (f.path === MANIFEST_ENTRY || omitEntries.includes(f.path)) continue;
     out.append(await f.buffer(), { name: f.path });
   }
   for (const e of extraParts) out.append(encryptEntryBuffer(key, envelope.archiveId, e.part, e.bytes, registry), { name: zipEntryName(e.part) });
@@ -588,6 +588,21 @@ describe('integrity and compatibility (D)', () => {
     await out.finalize();
     await done;
     await expectCode(runImport({ filePath: tampered, passphrase: PASS, callerUserId: seed.ownerId }), 'ARCHIVE_CORRUPT');
+    // H2: a manifest may not redefine a table's pk shape or bucket (that would skip the file rewrite or the scope).
+    const reshaped = path.join(archiveRoot, 'reshaped.zip');
+    await rewriteArchive(exported.path!, reshaped, (m) => { m.tables.find((t) => t.name === 'attachments')!.pk = 'no-pk'; });
+    const errShape = await expectCode(runImport({ filePath: reshaped, passphrase: PASS, callerUserId: seed.ownerId }), 'ARCHIVE_CORRUPT');
+    expect(errShape.message).toContain('pk shape');
+    const rebucketed = path.join(archiveRoot, 'rebucketed.zip');
+    await rewriteArchive(exported.path!, rebucketed, (m) => { m.tables.find((t) => t.name === 'deposit_lines')!.bucket = 'tenant'; });
+    expect((await expectCode(runImport({ filePath: rebucketed, passphrase: PASS, callerUserId: seed.ownerId }), 'ARCHIVE_CORRUPT')).message).toContain('bucket');
+    // H2: a file column value whose file is not in the archive, with nothing in the manifest explaining it, is a damaged archive.
+    const noSig = path.join(archiveRoot, 'no-signature-file.zip');
+    const sigEntry = `files/check_signatures/file_path/${seed.signatureId}`;
+    await rewriteArchive(exported.path!, noSig, (m) => { m.files = m.files.filter((f) => !(f.table === 'check_signatures' && f.rowId === seed.signatureId)); }, [], [zipEntryName(sigEntry)]);
+    const errFile = await expectCode(runImport({ filePath: noSig, passphrase: PASS, callerUserId: seed.ownerId }), 'ARCHIVE_CORRUPT');
+    expect(errFile.message).toContain('check_signatures.file_path');
+    expect(errFile.message).not.toContain(seed.tenantId);
     const after = (await q<{ n: number }>(`SELECT count(*)::int AS n FROM tenants`))[0]!.n;
     expect(after).toBe(before);
     expect(await sweepImportPending()).toBe(0);
