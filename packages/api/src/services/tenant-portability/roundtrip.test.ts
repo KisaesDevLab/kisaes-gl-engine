@@ -654,7 +654,7 @@ describe('identity on a different install (G)', () => {
     const email = `rt-fresh-${stamp}@example.test`;
     const archiveA = path.join(archiveRoot, 'fresh-user.zip');
     await rewriteUsers(archiveA, (u) => (u['id'] === seed.lanUserId ? { ...u, id: freshId, email, is_active: true } : u), { [seed.lanUserId]: freshId });
-    const rA = await runImport({ filePath: archiveA, passphrase: PASS, callerUserId: seed.ownerId });
+    const rA = await runImport({ filePath: archiveA, passphrase: PASS, callerUserId: seed.callerId });
     createdTenants.push(rA.tenantId);
     expect(rA.verification.identity).toEqual({ matched: 1, created: 1 }); // the owner matched; the caller had no access row in the archive
     const created = await q<{ id: string; tenant_id: string; is_super_admin: boolean; tfa_enabled: boolean; is_active: boolean; preferred_login_method: string }>(
@@ -668,7 +668,7 @@ describe('identity on a different install (G)', () => {
     const takenId = await insertUser(seed.tenantId, `rt-taken-${stamp}@example.test`, { display_name: 'Taken' });
     const archiveB = path.join(archiveRoot, 'collide-user.zip');
     await rewriteUsers(archiveB, (u) => (u['id'] === seed.lanUserId ? { ...u, id: takenId, email: email2 } : u), { [seed.lanUserId]: takenId });
-    const rB = await runImport({ filePath: archiveB, passphrase: PASS, callerUserId: seed.ownerId });
+    const rB = await runImport({ filePath: archiveB, passphrase: PASS, callerUserId: seed.callerId });
     createdTenants.push(rB.tenantId);
     const collided = await q<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [email2]);
     expect(collided).toHaveLength(1);
@@ -676,5 +676,56 @@ describe('identity on a different install (G)', () => {
     createdUsers.push(collided[0]!.id);
     const access = await q<{ user_id: string; role: string }>(`SELECT user_id, role FROM user_tenant_access WHERE tenant_id = $1 AND role = 'bookkeeper'`, [rB.tenantId]);
     expect(access).toEqual([{ user_id: collided[0]!.id, role: 'bookkeeper' }]);
+
+    // H1: a caller who is not a super admin never creates users; the unmatched
+    // user and its access row are skipped, matched users keep their rows.
+    const email3 = `rt-skipped-${stamp}@example.test`;
+    const skippedId = crypto.randomUUID();
+    const archiveC = path.join(archiveRoot, 'skipped-user.zip');
+    await rewriteUsers(archiveC, (u) => (u['id'] === seed.lanUserId ? { ...u, id: skippedId, email: email3 } : u), { [seed.lanUserId]: skippedId });
+    const rC = await runImport({ filePath: archiveC, passphrase: PASS, callerUserId: seed.ownerId });
+    createdTenants.push(rC.tenantId);
+    expect(rC.verification.identity).toEqual({ matched: 1, created: 0 });
+    expect(rC.warnings).toContain('USERS_NOT_CREATED:1');
+    expect(await q(`SELECT 1 FROM users WHERE email = $1 OR id = $2`, [email3, skippedId])).toHaveLength(0);
+    const accessC = await q<{ user_id: string; role: string }>(`SELECT user_id, role FROM user_tenant_access WHERE tenant_id = $1 ORDER BY role`, [rC.tenantId]);
+    expect(accessC).toEqual([{ user_id: seed.ownerId, role: 'owner' }]);
+
+    // H1: an archived role or user_type outside the closed lists is refused before any insert.
+    for (const [patch, what] of [[{ role: 'superuser' }, 'role'], [{ user_type: 'robot' }, 'user_type']] as const) {
+      const bad = path.join(archiveRoot, `bad-${what}.zip`);
+      await rewriteUsers(bad, (u) => (u['id'] === seed.lanUserId ? { ...u, ...patch } : u), {});
+      const err = await expectCode(runImport({ filePath: bad, passphrase: PASS, callerUserId: seed.callerId }), 'ARCHIVE_CORRUPT');
+      expect(err.message).toContain(what);
+    }
+    // An access row whose role is outside the closed list is refused too.
+    const accessPatched = accessLines.map((l) => l.replace('"role":"bookkeeper"', '"role":"superuser"'));
+    expect(accessPatched.join('\n')).toContain('superuser');
+    const partsD = { 'data/_user_tenant_access.ndjson': Buffer.from(accessPatched.map((l) => `${l}\n`).join(''), 'utf8') };
+    const archiveD = path.join(archiveRoot, 'bad-access-role-2.zip');
+    await rewriteArchive(exported.path!, archiveD, (m) => {
+      for (const [name, body] of Object.entries(partsD)) {
+        m.identity.parts[name] = { sha256: crypto.createHash('sha256').update(body).digest('hex'), bytes: body.length, rows: accessPatched.length };
+      }
+    }, []);
+    {
+      const d2 = await unzipper.Open.file(archiveD);
+      const out = archiver('zip', { store: true });
+      const tmp = `${archiveD}.tmp`;
+      const stream = fs.createWriteStream(tmp);
+      const done = new Promise<void>((r) => stream.on('close', r));
+      out.pipe(stream);
+      const registry = new NoncePrefixRegistry();
+      for (const f of d2.files) {
+        if (f.path === zipEntryName('data/_user_tenant_access.ndjson')) continue;
+        out.append(await f.buffer(), { name: f.path });
+      }
+      out.append(encryptEntryBuffer(key, envelope.archiveId, 'data/_user_tenant_access.ndjson', partsD['data/_user_tenant_access.ndjson'], registry), { name: zipEntryName('data/_user_tenant_access.ndjson') });
+      await out.finalize();
+      await done;
+      fs.renameSync(tmp, archiveD);
+    }
+    const errD = await expectCode(runImport({ filePath: archiveD, passphrase: PASS, callerUserId: seed.callerId }), 'ARCHIVE_CORRUPT');
+    expect(errD.message).toContain('access rows: role');
   }, 300_000);
 });

@@ -171,7 +171,14 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
     const home = (await client.query('SELECT is_super_admin, tfa_enabled FROM users WHERE id = $1', [newId])).rows[0] as { is_super_admin: boolean; tfa_enabled: boolean };
     if (home.is_super_admin || home.tfa_enabled) failures.push({ check: 'identity.created.flags', table: 'users' });
   }
+  const skippedUsers = new Set(input.identity.skipped);
   for (const a of input.archivedAccess) {
+    if (skippedUsers.has(a.user_id.toLowerCase())) {
+      // The user was not created (caller may not create users): no access row may exist for it.
+      const r = await client.query('SELECT 1 FROM user_tenant_access WHERE user_id = $1 AND tenant_id = $2', [a.user_id.toLowerCase(), newTenantId]);
+      if (r.rows.length > 0) failures.push({ check: 'identity.skippedAccess', table: 'user_tenant_access' });
+      continue;
+    }
     const userId = idMap.get(a.user_id) ?? a.user_id.toLowerCase();
     const r = await client.query('SELECT role, is_active FROM user_tenant_access WHERE user_id = $1 AND tenant_id = $2', [userId, newTenantId]);
     const row = r.rows[0] as { role: string; is_active: boolean } | undefined;

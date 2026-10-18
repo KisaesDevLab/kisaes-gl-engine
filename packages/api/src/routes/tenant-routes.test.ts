@@ -220,6 +220,19 @@ describe('lifecycle routes', () => {
   }, 180_000);
 
   it('imports by path (desktop, no LAN) and by upload; scratch is not available yet', async () => {
+    // H1: on desktop only a super admin imports, by path or by upload, and a
+    // refused upload never reaches the imports directory.
+    const roPath = await call('POST', '/api/v1/tenant-archives/import', { path: archivePath, passphrase: PASS }, readonlyJwt);
+    expect(roPath.status).toBe(403);
+    expect((roPath.json['error'] as { code: string }).code).toBe('SUPER_ADMIN_REQUIRED');
+    const roForm = new FormData();
+    roForm.append('passphrase', PASS);
+    roForm.append('file', new Blob([fs.readFileSync(archivePath)]), 'copy.clbackup');
+    const roUpload = await call('POST', '/api/v1/tenant-archives/import', undefined, readonlyJwt, { form: roForm });
+    expect(roUpload.status).toBe(403);
+    const importsDir = path.join(process.env['CL_ARCHIVE_DIR']!, 'imports');
+    expect(fs.existsSync(importsDir) ? fs.readdirSync(importsDir) : []).toEqual([]);
+
     const scratch = await call('POST', '/api/v1/tenant-archives/import', { path: archivePath, passphrase: PASS, scratch: true });
     expect(scratch.status).toBe(400);
     expect((scratch.json['error'] as { code: string }).code).toBe('SCRATCH_NOT_AVAILABLE');

@@ -11,10 +11,16 @@
  *                                  {path} to a local .zip/.clbackup; {passphrase} always;
  *                                  {scratch:true} -> 400 SCRATCH_NOT_AVAILABLE (E5b)
  *
+ * Import permission (H1), checked before any upload byte is accepted:
+ * desktop -> super admin only (403 SUPER_ADMIN_REQUIRED); server -> the
+ * tenant-creation eligibility of POST /api/v1/tenants (403 with its
+ * reason). User rows are created only for a super admin caller; the
+ * service decides that from the caller's own row (import.service.ts).
+ *
  * Error bodies never echo file contents or the passphrase.
  */
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,6 +35,7 @@ import { getJob, jobView, startJob } from '../services/tenant-portability/jobs.j
 import { archiveDir } from '../services/tenant-portability/export.service.js';
 import { runImport } from '../services/tenant-portability/import.service.js';
 import { ArchiveError } from '../services/tenant-portability/errors.js';
+import { getTenantCreationEligibility } from '../services/auth.service.js';
 import { assertTenantOwner } from './tenants.routes.js';
 
 const FILE_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.zip$/;
@@ -134,7 +141,23 @@ export function resolveImportPath(raw: string): string {
   return real;
 }
 
-tenantArchivesRouter.post('/import', requireSessionAuth, upload.single('file'), (req, _res, next) => {
+/**
+ * Who may import (H1). Runs before multer so a refused caller never gets a
+ * byte of upload written to disk. Desktop: super admin only. Server: the
+ * same eligibility as creating a company.
+ */
+export async function requireImportPermission(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  if (isDesktop()) {
+    if (!req.isSuperAdmin) throw AppError.forbidden('Only the owner can restore a company file.', 'SUPER_ADMIN_REQUIRED');
+    next();
+    return;
+  }
+  const eligibility = await getTenantCreationEligibility(req.userId, req.userRole);
+  if (!eligibility.allowed) throw AppError.forbidden(eligibility.reason || 'You are not allowed to create a new business.', 'TENANT_CREATION_NOT_ALLOWED');
+  next();
+}
+
+tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission, upload.single('file'), (req, _res, next) => {
   // multipart fields arrive as strings; coerce the two booleans before validation.
   const body = req.body as Record<string, unknown>;
   if (typeof body['scratch'] === 'string') body['scratch'] = body['scratch'] === 'true';

@@ -26,6 +26,7 @@ import { readSchemaInfo } from '../../startup/schema-info.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import type { StorageProvider } from '../storage/storage-provider.interface.js';
 import { decryptBuffer } from '../../utils/encryption.js';
+import { AppError } from '../../utils/errors.js';
 import { ArchiveReader } from './archive-reader.js';
 import { withScrubbedPassphrase } from './archive-crypto.js';
 import { sha256File } from './archive-container.js';
@@ -138,6 +139,13 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   const warnings: string[] = [...compat.warnings];
   const archiveSha256 = await sha256File(options.filePath);
 
+  // Only a super admin creates user rows (H1): decided from the caller's own
+  // row, never from the request, so the service enforces it in every mode.
+  const callerRow = (await withArchiveConnection((c) => c.query('SELECT is_super_admin, is_active FROM users WHERE id = $1', [options.callerUserId]))).rows[0] as
+    { is_super_admin: boolean; is_active: boolean | null } | undefined;
+  if (!callerRow || callerRow.is_active === false) throw AppError.forbidden('The importing user is not active.', 'IMPORT_NOT_ALLOWED');
+  const createUsers = callerRow.is_super_admin === true;
+
   // Step 2: id map.
   step('id-map', 17);
   const idMap = new IdMap();
@@ -204,7 +212,8 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       step('identity', 22);
       const archivedUsers = userLinesRaw.map((l) => parseIdentityLine<ArchivedUser>(idMap.substitute(l), ['id', 'email', 'password_hash']));
       const archivedAccess = accessLinesRaw.map((l) => parseIdentityLine<ArchivedAccess>(idMap.substitute(l), ['id', 'user_id', 'tenant_id', 'role']));
-      const identity = await applyIdentity(client, { idMap, newTenantId, workspaceTenantId, users: archivedUsers, access: archivedAccess, callerUserId: options.callerUserId });
+      const identity = await applyIdentity(client, { idMap, newTenantId, workspaceTenantId, users: archivedUsers, access: archivedAccess, callerUserId: options.callerUserId, createUsers });
+      if (identity.skipped.length > 0) warnings.push(`USERS_NOT_CREATED:${identity.skipped.length}`);
       await idMap.loadInto(client);
 
       // Tables in FK order.

@@ -14,10 +14,19 @@
  * inserted with mapped ids, and the importing caller gets an `owner` row
  * unless the archive already gives them access.
  *
+ * Only a super admin creates user rows (`createUsers`). For any other
+ * caller unmatched archived users are skipped (warning
+ * `USERS_NOT_CREATED:<n>`), their access rows are dropped, and the caller
+ * is granted `owner` on the new tenant; matched users still get their
+ * archived access rows. Archived `role`, `user_type` and access roles are
+ * validated against the closed lists below before any insert (an archive
+ * never mints a role the engine does not know).
+ *
  * Scratch mode (E5b) is not available here: the caller refuses it first.
  */
 
 import crypto from 'node:crypto';
+import { TENANT_ACCESS_ROLES } from '@kis-books/shared';
 import { USERS_PROJECTION } from './format.js';
 import type { IdMap } from './remap.js';
 import type { ArchiveClient } from './session.js';
@@ -54,11 +63,15 @@ export interface IdentityInput {
   users: ArchivedUser[];
   access: ArchivedAccess[];
   callerUserId: string;
+  /** Whether unmatched archived users may be created (super admin callers only). */
+  createUsers: boolean;
 }
 
 export interface IdentityResult {
   matched: string[];
   created: string[];
+  /** Archived user ids (lower-cased) skipped because the caller may not create users. */
+  skipped: string[];
   /** row_to_json of every matched user before the import (verified unchanged afterwards). */
   matchedRowsBefore: Record<string, string>;
   accessRows: number;
@@ -70,6 +83,44 @@ export function normalizeEmail(email: string): string {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Roles an archived user row or access row may carry (closed list; `users.role` and `user_tenant_access.role`). */
+export const ARCHIVE_USER_ROLES: readonly string[] = TENANT_ACCESS_ROLES;
+/** `users.user_type` values an archive may carry. */
+export const ARCHIVE_USER_TYPES: readonly string[] = ['staff', 'client'];
+const EMAIL_MAX = 255;
+const DISPLAY_NAME_MAX = 255;
+const PASSWORD_HASH_MAX = 255;
+
+function isBoolOrNull(v: unknown): v is boolean | null | undefined {
+  return v === null || v === undefined || typeof v === 'boolean';
+}
+
+/** Shape and vocabulary check of one archived user row; throws ARCHIVE_CORRUPT. */
+export function validateArchivedUser(u: ArchivedUser): void {
+  const bad = (what: string): never => {
+    throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (users projection: ${what}).`);
+  };
+  if (!UUID_RE.test(u.id)) bad('id');
+  if (typeof u.email !== 'string' || u.email.trim().length === 0 || u.email.length > EMAIL_MAX || /[\u0000-\u001f\u007f]/.test(u.email)) bad('email');
+  if (typeof u.password_hash !== 'string' || u.password_hash.length === 0 || u.password_hash.length > PASSWORD_HASH_MAX) bad('password_hash');
+  if (u.display_name !== null && u.display_name !== undefined && (typeof u.display_name !== 'string' || u.display_name.length > DISPLAY_NAME_MAX)) bad('display_name');
+  if (typeof u.role !== 'string' || !ARCHIVE_USER_ROLES.includes(u.role)) bad('role');
+  if (typeof u.user_type !== 'string' || !ARCHIVE_USER_TYPES.includes(u.user_type)) bad('user_type');
+  if (!isBoolOrNull(u.is_active)) bad('is_active');
+}
+
+/** Shape and vocabulary check of one archived access row; throws ARCHIVE_CORRUPT. */
+export function validateArchivedAccess(a: ArchivedAccess): void {
+  const bad = (what: string): never => {
+    throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (access rows: ${what}).`);
+  };
+  if (!UUID_RE.test(a.id)) bad('id');
+  if (!UUID_RE.test(a.user_id)) bad('user_id');
+  if (!UUID_RE.test(a.tenant_id)) bad('tenant_id');
+  if (typeof a.role !== 'string' || !ARCHIVE_USER_ROLES.includes(a.role)) bad('role');
+  if (!isBoolOrNull(a.is_active)) bad('is_active');
+}
 
 /** Parses an identity NDJSON line (identity rows hold no money, so JSON.parse is fine). */
 export function parseIdentityLine<T>(line: string, required: readonly string[]): T {
@@ -94,11 +145,12 @@ export async function userRowJson(client: ArchiveClient, userId: string): Promis
 /** Runs the identity step inside the import transaction. */
 export async function applyIdentity(client: ArchiveClient, input: IdentityInput): Promise<IdentityResult> {
   const { idMap, newTenantId, workspaceTenantId } = input;
-  const result: IdentityResult = { matched: [], created: [], matchedRowsBefore: {}, accessRows: 0, callerAccessAdded: false };
+  const result: IdentityResult = { matched: [], created: [], skipped: [], matchedRowsBefore: {}, accessRows: 0, callerAccessAdded: false };
+  // Validate every identity row before the first insert (fail closed).
+  for (const u of input.users) validateArchivedUser(u);
+  for (const a of input.access) validateArchivedAccess(a);
+  const skippedUsers = new Set<string>();
   for (const u of input.users) {
-    if (!UUID_RE.test(u.id) || typeof u.email !== 'string' || typeof u.password_hash !== 'string') {
-      throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (users projection).');
-    }
     const email = normalizeEmail(u.email);
     const existing = (await client.query('SELECT id FROM users WHERE lower(email) = $1 ORDER BY created_at LIMIT 1', [email])).rows[0] as { id: string } | undefined;
     if (existing) {
@@ -106,6 +158,12 @@ export async function applyIdentity(client: ArchiveClient, input: IdentityInput)
       if (existing.id.toLowerCase() !== u.id.toLowerCase()) idMap.set(u.id, existing.id);
       result.matched.push(existing.id);
       result.matchedRowsBefore[existing.id] = await userRowJson(client, existing.id);
+      continue;
+    }
+    if (!input.createUsers) {
+      // Only a super admin creates users; everyone else restores the books and grants themselves.
+      skippedUsers.add(u.id.toLowerCase());
+      result.skipped.push(u.id.toLowerCase());
       continue;
     }
     // Unmatched: the archived id, unless it belongs to a different email.
@@ -139,6 +197,7 @@ export async function applyIdentity(client: ArchiveClient, input: IdentityInput)
   // Access rows of the company, with mapped ids.
   let callerHasAccess = false;
   for (const a of input.access) {
+    if (skippedUsers.has(a.user_id.toLowerCase())) continue; // user not created: no access row either
     const userId = idMap.get(a.user_id) ?? a.user_id.toLowerCase();
     const known = (await client.query('SELECT 1 FROM users WHERE id = $1', [userId])).rows.length > 0;
     if (!known) continue; // an access row whose user was not in the users projection (never exported): skip
