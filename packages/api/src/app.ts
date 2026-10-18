@@ -41,6 +41,8 @@ import { duplicatesRouter } from './routes/duplicates.routes.js';
 import { budgetsRouter } from './routes/budgets.routes.js';
 import { backupRouter } from './routes/backup.routes.js';
 import { tenantExportRouter } from './routes/tenant-export.routes.js';
+import { tenantsRouter } from './routes/tenants.routes.js';
+import { tenantArchivesRouter } from './routes/tenant-archives.routes.js';
 import { remoteBackupRouter } from './routes/remote-backup.routes.js';
 import { exportRouter } from './routes/export.routes.js';
 import { downloadsRouter } from './routes/downloads.routes.js';
@@ -521,6 +523,10 @@ if (isDesktop()) {
 
 // Routes
 app.use('/api/v1/auth', authRouter);
+// Tenant lifecycle and archives (U-05): every mode; a desktop workspace
+// session may use these (desktop/workspace.ts allowlist).
+app.use('/api/v1/tenants', tenantsRouter);
+app.use('/api/v1/tenant-archives', tenantArchivesRouter);
 app.use('/api/v1/company', companyRouter);
 app.use('/api/v1/accounts', accountsRouter);
 app.use('/api/v1/contacts', contactsRouter);

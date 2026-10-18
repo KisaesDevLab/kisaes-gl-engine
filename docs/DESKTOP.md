@@ -387,10 +387,33 @@ What the desktop app (ClientLedger's `cl-host`) must do, because the engine cann
 - **P04 requirement (not implemented):** the host should verify it is talking to its own engine, not to another process that grabbed the port, before sending the token or credentials. Planned: the host sends a random challenge and the engine answers with an HMAC of it keyed by the launch token (e.g. a header on `/health`), so the token itself never has to be sent first.
 - Helper processes started by the engine (poppler `pdftoppm`, `pdftotext`, `pdfimages`) get a minimal environment in desktop mode (`PATH`, temp and locale variables, library and font paths; nothing credential-named), so boot secrets and API keys are not inherited. If the host bundles poppler, its libraries must be findable through `PATH` / `LD_LIBRARY_PATH` / `DYLD_*` or an rpath.
 
+## Tenant lifecycle and archives
+
+`/api/v1/tenants` and `/api/v1/tenant-archives` are mounted in every mode (they are the two tenant prefixes on the workspace allowlist). Every endpoint that names a tenant answers 409 `WORKSPACE_TENANT` for the workspace; writes need an interactive session and the `owner` (or `admin`) access role on the tenant (super admins pass).
+
+| Method | Path | Body / response |
+|---|---|---|
+| GET | `/api/v1/tenants` | `[{id, name, createdAt, updatedAt, role}]` of the companies the user has an active access row to. Never the workspace, never a scratch copy. |
+| POST | `/api/v1/tenants` | `{name, businessType?, coaTemplate?}` → 201 `{id, name, companyId}` (reuses `createOwnedTenant`: tenant + company + chart of accounts + `owner` access row, no firm join). |
+| PATCH | `/api/v1/tenants/:id` | `{name, expectedUpdatedAt}` → `{id, name, updatedAt}`; 409 `STALE` when `expectedUpdatedAt` no longer matches. Renames the tenant label only. |
+| POST | `/api/v1/tenants/:id/archives` | `{passphrase, includeAttachments=true, includeAudit=true, host?}` → 202 `{jobId, archiveId}`. 400 `PASSPHRASE_TOO_WEAK` (floor 12 characters), 400 for a `host` object over 16 KiB. |
+| GET | `/api/v1/tenant-archives/jobs/:jobId` | `{jobId, kind, status, progress, step, result?, error?}`. Jobs live in memory: after an engine restart the id is 404 `JOB_UNKNOWN` (failed → start again). Only the user who started a job (or a super admin) can read it. |
+| GET | `/api/v1/tenant-archives/:fileName/download` | The encrypted archive bytes (`application/zip`); writes no audit row. |
+| POST | `/api/v1/tenant-archives/import` | multipart `file` (any mode) or, on desktop without LAN, JSON `{path}` to a local `.zip`/`.clbackup` (absolute path to a regular file, opened read-only, never copied); `passphrase` always; `name?`; `scratch:true` → 400 `SCRATCH_NOT_AVAILABLE` until the safe-delete change lands. → 202 `{jobId}`. |
+
+**Archive format** (`mybooks-tenant-archive`, formatVersion 1): a zip with a plaintext `envelope.json` (format, `archiveId`, KDF and cipher parameters, key check) and encrypted entries: `manifest.json.enc`, `data/_tenant`, `data/_users`, `data/_user_tenant_access` (identity), one `data/<table>.ndjson.enc` per archived table (one `row_to_json` line per row), and `files/<table>/<column>/<rowId>.enc` for bundled files (attachments, logos, check signatures, payroll files, report PDFs). Encryption is PBKDF2-SHA512 (600,000 iterations) over the passphrase and chunked AES-256-GCM whose AAD binds every chunk to its archive, entry and position. The passphrase is a request field: never stored, logged (scrubber) or written into the archive. A ClientLedger `.clbackup` is this archive byte-for-byte; application metadata goes in `manifest.host`, never in extra entries.
+
+**What travels.** The plan in `services/tenant-portability/plan.ts` is generated from the live schema and fails closed: every public table is `tenant` (has `tenant_id`), `child` (reached through a parent), `identity`, `global` (install reference data, mapped by natural key on import) or `excluded` with a closed category (`secret`, `session-token`, `job-bookkeeping`, `derived`, `provenance`, `server-feature`). Secrets other than user password hashes are redacted (`companies.smtp_pass`, Stripe and remote-backup credentials, TFA state); public link tokens are nulled; references into excluded tables are nulled. The manifest records the trial balance by company, an unbalanced-transaction count, a tenant fingerprint (`fp1`), redacted columns and warnings (`SERVER_FEATURE_ROWS`, `DANGLING_REFERENCE:…`, `FILE_MISSING:…` on a server). On desktop a missing or wrongly sized file fails the export (422 `FILE_MISSING` / `FILE_SIZE_MISMATCH`).
+
+**Export** holds a session-level shared advisory lock on the tenant and streams every table from one `REPEATABLE READ, READ ONLY` snapshot through server-side cursors; rows never pass through JavaScript as values. The file is written as `CL_ARCHIVE_DIR/<tenantId>/<archiveId>.partial` and renamed to `.zip`; one `tenant_archive` audit row (with the file's SHA-256) is written in the exported tenant on success and never on failure. `.partial` files are swept at boot and hourly.
+
+**Import** verifies the whole archive before touching the database (passphrase, every part and file hash, schema compatibility: unknown tables or columns, retyped columns and missing NOT NULL columns fail closed unless `compat.ts` lists them), builds a fresh id map (every uuid pk gets a new id; global rows map by natural key; users match by normalized email and are never modified, unmatched users are created with the archived id, homed in the workspace with a `readonly` workspace row, never a super admin), then runs one transaction under an exclusive advisory lock: tenant row, identity, every table in FK order, files under a `.import-pending` marker, and a content verification (per-table counts, canonical digests with ids mapped back, the trial balance by company, file hashes, identity). Any difference rolls back with 422 `ARCHIVE_VERIFY_FAILED` and a report of table and check names only. After verification the import writes a `tenant_import` audit row, the tenant fingerprint and a `tenant_archive_imports` provenance row (migration `0217`). The importing user gets an `owner` access row unless the archive already grants one.
+
+`POST /api/v1/auth/switch-tenant` and `/api/v2/tenants/switch` refuse a tenant whose `tenant_archive_imports.scratch` is true with 403 `SCRATCH_TENANT`, super admins included.
+
 ## Not in desktop mode yet
 
 These come as separate changes:
 
-- the OpenAPI export;
-- tenant archives (`/api/v1/tenants`, `/api/v1/tenant-archives`);
+- safe delete of a company (`POST /api/v1/tenants/:id/delete`), scratch test-restores and their sweeps;
 - per-session AI and SMTP secrets.

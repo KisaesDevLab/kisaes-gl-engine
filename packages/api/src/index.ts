@@ -274,6 +274,21 @@ async function start() {
     } catch (err) {
       console.error('Failed to check the desktop workspace invariant:', err instanceof Error ? err.message : err);
     }
+    // Tenant archives (U-05): remove `.partial` exports and `.import-pending`
+    // upload dirs left by a crash, at boot and hourly.
+    const sweepArchives = async () => {
+      try {
+        const { sweepPartialArchives } = await import('./services/tenant-portability/export.service.js');
+        const { sweepImportPending } = await import('./services/tenant-portability/import.service.js');
+        const partial = sweepPartialArchives();
+        const pending = await sweepImportPending();
+        if (partial + pending > 0) console.log(`[tenant-archive] sweep removed ${partial} partial archive(s) and ${pending} pending import dir(s)`);
+      } catch (err) {
+        console.error('Tenant archive sweep failed:', err instanceof Error ? err.message : err);
+      }
+    };
+    await sweepArchives();
+    setInterval(() => { void sweepArchives(); }, 60 * 60 * 1000).unref();
   }
 
   // Background work that starts once the HTTP server is listening.
