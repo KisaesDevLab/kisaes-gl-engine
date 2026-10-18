@@ -108,9 +108,10 @@ describe('SMTP test in desktop mode', () => {
     expect(mocks.created).toHaveLength(0);
 
     secrets.setSmtpPassword('hunter2hunter2');
+    await secrets.allowSmtpEgress({ host: '10.0.0.25', port: 587, security: 'tls' });
     const r = await testSmtpConnection({ host: '10.0.0.25', port: 587, username: 'owner', password: 'body-pw', from: 'o@example.test' });
     expect(r).toEqual({ success: true });
-    expect(mocks.created[0]!['auth']).toEqual({ user: 'owner', pass: 'hunter2hunter2' });
+    expect(mocks.created[0]).toMatchObject({ secure: true, requireTLS: false, auth: { user: 'owner', pass: 'hunter2hunter2' } });
     expect(JSON.stringify(mocks.created)).not.toContain('body-pw');
   });
 

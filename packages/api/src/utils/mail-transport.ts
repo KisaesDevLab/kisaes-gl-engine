@@ -29,7 +29,7 @@
 
 import nodemailer from 'nodemailer';
 import { isDesktop } from '../desktop/profile.js';
-import { getSessionSecret } from '../desktop/session-secrets.js';
+import { getSessionSecret, getSessionSmtpServer, isLocalNetworkHost } from '../desktop/session-secrets.js';
 import { AppError } from './errors.js';
 import { classifyNetworkError, ensureOnline, isLoopbackAddress, type NetTarget } from './offline.js';
 
@@ -88,6 +88,16 @@ export function createMailTransport(opts: MailTransportOptions) {
   if (!isDesktop()) return nodemailer.createTransport(opts);
 
   const target = smtpTarget(opts);
+  // The transport security the owner chose with the session password, for
+  // that server: `tls` = TLS from the first byte, `starttls` = STARTTLS
+  // required, `none` = clear text (only to a local-network host; checked
+  // when it was set and again here).
+  const session = getSessionSmtpServer();
+  if (session && session.host.toLowerCase() === target.host.toLowerCase() && session.port === target.port) {
+    if (session.security === 'tls') opts = { ...opts, secure: true, requireTLS: false };
+    else if (session.security === 'starttls') opts = { ...opts, secure: false, requireTLS: true };
+    else if (isLocalNetworkHost(target.host)) opts = { ...opts, secure: false, requireTLS: false };
+  }
   if (opts.auth?.user) {
     const pass = getSessionSecret('smtp.password');
     if (!pass) {

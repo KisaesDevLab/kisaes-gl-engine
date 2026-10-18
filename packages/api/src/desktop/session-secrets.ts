@@ -29,7 +29,8 @@
 import crypto from 'node:crypto';
 import { AppError } from '../utils/errors.js';
 import { registerSecret } from '../utils/secret-scrubber.js';
-import { assertExternalUrlSafe, assertHostSafe } from '../utils/url-safety.js';
+import { assertExternalUrlSafe, assertHostSafe, classifyIpLiteral } from '../utils/url-safety.js';
+import net from 'node:net';
 import { targetFromUrl, isLoopbackAddress } from '../utils/offline.js';
 import { clearEgressAllowance, setEgressAllowance } from './egress-guard.js';
 
@@ -48,9 +49,32 @@ export const CLOUD_AI_EGRESS: Readonly<Record<'anthropic' | 'openai', { host: st
 /** SMTP ports a session may open (DESKTOP.md egress rules). */
 export const SMTP_EGRESS_PORTS: ReadonlySet<number> = new Set([25, 465, 587, 2525]);
 
+export type SmtpSecurity = 'tls' | 'starttls' | 'none';
+
+export interface SessionSmtpServer {
+  host: string;
+  port: number;
+  security: SmtpSecurity;
+}
+
 const store = new Map<SessionSecretName, string>();
 // Non-secret companion of ai.ollama.baseUrl: the model the owner picked.
 let ollamaModel: string | null = null;
+// Non-secret companion of smtp.password: the mail server the owner named.
+let smtpServer: SessionSmtpServer | null = null;
+
+/**
+ * A host on this machine or the owner's own network: loopback, RFC 1918,
+ * CGNAT (100.64/10), IPv6 ULA, exactly `localhost`, or a `.local` name.
+ * Other names cannot be verified without DNS, so they do not count.
+ */
+export function isLocalNetworkHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.local')) return true;
+  if (!net.isIP(h)) return false;
+  const cls = classifyIpLiteral(h);
+  return cls === 'loopback' || cls === 'private';
+}
 
 export function isSessionSecretName(name: string): name is SessionSecretName {
   return (SESSION_SECRET_NAMES as readonly string[]).includes(name);
@@ -126,6 +150,15 @@ export function validateOllamaBaseUrl(raw: string): string {
   } catch (err) {
     throw AppError.badRequest(err instanceof Error ? err.message : 'Ollama base URL is not allowed', 'OLLAMA_URL_INVALID');
   }
+  // An Ollama elsewhere is a cloud provider, not a local model: it would
+  // bypass consent, the token cap and the redaction backstop. Desktop mode
+  // only accepts this machine or the owner's own network.
+  if (!isLocalNetworkHost(u.hostname)) {
+    throw AppError.badRequest(
+      'Ollama base URL must point at this computer or your own network (localhost, a private address or a .local name).',
+      'OLLAMA_HOST_NOT_LOCAL',
+    );
+  }
   return trimmed.replace(/\/+$/, '').replace(/\/v1$/i, '');
 }
 
@@ -149,6 +182,11 @@ export function setSmtpPassword(password: string): void {
   // PUT); clearing the password removes that allowance.
 }
 
+/** The mail server named with the session password, or null. */
+export function getSessionSmtpServer(): SessionSmtpServer | null {
+  return smtpServer;
+}
+
 /**
  * Allow outbound SMTP to `host:port` for this session: the owner's
  * explicit choice, made in the same request as the password. The host
@@ -157,17 +195,31 @@ export function setSmtpPassword(password: string): void {
  * a mail port. Loopback relays need no allowance and are accepted as-is.
  * Replaces any previous SMTP allowance (one mail server per session).
  */
-export async function allowSmtpEgress(target: { host: string; port: number }): Promise<void> {
-  if (isLoopbackAddress(target.host)) return;
-  if (!SMTP_EGRESS_PORTS.has(target.port)) {
-    throw AppError.badRequest(`SMTP port ${target.port} is not allowed (use 25, 465, 587 or 2525)`, 'SMTP_HOST_BLOCKED');
+export async function allowSmtpEgress(target: { host: string; port: number; security?: SmtpSecurity }): Promise<void> {
+  const security: SmtpSecurity = target.security ?? (target.port === 465 ? 'tls' : 'starttls');
+  const local = isLocalNetworkHost(target.host);
+  // Clear-text SMTP (no TLS at all) only to this machine or the owner's
+  // own network; the password would otherwise cross the internet in clear.
+  if (security === 'none' && !local) {
+    throw AppError.badRequest(
+      'Sending without TLS is only allowed to a mail server on this computer or your own network. Choose TLS or STARTTLS.',
+      'SMTP_SECURITY_REQUIRED',
+    );
   }
-  try {
-    await assertHostSafe(target.host, 'SMTP host', { allowPrivate: true });
-  } catch (err) {
-    throw AppError.badRequest(err instanceof Error ? err.message : 'SMTP host is not allowed', 'SMTP_HOST_BLOCKED');
+  if (!isLoopbackAddress(target.host)) {
+    if (!SMTP_EGRESS_PORTS.has(target.port)) {
+      throw AppError.badRequest(`SMTP port ${target.port} is not allowed (use 25, 465, 587 or 2525)`, 'SMTP_HOST_BLOCKED');
+    }
+    try {
+      await assertHostSafe(target.host, 'SMTP host', { allowPrivate: true });
+    } catch (err) {
+      throw AppError.badRequest(err instanceof Error ? err.message : 'SMTP host is not allowed', 'SMTP_HOST_BLOCKED');
+    }
+    setEgressAllowance('smtp', [{ host: target.host, port: target.port }]);
+  } else {
+    clearEgressAllowance('smtp');
   }
-  setEgressAllowance('smtp', [{ host: target.host, port: target.port }]);
+  smtpServer = { host: target.host.trim(), port: target.port, security };
 }
 
 /**
@@ -186,6 +238,7 @@ export function deleteSessionSecret(name: SessionSecretName): boolean {
       clearEgressAllowance('ai.ollama');
       break;
     case 'smtp.password':
+      smtpServer = null;
       clearEgressAllowance('smtp');
       break;
   }

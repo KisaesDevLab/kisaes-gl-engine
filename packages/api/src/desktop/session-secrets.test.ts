@@ -89,10 +89,29 @@ describe('Ollama base URL (U-11, DESKTOP.md L-6)', () => {
   it('a LAN box is allowed on its port only, by the owner\'s explicit choice', () => {
     s.setOllamaBaseUrl('http://192.168.1.20:11434');
     expect(allowed('ai.ollama')).toEqual([{ host: '192.168.1.20', port: 11434 }]);
-    s.setOllamaBaseUrl('https://ollama.lan');
-    expect(allowed('ai.ollama')).toEqual([{ host: 'ollama.lan', port: 443 }]);
+    s.setOllamaBaseUrl('https://ollama.local');
+    expect(allowed('ai.ollama')).toEqual([{ host: 'ollama.local', port: 443 }]);
     s.deleteSessionSecret('ai.ollama.baseUrl');
     expect(allowed('ai.ollama')).toEqual([]);
+  });
+
+  it.each(['http://10.1.2.3:11434', 'http://172.16.5.5:11434', 'http://100.64.0.9:11434', 'http://[fd12::1]:11434', 'http://box.local:11434', 'http://localhost:11434', 'http://127.0.0.2:11434'])
+  ('accepts the local-network host %s', (url) => {
+    expect(() => s.validateOllamaBaseUrl(url)).not.toThrow();
+  });
+
+  it.each(['https://api.example.com', 'http://8.8.8.8:11434', 'http://ollama.lan:11434', 'http://[2001:db8::1]:11434', 'http://box.local.example.com'])
+  ('refuses the public host %s with OLLAMA_HOST_NOT_LOCAL (an Ollama elsewhere is cloud)', (url) => {
+    let code = '';
+    try { s.setOllamaBaseUrl(url); } catch (err) { code = (err as { code?: string }).code ?? ''; }
+    expect(code).toBe('OLLAMA_HOST_NOT_LOCAL');
+    expect(s.hasSessionSecret('ai.ollama.baseUrl')).toBe(false);
+    expect(allowed('ai.ollama')).toEqual([]);
+  });
+
+  it('isLocalNetworkHost', () => {
+    expect(['localhost', 'LOCALHOST', 'nas.local', '127.0.0.1', '::1', '[::1]', '10.0.0.1', '192.168.0.1', '172.31.255.255', '100.127.0.1', 'fc00::1'].every(s.isLocalNetworkHost)).toBe(true);
+    expect(['example.com', '8.8.8.8', '172.32.0.1', '100.128.0.1', '2001:db8::1', 'mail.lan', 'localhost.'].some(s.isLocalNetworkHost)).toBe(false);
   });
 
   it.each([
@@ -130,15 +149,31 @@ describe('SMTP (U-13)', () => {
     s.setSmtpPassword('hunter2hunter2');
     await s.allowSmtpEgress({ host: '10.0.0.25', port: 587 });
     expect(allowed('smtp')).toEqual([{ host: '10.0.0.25', port: 587 }]);
+    expect(s.getSessionSmtpServer()).toEqual({ host: '10.0.0.25', port: 587, security: 'starttls' });
     await s.allowSmtpEgress({ host: '10.0.0.25', port: 465 });
     expect(allowed('smtp')).toEqual([{ host: '10.0.0.25', port: 465 }]);
+    expect(s.getSessionSmtpServer()).toEqual({ host: '10.0.0.25', port: 465, security: 'tls' });
     s.deleteSessionSecret('smtp.password');
     expect(allowed('smtp')).toEqual([]);
+    expect(s.getSessionSmtpServer()).toBeNull();
   });
 
   it('loopback relays need no allowance', async () => {
-    await s.allowSmtpEgress({ host: '127.0.0.1', port: 1025 });
+    await s.allowSmtpEgress({ host: '127.0.0.1', port: 1025, security: 'none' });
     expect(allowed('smtp')).toEqual([]);
+    expect(s.getSessionSmtpServer()).toEqual({ host: '127.0.0.1', port: 1025, security: 'none' });
+  });
+
+  it("security 'none' is only accepted for a local-network host", async () => {
+    await s.allowSmtpEgress({ host: '192.168.1.5', port: 25, security: 'none' });
+    expect(s.getSessionSmtpServer()?.security).toBe('none');
+    await expect(s.allowSmtpEgress({ host: '203.0.113.9', port: 25, security: 'none' }))
+      .rejects.toMatchObject({ code: 'SMTP_SECURITY_REQUIRED', statusCode: 400 });
+    // The previous server is untouched by the refused request.
+    expect(s.getSessionSmtpServer()).toEqual({ host: '192.168.1.5', port: 25, security: 'none' });
+    expect(allowed('smtp')).toEqual([{ host: '192.168.1.5', port: 25 }]);
+    await s.allowSmtpEgress({ host: '203.0.113.9', port: 587, security: 'starttls' });
+    expect(allowed('smtp')).toEqual([{ host: '203.0.113.9', port: 587 }]);
   });
 
   it.each([

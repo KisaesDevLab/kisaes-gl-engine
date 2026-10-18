@@ -72,6 +72,15 @@ describe('updateConfig in desktop mode', () => {
       .rejects.toMatchObject({ statusCode: 400, code: 'AI_PROVIDER_NOT_AVAILABLE' });
   });
 
+  it('refuses a public Ollama base URL (OLLAMA_HOST_NOT_LOCAL) and link-local ones; accepts local-network ones', async () => {
+    await expect(aiConfigService.updateConfig({ ollamaBaseUrl: 'https://ollama.example.com' }))
+      .rejects.toMatchObject({ statusCode: 400, code: 'OLLAMA_HOST_NOT_LOCAL' });
+    await expect(aiConfigService.updateConfig({ ollamaBaseUrl: 'http://169.254.169.254:11434' }))
+      .rejects.toMatchObject({ statusCode: 400, code: 'OLLAMA_URL_INVALID' });
+    expect((await aiConfigService.updateConfig({ ollamaBaseUrl: 'http://192.168.1.20:11434' })).ollamaBaseUrl).toBe('http://192.168.1.20:11434');
+    expect((await aiConfigService.updateConfig({ ollamaBaseUrl: '' })).ollamaBaseUrl).toBeNull();
+  });
+
   it('accepts the allowlisted providers and the non-secret fields', async () => {
     const cfg = await aiConfigService.updateConfig({
       categorizationProvider: 'anthropic', ocrProvider: 'ollama', chatProvider: null,

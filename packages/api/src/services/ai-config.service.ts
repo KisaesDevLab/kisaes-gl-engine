@@ -17,7 +17,7 @@ import * as aiConsent from './ai-consent.service.js';
 import { resolveTaskParams, resolveTaskExec } from './ai-task-options.js';
 import { isDesktop } from '../desktop/profile.js';
 import { scrubSecrets } from '../utils/secret-scrubber.js';
-import { hasSessionSecret } from '../desktop/session-secrets.js';
+import { hasSessionSecret, validateOllamaBaseUrl } from '../desktop/session-secrets.js';
 import { assertDesktopProvider, desktopFallbackChain } from './ai-providers/index.js';
 
 async function getOrCreateConfig() {
@@ -298,6 +298,9 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   if (input.ollamaBaseUrl !== undefined) {
     // Self-hosted AI: allowPrivate so a LAN box (192.168.x.x / 10.x /
     // localhost) is a valid target. Metadata endpoints stay blocked.
+    // Desktop: only this machine or the owner's own network (400
+    // OLLAMA_HOST_NOT_LOCAL / OLLAMA_URL_INVALID); same rule as the session endpoint.
+    if (input.ollamaBaseUrl && isDesktop()) validateOllamaBaseUrl(input.ollamaBaseUrl);
     if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL', { allowPrivate: true });
     updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
   }

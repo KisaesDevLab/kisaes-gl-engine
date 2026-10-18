@@ -187,10 +187,14 @@ export const sessionSecretsPutSchema = z.object({
   // The SMTP password for the session and, with it, the mail server the
   // owner wants to reach (validated, mail ports only; omitted = a relay on
   // this machine or a host in CL_EGRESS_ALLOW).
+  // `security`: `tls` (TLS from the first byte, port 465), `starttls`
+  // (STARTTLS required) or `none` (clear text; this machine or the owner's
+  // own network only). Default: `tls` on port 465, else `starttls`.
   smtp: z.object({
     password: z.string().min(1).max(512).optional(),
     host: z.string().trim().min(1).max(255).optional(),
     port: z.number().int().min(1).max(65535).optional(),
+    security: z.enum(['tls', 'starttls', 'none']).optional(),
   }).strict().refine((v) => v.password !== undefined || v.host !== undefined, {
     message: 'password or host is required',
   }).optional(),
@@ -225,7 +229,7 @@ desktopRouter.put(
     // SMTP host does not leave half the body applied.
     const ollamaBaseUrl = input.ai?.ollama ? sessionSecrets.validateOllamaBaseUrl(input.ai.ollama.baseUrl) : null;
     if (input.smtp?.host) {
-      await sessionSecrets.allowSmtpEgress({ host: input.smtp.host, port: input.smtp.port ?? 587 });
+      await sessionSecrets.allowSmtpEgress({ host: input.smtp.host, port: input.smtp.port ?? 587, security: input.smtp.security });
     }
     if (input.ai?.anthropic) sessionSecrets.setAnthropicKey(input.ai.anthropic.apiKey);
     if (input.ai?.openai) sessionSecrets.setOpenaiKey(input.ai.openai.apiKey);

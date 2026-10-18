@@ -199,6 +199,9 @@ describe('desktop session-secrets routes', () => {
       });
       expect(bad.status).toBe(400);
       expect(bad.json.error.code).toBe('OLLAMA_URL_INVALID');
+      const remote = await call(P, { method: 'PUT', jwt: adminJwt, body: { ai: { ollama: { baseUrl: 'https://ollama.example.com' } } } });
+      expect(remote.status).toBe(400);
+      expect(remote.json.error.code).toBe('OLLAMA_HOST_NOT_LOCAL');
       expect(bad.text).not.toContain(KEY);
       const secrets = await import('../desktop/session-secrets.js');
       expect(secrets.hasSessionSecret('ai.anthropic')).toBe(false);
@@ -230,6 +233,16 @@ describe('desktop session-secrets routes', () => {
       expect(ok.status, ok.text).toBe(200);
       expect(ok.json['smtp.password'].present).toBe(true);
       expect(smtp()).toEqual([{ host: '10.0.0.25', port: 465 }]);
+      expect(secrets.getSessionSmtpServer()).toEqual({ host: '10.0.0.25', port: 465, security: 'tls' });
+
+      const clearText = await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { host: '203.0.113.9', port: 25, security: 'none' } } });
+      expect(clearText.status).toBe(400);
+      expect(clearText.json.error.code).toBe('SMTP_SECURITY_REQUIRED');
+      expect(secrets.getSessionSmtpServer()).toEqual({ host: '10.0.0.25', port: 465, security: 'tls' });
+      const starttls = await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { host: '203.0.113.9', port: 587, security: 'starttls' } } });
+      expect(starttls.status, starttls.text).toBe(200);
+      expect(secrets.getSessionSmtpServer()).toEqual({ host: '203.0.113.9', port: 587, security: 'starttls' });
+      expect((await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { host: '10.0.0.25', security: 'plain' } } })).status).toBe(400);
 
       // Host only (a relay without a login) is accepted; port defaults to 587.
       const hostOnly = await call(P, { method: 'PUT', jwt: adminJwt, body: { smtp: { host: '10.0.0.26' } } });

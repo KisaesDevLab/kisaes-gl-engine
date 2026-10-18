@@ -66,6 +66,33 @@ describe('desktop mail transport password', () => {
   });
 });
 
+describe('desktop transport security from the session server', () => {
+  it.each([
+    ['tls', 465, { secure: true, requireTLS: false }],
+    ['starttls', 587, { secure: false, requireTLS: true }],
+  ] as const)('%s on port %i', async (security, port, expected) => {
+    desktop();
+    secrets.setSmtpPassword('session-pw-123456');
+    await secrets.allowSmtpEgress({ host: '203.0.113.9', port, security });
+    createMailTransport({ host: '203.0.113.9', port, secure: port === 465, auth: { user: 'owner' } });
+    expect(mocks.created[0]).toMatchObject({ host: '203.0.113.9', port, ...expected, auth: { user: 'owner', pass: 'session-pw-123456' } });
+  });
+
+  it("'none' turns TLS off for a local-network relay only", async () => {
+    desktop();
+    await secrets.allowSmtpEgress({ host: '192.168.1.5', port: 25, security: 'none' });
+    createMailTransport({ host: '192.168.1.5', port: 25 });
+    expect(mocks.created[0]).toMatchObject({ secure: false, requireTLS: false });
+  });
+
+  it('a server other than the session one keeps the desktop default (STARTTLS required off loopback)', async () => {
+    desktop();
+    await secrets.allowSmtpEgress({ host: '192.168.1.5', port: 25, security: 'none' });
+    createMailTransport({ host: 'other.example.test', port: 587 });
+    expect(mocks.created[0]).toMatchObject({ requireTLS: true });
+  });
+});
+
 describe('server mail transport (unchanged)', () => {
   it('uses the password it was given and ignores the session store', () => {
     secrets.setSmtpPassword('session-pw-123456');
