@@ -221,5 +221,28 @@ export async function applyIdentity(client: ArchiveClient, input: IdentityInput)
   return result;
 }
 
-/** The users projection columns, for the export SELECT. */
+/**
+ * Password hash placeholder (H4). An archive carries a user's bcrypt hash
+ * only when the exporting caller is a super admin and the user is not one;
+ * every other hash is replaced by this value, which no bcrypt comparison
+ * ever matches, so a user created from it must have a password set again
+ * before logging in. The owner is matched by email on import and is never
+ * modified, so the owner's own password is unaffected.
+ */
+export const ARCHIVE_PASSWORD_PLACEHOLDER = '!archived:password-reset-required';
+
+/**
+ * The users projection SELECT list for the export, over alias `u`.
+ * `includeHashesParam` is the SQL placeholder (e.g. `$2`) of a boolean:
+ * true when the caller may export hashes (super admin).
+ */
+export function usersProjectionSql(includeHashesParam: string): string {
+  return USERS_PROJECTION.map((c) => (
+    c === 'password_hash'
+      ? `CASE WHEN ${includeHashesParam}::boolean AND NOT u.is_super_admin THEN u.password_hash ELSE '${ARCHIVE_PASSWORD_PLACEHOLDER}' END AS "password_hash"`
+      : `u."${c}"`
+  )).join(', ');
+}
+
+/** The users projection columns, for a plain SELECT (verification). */
 export const USERS_PROJECTION_SQL = USERS_PROJECTION.map((c) => `u."${c}"`).join(', ');

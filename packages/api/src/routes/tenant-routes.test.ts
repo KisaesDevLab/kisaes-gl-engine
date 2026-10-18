@@ -198,7 +198,8 @@ describe('lifecycle routes', () => {
     const result = job['result'] as Record<string, unknown>;
     expect(result['archiveId']).toBe(archiveId);
     expect(result['path']).toMatch(new RegExp(`${archiveId}\\.zip$`));
-    expect(result['warnings']).toEqual([]);
+    // The desktop owner is a super admin: their own hash never travels (H4).
+    expect(result['warnings']).toEqual(['PASSWORD_HASHES_OMITTED:1']);
     archivePath = result['path'] as string;
     fileName = result['fileName'] as string;
     expect(path.resolve(archivePath).startsWith(path.resolve(process.env['CL_ARCHIVE_DIR']!))).toBe(true);

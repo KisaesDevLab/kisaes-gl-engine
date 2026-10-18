@@ -38,7 +38,7 @@ import {
   HOST_MAX_BYTES, IDENTITY_ENTRIES, MANIFEST_ENTRY, filePartName, tablePartName,
   type ArchiveManifest, type ManifestFile, type ManifestTable,
 } from './format.js';
-import { USERS_PROJECTION_SQL } from './identity.js';
+import { ARCHIVE_PASSWORD_PLACEHOLDER, usersProjectionSql } from './identity.js';
 import type { JobProgress } from './jobs.js';
 import {
   ARCHIVE_AUDIT_ENTITY_TYPE, EXCLUDED_TENANT_ARCHIVE_TABLES, NATURAL_KEYS, getPortabilityPlan, scopeSql,
@@ -323,11 +323,16 @@ async function exportLocked(
       // Identity section (B6, S7).
       const tenantCols = plan.live.tables.get('tenants')!.columns.filter((c) => c.name !== 'is_workspace').map((c) => `t."${c.name}"`).join(', ');
       const tenantLine = (await client.query(`SELECT row_to_json(x)::text AS j FROM (SELECT ${tenantCols} FROM tenants t WHERE t.id = $1) x`, [tenantId])).rows[0] as { j: string };
+      // Password hashes travel only for a super admin caller, and never a super admin's own (H4).
+      const caller = (await client.query('SELECT is_super_admin FROM users WHERE id = $1', [userId])).rows[0] as { is_super_admin: boolean } | undefined;
+      const includeHashes = caller?.is_super_admin === true;
       const userLines = (await client.query(
-        `SELECT row_to_json(x)::text AS j FROM (SELECT ${USERS_PROJECTION_SQL} FROM users u
+        `SELECT row_to_json(x)::text AS j, (x.password_hash = $3) AS omitted FROM (SELECT ${usersProjectionSql('$2')} FROM users u
            WHERE u.id IN (SELECT user_id FROM user_tenant_access WHERE tenant_id = $1) ORDER BY u.id) x`,
-        [tenantId],
-      )).rows as Array<{ j: string }>;
+        [tenantId, includeHashes, ARCHIVE_PASSWORD_PLACEHOLDER],
+      )).rows as Array<{ j: string; omitted: boolean }>;
+      const omittedHashes = userLines.filter((r) => r.omitted).length;
+      if (omittedHashes > 0) warnings.push(`PASSWORD_HASHES_OMITTED:${omittedHashes}`);
       const accessLines = (await client.query(
         `SELECT row_to_json(x)::text AS j FROM (SELECT a.* FROM user_tenant_access a WHERE a.tenant_id = $1 ORDER BY a.id) x`,
         [tenantId],

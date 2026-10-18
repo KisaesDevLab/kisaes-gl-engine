@@ -606,7 +606,7 @@ export const SECRET_COLUMNS: Record<string, SecretColumnRule> = {
   'payroll_import_sessions.file_hash': { action: 'keep', reason: 'content hash of the payroll file' },
   'report_instances.share_token': { action: 'redact', reason: 'public share-link token (also nulled by UNIQUE_INDEX_RULES)' },
   'transactions.public_token': { action: 'redact', reason: 'public invoice-link token (also nulled by UNIQUE_INDEX_RULES)' },
-  'users.password_hash': { action: 'keep', reason: 'owner decision 3: LAN users restore with their password; the archive is passphrase-encrypted' },
+  'users.password_hash': { action: 'keep', reason: 'owner decision 3 (H4 default): travels only when the exporting caller is a super admin, never for a super admin user; otherwise the identity projection writes ARCHIVE_PASSWORD_PLACEHOLDER (identity.ts)' },
   'users.tfa_totp_secret_encrypted': { action: 'redact', reason: 'TFA secret; not in the users projection' },
   'users.tfa_totp_verified': { action: 'redact', reason: 'TFA state; not in the users projection' },
   'users.tfa_recovery_codes_encrypted': { action: 'redact', reason: 'TFA recovery codes; not in the users projection' },
