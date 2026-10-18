@@ -99,6 +99,7 @@ export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): Archi
   if (!isObject(fp) || fp['algorithm'] !== 'fp1' || !isObject(fp['tables'])) throw corrupt('manifest fingerprint');
   if (!Array.isArray(raw['warnings']) || !(raw['warnings'] as unknown[]).every((w) => typeof w === 'string')) throw corrupt('manifest warnings');
   for (const k of ['excludedTables', 'redactedColumns', 'nulledReferences'] as const) if (!isObject(raw[k])) throw corrupt(`manifest ${k}`);
+  for (const k of ['globalRows', 'canonical'] as const) if (raw[k] !== undefined && !isObject(raw[k])) throw corrupt(`manifest ${k}`);
   const declared = tables.reduce((s, t) => s + t.bytes, 0) + files.reduce((s, f) => s + f.bytes, 0);
   if (declared > ARCHIVE_MAX_PLAINTEXT_BYTES) throw new ArchiveError('ARCHIVE_TOO_LARGE', 'The archive declares more data than this engine accepts.');
   return raw as unknown as ArchiveManifest;

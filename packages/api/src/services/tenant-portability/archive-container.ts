@@ -98,7 +98,7 @@ export class ArchiveZipWriter {
         }
       };
       emitter.on('entry', onEntry);
-      this.archive.on('error', reject);
+      this.done.catch(reject);
       this.archive.append(stream, { name });
     });
   }

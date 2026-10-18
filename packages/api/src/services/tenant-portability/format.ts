@@ -147,6 +147,10 @@ export interface ArchiveManifest {
   redactedColumns: Record<string, string>;
   nulledReferences: Record<string, string>;
   warnings: string[];
+  /** Natural-key values of referenced global/system rows: table -> old id -> key columns. */
+  globalRows?: Record<string, Record<string, Record<string, unknown>>>;
+  /** Canonical projection column names per table, as the exporter computed them. */
+  canonical?: Record<string, string[]>;
 }
 
 /** The users projection of the identity section, in order. */

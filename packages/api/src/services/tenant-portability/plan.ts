@@ -1170,7 +1170,22 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
     deferredFks.push(candidate);
     orderEdges = orderEdges.filter((e) => !(e.child === candidate.table && e.parent === candidate.refTable));
   }
-  const order = topoOrder(archived, orderEdges).order;
+  // Soft references (tenant-ref) order referrers after their targets when
+  // that keeps the graph acyclic (journal_lines after transactions, so the
+  // 0144 stamp triggers see the transaction rows on import); cyclic hints
+  // (transactions <-> recurring_schedules) are dropped deterministically.
+  let hintEdges = orderEdges;
+  const softEdges = Object.entries(SOFT_REFS)
+    .filter(([, v]) => v.startsWith('tenant-ref:'))
+    .map(([k, v]) => ({ child: k.split('.')[0]!, parent: v.slice('tenant-ref:'.length) }))
+    .filter((e) => e.child !== e.parent && archivedSet.has(e.child) && archivedSet.has(e.parent))
+    .sort((x, y) => `${x.child}>${x.parent}`.localeCompare(`${y.child}>${y.parent}`));
+  for (const e of softEdges) {
+    if (hintEdges.some((h) => h.child === e.child && h.parent === e.parent)) continue;
+    const trial = [...hintEdges, e];
+    if (topoOrder(archived, trial).cyclic.length === 0) hintEdges = trial;
+  }
+  const order = topoOrder(archived, hintEdges).order;
 
   // Rule 2: pk shapes (R5).
   const fkRefCount = new Map<string, number>();
