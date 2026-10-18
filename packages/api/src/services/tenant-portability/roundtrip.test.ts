@@ -364,6 +364,7 @@ describe('import', () => {
     expect(imported.name).toMatch(/^RT .* \(restored \d{4}-\d{2}-\d{2} \d{2}:\d{2}\)$/);
     expect(imported.verification).toMatchObject({ contentEqual: true, trialBalanceEqual: true, files: 5, identity: { matched: 2, created: 0 } });
     expect(imported.warnings).toEqual([]);
+    expect(imported.host).toEqual({ app: 'ClientLedger', kind: 'backup' });
     const reader = await ArchiveReader.open(exported.path!, PASS);
     // The import audit row (tenant_import) is written after verification, so audit_log holds one row more.
     for (const t of reader.manifest.tables) expect(await countRows(t.name, imported.tenantId), t.name).toBe(t.rows + (t.name === 'audit_log' ? 1 : 0));

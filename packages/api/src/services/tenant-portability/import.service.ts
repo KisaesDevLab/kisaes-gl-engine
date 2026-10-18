@@ -56,6 +56,8 @@ export interface ImportResult {
   archiveId: string;
   sourceTenantId: string;
   verification: VerificationSummary;
+  /** The archive manifest's opaque `host` object, echoed so the client can restore its own metadata. */
+  host: Record<string, unknown>;
   warnings: string[];
 }
 
@@ -262,6 +264,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         archiveId: manifest.archiveId,
         sourceTenantId: manifest.source.tenantId,
         verification,
+        host: manifest.host,
         warnings: [...new Set(warnings)].sort(),
       };
     } catch (err) {
