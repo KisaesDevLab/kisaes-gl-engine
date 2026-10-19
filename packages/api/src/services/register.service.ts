@@ -165,7 +165,7 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
       AND jl.account_id = ${accountId}
       AND t.txn_date <= ${endDate}
   `);
-  const bfRow = (bfResult.rows as any[])[0] || {};
+  const bfRow = (bfResult.rows as Array<{ balance_forward?: string; ending_balance?: string }>)[0] ?? {};
   const balanceForward = new Decimal(bfRow.balance_forward ?? '0');
   const endingBalanceDec = new Decimal(bfRow.ending_balance ?? '0');
 
@@ -483,7 +483,7 @@ export async function getRegisterSummary(
       AND t.status = 'posted'
       ${opts.endDate ? sql`AND t.txn_date <= ${opts.endDate}` : sql``}
   `);
-  const footerRow = (footer.rows as any[])[0] || {};
+  const footerRow = (footer.rows as Array<{ ending_balance?: string; cleared_balance?: string }>)[0] ?? {};
   const money = moneyFormatter(opts.exact);
   const endingBalance = money.balance(new Decimal(footerRow.ending_balance ?? '0'));
   const clearedBalance = money.balance(new Decimal(footerRow.cleared_balance ?? '0'));
