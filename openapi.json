@@ -19085,6 +19085,138 @@
         ]
       }
     },
+    "/api/v1/company/closing-password": {
+      "get": {
+        "operationId": "get_api_v1_company_closing_password",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "closingDate": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "closingPasswordSet": {
+                      "type": "boolean"
+                    },
+                    "setAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "setBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "closingDate",
+                    "setBy",
+                    "setAt",
+                    "closingPasswordSet"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Closing date and whether a closing-date password is set",
+        "tags": [
+          "company"
+        ]
+      },
+      "put": {
+        "operationId": "put_api_v1_company_closing_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "currentPassword": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "newPassword": {
+                    "anyOf": [
+                      {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "newPassword"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "closingPasswordSet": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "closingPasswordSet"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Set, change or clear the closing-date password",
+        "tags": [
+          "company"
+        ]
+      }
+    },
     "/api/v1/company/create": {
       "post": {
         "operationId": "post_api_v1_company_create",
@@ -19622,6 +19754,10 @@
                   },
                   "chatSupportEnabled": {
                     "type": "boolean"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
                   },
                   "currency": {
                     "maxLength": 3,

@@ -1520,6 +1520,13 @@
       "when": 1784800000380,
       "tag": "0216_tenants_is_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1784800003380,
+      "tag": "0219_companies_closing_password",
+      "breakpoints": true
     }
   ]
 }

@@ -10,4 +10,6 @@
 export const DESKTOP_CAPABILITIES: readonly string[] = [
   /** `?exact=1` on GET /accounts/:id/register and /register/summary: money as decimal strings (P12 R2). */
   'register-exact-v1',
+  /** Closing-date password: companies.closing_password_hash, closingPassword on postings and lockDate changes (U-15). */
+  'closing-password-v1',
 ];

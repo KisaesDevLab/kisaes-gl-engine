@@ -13,6 +13,7 @@ import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { getLockContext } from './lock-context.js';
+import { closingPasswordMatches, closingPasswordInvalid } from './closing-password.service.js';
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 import { escapeLike } from '../utils/sql-like.js';
 
@@ -189,51 +190,143 @@ export interface LockDateContext {
   userType?: 'staff' | 'client';
   overrideConfirmed?: boolean;
   userId?: string;
+  // Closing-date password from the request body (U-15). Lives only in the
+  // request-scoped store; lockContextMiddleware removes it from req.body.
+  closingPassword?: string;
 }
 
+/** A permitted closed-period posting, for the closing_date_override audit row. */
+export interface LockOverride {
+  method: 'password' | 'confirmed';
+  companyId: string | null;
+  lockDate: string;
+  lockDateSetBy: string | null;
+  lockDateSetAt: unknown;
+  txnDate: string;
+  userId?: string;
+}
+
+/** What the override touched: the transaction and its old/new date. */
+export interface LockOverrideFacts {
+  txnId?: string | null;
+  oldDate?: string | null;
+  newDate?: string | null;
+}
+
+/**
+ * Writes the closing_date_override audit row (ADR-TB-04, U-15): who, which
+ * transaction, the old and new date, and how (password or staff
+ * confirmation). Never the password.
+ */
+export async function auditLockOverride(
+  executor: DbOrTx,
+  tenantId: string,
+  override: LockOverride,
+  facts: LockOverrideFacts = {},
+) {
+  await auditLog(tenantId, 'override', 'closing_date_override', facts.txnId ?? override.companyId ?? tenantId,
+    { lockDate: override.lockDate, lockDateSetBy: override.lockDateSetBy, lockDateSetAt: override.lockDateSetAt },
+    {
+      txnDate: override.txnDate,
+      method: override.method,
+      overrideConfirmed: override.method === 'confirmed',
+      transactionId: facts.txnId ?? null,
+      oldDate: facts.oldDate ?? null,
+      newDate: facts.newDate ?? null,
+      companyId: override.companyId,
+    },
+    override.userId, executor as Tx);
+}
+
+/**
+ * Closed-period check. Returns undefined when the date is open. A permitted
+ * override is audited here, unless `opts.deferAudit` is set: then it is
+ * returned and the caller audits it once it knows the transaction id
+ * (auditLockOverride), so one change leaves one row with old and new date.
+ */
 export async function checkLockDate(
   executor: DbOrTx,
   tenantId: string,
   txnDate: string,
   companyId?: string | null,
   ctx?: LockDateContext,
-) {
+  opts: LockOverrideFacts & { deferAudit?: boolean } = {},
+): Promise<LockOverride | undefined> {
   // Explicit ctx wins; otherwise pick up the request-scoped store set
   // by lockContextMiddleware (see services/lock-context.ts).
   ctx = ctx ?? getLockContext();
   const result = companyId
     ? await executor.execute(sql`
-        SELECT lock_date, lock_date_set_by, lock_date_set_at FROM companies
+        SELECT lock_date, lock_date_set_by, lock_date_set_at,
+               closing_password_hash IS NOT NULL AS password_set
+        FROM companies
         WHERE tenant_id = ${tenantId} AND id = ${companyId}
       `)
     : await executor.execute(sql`
-        SELECT MAX(lock_date) AS lock_date, NULL AS lock_date_set_by, NULL AS lock_date_set_at
+        SELECT MAX(lock_date) AS lock_date, NULL AS lock_date_set_by, NULL AS lock_date_set_at,
+               COALESCE(BOOL_OR(closing_password_hash IS NOT NULL AND lock_date >= ${txnDate}), false) AS password_set
         FROM companies WHERE tenant_id = ${tenantId}
       `);
   const row = (result.rows as any[])[0];
   const lockDate = row?.lock_date;
-  if (!lockDate || txnDate > lockDate) return;
+  if (!lockDate || txnDate > lockDate) return undefined;
+  const passwordSet = row?.password_set === true;
+
+  const permit = async (method: LockOverride['method']) => {
+    const override: LockOverride = {
+      method,
+      companyId: companyId ?? null,
+      lockDate,
+      lockDateSetBy: row?.lock_date_set_by ?? null,
+      lockDateSetAt: row?.lock_date_set_at ?? null,
+      txnDate,
+      userId: ctx?.userId,
+    };
+    if (!opts.deferAudit) await auditLockOverride(executor, tenantId, override, opts);
+    return override;
+  };
+
+  // Closing-date password (U-15): any actor holding it may post into the
+  // closed period. It must match the password of every company whose
+  // closed period covers the date; a company without one can't be opened
+  // this way. Wrong: 403, nothing changes (rate limited at the route).
+  if (ctx?.closingPassword !== undefined) {
+    const locking = companyId
+      ? await executor.execute(sql`
+          SELECT closing_password_hash FROM companies
+          WHERE tenant_id = ${tenantId} AND id = ${companyId}
+        `)
+      : await executor.execute(sql`
+          SELECT closing_password_hash FROM companies
+          WHERE tenant_id = ${tenantId} AND lock_date IS NOT NULL AND lock_date >= ${txnDate}
+        `);
+    const hashes = (locking.rows as Array<{ closing_password_hash: string | null }>).map((r) => r.closing_password_hash);
+    let ok = hashes.length > 0;
+    for (const hash of hashes) {
+      if (!ok) break;
+      ok = await closingPasswordMatches(hash, ctx.closingPassword);
+    }
+    if (!ok) throw closingPasswordInvalid();
+    return permit('password');
+  }
 
   // Firm staff may proceed with an explicit confirmation; the override
-  // is audit-logged with the facts a reviewer needs (ADR-TB-04).
-  if (ctx?.userType === 'staff' && ctx.overrideConfirmed) {
-    await auditLog(tenantId, 'override', 'closing_date_override', companyId ?? tenantId,
-      { lockDate, lockDateSetBy: row?.lock_date_set_by ?? null, lockDateSetAt: row?.lock_date_set_at ?? null },
-      { txnDate, overrideConfirmed: true },
-      ctx.userId, executor as Tx);
-    return;
+  // is audit-logged with the facts a reviewer needs (ADR-TB-04). Once the
+  // company has a closing-date password, the password is the only way in.
+  if (ctx?.userType === 'staff' && ctx.overrideConfirmed && !passwordSet) {
+    return permit('confirmed');
   }
-  if (ctx?.userType === 'client') {
+  if (ctx?.userType === 'client' && !passwordSet) {
     throw AppError.locked(
       `This period was closed by your accounting firm on ${lockDate}. Contact them to make changes.`,
       'TB_PERIOD_LOCKED',
-      { lockDate, canOverride: false },
+      { lockDate, canOverride: false, closingPasswordRequired: false },
     );
   }
   throw AppError.locked(
     `This period was closed on ${String(row?.lock_date_set_at ?? '').slice(0, 10) || lockDate}. Proceeding will change closed-period balances.`,
     'TB_PERIOD_LOCKED',
-    { lockDate, canOverride: ctx?.userType === 'staff' },
+    { lockDate, canOverride: ctx?.userType === 'staff' && !passwordSet, closingPasswordRequired: passwordSet },
   );
 }
 
@@ -320,9 +413,9 @@ export async function postTransaction(
     // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
     // router is the only path that posts txn_type 'aje', and closing a
     // period is exactly when the firm posts adjusting entries into it.
-    if (input.txnType !== 'aje') {
-      await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null);
-    }
+    const lockOverride = input.txnType !== 'aje'
+      ? await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null, undefined, { deferAudit: true })
+      : undefined;
     await assertAccountsInScope(
       tx,
       tenantId,
@@ -408,6 +501,9 @@ export async function postTransaction(
     }
 
     await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId, tx);
+    if (lockOverride) {
+      await auditLockOverride(tx, tenantId, lockOverride, { txnId: txn.id, oldDate: null, newDate: input.txnDate });
+    }
 
     return { ...txn, lines };
   };
@@ -438,7 +534,9 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     // Check lock date against the transaction's date (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
     if (txn.txnType !== 'aje') {
-      await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId);
+      await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+        txnId, oldDate: txn.txnDate, newDate: null,
+      });
     }
 
     // Mirror updateTransaction's reconciliation guard: a transaction
@@ -551,11 +649,15 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     // Check lock date for both old and new dates (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
     if (existing.txnType !== 'aje' && input.txnType !== 'aje') {
-      await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId);
-      // Only re-check (and possibly re-audit an override) when the date
-      // actually moves — same-date edits shouldn't double-log.
-      if (input.txnDate !== existing.txnDate) {
-        await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null);
+      const oldSide = await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId, undefined, { deferAudit: true });
+      // Only re-check when the date actually moves. Either side's override
+      // is audited ONCE, with the old and the new date.
+      const newSide = input.txnDate !== existing.txnDate
+        ? await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null, undefined, { deferAudit: true })
+        : undefined;
+      const override = oldSide ?? newSide;
+      if (override) {
+        await auditLockOverride(tx, tenantId, override, { txnId, oldDate: existing.txnDate, newDate: input.txnDate });
       }
     }
 

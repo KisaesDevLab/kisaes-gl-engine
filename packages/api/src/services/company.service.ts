@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { companies, accountantCompanyExclusions, transactions, bankFeedItems, bankConnections } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { authorizeLockDateChange, withoutClosingPasswordHash, type ClosingPasswordActor } from './closing-password.service.js';
 
 // List all companies for a tenant, filtered by accountant exclusions if applicable
 export async function listCompanies(tenantId: string, userId?: string) {
@@ -40,7 +41,8 @@ export async function getCompany(tenantId: string, companyId?: string) {
     : await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
 
   if (!company) throw AppError.notFound('Company not found');
-  return company;
+  // The closing-date password hash never leaves the service layer (U-15).
+  return withoutClosingPasswordHash(company);
 }
 
 // Fields the tenant's own users may edit via /companies/:id. Any
@@ -81,7 +83,14 @@ const COMPANY_UPDATABLE_FIELDS = [
   'chatSupportEnabled',
 ] as const;
 
-export async function updateCompany(tenantId: string, companyId: string, input: UpdateCompanyInput, userId?: string) {
+export async function updateCompany(
+  tenantId: string,
+  companyId: string,
+  input: UpdateCompanyInput,
+  userId?: string,
+  // Closing-date password from the request (U-15), and who is asking.
+  closing?: { password?: string; actor?: ClosingPasswordActor },
+) {
   const existing = await getCompany(tenantId, companyId);
 
   // Explicit allowlist: never trust `input` to be free of tenantId /
@@ -93,14 +102,40 @@ export async function updateCompany(tenantId: string, companyId: string, input: 
     }
   }
 
-  const [updated] = await db
+  // Closing date (TB rule TB5 / U-15): a change records who and when, as
+  // PUT /tb/closing-date does, and needs the closing-date password when
+  // the company has one. A password given while none is set becomes the
+  // company's password ("set or confirm"; owner or super admin only).
+  const requestedLock = (input as Record<string, unknown>)['lockDate'];
+  const lockChanges = requestedLock !== undefined && ((requestedLock as string | null) || null) !== (existing.lockDate || null);
+  let passwordSetNow = false;
+  if (lockChanges || closing?.password !== undefined) {
+    const { newHash } = await authorizeLockDateChange(db, tenantId, companyId, closing?.password, {
+      userId, ...closing?.actor,
+    });
+    if (newHash) {
+      updates['closingPasswordHash'] = newHash;
+      passwordSetNow = true;
+    }
+  }
+  if (lockChanges) {
+    updates['lockDateSetBy'] = userId ?? null;
+    updates['lockDateSetAt'] = new Date();
+  }
+
+  const [row] = await db
     .update(companies)
     .set(updates as Partial<typeof companies.$inferInsert>)
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
     .returning();
 
-  if (!updated) throw AppError.internal('Failed to update company');
+  if (!row) throw AppError.internal('Failed to update company');
+  const updated = withoutClosingPasswordHash(row);
   await auditLog(tenantId, 'update', 'company', updated.id, existing, updated, userId);
+  if (passwordSetNow) {
+    await auditLog(tenantId, 'update', 'closing_password', companyId,
+      { closingPasswordSet: false }, { closingPasswordSet: true }, userId);
+  }
   return updated;
 }
 

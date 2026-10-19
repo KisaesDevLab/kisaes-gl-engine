@@ -22,12 +22,29 @@ export function getLockContext(): LockDateContext | undefined {
   return storage.getStore();
 }
 
-// Express middleware: carries the caller's identity + the request's
-// overrideConfirmed flag into everything the handler awaits.
+/**
+ * Takes `closingPassword` (U-15) out of a JSON body: returns it when it is a
+ * string and deletes the key either way, so the password never reaches a
+ * schema, a service input, an audit row or a log. Anything that is not a
+ * non-empty string counts as absent.
+ */
+export function takeClosingPassword(req: Request): string | undefined {
+  const body = req.body as Record<string, unknown> | undefined;
+  if (!body || typeof body !== 'object' || !('closingPassword' in body)) return undefined;
+  const value = body['closingPassword'];
+  delete body['closingPassword'];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+// Express middleware: carries the caller's identity, the request's
+// overrideConfirmed flag and its closing-date password into everything the
+// handler awaits.
 export function lockContextMiddleware(req: Request, _res: Response, next: NextFunction) {
+  const closingPassword = takeClosingPassword(req);
   storage.run({
     userType: req.userType === 'client' ? 'client' : 'staff',
     overrideConfirmed: (req.body as { overrideConfirmed?: unknown } | undefined)?.overrideConfirmed === true,
     userId: req.userId,
+    ...(closingPassword !== undefined ? { closingPassword } : {}),
   }, next);
 }

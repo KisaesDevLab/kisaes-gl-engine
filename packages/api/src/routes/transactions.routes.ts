@@ -21,6 +21,7 @@ import * as emailService from '../services/email.service.js';
 import * as journalEntryService from '../services/journal-entry.service.js';
 import { AppError } from '../utils/errors.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import * as expenseService from '../services/expense.service.js';
 import * as transferService from '../services/transfer.service.js';
 import * as depositService from '../services/deposit.service.js';
@@ -38,8 +39,11 @@ transactionsRouter.use(authenticate);
 transactionsRouter.use(companyContext);
 transactionsRouter.use(requireResource('transactions'));
 // Closed-period actor context (TB ADR-TB-04): carries userType +
-// overrideConfirmed into the ledger choke point without threading it
-// through every posting-service signature.
+// overrideConfirmed and the closing-date password (U-15) into the ledger
+// choke point without threading it through every posting-service
+// signature. The limiter counts failed password attempts and must see the
+// body before lockContextMiddleware strips the password from it.
+transactionsRouter.use(closingPasswordLimiter);
 transactionsRouter.use(lockContextMiddleware);
 
 transactionsRouter.get('/', async (req, res) => {

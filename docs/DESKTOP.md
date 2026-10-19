@@ -382,6 +382,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 | Name | Contract |
 |---|---|
 | `register-exact-v1` | `?exact=1` on the account register and register summary: money as decimal strings (below). |
+| `closing-password-v1` | The closing-date password: `closingPassword` on postings and closing-date changes, `/company/closing-password` (below). |
 
 ## Account register
 
@@ -394,6 +395,21 @@ Response: `{"account":{"id","name","accountType","detailType","accountNumber"},"
 **Money shape.** By default money fields are JSON numbers as before: balances rounded to cents, `payment`/`deposit` as stored. With `exact=1` (or `exact=true`) every money field (`balanceForward`, `endingBalance`, `payment`, `deposit`, `runningBalance`) is a decimal string with four decimals, e.g. `"-12.0456"`, computed without floating point. `GET /api/v1/accounts/:id/register/summary?exact=1` sends its money fields the same way.
 
 **Register summary (footer).** `GET /api/v1/accounts/:id/register/summary` (query `end_date`, `exact=1`): `{"currentBalance","endingBalance","clearedBalance","asOfDate","unclearedCount","lastReconciliationDate","transactionsThisPeriod"}`. `currentBalance` is the stored account balance, as before. `endingBalance` is the posted balance through `end_date` (all dates when absent; `asOfDate` echoes it or is `null`) in the register's sign, unfiltered, so it equals the register's `endingBalance` for the same `end_date`. `clearedBalance` is the part of it whose lines are cleared in any reconciliation, open or complete (reconciled lines included). A malformed `end_date` is 400 `VALIDATION_ERROR`.
+
+## Closing-date password
+
+An optional per-company password guarding the closed period (`companies.closing_password_hash`, bcrypt; migration `0219`, additive). Without one, every closed-period rule is exactly as before. The password is never stored in plain text, logged, audited, exported or sent back; `closingPassword` is removed from the request body before validation, so it reaches no service input or audit row. Every route that accepts it counts failed attempts per user: 10 failures in 15 minutes, then 429 `CLOSING_PASSWORD_RATE_LIMIT` (requests without a password and successful ones are not counted).
+
+| Method | Path | Body / response |
+|---|---|---|
+| GET | `/api/v1/company/closing-password` | `{"closingDate"(YYYY-MM-DD or null),"setBy","setAt","closingPasswordSet"}` |
+| PUT | `/api/v1/company/closing-password` | Body `{"currentPassword"?,"newPassword"(string or null to clear)}`, response `{"closingPasswordSet"}`. With a password set, `currentPassword` must match (else 403 `CLOSING_PASSWORD_INVALID`). With none set, only the owner or a super admin may set one (else 403 `CLOSING_PASSWORD_OWNER_REQUIRED`). Passwords are 4 characters to 72 UTF-8 bytes (else 400 `VALIDATION_ERROR`). Needs `company_settings` update. Audited as `closing_password` with only a set/not-set flag. |
+| PUT | `/api/v1/company/settings` | Optional `closingPassword` next to `lockDate`. Changing `lockDate` stamps `lockDateSetBy`/`lockDateSetAt` (as `/tb/closing-date` does). With a password set, a change needs it: missing 403 `CLOSING_PASSWORD_REQUIRED`, wrong 403 `CLOSING_PASSWORD_INVALID`. A `closingPassword` given while none is set becomes the company's password ("set or confirm"; owner or super admin). An unchanged `lockDate` and the other settings need nothing. |
+| PUT | `/api/v1/tb/closing-date` | Same rule on the server-only TB route (`closingPassword` in the body); `GET` adds `closingPasswordSet`. |
+
+**Postings.** `POST /api/v1/transactions`, `PUT /api/v1/transactions/:id`, `POST /api/v1/transactions/:id/void` and `POST /api/v1/checks` accept `closingPassword` in the body. A date on or before the closing date (for an update, the old or the new date) is then allowed when the password matches; wrong is 403 `CLOSING_PASSWORD_INVALID` and nothing changes. Without it the answer stays 423 `TB_PERIOD_LOCKED`, whose `details` now carry `{"lockDate","canOverride","closingPasswordRequired"}`. Once a company has a password, staff `overrideConfirmed` alone no longer opens its closed period (`canOverride: false`, `closingPasswordRequired: true`); without a password it works as before. Each allowed closed-period change writes one audit row `action: "override"`, `entity_type: "closing_date_override"`, `entity_id` = the transaction, the acting user, before `{"lockDate","lockDateSetBy","lockDateSetAt"}`, after `{"txnDate","method":"password"|"confirmed","overrideConfirmed","transactionId","oldDate","newDate","companyId"}` (create: `oldDate` null; void: `newDate` null). AJEs stay exempt (TB rule TB5). Importers and jobs have no request context and keep the hard 423.
+
+**Audit before-image.** Update and void audit rows on `transaction` keep the header and every journal line as they stood before the change (`before_data.lines`).
 
 ## Host requirements
 
