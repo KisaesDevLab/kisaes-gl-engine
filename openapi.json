@@ -19217,6 +19217,80 @@
         ]
       }
     },
+    "/api/v1/company/closing-password/reset": {
+      "post": {
+        "operationId": "post_api_v1_company_closing_password_reset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "accountPassword": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "newPassword": {
+                    "anyOf": [
+                      {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "accountPassword",
+                  "newPassword"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "closingPasswordSet": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "closingPasswordSet"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Owner reset of the closing-date password (needs the caller sign-in password)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
     "/api/v1/company/create": {
       "post": {
         "operationId": "post_api_v1_company_create",

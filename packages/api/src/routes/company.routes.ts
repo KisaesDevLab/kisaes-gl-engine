@@ -210,6 +210,28 @@ companyRouter.put('/closing-password', requireCompanySettingsWrite, closingPassw
   res.json(result);
 });
 
+// Owner reset of a forgotten closing-date password (Q-239): the owner or a
+// super admin re-enters their own sign-in password and clears
+// (newPassword: null) or replaces it without the old one. Wrong sign-in
+// password: 403 ACCOUNT_PASSWORD_INVALID; not the owner: 403
+// CLOSING_PASSWORD_OWNER_REQUIRED. Rate limited with the other closing
+// password routes.
+const closingPasswordResetBody = z.object({
+  accountPassword: z.string().min(1).max(200),
+  newPassword: z.string().max(200).nullable(),
+});
+
+companyRouter.post('/closing-password/reset', requireCompanySettingsWrite, closingPasswordLimiter, validate(closingPasswordResetBody), describe({
+  summary: 'Owner reset of the closing-date password (needs the caller sign-in password)',
+  response: z.object({ closingPasswordSet: z.boolean() }),
+}), async (req, res) => {
+  const result = await closingPasswordService.resetClosingPassword(req.tenantId, req.companyId, {
+    accountPassword: req.body.accountPassword,
+    newPassword: req.body.newPassword,
+  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin });
+  res.json(result);
+});
+
 // ── Invoice Template (branding for generated invoices) ──
 // The invoice_templates table + service pre-existed but were never exposed
 // over HTTP, so /settings/invoice-template could not persist anything. These

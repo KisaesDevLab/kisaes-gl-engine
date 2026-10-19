@@ -15,6 +15,7 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -323,5 +324,84 @@ describe('posting into the closed period with closingPassword', () => {
     expect(limited.json.error.code).toBe('CLOSING_PASSWORD_RATE_LIMIT');
     // Requests without a password are not limited.
     expect((await call('POST', '/api/v1/transactions', deposit('2026-07-02'))).status).toBe(201);
+  });
+});
+
+describe('owner reset of a forgotten closing-date password (Q-239)', () => {
+  const SIGN_IN = 'owner-sign-in-pass';
+
+  async function giveOwnerSignInPassword() {
+    await db.update(users).set({ passwordHash: await bcrypt.hash(SIGN_IN, 4) }).where(eq(users.id, ownerId));
+  }
+
+  it('the owner replaces it with their sign-in password; the old one stops working', async () => {
+    await giveOwnerSignInPassword();
+    await setPassword();
+    const r = await call('POST', '/api/v1/company/closing-password/reset', { accountPassword: SIGN_IN, newPassword: 'fresh-pass' });
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ closingPasswordSet: true });
+
+    expect((await call('POST', '/api/v1/transactions', deposit('2026-05-01', '5.00', { closingPassword: PASSWORD }))).status).toBe(403);
+    expect((await call('POST', '/api/v1/transactions', deposit('2026-05-01', '5.00', { closingPassword: 'fresh-pass' }))).status).toBe(201);
+
+    const rows = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'closing_password_reset')));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.userId).toBe(ownerId);
+    const after = typeof rows[0]!.afterData === 'string' ? JSON.parse(rows[0]!.afterData) : rows[0]!.afterData;
+    expect(after).toMatchObject({ closingPasswordSet: true, method: 'account_password' });
+    const [company] = await db.select({ hash: companies.closingPasswordHash }).from(companies).where(eq(companies.id, companyId));
+    const audits = await auditText();
+    for (const secret of [SIGN_IN, 'fresh-pass', PASSWORD, company!.hash!]) expect(audits).not.toContain(secret);
+  });
+
+  it('newPassword null clears it', async () => {
+    await giveOwnerSignInPassword();
+    await setPassword();
+    const r = await call('POST', '/api/v1/company/closing-password/reset', { accountPassword: SIGN_IN, newPassword: null });
+    expect(r.json).toEqual({ closingPasswordSet: false });
+    expect((await call('GET', '/api/v1/company/closing-password')).json.closingPasswordSet).toBe(false);
+  });
+
+  it('a wrong sign-in password is 403 ACCOUNT_PASSWORD_INVALID and changes nothing', async () => {
+    await giveOwnerSignInPassword();
+    await setPassword();
+    const r = await call('POST', '/api/v1/company/closing-password/reset', { accountPassword: 'not-my-password', newPassword: null });
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe('ACCOUNT_PASSWORD_INVALID');
+    expect((await call('GET', '/api/v1/company/closing-password')).json.closingPasswordSet).toBe(true);
+    const failed = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'closing_password_reset_failed')));
+    expect(failed).toHaveLength(1);
+    expect(await auditText()).not.toContain('not-my-password');
+    // A short new password is refused before anything is checked.
+    const short = await call('POST', '/api/v1/company/closing-password/reset', { accountPassword: SIGN_IN, newPassword: 'abc' });
+    expect(short.status).toBe(400);
+  });
+
+  it('only the owner or a super admin may reset', async () => {
+    await setPassword();
+    const accountant = await seedUser('accountant');
+    await db.update(users).set({ passwordHash: await bcrypt.hash('acct-pass', 4) }).where(eq(users.id, accountant.id));
+    const r = await call('POST', '/api/v1/company/closing-password/reset', { accountPassword: 'acct-pass', newPassword: null }, accountant.token);
+    expect(r.status).toBe(403);
+    expect(['CLOSING_PASSWORD_OWNER_REQUIRED', 'PERMISSION_DENIED']).toContain(r.json.error.code);
+    expect((await call('GET', '/api/v1/company/closing-password')).json.closingPasswordSet).toBe(true);
+
+    await expect(closingPasswordService.resetClosingPassword(tenantId, companyId, { accountPassword: 'acct-pass', newPassword: null }, { userId: accountant.id, userRole: 'accountant' }))
+      .rejects.toMatchObject({ statusCode: 403, code: 'CLOSING_PASSWORD_OWNER_REQUIRED' });
+    await expect(closingPasswordService.resetClosingPassword(tenantId, companyId, { accountPassword: 'acct-pass', newPassword: null }, { userId: accountant.id, userRole: 'accountant', isSuperAdmin: true }))
+      .resolves.toEqual({ closingPasswordSet: false });
+  });
+
+  it('wrong sign-in passwords are rate limited with the other closing password routes', async () => {
+    await giveOwnerSignInPassword();
+    for (let i = 0; i < 10; i++) {
+      const r = await call('POST', '/api/v1/company/closing-password/reset', { accountPassword: `wrong-${i}`, newPassword: null });
+      expect(r.status).toBe(403);
+    }
+    const limited = await call('POST', '/api/v1/company/closing-password/reset', { accountPassword: SIGN_IN, newPassword: null });
+    expect(limited.status).toBe(429);
+    expect(limited.json.error.code).toBe('CLOSING_PASSWORD_RATE_LIMIT');
   });
 });

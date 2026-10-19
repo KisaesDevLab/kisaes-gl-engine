@@ -13,7 +13,7 @@
 import bcrypt from 'bcrypt';
 import { and, eq } from 'drizzle-orm';
 import { db, type DbOrTx } from '../db/index.js';
-import { companies } from '../db/schema/index.js';
+import { companies, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -119,6 +119,58 @@ export async function setClosingPassword(
       .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
     await auditLog(tenantId, 'update', 'closing_password', companyId,
       { closingPasswordSet: wasSet }, { closingPasswordSet: hash !== null }, actor.userId, tx);
+    return { closingPasswordSet: hash !== null };
+  });
+}
+
+export function accountPasswordInvalid(): AppError {
+  return AppError.forbidden('Your sign-in password is not correct.', 'ACCOUNT_PASSWORD_INVALID');
+}
+
+/**
+ * Owner reset of a forgotten closing-date password (Q-239, part of
+ * closing-password-v1): clears (`newPassword: null`) or replaces it without
+ * the old one. Only the company owner or a super admin, and only after
+ * re-entering their own sign-in password (bcrypt against their user row;
+ * wrong or none: 403 ACCOUNT_PASSWORD_INVALID, audited as a failed reset).
+ * Audited as `closing_password_reset` with set/not-set flags only — never a
+ * password or hash.
+ */
+export async function resetClosingPassword(
+  tenantId: string,
+  companyId: string,
+  input: { accountPassword: string; newPassword: string | null },
+  actor: ClosingPasswordActor,
+): Promise<{ closingPasswordSet: boolean }> {
+  if (!canSetFirstPassword(actor)) {
+    throw AppError.forbidden('Only the company owner can reset the closing date password.', 'CLOSING_PASSWORD_OWNER_REQUIRED');
+  }
+  if (input.newPassword !== null) assertNewClosingPassword(input.newPassword);
+
+  const user = actor.userId
+    ? await db.query.users.findFirst({ where: eq(users.id, actor.userId), columns: { passwordHash: true } })
+    : undefined;
+  // A malformed stored hash (e.g. an SSO-only account) counts as wrong.
+  const ok = !!user?.passwordHash && input.accountPassword.length > 0
+    && await bcrypt.compare(input.accountPassword, user.passwordHash).catch(() => false);
+  if (!ok) {
+    // Outside the write transaction so the failed attempt stays recorded.
+    await auditLog(tenantId, 'update', 'closing_password_reset_failed', companyId, null, null, actor.userId);
+    throw accountPasswordInvalid();
+  }
+
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select({ hash: companies.closingPasswordHash }).from(companies)
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+      .for('update')
+      .limit(1);
+    if (!row) throw AppError.notFound('Company not found');
+    const wasSet = !!row.hash;
+    const hash = input.newPassword === null ? null : await hashClosingPassword(input.newPassword);
+    await tx.update(companies).set({ closingPasswordHash: hash, updatedAt: new Date() })
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+    await auditLog(tenantId, 'update', 'closing_password_reset', companyId,
+      { closingPasswordSet: wasSet }, { closingPasswordSet: hash !== null, method: 'account_password' }, actor.userId, tx);
     return { closingPasswordSet: hash !== null };
   });
 }

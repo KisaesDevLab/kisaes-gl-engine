@@ -382,7 +382,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 | Name | Contract |
 |---|---|
 | `register-exact-v1` | `?exact=1` on the account register and register summary: money as decimal strings (below). |
-| `closing-password-v1` | The closing-date password: `closingPassword` on postings and closing-date changes, `/company/closing-password` (below). |
+| `closing-password-v1` | The closing-date password: `closingPassword` on postings and closing-date changes, `/company/closing-password` and the owner reset `/company/closing-password/reset` (below). |
 | `txn-delete-v1` | `DELETE /api/v1/transactions/:id`: soft delete with reversing lines, status `deleted` hidden from registers, reports, balances and lists (below). |
 
 ## Account register
@@ -399,12 +399,13 @@ Response: `{"account":{"id","name","accountType","detailType","accountNumber"},"
 
 ## Closing-date password
 
-An optional per-company password guarding the closed period (`companies.closing_password_hash`, bcrypt; migration `0219`, additive). Without one, every closed-period rule is exactly as before. The password is never stored in plain text, logged, audited, exported or sent back; `closingPassword` is removed from the request body before validation, so it reaches no service input or audit row. Every route that accepts it counts failed attempts per user: 10 failures in 15 minutes, then 429 `CLOSING_PASSWORD_RATE_LIMIT` (requests without a password and successful ones are not counted).
+An optional per-company password guarding the closed period (`companies.closing_password_hash`, bcrypt; migration `0219`, additive). Without one, every closed-period rule is exactly as before. The password is never stored in plain text, logged, audited, exported or sent back; `closingPassword` is removed from the request body before validation, so it reaches no service input or audit row. Every route that accepts it (or `currentPassword` / `accountPassword` below) counts failed attempts per user: 10 failures in 15 minutes, then 429 `CLOSING_PASSWORD_RATE_LIMIT` (requests without a password and successful ones are not counted).
 
 | Method | Path | Body / response |
 |---|---|---|
 | GET | `/api/v1/company/closing-password` | `{"closingDate"(YYYY-MM-DD or null),"setBy","setAt","closingPasswordSet"}` |
 | PUT | `/api/v1/company/closing-password` | Body `{"currentPassword"?,"newPassword"(string or null to clear)}`, response `{"closingPasswordSet"}`. With a password set, `currentPassword` must match (else 403 `CLOSING_PASSWORD_INVALID`). With none set, only the owner or a super admin may set one (else 403 `CLOSING_PASSWORD_OWNER_REQUIRED`). Passwords are 4 characters to 72 UTF-8 bytes (else 400 `VALIDATION_ERROR`). Needs `company_settings` update. Audited as `closing_password` with only a set/not-set flag. |
+| POST | `/api/v1/company/closing-password/reset` | Owner reset of a forgotten password. Body `{"accountPassword","newPassword"(string or null to clear)}`, response `{"closingPasswordSet"}`. The old closing password is not needed; instead the caller re-enters their own sign-in password (checked against their user row): wrong or none 403 `ACCOUNT_PASSWORD_INVALID` (audited as `closing_password_reset_failed`, no secrets). Only the owner or a super admin (else 403 `CLOSING_PASSWORD_OWNER_REQUIRED`); needs `company_settings` update; same length rule (400 `VALIDATION_ERROR`); counted by the same rate limit. Audited as `closing_password_reset` with before `{"closingPasswordSet"}` and after `{"closingPasswordSet","method":"account_password"}`. |
 | PUT | `/api/v1/company/settings` | Optional `closingPassword` next to `lockDate`. Changing `lockDate` stamps `lockDateSetBy`/`lockDateSetAt` (as `/tb/closing-date` does). With a password set, a change needs it: missing 403 `CLOSING_PASSWORD_REQUIRED`, wrong 403 `CLOSING_PASSWORD_INVALID`. A `closingPassword` given while none is set becomes the company's password ("set or confirm"; owner or super admin). An unchanged `lockDate` and the other settings need nothing. |
 | PUT | `/api/v1/tb/closing-date` | Same rule on the server-only TB route (`closingPassword` in the body); `GET` adds `closingPasswordSet`. |
 
