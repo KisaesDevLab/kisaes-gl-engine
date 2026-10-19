@@ -27,7 +27,7 @@
  */
 
 import crypto from 'crypto';
-import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, ne, notInArray, sql } from 'drizzle-orm';
 import type { CreateBillInput, EnterBillCaptureInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
@@ -189,7 +189,7 @@ export async function findDuplicateBill(
     eq(transactions.companyId, companyId),
     eq(transactions.txnType, 'bill'),
     eq(transactions.contactId, contactId),
-    ne(transactions.status, 'void'),
+    notInArray(transactions.status, ['void', 'deleted']),
   ];
   const inv = ext.vendorInvoiceNumber?.trim();
   if (inv) {

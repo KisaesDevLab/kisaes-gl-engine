@@ -62811,6 +62811,61 @@
       }
     },
     "/api/v1/transactions/{id}": {
+      "delete": {
+        "operationId": "delete_api_v1_transactions_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "maxLength": 500,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a transaction (soft delete with reversing lines; txn-delete-v1)",
+        "tags": [
+          "transactions"
+        ]
+      },
       "get": {
         "operationId": "get_api_v1_transactions_by_id",
         "parameters": [

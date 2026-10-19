@@ -527,7 +527,7 @@ export async function reverseJE(tenantId: string, sessionId: string, reason: str
   const existing = await db.select({ id: transactions.id, status: transactions.status })
     .from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, jeIds)));
-  const toVoid = existing.filter((t) => t.status !== 'void').map((t) => t.id);
+  const toVoid = existing.filter((t) => t.status !== 'void' && t.status !== 'deleted').map((t) => t.id);
   for (const jeId of toVoid) {
     await ledger.voidTransaction(tenantId, jeId, `Reversal of payroll import: ${reason}`, userId);
   }

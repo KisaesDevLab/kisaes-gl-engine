@@ -109,7 +109,7 @@ type ListRow = Awaited<ReturnType<typeof ledger.listTransactions>>['data'][numbe
 
 /** Debit / Credit for one list row — see the header comment for the rules. */
 export function deriveDebitCredit(row: Pick<ListRow, 'status' | 'accountDebit' | 'accountCredit' | 'categoryDebit' | 'categoryCredit' | 'lineCategories' | 'displayTotal' | 'total'>, accountFiltered: boolean): { debit: Decimal; credit: Decimal } {
-  if (row.status === 'void') return { debit: new Decimal(0), credit: new Decimal(0) };
+  if (row.status === 'void' || row.status === 'deleted') return { debit: new Decimal(0), credit: new Decimal(0) };
   if (accountFiltered) return { debit: dec(row.accountDebit), credit: dec(row.accountCredit) };
   if (row.lineCategories && row.lineCategories.length > 0) {
     return { debit: dec(row.categoryDebit), credit: dec(row.categoryCredit) };

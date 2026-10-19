@@ -528,7 +528,7 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
       .for('update')
       .limit(1);
 
-    if (!txn) throw AppError.notFound('Transaction not found');
+    if (!txn || txn.status === 'deleted') throw AppError.notFound('Transaction not found');
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
 
     // Check lock date against the transaction's date (company-scoped).
@@ -620,6 +620,143 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
   });
 }
 
+/**
+ * Transaction types DELETE /transactions/:id accepts (txn-delete-v1): the
+ * plain register entries whose only effect is their own journal lines (the
+ * types PUT /transactions/:id edits; checks post as 'expense'). Documents
+ * with a sub-ledger (invoices, bills, payments, credits, AJEs, daily sales)
+ * keep their own void paths and are refused with TXN_DELETE_UNSUPPORTED.
+ */
+export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense', 'transfer', 'deposit', 'cash_sale'];
+
+/**
+ * Soft delete (P12 R7, capability txn-delete-v1). Nothing is physically
+ * removed (CLAUDE.md rule #23): a posted transaction gets reversing journal
+ * lines (is_void_reversal, like void) and its balances are moved back; then
+ * the header is marked status 'deleted', which every register, report,
+ * balance and list leaves out (they read status = 'posted', or now exclude
+ * 'deleted' where they read "not void"). A draft or void transaction has no
+ * balance effect left to undo and is only marked.
+ *
+ * Same guards as void: the closing date (closingPassword / staff override
+ * via the request's lock context, 423 / 403), and a transaction cleared in a
+ * completed reconciliation is refused (409 RECONCILED_TRANSACTION). A
+ * deposit grouping undeposited payments, or a transaction grouped into such
+ * a deposit, is refused (409 TXN_DELETE_LINKED) because the deposit would
+ * keep pointing at it.
+ *
+ * Audited as action 'delete' with the full before-image: the header and
+ * every journal line as it stood before the delete.
+ */
+export async function deleteTransaction(
+  tenantId: string,
+  txnId: string,
+  opts: { reason?: string; userId?: string; companyId?: string } = {},
+) {
+  return await db.transaction(async (tx) => {
+    // Row lock: serializes with void / update / a second delete so the
+    // reversal can't be applied twice.
+    const [txn] = await tx.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+      .for('update')
+      .limit(1);
+
+    if (!txn || (opts.companyId && txn.companyId && txn.companyId !== opts.companyId)) {
+      throw AppError.notFound('Transaction not found');
+    }
+    if (txn.status === 'deleted') {
+      throw AppError.conflict('This transaction has already been deleted.', 'TXN_ALREADY_DELETED');
+    }
+    if (txn.txnType === 'aje') {
+      throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
+    }
+    if (!DELETABLE_TXN_TYPES.includes(txn.txnType)) {
+      throw AppError.conflict(
+        'This kind of transaction can’t be deleted here. Void it from its own screen instead.',
+        'TXN_DELETE_UNSUPPORTED',
+        { txnType: txn.txnType },
+      );
+    }
+
+    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+      txnId, oldDate: txn.txnDate, newDate: null,
+    });
+
+    const clearedInCompleted = await tx.execute(sql`
+      SELECT 1
+      FROM ${reconciliationLines} rl
+      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+      WHERE r.tenant_id = ${tenantId}
+        AND r.status = 'complete'
+        AND rl.is_cleared = true
+        AND jl.transaction_id = ${txnId}
+      LIMIT 1
+    `);
+    if ((clearedInCompleted.rows as unknown[]).length > 0) {
+      throw AppError.conflict(
+        'This transaction is part of a completed bank reconciliation, so it can’t be deleted. ' +
+          'Undo the reconciliation first.',
+        'RECONCILED_TRANSACTION',
+      );
+    }
+
+    const linked = await tx.execute(sql`
+      SELECT 1 FROM deposit_lines
+      WHERE deposit_id = ${txnId} OR source_transaction_id = ${txnId}
+      LIMIT 1
+    `);
+    if ((linked.rows as unknown[]).length > 0) {
+      throw AppError.conflict(
+        'This transaction is part of a bank deposit of customer payments, so it can’t be deleted. Void it instead.',
+        'TXN_DELETE_LINKED',
+      );
+    }
+
+    // Every line as it stands now (for a void transaction this includes its
+    // earlier reversal lines) — the before-image.
+    const originalLines = await tx.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
+      .orderBy(journalLines.lineOrder);
+
+    // Only a posted transaction still moves a balance; reverse it exactly
+    // (debit and credit swapped, same amounts, same tags).
+    if (txn.status === 'posted' && originalLines.length > 0) {
+      const maxOrder = originalLines.reduce((m, l) => Math.max(m, l.lineOrder ?? 0), 0);
+      await tx.insert(journalLines).values(originalLines.map((line, i) => ({
+        tenantId,
+        companyId: line.companyId,
+        transactionId: txnId,
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+        description: `Deleted: ${line.description || ''}`.trim(),
+        tagId: line.tagId,
+        contactId: line.contactId,
+        lineOrder: maxOrder + 1 + i,
+        isVoidReversal: true,
+      })));
+      await updateAccountBalances(tx, tenantId, originalLines.map((line) => ({
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+      })));
+    }
+
+    await tx.update(transactions).set({
+      status: 'deleted',
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+
+    await auditLog(tenantId, 'delete', 'transaction', txnId,
+      { ...txn, lines: originalLines },
+      { status: 'deleted', reason: opts.reason ?? null },
+      opts.userId, tx);
+
+    return { id: txnId, status: 'deleted' as const };
+  });
+}
+
 export async function updateTransaction(tenantId: string, txnId: string, input: PostTransactionInput, userId?: string, companyId?: string) {
   // Validate the new lines balance up front (in-memory, no DB access).
   let totalDebits = new Decimal('0');
@@ -643,7 +780,7 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       .for('update')
       .limit(1);
 
-    if (!existing) throw AppError.notFound('Transaction not found');
+    if (!existing || existing.status === 'deleted') throw AppError.notFound('Transaction not found');
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
     // Check lock date for both old and new dates (company-scoped).
@@ -1003,12 +1140,16 @@ export async function listTransactions(tenantId: string, filters: {
   /** List export (transaction-list-export.service): also return each
    *  transaction's category-side debit/credit sums. Not a query param. */
   withCategoryAmounts?: boolean;
+  /** Soft-deleted transactions (txn-delete-v1) are hidden unless 'true'
+   *  here or `status: 'deleted'` asks for them explicitly. */
+  includeDeleted?: 'true' | 'false';
 }, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
   if (companyId) conditions.push(eq(transactions.companyId, companyId));
 
   if (filters.txnType) conditions.push(eq(transactions.txnType, filters.txnType));
   if (filters.status) conditions.push(eq(transactions.status, filters.status));
+  else if (filters.includeDeleted !== 'true') conditions.push(sql`${transactions.status} <> 'deleted'`);
   if (Array.isArray(filters.contactId)) {
     if (filters.contactId.length > 0) conditions.push(inArray(transactions.contactId, filters.contactId));
   } else if (filters.contactId) {
@@ -1229,7 +1370,7 @@ export async function listTransactions(tenantId: string, filters: {
         : sql<string>`'0'`,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
-      .where(and(where, sql`${transactions.status} <> 'void'`)),
+      .where(and(where, sql`${transactions.status} NOT IN ('void', 'deleted')`)),
   ]);
 
   return {
@@ -1397,7 +1538,7 @@ export async function bulkUpdateTransactions(
       if (companyId) conds.push(eq(transactions.companyId, companyId));
       const [txn] = await tx.select().from(transactions).where(and(...conds)).for('update').limit(1);
 
-      if (!txn) { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
+      if (!txn || txn.status === 'deleted') { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
       if (txn.status === 'void') { skipped.push({ id: txnId, reason: 'void' }); continue; }
       // TB3: AJE lifecycle is firm-only and runs through the tb router —
       // bulk recategorize/retag must never rewrite an adjusting entry.

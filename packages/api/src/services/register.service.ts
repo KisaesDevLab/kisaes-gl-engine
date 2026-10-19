@@ -250,6 +250,10 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
       WHERE jl.tenant_id = ${tenantId}
         AND jl.account_id = ${accountId}
         AND t.txn_date <= ${endDate}
+        -- Soft-deleted transactions (txn-delete-v1) are not register rows;
+        -- they carry no balance (posted only) so leaving them out of the
+        -- window changes no running balance.
+        AND t.status <> 'deleted'
     )
   `;
 

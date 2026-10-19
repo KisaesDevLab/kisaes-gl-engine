@@ -383,6 +383,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 |---|---|
 | `register-exact-v1` | `?exact=1` on the account register and register summary: money as decimal strings (below). |
 | `closing-password-v1` | The closing-date password: `closingPassword` on postings and closing-date changes, `/company/closing-password` (below). |
+| `txn-delete-v1` | `DELETE /api/v1/transactions/:id`: soft delete with reversing lines, status `deleted` hidden from registers, reports, balances and lists (below). |
 
 ## Account register
 
@@ -409,7 +410,17 @@ An optional per-company password guarding the closed period (`companies.closing_
 
 **Postings.** `POST /api/v1/transactions`, `PUT /api/v1/transactions/:id`, `POST /api/v1/transactions/:id/void` and `POST /api/v1/checks` accept `closingPassword` in the body. A date on or before the closing date (for an update, the old or the new date) is then allowed when the password matches; wrong is 403 `CLOSING_PASSWORD_INVALID` and nothing changes. Without it the answer stays 423 `TB_PERIOD_LOCKED`, whose `details` now carry `{"lockDate","canOverride","closingPasswordRequired"}`. Once a company has a password, staff `overrideConfirmed` alone no longer opens its closed period (`canOverride: false`, `closingPasswordRequired: true`); without a password it works as before. Each allowed closed-period change writes one audit row `action: "override"`, `entity_type: "closing_date_override"`, `entity_id` = the transaction, the acting user, before `{"lockDate","lockDateSetBy","lockDateSetAt"}`, after `{"txnDate","method":"password"|"confirmed","overrideConfirmed","transactionId","oldDate","newDate","companyId"}` (create: `oldDate` null; void: `newDate` null). AJEs stay exempt (TB rule TB5). Importers and jobs have no request context and keep the hard 423.
 
-**Audit before-image.** Update and void audit rows on `transaction` keep the header and every journal line as they stood before the change (`before_data.lines`).
+**Audit before-image.** Update, void and delete audit rows on `transaction` keep the header and every journal line as they stood before the change (`before_data.lines`).
+
+## Transaction delete
+
+`DELETE /api/v1/transactions/:id` (capability `txn-delete-v1`; same permission as void: `transactions` write). Optional JSON body `{"reason"?(at most 500 chars),"closingPassword"?,"overrideConfirmed"?}`; no body is fine. Response 200 `{"transaction":{…,"status":"deleted","lines":[…]}}` (the same detail shape as `GET /transactions/:id`).
+
+A soft delete: nothing is physically removed. A posted transaction gets reversing journal lines (debit and credit swapped, same amounts and tags, `is_void_reversal`) and its account balances move back exactly; a draft or void one is only marked. The header becomes `status: "deleted"`. Registers (rows and every balance), the register summary, reports (they read posted transactions only), account balances, the checks list and print queue, duplicate detection and the transactions list leave it out. `GET /transactions` shows deleted transactions only with `status=deleted` or `includeDeleted=true`; `GET /transactions/:id` still returns one (status `deleted`). It can no longer be edited or voided (404) or deleted again (409 `TXN_ALREADY_DELETED`).
+
+Guards, in order: unknown id 404 (not a uuid: 400); already deleted 409 `TXN_ALREADY_DELETED`; an AJE 400 `TB_AJE_ROUTE`; a type other than `journal_entry`, `expense` (checks), `transfer`, `deposit`, `cash_sale` 409 `TXN_DELETE_UNSUPPORTED` (`details.txnType`; invoices, bills, payments and credits keep their own void paths); the closing date exactly as for void (423 `TB_PERIOD_LOCKED`, 403 `CLOSING_PASSWORD_INVALID`, 429 `CLOSING_PASSWORD_RATE_LIMIT`; an allowed one writes the `closing_date_override` row with `newDate` null); lines cleared in a completed reconciliation 409 `RECONCILED_TRANSACTION`; a deposit of undeposited payments, or a payment grouped into one, 409 `TXN_DELETE_LINKED`.
+
+Audit: one row `action: "delete"`, `entity_type: "transaction"`, before = the header and every journal line as they stood (`lines`), after `{"status":"deleted","reason"}`, the acting user.
 
 ## Host requirements
 

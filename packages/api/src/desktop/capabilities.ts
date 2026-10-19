@@ -12,4 +12,6 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'register-exact-v1',
   /** Closing-date password: companies.closing_password_hash, closingPassword on postings and lockDate changes (U-15). */
   'closing-password-v1',
+  /** DELETE /transactions/:id: soft delete with reversing lines, status 'deleted' hidden everywhere (P12 R7). */
+  'txn-delete-v1',
 ];

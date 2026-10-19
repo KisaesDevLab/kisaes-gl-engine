@@ -22,7 +22,7 @@ export async function findDuplicates(tenantId: string, transactionId: string) {
     LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE t.tenant_id = ${tenantId}
       AND t.id != ${transactionId}
-      AND t.status != 'void'
+      AND t.status NOT IN ('void', 'deleted')
       AND t.txn_type NOT IN ('journal_entry', 'transfer')
       AND CAST(t.total AS DECIMAL) = CAST(${txn.total} AS DECIMAL)
       AND ABS(t.txn_date::date - ${txn.txnDate}::date) <= 3
@@ -98,7 +98,7 @@ export async function scanDateRange(tenantId: string, startDate: string, endDate
     LEFT JOIN contacts c1 ON c1.id = t1.contact_id
     LEFT JOIN contacts c2 ON c2.id = t2.contact_id
     WHERE t1.tenant_id = ${tenantId}
-      AND t1.status != 'void' AND t2.status != 'void'
+      AND t1.status NOT IN ('void', 'deleted') AND t2.status NOT IN ('void', 'deleted')
       AND t1.txn_type NOT IN ('journal_entry', 'transfer')
       AND t2.txn_type NOT IN ('journal_entry', 'transfer')
       AND t1.txn_date >= ${startDate} AND t1.txn_date <= ${endDate}

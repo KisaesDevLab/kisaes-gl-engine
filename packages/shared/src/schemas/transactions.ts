@@ -19,7 +19,10 @@ const txnTypes = [
 // invoice or deposit and bounds the input size so a malicious client can't
 // push a 100k-line transaction that pins CPU on the validate + balance path.
 const MAX_LINES = 500;
-const txnStatuses = ['draft', 'posted', 'void'] as const;
+// 'deleted' (P12 R7, txn-delete-v1): a soft-deleted transaction. Its lines
+// stay (with reversing lines), it is hidden from registers, reports, balances
+// and lists unless asked for (`status=deleted` or `includeDeleted=true`).
+const txnStatuses = ['draft', 'posted', 'void', 'deleted'] as const;
 
 const journalLineInputSchema = z.object({
   accountId: z.string().uuid(),
@@ -159,6 +162,13 @@ export const voidTransactionSchema = z.object({
   reason: z.string().min(1, 'Void reason is required'),
 });
 
+// DELETE /transactions/:id (txn-delete-v1). Both optional; the closing-date
+// password is taken out of the body by lockContextMiddleware before this runs.
+export const deleteTransactionSchema = z.object({
+  reason: z.string().max(500).optional(),
+  overrideConfirmed: z.boolean().optional(),
+});
+
 export const transactionSortKeys = ['date', 'type', 'number', 'payee', 'memo', 'category', 'amount', 'status', 'dueDate', 'balanceDue', 'invoiceStatus'] as const;
 const invoiceStatuses = ['draft', 'sent', 'viewed', 'partial', 'paid', 'void'] as const;
 
@@ -191,6 +201,8 @@ export const transactionFiltersSchema = z.object({
   // whole filtered set in one request for typical small-business volumes.
   limit: z.coerce.number().int().min(1).max(10000).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  // Soft-deleted transactions (txn-delete-v1) are left out unless asked for.
+  includeDeleted: z.enum(['true', 'false']).optional(),
 });
 
 // Transaction Report for a date range (GET /transactions/report.pdf). The

@@ -263,7 +263,7 @@ export async function listTagMappings(tenantId: string, companyId: string) {
       WHERE jl.tag_id = "tags"."id"
         AND t.tenant_id = ${tenantId}
         AND (t.company_id = ${companyId} OR t.company_id IS NULL)
-        AND t.status <> 'void'
+        AND t.status NOT IN ('void', 'deleted')
     )`,
   }).from(tags)
     .where(and(
