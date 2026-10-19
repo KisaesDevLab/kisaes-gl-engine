@@ -516,7 +516,9 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
       await updateAccountBalances(tx, tenantId, reversingLines);
     }
 
-    await auditLog(tenantId, 'void', 'transaction', txnId, txn, { reason }, userId, tx);
+    // Full before-image: the header AND the lines as they stood before the
+    // void (the reversing lines are new rows, so originalLines is exact).
+    await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines }, { reason }, userId, tx);
   });
 }
 
@@ -693,7 +695,8 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
         ...newPLValues,
       ];
       await syncTransactionTagsFromLines(tx, tenantId, existing.companyId ?? null, txnId, fullValues);
-      await auditLog(tenantId, 'update', 'transaction', txnId, existing, { reconciledPartialEdit: true }, userId, tx);
+      // Full before-image: header plus every line as it stood before the edit.
+      await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: existingLines }, { reconciledPartialEdit: true }, userId, tx);
       const refreshed = await tx.select().from(journalLines)
         .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
       const [updatedTxn] = await tx.select().from(transactions)
@@ -777,7 +780,9 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       await updateAccountBalances(tx, tenantId, input.lines);
     }
 
-    await auditLog(tenantId, 'update', 'transaction', txnId, existing, input, userId, tx);
+    // Full before-image: header plus the lines this edit deleted, so the
+    // audit trail can show (and restore) what the transaction was.
+    await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: originalLines }, input, userId, tx);
 
     const [updated] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
