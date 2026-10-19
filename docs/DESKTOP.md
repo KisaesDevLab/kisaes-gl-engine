@@ -81,7 +81,7 @@ Mounted at `/api/v1/desktop` in desktop mode only. On the server they return 404
 | Method | Path | Body / response |
 |---|---|---|
 | POST | `/initialize` | Body: `{"admin":{"email","displayName","password"(12 characters to 72 UTF-8 bytes; bcrypt ignores anything longer)},"company"?:{"name","businessType"?,"entityType"?,"industry"?}}`. Response: 201 `{"workspaceTenantId","userId","companyTenantId"(or null),"warnings":[]}`; see "First run" below. Writes no `.env` and no sentinel; only the non-secret `CONFIG_DIR/.initialized` marker (`{"via","workspaceTenantId"}`). Errors: 409 `ALREADY_INITIALIZED` once a user exists, 409 `TENANTS_WITHOUT_USERS` for restored data with no users, 409 `SETUP_BUSY` while another run holds the setup lock, 400 `VALIDATION_ERROR`, 400 for an unknown `businessType` (nothing is written). |
-| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","dbRole":{"dangerous","warnings"},"initialized","workspaceTenantId"}`. `workspaceTenantId` is `null` before first run. |
+| GET | `/info` | `{"mode","version","engineCommit","queueBackend","offline","lan","dataDirExists","dbSuperuser","dbRole":{"dangerous","warnings"},"initialized","workspaceTenantId","capabilities"}`. `workspaceTenantId` is `null` before first run. `capabilities` is the append-only list of contracts this engine advertises (`desktop/capabilities.ts`); a client gates a feature on the name and treats a missing array as none. See "Capabilities" below. |
 
 `/api/setup/*` is not available in desktop mode, except `GET /api/setup/status`.
 
@@ -376,6 +376,22 @@ It never touches plain numbers, so amounts in log lines survive. To keep persona
 - logs unhandled errors as name, code, a short message and stack frames, never the full error object (which carries drizzle's `params:` and PostgreSQL's `detail`, i.e. amounts, names and memo text).
 
 With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated by size. Retention by age or total size is the desktop app's job: it deletes closed rotated files.
+
+## Capabilities
+
+| Name | Contract |
+|---|---|
+| `register-exact-v1` | `?exact=1` on the account register and register summary: money as decimal strings (below). |
+
+## Account register
+
+`GET /api/v1/accounts/:id/register` (permission `accounts`). Query: `start_date`, `end_date` (YYYY-MM-DD; send both, the defaults are the last 90 days by server UTC), `txn_type`, `payee`, `search`, `reconciled` (`all`, `cleared`, `reconciled`, `uncleared`), `min_amount`, `max_amount`, `include_void=true`, `sort_by` (`date`, `amount`, `type`, `ref_no`), `sort_dir`, `page`, `per_page` (at most 200), `exact=1`.
+
+Response: `{"account":{"id","name","accountType","detailType","accountNumber"},"balanceForward","endingBalance","filtersApplied","pagination":{"page","perPage","totalRows","totalPages"},"allowedEntryTypes":[],"lines":[{"lineId","transactionId","txnType","txnNumber","checkNumber","txnDate","payeeName","contactId","accountName","accountId","categoryName","categoryAccountId","memo","payment","deposit","runningBalance","reconciliationStatus","hasAttachments","hasSplits","isEditable","status"}]}`.
+
+**Balances do not depend on filters.** `runningBalance` is the account's balance after the line: a window over every line of the account through `end_date` in ledger order (date, entry time, line id), computed before any filter, sort or page. `balanceForward` is the balance before `start_date`; `endingBalance` is the balance at `end_date`, also unfiltered. Only posted transactions move a balance. Drafts are listed but carry their predecessor's balance, and so do void lines with `include_void=true`. A filter only chooses rows.
+
+**Money shape.** By default money fields are JSON numbers as before: balances rounded to cents, `payment`/`deposit` as stored. With `exact=1` (or `exact=true`) every money field (`balanceForward`, `endingBalance`, `payment`, `deposit`, `runningBalance`) is a decimal string with four decimals, e.g. `"-12.0456"`, computed without floating point. `GET /api/v1/accounts/:id/register/summary?exact=1` sends `currentBalance` the same way.
 
 ## Host requirements
 

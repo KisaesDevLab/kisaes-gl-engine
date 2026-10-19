@@ -2987,9 +2987,408 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default 90 days before today (server UTC)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today (server UTC)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "txn_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "payee",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reconciled",
+            "required": false,
+            "schema": {
+              "enum": [
+                "all",
+                "cleared",
+                "reconciled",
+                "uncleared"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_amount",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_amount",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_void",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "enum": [
+                "date",
+                "amount",
+                "type",
+                "ref_no"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "description": "at most 200",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (register-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "account": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountNumber": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "accountType": {
+                          "type": "string"
+                        },
+                        "detailType": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "accountType",
+                        "detailType",
+                        "accountNumber"
+                      ],
+                      "type": "object"
+                    },
+                    "allowedEntryTypes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "balanceForward": {
+                      "description": "balance before start_date (posted only, unfiltered)",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "endingBalance": {
+                      "description": "balance at end_date (posted only, unfiltered)",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "filtersApplied": {
+                      "additionalProperties": {},
+                      "type": "object"
+                    },
+                    "lines": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "accountName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "categoryAccountId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "categoryName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "checkNumber": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "contactId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "deposit": {
+                            "anyOf": [
+                              {
+                                "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                                "type": [
+                                  "number",
+                                  "string"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "JSON number by default; a decimal string with four decimals when exact=1"
+                          },
+                          "hasAttachments": {
+                            "type": "boolean"
+                          },
+                          "hasSplits": {
+                            "type": "boolean"
+                          },
+                          "isEditable": {
+                            "type": "boolean"
+                          },
+                          "lineId": {
+                            "type": "string"
+                          },
+                          "memo": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "payeeName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "payment": {
+                            "anyOf": [
+                              {
+                                "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                                "type": [
+                                  "number",
+                                  "string"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "JSON number by default; a decimal string with four decimals when exact=1"
+                          },
+                          "reconciliationStatus": {
+                            "enum": [
+                              "cleared",
+                              "reconciled",
+                              "uncleared"
+                            ],
+                            "type": "string"
+                          },
+                          "runningBalance": {
+                            "description": "account balance after this line, independent of filters",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "transactionId": {
+                            "type": "string"
+                          },
+                          "txnDate": {
+                            "type": "string"
+                          },
+                          "txnNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnType": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "lineId",
+                          "transactionId",
+                          "txnType",
+                          "txnNumber",
+                          "checkNumber",
+                          "txnDate",
+                          "payeeName",
+                          "contactId",
+                          "accountName",
+                          "accountId",
+                          "categoryName",
+                          "categoryAccountId",
+                          "memo",
+                          "payment",
+                          "deposit",
+                          "runningBalance",
+                          "reconciliationStatus",
+                          "hasAttachments",
+                          "hasSplits",
+                          "isEditable",
+                          "status"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "pagination": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "page": {
+                          "type": "number"
+                        },
+                        "perPage": {
+                          "type": "number"
+                        },
+                        "totalPages": {
+                          "type": "number"
+                        },
+                        "totalRows": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "page",
+                        "perPage",
+                        "totalRows",
+                        "totalPages"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "account",
+                    "balanceForward",
+                    "endingBalance",
+                    "filtersApplied",
+                    "pagination",
+                    "allowedEntryTypes",
+                    "lines"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -3002,6 +3401,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Account register",
         "tags": [
           "accounts"
         ]
@@ -3018,9 +3418,60 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (register-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "currentBalance": {
+                      "description": "the stored account balance",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "lastReconciliationDate": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "transactionsThisPeriod": {
+                      "type": "number"
+                    },
+                    "unclearedCount": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "currentBalance",
+                    "unclearedCount",
+                    "lastReconciliationDate",
+                    "transactionsThisPeriod"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -3033,6 +3484,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Account register summary",
         "tags": [
           "accounts"
         ]

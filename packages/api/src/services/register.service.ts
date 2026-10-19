@@ -18,6 +18,18 @@ function legacyCents(d: DecimalT): number {
   return Number(d.toFixed(2));
 }
 
+// Exact shape: the decimal(19,4) value as text, never through a JS number.
+export function exactMoney(d: DecimalT): string {
+  return d.toFixed(4);
+}
+
+function moneyFormatter(exact: boolean | undefined) {
+  return {
+    balance: (d: DecimalT): RegisterMoney => (exact ? exactMoney(d) : legacyCents(d)),
+    amount: (d: DecimalT): RegisterMoney => (exact ? exactMoney(d) : d.toNumber()),
+  };
+}
+
 interface RegisterFilters {
   startDate?: string;
   endDate?: string;
@@ -37,9 +49,16 @@ interface RegisterFilters {
   sortDir?: 'asc' | 'desc';
   page?: number;
   perPage?: number;
+  // `?exact=1` (capability register-exact-v1): every money field is a
+  // decimal string with the column's four decimals instead of a rounded
+  // JSON number. The number shape stays the default for existing clients.
+  exact?: boolean;
 }
 
-interface RegisterLine {
+/** A money value: a JSON number (default) or an exact decimal string (`exact`). */
+export type RegisterMoney = number | string;
+
+interface RegisterLine<M extends RegisterMoney = RegisterMoney> {
   lineId: string;
   transactionId: string;
   txnType: string;
@@ -53,9 +72,9 @@ interface RegisterLine {
   categoryName: string | null;
   categoryAccountId: string | null;
   memo: string | null;
-  payment: number | null;
-  deposit: number | null;
-  runningBalance: number;
+  payment: M | null;
+  deposit: M | null;
+  runningBalance: M;
   reconciliationStatus: 'cleared' | 'reconciled' | 'uncleared';
   hasAttachments: boolean;
   hasSplits: boolean;
@@ -90,7 +109,20 @@ function getAllowedEntryTypes(detailType: string | null, accountType: string): s
   }
 }
 
-export async function getRegister(tenantId: string, accountId: string, filters: RegisterFilters) {
+type RegisterResultOf<M extends RegisterMoney> =
+  Omit<Awaited<ReturnType<typeof buildRegister>>, 'balanceForward' | 'endingBalance' | 'lines'>
+  & { balanceForward: M; endingBalance: M; lines: RegisterLine<M>[] };
+
+// Overloads keep the money type precise for callers: numbers by default,
+// strings when `exact: true`.
+export function getRegister(tenantId: string, accountId: string, filters: RegisterFilters & { exact: true }): Promise<RegisterResultOf<string>>;
+export function getRegister(tenantId: string, accountId: string, filters: RegisterFilters & { exact?: false | undefined }): Promise<RegisterResultOf<number>>;
+export function getRegister(tenantId: string, accountId: string, filters: RegisterFilters): Promise<RegisterResultOf<RegisterMoney>>;
+export function getRegister(tenantId: string, accountId: string, filters: RegisterFilters) {
+  return buildRegister(tenantId, accountId, filters);
+}
+
+async function buildRegister(tenantId: string, accountId: string, filters: RegisterFilters) {
   // Validate account
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
@@ -98,6 +130,7 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
   if (!account) throw AppError.notFound('Account not found');
 
   const debitNormal = isDebitNormal(account.accountType);
+  const money = moneyFormatter(filters.exact);
   const page = filters.page || 1;
   const perPage = Math.min(filters.perPage || 50, 200);
   const offset = (page - 1) * perPage;
@@ -349,9 +382,9 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       categoryName,
       categoryAccountId,
       memo: row.memo,
-      payment: payment ? payment.toNumber() : null,
-      deposit: deposit ? deposit.toNumber() : null,
-      runningBalance: legacyCents(runningBalance),
+      payment: payment ? money.amount(payment) : null,
+      deposit: deposit ? money.amount(deposit) : null,
+      runningBalance: money.balance(runningBalance),
       reconciliationStatus,
       hasAttachments: false, // would need join to attachments
       hasSplits: splitCounts.has(row.transaction_id),
@@ -368,9 +401,9 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       detailType: account.detailType,
       accountNumber: account.accountNumber,
     },
-    balanceForward: legacyCents(balanceForward),
+    balanceForward: money.balance(balanceForward),
     // The account's balance at endDate, independent of filters and paging.
-    endingBalance: legacyCents(endingBalanceDec),
+    endingBalance: money.balance(endingBalanceDec),
     filtersApplied: { startDate, endDate, ...filters },
     pagination: {
       page,
@@ -383,14 +416,15 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
   };
 }
 
-export async function getRegisterSummary(tenantId: string, accountId: string) {
+export async function getRegisterSummary(tenantId: string, accountId: string, opts: { exact?: boolean } = {}) {
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
   });
   if (!account) throw AppError.notFound('Account not found');
 
-  // Current balance
-  const currentBalance = parseFloat(account.balance ?? '0');
+  // Current balance (the stored accounts.balance, as before)
+  const currentBalanceDec = new Decimal(account.balance ?? '0');
+  const currentBalance: RegisterMoney = opts.exact ? exactMoney(currentBalanceDec) : currentBalanceDec.toNumber();
 
   // Uncleared count
   const unclearedResult = await db.execute(sql`
