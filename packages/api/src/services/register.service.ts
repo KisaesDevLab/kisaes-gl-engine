@@ -36,7 +36,11 @@ interface RegisterFilters {
   txnType?: string;
   payee?: string;
   search?: string;
+  // Matches the line's reconciliationStatus exactly ('cleared' = cleared
+  // but not yet in a completed reconciliation); 'all' or absent = no filter.
   reconciled?: 'cleared' | 'reconciled' | 'uncleared' | 'all';
+  // Transactions carrying this tag on any of their journal lines.
+  tagId?: string;
   // Strings, not numbers — money is `decimal(19,4)` per CLAUDE.md.
   // Round-tripping through `parseFloat` introduces IEEE754 drift on
   // edge values; passing the raw string lets PostgreSQL parse with
@@ -190,6 +194,30 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
   if (filters.maxAmount !== undefined) {
     sqlConditions.push(sql`(l.debit <= ${filters.maxAmount} AND l.credit <= ${filters.maxAmount})`);
   }
+  switch (filters.reconciled) {
+    case 'reconciled':
+      sqlConditions.push(sql`rec.is_reconciled`);
+      break;
+    case 'cleared':
+      sqlConditions.push(sql`(rec.is_cleared AND NOT rec.is_reconciled)`);
+      break;
+    case 'uncleared':
+      sqlConditions.push(sql`NOT rec.is_cleared`);
+      break;
+    default:
+      break;
+  }
+  if (filters.tagId) {
+    // Same rule as the transaction list's tag filter: any line of the
+    // transaction carries the tag (journal_lines.tag_id is the source of
+    // truth; transaction_tags is only maintained under TAGS_SPLIT_LEVEL_V2).
+    sqlConditions.push(sql`EXISTS (
+      SELECT 1 FROM journal_lines tj
+      WHERE tj.transaction_id = l.transaction_id
+        AND tj.tenant_id = ${tenantId}
+        AND tj.tag_id = ${filters.tagId}
+    )`);
+  }
 
   const whereClause = sql.join(sqlConditions, sql` AND `);
 
@@ -225,6 +253,24 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
     )
   `;
 
+  // Rows plus the joins the filters read: payee name and the line's
+  // reconciliation status, collapsed to ONE row per journal line. A line
+  // gets a reconciliation_lines row in every reconciliation whose worksheet
+  // it appears on, so an item left outstanding for months has one per
+  // month; joining those rows directly would duplicate the line.
+  const filteredFrom = sql`
+    FROM l
+    LEFT JOIN contacts c ON c.id = l.contact_id AND c.tenant_id = ${tenantId}
+    LEFT JOIN LATERAL (
+      SELECT
+        COALESCE(BOOL_OR(rl.is_cleared), false) AS is_cleared,
+        COALESCE(BOOL_OR(rl.is_cleared AND r.status = 'complete'), false) AS is_reconciled
+      FROM reconciliation_lines rl
+      JOIN reconciliations r ON r.id = rl.reconciliation_id AND r.tenant_id = ${tenantId}
+      WHERE rl.journal_line_id = l.line_id
+    ) rec ON true
+  `;
+
   // Display sort — independent of the running balance. Sort columns are a
   // fixed switch, never interpolated from user input.
   const dir = filters.sortDir === 'desc' ? sql`DESC` : sql`ASC`;
@@ -246,8 +292,7 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
   const countResult = await db.execute(sql`
     ${ledgerCte}
     SELECT COUNT(*) AS total
-    FROM l
-    LEFT JOIN contacts c ON c.id = l.contact_id AND c.tenant_id = ${tenantId}
+    ${filteredFrom}
     WHERE ${whereClause}
   `);
   const countRow = (countResult.rows as any[])[0] || {};
@@ -275,20 +320,7 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
       cat.category_name,
       cat.category_account_id,
       l.running_balance::text AS running_balance
-    FROM l
-    LEFT JOIN contacts c ON c.id = l.contact_id AND c.tenant_id = ${tenantId}
-    -- Reconciliation status, collapsed to ONE row per journal line. A line
-    -- gets a reconciliation_lines row in every reconciliation whose worksheet
-    -- it appears on, so an item left outstanding for months has one per
-    -- month; joining those rows directly would duplicate the line.
-    LEFT JOIN LATERAL (
-      SELECT
-        COALESCE(BOOL_OR(rl.is_cleared), false) AS is_cleared,
-        COALESCE(BOOL_OR(rl.is_cleared AND r.status = 'complete'), false) AS is_reconciled
-      FROM reconciliation_lines rl
-      JOIN reconciliations r ON r.id = rl.reconciliation_id AND r.tenant_id = ${tenantId}
-      WHERE rl.journal_line_id = l.line_id
-    ) rec ON true
+    ${filteredFrom}
     -- Resolve the "other side" account(s) for the transaction. If exactly one
     -- distinct account other than the one being viewed, show its name/id.
     -- If more than one, it's a split. Scoped to tenant throughout.

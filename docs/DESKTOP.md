@@ -385,7 +385,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 
 ## Account register
 
-`GET /api/v1/accounts/:id/register` (permission `accounts`). Query: `start_date`, `end_date` (YYYY-MM-DD; send both, the defaults are the last 90 days by server UTC), `txn_type`, `payee`, `search`, `reconciled` (`all`, `cleared`, `reconciled`, `uncleared`), `min_amount`, `max_amount`, `include_void=true`, `sort_by` (`date`, `amount`, `type`, `ref_no`), `sort_dir`, `page`, `per_page` (at most 200), `exact=1`.
+`GET /api/v1/accounts/:id/register` (permission `accounts`). Query: `start_date`, `end_date` (YYYY-MM-DD; send both, the defaults are the last 90 days by server UTC), `txn_type`, `payee`, `search`, `reconciled` (`cleared`, `reconciled`, `uncleared` match the line's `reconciliationStatus` exactly; `all` or absent is no filter), `tag_id` (a tag on any line of the transaction; not a uuid: 400 `VALIDATION_ERROR`), `min_amount`, `max_amount`, `include_void=true`, `sort_by` (`date`, `amount`, `type`, `ref_no`), `sort_dir`, `page`, `per_page` (at most 200), `exact=1`.
 
 Response: `{"account":{"id","name","accountType","detailType","accountNumber"},"balanceForward","endingBalance","filtersApplied","pagination":{"page","perPage","totalRows","totalPages"},"allowedEntryTypes":[],"lines":[{"lineId","transactionId","txnType","txnNumber","checkNumber","txnDate","payeeName","contactId","accountName","accountId","categoryName","categoryAccountId","memo","payment","deposit","runningBalance","reconciliationStatus","hasAttachments","hasSplits","isEditable","status"}]}`.
 

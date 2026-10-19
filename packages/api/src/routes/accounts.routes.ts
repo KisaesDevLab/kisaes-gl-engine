@@ -117,6 +117,16 @@ function safeMoneyFilter(raw: string | undefined): string | undefined {
   return MONEY_FILTER_RE.test(raw) ? raw : undefined;
 }
 
+// A tag filter must be a uuid; anything else is a 400 rather than a
+// silently ignored filter (the bind would fail in PostgreSQL anyway).
+const TAG_ID = z.string().uuid();
+function tagIdFilter(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  const parsed = TAG_ID.safeParse(raw);
+  if (!parsed.success) throw AppError.badRequest('tag_id must be a tag id', 'VALIDATION_ERROR');
+  return parsed.data;
+}
+
 // `?exact=1` / `?exact=true` (capability register-exact-v1): money as
 // decimal strings. Anything else keeps the historical JSON numbers.
 function exactRequested(raw: unknown): boolean {
@@ -132,7 +142,9 @@ const registerQuery = z.object({
   txn_type: z.string().optional(),
   payee: z.string().optional(),
   search: z.string().optional(),
-  reconciled: z.enum(['all', 'cleared', 'reconciled', 'uncleared']).optional(),
+  reconciled: z.enum(['all', 'cleared', 'reconciled', 'uncleared']).optional()
+    .describe('matches reconciliationStatus exactly; all or absent = no filter'),
+  tag_id: z.string().uuid().optional().describe('transactions with this tag on any line'),
   min_amount: z.string().optional(),
   max_amount: z.string().optional(),
   include_void: z.enum(['true', 'false']).optional(),
@@ -203,6 +215,7 @@ accountsRouter.get('/:id/register', describe({
     sortDir,
     page: q['page'] ? parseInt(q['page']) : undefined,
     perPage: q['per_page'] ? parseInt(q['per_page']) : undefined,
+    tagId: tagIdFilter(q['tag_id']),
     exact: exactRequested(q['exact']),
   });
   res.json(result);

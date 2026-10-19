@@ -130,6 +130,39 @@ describe('GET /accounts/:id/register money shape', () => {
     expect(exactTrue.json.endingBalance).toBe('-12.0456');
   });
 
+  it('applies the reconciled filter (exact status) and the tag_id filter without changing balances', async () => {
+    const [tag] = await db.insert(tags).values({ tenantId, name: 'Job 7' }).returning();
+    await post('2026-03-01', '500.00', 'deposit');                                   // reconciled
+    const cleared = await post('2026-03-02', '40.00', 'expense', { tagId: tag!.id }); // cleared, tagged
+    await post('2026-03-03', '10.00', 'expense');                                    // uncleared
+    const first = (await db.select().from(transactions).where(eq(transactions.tenantId, tenantId)))
+      .find((t) => t.txnDate === '2026-03-01')!;
+    const [done, open] = await db.insert(reconciliations).values([
+      { tenantId, accountId: bankId, statementDate: '2026-03-01', statementEndingBalance: '500', beginningBalance: '0', status: 'complete' },
+      { tenantId, accountId: bankId, statementDate: '2026-03-31', statementEndingBalance: '0', beginningBalance: '500', status: 'in_progress' },
+    ]).returning();
+    await db.insert(reconciliationLines).values([
+      { reconciliationId: done!.id, journalLineId: await bankLineOf(first.id), isCleared: true },
+      { reconciliationId: open!.id, journalLineId: await bankLineOf(cleared.id), isCleared: true },
+    ]);
+
+    const statusOf = async (filter: string) => {
+      const r = await get(`/api/v1/accounts/${bankId}/register?${RANGE}&exact=1&${filter}`);
+      expect(r.status).toBe(200);
+      expect(r.json.endingBalance).toBe('450.0000');
+      return r.json.lines.map((l: any) => [l.txnDate, l.reconciliationStatus, l.runningBalance]);
+    };
+    expect(await statusOf('reconciled=reconciled')).toEqual([['2026-03-01', 'reconciled', '500.0000']]);
+    expect(await statusOf('reconciled=cleared')).toEqual([['2026-03-02', 'cleared', '460.0000']]);
+    expect(await statusOf('reconciled=uncleared')).toEqual([['2026-03-03', 'uncleared', '450.0000']]);
+    expect(await statusOf('reconciled=all')).toHaveLength(3);
+    expect(await statusOf(`tag_id=${tag!.id}`)).toEqual([['2026-03-02', 'cleared', '460.0000']]);
+    expect(await statusOf(`tag_id=${tag!.id}&reconciled=uncleared`)).toEqual([]);
+
+    const bad = await get(`/api/v1/accounts/${bankId}/register?${RANGE}&tag_id=not-a-uuid`);
+    expect(bad.status).toBe(400);
+  });
+
   it('summary currentBalance is a number by default and a decimal string under ?exact=1', async () => {
     await post('2026-03-01', '100.1234', 'deposit');
     const legacy = await get(`/api/v1/accounts/${bankId}/register/summary`);

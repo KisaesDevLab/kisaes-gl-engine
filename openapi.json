@@ -3035,12 +3035,23 @@
             "name": "reconciled",
             "required": false,
             "schema": {
+              "description": "matches reconciliationStatus exactly; all or absent = no filter",
               "enum": [
                 "all",
                 "cleared",
                 "reconciled",
                 "uncleared"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "transactions with this tag on any line",
+              "format": "uuid",
               "type": "string"
             }
           },
