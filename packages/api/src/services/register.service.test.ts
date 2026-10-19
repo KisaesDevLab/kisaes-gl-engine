@@ -242,6 +242,83 @@ describe('Register Service', () => {
     expect(result.lines[2]!.isEditable).toBe(false);
   });
 
+  // Q-187: the running balance is the account's true balance after each row,
+  // whatever the quick filters hide; the ending balance is the unfiltered
+  // balance at end_date. Drafts never move a balance.
+  it('keeps filtered rows on the same running balances as the unfiltered register', async () => {
+    const vendor = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Paper Co' }).returning();
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-03-01',
+      lines: [
+        { accountId: bankAccountId, debit: '1000.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '1000.00' },
+      ],
+    });
+    await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-03-05', contactId: vendor[0]!.id,
+      lines: [
+        { accountId: expenseAccountId, debit: '120.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '120.00' },
+      ],
+    });
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-03-10',
+      lines: [
+        { accountId: bankAccountId, debit: '50.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '50.00' },
+      ],
+    });
+    await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-03-12', contactId: vendor[0]!.id,
+      lines: [
+        { accountId: expenseAccountId, debit: '30.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '30.00' },
+      ],
+    });
+    // A draft: listed, but it moves no balance (accounts.balance ignores it).
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-03-15', status: 'draft',
+      lines: [
+        { accountId: bankAccountId, debit: '999.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '999.00' },
+      ],
+    });
+    // After end_date: never in the ending balance.
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-05-01',
+      lines: [
+        { accountId: bankAccountId, debit: '7.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '7.00' },
+      ],
+    });
+    const range = { startDate: '2026-03-02', endDate: '2026-03-31' };
+
+    const all = await registerService.getRegister(tenantId, bankAccountId, range);
+    expect(all.balanceForward).toBe(1000);
+    expect(all.lines.map((l) => l.runningBalance)).toEqual([880, 930, 900, 900]);
+    expect(all.lines[3]!.status).toBe('draft');
+    expect(all.endingBalance).toBe(900);
+    const byLine = new Map(all.lines.map((l) => [l.lineId, l.runningBalance]));
+
+    const filters: Array<Record<string, unknown>> = [
+      { payee: 'Paper' },
+      { txnType: 'deposit' },
+      { search: 'Paper' },
+      { minAmount: '40' },
+      { sortBy: 'amount', sortDir: 'desc', perPage: 1, page: 2 },
+    ];
+    for (const f of filters) {
+      const r = await registerService.getRegister(tenantId, bankAccountId, { ...range, ...f });
+      expect(r.lines.length).toBeGreaterThan(0);
+      for (const l of r.lines) expect(l.runningBalance).toBe(byLine.get(l.lineId));
+      expect(r.endingBalance).toBe(900);
+      expect(r.balanceForward).toBe(1000);
+    }
+    const payees = await registerService.getRegister(tenantId, bankAccountId, { ...range, payee: 'Paper' });
+    expect(payees.lines.map((l) => l.runningBalance)).toEqual([880, 900]);
+    expect(payees.pagination.totalRows).toBe(2);
+  });
+
   it('should compute balance_forward correctly', async () => {
     // Transaction in February
     await ledger.postTransaction(tenantId, {

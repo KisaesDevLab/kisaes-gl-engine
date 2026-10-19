@@ -8,6 +8,15 @@ import { db } from '../db/index.js';
 import { accounts, journalLines, transactions, contacts, reconciliationLines, reconciliations } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { escapeLike } from '../utils/sql-like.js';
+import DecimalLib from 'decimal.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
+type DecimalT = InstanceType<typeof Decimal>;
+
+// The historical JSON-number shape: balances rounded to cents.
+function legacyCents(d: DecimalT): number {
+  return Number(d.toFixed(2));
+}
 
 interface RegisterFilters {
   startDate?: string;
@@ -99,133 +108,153 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
   const startDate = filters.startDate || ninetyDaysAgo;
   const endDate = filters.endDate || today;
 
-  // Compute balance_forward: sum of all lines before startDate
+  // Balances are filter-independent (Q-187): every figure below is the
+  // account's true ledger balance, whatever the quick filters hide. Only
+  // POSTED transactions move a balance — drafts and voids carry a zero delta,
+  // matching accounts.balance (updateAccountBalances runs for posted only).
+  const postedDelta = debitNormal
+    ? sql`CASE WHEN t.status = 'posted' THEN jl.debit - jl.credit ELSE 0 END`
+    : sql`CASE WHEN t.status = 'posted' THEN jl.credit - jl.debit ELSE 0 END`;
+
+  // Balance forward (before startDate) and ending balance (through endDate)
+  // in one pass, unfiltered.
   const bfResult = await db.execute(sql`
     SELECT
-      COALESCE(SUM(jl.debit), 0) as total_debit,
-      COALESCE(SUM(jl.credit), 0) as total_credit
+      COALESCE(SUM(${postedDelta}) FILTER (WHERE t.txn_date < ${startDate}), 0)::text AS balance_forward,
+      COALESCE(SUM(${postedDelta}), 0)::text AS ending_balance
     FROM journal_lines jl
-    JOIN transactions t ON t.id = jl.transaction_id
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId}
       AND jl.account_id = ${accountId}
-      AND t.status != 'void'
-      AND t.txn_date < ${startDate}
+      AND t.txn_date <= ${endDate}
   `);
-  const bfRow = (bfResult.rows as any[])[0] || { total_debit: '0', total_credit: '0' };
-  const balanceForward = debitNormal
-    ? parseFloat(bfRow.total_debit) - parseFloat(bfRow.total_credit)
-    : parseFloat(bfRow.total_credit) - parseFloat(bfRow.total_debit);
+  const bfRow = (bfResult.rows as any[])[0] || {};
+  const balanceForward = new Decimal(bfRow.balance_forward ?? '0');
+  const endingBalanceDec = new Decimal(bfRow.ending_balance ?? '0');
 
-  // Build parameterized WHERE conditions
+  // Build parameterized WHERE conditions (applied OUTSIDE the running
+  // balance window, so filters choose rows but never change a balance).
   const sqlConditions = [
-    sql`jl.tenant_id = ${tenantId}`,
-    sql`jl.account_id = ${accountId}`,
-    sql`t.txn_date >= ${startDate}`,
-    sql`t.txn_date <= ${endDate}`,
+    sql`l.txn_date >= ${startDate}`,
   ];
 
   if (!filters.includeVoid) {
-    sqlConditions.push(sql`t.status != 'void'`);
+    sqlConditions.push(sql`l.status != 'void'`);
   }
   if (filters.txnType) {
-    sqlConditions.push(sql`t.txn_type = ${filters.txnType}`);
+    sqlConditions.push(sql`l.txn_type = ${filters.txnType}`);
   }
   if (filters.payee) {
     sqlConditions.push(sql`c.display_name ILIKE ${'%' + escapeLike(filters.payee) + '%'}`);
   }
   if (filters.search) {
     const pattern = '%' + escapeLike(filters.search) + '%';
-    sqlConditions.push(sql`(c.display_name ILIKE ${pattern} OR t.memo ILIKE ${pattern} OR t.txn_number ILIKE ${pattern})`);
+    sqlConditions.push(sql`(c.display_name ILIKE ${pattern} OR l.memo ILIKE ${pattern} OR l.txn_number ILIKE ${pattern})`);
   }
   if (filters.minAmount !== undefined) {
-    sqlConditions.push(sql`(jl.debit >= ${filters.minAmount} OR jl.credit >= ${filters.minAmount})`);
+    sqlConditions.push(sql`(l.debit >= ${filters.minAmount} OR l.credit >= ${filters.minAmount})`);
   }
   if (filters.maxAmount !== undefined) {
-    sqlConditions.push(sql`(jl.debit <= ${filters.maxAmount} AND jl.credit <= ${filters.maxAmount})`);
+    sqlConditions.push(sql`(l.debit <= ${filters.maxAmount} AND l.credit <= ${filters.maxAmount})`);
   }
 
   const whereClause = sql.join(sqlConditions, sql` AND `);
 
-  // Display sort — independent of the running balance, which is computed by
-  // a window over canonical date order (running_delta below), so any column
-  // can sort the FULL filtered set without corrupting balances. Sort columns
-  // are a fixed switch, never interpolated from user input.
+  // Every line of the account through endDate with its cumulative signed
+  // delta in canonical ledger order (date, entry time, line id). The window
+  // runs over the WHOLE account history, before any filter, sort or page,
+  // so a row's running balance is the true balance after it.
+  const ledgerCte = sql`
+    WITH l AS (
+      SELECT
+        jl.id AS line_id,
+        jl.transaction_id,
+        jl.debit,
+        jl.credit,
+        jl.description AS line_description,
+        t.txn_type,
+        t.txn_number,
+        t.check_number,
+        t.txn_date,
+        t.created_at,
+        t.status,
+        t.memo,
+        t.contact_id,
+        SUM(${postedDelta}) OVER (
+          ORDER BY t.txn_date ASC, t.created_at ASC, jl.id ASC
+          ROWS UNBOUNDED PRECEDING
+        ) AS running_balance
+      FROM journal_lines jl
+      JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+      WHERE jl.tenant_id = ${tenantId}
+        AND jl.account_id = ${accountId}
+        AND t.txn_date <= ${endDate}
+    )
+  `;
+
+  // Display sort — independent of the running balance. Sort columns are a
+  // fixed switch, never interpolated from user input.
   const dir = filters.sortDir === 'desc' ? sql`DESC` : sql`ASC`;
   let orderClause;
   switch (filters.sortBy) {
     case 'amount':
-      orderClause = sql`GREATEST(jl.debit, jl.credit) ${dir}, t.txn_date ASC, jl.id ASC`;
+      orderClause = sql`GREATEST(l.debit, l.credit) ${dir}, l.txn_date ASC, l.line_id ASC`;
       break;
     case 'type':
-      orderClause = sql`t.txn_type ${dir}, t.txn_date ASC, jl.id ASC`;
+      orderClause = sql`l.txn_type ${dir}, l.txn_date ASC, l.line_id ASC`;
       break;
     case 'ref_no':
-      orderClause = sql`t.txn_number ${dir} NULLS LAST, t.txn_date ASC, jl.id ASC`;
+      orderClause = sql`l.txn_number ${dir} NULLS LAST, l.txn_date ASC, l.line_id ASC`;
       break;
     default:
-      orderClause = sql`t.txn_date ${dir}, t.created_at ${dir}, jl.id ${dir}`;
+      orderClause = sql`l.txn_date ${dir}, l.created_at ${dir}, l.line_id ${dir}`;
   }
 
-  // Count + full-range totals (the ending balance must cover the whole
-  // filtered range, not just the fetched page).
   const countResult = await db.execute(sql`
-    SELECT COUNT(*) as total,
-      COALESCE(SUM(jl.debit), 0) as sum_debit,
-      COALESCE(SUM(jl.credit), 0) as sum_credit
-    FROM journal_lines jl
-    JOIN transactions t ON t.id = jl.transaction_id
-    LEFT JOIN contacts c ON c.id = t.contact_id
+    ${ledgerCte}
+    SELECT COUNT(*) AS total
+    FROM l
+    LEFT JOIN contacts c ON c.id = l.contact_id AND c.tenant_id = ${tenantId}
     WHERE ${whereClause}
   `);
   const countRow = (countResult.rows as any[])[0] || {};
   const totalRows = parseInt(countRow.total || '0');
-  const filteredDelta = debitNormal
-    ? parseFloat(countRow.sum_debit || '0') - parseFloat(countRow.sum_credit || '0')
-    : parseFloat(countRow.sum_credit || '0') - parseFloat(countRow.sum_debit || '0');
 
   // Fetch page
   const dataResult = await db.execute(sql`
+    ${ledgerCte}
     SELECT
-      jl.id AS line_id,
-      jl.transaction_id,
-      jl.debit,
-      jl.credit,
-      jl.description AS line_description,
-      t.txn_type,
-      t.txn_number,
-      t.check_number,
-      t.txn_date,
-      t.status,
-      t.memo,
-      t.contact_id,
+      l.line_id,
+      l.transaction_id,
+      l.debit::text AS debit,
+      l.credit::text AS credit,
+      l.line_description,
+      l.txn_type,
+      l.txn_number,
+      l.check_number,
+      l.txn_date,
+      l.status,
+      l.memo,
+      l.contact_id,
       c.display_name AS payee_name,
       rec.is_cleared,
       rec.is_reconciled,
       cat.category_name,
       cat.category_account_id,
-      -- Running balance delta in canonical ledger order, regardless of the
-      -- display ORDER BY below: each row carries the cumulative signed sum
-      -- of every filtered row up to and including itself by date.
-      SUM(jl.debit - jl.credit) OVER (
-        ORDER BY t.txn_date ASC, t.created_at ASC, jl.id ASC
-        ROWS UNBOUNDED PRECEDING
-      ) AS running_delta
-    FROM journal_lines jl
-    JOIN transactions t ON t.id = jl.transaction_id
-    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+      l.running_balance::text AS running_balance
+    FROM l
+    LEFT JOIN contacts c ON c.id = l.contact_id AND c.tenant_id = ${tenantId}
     -- Reconciliation status, collapsed to ONE row per journal line. A line
     -- gets a reconciliation_lines row in every reconciliation whose worksheet
     -- it appears on, so an item left outstanding for months has one per
-    -- month. Joining those rows directly duplicated the line in the register
-    -- and — because the window below runs over the joined rows — counted its
-    -- amount once per reconciliation in every later running balance.
+    -- month; joining those rows directly would duplicate the line.
     LEFT JOIN LATERAL (
       SELECT
         COALESCE(BOOL_OR(rl.is_cleared), false) AS is_cleared,
         COALESCE(BOOL_OR(rl.is_cleared AND r.status = 'complete'), false) AS is_reconciled
       FROM reconciliation_lines rl
       JOIN reconciliations r ON r.id = rl.reconciliation_id AND r.tenant_id = ${tenantId}
-      WHERE rl.journal_line_id = jl.id
+      WHERE rl.journal_line_id = l.line_id
     ) rec ON true
     -- Resolve the "other side" account(s) for the transaction. If exactly one
     -- distinct account other than the one being viewed, show its name/id.
@@ -242,7 +271,7 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
         END AS category_account_id
       FROM journal_lines ojl
       JOIN accounts oa ON oa.id = ojl.account_id AND oa.tenant_id = ${tenantId}
-      WHERE ojl.transaction_id = jl.transaction_id
+      WHERE ojl.transaction_id = l.transaction_id
         AND ojl.tenant_id = ${tenantId}
         AND ojl.account_id <> ${accountId}
     ) cat ON true
@@ -268,25 +297,24 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
   }
 
   const lines: RegisterLine[] = (dataResult.rows as any[]).map((row: any) => {
-    const debit = parseFloat(row.debit);
-    const credit = parseFloat(row.credit);
-    // Balance after this row = balance forward + this row's cumulative
-    // canonical-order delta (window column) — correct on any page and
-    // under any display sort.
-    const delta = parseFloat(row.running_delta);
-    const runningBalance = balanceForward + (debitNormal ? delta : -delta);
+    const debit = new Decimal(row.debit ?? '0');
+    const credit = new Decimal(row.credit ?? '0');
+    // Balance after this row: the account's whole-history cumulative
+    // posted delta in canonical order (window in the CTE) — correct on any
+    // page, under any display sort and under any filter.
+    const runningBalance = new Decimal(row.running_balance ?? '0');
 
     // Payment/deposit relative to account normal balance
-    let payment: number | null = null;
-    let deposit: number | null = null;
+    let payment: DecimalT | null = null;
+    let deposit: DecimalT | null = null;
     if (debitNormal) {
       // Asset/expense: debit = increase (deposit), credit = decrease (payment)
-      if (credit > 0) payment = credit;
-      if (debit > 0) deposit = debit;
+      if (credit.gt(0)) payment = credit;
+      if (debit.gt(0)) deposit = debit;
     } else {
       // Liability/equity/revenue: credit = increase (deposit), debit = decrease (payment)
-      if (debit > 0) payment = debit;
-      if (credit > 0) deposit = credit;
+      if (debit.gt(0)) payment = debit;
+      if (credit.gt(0)) deposit = credit;
     }
 
     // Reconciliation status
@@ -321,9 +349,9 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       categoryName,
       categoryAccountId,
       memo: row.memo,
-      payment,
-      deposit,
-      runningBalance: Math.round(runningBalance * 100) / 100,
+      payment: payment ? payment.toNumber() : null,
+      deposit: deposit ? deposit.toNumber() : null,
+      runningBalance: legacyCents(runningBalance),
       reconciliationStatus,
       hasAttachments: false, // would need join to attachments
       hasSplits: splitCounts.has(row.transaction_id),
@@ -331,10 +359,6 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       status: row.status,
     };
   });
-
-  // Ending balance for the FULL filtered range (balance forward + every
-  // filtered row's delta) — pages and display sort don't change it.
-  const endingBalance = Math.round((balanceForward + filteredDelta) * 100) / 100;
 
   return {
     account: {
@@ -344,8 +368,9 @@ export async function getRegister(tenantId: string, accountId: string, filters: 
       detailType: account.detailType,
       accountNumber: account.accountNumber,
     },
-    balanceForward: Math.round(balanceForward * 100) / 100,
-    endingBalance: Math.round(endingBalance * 100) / 100,
+    balanceForward: legacyCents(balanceForward),
+    // The account's balance at endDate, independent of filters and paging.
+    endingBalance: legacyCents(endingBalanceDec),
     filtersApplied: { startDate, endDate, ...filters },
     pagination: {
       page,
