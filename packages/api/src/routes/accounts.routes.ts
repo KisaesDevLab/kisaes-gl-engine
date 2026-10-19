@@ -224,18 +224,27 @@ accountsRouter.get('/:id/register', describe({
 accountsRouter.get('/:id/register/summary', describe({
   summary: 'Account register summary',
   query: z.object({
+    end_date: z.string().optional().describe('YYYY-MM-DD: endingBalance and clearedBalance through this date; default all dates'),
     exact: z.enum(['1', 'true']).optional().describe('money as decimal strings (register-exact-v1)'),
   }),
   response: z.object({
     currentBalance: registerMoney.describe('the stored account balance'),
+    endingBalance: registerMoney.describe('posted balance through end_date, unfiltered, natural sign'),
+    clearedBalance: registerMoney.describe('part of endingBalance whose lines are cleared in a reconciliation'),
+    asOfDate: z.string().nullable(),
     unclearedCount: z.number(),
     lastReconciliationDate: z.string().nullable(),
     transactionsThisPeriod: z.number(),
   }),
 }), async (req, res) => {
   const q = req.query as Record<string, string>;
+  const endDate = q['end_date'] || undefined;
+  if (endDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    throw AppError.badRequest('end_date must be YYYY-MM-DD', 'VALIDATION_ERROR');
+  }
   const result = await registerService.getRegisterSummary(req.tenantId, req.params['id']!, {
     exact: exactRequested(q['exact']),
+    endDate,
   });
   res.json(result);
 });

@@ -3432,6 +3432,15 @@
           },
           {
             "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD: endingBalance and clearedBalance through this date; default all dates",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "exact",
             "required": false,
             "schema": {
@@ -3451,8 +3460,28 @@
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
+                    "asOfDate": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "clearedBalance": {
+                      "description": "part of endingBalance whose lines are cleared in a reconciliation",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
                     "currentBalance": {
                       "description": "the stored account balance",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "endingBalance": {
+                      "description": "posted balance through end_date, unfiltered, natural sign",
                       "type": [
                         "number",
                         "string"
@@ -3473,6 +3502,9 @@
                   },
                   "required": [
                     "currentBalance",
+                    "endingBalance",
+                    "clearedBalance",
+                    "asOfDate",
                     "unclearedCount",
                     "lastReconciliationDate",
                     "transactionsThisPeriod"

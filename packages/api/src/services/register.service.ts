@@ -448,7 +448,11 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
   };
 }
 
-export async function getRegisterSummary(tenantId: string, accountId: string, opts: { exact?: boolean } = {}) {
+export async function getRegisterSummary(
+  tenantId: string,
+  accountId: string,
+  opts: { exact?: boolean; endDate?: string } = {},
+) {
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
   });
@@ -457,6 +461,32 @@ export async function getRegisterSummary(tenantId: string, accountId: string, op
   // Current balance (the stored accounts.balance, as before)
   const currentBalanceDec = new Decimal(account.balance ?? '0');
   const currentBalance: RegisterMoney = opts.exact ? exactMoney(currentBalanceDec) : currentBalanceDec.toNumber();
+
+  // Register footer balances (P12 R4), unfiltered and in the account's
+  // natural sign like the register: the ending balance of every posted line
+  // (through endDate when given) and the cleared balance — the part of it
+  // whose lines are cleared in any reconciliation, open or complete.
+  const debitNormal = isDebitNormal(account.accountType);
+  const delta = debitNormal ? sql`jl.debit - jl.credit` : sql`jl.credit - jl.debit`;
+  const footer = await db.execute(sql`
+    SELECT
+      COALESCE(SUM(${delta}), 0)::text AS ending_balance,
+      COALESCE(SUM(${delta}) FILTER (WHERE EXISTS (
+        SELECT 1 FROM reconciliation_lines rl
+        JOIN reconciliations r ON r.id = rl.reconciliation_id AND r.tenant_id = ${tenantId}
+        WHERE rl.journal_line_id = jl.id AND rl.is_cleared
+      )), 0)::text AS cleared_balance
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId}
+      AND jl.account_id = ${accountId}
+      AND t.status = 'posted'
+      ${opts.endDate ? sql`AND t.txn_date <= ${opts.endDate}` : sql``}
+  `);
+  const footerRow = (footer.rows as any[])[0] || {};
+  const money = moneyFormatter(opts.exact);
+  const endingBalance = money.balance(new Decimal(footerRow.ending_balance ?? '0'));
+  const clearedBalance = money.balance(new Decimal(footerRow.cleared_balance ?? '0'));
 
   // Uncleared count
   const unclearedResult = await db.execute(sql`
@@ -496,6 +526,9 @@ export async function getRegisterSummary(tenantId: string, accountId: string, op
 
   return {
     currentBalance,
+    endingBalance,
+    clearedBalance,
+    asOfDate: opts.endDate ?? null,
     unclearedCount,
     lastReconciliationDate: lastRecon?.statementDate || null,
     transactionsThisPeriod: parseInt((txnCountResult.rows as any[])[0]?.cnt || '0'),
