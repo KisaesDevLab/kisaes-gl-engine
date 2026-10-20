@@ -127,8 +127,9 @@ describe('Ollama adapter (desktop session endpoint)', () => {
     expect(calls[0]!.headers['authorization']).toBeUndefined();
   });
 
-  it('falls back to the stored base URL when no session endpoint was set', async () => {
+  it('ignores the stored base URL when no session endpoint was set (defaults to this machine)', async () => {
     const p = getProvider('ollama', { ollamaBaseUrl: baseUrl }, 'qwen3');
-    expect((await p.testConnection()).success).toBe(true);
+    expect((p as unknown as { baseUrl: string }).baseUrl).toBe('http://localhost:11434');
+    expect(calls).toHaveLength(0);
   });
 });

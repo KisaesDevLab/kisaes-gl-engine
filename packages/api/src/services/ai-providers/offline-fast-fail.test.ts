@@ -122,8 +122,10 @@ describe('desktop, CL_OFFLINE=on', () => {
   it('Ollama (local) still answers', async () => {
     desktop('on');
     const stub = await ollamaStub();
+    // Desktop takes the Ollama endpoint from the session, never ai_config.
+    await secrets.setOllamaBaseUrl(stub.url);
     try {
-      const r = await executeWithFallback(PARAMS, config({ ollamaBaseUrl: stub.url }), ['anthropic', 'ollama'], 'anthropic');
+      const r = await executeWithFallback(PARAMS, config(), ['anthropic', 'ollama'], 'anthropic');
       expect(r.provider).toBe('ollama');
       expect(r.parsed).toEqual({ ok: true });
     } finally {
@@ -164,9 +166,10 @@ describe('desktop, CL_OFFLINE=auto', () => {
   it('offline cloud provider falls back to a working local Ollama', async () => {
     desktop();
     const stub = await ollamaStub();
+    await secrets.setOllamaBaseUrl(stub.url);
     try {
       const { ms, value } = await timed(() =>
-        executeWithFallback(PARAMS, config({ ollamaBaseUrl: stub.url }), ['anthropic', 'openai', 'ollama'], 'anthropic'),
+        executeWithFallback(PARAMS, config(), ['anthropic', 'openai', 'ollama'], 'anthropic'),
       );
       expect(value?.provider).toBe('ollama');
       expect(stub.calls).toBe(1);
@@ -183,8 +186,9 @@ describe('desktop, CL_OFFLINE=auto', () => {
     await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
     const port = (probe.address() as AddressInfo).port;
     await new Promise<void>((r) => probe.close(() => r()));
+    await secrets.setOllamaBaseUrl(`http://127.0.0.1:${port}`);
     const { err } = await timed(() =>
-      executeWithFallback(PARAMS, config({ ollamaBaseUrl: `http://127.0.0.1:${port}` }), ['anthropic', 'ollama'], 'anthropic'),
+      executeWithFallback(PARAMS, config(), ['anthropic', 'ollama'], 'anthropic'),
     );
     expect(err).not.toBeInstanceOf(OfflineUnavailableError);
     expect((err as { code?: string }).code).toBe('ai_all_providers_failed');

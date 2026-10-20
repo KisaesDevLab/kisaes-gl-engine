@@ -133,8 +133,11 @@ export function resolveCredential(providerName: string, config: AiConfigRow): Re
         return apiKey ? { apiKey } : null;
       }
       case 'ollama':
+        // The session endpoint or the provider default (this machine);
+        // never the stored ai_config.ollama_base_url, which was validated
+        // under server rules and may point off the owner's network.
         return {
-          baseUrl: getSessionSecret('ai.ollama.baseUrl') ?? config.ollamaBaseUrl ?? undefined,
+          baseUrl: getSessionSecret('ai.ollama.baseUrl') ?? undefined,
           model: getSessionOllamaModel() ?? undefined,
         };
       default:
