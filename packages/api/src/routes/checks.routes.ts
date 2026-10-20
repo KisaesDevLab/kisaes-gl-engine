@@ -9,6 +9,8 @@ import { hasTenantOwnerPower } from '../middleware/firm-capabilities.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware } from '../services/lock-context.js';
 import * as checkService from '../services/check.service.js';
 import * as checkPdfService from '../services/check-pdf.service.js';
 import * as signatureService from '../services/check-signature.service.js';
@@ -24,7 +26,9 @@ checksRouter.use(authenticate);
 checksRouter.use(companyContext);
 checksRouter.use(requireResource('checks'));
 
-checksRouter.post('/', validate(writeCheckSchema), async (req, res) => {
+// lockContextMiddleware: a check dated in a closed period takes the same
+// closingPassword / overrideConfirmed as POST /transactions (U-15).
+checksRouter.post('/', closingPasswordLimiter, lockContextMiddleware, validate(writeCheckSchema), async (req, res) => {
   const check = await checkService.createCheck(req.tenantId, req.body, req.userId, req.companyId);
   // Checks post as txn_type 'expense', which is the attachable type the
   // transaction detail page reads — keep them in step.

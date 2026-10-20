@@ -41,6 +41,9 @@ import { db } from '../db/index.js';
 import { companies, companyTaxProfiles, tbStatus } from '../db/schema/index.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { auditLog as auditLogFn } from '../middleware/audit.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { takeClosingPassword, lockContextMiddleware } from '../services/lock-context.js';
+import { authorizeLockDateChange } from '../services/closing-password.service.js';
 import { fsRouter } from './tb-fs.routes.js';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
@@ -122,7 +125,9 @@ tbRouter.get('/seed-versions', async (_req, res) => {
 
 // ── AJEs (Phase 5, D10/D17, rule TB3) ──────────────────────────────
 // Firm-only by router construction; independent of the closing date
-// (ledger exempts txn_type 'aje').
+// (ledger exempts txn_type 'aje') unless the company has a closing-date
+// password (U-15): then `closingPassword` in the body opens the closed
+// period, as on /transactions.
 
 tbRouter.get('/ajes', async (req, res) => {
   const limit = Math.min(Number(req.query['limit']) || 50, 500);
@@ -138,7 +143,7 @@ tbRouter.get('/ajes', async (req, res) => {
   res.json({ ...result, limit, offset });
 });
 
-tbRouter.post('/ajes', validate(createAjeSchema), async (req, res) => {
+tbRouter.post('/ajes', closingPasswordLimiter, lockContextMiddleware, validate(createAjeSchema), async (req, res) => {
   const aje = await ajeService.createAje(req.tenantId, req.companyId!, req.body, req.userId);
   if (req.body.draftAttachmentId) {
     await attachmentService.reassignDraftAttachments(req.tenantId, req.body.draftAttachmentId, 'journal_entry', aje.id);
@@ -146,24 +151,24 @@ tbRouter.post('/ajes', validate(createAjeSchema), async (req, res) => {
   res.status(201).json({ aje });
 });
 
-tbRouter.put('/ajes/:id', validate(createAjeSchema), async (req, res) => {
+tbRouter.put('/ajes/:id', closingPasswordLimiter, lockContextMiddleware, validate(createAjeSchema), async (req, res) => {
   const aje = await ajeService.updateAje(req.tenantId, req.companyId!, String(req.params['id']), req.body, req.userId);
   res.json({ aje });
 });
 
-tbRouter.post('/ajes/:id/void', async (req, res) => {
+tbRouter.post('/ajes/:id/void', closingPasswordLimiter, lockContextMiddleware, async (req, res) => {
   const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : null;
   if (!reason) throw AppError.badRequest('Void reason is required');
   const aje = await ajeService.voidAje(req.tenantId, req.companyId!, String(req.params['id']), reason, req.userId);
   res.json({ aje });
 });
 
-tbRouter.post('/ajes/:id/reverse', async (req, res) => {
+tbRouter.post('/ajes/:id/reverse', closingPasswordLimiter, lockContextMiddleware, async (req, res) => {
   const aje = await ajeService.reverseAje(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
   res.status(201).json({ aje });
 });
 
-tbRouter.post('/ajes/:id/duplicate', async (req, res) => {
+tbRouter.post('/ajes/:id/duplicate', closingPasswordLimiter, lockContextMiddleware, async (req, res) => {
   const aje = await ajeService.duplicateAje(req.tenantId, req.companyId!, String(req.params['id']), req.userId);
   res.status(201).json({ aje });
 });
@@ -489,29 +494,54 @@ tbRouter.get('/closing-date', async (req, res) => {
     lockDate: companies.lockDate,
     setBy: companies.lockDateSetBy,
     setAt: companies.lockDateSetAt,
+    passwordHash: companies.closingPasswordHash,
   }).from(companies)
     .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
     .limit(1);
   if (!row) throw AppError.notFound('Company not found');
-  res.json({ closingDate: row.lockDate, setBy: row.setBy, setAt: row.setAt });
+  res.json({ closingDate: row.lockDate, setBy: row.setBy, setAt: row.setAt, closingPasswordSet: !!row.passwordHash });
 });
 
-tbRouter.put('/closing-date', requireTenantOwnerForTb, validate(z.object({
+// With a closing-date password set (U-15), a change needs `closingPassword`
+// in the body; it is taken out before validation and never stored.
+tbRouter.put('/closing-date', requireTenantOwnerForTb, closingPasswordLimiter, (req, res, next) => {
+  res.locals['closingPassword'] = takeClosingPassword(req);
+  next();
+}, validate(z.object({
   closingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
 })), async (req, res) => {
-  const [before] = await db.select({ lockDate: companies.lockDate }).from(companies)
-    .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
-    .limit(1);
-  if (!before) throw AppError.notFound('Company not found');
   const closingDate = req.body.closingDate as string | null;
-  const [after] = await db.update(companies).set({
-    lockDate: closingDate,
-    lockDateSetBy: req.userId ?? null,
-    lockDateSetAt: new Date(),
-  }).where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
-    .returning({ lockDate: companies.lockDate });
-  await auditLogFn(req.tenantId, 'update', 'closing_date', req.companyId!,
-    { closingDate: before.lockDate }, { closingDate }, req.userId);
+  const password = res.locals['closingPassword'] as string | undefined;
+  // One transaction with the company row locked: the password check, the
+  // new date and a first password can't interleave with another change
+  // (or a password change) to the same company.
+  const after = await db.transaction(async (tx) => {
+    const [before] = await tx.select({ lockDate: companies.lockDate }).from(companies)
+      .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+      .for('update')
+      .limit(1);
+    if (!before) throw AppError.notFound('Company not found');
+    let newHash: string | null = null;
+    if ((before.lockDate ?? null) !== closingDate || password !== undefined) {
+      ({ newHash } = await authorizeLockDateChange(tx, req.tenantId, req.companyId!, password, {
+        userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin,
+      }));
+    }
+    const [row] = await tx.update(companies).set({
+      lockDate: closingDate,
+      lockDateSetBy: req.userId ?? null,
+      lockDateSetAt: new Date(),
+      ...(newHash ? { closingPasswordHash: newHash } : {}),
+    }).where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+      .returning({ lockDate: companies.lockDate });
+    await auditLogFn(req.tenantId, 'update', 'closing_date', req.companyId!,
+      { closingDate: before.lockDate }, { closingDate }, req.userId, tx);
+    if (newHash) {
+      await auditLogFn(req.tenantId, 'update', 'closing_password', req.companyId!,
+        { closingDateProtected: false }, { closingDateProtected: true }, req.userId, tx);
+    }
+    return row;
+  });
   res.json({ closingDate: after?.lockDate ?? null });
 });
 

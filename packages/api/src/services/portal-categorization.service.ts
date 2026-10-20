@@ -234,7 +234,7 @@ async function queueSource(tenantId: string, companyId: string) {
             )) AS amount
       FROM transactions t
       WHERE t.tenant_id = ${tenantId}
-        AND t.status <> 'void'
+        AND t.status NOT IN ('void', 'deleted')
         AND (t.company_id = ${companyId} OR (t.company_id IS NULL AND ${singleCompany}))
         AND EXISTS (
           SELECT 1 FROM journal_lines jl

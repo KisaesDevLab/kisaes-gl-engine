@@ -391,6 +391,13 @@ describe('transaction-report.service', () => {
   });
 
   describe('generateTransactionReportPdf', () => {
+    it('prints a related transaction in full only when it is neither void nor deleted', () => {
+      expect(report.includedInReport('posted')).toBe(true);
+      expect(report.includedInReport('draft')).toBe(true);
+      expect(report.includedInReport('void')).toBe(false);
+      expect(report.includedInReport('deleted')).toBe(false);
+    });
+
     it('merges the summary, a PDF attachment page-for-page and an image attachment', async () => {
       const bill = await makeBill();
       const payment = await payBill(bill.id);

@@ -7,7 +7,7 @@ import { z } from 'zod';
 import {
   createJournalEntrySchema, createExpenseSchema, createTransferSchema,
   createDepositSchema, createCashSaleSchema, createCreditMemoSchema,
-  createCustomerRefundSchema, voidTransactionSchema, transactionFiltersSchema,
+  createCustomerRefundSchema, voidTransactionSchema, deleteTransactionSchema, transactionFiltersSchema,
   bulkUpdateTransactionsSchema, transactionRangeReportSchema, can,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
@@ -15,12 +15,14 @@ import { requireResource, resolvePermissionsForRequest } from '../middleware/per
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
 import * as journalEntryService from '../services/journal-entry.service.js';
 import { AppError } from '../utils/errors.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import * as expenseService from '../services/expense.service.js';
 import * as transferService from '../services/transfer.service.js';
 import * as depositService from '../services/deposit.service.js';
@@ -32,14 +34,18 @@ import * as transactionReport from '../services/transaction-report.service.js';
 import * as transactionActivity from '../services/transaction-activity.service.js';
 import * as txnListExport from '../services/transaction-list-export.service.js';
 import { auditLog } from '../middleware/audit.js';
+import * as featureFlags from '../services/feature-flags.service.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
 transactionsRouter.use(companyContext);
 transactionsRouter.use(requireResource('transactions'));
 // Closed-period actor context (TB ADR-TB-04): carries userType +
-// overrideConfirmed into the ledger choke point without threading it
-// through every posting-service signature.
+// overrideConfirmed and the closing-date password (U-15) into the ledger
+// choke point without threading it through every posting-service
+// signature. The limiter counts failed password attempts and must see the
+// body before lockContextMiddleware strips the password from it.
+transactionsRouter.use(closingPasswordLimiter);
 transactionsRouter.use(lockContextMiddleware);
 
 transactionsRouter.get('/', async (req, res) => {
@@ -277,8 +283,44 @@ transactionsRouter.post('/:id/void', validate(voidTransactionSchema), async (req
   if (voidType === 'aje' && req.userType === 'client') {
     throw AppError.forbidden('Adjusting journal entries are managed by your accounting firm', 'TB_AJE_ROUTE');
   }
+  // With TRIAL_BALANCE_V1 off the whole AJE lifecycle is absent (as on
+  // /tb), so an AJE can't be voided through this route either.
+  if (voidType === 'aje' && !(await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1'))) {
+    throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
+  }
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId);
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  res.json({ transaction: txn });
+});
+
+// Soft delete (P12 R7, capability txn-delete-v1). Body optional:
+// { reason?, closingPassword? } — the password is taken out of the body by
+// lockContextMiddleware and opens a closed period exactly as for void.
+// Same router permission as void (transactions: update). The transaction
+// keeps its lines plus reversing lines and becomes status 'deleted', hidden
+// from registers, reports, balances and lists. Errors: 404 not found,
+// 409 TXN_ALREADY_DELETED / RECONCILED_TRANSACTION / TXN_DELETE_UNSUPPORTED
+// / TXN_DELETE_LINKED, 400 TB_AJE_ROUTE, 423 TB_PERIOD_LOCKED,
+// 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.
+const deleteTransactionBodyDoc = deleteTransactionSchema.extend({
+  closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
+});
+
+transactionsRouter.delete('/:id', (req, _res, next) => {
+  // A DELETE often has no body at all.
+  if (!req.body || typeof req.body !== 'object') req.body = {};
+  next();
+}, validate(deleteTransactionSchema), describe({
+  summary: 'Delete a transaction (soft delete with reversing lines; txn-delete-v1)',
+  body: deleteTransactionBodyDoc,
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
+  const parsed = txnIdParam.safeParse(req.params['id']);
+  if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
+  await ledger.deleteTransaction(req.tenantId, parsed.data, {
+    reason: req.body.reason, userId: req.userId, companyId: req.companyId,
+  });
+  const txn = await ledger.getTransaction(req.tenantId, parsed.data);
   res.json({ transaction: txn });
 });
 

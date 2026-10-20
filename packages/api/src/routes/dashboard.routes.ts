@@ -238,7 +238,7 @@ export async function computeWorkQueue(tenantId: string) {
         eq(accounts.id, journalLines.accountId),
         eq(accounts.systemTag, 'suspense'),
       ))
-      .where(and(eq(transactions.tenantId, tenantId), sql`${transactions.status} <> 'void'`)),
+      .where(and(eq(transactions.tenantId, tenantId), sql`${transactions.status} NOT IN ('void', 'deleted')`)),
   );
 
   // "Unresolved" — the Questions tab's own default filter, so the card and

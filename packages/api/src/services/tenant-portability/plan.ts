@@ -603,6 +603,7 @@ export const SECRET_COLUMNS: Record<string, SecretColumnRule> = {
   'chat_messages.output_tokens': { action: 'keep', reason: 'LLM token count, not a credential' },
   'bank_connections.access_token_encrypted': { action: 'redact', reason: 'bank feed provider access token (the connection record itself is business data)' },
   'companies.smtp_pass': { action: 'redact', reason: 'SMTP password (owner re-enters it after a restore)' },
+  'companies.closing_password_hash': { action: 'redact', reason: 'closing-date password hash (owner sets it again after a restore; closed periods stay locked by the closing date)' },
   'companies.remote_backup_passphrase_hash': { action: 'redact', reason: 'appliance remote-backup passphrase hash' },
   'companies.stripe_secret_key_encrypted': { action: 'redact', reason: 'Stripe secret key' },
   'companies.stripe_webhook_secret_encrypted': { action: 'redact', reason: 'Stripe webhook secret' },

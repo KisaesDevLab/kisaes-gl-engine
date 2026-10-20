@@ -116,7 +116,7 @@ export async function getSuspenseSummary(tenantId: string, companyId?: string): 
       JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
       WHERE t.tenant_id = ${tenantId}
         AND jl.account_id = ${suspenseAccountId}
-        AND t.status <> 'void'
+        AND t.status NOT IN ('void', 'deleted')
         ${companyClause}
     `);
     transactionCount = Number((counted.rows as Array<{ n: string }>)[0]?.n ?? '0');
@@ -231,7 +231,7 @@ export async function listInSuspense(
     FROM transactions t
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = t.tenant_id
     WHERE t.tenant_id = ${tenantId}
-      AND t.status <> 'void'
+      AND t.status NOT IN ('void', 'deleted')
       AND EXISTS (
         SELECT 1 FROM journal_lines jl
         WHERE jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id

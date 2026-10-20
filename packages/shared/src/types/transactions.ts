@@ -22,7 +22,7 @@ export type TxnType =
   // entry, firm-only CRUD, numbered AJE-001 per company per fiscal year.
   | 'aje';
 
-export type TxnStatus = 'draft' | 'posted' | 'void';
+export type TxnStatus = 'draft' | 'posted' | 'void' | 'deleted';
 
 export type InvoiceStatus = 'draft' | 'sent' | 'viewed' | 'partial' | 'paid' | 'void';
 

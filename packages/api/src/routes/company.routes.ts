@@ -23,7 +23,11 @@ import { authenticate } from '../middleware/auth.js';
 import { requireTenantCapability } from '../middleware/firm-capabilities.js';
 import { companyContext } from '../middleware/company.js';
 import { requirePermission } from '../middleware/permission.js';
+import { describe } from '../middleware/describe.js';
 import { validate } from '../middleware/validate.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { takeClosingPassword } from '../services/lock-context.js';
+import * as closingPasswordService from '../services/closing-password.service.js';
 import * as companyService from '../services/company.service.js';
 import * as invoiceTemplateService from '../services/invoice-template.service.js';
 import * as authService from '../services/auth.service.js';
@@ -139,8 +143,24 @@ companyRouter.get('/settings', async (req, res) => {
   res.json({ settings });
 });
 
-companyRouter.put('/settings', requireCompanySettingsWrite, validate(updateCompanySettingsSchema), async (req, res) => {
-  const company = await companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId);
+// The closing-date password (U-15) is taken out of the body before the
+// schema sees it. With a password set, changing lockDate needs it; given
+// while none is set, it becomes the password (owner or super admin).
+// Documented on the schema for OpenAPI only.
+const updateCompanySettingsBodyDoc = updateCompanySettingsSchema.extend({
+  closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
+});
+
+function captureClosingPassword(req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) {
+  res.locals['closingPassword'] = takeClosingPassword(req);
+  next();
+}
+
+companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimiter, captureClosingPassword, validate(updateCompanySettingsSchema), describe({ body: updateCompanySettingsBodyDoc }), async (req, res) => {
+  const company = await companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId, {
+    password: res.locals['closingPassword'] as string | undefined,
+    actor: { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin },
+  });
   res.json({
     settings: {
       fiscalYearStartMonth: company.fiscalYearStartMonth,
@@ -157,6 +177,59 @@ companyRouter.put('/settings', requireCompanySettingsWrite, validate(updateCompa
       chatSupportEnabled: company.chatSupportEnabled,
     },
   });
+});
+
+// ── Closing-date password (U-15, capability closing-password-v1) ──
+// Status for the closing-date screen; never the hash.
+companyRouter.get('/closing-password', describe({
+  summary: 'Closing date and whether a closing-date password is set',
+  response: z.object({
+    closingDate: z.string().nullable(), setBy: z.string().nullable(),
+    setAt: z.string().nullable(), closingPasswordSet: z.boolean(),
+  }),
+}), async (req, res) => {
+  res.json(await closingPasswordService.getClosingDateStatus(req.tenantId, req.companyId));
+});
+
+// Set, change or clear (newPassword: null). With a password set the
+// current one is required; setting the first one is for the owner or a
+// super admin. Wrong current password: 403 CLOSING_PASSWORD_INVALID.
+const closingPasswordBody = z.object({
+  currentPassword: z.string().max(200).optional(),
+  newPassword: z.string().max(200).nullable(),
+});
+
+companyRouter.put('/closing-password', requireCompanySettingsWrite, closingPasswordLimiter, validate(closingPasswordBody), describe({
+  summary: 'Set, change or clear the closing-date password',
+  response: z.object({ closingPasswordSet: z.boolean() }),
+}), async (req, res) => {
+  const result = await closingPasswordService.setClosingPassword(req.tenantId, req.companyId, {
+    currentPassword: req.body.currentPassword,
+    newPassword: req.body.newPassword,
+  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin });
+  res.json(result);
+});
+
+// Owner reset of a forgotten closing-date password (Q-239): the owner or a
+// super admin re-enters their own sign-in password and clears
+// (newPassword: null) or replaces it without the old one. Wrong sign-in
+// password: 403 ACCOUNT_PASSWORD_INVALID; not the owner: 403
+// CLOSING_PASSWORD_OWNER_REQUIRED. Rate limited with the other closing
+// password routes.
+const closingPasswordResetBody = z.object({
+  accountPassword: z.string().min(1).max(200),
+  newPassword: z.string().max(200).nullable(),
+});
+
+companyRouter.post('/closing-password/reset', requireCompanySettingsWrite, closingPasswordLimiter, validate(closingPasswordResetBody), describe({
+  summary: 'Owner reset of the closing-date password (needs the caller sign-in password)',
+  response: z.object({ closingPasswordSet: z.boolean() }),
+}), async (req, res) => {
+  const result = await closingPasswordService.resetClosingPassword(req.tenantId, req.companyId, {
+    accountPassword: req.body.accountPassword,
+    newPassword: req.body.newPassword,
+  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin });
+  res.json(result);
 });
 
 // ── Invoice Template (branding for generated invoices) ──

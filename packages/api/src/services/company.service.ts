@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { companies, accountantCompanyExclusions, transactions, bankFeedItems, bankConnections } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { authorizeLockDateChange, withoutClosingPasswordHash, type ClosingPasswordActor } from './closing-password.service.js';
 import { isDesktop } from '../desktop/profile.js';
 import { hasSessionSecret } from '../desktop/session-secrets.js';
 
@@ -42,7 +43,8 @@ export async function getCompany(tenantId: string, companyId?: string) {
     : await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
 
   if (!company) throw AppError.notFound('Company not found');
-  return company;
+  // The closing-date password hash never leaves the service layer (U-15).
+  return withoutClosingPasswordHash(company);
 }
 
 // Fields the tenant's own users may edit via /companies/:id. Any
@@ -83,7 +85,14 @@ const COMPANY_UPDATABLE_FIELDS = [
   'chatSupportEnabled',
 ] as const;
 
-export async function updateCompany(tenantId: string, companyId: string, input: UpdateCompanyInput, userId?: string) {
+export async function updateCompany(
+  tenantId: string,
+  companyId: string,
+  input: UpdateCompanyInput,
+  userId?: string,
+  // Closing-date password from the request (U-15), and who is asking.
+  closing?: { password?: string; actor?: ClosingPasswordActor },
+) {
   const existing = await getCompany(tenantId, companyId);
 
   // Explicit allowlist: never trust `input` to be free of tenantId /
@@ -95,14 +104,50 @@ export async function updateCompany(tenantId: string, companyId: string, input: 
     }
   }
 
-  const [updated] = await db
-    .update(companies)
-    .set(updates as Partial<typeof companies.$inferInsert>)
-    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
-    .returning();
+  // Closing date (TB rule TB5 / U-15): a change records who and when, as
+  // PUT /tb/closing-date does, and needs the closing-date password when
+  // the company has one. A password given while none is set becomes the
+  // company's password ("set or confirm"; owner or super admin only).
+  // Check and write run in one transaction with the company row locked,
+  // so a concurrent password or closing-date change can't slip between.
+  const requestedLock = (input as Record<string, unknown>)['lockDate'];
+  const updated = await db.transaction(async (tx) => {
+    const [locked] = await tx.select({ lockDate: companies.lockDate }).from(companies)
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+      .for('update')
+      .limit(1);
+    if (!locked) throw AppError.notFound('Company not found');
+    const lockChanges = requestedLock !== undefined && ((requestedLock as string | null) || null) !== (locked.lockDate || null);
+    let passwordSetNow = false;
+    if (lockChanges || closing?.password !== undefined) {
+      const { newHash } = await authorizeLockDateChange(tx, tenantId, companyId, closing?.password, {
+        userId, ...closing?.actor,
+      });
+      if (newHash) {
+        updates['closingPasswordHash'] = newHash;
+        passwordSetNow = true;
+      }
+    }
+    if (lockChanges) {
+      updates['lockDateSetBy'] = userId ?? null;
+      updates['lockDateSetAt'] = new Date();
+    }
 
-  if (!updated) throw AppError.internal('Failed to update company');
-  await auditLog(tenantId, 'update', 'company', updated.id, existing, updated, userId);
+    const [row] = await tx
+      .update(companies)
+      .set(updates as Partial<typeof companies.$inferInsert>)
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+      .returning();
+
+    if (!row) throw AppError.internal('Failed to update company');
+    const safe = withoutClosingPasswordHash(row);
+    await auditLog(tenantId, 'update', 'company', safe.id, existing, safe, userId, tx);
+    if (passwordSetNow) {
+      await auditLog(tenantId, 'update', 'closing_password', companyId,
+        { closingDateProtected: false }, { closingDateProtected: true }, userId, tx);
+    }
+    return safe;
+  });
   return updated;
 }
 
@@ -117,7 +162,8 @@ export async function updateLogo(tenantId: string, companyId: string, logoUrl: s
 
   if (!updated) throw AppError.internal('Failed to update logo');
   await auditLog(tenantId, 'update', 'company', updated.id, { logoUrl: existing.logoUrl }, { logoUrl }, userId);
-  return updated;
+  // The full row goes back to POST /company/logo: never with the hash (U-15).
+  return withoutClosingPasswordHash(updated);
 }
 
 export async function markSetupComplete(tenantId: string, companyId: string) {
@@ -221,11 +267,15 @@ export async function updateSmtpSettings(
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
     .returning();
 
+  if (!updated) throw AppError.internal('Failed to update email settings');
   if (userId) {
     await auditLog(tenantId, 'update', 'company', companyId, { smtpHost: existing.smtpHost }, { smtpHost: input.smtpHost }, userId);
   }
 
-  return updated;
+  // No secret leaves the service layer: neither the closing-date password
+  // hash (U-15) nor the stored SMTP password.
+  const { smtpPass: _smtpPass, ...safe } = withoutClosingPasswordHash(updated);
+  return safe;
 }
 
 export async function createCompanyForTenant(tenantId: string, businessName: string) {
@@ -233,7 +283,7 @@ export async function createCompanyForTenant(tenantId: string, businessName: str
     tenantId,
     businessName,
   }).returning();
-  return company;
+  return company ? withoutClosingPasswordHash(company) : company;
 }
 
 // Create an additional company under the same tenant.
@@ -268,7 +318,7 @@ export async function createAdditionalCompany(tenantId: string, input: { busines
 
   if (!company) throw AppError.internal('Failed to create company');
 
-  return company;
+  return withoutClosingPasswordHash(company);
 }
 
 // Delete an additional company from a tenant. Safe because companies within a

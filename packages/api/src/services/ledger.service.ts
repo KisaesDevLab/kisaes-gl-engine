@@ -13,6 +13,7 @@ import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { getLockContext } from './lock-context.js';
+import { closingPasswordMatches, closingPasswordInvalid, auditClosingPasswordFailed } from './closing-password.service.js';
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 import { escapeLike } from '../utils/sql-like.js';
 
@@ -189,51 +190,152 @@ export interface LockDateContext {
   userType?: 'staff' | 'client';
   overrideConfirmed?: boolean;
   userId?: string;
+  // Closing-date password from the request body (U-15). Lives only in the
+  // request-scoped store; lockContextMiddleware removes it from req.body.
+  closingPassword?: string;
 }
 
+/** A permitted closed-period posting, for the closing_date_override audit row. */
+export interface LockOverride {
+  method: 'password' | 'confirmed';
+  companyId: string | null;
+  lockDate: string;
+  lockDateSetBy: string | null;
+  lockDateSetAt: unknown;
+  txnDate: string;
+  userId?: string;
+}
+
+/** What the override touched: the transaction and its old/new date. */
+export interface LockOverrideFacts {
+  txnId?: string | null;
+  oldDate?: string | null;
+  newDate?: string | null;
+}
+
+/**
+ * Writes the closing_date_override audit row (ADR-TB-04, U-15): who, which
+ * transaction, the old and new date, and how (password or staff
+ * confirmation). Never the password.
+ */
+export async function auditLockOverride(
+  executor: DbOrTx,
+  tenantId: string,
+  override: LockOverride,
+  facts: LockOverrideFacts = {},
+) {
+  await auditLog(tenantId, 'override', 'closing_date_override', facts.txnId ?? override.companyId ?? tenantId,
+    { lockDate: override.lockDate, lockDateSetBy: override.lockDateSetBy, lockDateSetAt: override.lockDateSetAt },
+    {
+      txnDate: override.txnDate,
+      method: override.method,
+      overrideConfirmed: override.method === 'confirmed',
+      transactionId: facts.txnId ?? null,
+      oldDate: facts.oldDate ?? null,
+      newDate: facts.newDate ?? null,
+      companyId: override.companyId,
+    },
+    override.userId, executor as Tx);
+}
+
+/**
+ * Closed-period check. Returns undefined when the date is open. A permitted
+ * override is audited here, unless `opts.deferAudit` is set: then it is
+ * returned and the caller audits it once it knows the transaction id
+ * (auditLockOverride), so one change leaves one row with old and new date.
+ */
 export async function checkLockDate(
   executor: DbOrTx,
   tenantId: string,
   txnDate: string,
   companyId?: string | null,
   ctx?: LockDateContext,
-) {
+  opts: LockOverrideFacts & { deferAudit?: boolean; ajeExempt?: boolean } = {},
+): Promise<LockOverride | undefined> {
   // Explicit ctx wins; otherwise pick up the request-scoped store set
   // by lockContextMiddleware (see services/lock-context.ts).
   ctx = ctx ?? getLockContext();
   const result = companyId
     ? await executor.execute(sql`
-        SELECT lock_date, lock_date_set_by, lock_date_set_at FROM companies
+        SELECT lock_date, lock_date_set_by, lock_date_set_at,
+               closing_password_hash IS NOT NULL AS password_set
+        FROM companies
         WHERE tenant_id = ${tenantId} AND id = ${companyId}
       `)
     : await executor.execute(sql`
-        SELECT MAX(lock_date) AS lock_date, NULL AS lock_date_set_by, NULL AS lock_date_set_at
+        SELECT MAX(lock_date) AS lock_date, NULL AS lock_date_set_by, NULL AS lock_date_set_at,
+               COALESCE(BOOL_OR(closing_password_hash IS NOT NULL AND lock_date >= ${txnDate}), false) AS password_set
         FROM companies WHERE tenant_id = ${tenantId}
       `);
   const row = (result.rows as any[])[0];
   const lockDate = row?.lock_date;
-  if (!lockDate || txnDate > lockDate) return;
+  if (!lockDate || txnDate > lockDate) return undefined;
+  const passwordSet = row?.password_set === true;
+  // AJEs (TB5) are exempt from the closing date unless the company has a
+  // closing-date password (U-15): then the closed period is locked for
+  // them too and the password is the only way in.
+  if (opts.ajeExempt && !passwordSet) return undefined;
+
+  const permit = async (method: LockOverride['method']) => {
+    const override: LockOverride = {
+      method,
+      companyId: companyId ?? null,
+      lockDate,
+      lockDateSetBy: row?.lock_date_set_by ?? null,
+      lockDateSetAt: row?.lock_date_set_at ?? null,
+      txnDate,
+      userId: ctx?.userId,
+    };
+    if (!opts.deferAudit) await auditLockOverride(executor, tenantId, override, opts);
+    return override;
+  };
+
+  // Closing-date password (U-15): any actor holding it may post into the
+  // closed period. It must match the password of every company whose
+  // closed period covers the date; a company without one can't be opened
+  // this way. Wrong: 403, nothing changes (rate limited at the route).
+  if (ctx?.closingPassword !== undefined) {
+    const locking = companyId
+      ? await executor.execute(sql`
+          SELECT closing_password_hash FROM companies
+          WHERE tenant_id = ${tenantId} AND id = ${companyId}
+        `)
+      : await executor.execute(sql`
+          SELECT closing_password_hash FROM companies
+          WHERE tenant_id = ${tenantId} AND lock_date IS NOT NULL AND lock_date >= ${txnDate}
+        `);
+    const hashes = (locking.rows as Array<{ closing_password_hash: string | null }>).map((r) => r.closing_password_hash);
+    let ok = hashes.length > 0;
+    for (const hash of hashes) {
+      if (!ok) break;
+      ok = await closingPasswordMatches(hash, ctx.closingPassword);
+    }
+    if (!ok) {
+      await auditClosingPasswordFailed(tenantId, companyId ?? null, ctx.userId, 'posting', {
+        transactionId: opts.txnId ?? null, txnDate,
+      });
+      throw closingPasswordInvalid();
+    }
+    return permit('password');
+  }
 
   // Firm staff may proceed with an explicit confirmation; the override
-  // is audit-logged with the facts a reviewer needs (ADR-TB-04).
-  if (ctx?.userType === 'staff' && ctx.overrideConfirmed) {
-    await auditLog(tenantId, 'override', 'closing_date_override', companyId ?? tenantId,
-      { lockDate, lockDateSetBy: row?.lock_date_set_by ?? null, lockDateSetAt: row?.lock_date_set_at ?? null },
-      { txnDate, overrideConfirmed: true },
-      ctx.userId, executor as Tx);
-    return;
+  // is audit-logged with the facts a reviewer needs (ADR-TB-04). Once the
+  // company has a closing-date password, the password is the only way in.
+  if (ctx?.userType === 'staff' && ctx.overrideConfirmed && !passwordSet) {
+    return permit('confirmed');
   }
-  if (ctx?.userType === 'client') {
+  if (ctx?.userType === 'client' && !passwordSet) {
     throw AppError.locked(
       `This period was closed by your accounting firm on ${lockDate}. Contact them to make changes.`,
       'TB_PERIOD_LOCKED',
-      { lockDate, canOverride: false },
+      { lockDate, canOverride: false, closingPasswordRequired: false },
     );
   }
   throw AppError.locked(
     `This period was closed on ${String(row?.lock_date_set_at ?? '').slice(0, 10) || lockDate}. Proceeding will change closed-period balances.`,
     'TB_PERIOD_LOCKED',
-    { lockDate, canOverride: ctx?.userType === 'staff' },
+    { lockDate, canOverride: ctx?.userType === 'staff' && !passwordSet, closingPasswordRequired: passwordSet },
   );
 }
 
@@ -320,9 +422,11 @@ export async function postTransaction(
     // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
     // router is the only path that posts txn_type 'aje', and closing a
     // period is exactly when the firm posts adjusting entries into it.
-    if (input.txnType !== 'aje') {
-      await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null);
-    }
+    // Exception (U-15): with a closing-date password set, an AJE dated in
+    // the closed period needs the password like any other posting.
+    const lockOverride = await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null, undefined, {
+      deferAudit: true, ajeExempt: input.txnType === 'aje',
+    });
     await assertAccountsInScope(
       tx,
       tenantId,
@@ -408,6 +512,9 @@ export async function postTransaction(
     }
 
     await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId, tx);
+    if (lockOverride) {
+      await auditLockOverride(tx, tenantId, lockOverride, { txnId: txn.id, oldDate: null, newDate: input.txnDate });
+    }
 
     return { ...txn, lines };
   };
@@ -432,14 +539,15 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
       .for('update')
       .limit(1);
 
-    if (!txn) throw AppError.notFound('Transaction not found');
+    if (!txn || txn.status === 'deleted') throw AppError.notFound('Transaction not found');
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
 
     // Check lock date against the transaction's date (company-scoped).
-    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
-    if (txn.txnType !== 'aje') {
-      await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId);
-    }
+    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
+    // unless the company has a closing-date password (U-15).
+    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+      txnId, oldDate: txn.txnDate, newDate: null, ajeExempt: txn.txnType === 'aje',
+    });
 
     // Mirror updateTransaction's reconciliation guard: a transaction
     // whose lines are cleared in a COMPLETED bank rec must not be
@@ -516,7 +624,196 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
       await updateAccountBalances(tx, tenantId, reversingLines);
     }
 
-    await auditLog(tenantId, 'void', 'transaction', txnId, txn, { reason }, userId, tx);
+    // Full before-image: the header AND the lines as they stood before the
+    // void (the reversing lines are new rows, so originalLines is exact).
+    await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines }, { reason }, userId, tx);
+  });
+}
+
+/**
+ * Transaction types DELETE /transactions/:id accepts (txn-delete-v1): the
+ * plain register entries whose only effect is their own journal lines (the
+ * types PUT /transactions/:id edits; checks post as 'expense'). Documents
+ * with a sub-ledger (invoices, bills, payments, credits, AJEs, daily sales)
+ * keep their own void paths and are refused with TXN_DELETE_UNSUPPORTED.
+ */
+export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense', 'transfer', 'deposit', 'cash_sale'];
+
+/**
+ * Soft delete (P12 R7, capability txn-delete-v1). Nothing is physically
+ * removed (CLAUDE.md rule #23): a posted transaction gets reversing journal
+ * lines (is_void_reversal, like void) and its balances are moved back; then
+ * the header is marked status 'deleted', which every register, report,
+ * balance and list leaves out (they read status = 'posted', or now exclude
+ * 'deleted' where they read "not void"). A draft or void transaction has no
+ * balance effect left to undo and is only marked.
+ *
+ * Same guards as void: the closing date (closingPassword / staff override
+ * via the request's lock context, 423 / 403), and a transaction cleared in a
+ * completed reconciliation is refused (409 RECONCILED_TRANSACTION). A
+ * deposit grouping undeposited payments, or a transaction grouped into such
+ * a deposit, is refused (409 TXN_DELETE_LINKED) because the deposit would
+ * keep pointing at it.
+ *
+ * Audited as action 'delete' with the full before-image: the header and
+ * every journal line as it stood before the delete.
+ */
+/**
+ * Kinds of record that refuse a delete while they point at the transaction
+ * (TXN_DELETE_LINKED details.links). Informational links (findings, rule
+ * audit, dismissals, portal questions, tags) don't block: they keep
+ * describing a transaction that still exists with status 'deleted'.
+ */
+export const DELETE_BLOCKING_LINKS = [
+  'bank_feed_match', 'accrual', 'payroll', 'portal_receipt', 'category_suggestion',
+  'recurring_template', 'daily_sales', 'estimated_tax_payment',
+] as const;
+
+export async function findDeleteBlockingLinks(
+  executor: DbOrTx,
+  tenantId: string,
+  txnId: string,
+): Promise<Array<(typeof DELETE_BLOCKING_LINKS)[number]>> {
+  const result = await executor.execute(sql`
+    SELECT
+      EXISTS (SELECT 1 FROM bank_feed_items WHERE tenant_id = ${tenantId} AND matched_transaction_id = ${txnId}) AS bank_feed_match,
+      (EXISTS (SELECT 1 FROM accrual_entries WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId})
+        OR EXISTS (SELECT 1 FROM accrual_schedules WHERE tenant_id = ${tenantId} AND source_transaction_id = ${txnId})) AS accrual,
+      (EXISTS (SELECT 1 FROM payroll_check_register_rows r JOIN payroll_import_sessions ps ON ps.id = r.session_id
+                WHERE ps.tenant_id = ${tenantId} AND r.transaction_id = ${txnId})
+        OR EXISTS (SELECT 1 FROM payroll_import_sessions WHERE tenant_id = ${tenantId}
+                AND (journal_entry_id = ${txnId}
+                  OR (jsonb_typeof(journal_entry_ids) = 'array' AND jsonb_exists(journal_entry_ids, ${txnId}::text))))) AS payroll,
+      EXISTS (SELECT 1 FROM portal_receipts WHERE tenant_id = ${tenantId} AND matched_transaction_id = ${txnId}) AS portal_receipt,
+      EXISTS (SELECT 1 FROM client_category_suggestions WHERE tenant_id = ${tenantId}
+                AND ((transaction_id = ${txnId} AND status = 'pending') OR posted_transaction_id = ${txnId})) AS category_suggestion,
+      EXISTS (SELECT 1 FROM recurring_schedules WHERE tenant_id = ${tenantId} AND template_transaction_id = ${txnId}) AS recurring_template,
+      EXISTS (SELECT 1 FROM daily_sales_entries WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId}) AS daily_sales,
+      EXISTS (SELECT 1 FROM tax_est_payments WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId}) AS estimated_tax_payment
+  `);
+  const row = (result.rows as Array<Record<string, boolean>>)[0] ?? {};
+  return DELETE_BLOCKING_LINKS.filter((k) => row[k] === true);
+}
+
+export async function deleteTransaction(
+  tenantId: string,
+  txnId: string,
+  opts: { reason?: string; userId?: string; companyId?: string } = {},
+) {
+  return await db.transaction(async (tx) => {
+    // Row lock: serializes with void / update / a second delete so the
+    // reversal can't be applied twice.
+    const [txn] = await tx.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+      .for('update')
+      .limit(1);
+
+    if (!txn || (opts.companyId && txn.companyId && txn.companyId !== opts.companyId)) {
+      throw AppError.notFound('Transaction not found');
+    }
+    if (txn.status === 'deleted') {
+      throw AppError.conflict('This transaction has already been deleted.', 'TXN_ALREADY_DELETED');
+    }
+    if (txn.txnType === 'aje') {
+      throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
+    }
+    if (!DELETABLE_TXN_TYPES.includes(txn.txnType)) {
+      throw AppError.conflict(
+        'This kind of transaction can’t be deleted here. Void it from its own screen instead.',
+        'TXN_DELETE_UNSUPPORTED',
+        { txnType: txn.txnType },
+      );
+    }
+
+    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+      txnId, oldDate: txn.txnDate, newDate: null,
+    });
+
+    const clearedInCompleted = await tx.execute(sql`
+      SELECT 1
+      FROM ${reconciliationLines} rl
+      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+      WHERE r.tenant_id = ${tenantId}
+        AND r.status = 'complete'
+        AND rl.is_cleared = true
+        AND jl.transaction_id = ${txnId}
+      LIMIT 1
+    `);
+    if ((clearedInCompleted.rows as unknown[]).length > 0) {
+      throw AppError.conflict(
+        'This transaction is part of a completed bank reconciliation, so it can’t be deleted. ' +
+          'Undo the reconciliation first.',
+        'RECONCILED_TRANSACTION',
+      );
+    }
+
+    const linked = await tx.execute(sql`
+      SELECT 1 FROM deposit_lines
+      WHERE deposit_id = ${txnId} OR source_transaction_id = ${txnId}
+      LIMIT 1
+    `);
+    if ((linked.rows as unknown[]).length > 0) {
+      throw AppError.conflict(
+        'This transaction is part of a bank deposit of customer payments, so it can’t be deleted. Void it instead.',
+        'TXN_DELETE_LINKED',
+      );
+    }
+
+    // Other records that point at this transaction and would be left
+    // pointing at a deleted one (a matched bank-feed item would also stay
+    // "matched" and never come back for review). Refused, naming the kinds
+    // in details.links; the owner unmatches / removes the link first.
+    const links = await findDeleteBlockingLinks(tx, tenantId, txnId);
+    if (links.length > 0) {
+      throw AppError.conflict(
+        'Other records point at this transaction (for example a matched bank-feed item), so it can’t be deleted. Undo that link first, or void it instead.',
+        'TXN_DELETE_LINKED',
+        { links },
+      );
+    }
+
+    // Every line as it stands now (for a void transaction this includes its
+    // earlier reversal lines) — the before-image.
+    const originalLines = await tx.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
+      .orderBy(journalLines.lineOrder);
+
+    // Only a posted transaction still moves a balance; reverse it exactly
+    // (debit and credit swapped, same amounts, same tags).
+    if (txn.status === 'posted' && originalLines.length > 0) {
+      const maxOrder = originalLines.reduce((m, l) => Math.max(m, l.lineOrder ?? 0), 0);
+      await tx.insert(journalLines).values(originalLines.map((line, i) => ({
+        tenantId,
+        companyId: line.companyId,
+        transactionId: txnId,
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+        description: `Deleted: ${line.description || ''}`.trim(),
+        tagId: line.tagId,
+        contactId: line.contactId,
+        lineOrder: maxOrder + 1 + i,
+        isVoidReversal: true,
+      })));
+      await updateAccountBalances(tx, tenantId, originalLines.map((line) => ({
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+      })));
+    }
+
+    await tx.update(transactions).set({
+      status: 'deleted',
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+
+    await auditLog(tenantId, 'delete', 'transaction', txnId,
+      { ...txn, lines: originalLines },
+      { status: 'deleted', reason: opts.reason ?? null },
+      opts.userId, tx);
+
+    return { id: txnId, status: 'deleted' as const };
   });
 }
 
@@ -543,17 +840,23 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       .for('update')
       .limit(1);
 
-    if (!existing) throw AppError.notFound('Transaction not found');
+    if (!existing || existing.status === 'deleted') throw AppError.notFound('Transaction not found');
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
     // Check lock date for both old and new dates (company-scoped).
-    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
-    if (existing.txnType !== 'aje' && input.txnType !== 'aje') {
-      await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId);
-      // Only re-check (and possibly re-audit an override) when the date
-      // actually moves — same-date edits shouldn't double-log.
-      if (input.txnDate !== existing.txnDate) {
-        await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null);
+    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
+    // unless the company has a closing-date password (U-15).
+    {
+      const ajeExempt = existing.txnType === 'aje' || input.txnType === 'aje';
+      const oldSide = await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId, undefined, { deferAudit: true, ajeExempt });
+      // Only re-check when the date actually moves. Either side's override
+      // is audited ONCE, with the old and the new date.
+      const newSide = input.txnDate !== existing.txnDate
+        ? await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null, undefined, { deferAudit: true, ajeExempt })
+        : undefined;
+      const override = oldSide ?? newSide;
+      if (override) {
+        await auditLockOverride(tx, tenantId, override, { txnId, oldDate: existing.txnDate, newDate: input.txnDate });
       }
     }
 
@@ -693,7 +996,8 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
         ...newPLValues,
       ];
       await syncTransactionTagsFromLines(tx, tenantId, existing.companyId ?? null, txnId, fullValues);
-      await auditLog(tenantId, 'update', 'transaction', txnId, existing, { reconciledPartialEdit: true }, userId, tx);
+      // Full before-image: header plus every line as it stood before the edit.
+      await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: existingLines }, { reconciledPartialEdit: true }, userId, tx);
       const refreshed = await tx.select().from(journalLines)
         .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
       const [updatedTxn] = await tx.select().from(transactions)
@@ -777,7 +1081,9 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       await updateAccountBalances(tx, tenantId, input.lines);
     }
 
-    await auditLog(tenantId, 'update', 'transaction', txnId, existing, input, userId, tx);
+    // Full before-image: header plus the lines this edit deleted, so the
+    // audit trail can show (and restore) what the transaction was.
+    await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: originalLines }, input, userId, tx);
 
     const [updated] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
@@ -896,12 +1202,16 @@ export async function listTransactions(tenantId: string, filters: {
   /** List export (transaction-list-export.service): also return each
    *  transaction's category-side debit/credit sums. Not a query param. */
   withCategoryAmounts?: boolean;
+  /** Soft-deleted transactions (txn-delete-v1) are hidden unless 'true'
+   *  here or `status: 'deleted'` asks for them explicitly. */
+  includeDeleted?: 'true' | 'false';
 }, companyId?: string) {
   const conditions = [eq(transactions.tenantId, tenantId)];
   if (companyId) conditions.push(eq(transactions.companyId, companyId));
 
   if (filters.txnType) conditions.push(eq(transactions.txnType, filters.txnType));
   if (filters.status) conditions.push(eq(transactions.status, filters.status));
+  else if (filters.includeDeleted !== 'true') conditions.push(sql`${transactions.status} <> 'deleted'`);
   if (Array.isArray(filters.contactId)) {
     if (filters.contactId.length > 0) conditions.push(inArray(transactions.contactId, filters.contactId));
   } else if (filters.contactId) {
@@ -1122,7 +1432,7 @@ export async function listTransactions(tenantId: string, filters: {
         : sql<string>`'0'`,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
-      .where(and(where, sql`${transactions.status} <> 'void'`)),
+      .where(and(where, sql`${transactions.status} NOT IN ('void', 'deleted')`)),
   ]);
 
   return {
@@ -1290,7 +1600,7 @@ export async function bulkUpdateTransactions(
       if (companyId) conds.push(eq(transactions.companyId, companyId));
       const [txn] = await tx.select().from(transactions).where(and(...conds)).for('update').limit(1);
 
-      if (!txn) { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
+      if (!txn || txn.status === 'deleted') { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
       if (txn.status === 'void') { skipped.push({ id: txnId, reason: 'void' }); continue; }
       // TB3: AJE lifecycle is firm-only and runs through the tb router —
       // bulk recategorize/retag must never rewrite an adjusting entry.

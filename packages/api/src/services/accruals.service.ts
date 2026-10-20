@@ -293,7 +293,7 @@ export async function unpostEntry(tenantId: string, entryId: string, userId?: st
     // that must not leave the entry stuck as posted.
     const [txn] = await db.select({ status: transactions.status }).from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, e.transactionId))).limit(1);
-    if (txn && txn.status !== 'void') {
+    if (txn && txn.status !== 'void' && txn.status !== 'deleted') {
       await ledger.voidTransaction(tenantId, e.transactionId, 'Accrual entry unposted from Close Review', userId);
     }
   }

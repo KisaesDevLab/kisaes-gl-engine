@@ -512,7 +512,9 @@ registerTool('get_company_info', 'Get company details', { company_id: 'string?' 
   const { eq } = await import('drizzle-orm');
   const company = await db.query.companies.findFirst({ where: eq(companies.id, companyId) });
   if (!company) throw new Error('NOT_FOUND: Company not found');
-  return company;
+  // Never hand the closing-date password hash (U-15) to an MCP client.
+  const { closingPasswordHash: _closingPasswordHash, ...info } = company;
+  return info;
 });
 
 // ─── Bills / Accounts Payable ───────────────────────────────────

@@ -44,6 +44,9 @@ export const companies = pgTable('companies', {
   // doubles as the TB closing date; these record who set it and when.
   lockDateSetBy: uuid('lock_date_set_by'),
   lockDateSetAt: timestamp('lock_date_set_at', { withTimezone: true }),
+  // Closing-date password (U-15): bcrypt hash, NULL = none set. Never sent
+  // to clients, logged, audited or exported; see closing-password.service.
+  closingPasswordHash: varchar('closing_password_hash', { length: 255 }),
   setupComplete: boolean('setup_complete').default(false),
   mcpEnabled: boolean('mcp_enabled').default(false),
   // Per-company chat opt-in (tier 2 of two-tier consent — see

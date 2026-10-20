@@ -74,7 +74,7 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
         -- printed bill payments carry check numbers too — a number is
         -- taken if ANY non-void transaction on this bank account holds it.
         AND t.check_number = ${input.checkNumber}
-        AND t.status <> 'void'
+        AND t.status NOT IN ('void', 'deleted')
       LIMIT 1
     `);
     if (dup.rows.length > 0) {
@@ -166,6 +166,8 @@ export async function listChecks(tenantId: string, filters?: {
     // they'd vanish from the Checks list the moment they printed.
     sql`t.txn_type IN ('expense', 'bill_payment')`,
     sql`t.print_status IS NOT NULL`,
+    // Soft-deleted checks (txn-delete-v1) leave the list.
+    sql`t.status <> 'deleted'`,
   ];
   if (companyId) conds.push(sql`t.company_id = ${companyId}`);
   if (filters?.bankAccountId) conds.push(sql`EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = t.id AND jl2.account_id = ${filters.bankAccountId} AND jl2.credit > 0)`);
@@ -199,7 +201,7 @@ export async function listChecks(tenantId: string, filters?: {
 }
 
 export async function getPrintQueue(tenantId: string, bankAccountId?: string, companyId?: string) {
-  const pqConds = [sql`t.tenant_id = ${tenantId}`, sql`t.print_status = 'queue'`];
+  const pqConds = [sql`t.tenant_id = ${tenantId}`, sql`t.print_status = 'queue'`, sql`t.status <> 'deleted'`];
   if (companyId) pqConds.push(sql`t.company_id = ${companyId}`);
   if (bankAccountId) {
     pqConds.push(sql`t.id IN (SELECT transaction_id FROM journal_lines WHERE account_id = ${bankAccountId} AND credit > 0)`);
@@ -255,7 +257,7 @@ export async function printChecks(
       FROM transactions t
       JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bankAccountId}
       WHERE t.tenant_id = ${tenantId}
-        AND t.status <> 'void'
+        AND t.status NOT IN ('void', 'deleted')
         AND t.check_number BETWEEN ${startingNumber} AND ${endNumber}
       ORDER BY t.check_number
       LIMIT 1

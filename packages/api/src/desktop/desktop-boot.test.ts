@@ -316,6 +316,7 @@ describe('desktop first run: info and initialize', () => {
       workspaceTenantId: null,
     });
     expect(typeof r.json.dbSuperuser).toBe('boolean');
+    expect(r.json.capabilities).toContain('register-exact-v1');
   });
 
   it('rejects an invalid first-run body', async () => {

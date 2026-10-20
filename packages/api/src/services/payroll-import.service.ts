@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import path from 'path';
 import { resolveInside } from '../utils/contained-path.js';
-import { eq, and, ne, sql, count, desc, inArray } from 'drizzle-orm';
+import { eq, and, ne, sql, count, desc, inArray, notInArray } from 'drizzle-orm';
 import type { ColumnMapConfig, PayrollSessionFilters } from '@kis-books/shared';
 import {
   PAYROLL_RELIEF_DESCRIPTION_SUGGESTIONS,
@@ -800,7 +800,7 @@ async function priorImportStillLive(tenantId: string, priorId: string): Promise<
   const ids = await sessionTransactionIds(prior.id, prior);
   if (ids.length > 0) {
     const [live] = await db.select({ n: count() }).from(transactions)
-      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids), ne(transactions.status, 'void')));
+      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids), notInArray(transactions.status, ['void', 'deleted'])));
     if ((live?.n ?? 0) > 0) return true;
   }
   await db.update(payrollCheckRegisterRows)
