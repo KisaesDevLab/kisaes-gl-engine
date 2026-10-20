@@ -30,6 +30,11 @@ export const writeCheckSchema = z.object({
     // ADR 0XX: per-line tag. `tagIds` remains for header-level multi-tag
     // compatibility; `tagId` here is the line-level value.
     tagId: z.string().uuid().nullable().optional(),
+    // Per-line customer (U-49), persisted on journal_lines.contact_id.
+    contactId: z.string().uuid().nullable().optional(),
+    // Billable to the line's customer (U-50). Requires contactId; the
+    // service refuses it otherwise (400 VALIDATION_ERROR).
+    isBillable: z.boolean().optional(),
   })).min(1),
   tagIds: z.array(z.string().uuid()).optional(),
   // Client-generated id the form's attachments were uploaded against while

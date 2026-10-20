@@ -133,6 +133,17 @@ async function syncTransactionTagsFromLines(
 }
 
 /**
+ * journal_lines billable columns for a line (U-50): a billable line starts
+ * 'unbilled'; any other line has no billed status. Callers that accept
+ * isBillable check that the line has a contact first.
+ */
+export function billableColumns(line: { isBillable?: boolean }): { isBillable: boolean; billedStatus: string | null } {
+  return line.isBillable === true
+    ? { isBillable: true, billedStatus: 'unbilled' }
+    : { isBillable: false, billedStatus: null };
+}
+
+/**
  * Every journal line references an accountId. The caller supplies those IDs
  * in their request body — we cannot assume they belong to this tenant just
  * because the enclosing transaction row will. This runs a single query to
@@ -493,6 +504,7 @@ export async function postTransaction(
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
       contactId: line.contactId ?? null,
+      ...billableColumns(line),
       tagId: resolveDefaultTag({
         explicitUserTagId: line.tagId,
         bankRuleTagId: line.bankRuleTagId ?? undefined,
@@ -817,7 +829,17 @@ export async function deleteTransaction(
   });
 }
 
-export async function updateTransaction(tenantId: string, txnId: string, input: PostTransactionInput, userId?: string, companyId?: string) {
+export async function updateTransaction(
+  tenantId: string,
+  txnId: string,
+  input: PostTransactionInput,
+  userId?: string,
+  companyId?: string,
+  // Optional outer transaction, as for postTransaction: lets a caller
+  // (PUT /checks/:id) commit the ledger edit together with its own header
+  // fields. Omitted, the update opens its own transaction as before.
+  outerTx?: Tx,
+) {
   // Validate the new lines balance up front (in-memory, no DB access).
   let totalDebits = new Decimal('0');
   let totalCredits = new Decimal('0');
@@ -834,7 +856,8 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
   // reverse-old-balances → delete-lines → insert-new-lines → apply-new
   // balances steps and corrupt account balances + leave duplicated /
   // missing journal lines. SELECT … FOR UPDATE serializes them.
-  return await db.transaction(async (tx) => {
+  const run = <T>(fn: (tx: Tx) => Promise<T>): Promise<T> => (outerTx ? fn(outerTx) : db.transaction(fn));
+  return await run(async (tx) => {
     const [existing] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update')
@@ -978,6 +1001,7 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
         quantity: line.quantity || null, unitPrice: line.unitPrice || null,
         isTaxable: line.isTaxable || false, taxRate: line.taxRate || '0', taxAmount: line.taxAmount || '0',
         lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
+        ...billableColumns(line),
       }));
       if (newPLValues.length > 0) {
         await tx.insert(journalLines).values(newPLValues);
@@ -1063,6 +1087,7 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
       contactId: line.contactId ?? null,
+      ...billableColumns(line),
       tagId: resolveDefaultTag({
         explicitUserTagId: line.tagId,
         bankRuleTagId: line.bankRuleTagId ?? undefined,
@@ -1163,6 +1188,8 @@ export async function getTransaction(tenantId: string, txnId: string) {
     lineOrder: journalLines.lineOrder,
     tagId: journalLines.tagId,
     contactId: journalLines.contactId,
+    isBillable: journalLines.isBillable,
+    billedStatus: journalLines.billedStatus,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     // Exclude the persisted void-reversal rows (rule 23) so the detail

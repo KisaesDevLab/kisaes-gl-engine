@@ -30,6 +30,10 @@ export interface WriteCheckInput {
     description?: string;
     amount: string;
     tagId?: string | null;
+    /** Per-line customer (U-49) → journal_lines.contact_id. */
+    contactId?: string | null;
+    /** Billable to the line's customer (U-50); requires contactId. */
+    isBillable?: boolean;
   }>;
   tagIds?: string[];
   /** Draft id the form's attachments were uploaded against, relinked to the
