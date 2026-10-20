@@ -214,11 +214,18 @@ describe('closing-date password: set, change, clear', () => {
   it('only an owner (or super admin) sets the first password; short ones are refused', async () => {
     const short = await call('PUT', '/api/v1/company/closing-password', { newPassword: 'abc' });
     expect(short.status).toBe(400);
+    // The minimum is 8 characters (L1): 7 is refused, also as a first
+    // password given with a closing-date change.
+    const seven = await call('PUT', '/api/v1/company/closing-password', { newPassword: 'abcdefg' });
+    expect(seven.status).toBe(400);
+    expect(seven.json.error.code).toBe('VALIDATION_ERROR');
+    expect((await call('PUT', '/api/v1/company/settings', { lockDate: '2026-03-31', closingPassword: 'abcdefg' })).status).toBe(400);
     const accountant = await seedUser('accountant');
     const r = await call('PUT', '/api/v1/company/closing-password', { newPassword: PASSWORD }, accountant.token);
     expect(r.status).toBe(403);
     expect(['CLOSING_PASSWORD_OWNER_REQUIRED', 'PERMISSION_DENIED']).toContain(r.json.error.code);
     expect((await call('GET', '/api/v1/company/closing-password')).json.closingPasswordSet).toBe(false);
+    expect((await call('PUT', '/api/v1/company/closing-password', { newPassword: 'abcdefgh' })).json).toEqual({ closingPasswordSet: true });
   });
 
   it('the service refuses a first password from a non-owner', async () => {

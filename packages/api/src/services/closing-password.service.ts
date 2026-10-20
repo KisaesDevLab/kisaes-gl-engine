@@ -20,7 +20,8 @@ import { auditLog } from '../middleware/audit.js';
 
 /** bcrypt reads at most 72 bytes; a longer password would silently truncate. */
 export const CLOSING_PASSWORD_MAX_BYTES = 72;
-export const CLOSING_PASSWORD_MIN_LENGTH = 4;
+/** Applies to new passwords only; one set earlier keeps working until changed. */
+export const CLOSING_PASSWORD_MIN_LENGTH = 8;
 
 export function closingPasswordInvalid(): AppError {
   return AppError.forbidden('The closing date password is not correct.', 'CLOSING_PASSWORD_INVALID');
