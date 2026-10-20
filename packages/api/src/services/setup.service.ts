@@ -583,8 +583,10 @@ export async function testSmtpConnection(config: SmtpConfig, testEmail?: string)
     if (isOfflineUnavailable(err) || probeBlocked) throw err;
     // Desktop: no session password for an authenticated server, or a
     // refused host, are typed 400s rather than a failed test result.
-    if (err instanceof AppError && (err.code === 'SMTP_NOT_CONFIGURED' || err.code === 'SMTP_HOST_BLOCKED')) throw err;
-    return { success: false, error: err instanceof Error ? err.message : 'SMTP test failed' };
+    if (err instanceof AppError && (err.code === 'SMTP_NOT_CONFIGURED' || err.code === 'SMTP_HOST_BLOCKED' || err.code === 'SMTP_HOST_MISMATCH')) throw err;
+    // A mail server may quote the credentials it rejected.
+    const { scrubSecrets } = await import('../utils/secret-scrubber.js');
+    return { success: false, error: scrubSecrets(err instanceof Error ? err.message : 'SMTP test failed') };
   }
 }
 
