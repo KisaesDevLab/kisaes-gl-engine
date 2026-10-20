@@ -62,6 +62,11 @@ describe('admin getSystemAccountsInfo', () => {
         expect(role.assigned, `required role ${role.tag} should be seeded`).not.toBeNull();
         expect(role.typeMismatch).toBe(false);
         expect(role.duplicates).toEqual([]);
+      } else if (role.tag === 'owner_draw' || role.tag === 'owner_contribution') {
+        // Equity roles for the company's entity type (sole_prop) are seeded
+        // with the company (U-55); the template's Owner Withdraw/Contribution
+        // accounts are adopted.
+        expect(role.assigned, `equity role ${role.tag} should be seeded`).not.toBeNull();
       } else {
         expect(role.assigned).toBeNull(); // daily-sales roles are lazy-created
       }

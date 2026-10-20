@@ -14,6 +14,7 @@
 // Lock dates, void/AJE skips and reconciliation safety therefore come for
 // free — that is the whole argument for the reuse.
 
+import { isEquityRoleTag } from '@kis-books/shared';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -364,7 +365,8 @@ async function assertUsableCategory(tenantId: string, accountId: string): Promis
     .limit(1);
   if (!a) throw AppError.badRequest('Category account not found.', 'ACCOUNT_NOT_FOUND');
   if (!a.isActive) throw AppError.badRequest('That category account is inactive.', 'ACCOUNT_INACTIVE');
-  if (a.systemTag) {
+  // Equity roles (owner's draw…) are ordinary categories despite their tag (U-55).
+  if (a.systemTag && !isEquityRoleTag(a.systemTag)) {
     throw AppError.badRequest('A system account cannot be a category here.', 'SYSTEM_ACCOUNT_TARGET');
   }
 }

@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import type { AccountType } from '../types/accounts.js';
+import { EQUITY_ROLE_TAGS, EQUITY_ROLE_SPECS } from './equity-roles.js';
 
 // ─── System-account roles ───────────────────────────────────────
 //
@@ -176,6 +177,18 @@ export const SYSTEM_ACCOUNT_ROLES: SystemAccountRole[] = [
     tenantAssignable: true,
     required: false,
   },
+  // Equity roles (U-55) — seeded by company entity type on company creation
+  // and by migration 0223; see equity-roles.ts. Ordinary categories (an
+  // owner's draw is a normal bank-feed target), so the tenant's own admin
+  // may re-point them and nothing breaks while one is missing.
+  ...EQUITY_ROLE_TAGS.map((tag): SystemAccountRole => ({
+    tag,
+    label: EQUITY_ROLE_SPECS[tag].name,
+    description: 'Owner money (equity role): draws, contributions, distributions or paid-in capital by entity type.',
+    accountType: 'equity',
+    tenantAssignable: true,
+    required: false,
+  })),
 ];
 
 export const SYSTEM_ACCOUNT_ROLE_BY_TAG: Record<string, SystemAccountRole> =

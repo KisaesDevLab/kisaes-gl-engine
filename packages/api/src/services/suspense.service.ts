@@ -14,6 +14,7 @@
 // denormalised accounts.balance bookkeeping, and re-implementing any of that
 // here would be a second source of truth for the ledger.
 
+import { isEquityRoleTag } from '@kis-books/shared';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { accounts, journalLines, transactions } from '../db/schema/index.js';
@@ -393,7 +394,8 @@ export async function clearSuspense(
     .limit(1);
   if (!target) throw AppError.badRequest('Category account not found.', 'ACCOUNT_NOT_FOUND');
   if (!target.isActive) throw AppError.badRequest('That category account is inactive.', 'ACCOUNT_INACTIVE');
-  if (target.systemTag) {
+  // Equity roles (owner's draw…) are ordinary categories despite their tag (U-55).
+  if (target.systemTag && !isEquityRoleTag(target.systemTag)) {
     throw AppError.badRequest(
       `"${target.systemTag}" is a system account and cannot be a category here.`,
       'SYSTEM_ACCOUNT_TARGET',

@@ -18,6 +18,7 @@ import {
   createPermissionTemplateSchema,
   updatePermissionTemplateSchema,
   setUserPermissionsSchema,
+  EQUITY_ROLE_REPORT_TAGS,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireTenantCapability } from '../middleware/firm-capabilities.js';
@@ -29,6 +30,7 @@ import { closingPasswordLimiter } from '../middleware/closing-password-limiter.j
 import { takeClosingPassword } from '../services/lock-context.js';
 import * as closingPasswordService from '../services/closing-password.service.js';
 import * as companyService from '../services/company.service.js';
+import * as equityRolesService from '../services/equity-roles.service.js';
 import * as invoiceTemplateService from '../services/invoice-template.service.js';
 import * as authService from '../services/auth.service.js';
 import * as permissionService from '../services/permission.service.js';
@@ -136,6 +138,20 @@ companyRouter.post('/logo', requireCompanySettingsWrite, upload.single('logo'), 
   const logoUrl = `/uploads/logos/${req.file.filename}`;
   const company = await companyService.updateLogo(req.tenantId, req.companyId, logoUrl, req.userId);
   res.json({ company });
+});
+
+// Equity roles (U-55, equity-roles-v1): the company's entity type and, per
+// role, the account playing it or null. Read-only; the roles are seeded on
+// company creation and entity-type change, and reassigned through the
+// system-accounts tools.
+companyRouter.get('/equity-roles', describe({
+  summary: 'Equity role accounts for the company (equity-roles-v1)',
+  response: z.object({
+    entityType: z.string(),
+    roles: z.object(Object.fromEntries(EQUITY_ROLE_REPORT_TAGS.map((t) => [t, z.string().uuid().nullable()]))),
+  }),
+}), async (req, res) => {
+  res.json(await equityRolesService.getEquityRoles(req.tenantId, req.companyId));
 });
 
 companyRouter.get('/settings', async (req, res) => {

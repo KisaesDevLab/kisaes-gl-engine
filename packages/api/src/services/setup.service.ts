@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { seedEquityRolesBestEffort } from './equity-roles.service.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -841,6 +842,8 @@ export async function createAdminUser(input: CreateAdminUserInput) {
   try {
     // Seed COA with business type template
     await accountsService.seedFromTemplate(created.tenantId, templateName);
+    // Owner-money accounts for the company's entity type (U-55).
+    await seedEquityRolesBestEffort(created.tenantId);
 
     // First-run setup creates the bootstrap tenant; Practice flags
     // are on by default so the operator can see them immediately.
