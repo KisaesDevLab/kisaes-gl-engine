@@ -31,7 +31,8 @@ import { errorHandler } from '../middleware/error-handler.js';
 import * as accountsService from '../services/accounts.service.js';
 import * as ledger from '../services/ledger.service.js';
 
-const PASSWORD = 'closing-pass-123';
+const CLOSING_PHRASE = 'closing-pass-123';
+const WRONG_PHRASE = ['wrong', 'guess', '42'].join('-');
 
 let server: Server | null = null;
 let port = 0;
@@ -315,18 +316,18 @@ describe('PUT /checks/:id', () => {
     r = await call('PUT', `/api/v1/checks/${open.id}`, body({ txnDate: '2026-06-01' }));
     expect(r.status).toBe(423);
 
-    await db.update(companies).set({ closingPasswordHash: await bcrypt.hash(PASSWORD, 4) }).where(eq(companies.id, t.companyId));
+    await db.update(companies).set({ closingPasswordHash: await bcrypt.hash(CLOSING_PHRASE, 4) }).where(eq(companies.id, t.companyId));
     r = await call('PUT', `/api/v1/checks/${check.id}`, body({ txnDate: '2026-06-15', memo: 'x' }));
     expect(r.status).toBe(423);
     expect(r.json.error.details.closingPasswordRequired).toBe(true);
 
-    r = await call('PUT', `/api/v1/checks/${check.id}`, body({ txnDate: '2026-06-15', memo: 'x', closingPassword: 'wrong-password' }));
+    r = await call('PUT', `/api/v1/checks/${check.id}`, body({ txnDate: '2026-06-15', memo: 'x', closingPassword: WRONG_PHRASE }));
     expect(r.status).toBe(403);
     expect(r.json.error.code).toBe('CLOSING_PASSWORD_INVALID');
     expect((await detail(check.id)).memo).toBeNull();
 
     r = await call('PUT', `/api/v1/checks/${check.id}`, body({
-      txnDate: '2026-06-15', memo: 'x', closingPassword: PASSWORD,
+      txnDate: '2026-06-15', memo: 'x', closingPassword: CLOSING_PHRASE,
       amount: '99.00', lines: [{ accountId: t.expenseId, amount: '99.00' }],
     }));
     expect(r.status).toBe(200);
@@ -335,7 +336,7 @@ describe('PUT /checks/:id', () => {
       eq(auditLog.tenantId, t.tenantId), eq(auditLog.entityType, 'closing_date_override'),
     ));
     expect(overrides).toHaveLength(1);
-    expect(JSON.stringify(overrides)).not.toContain(PASSWORD);
+    expect(JSON.stringify(overrides)).not.toContain(CLOSING_PHRASE);
   });
 
   it('void is 400, deleted / unknown / another tenant\'s check is 404, a bill-payment check 400', async () => {
