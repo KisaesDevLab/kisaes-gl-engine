@@ -411,3 +411,29 @@ describe('per-line format overrides in HTML', () => {
     expect(html).not.toMatch(/<tr class="r-text" style=/);
   });
 });
+
+describe('detail leadsheet inside a section', () => {
+  const build = (extra: { showHeading?: boolean; showTotal?: boolean }) => {
+    const layout = buildDefaultLayout('corporation');
+    const is = layout.statements.find((x) => x.kind === 'income_statement')!;
+    is.body = [{
+      type: 'section', id: 'grp', caption: 'Revenue group', children: [
+        { type: 'leadsheet', id: 'k', ref: { leadsheetCode: 'K' }, caption: 'Sales group', display: 'detail', ...extra },
+      ],
+    }];
+    return stmt(run({ layout }), 'income_statement');
+  };
+  it('has no heading or total by default', () => {
+    const st = build({});
+    expect(st.rows.some((r) => r.caption === 'Sales group')).toBe(false);
+  });
+  it('shows a heading, lines and a custom-able total when opted in', () => {
+    const st = build({ showHeading: true, showTotal: true });
+    const h = st.rows.findIndex((r) => r.caption === 'Sales group');
+    const t = st.rows.findIndex((r) => r.caption === 'Total sales group');
+    expect(h).toBeGreaterThanOrEqual(0);
+    expect(t).toBeGreaterThan(h);
+    expect(st.rows[h]!.kind).toBe('heading');
+    expect(st.rows[h + 1]!.level).toBeGreaterThan(st.rows[h]!.level);
+  });
+});

@@ -474,24 +474,29 @@ export function buildFace(ctx: EngineCtx, stmt: FsStatementConfig, opt: FaceOpti
     }
     if (n.type === 'leadsheet' && n.display === 'detail') {
       const top = e.depth === 0;
-      if (top && (n.caption || e.lines.length)) {
-        out.push(row({ key: `${n.id}:h`, ...common, kind: 'heading', caption: n.caption || 'Detail', level: indent, styleRole: 'sectionHeading', ...styleOf(n) }, new Array(nCols).fill(null)));
+      // Top-level detail leadsheets get a heading and total by default; one
+      // nested in a section is a plain run of lines unless it opts in.
+      const withHeading = n.showHeading ?? top;
+      const withTotal = n.showTotal ?? top;
+      const base = withHeading ? 1 : 0;
+      if (withHeading && (n.caption || e.lines.length)) {
+        out.push(row({ key: `${n.id}:h`, ...common, kind: 'heading', caption: n.caption || 'Detail', level: e.depth + indent, styleRole: 'sectionHeading', ...styleOf(n) }, new Array(nCols).fill(null)));
       }
       let any = false;
       for (const l of e.lines) {
         const amounts = lineAmounts(l);
         const hidden = hideZero && isZero(amounts) && l.plug.every((p) => p === 0);
-        out.push({ ...row({ key: l.key, nodeId: n.id, kind: 'detail', caption: l.caption, level: (top ? 1 : e.depth) + indent, styleRole: 'detail', ...styleOf(n), ref: { line: l }, plug: l.plug.some((p) => p !== 0) ? l.plug.map(toDisplay) : undefined }, amounts), hidden });
+        out.push({ ...row({ key: l.key, nodeId: n.id, kind: 'detail', caption: l.caption, level: (top ? 1 : e.depth + base) + indent, styleRole: 'detail', ...styleOf(n), ref: { line: l }, plug: l.plug.some((p) => p !== 0) ? l.plug.map(toDisplay) : undefined }, amounts), hidden });
         any = any || !hidden;
       }
       // Rules on a detail leadsheet land on its last visible line.
       const vis = out.slice(startLen).filter((r) => !r.hidden && r.kind === 'detail');
       const last = vis[vis.length - 1];
       if (last) last.ruleBelow = n.ruleBelow ?? 'none';
-      if (top) {
-        out.push(row({ key: `${n.id}:t`, nodeId: n.id, kind: 'subtotal', caption: n.totalCaption || `Total ${(n.caption || 'detail').toLowerCase()}`, level: indent, styleRole: 'subtotal', ruleAbove: 'single', ref: { totalOf: e } }, nodeAmounts(e)));
+      if (withTotal) {
+        out.push(row({ key: `${n.id}:t`, nodeId: n.id, kind: 'subtotal', caption: n.totalCaption || `Total ${(n.caption || 'detail').toLowerCase()}`, level: (top ? 0 : e.depth + 2) + indent, styleRole: 'subtotal', ruleAbove: 'single', ref: { totalOf: e } }, nodeAmounts(e)));
       }
-      if (!any && !top) return false;
+      if (!any && !withHeading && !withTotal) return false;
       return true;
     }
     if (n.type === 'leadsheet' || n.type === 'account') {

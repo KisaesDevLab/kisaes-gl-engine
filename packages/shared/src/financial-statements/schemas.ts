@@ -114,6 +114,9 @@ export interface FsLeadsheetNode {
   scheduleTitle?: string;
   /** Caption of the total row under a detail leadsheet (default "Total <caption>"). */
   totalCaption?: string;
+  /** Heading / total row for a detail leadsheet. Default: on at top level, off inside a section. */
+  showHeading?: boolean;
+  showTotal?: boolean;
   scheduleLines?: FsScheduleLine[];
   revenueBase?: boolean;
   anchor?: boolean;
@@ -205,6 +208,8 @@ export const fsNodeSchema: z.ZodType<FsNode> = z.lazy(() => z.discriminatedUnion
     polarity: fsPolaritySchema.optional(),
     scheduleTitle: caption.optional(),
     totalCaption: caption.optional(),
+    showHeading: z.boolean().optional(),
+    showTotal: z.boolean().optional(),
     scheduleLines: z.array(fsScheduleLineSchema).max(300).optional(),
     revenueBase: z.boolean().optional(),
     anchor: z.boolean().optional(),
