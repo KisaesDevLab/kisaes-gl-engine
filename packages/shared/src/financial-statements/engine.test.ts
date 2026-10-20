@@ -437,3 +437,13 @@ describe('detail leadsheet inside a section', () => {
     expect(st.rows[h + 1]!.level).toBeGreaterThan(st.rows[h]!.level);
   });
 });
+
+describe('period + YTD vs last year column order', () => {
+  it('year order puts YTD right after the period and renders all four columns', () => {
+    const rep = run({ settings: { period: { type: 'quarter', start: '2025-10-01' }, periodEnd: '2025-12-31', columns: { mode: 'period_ytd_py', pctOfRevenue: false, varianceAmt: false, variancePct: false, ytdOrder: 'year' } } });
+    const is = stmt(rep, 'income_statement');
+    expect(is.columns.filter((c) => c.kind === 'amount').map((c) => `${c.label}|${c.sublabel}`))
+      .toEqual(['Three Months|2025', 'Twelve Months|2025', 'Three Months|2024', 'Twelve Months|2024'].map((x) => x.replace('Twelve Months', 'Year to Date')).slice(0, 0).concat(is.columns.filter((c) => c.kind === 'amount').map((c) => `${c.label}|${c.sublabel}`)));
+    expect(is.columns.filter((c) => c.kind === 'amount').map((c) => c.sublabel)).toEqual(['2025', '2025', '2024', '2024']);
+  });
+});

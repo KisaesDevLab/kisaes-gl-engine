@@ -64,6 +64,11 @@ describe('column plans + date lines', () => {
   const plan = (mode: FsColumnMode, period: FsReportSettings['period'], extra: Partial<FsReportSettings['columns']> = {}) =>
     fsPlanColumns(base({ period, columns: { mode, pctOfRevenue: false, varianceAmt: false, variancePct: false, ...extra } }), 1);
 
+  it('quarter + YTD vs prior year can group by year (period, YTD, PY period, PY YTD)', () => {
+    const p = plan('period_ytd_py', { type: 'quarter', start: '2026-07-01' }, { ytdOrder: 'year' });
+    expect(p.isRanges.map((r) => r.key)).toEqual(['P', 'YTD', 'P_py', 'YTD_py']);
+  });
+
   it('quarter + YTD vs prior year', () => {
     const p = plan('period_ytd_py', { type: 'quarter', start: '2026-07-01' });
     expect(p.isRanges.map((r) => [r.start, r.end, r.label, r.sublabel])).toEqual([

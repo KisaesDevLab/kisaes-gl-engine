@@ -424,6 +424,9 @@ export const fsColumnsConfigSchema = z.object({
   // Comparative balance sheet column: prior fiscal year-end (interim
   // convention) or the same date one year earlier.
   bsCompare: z.enum(['prior_fye', 'same_date']).optional(),
+  // Period + YTD vs last year column order: 'measure' = period (this yr, last yr)
+  // then YTD (this yr, last yr); 'year' = this yr (period, YTD) then last yr.
+  ytdOrder: z.enum(['measure', 'year']).optional(),
 });
 export type FsColumnsConfig = z.infer<typeof fsColumnsConfigSchema>;
 

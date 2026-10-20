@@ -233,7 +233,9 @@ export function fsPlanColumns(settings: FsReportSettings, fyStartMonth: number):
       isRanges = [cur, prev];
       if (withYtd) {
         const ytdLabel = span(YTD) === 'Year' ? 'Year to Date' : span(YTD);
-        isRanges.push({ ...YTD, label: ytdLabel, sublabel: yr(YTD.end) }, { ...py(YTD, 'YTD_py'), label: ytdLabel, sublabel: yr(fsShiftYears(YTD.end, -1)) });
+        const ytdCur = { ...YTD, label: ytdLabel, sublabel: yr(YTD.end) };
+        const ytdPrev = { ...py(YTD, 'YTD_py'), label: ytdLabel, sublabel: yr(fsShiftYears(YTD.end, -1)) };
+        isRanges = s.columns.ytdOrder === 'year' ? [cur, ytdCur, prev, ytdPrev] : [cur, prev, ytdCur, ytdPrev];
       } else {
         variance = true;
       }
