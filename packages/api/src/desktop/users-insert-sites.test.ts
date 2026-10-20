@@ -21,6 +21,7 @@ const KNOWN_SITES: Record<string, { count: number; desktop: string }> = {
   'routes/admin.routes.ts': { count: 1, desktop: 'admin users/create: homed in the workspace' },
   'services/auth.service.ts': { count: 2, desktop: 'register: 404 on desktop; inviteUser: homed in the workspace' },
   'services/setup.service.ts': { count: 2, desktop: 'createAdminUser / adoptRestoredTenants: throw on desktop' },
+  'services/tenant-portability/identity.ts': { count: 1, desktop: 'archive import: unmatched users homed in the workspace with a readonly workspace row, never super admin' },
 };
 
 const INSERT_USERS = /\binsert\s*\(\s*users\s*\)|\binsert\s+into\s+"?(?:public"?\."?)?users"?[\s(]/gi;

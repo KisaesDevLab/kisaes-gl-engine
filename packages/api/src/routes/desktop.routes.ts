@@ -32,6 +32,7 @@ import * as setupService from '../services/setup.service.js';
 import * as authService from '../services/auth.service.js';
 import * as accountsService from '../services/accounts.service.js';
 import { createWorkspaceWithOwner, getWorkspaceTenantId } from '../desktop/workspace.js';
+import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { desktopWarning } from '../desktop/fatal.js';
 import { env } from '../config/env.js';
 import { getCurrentVersion } from '../services/updates.service.js';
@@ -150,5 +151,6 @@ desktopRouter.get('/info', async (_req, res) => {
     dbRole,
     initialized,
     workspaceTenantId,
+    capabilities: [...DESKTOP_CAPABILITIES],
   });
 });

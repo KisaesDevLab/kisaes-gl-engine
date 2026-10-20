@@ -627,6 +627,15 @@ export async function switchTenant(
     if (!exists) throw new AppError(404, 'That company does not exist.', 'TENANT_NOT_FOUND');
   }
 
+  // A scratch (test-restore) copy of an archive can never be opened, super
+  // admins included (U-05, N4): it is a verified copy that the sweep removes.
+  if (typeof targetTenantId === 'string' && UUID_RE.test(targetTenantId)) {
+    const scratch = await db.execute(sql`SELECT 1 FROM tenant_archive_imports WHERE tenant_id = ${targetTenantId} AND scratch = true`);
+    if (scratch.rows.length > 0) {
+      throw AppError.forbidden('This is a scratch copy used for a test restore; it cannot be opened.', 'SCRATCH_TENANT');
+    }
+  }
+
   // Verify access to the target tenant
   const access = await db.query.userTenantAccess.findFirst({
     where: and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, targetTenantId)),

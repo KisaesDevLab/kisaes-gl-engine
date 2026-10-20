@@ -63,4 +63,24 @@ describe('LocalProvider key confinement', () => {
     }
     expect(fs.readdirSync(outside)).toEqual([]);
   }));
+
+  it("a tenant-scoped provider refuses another tenant's folder and the _system root (H2)", () => withRoot(async () => {
+    const mine = '3b1d2f40-1111-4222-8333-444444444444';
+    const other = '9a9a9a9a-1111-4222-8333-444444444444';
+    const p = new LocalProvider(root, mine);
+    await p.upload(`${mine}/attachments/a.bin`, Buffer.from('a'), meta);
+    await p.upload(`attachments/${mine}/legacy.bin`, Buffer.from('l'), meta);
+    expect((await p.download(`${mine}/attachments/a.bin`)).toString()).toBe('a');
+    expect((await p.download(`attachments/${mine}/legacy.bin`)).toString()).toBe('l');
+    const unscoped = new LocalProvider(root);
+    await unscoped.upload(`${other}/attachments/theirs.bin`, Buffer.from('t'), meta);
+    await unscoped.upload('_system/backups/all.vmb', Buffer.from('s'), meta);
+    for (const k of [`${other}/attachments/theirs.bin`, `attachments/${other}/x.bin`, '_system/backups/all.vmb']) {
+      await expect(p.download(k), k).rejects.toThrow(/outside the tenant scope/);
+      await expect(p.upload(k, Buffer.from('x'), meta), k).rejects.toThrow(/outside the tenant scope/);
+      await expect(p.delete(k), k).rejects.toThrow(/outside the tenant scope/);
+      await expect(p.exists(k), k).rejects.toThrow(/outside the tenant scope/);
+    }
+    expect(fs.existsSync(path.join(root, other, 'attachments', 'theirs.bin'))).toBe(true);
+  }));
 });

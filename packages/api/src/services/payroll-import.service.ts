@@ -4,6 +4,8 @@
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import path from 'path';
+import { resolveInside } from '../utils/contained-path.js';
 import { eq, and, ne, sql, count, desc, inArray } from 'drizzle-orm';
 import type { ColumnMapConfig, PayrollSessionFilters } from '@kis-books/shared';
 import {
@@ -414,10 +416,12 @@ export async function deleteSession(tenantId: string, sessionId: string, userId:
   await db.delete(payrollCheckRegisterRows).where(eq(payrollCheckRegisterRows.sessionId, sessionId));
   await db.delete(payrollImportSessions).where(eq(payrollImportSessions.id, sessionId));
 
-  // Clean up uploaded files
+  // Clean up uploaded files. The stored path is data: only a regular file
+  // inside UPLOAD_DIR/payroll is ever unlinked (H2).
   for (const filePath of [session.filePath, session.companionFilePath]) {
-    if (filePath) {
-      try { await fs.promises.unlink(filePath); } catch { /* file may already be deleted */ }
+    const safe = resolveInside(path.join(UPLOAD_DIR, 'payroll'), filePath);
+    if (safe) {
+      try { await fs.promises.unlink(safe); } catch { /* file may already be deleted */ }
     }
   }
 

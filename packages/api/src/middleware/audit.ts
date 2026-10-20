@@ -4,7 +4,14 @@
 
 import { db, type DbOrTx } from '../db/index.js';
 import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
+import { stripSecretKeys } from '../utils/secret-keys.js';
 
+/**
+ * Writes one audit row. `before` / `after` are usually whole rows; any
+ * secret-looking key in them (utils/secret-keys.ts: passwords, tokens,
+ * encrypted blobs, hashes, remote-backup config) is stripped at every depth
+ * before the insert, so the audit log never stores a credential.
+ */
 export async function auditLog(
   tenantId: string,
   // 'signoff' + 'override' added by the TB module (leadsheet sign-offs,
@@ -28,8 +35,8 @@ export async function auditLog(
     action,
     entityType,
     entityId,
-    beforeData: before ? JSON.stringify(before) : null,
-    afterData: after ? JSON.stringify(after) : null,
+    beforeData: before ? JSON.stringify(stripSecretKeys(before)) : null,
+    afterData: after ? JSON.stringify(stripSecretKeys(after)) : null,
     userId,
   });
 }
