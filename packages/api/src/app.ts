@@ -99,6 +99,7 @@ import { bankConnectPublicRouter } from './routes/bank-connect-public.routes.js'
 import { recurringDocRequestsRouter } from './routes/recurring-doc-requests.routes.js';
 import { portalDocumentRequestsPublicRouter } from './routes/portal-document-requests-public.routes.js';
 import { portalBankingPublicRouter } from './routes/portal-banking-public.routes.js';
+import { portalPnlPublicRouter } from './routes/portal-pnl-public.routes.js';
 import { portalBankRepairPublicRouter } from './routes/portal-bank-repair-public.routes.js';
 import { portalCategorizePublicRouter } from './routes/portal-categorize-public.routes.js';
 import { portalBillsPublicRouter } from './routes/portal-bills-public.routes.js';
@@ -659,6 +660,7 @@ serverOnly.use('/api/portal/document-requests', portalDocumentRequestsPublicRout
 // must not fall into the read-only banking router.
 serverOnly.use('/api/portal/banking/connections', portalBankRepairPublicRouter);
 serverOnly.use('/api/portal/banking', portalBankingPublicRouter);
+serverOnly.use('/api/portal/profit-loss', portalPnlPublicRouter);
 serverOnly.use('/api/portal/categorize', portalCategorizePublicRouter);
 // PORTAL_BILL_PAY_V1 — unpaid bills list + mark-for-payment.
 serverOnly.use('/api/portal/bills', portalBillsPublicRouter);

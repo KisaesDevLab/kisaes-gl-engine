@@ -987,6 +987,36 @@ export async function contactAsk(
   if (!input.body || !input.body.trim()) throw AppError.badRequest('Body required');
   await ensureContactLinkedToCompany(tenantId, contactId, input.companyId);
 
+  // Questions-for-Us must be granted for this company; the route comment
+  // always promised this, the service now enforces it.
+  const grant = await db
+    .select({ on: portalContactCompanies.questionsForUsAccess })
+    .from(portalContactCompanies)
+    .where(and(
+      eq(portalContactCompanies.contactId, contactId),
+      eq(portalContactCompanies.companyId, input.companyId),
+    ))
+    .limit(1);
+  if (!grant[0]?.on) {
+    throw AppError.forbidden('Asking questions is not enabled for your account', 'QUESTIONS_NOT_ENABLED');
+  }
+
+  // The transaction id is client-supplied: it must be a transaction of this
+  // tenant and company, or a client could attach a question to another
+  // client's books.
+  if (input.transactionId) {
+    const txn = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(and(
+        eq(transactions.id, input.transactionId),
+        eq(transactions.tenantId, tenantId),
+        eq(transactions.companyId, input.companyId),
+      ))
+      .limit(1);
+    if (txn.length === 0) throw AppError.notFound('Transaction not found');
+  }
+
   return db.transaction(async (tx) => {
     const inserted = await tx
       .insert(portalQuestions)

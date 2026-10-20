@@ -75,6 +75,9 @@ export const portalContactCompanies = pgTable('portal_contact_companies', {
   billUploadAccess: boolean('bill_upload_access').notNull().default(false),
   // Tax Estimator (TAX_ESTIMATOR_V1) — may view tax estimates for linked taxpayers.
   taxEstimatesAccess: boolean('tax_estimates_access').notNull().default(false),
+  // Migration 0221 — may view a live Profit & Loss (date range, row drill-down
+  // to transactions, ask a question about a transaction).
+  profitLossAccess: boolean('profit_loss_access').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.contactId, table.companyId] }),

@@ -51,6 +51,7 @@ const companyAssignmentSchema = z.object({
   bankRepairAccess: z.boolean().optional(),
   billUploadAccess: z.boolean().optional(),
   taxEstimatesAccess: z.boolean().optional(),
+  profitLossAccess: z.boolean().optional(),
 });
 
 const createContactSchema = z.object({
