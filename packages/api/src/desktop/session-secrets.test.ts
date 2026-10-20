@@ -6,6 +6,7 @@
 // allowances per docs/DESKTOP.md "Rules for features that open egress".
 
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import crypto from 'node:crypto';
 import * as s from './session-secrets.js';
 import { egressAllowlist, exemptDnsLookup, installEgressGuard, isLoopbackHost, _uninstallEgressGuardForTests } from './egress-guard.js';
 import { scrubSecrets, _resetSecretScrubberForTests } from '../utils/secret-scrubber.js';
@@ -52,9 +53,19 @@ describe('session secrets store', () => {
     expect(allowed('ai.openai')).toEqual([{ host: 'api.openai.com', port: 443 }]);
   });
 
-  it('fingerprints are stable and differ per value', () => {
+  it('fingerprints are stable within the process, differ per value, and are not a plain hash', () => {
     expect(s.fingerprint('abc')).toBe(s.fingerprint('abc'));
     expect(s.fingerprint('abc')).not.toBe(s.fingerprint('abd'));
+    const plain = `sha256:${crypto.createHash('sha256').update('abc').digest('hex').slice(0, 8)}`;
+    expect(s.fingerprint('abc')).not.toBe(plain);
+  });
+
+  it('caps the scrubber registrations without dropping values still in the store', () => {
+    s.setAnthropicKey(KEY);
+    for (let i = 0; i < 80; i++) s.setOpenaiKey('sk-proj-rotated-' + String(i).padStart(3, '0') + 'x'.repeat(20));
+    expect(s._scrubberRegistrationCountForTests()).toBeLessThanOrEqual(64);
+    expect(scrubSecrets(KEY)).toBe('[redacted]');
+    expect(scrubSecrets('sk-proj-rotated-079' + 'x'.repeat(20))).toBe('[redacted]');
   });
 
   it('deleting a key removes the allowance but keeps the scrubber registration', () => {
@@ -181,10 +192,12 @@ describe('SMTP (U-13)', () => {
     expect(s.getSessionSmtpServer()?.security).toBe('none');
     await expect(s.allowSmtpEgress({ host: 'far.local', port: 25, security: 'none' })).rejects.toMatchObject({ code: 'SMTP_SECURITY_REQUIRED' });
   });
-  it('the password is scrubbed and opens nothing by itself', () => {
+  it('the password is scrubbed (from 4 characters) and opens nothing by itself', () => {
     s.setSmtpPassword('hunter2hunter2');
     expect(scrubSecrets('535 hunter2hunter2 rejected')).toBe('535 [redacted] rejected');
     expect(allowed('smtp')).toEqual([]);
+    s.setSmtpPassword('pw42');
+    expect(scrubSecrets('535 pw42 rejected')).toBe('535 [redacted] rejected');
   });
 
   it('allowSmtpEgress allows a validated host on a mail port; the password clear removes it', async () => {

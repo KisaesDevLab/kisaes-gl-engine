@@ -28,7 +28,7 @@
 
 import crypto from 'node:crypto';
 import { AppError } from '../utils/errors.js';
-import { registerSecret } from '../utils/secret-scrubber.js';
+import { registerSecret, unregisterSecret } from '../utils/secret-scrubber.js';
 import { assertExternalUrlSafe, assertHostSafe, classifyIpLiteral } from '../utils/url-safety.js';
 import net from 'node:net';
 import { targetFromUrl, isLoopbackAddress } from '../utils/offline.js';
@@ -58,6 +58,29 @@ export interface SessionSmtpServer {
 }
 
 const store = new Map<SessionSecretName, string>();
+
+// Per-process key for the GET fingerprints: a plain hash of a short
+// password would be a brute-force oracle; an HMAC with a random key is not.
+const fingerprintKey = crypto.randomBytes(32);
+
+// Values handed to the scrubber by this store, oldest first. Capped so a
+// client that rotates keys all day cannot grow the scrubber without bound;
+// the values still in the store are never dropped.
+const MAX_SCRUBBER_REGISTRATIONS = 64;
+const registeredValues: string[] = [];
+
+function registerSessionValue(value: string, minLength?: number): void {
+  registerSecret(value, minLength);
+  if (!registeredValues.includes(value)) registeredValues.push(value);
+  while (registeredValues.length > MAX_SCRUBBER_REGISTRATIONS) {
+    const idx = registeredValues.findIndex((v) => ![...store.values()].includes(v));
+    if (idx < 0) break;
+    unregisterSecret(registeredValues.splice(idx, 1)[0]);
+  }
+}
+
+/** Shortest SMTP password still registered with the scrubber. */
+export const SMTP_PASSWORD_SCRUB_MIN_LENGTH = 4;
 // Non-secret companion of ai.ollama.baseUrl: the model the owner picked.
 let ollamaModel: string | null = null;
 // Non-secret companion of smtp.password: the mail server the owner named.
@@ -88,6 +111,11 @@ export function isLocalNetworkHost(host: string): boolean {
 
 // Resolver for owner-named hosts (bypasses the guard; see exemptDnsLookup).
 let dnsLookup: (host: string) => Promise<Array<{ address: string }>> = exemptDnsLookup;
+
+/** Test hook: how many values this store has registered with the scrubber. */
+export function _scrubberRegistrationCountForTests(): number {
+  return registeredValues.length;
+}
 
 /** Test hook: replace the resolver (null restores the default). */
 export function _setDnsLookupForTests(fn: ((host: string) => Promise<Array<{ address: string }>>) | null): void {
@@ -126,9 +154,13 @@ export function getSessionOllamaModel(): string | null {
   return ollamaModel;
 }
 
-/** `sha256:` + the first 8 hex characters of SHA-256(value). Never the value. */
+/**
+ * `sha256:` + the first 8 hex characters of HMAC-SHA256(key, value) with a
+ * key drawn at process start: stable within a session (a client can tell
+ * "changed" from "same"), useless for guessing the value, never the value.
+ */
 export function fingerprint(value: string): string {
-  return `sha256:${crypto.createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 8)}`;
+  return `sha256:${crypto.createHmac('sha256', fingerprintKey).update(value, 'utf8').digest('hex').slice(0, 8)}`;
 }
 
 export interface SessionSecretStatus {
@@ -148,7 +180,7 @@ export function sessionSecretStatus(): Record<SessionSecretName, SessionSecretSt
 
 function setCloudKey(name: 'ai.anthropic' | 'ai.openai', apiKey: string): void {
   const provider = name === 'ai.anthropic' ? 'anthropic' : 'openai';
-  registerSecret(apiKey);
+  registerSessionValue(apiKey);
   store.set(name, apiKey);
   setEgressAllowance(name, [CLOUD_AI_EGRESS[provider]]);
 }
@@ -208,7 +240,8 @@ export async function setOllamaBaseUrl(raw: string, model?: string | null): Prom
 }
 
 export function setSmtpPassword(password: string): void {
-  registerSecret(password);
+  // Mail passwords are often short; scrub them from 4 characters.
+  registerSessionValue(password, SMTP_PASSWORD_SCRUB_MIN_LENGTH);
   store.set('smtp.password', password);
   // The mail server is allowed separately (allowSmtpEgress, from the same
   // PUT); clearing the password removes that allowance.
