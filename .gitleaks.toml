@@ -16,4 +16,10 @@ paths = [
   '''packages/api/src/desktop/profile\.test\.ts''',
   # Desktop AI config test: placeholder key values the config API must refuse.
   '''packages/api/src/services/ai-config\.desktop\.test\.ts''',
+  # Closing-date password tests: placeholder passwords the engine must accept,
+  # refuse or keep out of responses and the audit trail.
+  '''packages/api/src/routes/closing-password\.routes\.test\.ts''',
+  '''packages/api/src/routes/closing-password\.aje\.routes\.test\.ts''',
+  '''packages/api/src/routes/transactions\.delete\.routes\.test\.ts''',
+  '''packages/api/src/services/lock-context\.test\.ts''',
 ]
