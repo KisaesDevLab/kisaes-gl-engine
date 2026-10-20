@@ -100,6 +100,8 @@ export const aiConfigUpdateSchema = z.object({
   maxConcurrentJobs: z.number().int().min(1).max(20).optional(),
   trackUsage: z.boolean().optional(),
   monthlyBudgetLimit: z.number().nullable().optional(),
+  // Integer token cap per tenant per month (input + output tokens); null = off.
+  monthlyTokenLimit: z.number().int().min(0).max(2_000_000_000).nullable().optional(),
   piiProtectionLevel: z.enum(['strict', 'standard', 'permissive']).optional(),
   cloudVisionEnabled: z.boolean().optional(),
   // Vibe AI Router, per feature. Keys are router task classes.

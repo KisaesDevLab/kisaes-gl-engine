@@ -16,6 +16,7 @@ import * as aiPrompt from './ai-prompt.service.js';
 import { matchByName } from './ai-name-match.js';
 import { suggestAccountFromPayeeHistory } from './categorization-ai.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
+import { usageOf } from './ai-providers/usage.js';
 import { normalizePayeePattern, isIdentifyingPattern } from './categorization-ai.service.js';
 import { sanitize, type PiiType } from './pii-sanitizer.service.js';
 
@@ -585,6 +586,7 @@ export async function categorize(tenantId: string, feedItemId: string) {
       tagName: matchedTag?.name || parsed.tag_name || null,
       confidence,
       matchType: 'ai' as const,
+      usage: usageOf(result),
     };
   } catch (err: any) {
     // Don't double-fail the job if we already failed it above (parse

@@ -24,6 +24,8 @@ import { seedPayrollTemplates } from './services/payroll-templates.seed.js';
 import { seedDefaultPrompts } from './services/ai-prompt.service.js';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
+import path from 'node:path';
+import { errorSummaryForLog } from './utils/log-safe.js';
 import { isDesktop, desktopProfile, queueBackend, type DesktopBind } from './desktop/profile.js';
 import type { InProcessWorker } from './queue/in-process-worker.js';
 import { setDesktopBoundAddress } from './middleware/desktop-gate.js';
@@ -70,6 +72,12 @@ function installShutdownHandlers(server: Server): void {
 
     // Stop accepting new HTTP connections; existing ones finish.
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Desktop: the per-session AI keys and SMTP password are memory-only;
+    // drop them (and their egress allowances) before anything else drains.
+    if (isDesktop()) {
+      const { clearAllSessionSecrets } = await import('./desktop/session-secrets.js');
+      clearAllSessionSecrets();
+    }
     // Desktop: stop consuming background jobs (in-flight ones finish, up to
     // IN_PROCESS_WORKER_STOP_MS) and the worker-only schedulers, before the
     // API schedulers, the job queue and the DB pool go away.
@@ -274,6 +282,23 @@ async function start() {
     } catch (err) {
       console.error('Failed to check the desktop workspace invariant:', err instanceof Error ? err.message : err);
     }
+    // Tenant archives (U-05): remove `.partial` exports, `.import-pending`
+    // upload dirs and leftover uploads left by a crash, at boot and hourly.
+    // Resources of running jobs and locked tenants are skipped (M2).
+    const sweepArchives = async () => {
+      try {
+        const { archiveDir, sweepPartialArchives } = await import('./services/tenant-portability/export.service.js');
+        const { sweepImportPending, sweepStaleUploads } = await import('./services/tenant-portability/import.service.js');
+        const partial = await sweepPartialArchives();
+        const pending = await sweepImportPending();
+        const uploads = await sweepStaleUploads(path.join(archiveDir(), 'imports'));
+        if (partial + pending + uploads > 0) console.log(`[tenant-archive] sweep removed ${partial} partial archive(s), ${pending} pending import dir(s) and ${uploads} leftover upload(s)`);
+      } catch (err) {
+        console.error('Tenant archive sweep failed:', errorSummaryForLog(err));
+      }
+    };
+    await sweepArchives();
+    setInterval(() => { void sweepArchives(); }, 60 * 60 * 1000).unref();
   }
 
   // Background work that starts once the HTTP server is listening.

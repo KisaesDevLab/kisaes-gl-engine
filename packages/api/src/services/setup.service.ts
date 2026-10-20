@@ -30,6 +30,7 @@ import { generateRecoveryKey } from './recovery-key.service.js';
 import { writeRecoveryFile } from './env-recovery.service.js';
 import { clearRestoreIntent } from './restore-intent.service.js';
 import { isDesktop, assertNoSecretWriteInDesktop } from '../desktop/profile.js';
+import { AppError } from '../utils/errors.js';
 
 // Resolved per call (not at import) so the diagnostic app, tests and the
 // CLI scripts all honour a CONFIG_DIR set after this module was first loaded.
@@ -580,7 +581,12 @@ export async function testSmtpConnection(config: SmtpConfig, testEmail?: string)
     // connectivity probe) reach the caller as errors, not as a failed test.
     const probeBlocked = err instanceof Error && 'statusCode' in err && (err as { code?: unknown }).code === 'EGRESS_BLOCKED';
     if (isOfflineUnavailable(err) || probeBlocked) throw err;
-    return { success: false, error: err instanceof Error ? err.message : 'SMTP test failed' };
+    // Desktop: no session password for an authenticated server, or a
+    // refused host, are typed 400s rather than a failed test result.
+    if (err instanceof AppError && (err.code === 'SMTP_NOT_CONFIGURED' || err.code === 'SMTP_HOST_BLOCKED' || err.code === 'SMTP_HOST_MISMATCH')) throw err;
+    // A mail server may quote the credentials it rejected.
+    const { scrubSecrets } = await import('../utils/secret-scrubber.js');
+    return { success: false, error: scrubSecrets(err instanceof Error ? err.message : 'SMTP test failed') };
   }
 }
 

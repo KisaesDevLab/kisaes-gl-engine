@@ -15,6 +15,10 @@ import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import * as aiConsent from './ai-consent.service.js';
 import { resolveTaskParams, resolveTaskExec } from './ai-task-options.js';
+import { isDesktop } from '../desktop/profile.js';
+import { scrubSecrets } from '../utils/secret-scrubber.js';
+import { hasSessionSecret, validateOllamaBaseUrl } from '../desktop/session-secrets.js';
+import { assertDesktopProvider, desktopFallbackChain } from './ai-providers/index.js';
 
 async function getOrCreateConfig() {
   let config = await db.query.aiConfig.findFirst();
@@ -73,10 +77,13 @@ export async function getConfig() {
     ocrModel: config.ocrModel,
     documentClassificationProvider: config.documentClassificationProvider,
     documentClassificationModel: config.documentClassificationModel,
-    fallbackChain: (config.fallbackChain as string[]) || ['anthropic', 'openai', 'gemini', 'ollama'],
-    hasAnthropicKey: !!config.anthropicApiKeyEncrypted,
-    hasOpenaiKey: !!config.openaiApiKeyEncrypted,
-    hasGeminiKey: !!config.geminiApiKeyEncrypted,
+    // Desktop (E6): the chain is limited to the providers the desktop edition
+    // offers, and "has key" means a per-session key (desktop/session-secrets);
+    // the ai_config key columns are never consulted there.
+    fallbackChain: desktopFallbackChain((config.fallbackChain as string[]) || ['anthropic', 'openai', 'gemini', 'ollama']),
+    hasAnthropicKey: isDesktop() ? hasSessionSecret('ai.anthropic') : !!config.anthropicApiKeyEncrypted,
+    hasOpenaiKey: isDesktop() ? hasSessionSecret('ai.openai') : !!config.openaiApiKeyEncrypted,
+    hasGeminiKey: isDesktop() ? false : !!config.geminiApiKeyEncrypted,
     ollamaBaseUrl: config.ollamaBaseUrl,
     // Generic OpenAI-compatible server — Ollama /v1, llama.cpp, LM
     // Studio, vLLM, etc. Key returned as a boolean flag; plaintext
@@ -110,6 +117,8 @@ export async function getConfig() {
     maxConcurrentJobs: config.maxConcurrentJobs || 5,
     trackUsage: config.trackUsage ?? true,
     monthlyBudgetLimit: config.monthlyBudgetLimit ? parseFloat(config.monthlyBudgetLimit) : null,
+    // Integer token cap per tenant per month (U-29, migration 0219); null = off.
+    monthlyTokenLimit: config.monthlyTokenLimit ?? null,
     // Per-function settings overlay (AI_FUNCTION_SETTINGS_PLAN.md).
     // Stored as JSONB keyed by function; absent/null keys resolve to the
     // built-in default at call time via resolveTaskParams/resolveTaskExec.
@@ -202,7 +211,73 @@ export async function resolveGlmOcrConfig(): Promise<ResolvedGlmOcrConfig> {
   };
 }
 
+// Credential fields of aiConfigUpdateSchema. In desktop mode none of them
+// may be stored (the desktop app keeps keys in the OS keychain and supplies
+// them per session): any attempt to set or clear one is 400
+// DESKTOP_KEYS_NOT_STORED. '' is the schema's "no change" sentinel and is
+// ignored, so a form re-save that defaults blank keys still works.
+const CREDENTIAL_FIELDS = [
+  'anthropicApiKey', 'openaiApiKey', 'geminiApiKey', 'openaiCompatApiKey',
+  'digitaloceanApiKey', 'glmOcrApiKey', 'routerToken',
+] as const satisfies ReadonlyArray<keyof AiConfigUpdateInput>;
+
+// Provider-choice fields; in desktop mode each must name an allowlisted
+// provider (anthropic, openai, ollama) or be cleared.
+const PROVIDER_FIELDS = [
+  'categorizationProvider', 'ocrProvider', 'documentClassificationProvider', 'chatProvider',
+] as const satisfies ReadonlyArray<keyof AiConfigUpdateInput>;
+
+// Fields that configure providers the desktop edition does not offer (the
+// Vibe AI Router, OpenAI-compatible servers, DigitalOcean, GLM-OCR). Any
+// attempt to set them is 400 AI_PROVIDER_NOT_AVAILABLE; clearing values
+// ('' / null / false) passes so a restored server database can be cleaned.
+const UNAVAILABLE_PROVIDER_FIELDS = [
+  'routerUrl', 'routerEnabled', 'routerFeatures', 'routerStatementsOnBox',
+  'openaiCompatBaseUrl', 'openaiCompatModel', 'openaiCompatMode',
+  'digitaloceanModel', 'digitaloceanBaseUrl',
+  'glmOcrEnabled', 'glmOcrBaseUrl', 'glmOcrModel', 'glmOcrPrompt', 'glmOcrTimeoutMs', 'glmOcrConcurrency', 'glmOcrForceOcr', 'glmOcrRenderDpi',
+] as const satisfies ReadonlyArray<keyof AiConfigUpdateInput>;
+
+function isClearingValue(v: unknown): boolean {
+  if (v === undefined || v === null || v === '' || v === false) return true;
+  if (typeof v === 'object' && Object.keys(v as object).length === 0) return true;
+  return false;
+}
+
+function assertDesktopConfigInput(input: AiConfigUpdateInput): void {
+  if (!isDesktop()) return;
+  for (const field of UNAVAILABLE_PROVIDER_FIELDS) {
+    if (!isClearingValue(input[field])) {
+      throw AppError.badRequest(
+        `${field} configures a provider that is not available in the desktop edition. Choose Anthropic, OpenAI or a local Ollama model.`,
+        'AI_PROVIDER_NOT_AVAILABLE',
+      );
+    }
+  }
+  for (const field of CREDENTIAL_FIELDS) {
+    const v = input[field];
+    if (v === undefined || v === '') continue;
+    throw AppError.badRequest(
+      `${field} is not stored by the desktop edition. Supply it for the session through /api/v1/desktop/session-secrets.`,
+      'DESKTOP_KEYS_NOT_STORED',
+    );
+  }
+  for (const field of PROVIDER_FIELDS) {
+    const v = input[field];
+    if (v) assertDesktopProvider(v);
+  }
+  if (input.statementExtractionProvider && input.statementExtractionProvider !== 'local') {
+    assertDesktopProvider(input.statementExtractionProvider);
+  }
+  for (const p of input.fallbackChain ?? []) assertDesktopProvider(p);
+  for (const opt of Object.values(input.taskOptions ?? {})) {
+    if (opt?.provider) assertDesktopProvider(opt.provider);
+    for (const p of opt?.fallbackChain ?? []) assertDesktopProvider(p);
+  }
+}
+
 export async function updateConfig(input: AiConfigUpdateInput, userId?: string) {
+  assertDesktopConfigInput(input);
   const config = await getOrCreateConfig();
   // Use Drizzle's `$inferInsert` partial so the updates object is typed
   // against the actual aiConfig column shape. Dot-notation accesses
@@ -248,6 +323,9 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   if (input.ollamaBaseUrl !== undefined) {
     // Self-hosted AI: allowPrivate so a LAN box (192.168.x.x / 10.x /
     // localhost) is a valid target. Metadata endpoints stay blocked.
+    // Desktop: only this machine or the owner's own network (400
+    // OLLAMA_HOST_NOT_LOCAL / OLLAMA_URL_INVALID); same rule as the session endpoint.
+    if (input.ollamaBaseUrl && isDesktop()) await validateOllamaBaseUrl(input.ollamaBaseUrl);
     if (input.ollamaBaseUrl) assertExternalUrlSafe(input.ollamaBaseUrl, 'Ollama base URL', { allowPrivate: true });
     updates.ollamaBaseUrl = input.ollamaBaseUrl || null;
   }
@@ -291,6 +369,7 @@ export async function updateConfig(input: AiConfigUpdateInput, userId?: string) 
   if (input.maxConcurrentJobs !== undefined) updates.maxConcurrentJobs = input.maxConcurrentJobs;
   if (input.trackUsage !== undefined) updates.trackUsage = input.trackUsage;
   if (input.monthlyBudgetLimit !== undefined) updates.monthlyBudgetLimit = input.monthlyBudgetLimit != null ? String(input.monthlyBudgetLimit) : null;
+  if (input.monthlyTokenLimit !== undefined) updates.monthlyTokenLimit = input.monthlyTokenLimit;
   // Chat support
   if (input.chatSupportEnabled !== undefined) updates.chatSupportEnabled = input.chatSupportEnabled;
   if (input.chatProvider !== undefined) updates.chatProvider = input.chatProvider || null;
@@ -499,7 +578,8 @@ export async function listProviderModels(providerName: string): Promise<Provider
       cancel();
     }
   } catch (err) {
-    return { models: [], error: err instanceof Error ? err.message : String(err) };
+    if (err instanceof AppError && err.code === 'AI_PROVIDER_NOT_AVAILABLE') throw err;
+    return { models: [], error: scrubSecrets(err instanceof Error ? err.message : String(err)) };
   }
 }
 
@@ -575,7 +655,9 @@ export async function testProvider(
   try {
     provider = getProvider(providerName, config, configuredModels[0], { forceDirect: true });
   } catch (err) {
-    const result: TestProviderResult = { success: false, error: err instanceof Error ? err.message : String(err) };
+    // Desktop: a provider outside the allowlist is a typed 400, not a test result.
+    if (err instanceof AppError && err.code === 'AI_PROVIDER_NOT_AVAILABLE') throw err;
+    const result: TestProviderResult = { success: false, error: scrubSecrets(err instanceof Error ? err.message : String(err)) };
     await recordTestResult(providerName, result);
     return result;
   }
@@ -605,10 +687,12 @@ export async function testProvider(
     const isAbort = err instanceof TimeoutError || name.toLowerCase().includes('abort');
     result = isAbort
       ? { success: false, error: `Test timed out after ${TEST_PROVIDER_TIMEOUT_MS / 1000}s — provider did not respond` }
-      : { success: false, error: err instanceof Error ? err.message : String(err) };
+      : { success: false, error: scrubSecrets(err instanceof Error ? err.message : String(err)) };
   } finally {
     cancel();
   }
+  // A provider's own `{ success:false, error }` may quote the request too.
+  if (result.error) result = { ...result, error: scrubSecrets(result.error) };
   await recordTestResult(providerName, result);
   return result;
 }
@@ -851,7 +935,7 @@ export async function testFunction(fn: AiFunctionKey): Promise<TestFunctionResul
     const detail = Array.isArray(e.providerErrors) && e.providerErrors.length > 0
       ? e.providerErrors.join('; ')
       : (e.message ?? String(err));
-    return { success: false, provider, durationMs, error: detail };
+    return { success: false, provider, durationMs, error: scrubSecrets(detail) };
   }
 }
 
@@ -959,15 +1043,26 @@ async function configuredClaudeSlots(): Promise<ClaudeModelSlot[]> {
 async function liveClaudeModels(): Promise<ClaudeModelInfo[]> {
   const config = await getRawConfig();
   const { getProvider } = await import('./ai-providers/index.js');
-  const { AnthropicProvider } = await import('./ai-providers/anthropic.provider.js');
-  const provider = getProvider('anthropic', config, undefined, { forceDirect: true });
-  if (!(provider instanceof AnthropicProvider)) throw AppError.badRequest('Anthropic is not configured.');
+  type WithModelDetails = ReturnType<typeof getProvider> & {
+    listModelDetails?: (signal?: AbortSignal) => Promise<ClaudeModelInfo[]>;
+  };
+  let provider: WithModelDetails;
+  try {
+    provider = getProvider('anthropic', config, undefined, { forceDirect: true }) as WithModelDetails;
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw AppError.badRequest('Anthropic is not configured.');
+  }
+  // Desktop wraps the adapter (offline fast-fail, scrubbing); duck-type
+  // the model-details call instead of an instanceof check.
+  if (typeof provider.listModelDetails !== 'function') throw AppError.badRequest('Anthropic is not configured.');
   const { abortableTimeout } = await import('../utils/retry.js');
   const { signal, cancel } = abortableTimeout(12_000);
   try {
     return await provider.listModelDetails(signal);
   } catch (err) {
-    throw AppError.badRequest(`Could not reach Anthropic to list models: ${err instanceof Error ? err.message : String(err)}`);
+    if (err instanceof AppError) throw err;
+    throw AppError.badRequest(`Could not reach Anthropic to list models: ${scrubSecrets(err instanceof Error ? err.message : String(err))}`);
   } finally {
     cancel();
   }

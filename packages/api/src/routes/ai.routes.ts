@@ -26,6 +26,8 @@ import { requireTenantCapability } from '../middleware/firm-capabilities.js';
 import { requireSuperAdmin } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
+import { requirePermission } from '../middleware/permission.js';
 import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiCategorization from '../services/ai-categorization.service.js';
 import * as aiReceiptOcr from '../services/ai-receipt-ocr.service.js';
@@ -725,3 +727,37 @@ aiRouter.get('/usage', authenticate, async (req, res) => {
   const summary = await aiOrchestrator.getUsageSummary(req.tenantId, months);
   res.json(summary);
 });
+
+// Integer token totals per provider/model/job type for a date range (U-09).
+// `from` and `to` are ISO dates or date-times; `to` is exclusive. Defaults:
+// the first of the current month to now. No dollar figures.
+const usageSummaryQuery = z.object({
+  from: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
+  to: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
+});
+const usageSummaryResponse = z.object({
+  from: z.string(),
+  to: z.string(),
+  totals: z.object({ calls: z.number().int(), inputTokens: z.number().int(), outputTokens: z.number().int() }),
+  rows: z.array(z.object({
+    provider: z.string(), model: z.string(), jobType: z.string(),
+    calls: z.number().int(), inputTokens: z.number().int(), outputTokens: z.number().int(),
+  })),
+});
+// Usage figures are a settings concern: the same right that edits company
+// settings (read-only users and restricted users are refused).
+aiRouter.get('/usage/summary', authenticate, requirePermission('company_settings', 'update'),
+  describe({ summary: 'AI token usage per provider, model and job type for a date range', query: usageSummaryQuery, response: usageSummaryResponse }),
+  async (req, res) => {
+    const q = usageSummaryQuery.parse({ from: req.query['from'], to: req.query['to'] });
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const from = q.from ? new Date(q.from) : monthStart;
+    const to = q.to ? new Date(q.to) : new Date();
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw AppError.badRequest('from and to must be valid dates');
+    }
+    if (to <= from) throw AppError.badRequest('to must be after from');
+    res.json(await aiOrchestrator.getUsageSummaryByRange(req.tenantId, from, to));
+  });

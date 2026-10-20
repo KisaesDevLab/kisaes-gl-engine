@@ -100,6 +100,8 @@ export const DESKTOP_KEPT: readonly string[] = [
   '/health', '/api/health', '/api/v1/health', '/ping', '/api/ping', '/api/v1/ping', '/api/v1/csp-report',
   // Desktop-only first run and info (mounted in desktop mode only).
   '/api/v1/desktop',
+  // Tenant lifecycle and archives (U-05): every mode.
+  '/api/v1/tenants', '/api/v1/tenant-archives',
   // Sign-in, users, tenants.
   '/api/v1/auth', '/api/v1/auth/methods', '/api/v1/auth/passkeys', '/api/v1/users/me/tfa',
   '/api/v1/users/me/login-preference', '/api/v1/api-keys', '/api/v1/tenant-settings', '/api/v1/company',

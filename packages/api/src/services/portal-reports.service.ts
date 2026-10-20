@@ -22,6 +22,7 @@ import { checkTenantTaskConsent } from './ai-consent.service.js';
 import { consentReasonMessage } from './ai-orchestrator.service.js';
 import { MYBOOKS_TASK_CLASSES } from './ai-providers/vibe-router.provider.js';
 import { executeWithFallback, getProvider } from './ai-providers/index.js';
+import { assertWithinUsageCaps } from './ai-usage-caps.js';
 import type { CompletionResult } from './ai-providers/index.js';
 import { getProviderForTenant } from './storage/storage-provider.factory.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
@@ -1246,6 +1247,9 @@ export async function generateAiSummary(
       'ai_function_disabled',
     );
   }
+
+  // Summaries do not go through createJob: apply the monthly caps here.
+  await assertWithinUsageCaps(tenantId);
 
   let result: CompletionResult;
   try {

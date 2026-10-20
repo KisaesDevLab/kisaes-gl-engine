@@ -187,15 +187,17 @@ describe('every mount is classified for desktop mode', () => {
 describe('workspace allowlist (desktop/workspace.ts WORKSPACE_ALLOWED_PREFIXES)', () => {
   // Everything a workspace session can reach. A new mount under an allowed
   // prefix is reachable from the workspace (which has no books) without any
-  // other check, so it must be reviewed and added here. /api/v1/tenants and
-  // /api/v1/tenant-archives have nothing mounted yet: the first route there
-  // fails this test until it is reviewed.
+  // other check, so it must be reviewed and added here. The tenants and
+  // tenant-archives routers (U-05) carry owner-of-tenant checks of their own
+  // and refuse the workspace as a target.
   const REVIEWED = [
     '/api/v1/auth -> authRouter',
     '/api/v1/auth/magic-link -> NOT_AVAILABLE_IN_DESKTOP',
     '/api/v1/auth/methods -> GET route',
     '/api/v1/auth/passkeys -> passkeyRouter',
     '/api/v1/desktop -> desktopRouter',
+    '/api/v1/tenant-archives -> tenantArchivesRouter',
+    '/api/v1/tenants -> tenantsRouter',
   ];
 
   it('each allowlisted prefix maps to exactly the reviewed handlers', async () => {
@@ -204,6 +206,8 @@ describe('workspace allowlist (desktop/workspace.ts WORKSPACE_ALLOWED_PREFIXES)'
     const { authRouter } = await import('../routes/auth.routes.js');
     const { passkeyRouter } = await import('../routes/passkey.routes.js');
     const { desktopRouter } = await import('../routes/desktop.routes.js');
+    const { tenantsRouter } = await import('../routes/tenants.routes.js');
+    const { tenantArchivesRouter } = await import('../routes/tenant-archives.routes.js');
     const { familyOf } = await import('./features.js');
     expect(WORKSPACE_ALLOWED_PREFIXES).toEqual(['/api/v1/auth/', '/api/v1/tenants', '/api/v1/tenant-archives', '/api/v1/desktop/']);
 
@@ -224,12 +228,13 @@ describe('workspace allowlist (desktop/workspace.ts WORKSPACE_ALLOWED_PREFIXES)'
       else if (isRouter(authRouter)) what = 'authRouter';
       else if (isRouter(passkeyRouter)) what = 'passkeyRouter';
       else if (isRouter(desktopRouter)) what = 'desktopRouter';
+      else if (isRouter(tenantsRouter)) what = 'tenantsRouter';
+      else if (isRouter(tenantArchivesRouter)) what = 'tenantArchivesRouter';
       else if (familyOf(p)?.prefix === p) what = 'NOT_AVAILABLE_IN_DESKTOP';
       else what = `UNREVIEWED ${l.name}`;
       found.push(`${p} -> ${what}`);
     }
     expect(found.sort()).toEqual(REVIEWED);
-    expect(found.some((f) => f.startsWith('/api/v1/tenants') || f.startsWith('/api/v1/tenant-archives'))).toBe(false);
   }, 120_000);
 });
 

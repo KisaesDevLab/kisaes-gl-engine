@@ -14,6 +14,7 @@ import { escapeLike } from '../utils/sql-like.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
+import { usageOf } from './ai-providers/usage.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally } from './local-ocr.service.js';
 import { unwrapParsedResult, validateModelOutput } from './ai-providers/json-utils.js';
@@ -278,6 +279,7 @@ export async function processReceipt(tenantId: string, attachmentId: string) {
       contactId,
       qualityWarnings,
       status,
+      usage: usageOf(result),
       ...(status === 'ocr_only' ? { rawText: parsed.raw_text } : {}),
     };
   } catch (err: any) {
