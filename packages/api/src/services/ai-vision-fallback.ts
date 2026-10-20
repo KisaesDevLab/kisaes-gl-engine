@@ -25,6 +25,8 @@ import * as orchestrator from './ai-orchestrator.service.js';
 import { env } from '../config/env.js';
 import { log } from '../utils/logger.js';
 import { withTimeout } from '../utils/retry.js';
+import { isDesktop } from '../desktop/profile.js';
+import { assertWithinUsageCaps } from './ai-usage-caps.js';
 
 type RawConfig = Parameters<typeof getProvider>[1];
 
@@ -52,6 +54,8 @@ export async function completeVisionWithFallback(
   params: VisionParams,
   ctx: VisionFallbackCtx,
 ): Promise<CompletionResult> {
+  // Desktop: the monthly caps apply to every vision call (review M3).
+  if (isDesktop()) await assertWithinUsageCaps(params.tenantId ?? null);
   // A feature switched to the router collapses the whole chain to one
   // router call — model choice and failover are router policy's job, and the
   // router's config-time capability gate guarantees the class's bound model

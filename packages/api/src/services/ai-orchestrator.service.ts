@@ -12,6 +12,11 @@ import { executeWithFallback, getProvider } from './ai-providers/index.js';
 import type { CompletionParams, CompletionResult, VisionParams } from './ai-providers/index.js';
 import { pickMode, type SanitizerMode } from './pii-sanitizer.service.js';
 import { checkTenantTaskConsent, type AiTaskKey } from './ai-consent.service.js';
+import { scrubSecrets } from '../utils/secret-scrubber.js';
+import { assertWithinUsageCaps } from './ai-usage-caps.js';
+
+// Per-call usage for API responses (U-09) lives in ai-providers/usage.ts.
+export { usageOf, type AiUsage } from './ai-providers/usage.js';
 
 export type AiTask =
   | 'categorize'
@@ -186,26 +191,12 @@ export async function createJob(
     }
   }
 
-  // Budget check. NOTE: this limit is enforced PER-TENANT — the SUM below is
-  // scoped to `tenant_id = ${tenantId}`, so each tenant may independently
-  // spend up to `monthlyBudgetLimit`. This is deliberate (a self-hosted
-  // appliance is usually single-tenant, and a shared install shouldn't let one
-  // busy tenant starve the others). It is NOT a global cap across all tenants.
-  if (config.monthlyBudgetLimit != null) {
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-
-    const usage = await db.execute(sql`
-      SELECT COALESCE(SUM(estimated_cost::numeric), 0) as total
-      FROM ai_usage_log
-      WHERE tenant_id = ${tenantId} AND created_at >= ${monthStart.toISOString()}
-    `);
-    const currentCost = parseFloat((usage.rows[0] as any)?.total || '0');
-    if (currentCost >= config.monthlyBudgetLimit) {
-      throw AppError.badRequest('Monthly AI budget exceeded. Contact your administrator to increase the limit.');
-    }
-  }
+  // Budget checks (dollar estimate and integer token cap, U-29). Enforced
+  // PER-TENANT: each tenant may independently spend up to the limits; this
+  // is deliberate (a self-hosted appliance is usually single-tenant, and a
+  // shared install shouldn't let one busy tenant starve the others). The
+  // same function guards the callers that do not go through createJob.
+  await assertWithinUsageCaps(tenantId);
 
   const [job] = await db.insert(aiJobs).values({
     tenantId,
@@ -270,7 +261,7 @@ export async function setStage(jobId: string, stage: string, patch: Record<strin
 // unlike failJob(), which re-queues to 'pending' until maxRetries.
 export async function failJobTerminal(jobId: string, error: string) {
   await db.update(aiJobs)
-    .set({ status: 'failed', stage: 'failed', errorMessage: error, processingCompletedAt: new Date(), updatedAt: new Date() })
+    .set({ status: 'failed', stage: 'failed', errorMessage: scrubSecrets(error), processingCompletedAt: new Date(), updatedAt: new Date() })
     .where(eq(aiJobs.id, jobId));
 }
 
@@ -366,7 +357,7 @@ export async function failJob(jobId: string, error: string, usage?: FailJobUsage
   // Mark every failure terminal, matching failJobTerminal (statement pipeline).
   // retryCount is still incremented for observability.
   await db.update(aiJobs).set({
-    status: 'failed', retryCount, errorMessage: error,
+    status: 'failed', retryCount, errorMessage: scrubSecrets(error),
     processingCompletedAt: new Date(), updatedAt: new Date(),
   }).where(eq(aiJobs.id, jobId));
 
@@ -419,6 +410,57 @@ export async function executeCompletion(tenantId: string, params: CompletionPara
     const rawConfig = await aiConfigService.getRawConfig();
     return executeWithFallback(params, rawConfig, config.fallbackChain);
   });
+}
+
+export interface UsageSummaryRow {
+  provider: string;
+  model: string;
+  jobType: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface UsageSummaryByRange {
+  from: string;
+  to: string;
+  totals: { calls: number; inputTokens: number; outputTokens: number };
+  rows: UsageSummaryRow[];
+}
+
+/**
+ * Integer token totals per provider/model/job type between `from`
+ * (inclusive) and `to` (exclusive) for one tenant — no dollar figures (the
+ * cost estimate is a float; see getUsageSummary). Ordered for stable output.
+ */
+export async function getUsageSummaryByRange(tenantId: string, from: Date, to: Date): Promise<UsageSummaryByRange> {
+  const rows = await db.execute(sql`
+    SELECT provider, model, job_type,
+      COUNT(*)::bigint AS calls,
+      COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+      COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+    FROM ai_usage_log
+    WHERE tenant_id = ${tenantId} AND created_at >= ${from.toISOString()} AND created_at < ${to.toISOString()}
+    GROUP BY provider, model, job_type
+    ORDER BY provider, model, job_type
+  `);
+  const out: UsageSummaryRow[] = [];
+  const totals = { calls: 0, inputTokens: 0, outputTokens: 0 };
+  for (const r of rows.rows as Array<Record<string, string | number | null>>) {
+    const row: UsageSummaryRow = {
+      provider: String(r['provider']),
+      model: String(r['model']),
+      jobType: String(r['job_type']),
+      calls: Number(r['calls'] ?? 0),
+      inputTokens: Number(r['input_tokens'] ?? 0),
+      outputTokens: Number(r['output_tokens'] ?? 0),
+    };
+    totals.calls += row.calls;
+    totals.inputTokens += row.inputTokens;
+    totals.outputTokens += row.outputTokens;
+    out.push(row);
+  }
+  return { from: from.toISOString(), to: to.toISOString(), totals, rows: out };
 }
 
 export async function getUsageSummary(tenantId: string, months: number = 1) {

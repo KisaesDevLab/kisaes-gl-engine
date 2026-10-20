@@ -24,7 +24,8 @@ import { AppError } from '../../utils/errors.js';
 import { abortableTimeout, TimeoutError } from '../../utils/retry.js';
 import * as aiConfigService from '../ai-config.service.js';
 import * as orchestrator from '../ai-orchestrator.service.js';
-import { getProvider, hasCredentials, nativeOllamaBaseUrl } from '../ai-providers/index.js';
+import { getProvider, hasCredentials, nativeOllamaBaseUrl, resolveCredential } from '../ai-providers/index.js';
+import { isDesktop } from '../../desktop/profile.js';
 import { OllamaProvider } from '../ai-providers/ollama.provider.js';
 import type { AiProvider } from '../ai-providers/ai-provider.interface.js';
 import { resolveExtractionOptions } from './options.js';
@@ -69,6 +70,16 @@ export interface ExtractImageResult {
  */
 async function resolveProvider(modelTag?: string): Promise<{ provider: AiProvider; opt: ReturnType<typeof resolveExtractionOptions> }> {
   const config = await aiConfigService.getRawConfig();
+  if (isDesktop()) {
+    // Desktop (review M4): the local extraction model is the session's
+    // Ollama endpoint (desktop/session-secrets), never the openai_compat
+    // base URL, which is not offered there. Always local, so the
+    // cloud-vision gate is satisfied by construction.
+    const cred = resolveCredential('ollama', config);
+    const opt = resolveExtractionOptions(config);
+    const tag = modelTag ?? opt.modelTag;
+    return { provider: new OllamaProvider(cred?.baseUrl, tag), opt };
+  }
   if (!hasCredentials(PROVIDER_NAME, config)) {
     throw AppError.badRequest(
       'Local extraction model is not configured. Set the OpenAI-compatible base URL ' +

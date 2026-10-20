@@ -8,6 +8,8 @@ import { db } from '../db/index.js';
 import { companies, accountantCompanyExclusions, transactions, bankFeedItems, bankConnections } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { isDesktop } from '../desktop/profile.js';
+import { hasSessionSecret } from '../desktop/session-secrets.js';
 
 // List all companies for a tenant, filtered by accountant exclusions if applicable
 export async function listCompanies(tenantId: string, userId?: string) {
@@ -143,6 +145,20 @@ export async function getSettings(tenantId: string, companyId?: string) {
   };
 }
 
+/**
+ * Desktop (U-13): the SMTP password is supplied per session through
+ * /api/v1/desktop/session-secrets and never stored. Setting or clearing it
+ * through a settings write is 400 DESKTOP_KEYS_NOT_STORED; '' (no change)
+ * passes. No-op on the server.
+ */
+export function assertSmtpPasswordNotStoredInDesktop(smtpPass: string | null | undefined): void {
+  if (!isDesktop() || smtpPass === undefined || smtpPass === '') return;
+  throw AppError.badRequest(
+    'The email password is not stored by the desktop edition. Supply it for the session through /api/v1/desktop/session-secrets.',
+    'DESKTOP_KEYS_NOT_STORED',
+  );
+}
+
 export async function getSmtpSettings(tenantId: string, companyId?: string) {
   const company = await getCompany(tenantId, companyId);
   return {
@@ -153,7 +169,8 @@ export async function getSmtpSettings(tenantId: string, companyId?: string) {
     // The frontend treats an empty value as "leave alone" on save. A
     // `passwordConfigured` boolean lets the UI render a placeholder.
     smtpPass: '',
-    passwordConfigured: !!company.smtpPass,
+    // Desktop (U-13): the password is a per-session secret, never a column.
+    passwordConfigured: isDesktop() ? hasSessionSecret('smtp.password') : !!company.smtpPass,
     smtpFrom: company.smtpFrom || company.email || '',
     smtpFromName: company.smtpFromName || '',
     configured: !!company.smtpHost,
@@ -167,6 +184,7 @@ export async function updateSmtpSettings(
   userId?: string,
 ) {
   const existing = await getCompany(tenantId, companyId);
+  assertSmtpPasswordNotStoredInDesktop(input.smtpPass);
 
   // The same host guard the "test connection" path applies (loopback,
   // link-local / cloud-metadata refused; LAN relays allowed): otherwise a

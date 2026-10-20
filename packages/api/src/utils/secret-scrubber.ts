@@ -27,12 +27,13 @@ function rebuild(): void {
 }
 
 /**
- * Register an exact secret value. Values shorter than 8 chars are ignored.
- * The JSON-escaped form (how the value appears inside a logged JSON body,
- * e.g. with `"` or `\` escaped) is registered too.
+ * Register an exact secret value. Values shorter than `minLength` (default
+ * 8) are ignored: a very short value would redact ordinary text. The
+ * JSON-escaped form (how the value appears inside a logged JSON body, e.g.
+ * with `"` or `\` escaped) is registered too.
  */
-export function registerSecret(value: string | null | undefined): void {
-  if (!value || value.length < MIN_SECRET_LENGTH) return;
+export function registerSecret(value: string | null | undefined, minLength: number = MIN_SECRET_LENGTH): void {
+  if (!value || value.length < Math.max(1, minLength)) return;
   if (registered.has(value)) return;
   registered.add(value);
   const escaped = JSON.stringify(value).slice(1, -1);

@@ -250,7 +250,15 @@ export function makeSafeAgents(opts: UrlSafetyOptions = {}): { httpAgent: http.A
  * allowPrivate:true and rely on this to block loopback + link-local +
  * the cloud-metadata endpoint only.
  */
-export async function assertHostSafe(host: string, label = 'host', opts: UrlSafetyOptions & { allowLoopback?: boolean } = {}): Promise<void> {
+export interface HostSafetyOptions extends UrlSafetyOptions {
+  allowLoopback?: boolean;
+  /** Resolver to use for names (default dns.promises.lookup, all addresses). */
+  lookup?: (host: string) => Promise<Array<{ address: string }>>;
+  /** Refuse a name that yields no addresses (lookup error or empty answer). */
+  failClosed?: boolean;
+}
+
+export async function assertHostSafe(host: string, label = 'host', opts: HostSafetyOptions = {}): Promise<void> {
   const bare = (host || '').trim().replace(/^\[|\]$/g, '');
   if (!bare) throw new Error(`${label} is required`);
   const lower = bare.toLowerCase();
@@ -268,6 +276,8 @@ export async function assertHostSafe(host: string, label = 'host', opts: UrlSafe
     if (cls === 'private' && !opts.allowPrivate && !privateTargetsAllowedByEnv()) throw new Error(`${label} resolves to a private address`);
   };
   if (net.isIP(bare)) { check(bare); return; }
-  const answers = await dns.promises.lookup(bare, { all: true }).catch(() => [] as dns.LookupAddress[]);
+  const resolve = opts.lookup ?? ((h: string) => dns.promises.lookup(h, { all: true }));
+  const answers = await resolve(bare).catch(() => [] as Array<{ address: string }>);
+  if (opts.failClosed && answers.length === 0) throw new Error(`${label} could not be resolved`);
   for (const a of answers) check(a.address);
 }

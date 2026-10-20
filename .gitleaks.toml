@@ -14,4 +14,6 @@ paths = [
   '''packages/api/src/config/env\.server-defaults\.test\.ts''',
   '''packages/api/src/config/__fixtures__/env-server-baseline\.json''',
   '''packages/api/src/desktop/profile\.test\.ts''',
+  # Desktop AI config test: placeholder key values the config API must refuse.
+  '''packages/api/src/services/ai-config\.desktop\.test\.ts''',
 ]

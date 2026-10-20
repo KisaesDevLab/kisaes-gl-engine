@@ -81,6 +81,9 @@ async function createTransport(tenantId: string, companyId?: string) {
     };
   }
 
+  // Desktop: createMailTransport replaces `pass` with the session secret
+  // (U-13) and throws 400 SMTP_NOT_CONFIGURED when none was provided; the
+  // stored column is never used there.
   return {
     from,
     transport: createMailTransport({

@@ -150,13 +150,27 @@ export async function acceptSystemDisclosure(userId: string): Promise<void> {
   // as a sentinel for system-level actions, same convention the rest
   // of the admin code paths use. Non-tenanted audit rows are fine
   // here because the admin identity is captured in userId.
+  // U-30: the row names the disclosure version that was accepted and the
+  // providers it covered at that moment.
   await auditLog(
     '00000000-0000-0000-0000-000000000000',
     'update',
     'ai_config_system_disclosure',
     null,
     null,
-    { acceptedAt: new Date().toISOString(), acceptedBy: userId },
+    {
+      acceptedAt: new Date().toISOString(),
+      acceptedBy: userId,
+      disclosureVersion: config?.disclosureVersion ?? 1,
+      textVersion: SYSTEM_DISCLOSURE_TEXT_VERSION,
+      provider: config?.categorizationProvider ?? null,
+      providers: {
+        categorization: config?.categorizationProvider ?? null,
+        ocr: config?.ocrProvider || config?.categorizationProvider || null,
+        documentClassification: config?.documentClassificationProvider || config?.categorizationProvider || null,
+        chat: config?.chatProvider ?? null,
+      },
+    },
     userId,
   );
 }
@@ -448,13 +462,26 @@ export async function acceptCompanyDisclosure(tenantId: string, companyId: strin
     updatedAt: now,
   }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
 
+  // U-30: record which provider(s) and disclosure version the owner agreed to.
   await auditLog(
     tenantId,
     'update',
     'company_ai_consent_accepted',
     companyId,
     { aiEnabled: before.aiEnabled, version: before.aiDisclosureVersion, tasks: before.aiEnabledTasks },
-    { aiEnabled: true, version, tasks: nextTasks },
+    {
+      aiEnabled: true,
+      version,
+      disclosureVersion: version,
+      provider: cfg.categorizationProvider ?? null,
+      providers: {
+        categorization: cfg.categorizationProvider ?? null,
+        ocr: cfg.ocrProvider || cfg.categorizationProvider || null,
+        documentClassification: cfg.documentClassificationProvider || cfg.categorizationProvider || null,
+        chat: cfg.chatProvider ?? null,
+      },
+      tasks: nextTasks,
+    },
     userId,
   );
 

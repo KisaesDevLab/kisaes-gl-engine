@@ -132,7 +132,8 @@ describe('lifecycle routes', () => {
   it('advertises the tenant capabilities on /desktop/info', async () => {
     const info = await call('GET', '/api/v1/desktop/info');
     expect(info.status).toBe(200);
-    expect(info.json['capabilities']).toEqual(['tenants-list-v1', 'tenant-archive-v1']);
+    // Append-only list shared with other changes: check these two are in it.
+    expect(info.json['capabilities']).toEqual(expect.arrayContaining(['tenants-list-v1', 'tenant-archive-v1']));
     expect(info.json['workspaceTenantId']).toBe(workspaceId);
   });
 

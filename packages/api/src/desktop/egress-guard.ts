@@ -118,6 +118,8 @@ interface CoreHandle {
   isLoopback(host: string): boolean;
   isAllowed(host: string, port: number | null): boolean;
   setEntries(entries: Entry[]): void;
+  /** The original dns.promises.lookup (all addresses), bypassing the guard. */
+  lookupUnguarded(host: string): Promise<Array<{ address: string; family: number }>>;
   /** JS source that installs this guard (with the current allowlist) in a worker thread. */
   workerPrelude(): string;
   restore(): void;
@@ -287,11 +289,16 @@ function guardCore(cfg: CoreConfig, m: CoreModules, install: boolean): CoreHandl
     m.module.syncBuiltinESMExports();
   }
 
+  // Captured before any patch so owner-driven validation (session
+  // secrets) can resolve a name the guard does not allow yet.
+  const origPromisesLookup = m.dns.promises.lookup as unknown as
+    (host: string, opts: { all: true }) => Promise<Array<{ address: string; family: number }>>;
   const handle: CoreHandle = {
     normalize,
     isLoopback,
     isAllowed,
     setEntries(next: Entry[]) { entries = next.slice(); },
+    lookupUnguarded: (host) => origPromisesLookup.call(m.dns.promises, host, { all: true as const }),
     workerPrelude,
     restore,
   };
@@ -506,6 +513,16 @@ export function egressAllowlist(): Array<{ source: string; host: string; port: n
 /** Whether a connection to host[:port] is allowed. Port null = DNS-only check. */
 export function isEgressAllowed(host: string, port: number | null = null): boolean {
   return (handle ?? helpers).isAllowed(host, port);
+}
+
+/**
+ * Resolve a name with the ORIGINAL dns.promises.lookup, past the guard.
+ * Only for validating a host the owner just named (session secrets) before
+ * it is allowed: the answer is checked, nothing is connected. Never use it
+ * on a request path.
+ */
+export function exemptDnsLookup(host: string): Promise<Array<{ address: string; family: number }>> {
+  return (handle ?? helpers).lookupUnguarded(host);
 }
 
 /** Parse `host[:port]` / `[v6]:port` / bare v6, comma-separated. */

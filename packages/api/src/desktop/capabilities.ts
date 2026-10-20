@@ -12,4 +12,12 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'tenants-list-v1',
   /** Archive export job, download, import and rename (U-05, E5a). */
   'tenant-archive-v1',
+  /** PUT/GET/DELETE /api/v1/desktop/session-secrets (U-09, U-13, E6). */
+  'session-secrets-v1',
+  /** Per-session AI credentials, provider allowlist, usage summary (U-09, U-11, E6). */
+  'ai-desktop-v1',
+  /** SMTP password from the session store (U-13, E6). */
+  'smtp-session-v1',
+  /** Integer monthly token cap, applied to every AI call in desktop mode (U-29, E6). */
+  'ai-token-cap-v1',
 ];

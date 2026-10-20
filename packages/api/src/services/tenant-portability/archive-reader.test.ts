@@ -360,6 +360,8 @@ describe('schema compatibility (MT7, B8)', () => {
       if (nonAdditive && !covered.has(version)) offenders.push(e.tag);
     }
     expect(offenders).toEqual([]);
-    expect(journal.entries.length).toBe(COMPAT_BASELINE_SCHEMA_VERSION);
+    // The baseline is fixed at E5; later migrations only add entries.
+    expect(journal.entries.length).toBeGreaterThanOrEqual(COMPAT_BASELINE_SCHEMA_VERSION);
+    expect(journal.entries.map((e) => e.idx)).toEqual(journal.entries.map((_, i) => i));
   });
 });

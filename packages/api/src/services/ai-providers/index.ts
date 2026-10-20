@@ -13,6 +13,11 @@ import { decrypt } from '../../utils/encryption.js';
 import { retryWithBackoff, abortableTimeout, withTimeout, TimeoutError } from '../../utils/retry.js';
 import { routeFor, routerOn, routerProvider, type RouterSettings } from './vibe-router.provider.js';
 import { isDesktop } from '../../desktop/profile.js';
+import { getSessionSecret, getSessionOllamaModel } from '../../desktop/session-secrets.js';
+import { AppError } from '../../utils/errors.js';
+import { scrubSecrets } from '../../utils/secret-scrubber.js';
+import { log } from '../../utils/logger.js';
+import { sanitize } from '../pii-sanitizer.service.js';
 import {
   classifyNetworkError,
   ensureOnline,
@@ -75,6 +80,98 @@ export function resolveOllamaNative(baseUrl: string, mode?: string | null): bool
   return /:11434(\b|\/|$)/.test(baseUrl) || /\bollama\b/i.test(baseUrl);
 }
 
+// --- desktop credential resolution (E6, U-09/U-11) ------------------------
+//
+// In desktop mode (CL_MODE=desktop) API keys come from the per-session store
+// (desktop/session-secrets.ts) and never from the ai_config columns; only
+// Anthropic, OpenAI and Ollama are offered (Q-33). On the server nothing
+// changes: keys are decrypted from ai_config as before.
+
+/** Providers the desktop edition offers. */
+export const DESKTOP_AI_PROVIDERS: ReadonlySet<string> = new Set(['anthropic', 'openai', 'ollama']);
+
+export function isDesktopProvider(providerName: string): boolean {
+  return DESKTOP_AI_PROVIDERS.has(providerName);
+}
+
+/** The fallback chain restricted to the desktop allowlist; unchanged on the server. */
+export function desktopFallbackChain(chain: readonly string[]): string[] {
+  return isDesktop() ? chain.filter(isDesktopProvider) : [...chain];
+}
+
+/** 400 AI_PROVIDER_NOT_AVAILABLE for a provider the desktop edition does not offer. */
+export function assertDesktopProvider(providerName: string): void {
+  if (isDesktop() && !isDesktopProvider(providerName)) {
+    throw AppError.badRequest(
+      `AI provider '${providerName}' is not available in the desktop edition. Choose Anthropic, OpenAI or a local Ollama model.`,
+      'AI_PROVIDER_NOT_AVAILABLE',
+    );
+  }
+}
+
+export interface ResolvedCredential {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
+/**
+ * The credential a provider is built from, or null when it has none.
+ * Desktop: the session store only (ai_config key columns are ignored);
+ * an unlisted provider resolves to null. Server: the stored, encrypted
+ * columns, exactly as before.
+ */
+export function resolveCredential(providerName: string, config: AiConfigRow): ResolvedCredential | null {
+  if (isDesktop()) {
+    switch (providerName) {
+      case 'anthropic': {
+        const apiKey = getSessionSecret('ai.anthropic');
+        return apiKey ? { apiKey } : null;
+      }
+      case 'openai': {
+        const apiKey = getSessionSecret('ai.openai');
+        return apiKey ? { apiKey } : null;
+      }
+      case 'ollama':
+        // The session endpoint or the provider default (this machine);
+        // never the stored ai_config.ollama_base_url, which was validated
+        // under server rules and may point off the owner's network.
+        return {
+          baseUrl: getSessionSecret('ai.ollama.baseUrl') ?? undefined,
+          model: getSessionOllamaModel() ?? undefined,
+        };
+      default:
+        return null;
+    }
+  }
+  switch (providerName) {
+    case 'anthropic':
+      return config.anthropicApiKeyEncrypted ? { apiKey: decrypt(config.anthropicApiKeyEncrypted) } : null;
+    case 'openai':
+      return config.openaiApiKeyEncrypted ? { apiKey: decrypt(config.openaiApiKeyEncrypted) } : null;
+    case 'gemini':
+      return config.geminiApiKeyEncrypted ? { apiKey: decrypt(config.geminiApiKeyEncrypted) } : null;
+    case 'ollama':
+      return { baseUrl: config.ollamaBaseUrl || undefined };
+    case 'openai_compat':
+      if (!config.openaiCompatBaseUrl) return null;
+      return {
+        baseUrl: config.openaiCompatBaseUrl,
+        model: config.openaiCompatModel || undefined,
+        apiKey: config.openaiCompatApiKeyEncrypted ? decrypt(config.openaiCompatApiKeyEncrypted) : undefined,
+      };
+    case 'digitalocean':
+      if (!config.digitaloceanApiKeyEncrypted) return null;
+      return {
+        apiKey: decrypt(config.digitaloceanApiKeyEncrypted),
+        model: config.digitaloceanModel || undefined,
+        baseUrl: config.digitaloceanBaseUrl || undefined,
+      };
+    default:
+      return null;
+  }
+}
+
 export function getProvider(
   providerName: string,
   config: AiConfigRow,
@@ -87,6 +184,7 @@ export function getProvider(
     forceDirect?: boolean;
   },
 ): AiProvider {
+  assertDesktopProvider(providerName);
   // Per-feature routing: when the router is on, hand back a provider that
   // decides at call time from params.taskClass (router for routed features,
   // this direct provider otherwise). The direct provider is still built now
@@ -121,17 +219,55 @@ export function cloudAiTarget(providerName: string): NetTarget | null {
 }
 
 /**
+ * Scrub a provider error in place (OpenAI echoes `sk-…` in 401 bodies,
+ * SDKs quote request headers): the message is what reaches logs,
+ * ai_jobs.error_message and HTTP responses. Returns the same error.
+ */
+export function scrubProviderError<T>(err: T): T {
+  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    try {
+      (err as { message: string }).message = scrubSecrets((err as { message: string }).message);
+    } catch {
+      /* read-only message: leave it */
+    }
+  }
+  return err;
+}
+
+/**
+ * Desktop egress backstop (E6): text sent to a CLOUD provider gets the
+ * strict PII sanitizer on top of whatever the caller applied, so a caller
+ * that forgot (or chose a looser mode) cannot send bank, card or tax
+ * numbers off the machine. Images cannot be text-redacted; the cloud-vision
+ * gate (assertCloudVisionAllowed) is the control there. Only the detected
+ * PII types are logged, at debug.
+ */
+function desktopStrictText<T extends CompletionParams>(provider: string, params: T): T {
+  const sys = sanitize(params.systemPrompt, 'strict');
+  const user = sanitize(params.userPrompt, 'strict');
+  const detected = [...new Set([...sys.detected, ...user.detected])];
+  if (detected.length > 0) {
+    log.debug({ component: 'ai-egress', event: 'strict_backstop_redacted', provider, types: detected });
+  }
+  return { ...params, systemPrompt: sys.text, userPrompt: user.text };
+}
+
+/**
  * Desktop only: before every call, check that the provider's host is
  * reachable (utils/offline.ts: 1.5 s probe, CL_OFFLINE=on fails at once),
  * and map network errors from the SDK to OfflineUnavailableError (HTTP 503
  * OFFLINE_UNAVAILABLE). Covers complete(), completeWithImage() (the OCR
  * and vision callers that bypass executeWithFallback), testConnection()
- * and listModels().
+ * and listModels(). Text leaving through complete()/completeWithImage()
+ * passes the strict sanitizer backstop, and every error is scrubbed of
+ * secrets before it leaves the wrapper.
  */
 class OfflineAwareProvider implements AiProvider {
   readonly name: string;
   readonly supportsVision: boolean;
   listModels?: (signal?: AbortSignal) => Promise<string[]>;
+  /** AnthropicProvider.listModelDetails, guarded the same way (model-upgrade check). */
+  listModelDetails?: (signal?: AbortSignal) => Promise<Array<{ id: string; displayName: string; createdAt: string }>>;
   private readonly feature: string;
   constructor(private readonly inner: AiProvider, private readonly target: NetTarget) {
     this.name = inner.name;
@@ -141,20 +277,25 @@ class OfflineAwareProvider implements AiProvider {
       const list = inner.listModels.bind(inner);
       this.listModels = (signal?: AbortSignal) => this.guard(() => list(signal));
     }
+    const details = (inner as { listModelDetails?: (signal?: AbortSignal) => Promise<Array<{ id: string; displayName: string; createdAt: string }>> }).listModelDetails;
+    if (typeof details === 'function') {
+      const bound = details.bind(inner);
+      this.listModelDetails = (signal?: AbortSignal) => this.guard(() => bound(signal));
+    }
   }
   private async guard<T>(fn: () => Promise<T>): Promise<T> {
     await ensureOnline(this.feature, this.target);
     try {
       return await fn();
     } catch (err) {
-      throw classifyNetworkError(err, this.feature) ?? err;
+      throw classifyNetworkError(err, this.feature) ?? scrubProviderError(err);
     }
   }
   complete(params: CompletionParams): Promise<CompletionResult> {
-    return this.guard(() => this.inner.complete(params));
+    return this.guard(() => this.inner.complete(desktopStrictText(this.name, params)));
   }
   completeWithImage(params: import('./ai-provider.interface.js').VisionParams): Promise<CompletionResult> {
-    return this.guard(() => this.inner.completeWithImage(params));
+    return this.guard(() => this.inner.completeWithImage(desktopStrictText(this.name, params)));
   }
   testConnection(signal?: AbortSignal) {
     return this.guard(() => this.inner.testConnection(signal));
@@ -172,50 +313,51 @@ function buildDirect(providerName: string, config: AiConfigRow, model?: string):
 }
 
 function buildProvider(providerName: string, config: AiConfigRow, model?: string): AiProvider {
+  assertDesktopProvider(providerName);
+  const cred = resolveCredential(providerName, config);
   switch (providerName) {
     case 'anthropic':
-      if (!config.anthropicApiKeyEncrypted) throw new Error('Anthropic API key not configured');
-      return new AnthropicProvider(decrypt(config.anthropicApiKeyEncrypted), model);
+      if (!cred?.apiKey) throw new Error('Anthropic API key not configured');
+      return new AnthropicProvider(cred.apiKey, model);
     case 'openai':
-      if (!config.openaiApiKeyEncrypted) throw new Error('OpenAI API key not configured');
-      return new OpenAiProvider(decrypt(config.openaiApiKeyEncrypted), model);
+      if (!cred?.apiKey) throw new Error('OpenAI API key not configured');
+      return new OpenAiProvider(cred.apiKey, model);
     case 'gemini':
-      if (!config.geminiApiKeyEncrypted) throw new Error('Gemini API key not configured');
-      return new GeminiProvider(decrypt(config.geminiApiKeyEncrypted), model);
+      if (!cred?.apiKey) throw new Error('Gemini API key not configured');
+      return new GeminiProvider(cred.apiKey, model);
     case 'ollama':
-      return new OllamaProvider(config.ollamaBaseUrl || undefined, model);
+      // Desktop: the session endpoint/model (if any) stand in for the stored
+      // base URL and the provider default; a caller's model still wins.
+      return new OllamaProvider(cred?.baseUrl, model || cred?.model);
     case 'openai_compat': {
       // Generic OpenAI-compatible local/remote server. Points at
       // Ollama's `/v1`, llama.cpp's server, LM Studio, vLLM, etc.
       // Admin supplies: base URL (required), model name (defaults to
       // llama3.2 — a common Ollama model; callers can override via
       // the optional `model` argument), optional bearer API key.
-      if (!config.openaiCompatBaseUrl) throw new Error('OpenAI-compat base URL not configured');
-      const effectiveModel = model || config.openaiCompatModel || 'llama3.2';
+      if (!cred?.baseUrl) throw new Error('OpenAI-compat base URL not configured');
+      const effectiveModel = model || cred.model || 'llama3.2';
       // When the endpoint is Ollama, drive it natively (/api/chat). This is
       // the correct method for Ollama-served models — especially thinking
       // models like Qwen3.5, which return empty `content` on the /v1 path —
       // and it unlocks num_ctx / keep_alive / think. Non-Ollama backends
       // (vLLM, llama.cpp, LM Studio) keep using /v1.
-      if (resolveOllamaNative(config.openaiCompatBaseUrl, config.openaiCompatMode)) {
-        return new OllamaProvider(nativeOllamaBaseUrl(config.openaiCompatBaseUrl), effectiveModel);
+      if (resolveOllamaNative(cred.baseUrl, config.openaiCompatMode)) {
+        return new OllamaProvider(nativeOllamaBaseUrl(cred.baseUrl), effectiveModel);
       }
-      const apiKey = config.openaiCompatApiKeyEncrypted ? decrypt(config.openaiCompatApiKeyEncrypted) : undefined;
-      return new OpenAiCompatProvider(config.openaiCompatBaseUrl, effectiveModel, apiKey);
+      return new OpenAiCompatProvider(cred.baseUrl, effectiveModel, cred.apiKey);
     }
     case 'digitalocean':
-      if (!config.digitaloceanApiKeyEncrypted) throw new Error('DigitalOcean API key not configured');
-      return new DigitalOceanProvider(
-        decrypt(config.digitaloceanApiKeyEncrypted),
-        model || config.digitaloceanModel || undefined,
-        config.digitaloceanBaseUrl || undefined,
-      );
+      if (!cred?.apiKey) throw new Error('DigitalOcean API key not configured');
+      return new DigitalOceanProvider(cred.apiKey, model || cred.model, cred.baseUrl);
     default:
       throw new Error(`Unknown AI provider: ${providerName}`);
   }
 }
 
 export function hasCredentials(providerName: string, config: AiConfigRow): boolean {
+  // Desktop: a session key (or, for Ollama, nothing) — never a stored column.
+  if (isDesktop()) return isDesktopProvider(providerName) && resolveCredential(providerName, config) !== null;
   switch (providerName) {
     case 'anthropic': return !!config.anthropicApiKeyEncrypted;
     case 'openai': return !!config.openaiApiKeyEncrypted;
@@ -262,6 +404,9 @@ async function attempt(
   // cascade-cancel attempt N's still-running fetch (which never happens
   // — attempts are serial — but the contract is clearer this way).
   const { signal, cancel } = abortableTimeout(timeoutMs);
+  // Desktop cloud providers are wrapped (buildDirect -> OfflineAwareProvider),
+  // which applies the strict sanitizer backstop to the prompts of this call
+  // and scrubs secrets from any error it raises.
   try {
     const inner = retryWithBackoff(
       () => provider.complete({ ...params, signal }),
@@ -293,6 +438,16 @@ export async function executeWithFallback(
 ): Promise<CompletionResult> {
   const errors: string[] = [];
   const timeoutMs = options?.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+  // Desktop: the monthly caps are checked here too, so a caller that does
+  // not go through createJob cannot bypass them (review M3).
+  if (isDesktop()) await (await import('../ai-usage-caps.js')).assertWithinUsageCaps(params.tenantId ?? null);
+  // Desktop: only the allowlisted providers are ever tried (Q-33). A
+  // preferred provider outside it is recorded, not attempted.
+  if (isDesktop() && preferredProvider && !isDesktopProvider(preferredProvider)) {
+    errors.push(`${preferredProvider}: not available in the desktop edition (AI_PROVIDER_NOT_AVAILABLE)`);
+    preferredProvider = undefined;
+  }
+  fallbackChain = desktopFallbackChain(fallbackChain);
 
   // A feature switched to the router short-circuits provider selection and
   // the fallback chain — failover WITHIN router mode is the router's own job,
@@ -328,7 +483,9 @@ export async function executeWithFallback(
     if (err instanceof TimeoutError) {
       errors.push(`${providerName}: timeout after ${timeoutMs}ms`);
     } else {
-      errors.push(`${providerName}: ${err?.message ?? String(err)}`);
+      // Never let a provider echo a credential into the aggregate message,
+      // the warn line, ai_jobs.error_message or an HTTP response.
+      errors.push(`${providerName}: ${scrubSecrets(String(err?.message ?? err))}`);
     }
   };
 

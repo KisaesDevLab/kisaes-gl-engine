@@ -20,6 +20,9 @@ import { db } from '../db/index.js';
 import { tenants, users, sessions, companies, transactions, accounts, contacts, systemSettings, accountantCompanyExclusions, userTenantAccess, plaidItems, plaidAccounts } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
+import { isDesktop } from '../desktop/profile.js';
+import { hasSessionSecret } from '../desktop/session-secrets.js';
+import { assertSmtpPasswordNotStoredInDesktop } from './company.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { escapeLike } from '../utils/sql-like.js';
 // Shared with the consolidation tool so "safe to move" has one definition.
@@ -1823,6 +1826,8 @@ export async function saveSmtpSettings(input: {
   smtpFrom: string;
   smtpFromName?: string;
 }) {
+  // Desktop (U-13): refused before anything is written.
+  assertSmtpPasswordNotStoredInDesktop(input.smtpPass);
   await setSetting('smtp_host', input.smtpHost);
   await setSetting('smtp_port', String(input.smtpPort));
   await setSetting('smtp_user', input.smtpUser);
@@ -1850,7 +1855,7 @@ export async function getGlobalSettings() {
     smtpConfigured: !!smtp.smtpHost,
     // `passwordConfigured` lets the UI render a "Clear stored password"
     // button conditionally — the actual password never round-trips.
-    smtpPasswordConfigured: !!smtp.smtpPass,
+    smtpPasswordConfigured: isDesktop() ? hasSessionSecret('smtp.password') : !!smtp.smtpPass,
     smtpSource: smtp.source,
     backupDir: process.env['BACKUP_DIR'] || '/data/backups',
     uploadDir: process.env['UPLOAD_DIR'] || '/data/uploads',

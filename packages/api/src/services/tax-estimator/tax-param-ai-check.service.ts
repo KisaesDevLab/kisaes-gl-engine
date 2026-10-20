@@ -36,9 +36,10 @@ import { taxParamAiChecks, taxParamAiCheckRuns } from '../../db/schema/tax-estim
 import { aiUsageLog } from '../../db/schema/ai.js';
 import { auditLog } from '../../middleware/audit.js';
 import { AppError } from '../../utils/errors.js';
-import { decrypt } from '../../utils/encryption.js';
+import { isDesktop } from '../../desktop/profile.js';
 import { getRawConfig } from '../ai-config.service.js';
 import { safeJsonExtract } from '../ai-providers/json-utils.js';
+import { resolveCredential } from '../ai-providers/index.js';
 import * as paramSvc from './tax-parameters.service.js';
 import * as stateSvc from './tax-state-rules.service.js';
 
@@ -135,7 +136,9 @@ export function resolveAiCheckModel(c: Pick<RawConfig, 'chatProvider' | 'chatMod
 function availabilityOf(c: RawConfig): AiCheckAvailabilityDTO {
   const base = { model: resolveAiCheckModel(c), maxSearchesPerCheck: MAX_SEARCHES_PER_CHECK, concurrency: AI_CHECK_CONCURRENCY };
   if (!c.isEnabled) return { ...base, available: false, reason: 'AI is turned off in Admin → AI.' };
-  if (!c.anthropicApiKeyEncrypted) return { ...base, available: false, reason: 'No Anthropic API key is saved in Admin → AI. The AI check uses Claude with web search.' };
+  // Desktop (E6): keys are per-session and this check needs Claude web search; not offered there.
+  if (isDesktop()) return { ...base, available: false, reason: 'The AI parameter check is not available in the desktop edition.' };
+  if (!resolveCredential('anthropic', c)?.apiKey) return { ...base, available: false, reason: 'No Anthropic API key is saved in Admin → AI. The AI check uses Claude with web search.' };
   return { ...base, available: true, reason: null };
 }
 
@@ -348,8 +351,9 @@ export async function executeRun(runId: string): Promise<void> {
   try {
     const config = await getRawConfig();
     const avail = availabilityOf(config);
-    if (!avail.available || !config.anthropicApiKeyEncrypted) { await finish('failed', avail.reason ?? 'AI check unavailable'); return; }
-    const client = deps.clientFactory(decrypt(config.anthropicApiKeyEncrypted));
+    const apiKey = avail.available ? resolveCredential('anthropic', config)?.apiKey : undefined;
+    if (!apiKey) { await finish('failed', avail.reason ?? 'AI check unavailable'); return; }
+    const client = deps.clientFactory(apiKey);
     const model = claimed.model ?? avail.model ?? DEFAULT_AI_CHECK_MODEL;
     const targets = (claimed.targets ?? []) as AiCheckTarget[];
     const ctx: RowContext = { year: claimed.taxYear, federal: null, states: new Map() };
