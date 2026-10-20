@@ -26,4 +26,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'closing-password-v1',
   /** DELETE /transactions/:id: soft delete with reversing lines, status 'deleted' hidden everywhere (P12 R7). */
   'txn-delete-v1',
+  /** PUT /checks/:id with the create body; exact line sum on create and edit (U-48). */
+  'check-edit-v1',
+  /** contactId + isBillable per line on checks and expenses; journal_lines.is_billable / billed_status (U-49, U-50). */
+  'line-billable-v1',
+  /** POST /practice/conditional-rules/evaluate: read-only rule match for one entry (U-51). */
+  'rules-evaluate-v1',
 ];
