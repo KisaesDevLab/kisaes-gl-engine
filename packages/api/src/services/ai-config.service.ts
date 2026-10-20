@@ -1043,15 +1043,26 @@ async function configuredClaudeSlots(): Promise<ClaudeModelSlot[]> {
 async function liveClaudeModels(): Promise<ClaudeModelInfo[]> {
   const config = await getRawConfig();
   const { getProvider } = await import('./ai-providers/index.js');
-  const { AnthropicProvider } = await import('./ai-providers/anthropic.provider.js');
-  const provider = getProvider('anthropic', config, undefined, { forceDirect: true });
-  if (!(provider instanceof AnthropicProvider)) throw AppError.badRequest('Anthropic is not configured.');
+  type WithModelDetails = ReturnType<typeof getProvider> & {
+    listModelDetails?: (signal?: AbortSignal) => Promise<ClaudeModelInfo[]>;
+  };
+  let provider: WithModelDetails;
+  try {
+    provider = getProvider('anthropic', config, undefined, { forceDirect: true }) as WithModelDetails;
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw AppError.badRequest('Anthropic is not configured.');
+  }
+  // Desktop wraps the adapter (offline fast-fail, scrubbing); duck-type
+  // the model-details call instead of an instanceof check.
+  if (typeof provider.listModelDetails !== 'function') throw AppError.badRequest('Anthropic is not configured.');
   const { abortableTimeout } = await import('../utils/retry.js');
   const { signal, cancel } = abortableTimeout(12_000);
   try {
     return await provider.listModelDetails(signal);
   } catch (err) {
-    throw AppError.badRequest(`Could not reach Anthropic to list models: ${err instanceof Error ? err.message : String(err)}`);
+    if (err instanceof AppError) throw err;
+    throw AppError.badRequest(`Could not reach Anthropic to list models: ${scrubSecrets(err instanceof Error ? err.message : String(err))}`);
   } finally {
     cancel();
   }

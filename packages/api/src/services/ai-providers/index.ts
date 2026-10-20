@@ -266,6 +266,8 @@ class OfflineAwareProvider implements AiProvider {
   readonly name: string;
   readonly supportsVision: boolean;
   listModels?: (signal?: AbortSignal) => Promise<string[]>;
+  /** AnthropicProvider.listModelDetails, guarded the same way (model-upgrade check). */
+  listModelDetails?: (signal?: AbortSignal) => Promise<Array<{ id: string; displayName: string; createdAt: string }>>;
   private readonly feature: string;
   constructor(private readonly inner: AiProvider, private readonly target: NetTarget) {
     this.name = inner.name;
@@ -274,6 +276,11 @@ class OfflineAwareProvider implements AiProvider {
     if (inner.listModels) {
       const list = inner.listModels.bind(inner);
       this.listModels = (signal?: AbortSignal) => this.guard(() => list(signal));
+    }
+    const details = (inner as { listModelDetails?: (signal?: AbortSignal) => Promise<Array<{ id: string; displayName: string; createdAt: string }>> }).listModelDetails;
+    if (typeof details === 'function') {
+      const bound = details.bind(inner);
+      this.listModelDetails = (signal?: AbortSignal) => this.guard(() => bound(signal));
     }
   }
   private async guard<T>(fn: () => Promise<T>): Promise<T> {
