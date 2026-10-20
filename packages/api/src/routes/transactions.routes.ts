@@ -133,7 +133,20 @@ transactionsRouter.post('/bulk-update', validate(bulkUpdateTransactionsSchema), 
   res.json(result);
 });
 
-transactionsRouter.post('/', async (req, res) => {
+// OpenAPI only: the request bodies this route takes for the register
+// entry types ClientLedger posts (deposit, transfer, expense). Validation
+// stays per txnType in the handler; other types are documented elsewhere.
+const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed');
+const registerEntryBodyDoc = z.discriminatedUnion('txnType', [
+  createDepositSchema.extend({ txnType: z.literal('deposit'), closingPassword: closingPasswordDoc }),
+  createTransferSchema.extend({ txnType: z.literal('transfer'), closingPassword: closingPasswordDoc }),
+  createExpenseSchema.extend({ txnType: z.literal('expense'), closingPassword: closingPasswordDoc }),
+]);
+
+transactionsRouter.post('/', describe({
+  summary: 'Create a transaction (body per txnType; deposit, transfer and expense documented)',
+  body: registerEntryBodyDoc,
+}), async (req, res) => {
   const { txnType, ...body } = req.body;
   let result;
 
@@ -178,7 +191,11 @@ transactionsRouter.post('/', async (req, res) => {
   res.status(201).json({ transaction: result });
 });
 
-transactionsRouter.put('/:id', async (req, res) => {
+transactionsRouter.put('/:id', describe({
+  summary: 'Edit a transaction (body per txnType; deposit, transfer and expense documented)',
+  body: registerEntryBodyDoc,
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
   const txnId = req.params['id']!;
   const { txnType, ...body } = req.body;
   let result;
