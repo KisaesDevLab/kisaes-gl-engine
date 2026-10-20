@@ -18436,8 +18436,22 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "description": {
                           "type": "string"
+                        },
+                        "isBillable": {
+                          "type": "boolean"
                         },
                         "tagId": {
                           "anyOf": [
@@ -18912,6 +18926,160 @@
             "ApiKeyAuth": []
           }
         ],
+        "tags": [
+          "checks"
+        ]
+      }
+    },
+    "/api/v1/checks/{id}": {
+      "put": {
+        "operationId": "put_api_v1_checks_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "amount": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "bankAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "checkNumber": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "amount": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "isBillable": {
+                          "type": "boolean"
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "accountId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "payeeAddress": {
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "payeeNameOnCheck": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "printLater": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "printedMemo": {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "txnDate": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bankAccountId",
+                  "payeeNameOnCheck",
+                  "txnDate",
+                  "amount",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a check: lines, amount, payee, date, number and print status (check-edit-v1)",
         "tags": [
           "checks"
         ]
@@ -32990,6 +33158,149 @@
             "ApiKeyAuth": []
           }
         ],
+        "tags": [
+          "practice"
+        ]
+      }
+    },
+    "/api/v1/practice/conditional-rules/evaluate": {
+      "post": {
+        "operationId": "post_api_v1_practice_conditional_rules_evaluate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "amount": {
+                    "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  },
+                  "bankAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "description": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "description",
+                  "amount",
+                  "bankAccountId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "match": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accountId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "ruleId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "ruleName": {
+                              "type": "string"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "ruleId",
+                            "ruleName",
+                            "accountId",
+                            "tagId",
+                            "contactId"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "match"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Evaluate the active conditional rules for one entry, read-only (rules-evaluate-v1)",
         "tags": [
           "practice"
         ]
