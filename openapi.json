@@ -19034,8 +19034,14 @@
                     "type": "string"
                   },
                   "printLater": {
-                    "default": false,
                     "type": "boolean"
+                  },
+                  "printedCheckChange": {
+                    "enum": [
+                      "reprint",
+                      "keep_number"
+                    ],
+                    "type": "string"
                   },
                   "printedMemo": {
                     "maxLength": 255,
