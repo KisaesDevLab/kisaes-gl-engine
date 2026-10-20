@@ -22,4 +22,5 @@ paths = [
   '''packages/api/src/routes/closing-password\.aje\.routes\.test\.ts''',
   '''packages/api/src/routes/transactions\.delete\.routes\.test\.ts''',
   '''packages/api/src/services/lock-context\.test\.ts''',
+  '''packages/api/src/routes/checks\.routes\.edit\.test\.ts''',
 ]
