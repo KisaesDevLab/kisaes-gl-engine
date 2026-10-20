@@ -241,9 +241,12 @@ function rowHtml(r: FsRow, st: FsRenderedStatement, style: FsStyle): string {
   if (r.caps) inline.push('text-transform:uppercase');
   const role = r.styleRole === 'sectionHeading' ? 'sectionHeading' : r.styleRole;
   if (r.sizeDelta) inline.push(`font-size:${style.elements[role].sizePt + r.sizeDelta}pt`);
+  // Per-cell, not on the <tr>: the `tr.r-* td` element CSS sets font props on
+  // the cells, which would override anything inherited from the row.
+  const tdInl = inline.length ? `;${inline.join(';')}` : '';
   const inl = inline.length ? ` style="${inline.join(';')}"` : '';
   const ref = r.scheduleRef ? ` <span class="ref">(${esc(r.scheduleRef)})</span>` : '';
-  const cells: string[] = [`<td class="cap" style="padding-left:${indent}pt">${esc(r.caption)}${ref}</td>`];
+  const cells: string[] = [`<td class="cap" style="padding-left:${indent}pt${tdInl}">${esc(r.caption)}${ref}</td>`];
   const ruleCls = (r.ruleAbove === 'single' ? ' ra-single' : '') + (r.ruleBelow === 'single' ? ' rb-single' : r.ruleBelow === 'double' ? ' rb-double' : '');
   st.columns.forEach((c, i) => {
     cells.push('<td></td>');
@@ -254,15 +257,15 @@ function rowHtml(r: FsRow, st: FsRenderedStatement, style: FsStyle): string {
       const showRule = numeric && (v !== null || r.ruleBelow !== 'none' || r.ruleAbove !== 'none');
       const cls = showRule ? ruleCls : '';
       const pad = txt && !txt.endsWith(')') && style.number.negative === 'parens' ? '<span class="np">)</span>' : '';
-      cells.push(`<td class="sign${cls}">${r.dollarSign && txt ? '$' : ''}</td><td class="amt${cls}">${esc(txt)}${pad}</td>`);
+      cells.push(`<td class="sign${cls}"${inl}>${r.dollarSign && txt ? '$' : ''}</td><td class="amt${cls}"${inl}>${esc(txt)}${pad}</td>`);
     } else {
       const txt = numeric ? fsFormatPct(v, style) : '';
       const pad = txt && !txt.endsWith(')') && style.number.negative === 'parens' ? '<span class="np">)</span>' : '';
-      cells.push(`<td class="pct">${esc(txt)}${pad}</td>`);
+      cells.push(`<td class="pct"${inl}>${esc(txt)}${pad}</td>`);
     }
   });
   const cls = r.kind === 'heading' ? (r.styleRole === 'sectionHeading' ? 'heading' : r.styleRole) : r.kind;
-  return `<tr class="r-${cls}"${inl}>${cells.join('')}</tr>`;
+  return `<tr class="r-${cls}">${cells.join('')}</tr>`;
 }
 
 // Split rows at page_break rows / breakBefore so each chunk is its own

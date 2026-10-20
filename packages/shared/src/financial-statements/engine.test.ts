@@ -390,3 +390,24 @@ describe('preview fonts', () => {
     expect(css).not.toMatch(/fs-fonts\/[^')]+\.ttf/);
   });
 });
+
+describe('per-line format overrides in HTML', () => {
+  it('puts the override on every cell so the element CSS (tr.r-* td) cannot beat it', async () => {
+    const { fsStatementHtml } = await import('./render/html.js');
+    const rep = run();
+    const is = stmt(rep, 'income_statement');
+    const st: FsRenderedStatement = {
+      ...is,
+      rows: [{
+        key: 't1', kind: 'text', caption: 'Note', level: 0, styleRole: 'text', values: is.columns.map(() => null),
+        dollarSign: false, ruleAbove: 'none', ruleBelow: 'none', bold: true, italic: false, caps: true, sizeDelta: 2,
+      }],
+    };
+    const html = fsStatementHtml(rep, st, FS_DEFAULT_STYLE);
+    const cap = html.match(/<td class="cap"[^>]*>/)![0];
+    expect(cap).toContain('font-weight:700');
+    expect(cap).toContain('text-transform:uppercase');
+    expect(cap).toContain('font-size:');
+    expect(html).not.toMatch(/<tr class="r-text" style=/);
+  });
+});
