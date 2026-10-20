@@ -17,11 +17,9 @@ import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { encryptBuffer, decryptBuffer, encrypt, decrypt } from '../../utils/encryption.js';
 import { auditLog } from '../../middleware/audit.js';
-import bcrypt from 'bcrypt';
 import { ArchiveReader } from './archive-reader.js';
 import { encryptEntryBuffer, NoncePrefixRegistry, openEnvelope, validateEnvelope } from './archive-crypto.js';
 import { ArchiveError } from './errors.js';
-import { ARCHIVE_PASSWORD_PLACEHOLDER } from './identity.js';
 import { _exportTestHooks, runExport, archiveDir, sweepPartialArchives, type ExportResult } from './export.service.js';
 import { _importTestHooks, runImport, sweepImportPending, sweepStaleUploads } from './import.service.js';
 import { startJob, waitForJob } from './jobs.js';
@@ -358,36 +356,42 @@ describe('export', () => {
     expect(JSON.stringify(live[2])).toContain('AUDIT-CANARY');
   }, 60_000);
 
-  it('password hashes travel only for a super admin caller and never for a super admin user (H4)', async () => {
+  it('every user travels with their password hash, whoever exports (Q-234)', async () => {
     const usersOf = async (file: string): Promise<Array<{ id: string; password_hash: string }>> => {
       const reader = await ArchiveReader.open(file, PASS);
       const out: Array<{ id: string; password_hash: string }> = [];
       for await (const l of reader.lines('data/_users.ndjson')) out.push(JSON.parse(l) as { id: string; password_hash: string });
       return out;
     };
-    // The main archive was exported by a super admin: the owner and the LAN user travel with their hashes.
+    const liveHashes = async (ids: string[]): Promise<string[]> => {
+      const out: string[] = [];
+      for (const id of ids) out.push((await q<{ password_hash: string }>(`SELECT password_hash FROM users WHERE id = $1`, [id]))[0]!.password_hash);
+      return out;
+    };
+    // The main archive was exported by a super admin: every user with access carries their live hash.
     const main = await usersOf(exported.path!);
-    expect(main.map((u) => u.password_hash.startsWith('$2b$12$'))).toEqual([true, true, true]);
-    // An owner (not a super admin) gets placeholders for everyone, and the manifest says so.
+    expect(main).toHaveLength(3);
+    expect(main.map((u) => u.password_hash)).toEqual(await liveHashes(main.map((u) => u.id)));
+    expect(main.every((u) => u.password_hash.startsWith('$2b$12$'))).toBe(true);
+    // A company owner who is not a super admin exports the same hashes, with no warning about them.
     const byOwner = await runExport(seed.tenantId, seed.ownerId, { passphrase: PASS });
-    expect(byOwner.warnings).toEqual(['PASSWORD_HASHES_OMITTED:3', tinWarning()]);
+    expect(byOwner.warnings).toEqual([tinWarning()]);
     const owned = await usersOf(byOwner.path!);
-    expect(owned.map((u) => u.password_hash)).toEqual([ARCHIVE_PASSWORD_PLACEHOLDER, ARCHIVE_PASSWORD_PLACEHOLDER, ARCHIVE_PASSWORD_PLACEHOLDER]);
-    expect(fs.readFileSync(byOwner.path!).includes('$2b$12$')).toBe(false);
-    // A super admin user with access never travels with a hash, even for a super admin caller.
+    expect(owned.map((u) => u.password_hash)).toEqual(await liveHashes(owned.map((u) => u.id)));
+    // A super admin user with access travels with their hash too.
     await q(`INSERT INTO user_tenant_access (user_id, tenant_id, role) VALUES ($1, $2, 'owner')`, [seed.callerId, seed.tenantId]);
     let bySuper: ExportResult;
     try {
       bySuper = await runExport(seed.tenantId, seed.callerId, { passphrase: PASS });
-      expect(bySuper.warnings).toEqual(['PASSWORD_HASHES_OMITTED:1', tinWarning()]);
+      expect(bySuper.warnings).toEqual([tinWarning()]);
       const rows = await usersOf(bySuper.path!);
-      expect(rows.find((u) => u.id === seed.callerId)!.password_hash).toBe(ARCHIVE_PASSWORD_PLACEHOLDER);
-      expect(rows.filter((u) => u.id !== seed.callerId).every((u) => u.password_hash.startsWith('$2b$12$'))).toBe(true);
+      expect(rows).toHaveLength(4);
+      expect(rows.find((u) => u.id === seed.callerId)!.password_hash).toBe((await liveHashes([seed.callerId]))[0]);
     } finally {
       await q(`DELETE FROM user_tenant_access WHERE user_id = $1 AND tenant_id = $2`, [seed.callerId, seed.tenantId]);
     }
-    // A placeholder never matches a password, so a user restored from it must have one set again.
-    expect(await bcrypt.compare('owner password 1234', ARCHIVE_PASSWORD_PLACEHOLDER)).toBe(false);
+    // The hashes sit inside the passphrase-encrypted entries, never in the clear.
+    expect(fs.readFileSync(byOwner.path!).includes('$2b$12$')).toBe(false);
     // Leave the directory and the audit trail as the later tests expect them.
     for (const r of [byOwner, bySuper]) {
       fs.rmSync(r.path!, { force: true });
