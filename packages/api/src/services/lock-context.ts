@@ -36,15 +36,33 @@ export function takeClosingPassword(req: Request): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Forgets the request's closing-date password and override confirmation.
+ * Called when the response is done: AsyncLocalStorage hands the same store
+ * to anything the handler started without awaiting (timers, queued work),
+ * which must not be able to open the closed period after the request.
+ */
+export function clearLockContextSecrets(ctx: LockDateContext): void {
+  delete ctx.closingPassword;
+  ctx.overrideConfirmed = false;
+}
+
 // Express middleware: carries the caller's identity, the request's
 // overrideConfirmed flag and its closing-date password into everything the
-// handler awaits.
-export function lockContextMiddleware(req: Request, _res: Response, next: NextFunction) {
+// handler awaits. They are not cleared after the first checkLockDate: one
+// request may check several dates (an update checks the old and the new
+// one, a payment may post more than one transaction). They are cleared
+// once the response has finished or the connection closed.
+export function lockContextMiddleware(req: Request, res: Response, next: NextFunction) {
   const closingPassword = takeClosingPassword(req);
-  storage.run({
+  const ctx: LockDateContext = {
     userType: req.userType === 'client' ? 'client' : 'staff',
     overrideConfirmed: (req.body as { overrideConfirmed?: unknown } | undefined)?.overrideConfirmed === true,
     userId: req.userId,
     ...(closingPassword !== undefined ? { closingPassword } : {}),
-  }, next);
+  };
+  const clear = () => clearLockContextSecrets(ctx);
+  res.once('finish', clear);
+  res.once('close', clear);
+  storage.run(ctx, next);
 }
