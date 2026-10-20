@@ -117,7 +117,7 @@ export async function getConfig() {
     maxConcurrentJobs: config.maxConcurrentJobs || 5,
     trackUsage: config.trackUsage ?? true,
     monthlyBudgetLimit: config.monthlyBudgetLimit ? parseFloat(config.monthlyBudgetLimit) : null,
-    // Integer token cap per tenant per month (U-29, migration 0218); null = off.
+    // Integer token cap per tenant per month (U-29, migration 0219); null = off.
     monthlyTokenLimit: config.monthlyTokenLimit ?? null,
     // Per-function settings overlay (AI_FUNCTION_SETTINGS_PLAN.md).
     // Stored as JSONB keyed by function; absent/null keys resolve to the

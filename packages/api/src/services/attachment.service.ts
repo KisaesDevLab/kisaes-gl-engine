@@ -12,6 +12,7 @@ import { attachments } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
+import { keyBelongsToTenant } from '../utils/contained-path.js';
 
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -20,11 +21,12 @@ function ensureDir(dir: string) {
 // Resolves a filePath (stored in the DB as "/uploads/<tenant>/attachments/<uuid>.ext",
 // or "/uploads/attachments/<tenant>/<uuid>.ext" for pre-layout-change rows)
 // to an absolute path under UPLOAD_DIR and refuses anything that escapes the
-// root via "..", symlinks, or absolute overrides. The DB value is considered
-// trusted today, but these defenses are cheap and protect against any future
-// primitive that lets a user influence filePath.
-function resolveUploadPath(filePath: string): string {
+// root via "..", symlinks, or absolute overrides, or that names another
+// tenant's folder (utils/contained-path.ts keyBelongsToTenant). A stored
+// path is data (an imported archive can write one), never an instruction.
+function resolveUploadPath(tenantId: string, filePath: string): string {
   const rel = filePath.replace(/^\/uploads\//, '');
+  if (!keyBelongsToTenant(rel, tenantId)) throw AppError.notFound('File not found');
   const root = path.resolve(env.UPLOAD_DIR);
   const resolved = path.resolve(root, rel);
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
@@ -148,7 +150,7 @@ export async function download(tenantId: string, id: string) {
     return { stream: Readable.from(data), attachment };
   } catch {
     // Fallback to direct filesystem for backward compatibility
-    const fullPath = resolveUploadPath(attachment.filePath);
+    const fullPath = resolveUploadPath(tenantId, attachment.filePath);
     if (!fs.existsSync(fullPath)) throw AppError.notFound('File not found');
     return { stream: fs.createReadStream(fullPath), attachment };
   }
@@ -169,7 +171,7 @@ export async function readAttachmentBytes(
     if (!key) throw new Error('No storage key');
     return await provider.download(key);
   } catch {
-    const fullPath = resolveUploadPath(attachment.filePath);
+    const fullPath = resolveUploadPath(tenantId, attachment.filePath);
     if (!fs.existsSync(fullPath)) throw AppError.notFound('File not found');
     return fs.readFileSync(fullPath);
   }
@@ -294,7 +296,7 @@ export async function remove(tenantId: string, id: string) {
   } catch {
     // Fallback to direct filesystem
     try {
-      const fullPath = resolveUploadPath(attachment.filePath);
+      const fullPath = resolveUploadPath(tenantId, attachment.filePath);
       if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
     } catch {
       // Path didn't resolve under UPLOAD_DIR — leave DB row to be deleted

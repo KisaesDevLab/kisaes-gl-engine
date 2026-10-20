@@ -15,6 +15,7 @@ import { OneDriveProvider } from './onedrive.provider.js';
 import { S3Provider } from './s3.provider.js';
 import { B2Provider } from './b2.provider.js';
 import { LocalFallbackProvider } from './local-fallback.provider.js';
+import { TenantScopedProvider } from './tenant-scoped.provider.js';
 import { ensureFreshAccessToken } from './oauth-refresh.js';
 
 // Cache provider instances per tenant. Capped + periodic sweep so that an
@@ -59,7 +60,9 @@ export async function getProviderForTenant(tenantId: string): Promise<StoragePro
   // original behavior). Tenants with their own active row are never
   // affected by the system setting.
   if (!record) {
-    const provider = await getSystemStorageProvider();
+    // Scoped to the tenant: a key read back from one of its rows can never
+    // name another tenant's folder or the appliance's `_system` root.
+    const provider = new TenantScopedProvider(await getSystemStorageProvider(), tenantId);
     providerCache.set(tenantId, { provider, expiresAt: Date.now() + CACHE_TTL });
     return provider;
   }
@@ -69,7 +72,7 @@ export async function getProviderForTenant(tenantId: string): Promise<StoragePro
 
   switch (record.provider) {
     case 'local':
-      provider = new LocalProvider(config['base_path']);
+      provider = new LocalProvider(config['base_path'], tenantId);
       break;
     case 'dropbox':
       if (!record.accessTokenEncrypted) throw new Error('Dropbox access token not configured');
@@ -121,9 +124,11 @@ export async function getProviderForTenant(tenantId: string): Promise<StoragePro
       });
       break;
     default:
-      provider = new LocalProvider();
+      provider = new LocalProvider(undefined, tenantId);
   }
 
+  // Tenant scope for every provider kind (local keys are also scoped inside LocalProvider).
+  provider = new TenantScopedProvider(provider, tenantId);
   providerCache.set(tenantId, { provider, expiresAt: Date.now() + CACHE_TTL });
   return provider;
 }
