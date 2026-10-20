@@ -510,31 +510,38 @@ tbRouter.put('/closing-date', requireTenantOwnerForTb, closingPasswordLimiter, (
 }, validate(z.object({
   closingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
 })), async (req, res) => {
-  const [before] = await db.select({ lockDate: companies.lockDate }).from(companies)
-    .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
-    .limit(1);
-  if (!before) throw AppError.notFound('Company not found');
   const closingDate = req.body.closingDate as string | null;
   const password = res.locals['closingPassword'] as string | undefined;
-  let newHash: string | null = null;
-  if ((before.lockDate ?? null) !== closingDate || password !== undefined) {
-    ({ newHash } = await authorizeLockDateChange(db, req.tenantId, req.companyId!, password, {
-      userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin,
-    }));
-  }
-  const [after] = await db.update(companies).set({
-    lockDate: closingDate,
-    lockDateSetBy: req.userId ?? null,
-    lockDateSetAt: new Date(),
-    ...(newHash ? { closingPasswordHash: newHash } : {}),
-  }).where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
-    .returning({ lockDate: companies.lockDate });
-  await auditLogFn(req.tenantId, 'update', 'closing_date', req.companyId!,
-    { closingDate: before.lockDate }, { closingDate }, req.userId);
-  if (newHash) {
-    await auditLogFn(req.tenantId, 'update', 'closing_password', req.companyId!,
-      { closingDateProtected: false }, { closingDateProtected: true }, req.userId);
-  }
+  // One transaction with the company row locked: the password check, the
+  // new date and a first password can't interleave with another change
+  // (or a password change) to the same company.
+  const after = await db.transaction(async (tx) => {
+    const [before] = await tx.select({ lockDate: companies.lockDate }).from(companies)
+      .where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+      .for('update')
+      .limit(1);
+    if (!before) throw AppError.notFound('Company not found');
+    let newHash: string | null = null;
+    if ((before.lockDate ?? null) !== closingDate || password !== undefined) {
+      ({ newHash } = await authorizeLockDateChange(tx, req.tenantId, req.companyId!, password, {
+        userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin,
+      }));
+    }
+    const [row] = await tx.update(companies).set({
+      lockDate: closingDate,
+      lockDateSetBy: req.userId ?? null,
+      lockDateSetAt: new Date(),
+      ...(newHash ? { closingPasswordHash: newHash } : {}),
+    }).where(and(eq(companies.tenantId, req.tenantId), eq(companies.id, req.companyId!)))
+      .returning({ lockDate: companies.lockDate });
+    await auditLogFn(req.tenantId, 'update', 'closing_date', req.companyId!,
+      { closingDate: before.lockDate }, { closingDate }, req.userId, tx);
+    if (newHash) {
+      await auditLogFn(req.tenantId, 'update', 'closing_password', req.companyId!,
+        { closingDateProtected: false }, { closingDateProtected: true }, req.userId, tx);
+    }
+    return row;
+  });
   res.json({ closingDate: after?.lockDate ?? null });
 });
 

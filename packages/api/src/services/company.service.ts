@@ -108,36 +108,46 @@ export async function updateCompany(
   // PUT /tb/closing-date does, and needs the closing-date password when
   // the company has one. A password given while none is set becomes the
   // company's password ("set or confirm"; owner or super admin only).
+  // Check and write run in one transaction with the company row locked,
+  // so a concurrent password or closing-date change can't slip between.
   const requestedLock = (input as Record<string, unknown>)['lockDate'];
-  const lockChanges = requestedLock !== undefined && ((requestedLock as string | null) || null) !== (existing.lockDate || null);
-  let passwordSetNow = false;
-  if (lockChanges || closing?.password !== undefined) {
-    const { newHash } = await authorizeLockDateChange(db, tenantId, companyId, closing?.password, {
-      userId, ...closing?.actor,
-    });
-    if (newHash) {
-      updates['closingPasswordHash'] = newHash;
-      passwordSetNow = true;
+  const updated = await db.transaction(async (tx) => {
+    const [locked] = await tx.select({ lockDate: companies.lockDate }).from(companies)
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+      .for('update')
+      .limit(1);
+    if (!locked) throw AppError.notFound('Company not found');
+    const lockChanges = requestedLock !== undefined && ((requestedLock as string | null) || null) !== (locked.lockDate || null);
+    let passwordSetNow = false;
+    if (lockChanges || closing?.password !== undefined) {
+      const { newHash } = await authorizeLockDateChange(tx, tenantId, companyId, closing?.password, {
+        userId, ...closing?.actor,
+      });
+      if (newHash) {
+        updates['closingPasswordHash'] = newHash;
+        passwordSetNow = true;
+      }
     }
-  }
-  if (lockChanges) {
-    updates['lockDateSetBy'] = userId ?? null;
-    updates['lockDateSetAt'] = new Date();
-  }
+    if (lockChanges) {
+      updates['lockDateSetBy'] = userId ?? null;
+      updates['lockDateSetAt'] = new Date();
+    }
 
-  const [row] = await db
-    .update(companies)
-    .set(updates as Partial<typeof companies.$inferInsert>)
-    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
-    .returning();
+    const [row] = await tx
+      .update(companies)
+      .set(updates as Partial<typeof companies.$inferInsert>)
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+      .returning();
 
-  if (!row) throw AppError.internal('Failed to update company');
-  const updated = withoutClosingPasswordHash(row);
-  await auditLog(tenantId, 'update', 'company', updated.id, existing, updated, userId);
-  if (passwordSetNow) {
-    await auditLog(tenantId, 'update', 'closing_password', companyId,
-      { closingDateProtected: false }, { closingDateProtected: true }, userId);
-  }
+    if (!row) throw AppError.internal('Failed to update company');
+    const safe = withoutClosingPasswordHash(row);
+    await auditLog(tenantId, 'update', 'company', safe.id, existing, safe, userId, tx);
+    if (passwordSetNow) {
+      await auditLog(tenantId, 'update', 'closing_password', companyId,
+        { closingDateProtected: false }, { closingDateProtected: true }, userId, tx);
+    }
+    return safe;
+  });
   return updated;
 }
 

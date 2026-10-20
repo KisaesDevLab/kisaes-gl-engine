@@ -12,7 +12,7 @@
 
 import bcrypt from 'bcrypt';
 import { and, eq } from 'drizzle-orm';
-import { db, type DbOrTx } from '../db/index.js';
+import { db, type Tx } from '../db/index.js';
 import { companies, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -54,9 +54,11 @@ export async function closingPasswordMatches(hash: string | null | undefined, pa
   return bcrypt.compare(password, hash);
 }
 
-async function readHash(executor: DbOrTx, tenantId: string, companyId: string): Promise<string | null> {
-  const [row] = await executor.select({ hash: companies.closingPasswordHash }).from(companies)
+/** Reads the hash and locks the company row until `tx` ends. */
+async function lockAndReadHash(tx: Tx, tenantId: string, companyId: string): Promise<string | null> {
+  const [row] = await tx.select({ hash: companies.closingPasswordHash }).from(companies)
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+    .for('update')
     .limit(1);
   if (!row) throw AppError.notFound('Company not found');
   return row.hash ?? null;
@@ -186,13 +188,15 @@ export async function resetClosingPassword(
  * Returns the hash to store when a first password is being set.
  */
 export async function authorizeLockDateChange(
-  executor: DbOrTx,
+  // The caller's transaction: the company row stays locked until the new
+  // closing date (and a first password) are written in the same tx.
+  tx: Tx,
   tenantId: string,
   companyId: string,
   password: string | undefined,
   actor: ClosingPasswordActor,
 ): Promise<{ newHash: string | null }> {
-  const hash = await readHash(executor, tenantId, companyId);
+  const hash = await lockAndReadHash(tx, tenantId, companyId);
   if (hash) {
     if (password === undefined) throw closingPasswordRequired();
     if (!(await closingPasswordMatches(hash, password))) throw closingPasswordInvalid();

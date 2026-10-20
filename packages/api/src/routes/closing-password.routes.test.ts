@@ -268,6 +268,33 @@ describe('closing date change through PUT /company/settings', () => {
     expect(wrong.status).toBe(403);
     expect((await call('PUT', '/api/v1/company/settings', { lockDate: null, closingPassword: PASSWORD })).status).toBe(200);
   });
+
+  it('two concurrent first passwords: the company row is locked, so only one wins', async () => {
+    const [a, b] = await Promise.all([
+      call('PUT', '/api/v1/company/settings', { lockDate: '2026-03-31', closingPassword: 'first-pass-a' }),
+      db.transaction(async (tx) => {
+        const { newHash } = await closingPasswordService.authorizeLockDateChange(
+          tx, tenantId, companyId, 'first-pass-b', { userId: ownerId, userRole: 'owner' });
+        await tx.update(companies).set({ closingPasswordHash: newHash }).where(eq(companies.id, companyId));
+        return { status: 200 };
+      }).catch((e: { statusCode?: number }) => ({ status: e.statusCode ?? 500 })),
+    ]);
+    // Whichever committed first set the password; the other then had to
+    // match it, and didn't.
+    expect([a.status, b.status].sort()).toEqual([200, 403]);
+    const [row] = await db.select({ hash: companies.closingPasswordHash }).from(companies).where(eq(companies.id, companyId));
+    const winner = a.status === 200 ? 'first-pass-a' : 'first-pass-b';
+    expect(await bcrypt.compare(winner, row!.hash!)).toBe(true);
+  });
+
+  it('PUT /company/settings rolls back the whole change when the password is wrong', async () => {
+    await setPassword();
+    const wrong = await call('PUT', '/api/v1/company/settings', { lockDate: '2026-09-30', currency: 'EUR', closingPassword: 'wrong-one' });
+    expect(wrong.status).toBe(403);
+    const [row] = await db.select().from(companies).where(eq(companies.id, companyId));
+    expect(row!.lockDate).toBe('2026-06-30');
+    expect(row!.currency).not.toBe('EUR');
+  });
 });
 
 describe('posting into the closed period with closingPassword', () => {
