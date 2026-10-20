@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import {
   createDailySalesTemplateSchema,
   updateDailySalesTemplateSchema,
@@ -17,7 +18,10 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
 import * as service from '../services/daily-sales.service.js';
+import { lockContextMiddleware } from '../services/lock-context.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 
 export const dailySalesRouter = Router();
 dailySalesRouter.use(authenticate);
@@ -26,7 +30,7 @@ dailySalesRouter.use(requireResource('daily_sales'));
 
 // ── Templates ──
 dailySalesRouter.get('/templates', async (req, res) => {
-  res.json({ templates: await service.listTemplates(req.tenantId) });
+  res.json({ templates: await service.listTemplates(req.tenantId, req.companyId) });
 });
 
 dailySalesRouter.post('/templates', validate(createDailySalesTemplateSchema), async (req, res) => {
@@ -35,32 +39,32 @@ dailySalesRouter.post('/templates', validate(createDailySalesTemplateSchema), as
 });
 
 dailySalesRouter.get('/templates/:id', async (req, res) => {
-  res.json({ template: await service.getTemplate(req.tenantId, req.params['id']!) });
+  res.json({ template: await service.getTemplate(req.tenantId, req.params['id']!, req.companyId) });
 });
 
 dailySalesRouter.put('/templates/:id', validate(updateDailySalesTemplateSchema), async (req, res) => {
-  res.json({ template: await service.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId) });
+  res.json({ template: await service.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId) });
 });
 
 dailySalesRouter.post('/templates/:id/duplicate', validate(duplicateDailySalesTemplateSchema), async (req, res) => {
-  const template = await service.duplicateTemplate(req.tenantId, req.params['id']!, req.body, req.userId);
+  const template = await service.duplicateTemplate(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.status(201).json({ template });
 });
 
 dailySalesRouter.delete('/templates/:id', async (req, res) => {
-  await service.deleteTemplate(req.tenantId, req.params['id']!, req.userId);
+  await service.deleteTemplate(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ deleted: true });
 });
 
 dailySalesRouter.put('/templates/:id/lines', validate(replaceDailySalesTemplateLinesSchema), async (req, res) => {
-  const template = await service.replaceTemplateLines(req.tenantId, req.params['id']!, req.body.lines, req.userId);
+  const template = await service.replaceTemplateLines(req.tenantId, req.params['id']!, req.body.lines, req.userId, req.companyId);
   res.json({ template });
 });
 
 // ── Entries ──
 dailySalesRouter.get('/entries', async (req, res) => {
   const filters = dailySalesEntriesFilterSchema.parse(req.query);
-  const { entries, total } = await service.listEntries(req.tenantId, filters);
+  const { entries, total } = await service.listEntries(req.tenantId, filters, req.companyId);
   res.json({ entries, total });
 });
 
@@ -70,26 +74,40 @@ dailySalesRouter.post('/entries', validate(createDailySalesEntrySchema), async (
 });
 
 dailySalesRouter.post('/entries/preview', validate(previewDailySalesEntrySchema), async (req, res) => {
-  res.json(await service.previewEntry(req.tenantId, req.body));
+  res.json(await service.previewEntry(req.tenantId, req.body, req.companyId));
 });
 
 dailySalesRouter.get('/entries/:id', async (req, res) => {
-  res.json({ entry: await service.getEntry(req.tenantId, req.params['id']!) });
+  res.json({ entry: await service.getEntry(req.tenantId, req.params['id']!, req.companyId) });
 });
 
 dailySalesRouter.put('/entries/:id', validate(updateDailySalesEntrySchema), async (req, res) => {
-  res.json({ entry: await service.updateDraft(req.tenantId, req.params['id']!, req.body, req.userId) });
+  res.json({ entry: await service.updateDraft(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId) });
 });
 
-dailySalesRouter.post('/entries/:id/post', async (req, res) => {
+// Posting and voiding check the closing date like every other posting
+// (U-57): a closed-period date answers 423 TB_PERIOD_LOCKED, and
+// `closingPassword` in the body (closing-password-v1) opens it; a wrong one
+// is 403 CLOSING_PASSWORD_INVALID, rate limited (429).
+const closingPasswordBodyDoc = z.object({
+  closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
+});
+
+dailySalesRouter.post('/entries/:id/post', closingPasswordLimiter, lockContextMiddleware, describe({
+  summary: 'Post a daily-sales entry (closing date enforced; daily-sales-lock-v1)',
+  body: closingPasswordBodyDoc,
+}), async (req, res) => {
   res.json({ entry: await service.postEntry(req.tenantId, req.params['id']!, req.userId, req.companyId) });
 });
 
-dailySalesRouter.post('/entries/:id/void', async (req, res) => {
-  res.json({ entry: await service.voidEntry(req.tenantId, req.params['id']!, req.userId) });
+dailySalesRouter.post('/entries/:id/void', closingPasswordLimiter, lockContextMiddleware, describe({
+  summary: 'Void a posted daily-sales entry (closing date enforced; daily-sales-lock-v1)',
+  body: closingPasswordBodyDoc,
+}), async (req, res) => {
+  res.json({ entry: await service.voidEntry(req.tenantId, req.params['id']!, req.userId, req.companyId) });
 });
 
 dailySalesRouter.delete('/entries/:id', async (req, res) => {
-  await service.deleteEntry(req.tenantId, req.params['id']!, req.userId);
+  await service.deleteEntry(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ deleted: true });
 });

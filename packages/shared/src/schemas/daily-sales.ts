@@ -9,7 +9,10 @@ export const dailySalesSectionEnum = z.enum([
 ]);
 export const dailySalesSideEnum = z.enum(['debit', 'credit']);
 
-const money = z.union([z.string(), z.number()]);
+// Amounts are decimal strings only (U-57): a JSON number is refused with
+// 400 so a float never reaches the ledger. Optionally signed, at most four
+// places (the scale of every money column).
+const money = z.string().trim().regex(/^-?\d{1,15}(\.\d{1,4})?$/, 'Amount must be a decimal string with at most 4 decimal places');
 
 // ── Templates ──────────────────────────────────────────────────
 export const createDailySalesTemplateSchema = z.object({
