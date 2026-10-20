@@ -489,7 +489,7 @@ export function buildFace(ctx: EngineCtx, stmt: FsStatementConfig, opt: FaceOpti
       const last = vis[vis.length - 1];
       if (last) last.ruleBelow = n.ruleBelow ?? 'none';
       if (top) {
-        out.push(row({ key: `${n.id}:t`, nodeId: n.id, kind: 'subtotal', caption: `Total ${(n.caption || 'detail').toLowerCase()}`, level: indent, styleRole: 'subtotal', ruleAbove: 'single', ref: { totalOf: e } }, nodeAmounts(e)));
+        out.push(row({ key: `${n.id}:t`, nodeId: n.id, kind: 'subtotal', caption: n.totalCaption || `Total ${(n.caption || 'detail').toLowerCase()}`, level: indent, styleRole: 'subtotal', ruleAbove: 'single', ref: { totalOf: e } }, nodeAmounts(e)));
       }
       if (!any && !top) return false;
       return true;
