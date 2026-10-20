@@ -152,7 +152,8 @@ export async function updateLogo(tenantId: string, companyId: string, logoUrl: s
 
   if (!updated) throw AppError.internal('Failed to update logo');
   await auditLog(tenantId, 'update', 'company', updated.id, { logoUrl: existing.logoUrl }, { logoUrl }, userId);
-  return updated;
+  // The full row goes back to POST /company/logo: never with the hash (U-15).
+  return withoutClosingPasswordHash(updated);
 }
 
 export async function markSetupComplete(tenantId: string, companyId: string) {
@@ -256,11 +257,15 @@ export async function updateSmtpSettings(
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
     .returning();
 
+  if (!updated) throw AppError.internal('Failed to update email settings');
   if (userId) {
     await auditLog(tenantId, 'update', 'company', companyId, { smtpHost: existing.smtpHost }, { smtpHost: input.smtpHost }, userId);
   }
 
-  return updated;
+  // No secret leaves the service layer: neither the closing-date password
+  // hash (U-15) nor the stored SMTP password.
+  const { smtpPass: _smtpPass, ...safe } = withoutClosingPasswordHash(updated);
+  return safe;
 }
 
 export async function createCompanyForTenant(tenantId: string, businessName: string) {
@@ -268,7 +273,7 @@ export async function createCompanyForTenant(tenantId: string, businessName: str
     tenantId,
     businessName,
   }).returning();
-  return company;
+  return company ? withoutClosingPasswordHash(company) : company;
 }
 
 // Create an additional company under the same tenant.
@@ -303,7 +308,7 @@ export async function createAdditionalCompany(tenantId: string, input: { busines
 
   if (!company) throw AppError.internal('Failed to create company');
 
-  return company;
+  return withoutClosingPasswordHash(company);
 }
 
 // Delete an additional company from a tenant. Safe because companies within a

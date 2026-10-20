@@ -165,6 +165,36 @@ describe('closing-date password: set, change, clear', () => {
     expect(audits).toContain('closing_password');
   });
 
+  it('POST /company/logo and the other company writes never return the hash', async () => {
+    await setPassword();
+    const [row] = await db.select({ hash: companies.closingPasswordHash }).from(companies).where(eq(companies.id, companyId));
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
+    const form = new FormData();
+    form.append('logo', new Blob([png], { type: 'image/png' }), 'logo.png');
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/company/logo`, {
+      method: 'POST', headers: { Authorization: `Bearer ${ownerToken}` }, body: form,
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json() as { company: Record<string, unknown> };
+    expect(json.company['logoUrl']).toMatch(/^\/uploads\/logos\//);
+    expect(json.company).not.toHaveProperty('closingPasswordHash');
+    expect(JSON.stringify(json)).not.toContain(row!.hash!);
+
+    const put = await call('PUT', '/api/v1/company', { businessName: 'Closing Co 2' });
+    expect(put.status).toBe(200);
+    expect(put.json.company).not.toHaveProperty('closingPasswordHash');
+    const created = await call('POST', '/api/v1/company/create', { businessName: 'Second Co' });
+    expect(created.status).toBe(201);
+    expect(created.json.company).not.toHaveProperty('closingPasswordHash');
+
+    const { updateSmtpSettings } = await import('../services/company.service.js');
+    const smtp = await updateSmtpSettings(tenantId, companyId, {
+      smtpHost: '', smtpPort: 587, smtpUser: '', smtpPass: 'stored-pass', smtpFrom: 'a@example.com',
+    });
+    expect(smtp).not.toHaveProperty('closingPasswordHash');
+    expect(smtp).not.toHaveProperty('smtpPass');
+  });
+
   it('changing or clearing needs the current password', async () => {
     await setPassword();
     const missing = await call('PUT', '/api/v1/company/closing-password', { newPassword: 'another-pass' });
