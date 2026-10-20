@@ -184,6 +184,24 @@ describe('AJEs and the closing-date password', () => {
   });
 });
 
+describe('PUT /tb/closing-date with a wrong password', () => {
+  it('is 403, changes nothing and is audited as closing_password_failed', async () => {
+    await setPassword();
+    const r = await call('PUT', '/api/v1/tb/closing-date', { closingDate: '2026-09-30', closingPassword: 'wrong-pass' });
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe('CLOSING_PASSWORD_INVALID');
+    const [company] = await db.select({ lockDate: companies.lockDate }).from(companies).where(eq(companies.id, companyId));
+    expect(company!.lockDate).toBe('2026-06-30');
+    const rows = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'closing_password_failed')));
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows)).toContain('closing_date');
+    expect(JSON.stringify(rows)).not.toContain('wrong-pass');
+    // The right one goes through, in the same transaction as its audit row.
+    expect((await call('PUT', '/api/v1/tb/closing-date', { closingDate: '2026-09-30', closingPassword: PASSWORD })).status).toBe(200);
+  });
+});
+
 describe('POST /transactions/:id/void and the TRIAL_BALANCE_V1 flag', () => {
   it('refuses an AJE when the trial balance module is off', async () => {
     const created = await call('POST', '/api/v1/tb/ajes', aje('2026-07-15'));

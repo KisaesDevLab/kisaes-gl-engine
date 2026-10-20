@@ -13,7 +13,7 @@ import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { getLockContext } from './lock-context.js';
-import { closingPasswordMatches, closingPasswordInvalid } from './closing-password.service.js';
+import { closingPasswordMatches, closingPasswordInvalid, auditClosingPasswordFailed } from './closing-password.service.js';
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 import { escapeLike } from '../utils/sql-like.js';
 
@@ -310,7 +310,12 @@ export async function checkLockDate(
       if (!ok) break;
       ok = await closingPasswordMatches(hash, ctx.closingPassword);
     }
-    if (!ok) throw closingPasswordInvalid();
+    if (!ok) {
+      await auditClosingPasswordFailed(tenantId, companyId ?? null, ctx.userId, 'posting', {
+        transactionId: opts.txnId ?? null, txnDate,
+      });
+      throw closingPasswordInvalid();
+    }
     return permit('password');
   }
 

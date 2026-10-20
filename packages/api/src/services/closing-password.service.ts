@@ -23,6 +23,26 @@ export const CLOSING_PASSWORD_MAX_BYTES = 72;
 /** Applies to new passwords only; one set earlier keeps working until changed. */
 export const CLOSING_PASSWORD_MIN_LENGTH = 8;
 
+/** Where a wrong closing-date password was tried (closing_password_failed audit rows). */
+export type ClosingPasswordFailure = 'posting' | 'change_password' | 'closing_date' | 'reset_not_owner';
+
+/**
+ * Records a failed closing-date password attempt as `closing_password_failed`:
+ * who, which company, where, and for a posting the transaction and date.
+ * Never the password or a hash. Written on its own connection (never the
+ * caller's transaction), so it stays when the caller rolls back; audit_log
+ * has no foreign keys, so it can't wait on the caller's row lock.
+ */
+export async function auditClosingPasswordFailed(
+  tenantId: string,
+  companyId: string | null,
+  userId: string | undefined,
+  context: ClosingPasswordFailure,
+  facts: { transactionId?: string | null; txnDate?: string | null } = {},
+): Promise<void> {
+  await auditLog(tenantId, 'update', 'closing_password_failed', companyId, null, { context, ...facts }, userId);
+}
+
 export function closingPasswordInvalid(): AppError {
   return AppError.forbidden('The closing date password is not correct.', 'CLOSING_PASSWORD_INVALID');
 }
@@ -114,7 +134,10 @@ export async function setClosingPassword(
     if (!row) throw AppError.notFound('Company not found');
     const wasSet = !!row.hash;
     if (wasSet) {
-      if (!(await closingPasswordMatches(row.hash, input.currentPassword))) throw closingPasswordInvalid();
+      if (!(await closingPasswordMatches(row.hash, input.currentPassword))) {
+        await auditClosingPasswordFailed(tenantId, companyId, actor.userId, 'change_password');
+        throw closingPasswordInvalid();
+      }
     } else if (!canSetFirstPassword(actor)) {
       throw AppError.forbidden('Only the company owner can set the closing date password.', 'CLOSING_PASSWORD_OWNER_REQUIRED');
     }
@@ -147,6 +170,7 @@ export async function resetClosingPassword(
   actor: ClosingPasswordActor,
 ): Promise<{ closingPasswordSet: boolean }> {
   if (!canSetFirstPassword(actor)) {
+    await auditClosingPasswordFailed(tenantId, companyId, actor.userId, 'reset_not_owner');
     throw AppError.forbidden('Only the company owner can reset the closing date password.', 'CLOSING_PASSWORD_OWNER_REQUIRED');
   }
   if (input.newPassword !== null) assertNewClosingPassword(input.newPassword);
@@ -200,7 +224,10 @@ export async function authorizeLockDateChange(
   const hash = await lockAndReadHash(tx, tenantId, companyId);
   if (hash) {
     if (password === undefined) throw closingPasswordRequired();
-    if (!(await closingPasswordMatches(hash, password))) throw closingPasswordInvalid();
+    if (!(await closingPasswordMatches(hash, password))) {
+      await auditClosingPasswordFailed(tenantId, companyId, actor.userId, 'closing_date');
+      throw closingPasswordInvalid();
+    }
     return { newHash: null };
   }
   if (password === undefined) return { newHash: null };

@@ -391,6 +391,49 @@ describe('posting into the closed period with closingPassword', () => {
   });
 });
 
+describe('failed closing-date password attempts are audited (closing_password_failed)', () => {
+  async function failedRows() {
+    const rows = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'closing_password_failed')));
+    return rows.map((r) => ({ ...r, after: typeof r.afterData === 'string' ? JSON.parse(r.afterData) : r.afterData as any }));
+  }
+
+  it('a wrong password on a posting, a password change, a closing-date change and a non-owner reset', async () => {
+    await setPassword();
+    expect((await call('POST', '/api/v1/transactions', deposit('2026-05-01', '1.00', { closingPassword: 'wrong-post' }))).status).toBe(403);
+    expect((await call('PUT', '/api/v1/company/closing-password', { currentPassword: 'wrong-current', newPassword: 'another-pass' })).status).toBe(403);
+    expect((await call('PUT', '/api/v1/company/settings', { lockDate: '2026-09-30', closingPassword: 'wrong-date' })).status).toBe(403);
+    const accountant = await seedUser('accountant');
+    await expect(closingPasswordService.resetClosingPassword(tenantId, companyId,
+      { accountPassword: 'acct-pass', newPassword: null }, { userId: accountant.id, userRole: 'accountant' }))
+      .rejects.toMatchObject({ code: 'CLOSING_PASSWORD_OWNER_REQUIRED' });
+
+    const rows = await failedRows();
+    expect(rows.map((r) => r.after.context).sort()).toEqual(['change_password', 'closing_date', 'posting', 'reset_not_owner']);
+    const posting = rows.find((r) => r.after.context === 'posting')!;
+    expect(posting.userId).toBe(ownerId);
+    expect(posting.entityId).toBe(companyId);
+    expect(posting.after).toMatchObject({ txnDate: '2026-05-01', transactionId: null });
+    expect(rows.find((r) => r.after.context === 'reset_not_owner')!.userId).toBe(accountant.id);
+
+    // The failures changed nothing, and no secret reached the audit trail.
+    expect(await db.select().from(transactions).where(eq(transactions.tenantId, tenantId))).toHaveLength(0);
+    const [company] = await db.select().from(companies).where(eq(companies.id, companyId));
+    expect(company!.lockDate).toBe('2026-06-30');
+    const audits = await auditText();
+    for (const secret of ['wrong-post', 'wrong-current', 'wrong-date', 'acct-pass', PASSWORD, company!.closingPasswordHash!]) {
+      expect(audits).not.toContain(secret);
+    }
+  });
+
+  it('a right password or no password at all leaves no failure row', async () => {
+    await setPassword();
+    expect((await call('POST', '/api/v1/transactions', deposit('2026-05-01'))).status).toBe(423);
+    expect((await call('POST', '/api/v1/transactions', deposit('2026-05-01', '1.00', { closingPassword: PASSWORD }))).status).toBe(201);
+    expect(await failedRows()).toHaveLength(0);
+  });
+});
+
 describe('owner reset of a forgotten closing-date password (Q-239)', () => {
   const SIGN_IN = 'owner-sign-in-pass';
 
