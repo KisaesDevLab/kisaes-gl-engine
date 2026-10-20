@@ -47,6 +47,12 @@ async function call(method: string, p: string, body?: unknown, token = ownerJwt,
   return { status: r.status, json: {}, headers: r.headers, bytes: Buffer.from(await r.arrayBuffer()) };
 }
 
+type Listed = { id: string; name: string; role: string };
+/** The listed companies created by this file (the test database is shared, and the owner is a super admin who sees every company, Q-244). */
+function mine(list: Record<string, unknown>): Listed[] {
+  return (list as unknown as Listed[]).filter((t) => t.name.includes(stamp));
+}
+
 async function waitJob(jobId: string): Promise<Record<string, unknown>> {
   for (let i = 0; i < 2400; i++) {
     const r = await call('GET', `/api/v1/tenant-archives/jobs/${jobId}`);
@@ -133,14 +139,15 @@ describe('lifecycle routes', () => {
   it('creates and lists companies from the workspace session, never the workspace itself', async () => {
     const before = await call('GET', '/api/v1/tenants');
     expect(before.status).toBe(200);
-    expect(before.json).toEqual([]);
+    expect(Array.isArray(before.json)).toBe(true);
+    expect(mine(before.json)).toEqual([]);
     const created = await call('POST', '/api/v1/tenants', { name: `Routes Co ${stamp}`, businessType: 'default' });
     expect(created.status).toBe(201);
     companyId = created.json['id'] as string;
     tenantsToClean.push(companyId);
     const list = await call('GET', '/api/v1/tenants');
-    expect(list.json).toEqual([{ id: companyId, name: `Routes Co ${stamp}`, role: 'owner', createdAt: expect.any(String), updatedAt: expect.any(String) }]);
-    updatedAt = (list.json as unknown as Array<{ updatedAt: string }>)[0]!.updatedAt;
+    expect(mine(list.json)).toEqual([{ id: companyId, name: `Routes Co ${stamp}`, role: 'owner', createdAt: expect.any(String), updatedAt: expect.any(String) }]);
+    updatedAt = (mine(list.json)[0] as unknown as { updatedAt: string }).updatedAt;
     expect((list.json as unknown as Array<{ id: string }>).some((t) => t.id === workspaceId)).toBe(false);
     // Zero firm rows on desktop (F15).
     const { sql } = await import('drizzle-orm');
@@ -198,8 +205,8 @@ describe('lifecycle routes', () => {
     const result = job['result'] as Record<string, unknown>;
     expect(result['archiveId']).toBe(archiveId);
     expect(result['path']).toMatch(new RegExp(`${archiveId}\\.zip$`));
-    // The desktop owner is a super admin: their own hash never travels (H4).
-    expect(result['warnings']).toEqual(['PASSWORD_HASHES_OMITTED:1']);
+    // Every user's hash travels (Q-234): no warning about password hashes.
+    expect(result['warnings']).toEqual([]);
     archivePath = result['path'] as string;
     fileName = result['fileName'] as string;
     expect(path.resolve(archivePath).startsWith(path.resolve(process.env['CL_ARCHIVE_DIR']!))).toBe(true);
@@ -307,10 +314,38 @@ describe('lifecycle routes', () => {
     expect(fs.readdirSync(path.join(process.env['CL_ARCHIVE_DIR']!, 'imports'))).toEqual([]); // the upload is removed after the job
 
     const list = await call('GET', '/api/v1/tenants');
-    expect((list.json as unknown as Array<{ name: string }>).map((t) => t.name).sort()).toEqual([
+    expect(mine(list.json).map((t) => t.name).sort()).toEqual([
       `Restored by path ${stamp}`, `Restored by upload ${stamp}`, `Routes Co renamed ${stamp}`, `Routes Sys ${stamp}`,
     ]);
   }, 300_000);
+
+  it('the owner (super admin) sees every company, access row or not; other users see only their own (Q-244)', async () => {
+    const { sql } = await import('drizzle-orm');
+    const orphanId = crypto.randomUUID();
+    await dbm.db.execute(sql`INSERT INTO tenants (id, name, slug) VALUES (${orphanId}, ${`Routes Orphan ${stamp}`}, ${`orphan-${stamp}`})`);
+    tenantsToClean.push(orphanId);
+    // No access row for anyone: the owner still sees it, as 'owner' (the role switch-tenant issues there), and can open it.
+    const ownerList = await call('GET', '/api/v1/tenants');
+    expect(mine(ownerList.json).find((t) => t.id === orphanId)).toMatchObject({ name: `Routes Orphan ${stamp}`, role: 'owner' });
+    const sw = await call('POST', '/api/v1/auth/switch-tenant', { tenantId: orphanId });
+    expect(sw.status).toBe(200);
+    // The readonly user sees nothing until given a row, then exactly that company with its role.
+    const roBefore = await call('GET', '/api/v1/tenants', undefined, readonlyJwt);
+    expect(roBefore.status).toBe(200);
+    expect(roBefore.json).toEqual([]);
+    await dbm.db.execute(sql`INSERT INTO user_tenant_access (user_id, tenant_id, role) VALUES (${readonlyId}, ${companyId}, 'bookkeeper')`);
+    const roAfter = await call('GET', '/api/v1/tenants', undefined, readonlyJwt);
+    expect((roAfter.json as unknown as Listed[]).map((t) => ({ id: t.id, role: t.role }))).toEqual([{ id: companyId, role: 'bookkeeper' }]);
+    // An inactive row hides the company again.
+    await dbm.db.execute(sql`UPDATE user_tenant_access SET is_active = false WHERE user_id = ${readonlyId} AND tenant_id = ${companyId}`);
+    expect((await call('GET', '/api/v1/tenants', undefined, readonlyJwt)).json).toEqual([]);
+    await dbm.db.execute(sql`DELETE FROM user_tenant_access WHERE user_id = ${readonlyId} AND tenant_id = ${companyId}`);
+    // A super admin flag in an old token is not enough: the caller's own row decides.
+    const forged = jwt.sign({ userId: readonlyId, tenantId: workspaceId, role: 'readonly', isSuperAdmin: true }, (await import('../config/env.js')).env.JWT_SECRET, { expiresIn: '30m' });
+    const forgedList = await call('GET', '/api/v1/tenants', undefined, forged);
+    expect(forgedList.status).toBe(200);
+    expect(forgedList.json).toEqual([]);
+  }, 60_000);
 
   it('a scratch tenant is never listed and cannot be switched into, even by the owner (N4)', async () => {
     const { sql } = await import('drizzle-orm');

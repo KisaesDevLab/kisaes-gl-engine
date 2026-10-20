@@ -5,7 +5,8 @@
 /**
  * Tenant lifecycle routes (U-05), mounted at /api/v1/tenants in every mode.
  *
- *   GET    /               companies the user can access (never the workspace, never scratch copies)
+ *   GET    /               companies the user can access; on desktop a super admin sees every company
+ *                           (Q-244). Never the workspace, never scratch copies.
  *   POST   /               create a company (createOwnedTenant; no firm join)
  *   PATCH  /:id            rename the tenant label (409 STALE on an expectedUpdatedAt mismatch)
  *   POST   /:id/archives   start an archive export job -> 202 {jobId, archiveId}
@@ -26,6 +27,7 @@ import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
 import { assertNotWorkspace } from '../desktop/workspace.js';
+import { isDesktop } from '../desktop/profile.js';
 import * as authService from '../services/auth.service.js';
 import { runExport } from '../services/tenant-portability/export.service.js';
 import { assertPassphraseStrong, registerPassphrase, releasePassphrase } from '../services/tenant-portability/archive-crypto.js';
@@ -58,15 +60,24 @@ const tenantView = z.object({
 });
 
 tenantsRouter.get('/', describe({
-  summary: 'List the companies the current user can access',
+  summary: 'List the companies the current user can access (desktop: a super admin sees every company)',
   tags: ['tenants'],
   response: z.array(tenantView),
 }), async (req, res) => {
+  // Desktop: the owner (a super admin, decided from the caller's own row)
+  // sees every company on the install, access row or not (owner decision
+  // Q-244); switch-tenant already lets a super admin in and issues 'owner'
+  // where there is no row, so the list reports the same role. A server keeps
+  // the access-row list for everyone (super admins use the admin routes).
+  const seeAll = isDesktop() && (await db.execute(sql`
+    SELECT 1 FROM users WHERE id = ${req.userId} AND is_super_admin = true AND is_active = true
+  `)).rows.length > 0;
   const rows = (await db.execute(sql`
-    SELECT t.id, t.name, t.created_at AS "createdAt", t.updated_at AS "updatedAt", a.role
+    SELECT t.id, t.name, t.created_at AS "createdAt", t.updated_at AS "updatedAt", COALESCE(a.role, 'owner') AS role
     FROM tenants t
-    JOIN user_tenant_access a ON a.tenant_id = t.id AND a.user_id = ${req.userId} AND a.is_active = true
+    LEFT JOIN user_tenant_access a ON a.tenant_id = t.id AND a.user_id = ${req.userId} AND a.is_active = true
     WHERE t.is_workspace = false
+      AND (a.id IS NOT NULL OR ${seeAll}::boolean)
       AND NOT EXISTS (SELECT 1 FROM tenant_archive_imports i WHERE i.tenant_id = t.id AND i.scratch)
     ORDER BY t.name, t.id
   `)).rows as Array<{ id: string; name: string; createdAt: Date | null; updatedAt: Date | null; role: string }>;
