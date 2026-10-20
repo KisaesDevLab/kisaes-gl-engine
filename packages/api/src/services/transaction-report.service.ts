@@ -606,7 +606,7 @@ function inlineImagesHtml(atts: PreparedAttachment[], total: number): string {
 function linkedLineHtml(related: RelatedTransactionsResult): string {
   if (related.related.length === 0) return '';
   return `<div class="links"><span class="lbl">Linked:</span> ${related.related.map((r) =>
-    `<span class="rel">${escapeHtml(RELATION_LABELS[r.relation] ?? r.relation)} — ${escapeHtml(relatedLabel(r))}${r.contactName ? ` (${escapeHtml(r.contactName)})` : ''}${r.appliedAmount ? ` ${escapeHtml(fmtMoney(r.appliedAmount))}` : ''}${r.status === 'void' ? ' <span class="pill pill-void">void</span>' : ''}</span>`).join('')}${related.truncated ? ' <span class="muted">…</span>' : ''}</div>`;
+    `<span class="rel">${escapeHtml(RELATION_LABELS[r.relation] ?? r.relation)} — ${escapeHtml(relatedLabel(r))}${r.contactName ? ` (${escapeHtml(r.contactName)})` : ''}${r.appliedAmount ? ` ${escapeHtml(fmtMoney(r.appliedAmount))}` : ''}${includedInReport(r.status) ? '' : ` <span class="pill pill-void">${escapeHtml(r.status)}</span>`}</span>`).join('')}${related.truncated ? ' <span class="muted">…</span>' : ''}</div>`;
 }
 
 /** A valid IANA zone name, or UTC — the server's own zone means nothing to the reader. */
@@ -668,7 +668,7 @@ function summaryParts(opts: {
       <thead><tr><th>Relationship</th><th>Transaction</th><th>Date</th><th>Name</th><th class="num">Applied</th><th class="num">Total</th></tr></thead>
       <tbody>${related.map((r) => `<tr>
         <td>${escapeHtml(RELATION_LABELS[r.relation] ?? r.relation)}</td>
-        <td>${escapeHtml(relatedLabel(r))}${r.status === 'void' ? ' <span class="pill pill-void">void</span>' : ''}</td>
+        <td>${escapeHtml(relatedLabel(r))}${includedInReport(r.status) ? '' : ` <span class="pill pill-void">${escapeHtml(r.status)}</span>`}</td>
         <td>${escapeHtml(formatIsoUS(r.txnDate))}</td>
         <td>${escapeHtml(r.contactName ?? '')}</td>
         <td class="num">${r.appliedAmount ? fmtMoney(r.appliedAmount) : ''}</td>
@@ -676,7 +676,7 @@ function summaryParts(opts: {
       </tr>`).join('')}</tbody>
     </table>
     ${opts.related.truncated ? `<p class="muted">Only the first ${MAX_RELATED} linked transactions are shown.</p>` : ''}
-    ${related.some((r) => r.status === 'void') ? '<p class="muted">Voided transactions are listed for reference; their details and attachments are not included.</p>' : ''}
+    ${related.some((r) => !includedInReport(r.status)) ? '<p class="muted">Voided transactions are listed for reference (deleted ones too); their details and attachments are not included.</p>' : ''}
   </section>` : '';
 
   const head = `<header>
@@ -739,6 +739,14 @@ function rangeSummaryParts(opts: {
  * password-protected statement or a slow storage provider costs that one
  * file, never the report.
  */
+/**
+ * A related transaction is printed in full unless it is void or deleted
+ * (status NOT IN ('void', 'deleted')); those are only listed.
+ */
+export function includedInReport(status: string | null | undefined): boolean {
+  return status !== 'void' && status !== 'deleted';
+}
+
 export async function generateTransactionReportPdf(
   tenantId: string,
   txnId: string,
@@ -750,7 +758,7 @@ export async function generateTransactionReportPdf(
     const root = await getTransactionDetail(tenantId, txnId);
     const included: TransactionDetail[] = [root];
     for (const r of related.related) {
-      if (r.status !== 'void') included.push(await getTransactionDetail(tenantId, r.id));
+      if (includedInReport(r.status)) included.push(await getTransactionDetail(tenantId, r.id));
     }
     let activity: Map<string, TransactionActivityEvent[] | null> | null = null;
     if (opts.includeActivity) {
