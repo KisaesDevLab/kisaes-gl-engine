@@ -23,3 +23,11 @@ paths = [
   '''packages/api/src/routes/transactions\.delete\.routes\.test\.ts''',
   '''packages/api/src/services/lock-context\.test\.ts''',
 ]
+# Closing-date password placeholders in packages/api/src/routes/checks.routes.edit.test.ts
+# (current lines carry gitleaks:allow; these two exact values also cover the
+# branch's earlier commits). Not secrets: test-only values the engine must
+# accept or refuse.
+regexes = [
+  '''closing-pass-123''',
+  '''wrong-password''',
+]

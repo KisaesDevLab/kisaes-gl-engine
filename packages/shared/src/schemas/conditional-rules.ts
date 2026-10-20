@@ -307,3 +307,16 @@ export type MarkOverriddenInput = z.infer<typeof markOverriddenSchema>;
 // Listing actions referenced by tests. Re-exporting here so
 // the action catalog is reachable through the schemas barrel.
 export const _actionTypesForRefinement = ACTION_TYPES;
+
+// POST /practice/conditional-rules/evaluate (U-51, rules-evaluate-v1):
+// what the active rules would set for one description / amount / bank
+// account. Read-only. `amount` is a signed decimal string (negative = money
+// out, as on bank feed items); `txnDate` defaults to today.
+export const evaluateConditionalRulesSchema = z.object({
+  description: z.string().max(1000),
+  amount: z.string().trim().regex(/^-?\d{1,15}(\.\d{1,4})?$/, 'Must be a decimal amount with at most 4 decimal places'),
+  contactId: z.string().uuid().nullable().optional(),
+  bankAccountId: z.string().uuid(),
+  txnDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
+});
+export type EvaluateConditionalRulesInput = z.infer<typeof evaluateConditionalRulesSchema>;

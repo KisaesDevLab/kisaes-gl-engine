@@ -317,6 +317,7 @@ describe('desktop first run: info and initialize', () => {
     });
     expect(typeof r.json.dbSuperuser).toBe('boolean');
     expect(r.json.capabilities).toContain('register-exact-v1');
+    expect(r.json.capabilities).toEqual(expect.arrayContaining(['check-edit-v1', 'line-billable-v1', 'rules-evaluate-v1']));
   });
 
   it('rejects an invalid first-run body', async () => {

@@ -155,6 +155,10 @@ export interface JournalLineInput {
   tagId?: string | null;
   // Per-line payee ("Received From"). Persisted on journal_lines.contact_id.
   contactId?: string | null;
+  // Billable to the line's contact (U-50). Persisted on
+  // journal_lines.is_billable; billed_status becomes 'unbilled' when true
+  // and stays NULL otherwise. Callers check that contactId is set.
+  isBillable?: boolean;
   // ADR 0XY §3.2 — when the line references an item, the ledger service
   // batch-loads items.default_tag_id and feeds it into the resolver so
   // item-default resolution runs server-side. Persisted on the journal
@@ -181,6 +185,10 @@ export interface ExpenseLineItem {
   amount: string;
   description?: string;
   tagId?: string | null;
+  /** Per-line customer (U-49) → journal_lines.contact_id. */
+  contactId?: string | null;
+  /** Billable to the line's customer (U-50); requires contactId. */
+  isBillable?: boolean;
 }
 
 export interface CreateExpenseInput {
