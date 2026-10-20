@@ -179,14 +179,14 @@ export const SYSTEM_ACCOUNT_ROLES: SystemAccountRole[] = [
   },
   // Equity roles (U-55) — seeded by company entity type on company creation
   // and by migration 0223; see equity-roles.ts. Ordinary categories (an
-  // owner's draw is a normal bank-feed target), so the tenant's own admin
-  // may re-point them and nothing breaks while one is missing.
+  // owner's draw is a normal bank-feed target); nothing breaks while one is
+  // missing. Re-pointing stays with the system-accounts repair tool, like
+  // every role but suspense.
   ...EQUITY_ROLE_TAGS.map((tag): SystemAccountRole => ({
     tag,
     label: EQUITY_ROLE_SPECS[tag].name,
     description: 'Owner money (equity role): draws, contributions, distributions or paid-in capital by entity type.',
     accountType: 'equity',
-    tenantAssignable: true,
     required: false,
   })),
 ];

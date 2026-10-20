@@ -14,8 +14,10 @@
 // categorization or a client's suggestion. EQUITY_ROLE_TAGS lists the tags
 // that stay usable as a category even though they carry a system_tag.
 //
-// Accounts are seeded with is_system = false: the owner may rename or
-// retire them; a missing role simply resolves to null.
+// Accounts the engine creates for a role are system accounts (is_system,
+// like the daily-sales role accounts): protected from deletion and type
+// changes, still renameable. An adopted account keeps its own flag. A
+// missing role resolves to null.
 
 import type { entityTypes } from '../schemas/company.js';
 

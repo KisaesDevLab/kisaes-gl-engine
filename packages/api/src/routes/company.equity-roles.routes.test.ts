@@ -133,7 +133,7 @@ describe('equity roles (U-55)', () => {
     expect(res.json.roles.paid_in_capital).not.toBeNull();
     const rows = await tagged(t.tenantId);
     expect(rows.find((r) => r.systemTag === 'shareholder_distributions')!.name).toBe('Shareholder Distributions');
-    expect(rows.find((r) => r.systemTag === 'paid_in_capital')!.accountNumber).toBe('30140');
+    expect(rows.find((r) => r.systemTag === 'paid_in_capital')).toMatchObject({ accountNumber: '30140', isSystem: true });
 
     const before = (await tagged(t.tenantId)).length;
     expect(await ensureEquityRoleAccounts(t.tenantId)).toEqual([]);
@@ -210,7 +210,9 @@ describe('migration 0223 (equity roles backfill, journal line columns)', () => {
       expect(tagOf('Owner Contribution')).toBe('owner_contribution');
       expect(tagOf('Common Stock')).toBe('paid_in_capital');
       // Partnership roles created; 30180 was taken, so Partner Draws has no number.
-      expect(first.find((r) => r.system_tag === 'partner_draws')).toMatchObject({ name: 'Partner Draws', account_number: null, is_system: false });
+      expect(first.find((r) => r.system_tag === 'partner_draws')).toMatchObject({ name: 'Partner Draws', account_number: null, is_system: true });
+      // Adopted accounts keep their flag.
+      expect(first.find((r) => r.name === 'Owner Withdraw')!.is_system).toBe(false);
       expect(first.find((r) => r.system_tag === 'partner_contributions')).toMatchObject({ name: 'Partner Contributions', account_number: '30190' });
       expect(first.find((r) => r.system_tag === 'shareholder_distributions')).toMatchObject({ name: 'Shareholder Distributions', account_number: '30200' });
       expect(first.filter((r) => r.system_tag === 'paid_in_capital')).toHaveLength(1);

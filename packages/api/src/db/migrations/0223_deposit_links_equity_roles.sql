@@ -25,9 +25,10 @@
 --       Contributions; s_corp: Shareholder Distributions + Paid-in Capital;
 --       c_corp: Paid-in Capital + Dividends Paid). Companies of a tenant
 --       share one chart, so the accounts are tenant-wide (company_id NULL)
---       and is_system false (the owner may rename or retire them). The
---       template number is used when free, else NULL (account numbers are
---       unique per tenant).
+--       and system accounts (is_system true, as the engine's other role
+--       accounts; renameable, not deletable). Adopted accounts keep their
+--       flag. The template number is used when free, else NULL (account
+--       numbers are unique per tenant).
 --    Every statement skips a role the tenant already has, so running the
 --    file again changes nothing (idempotent). Only accounts rows change:
 --    no journal line, balance or posting is touched.
@@ -137,6 +138,6 @@ wanted AS (
 INSERT INTO "accounts" ("tenant_id", "company_id", "account_number", "name", "account_type", "detail_type", "is_active", "is_system", "system_tag")
 SELECT w.tenant_id, NULL,
   CASE WHEN EXISTS (SELECT 1 FROM "accounts" x WHERE x.tenant_id = w.tenant_id AND x.account_number = w.num) THEN NULL ELSE w.num END,
-  w.name, 'equity', 'owners_equity', true, false, w.role
+  w.name, 'equity', 'owners_equity', true, true, w.role
 FROM wanted w
 WHERE NOT EXISTS (SELECT 1 FROM "accounts" x WHERE x.tenant_id = w.tenant_id AND x.system_tag = w.role);

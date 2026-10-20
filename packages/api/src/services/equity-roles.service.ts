@@ -84,7 +84,9 @@ export async function ensureEquityRoleAccounts(
       name,
       accountType: 'equity',
       detailType: spec.detailType,
-      isSystem: false,
+      // Engine-made role account: a system account, as the daily-sales
+      // roles are (an adopted account above keeps its own flag).
+      isSystem: true,
       systemTag: tag,
       isActive: true,
     }).returning({ id: accounts.id, accountNumber: accounts.accountNumber });
