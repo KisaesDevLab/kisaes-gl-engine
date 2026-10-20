@@ -41,6 +41,7 @@ describe('migration 0218 mybooks_strip_secret_keys', () => {
     const docs: unknown[] = [
       { business_name: 'Co', smtp_pass: 'p1', nested: { stripe: { secretKeyEncrypted: 'p2', mode: 'live' } }, list: [{ apiKey: 'p3', n: 1 }, 'x', 2, null], remote_backup_config: { token: 'p4' }, inputTokens: 12, nothing: null },
       { smtpPass: 'only' },
+      { fileHash: 'abc', file_hash: 'abc', numbersHash: 'n', tokenExpiresAt: 'x', monthlyTokenLimit: 5, credentialId: 'c', fileHashSecret: 'drop', passwordHash: 'drop' },
       {},
       [],
       [{ password_hash: 'h' }, [{ refresh_token: 't', ok: true }]],

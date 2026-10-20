@@ -319,6 +319,40 @@ describe('Register Service', () => {
     expect(payees.pagination.totalRows).toBe(2);
   });
 
+  // The register ending balance (no end_date) is the account's stored
+  // balance: posted transactions only, whatever filters are applied.
+  it('ties the ending balance to accounts.balance with a draft present and a filter on', async () => {
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-03-01',
+      lines: [
+        { accountId: bankAccountId, debit: '400.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '400.00' },
+      ],
+    });
+    await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-03-02',
+      lines: [
+        { accountId: expenseAccountId, debit: '75.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '75.00' },
+      ],
+    });
+    await ledger.postTransaction(tenantId, {
+      txnType: 'deposit', txnDate: '2026-03-03', status: 'draft',
+      lines: [
+        { accountId: bankAccountId, debit: '5000.00', credit: '0' },
+        { accountId: revenueAccountId, debit: '0', credit: '5000.00' },
+      ],
+    });
+    const [acct] = await db.select({ balance: accounts.balance }).from(accounts).where(eq(accounts.id, bankAccountId));
+    const stored = Number(acct!.balance);
+    expect(stored).toBe(325);
+
+    const unfiltered = await registerService.getRegister(tenantId, bankAccountId, {});
+    const filtered = await registerService.getRegister(tenantId, bankAccountId, { txnType: 'expense' });
+    expect(unfiltered.endingBalance).toBe(stored);
+    expect(filtered.endingBalance).toBe(stored);
+  });
+
   it('should compute balance_forward correctly', async () => {
     // Transaction in February
     await ledger.postTransaction(tenantId, {

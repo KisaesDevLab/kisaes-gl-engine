@@ -21,6 +21,22 @@ describe('isSecretKey', () => {
       expect(isSecretKey(k), k).toBe(false);
     }
   });
+
+  it('keeps content digests, expiry/limit bookkeeping and public ids in the audit trail', () => {
+    for (const k of [
+      'fileHash', 'file_hash', 'sourceFileHash', 'numbersHash', 'contentHash',
+      'tokenExpiresAt', 'accessTokenExpiresAt', 'monthlyTokenLimit',
+      'tfaTotpVerified', 'tfaTotpLastStep', 'credentialId', 'credential_id',
+    ]) {
+      expect(isSecretKey(k), k).toBe(false);
+    }
+  });
+
+  it('still strips secrets that merely resemble an exempt name', () => {
+    for (const k of ['fileHashSecret', 'passwordHash', 'tokenExpiresAtToken', 'credentialIdSecret', 'refreshTokenExpiresAt', 'tfaTotpSecret']) {
+      expect(isSecretKey(k), k).toBe(true);
+    }
+  });
 });
 
 describe('stripSecretKeys', () => {

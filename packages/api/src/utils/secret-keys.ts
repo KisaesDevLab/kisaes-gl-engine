@@ -13,11 +13,19 @@
  * (plan.ts SECRET_COLUMN_RE) applied to camelCase and snake_case keys,
  * minus LLM token counts (`inputTokens`, `output_tokens`), plus the
  * secret jsonb config column (`remote_backup_config` / `remoteBackupConfig`).
- * It must stay valid in both JavaScript and PostgreSQL ARE syntax.
+ * It must stay valid in both JavaScript and PostgreSQL ARE syntax (and
+ * contain no single quote: it is embedded in a SQL string literal).
  */
 
+// Whole-key exemptions for names that only contain a secret-looking word:
+// content digests (`fileHash`), expiry/limit/step bookkeeping, and public
+// identifiers. They are anchored with `$`, so `fileHashSecret` is still a
+// secret. Keep the list short and exact; when in doubt a key is stripped.
+const EXEMPT_KEYS =
+  '(file_?hash|source_?file_?hash|numbers_?hash|content_?hash|(access_?)?token_?expires_?at|monthly_?token_?limit|tfa_?totp_?verified|tfa_?totp_?last_?step|credential_?id)';
+
 export const SECRET_KEY_PATTERN =
-  '(secret|token(?!s$)|password|pass$|passwd|passphrase|api_?key|encrypted|hash|otp|refresh|credential|remote_?backup_?config)';
+  `^(?!${EXEMPT_KEYS}$).*(secret|token(?!s$)|password|pass$|passwd|passphrase|api_?key|encrypted|hash|otp|refresh|credential|remote_?backup_?config)`;
 
 export const SECRET_KEY_RE = new RegExp(SECRET_KEY_PATTERN, 'i');
 
