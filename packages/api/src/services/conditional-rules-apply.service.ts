@@ -392,3 +392,95 @@ async function stageOnFeedItem(
     .set(updates)
     .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
 }
+
+// ─── Read-only evaluation (U-51) ──────────────────────────────
+
+export interface RuleEvaluateInput {
+  /** Bank / register description the rules test as the descriptor. */
+  description: string;
+  /** Signed decimal string, same sign convention as bank feed items. */
+  amount: string;
+  /** GL account the money moves through (the rules' account_source_id). */
+  bankAccountId: string;
+  /** Payee already chosen; its display name is appended to the descriptor
+   *  the way a check's payee is for feed items. Must be this tenant's. */
+  payeeName?: string | null;
+  /** YYYY-MM-DD; defaults to today (UTC) when omitted. */
+  date?: string;
+}
+
+export interface RuleEvaluateMatch {
+  ruleId: string;
+  ruleName: string;
+  accountId: string | null;
+  tagId: string | null;
+  contactId: string | null;
+}
+
+/**
+ * Runs the tenant's active conditional rules against a description /
+ * amount / bank account, exactly as the bank-feed pipeline would (same
+ * rule list, tier order, symbol resolution and action aggregation), and
+ * returns what they would set — without staging anything on a feed item
+ * and without recording a fire. Read-only and offline.
+ *
+ * `ruleId` / `ruleName` name the first rule that matched (highest
+ * priority); the account / tag / contact are the aggregated result of
+ * every rule that fired, as the pipeline would stage them.
+ */
+export async function evaluateForInput(
+  tenantId: string,
+  input: RuleEvaluateInput,
+  opts: ApplyOptions = {},
+): Promise<RuleEvaluateMatch | null> {
+  const tieredEnabled = await featureFlagsService
+    .isEnabled(tenantId, 'RULES_TIERED_V1')
+    .catch(() => false);
+
+  let rules: ConditionalRule[];
+  if (tieredEnabled) {
+    const assignment = await tenantFirmAssignmentService.getActiveForTenant(tenantId);
+    rules = await crudService.listEvaluableRulesForTenant(tenantId, {
+      currentUserId: opts.currentUserId ?? null,
+      firmId: assignment?.firmId ?? null,
+    });
+  } else {
+    rules = await crudService.listActiveOrderedByPriority(tenantId);
+  }
+  if (rules.length === 0) return null;
+
+  const ctx = engine.contextFromFeedItem({
+    description: input.description,
+    originalDescription: null,
+    amount: input.amount,
+    feedDate: input.date ?? new Date().toISOString().slice(0, 10),
+    bankConnectionAccountId: input.bankAccountId,
+    payeeNameOnCheck: input.payeeName ?? null,
+  });
+  const matches = engine.evaluateRules(rules, ctx);
+  if (matches.length === 0) return null;
+
+  const ruleById = new Map(rules.map((r) => [r.id, r]));
+  let aggregated: Action[];
+  if (tieredEnabled) {
+    const resolvedMatches: RuleEvaluationResult[] = [];
+    for (const match of matches) {
+      const rule = ruleById.get(match.ruleId);
+      if (!rule) continue;
+      const resolved = await symbolResolution.resolveActionsForTenant(tenantId, match.appliedActions, { scope: rule.scope });
+      resolvedMatches.push({ ...match, appliedActions: resolved });
+    }
+    aggregated = aggregateActionsTiered(resolvedMatches, ruleById);
+  } else {
+    aggregated = aggregateActions(matches.flatMap((m) => m.appliedActions));
+  }
+
+  const first = ruleById.get(matches[0]!.ruleId)!;
+  const out: RuleEvaluateMatch = { ruleId: first.id, ruleName: first.name, accountId: null, tagId: null, contactId: null };
+  for (const a of aggregated) {
+    if (a.type === 'set_account') out.accountId = a.accountId;
+    else if (a.type === 'set_tag') out.tagId = a.tagId ?? null;
+    else if (a.type === 'set_vendor') out.contactId = a.vendorId;
+  }
+  return out;
+}

@@ -138,6 +138,11 @@ export const journalLines = pgTable('journal_lines', {
   // True on the reversing lines persisted by voidTransaction (rule 23,
   // migration 0112). Document views filter these out; the GL keeps them.
   isVoidReversal: boolean('is_void_reversal').notNull().default(false),
+  // Billable to the line's contact (U-50, migration 0221). billedStatus is
+  // NULL when not billable, 'unbilled' when billable and not yet invoiced,
+  // 'billed' once invoiced (CHECK journal_lines_billed_status_chk).
+  isBillable: boolean('is_billable').notNull().default(false),
+  billedStatus: text('billed_status'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

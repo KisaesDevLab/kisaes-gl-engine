@@ -64,6 +64,10 @@ export const createExpenseSchema = z.object({
     description: z.string().optional(),
     // ADR 0XX: per-line tag.
     tagId: z.string().uuid().nullable().optional(),
+    // Per-line customer (U-49), persisted on journal_lines.contact_id.
+    contactId: z.string().uuid().nullable().optional(),
+    // Billable to the line's customer (U-50); requires contactId.
+    isBillable: z.boolean().optional(),
   })).max(MAX_LINES).optional(),
   memo: z.string().optional(),
   tags: z.array(z.string().uuid()).optional(),

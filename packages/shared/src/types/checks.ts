@@ -30,11 +30,23 @@ export interface WriteCheckInput {
     description?: string;
     amount: string;
     tagId?: string | null;
+    /** Per-line customer (U-49) → journal_lines.contact_id. */
+    contactId?: string | null;
+    /** Billable to the line's customer (U-50); requires contactId. */
+    isBillable?: boolean;
   }>;
   tagIds?: string[];
   /** Draft id the form's attachments were uploaded against, relinked to the
    *  created check by POST /checks. */
   draftAttachmentId?: string;
+}
+
+/** PUT /checks/:id body (check-edit-v1); see updateCheckSchema. */
+export interface UpdateCheckInput extends Omit<WriteCheckInput, 'printLater' | 'draftAttachmentId'> {
+  /** Absent keeps the current print state; true = back to the queue. */
+  printLater?: boolean;
+  /** Required when a PRINTED check's printed face changes. */
+  printedCheckChange?: 'reprint' | 'keep_number';
 }
 
 // Single source of truth for the selectable check print layouts. The
