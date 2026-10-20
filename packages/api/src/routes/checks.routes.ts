@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { writeCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, updateCheckMemoSchema, STEP_UP_REQUIRED } from '@kis-books/shared';
+import { writeCheckSchema, updateCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, updateCheckMemoSchema, STEP_UP_REQUIRED } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { hasTenantOwnerPower } from '../middleware/firm-capabilities.js';
 import { requireResource } from '../middleware/permission.js';
@@ -156,19 +156,23 @@ checksRouter.put('/settings', validate(checkSettingsSchema), async (req, res) =>
   res.json({ settings: merged });
 });
 
-// Edit a check (U-48, capability check-edit-v1). Same body as POST /checks.
-// Declared after PUT /settings so that static path is not read as an id.
-// Closed periods take closingPassword (or a staff overrideConfirmed) exactly
-// as PUT /transactions/:id. Errors: 400 VALIDATION_ERROR (lines don't sum
-// exactly to amount, billable line without a customer, unknown line
-// customer), 400 CHECK_NOT_EDITABLE (a bill-payment check), 400 void check,
-// 404 not a check / deleted, 409 duplicate check number, 423
+// Edit a check (U-48, capability check-edit-v1). Body = POST /checks body
+// without draftAttachmentId; printLater has no default (absent keeps the
+// current print state) and printedCheckChange ('reprint' | 'keep_number')
+// is required when a PRINTED check's printed face changes. Declared after
+// PUT /settings so that static path is not read as an id. Closed periods
+// take closingPassword (or a staff overrideConfirmed) exactly as
+// PUT /transactions/:id. Errors: 400 VALIDATION_ERROR (amount not > 0,
+// lines don't sum exactly to amount, billable line without a customer, line
+// customer or tag outside the company), 400 CHECK_NOT_EDITABLE (a
+// bill-payment check), 400 void check, 404 not a check / deleted, 409
+// CHECK_PRINTED, 409 LINE_BILLED, 409 duplicate check number, 423
 // TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 rate limit.
-const updateCheckBodyDoc = writeCheckSchema.omit({ draftAttachmentId: true }).extend({
+const updateCheckBodyDoc = updateCheckSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-checksRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, validate(writeCheckSchema), describe({
+checksRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, validate(updateCheckSchema), describe({
   summary: 'Edit a check: lines, amount, payee, date, number and print status (check-edit-v1)',
   body: updateCheckBodyDoc,
   params: z.object({ id: z.string().uuid() }),

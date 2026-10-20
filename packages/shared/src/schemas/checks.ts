@@ -43,6 +43,23 @@ export const writeCheckSchema = z.object({
   draftAttachmentId: z.string().uuid().optional(),
 });
 
+// What to do with a PRINTED check whose printed face changes (amount, payee,
+// payee name or address, printed memo, bank account, date or number) on
+// PUT /checks/:id: 'reprint' sends it back to the print queue (number and
+// print stamp cleared); 'keep_number' keeps it numbered as a hand-written
+// check (print stamp cleared). Required in that case — 409 CHECK_PRINTED
+// without it.
+export const PRINTED_CHECK_CHANGES = ['reprint', 'keep_number'] as const;
+
+// PUT /checks/:id body (check-edit-v1). As writeCheckSchema, except:
+// printLater has NO default — absent keeps the check's current print state
+// (a queued check stays queued, a numbered one keeps its number) — and
+// printedCheckChange answers the printed-check question above.
+export const updateCheckSchema = writeCheckSchema.omit({ draftAttachmentId: true, printLater: true }).extend({
+  printLater: z.boolean().optional(),
+  printedCheckChange: z.enum(PRINTED_CHECK_CHANGES).optional(),
+});
+
 // Edit the memo line of a check that hasn't printed yet. Empty string is
 // meaningful — it means "print no memo" (see check.service).
 export const updateCheckMemoSchema = z.object({

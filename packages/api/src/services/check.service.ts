@@ -2,16 +2,20 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, count } from 'drizzle-orm';
-import type { WriteCheckInput } from '@kis-books/shared';
+import { eq, and, sql, count, inArray } from 'drizzle-orm';
+import type { WriteCheckInput, UpdateCheckInput } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
-import { transactions, companies, journalLines as journalLinesTable } from '../db/schema/index.js';
+import {
+  transactions, companies, journalLines as journalLinesTable, tags, transactionTags,
+} from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { signatureApplies } from './check-signature.service.js';
-import { assertLineContacts } from './line-contacts.service.js';
+import { assertLineContacts, assertBillableLinesHaveContact } from './line-contacts.service.js';
 import { exactAmount } from '../utils/money.js';
+import { env } from '../config/env.js';
+import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import crypto from 'crypto';
 
 // Check numbers are tracked PER BANK ACCOUNT in
@@ -103,14 +107,21 @@ async function allocateCheckNumber(executor: DbOrTx, tenantId: string, bankAccou
   return Number(assigned);
 }
 
+type CheckBody = Pick<WriteCheckInput, 'amount' | 'lines' | 'bankAccountId'>;
+
 /**
  * Journal lines for a check: DR each expense line, CR the bank account.
- * The line amounts must sum EXACTLY to the check amount (decimal
- * arithmetic, no tolerance) — 400 VALIDATION_ERROR otherwise. Line
- * customers and billable marks are checked too (U-49, U-50).
+ * In-memory rules only (400 VALIDATION_ERROR): the check amount must be
+ * greater than zero, the line amounts must sum EXACTLY to it (decimal
+ * arithmetic, no tolerance), and a billable line needs a customer. The
+ * database-backed scope checks (line customers, header tags) run inside
+ * the posting transaction — assertCheckRefsInScope.
  */
-async function buildCheckLines(tenantId: string, input: WriteCheckInput) {
+function buildCheckLines(input: CheckBody) {
   const amount = exactAmount(input.amount, 'amount');
+  if (!amount.greaterThan(0)) {
+    throw AppError.badRequest('The check amount must be greater than zero', 'VALIDATION_ERROR');
+  }
   const lineAmounts = input.lines.map((l, i) => exactAmount(l.amount, `lines[${i}].amount`));
   const sum = lineAmounts.reduce((s, a) => s.plus(a), exactAmount('0', 'amount'));
   if (!sum.equals(amount)) {
@@ -119,7 +130,7 @@ async function buildCheckLines(tenantId: string, input: WriteCheckInput) {
       'VALIDATION_ERROR',
     );
   }
-  await assertLineContacts(tenantId, input.lines);
+  assertBillableLinesHaveContact(input.lines);
 
   return [
     ...input.lines.map((l, i) => ({
@@ -135,8 +146,29 @@ async function buildCheckLines(tenantId: string, input: WriteCheckInput) {
   ];
 }
 
+/**
+ * Scope checks for a check's references, run on the posting transaction:
+ * line customers must be this tenant's (and in the company scope), and so
+ * must the header tagIds — 400 VALIDATION_ERROR otherwise. Line accounts
+ * and the bank account are checked by the ledger (assertAccountsInScope).
+ */
+async function assertCheckRefsInScope(
+  tx: DbOrTx, tenantId: string, companyId: string | undefined,
+  input: { lines: WriteCheckInput['lines']; tagIds?: string[] },
+) {
+  await assertLineContacts(tenantId, input.lines, tx, companyId);
+  const tagIds = [...new Set(input.tagIds ?? [])];
+  if (tagIds.length === 0) return;
+  const rows = await tx.select({ id: tags.id, companyId: tags.companyId }).from(tags)
+    .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, tagIds)));
+  if (rows.length !== tagIds.length
+    || (companyId && rows.some((r) => r.companyId !== null && r.companyId !== companyId))) {
+    throw AppError.badRequest('One or more tags do not belong to this company', 'VALIDATION_ERROR');
+  }
+}
+
 export async function createCheck(tenantId: string, input: WriteCheckInput, userId?: string, companyId?: string) {
-  const journalLines = await buildCheckLines(tenantId, input);
+  const journalLines = buildCheckLines(input);
 
   // Determine check number
   let checkNumber: number | null = null;
@@ -165,6 +197,7 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
   // check-fields UPDATE would leave a transaction posted that lacks a
   // check number — orphaned check-allocation that's hard to reconcile.
   const txn = await db.transaction(async (tx) => {
+    await assertCheckRefsInScope(tx, tenantId, companyId, input);
     const t = await ledger.postTransaction(tenantId, {
       txnType: 'expense',
       txnDate: input.txnDate,
@@ -185,7 +218,6 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
 
     if (input.tagIds && input.tagIds.length > 0) {
-      const { transactionTags } = await import('../db/schema/index.js');
       for (const tagId of input.tagIds) {
         await tx.insert(transactionTags).values({ transactionId: t.id, tagId, tenantId }).onConflictDoNothing();
       }
@@ -196,32 +228,84 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
   return { ...txn, checkNumber, printStatus, payeeNameOnCheck: input.payeeNameOnCheck };
 }
 
+/** The printed face of a check: what a PRINTED check carries on paper. */
+const PRINTED_FACE_FIELDS = [
+  'amount', 'contactId', 'payeeNameOnCheck', 'payeeAddress', 'printedMemo', 'bankAccountId', 'txnDate', 'checkNumber',
+] as const;
+type PrintedFaceField = (typeof PRINTED_FACE_FIELDS)[number];
+
 /**
- * Edit a check (U-48): the same body as createCheck. The ledger side goes
- * through ledger.updateTransaction, so the edit gets exactly the rules of
+ * Which printed-face fields an edit changes, compared the way the check
+ * prints: the amount exactly (decimal), the memo line as check-pdf picks it
+ * (printed memo, else the internal memo), the bank account from the check's
+ * bank (credit) line, and the number only when one is sent.
+ */
+async function printedFaceChanges(
+  tx: DbOrTx, tenantId: string, existing: typeof transactions.$inferSelect, input: UpdateCheckInput,
+): Promise<PrintedFaceField[]> {
+  const bankLines = await tx.select({ accountId: journalLinesTable.accountId }).from(journalLinesTable).where(and(
+    eq(journalLinesTable.tenantId, tenantId),
+    eq(journalLinesTable.transactionId, existing.id),
+    eq(journalLinesTable.isVoidReversal, false),
+    sql`${journalLinesTable.credit} > 0`,
+  ));
+  const oldMemoLine = existing.printedMemo ?? existing.memo ?? '';
+  const newMemoLine = (input.printedMemo || null) ?? (input.memo || null) ?? '';
+  const changed: Record<PrintedFaceField, boolean> = {
+    amount: !exactAmount(input.amount, 'amount').equals(existing.total ?? '0'),
+    contactId: (input.contactId ?? null) !== (existing.contactId ?? null),
+    payeeNameOnCheck: input.payeeNameOnCheck !== existing.payeeNameOnCheck,
+    payeeAddress: (input.payeeAddress || null) !== (existing.payeeAddress || null),
+    printedMemo: newMemoLine !== oldMemoLine,
+    bankAccountId: bankLines.length !== 1 || bankLines[0]!.accountId !== input.bankAccountId,
+    txnDate: input.txnDate !== existing.txnDate,
+    checkNumber: input.checkNumber !== undefined && input.checkNumber !== existing.checkNumber,
+  };
+  return PRINTED_FACE_FIELDS.filter((f) => changed[f]);
+}
+
+/**
+ * Edit a check (U-48). The ledger side goes through
+ * ledger.updateTransaction, so the edit gets exactly the rules of
  * PUT /transactions/:id — closing date and closing-date password (423 /
  * 403), void (400) and deleted (404) refusals, the reconciled-line guard,
- * balance reversal and the audit row with the before-image lines. The
- * check fields are written in the same database transaction.
+ * the billed-line guard (409 LINE_BILLED), balance reversal and the audit
+ * row with the before-image lines. The check fields, the header tags and
+ * the scope checks run in the same database transaction.
  *
- * Numbering:
- *   - printLater: back to the print queue, number and print stamp cleared;
- *   - checkNumber given: a printed check keeping its own number stays
- *     printed; otherwise the number is checked for duplicates on the bank
- *     account (409), the counter advanced past it, status 'hand_written'
- *     (as on create);
- *   - neither: a numbered check keeps its number and status (re-checked
+ * A PRINTED check is a piece of paper the payee may already hold. If the
+ * edit changes its printed face (amount, payee contact, name or address on
+ * the check, memo line, bank account, date, number) or sends printLater:
+ * true, the caller must say what happens to the paper —
+ * printedCheckChange 'reprint' (back to the queue, number and print stamp
+ * cleared) or 'keep_number' (stays numbered as 'hand_written', print stamp
+ * cleared; printLater: true needs 'reprint'). Without it: 409
+ * CHECK_PRINTED, nothing changes. Edits that leave the face alone (line
+ * accounts, descriptions, tags, customers, billable marks with the same
+ * amount) keep the check printed and need no flag.
+ *
+ * Numbering for checks that are not printed:
+ *   - printLater true: back to the print queue, number and stamp cleared;
+ *   - checkNumber given: checked for duplicates on the bank account (409),
+ *     counter advanced past it, status 'hand_written' (as on create);
+ *   - otherwise a numbered check keeps its number and status (re-checked
  *     for duplicates, the bank account may have changed); a queued check
- *     gets the next number from the counter, as on create.
+ *     stays queued unless printLater is false, which gives it the next
+ *     number from the counter, as on create.
+ *
+ * Header tagIds, when sent, REPLACE the check's header tags (an empty array
+ * clears them); absent leaves them as the ledger edit leaves them (unchanged,
+ * or re-derived from the line tags when TAGS_SPLIT_LEVEL_V2 is on — as on
+ * PUT /transactions/:id).
  *
  * Only checks (txn_type 'expense' with a print status) are edited here:
  * anything else is 404; a check that pays bills is 400 CHECK_NOT_EDITABLE
  * (it is changed from its bill payment).
  */
 export async function updateCheck(
-  tenantId: string, checkId: string, input: WriteCheckInput, userId?: string, companyId?: string,
+  tenantId: string, checkId: string, input: UpdateCheckInput, userId?: string, companyId?: string,
 ) {
-  const journalLines = await buildCheckLines(tenantId, input);
+  const journalLines = buildCheckLines(input);
 
   return await db.transaction(async (tx) => {
     const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)];
@@ -234,8 +318,30 @@ export async function updateCheck(
       throw AppError.badRequest('A check that pays bills is changed from its bill payment.', 'CHECK_NOT_EDITABLE');
     }
 
-    // Ledger first: closed-period, void and reconciliation refusals happen
-    // before any check number is touched.
+    // A printed check's face may only change with an explicit answer to
+    // "reprint it, or keep its number?" — refused before anything moves.
+    const wasPrinted = existing.printStatus === 'printed';
+    let printedChange: 'reprint' | 'keep_number' | null = null;
+    let changedFields: PrintedFaceField[] = [];
+    if (wasPrinted) {
+      changedFields = await printedFaceChanges(tx, tenantId, existing, input);
+      if (changedFields.length > 0 || input.printLater === true) {
+        const choice = input.printedCheckChange;
+        if (!choice || (input.printLater === true && choice !== 'reprint')) {
+          throw AppError.conflict(
+            'This check has already been printed. Say whether to reprint it or keep its check number before changing what is printed on it.',
+            'CHECK_PRINTED',
+            { checkNumber: existing.checkNumber, printedAt: existing.printedAt, changedFields },
+          );
+        }
+        printedChange = choice;
+      }
+    }
+
+    await assertCheckRefsInScope(tx, tenantId, companyId, input);
+
+    // Ledger first: closed-period, void, reconciliation and billed-line
+    // refusals happen before any check number is touched.
     await ledger.updateTransaction(tenantId, checkId, {
       txnType: 'expense',
       txnDate: input.txnDate,
@@ -249,38 +355,53 @@ export async function updateCheck(
     let checkNumber: number | null;
     let printStatus: string;
     let clearPrintStamp = false;
-    if (input.printLater) {
+    if (printedChange === 'reprint' || (!wasPrinted && input.printLater === true)) {
       checkNumber = null;
       printStatus = 'queue';
       clearPrintStamp = true;
+    } else if (printedChange === 'keep_number') {
+      checkNumber = input.checkNumber ?? existing.checkNumber;
+      if (checkNumber === null) {
+        checkNumber = await allocateCheckNumber(tx, tenantId, input.bankAccountId);
+      } else {
+        await assertCheckNumberFree(tx, tenantId, input.bankAccountId, checkNumber, checkId);
+        await advanceCounterPast(tx, tenantId, input.bankAccountId, checkNumber);
+      }
+      printStatus = 'hand_written';
+      clearPrintStamp = true;
+    } else if (wasPrinted) {
+      // Printed face unchanged (same number, bank account, amount, ...).
+      checkNumber = existing.checkNumber;
+      printStatus = 'printed';
     } else if (input.checkNumber) {
       checkNumber = input.checkNumber;
       await assertCheckNumberFree(tx, tenantId, input.bankAccountId, checkNumber, checkId);
-      if (existing.printStatus === 'printed' && existing.checkNumber === checkNumber) {
-        printStatus = 'printed';
-      } else {
-        await advanceCounterPast(tx, tenantId, input.bankAccountId, checkNumber);
-        printStatus = 'hand_written';
-        clearPrintStamp = true;
-      }
+      await advanceCounterPast(tx, tenantId, input.bankAccountId, checkNumber);
+      printStatus = 'hand_written';
+      clearPrintStamp = true;
     } else if (existing.checkNumber !== null && existing.printStatus !== 'queue') {
       checkNumber = existing.checkNumber;
       printStatus = existing.printStatus!;
       await assertCheckNumberFree(tx, tenantId, input.bankAccountId, checkNumber, checkId);
-    } else {
+    } else if (input.printLater === false) {
       checkNumber = await allocateCheckNumber(tx, tenantId, input.bankAccountId);
       printStatus = 'hand_written';
       clearPrintStamp = true;
+    } else {
+      // Queued check, printLater absent: stays in the queue.
+      checkNumber = null;
+      printStatus = 'queue';
     }
 
     const before = {
       checkNumber: existing.checkNumber,
       printStatus: existing.printStatus,
+      printedAt: existing.printedAt,
       payeeNameOnCheck: existing.payeeNameOnCheck,
       payeeAddress: existing.payeeAddress,
       printedMemo: existing.printedMemo,
     };
-    const after = {
+    const fields = {
       checkNumber,
       printStatus,
       payeeNameOnCheck: input.payeeNameOnCheck,
@@ -289,26 +410,41 @@ export async function updateCheck(
     };
     // Tenant_id in WHERE for defense in depth (CLAUDE.md rule #17).
     await tx.update(transactions).set({
-      ...after,
+      ...fields,
       ...(clearPrintStamp ? { printedAt: null, printBatchId: null, printSignatureId: null } : {}),
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)));
 
-    if (input.tagIds && input.tagIds.length > 0) {
-      const { transactionTags } = await import('../db/schema/index.js');
-      for (const tagId of input.tagIds) {
-        await tx.insert(transactionTags).values({ transactionId: checkId, tagId, tenantId }).onConflictDoNothing();
+    const lines = await tx.select().from(journalLinesTable)
+      .where(and(eq(journalLinesTable.tenantId, tenantId), eq(journalLinesTable.transactionId, checkId)));
+
+    // Header tags: sent → the set is replaced (with TAGS_SPLIT_LEVEL_V2 the
+    // line-derived tags the ledger just wrote stay in it); absent → as the
+    // ledger edit left it.
+    if (input.tagIds !== undefined) {
+      const keep = new Set<string>(input.tagIds);
+      if (env.TAGS_SPLIT_LEVEL_V2) {
+        for (const tagId of deriveHeaderTags(lines.filter((l) => !l.isVoidReversal))) keep.add(tagId);
+      }
+      await tx.delete(transactionTags)
+        .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, checkId)));
+      if (keep.size > 0) {
+        await tx.insert(transactionTags).values([...keep].map((tagId) => ({
+          transactionId: checkId, tagId, tenantId, companyId: existing.companyId ?? null,
+        })));
       }
     }
 
     // The ledger row above carries the before-image lines; this one the
-    // check fields (number, print status, payee, printed memo).
-    await auditLog(tenantId, 'update', 'check', checkId, before, after, userId, tx);
+    // check fields and, for a printed check, the reprint / keep-number choice.
+    await auditLog(tenantId, 'update', 'check', checkId, before, {
+      ...fields,
+      printedCheckChange: printedChange,
+      ...(printedChange ? { changedFields } : {}),
+    }, userId, tx);
 
     const [txn] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId))).limit(1);
-    const lines = await tx.select().from(journalLinesTable)
-      .where(and(eq(journalLinesTable.tenantId, tenantId), eq(journalLinesTable.transactionId, checkId)));
     return { ...txn!, lines, checkNumber, printStatus, payeeNameOnCheck: input.payeeNameOnCheck };
   });
 }

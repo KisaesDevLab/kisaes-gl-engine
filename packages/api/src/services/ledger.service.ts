@@ -143,6 +143,74 @@ export function billableColumns(line: { isBillable?: boolean }): { isBillable: b
     : { isBillable: false, billedStatus: null };
 }
 
+type BillableCols = { isBillable: boolean; billedStatus: string | null };
+type LedgerLine = PostTransactionInput['lines'][number];
+
+/** A transaction's live lines already billed to a customer ('billed'). */
+async function loadBilledLines(executor: DbOrTx, tenantId: string, txnId: string) {
+  return executor.select().from(journalLines).where(and(
+    eq(journalLines.tenantId, tenantId),
+    eq(journalLines.transactionId, txnId),
+    eq(journalLines.isVoidReversal, false),
+    eq(journalLines.billedStatus, 'billed'),
+  ));
+}
+
+function billedLineConflict(line: { id: string; accountId: string }) {
+  return AppError.conflict(
+    'A line of this transaction has already been billed to a customer, so its account, amount, customer and billable mark ' +
+      'can’t change and it can’t be removed or voided. Remove it from the customer’s invoice first.',
+    'LINE_BILLED',
+    { lineId: line.id, accountId: line.accountId },
+  );
+}
+
+/**
+ * Billable columns for an edit's new line set (U-50). The ledger edit
+ * deletes and re-inserts lines, so a line's billed state is carried over by
+ * identity: every existing 'billed' line must reappear as a billable input
+ * line with the same account, debit, credit and customer (description and
+ * tag may change), and that input line keeps 'billed'. A billed line with
+ * no such match — removed, or its amount / account / customer / billable
+ * mark changed — refuses the edit with 409 LINE_BILLED. Every other line
+ * gets billableColumns() (billable → 'unbilled').
+ */
+function planBillableColumns(
+  inputLines: readonly LedgerLine[],
+  billedLines: Array<{ id: string; accountId: string; debit: string | null; credit: string | null; contactId: string | null }>,
+): (line: LedgerLine) => BillableCols {
+  const amt = (v: string | null | undefined) => new Decimal(v || '0');
+  const carried = new Set<LedgerLine>();
+  for (const billed of billedLines) {
+    const match = inputLines.find((l) => !carried.has(l)
+      && l.isBillable === true
+      && l.accountId === billed.accountId
+      && (l.contactId ?? null) === (billed.contactId ?? null)
+      && amt(l.debit).equals(amt(billed.debit))
+      && amt(l.credit).equals(amt(billed.credit)));
+    if (!match) throw billedLineConflict(billed);
+    carried.add(match);
+  }
+  return (line) => (carried.has(line) ? { isBillable: true, billedStatus: 'billed' } : billableColumns(line));
+}
+
+/**
+ * Void / delete (U-50): a voided or deleted transaction's costs are no
+ * longer billable, so its billable lines are cleared (is_billable false,
+ * billed_status NULL — the pair the CHECK constraint allows; the audit
+ * before-image keeps the old marks). A line already 'billed' refuses the
+ * void / delete with 409 LINE_BILLED, as an edit removing it would.
+ */
+async function releaseBillableLines(executor: DbOrTx, tenantId: string, txnId: string) {
+  const billed = await loadBilledLines(executor, tenantId, txnId);
+  if (billed.length > 0) throw billedLineConflict(billed[0]!);
+  await executor.update(journalLines).set({ isBillable: false, billedStatus: null }).where(and(
+    eq(journalLines.tenantId, tenantId),
+    eq(journalLines.transactionId, txnId),
+    eq(journalLines.isBillable, true),
+  ));
+}
+
 /**
  * Every journal line references an accountId. The caller supplies those IDs
  * in their request body — we cannot assume they belong to this tenant just
@@ -589,6 +657,9 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     const originalLines = await tx.select().from(journalLines)
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
 
+    // Billable lines stop being billable (U-50); a billed line refuses.
+    await releaseBillableLines(tx, tenantId, txnId);
+
     // Mark as void. Tenant_id is included in the WHERE clause for
     // defense-in-depth (CLAUDE.md rule #17) — even though we already
     // confirmed the row belongs to this tenant via the locked SELECT.
@@ -791,6 +862,9 @@ export async function deleteTransaction(
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
       .orderBy(journalLines.lineOrder);
 
+    // Billable lines stop being billable (U-50); a billed line refuses.
+    await releaseBillableLines(tx, tenantId, txnId);
+
     // Only a posted transaction still moves a balance; reverse it exactly
     // (debit and credit swapped, same amounts, same tags).
     if (txn.status === 'posted' && originalLines.length > 0) {
@@ -890,6 +964,10 @@ export async function updateTransaction(
       companyId ?? existing.companyId ?? null,
       input.lines.map((l) => l.accountId),
     );
+
+    // Lines already billed to a customer keep their billed state by
+    // identity, or the edit is refused (409 LINE_BILLED) — U-50.
+    const billableFor = planBillableColumns(input.lines, await loadBilledLines(tx, tenantId, txnId));
 
     // Refuse to edit if any of this transaction's journal lines were
     // marked cleared inside a completed reconciliation. Allowing the edit
@@ -1001,7 +1079,7 @@ export async function updateTransaction(
         quantity: line.quantity || null, unitPrice: line.unitPrice || null,
         isTaxable: line.isTaxable || false, taxRate: line.taxRate || '0', taxAmount: line.taxAmount || '0',
         lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
-        ...billableColumns(line),
+        ...billableFor(line),
       }));
       if (newPLValues.length > 0) {
         await tx.insert(journalLines).values(newPLValues);
@@ -1087,7 +1165,7 @@ export async function updateTransaction(
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
       contactId: line.contactId ?? null,
-      ...billableColumns(line),
+      ...billableFor(line),
       tagId: resolveDefaultTag({
         explicitUserTagId: line.tagId,
         bankRuleTagId: line.bankRuleTagId ?? undefined,

@@ -21,6 +21,8 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { accounts, contacts } from '../db/schema/index.js';
 import * as applyService from '../services/conditional-rules-apply.service.js';
+import { assertContactsInScope } from '../services/line-contacts.service.js';
+import { companyContext } from '../middleware/company.js';
 import { auditLog } from '../middleware/audit.js';
 import { requirePracticeAccess } from '../middleware/practice-access.js';
 import { AppError } from '../utils/errors.js';
@@ -381,8 +383,10 @@ const sandboxRuleBodySchema = z.object({
 // rules would set for a description / amount / bank account, e.g. while a
 // check or expense is being entered. Read-only: nothing is staged and no
 // fire is recorded. Tenant-scoped: the bank account and contact must be
-// this tenant's (400 VALIDATION_ERROR otherwise). Same gate as every
-// conditional-rules route (CONDITIONAL_RULES_V1; 404 when off).
+// this tenant's and in the active company's scope (400 VALIDATION_ERROR
+// otherwise; the company comes from X-Company-Id as on company routes).
+// Same gate as every conditional-rules route (CONDITIONAL_RULES_V1; 404
+// when off).
 const evaluateMatchSchema = z.object({
   ruleId: z.string().uuid(),
   ruleName: z.string(),
@@ -391,24 +395,28 @@ const evaluateMatchSchema = z.object({
   contactId: z.string().uuid().nullable(),
 });
 
-conditionalRulesRouter.post('/evaluate', validate(evaluateConditionalRulesSchema), describe({
+conditionalRulesRouter.post('/evaluate', companyContext, validate(evaluateConditionalRulesSchema), describe({
   summary: 'Evaluate the active conditional rules for one entry, read-only (rules-evaluate-v1)',
   response: z.object({ match: evaluateMatchSchema.nullable() }),
 }), async (req, res) => {
   const body = req.body as z.infer<typeof evaluateConditionalRulesSchema>;
+  // Bank account and payee: this tenant's, and tenant-wide or the active
+  // company's (the assertAccountsInScope rule) — 400 VALIDATION_ERROR.
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, req.tenantId), eq(accounts.id, body.bankAccountId)),
-    columns: { id: true },
+    columns: { id: true, companyId: true },
   });
-  if (!account) throw AppError.badRequest('Bank account not found', 'VALIDATION_ERROR');
+  if (!account || (account.companyId !== null && account.companyId !== req.companyId)) {
+    throw AppError.badRequest('Bank account not found', 'VALIDATION_ERROR');
+  }
   let payeeName: string | null = null;
   if (body.contactId) {
+    await assertContactsInScope(db, req.tenantId, req.companyId, [body.contactId], 'Contact not found');
     const contact = await db.query.contacts.findFirst({
       where: and(eq(contacts.tenantId, req.tenantId), eq(contacts.id, body.contactId)),
       columns: { displayName: true },
     });
-    if (!contact) throw AppError.badRequest('Contact not found', 'VALIDATION_ERROR');
-    payeeName = contact.displayName;
+    payeeName = contact?.displayName ?? null;
   }
   const match = await applyService.evaluateForInput(req.tenantId, {
     description: body.description,

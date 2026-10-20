@@ -41,6 +41,14 @@ export interface WriteCheckInput {
   draftAttachmentId?: string;
 }
 
+/** PUT /checks/:id body (check-edit-v1); see updateCheckSchema. */
+export interface UpdateCheckInput extends Omit<WriteCheckInput, 'printLater' | 'draftAttachmentId'> {
+  /** Absent keeps the current print state; true = back to the queue. */
+  printLater?: boolean;
+  /** Required when a PRINTED check's printed face changes. */
+  printedCheckChange?: 'reprint' | 'keep_number';
+}
+
 // Single source of truth for the selectable check print layouts. The
 // Zod enum (schemas/checks.ts), the TS union below, and both frontend
 // selectors all derive from this, so adding a layout is a one-line

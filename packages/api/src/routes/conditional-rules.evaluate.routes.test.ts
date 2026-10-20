@@ -5,8 +5,9 @@
 // POST /practice/conditional-rules/evaluate (U-51, rules-evaluate-v1): what
 // the active rules would set for one entry. Match / no match, the payee
 // name and amount feeding the context, read-only (no fire recorded),
-// tenant isolation (another tenant's rules, bank account and contact), and
-// the same feature-flag gate as the rest of the router.
+// tenant isolation (another tenant's rules, bank account and contact),
+// company scope (another company's bank account or contact in the same
+// tenant), and the same feature-flag gate as the rest of the router.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
@@ -18,7 +19,7 @@ import jwt from 'jsonwebtoken';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
-  tenants, users, accounts, contacts, conditionalRules, conditionalRuleAudit, tenantFeatureFlags, auditLog,
+  tenants, users, accounts, companies, contacts, conditionalRules, conditionalRuleAudit, tenantFeatureFlags, auditLog,
 } from '../db/schema/index.js';
 import { conditionalRulesRouter } from './conditional-rules.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
@@ -29,7 +30,7 @@ const URL = '/api/v1/practice/conditional-rules/evaluate';
 let server: Server | null = null;
 let port = 0;
 
-interface Seeded { tenantId: string; userId: string; token: string; bankId: string; suppliesId: string; contactId: string }
+interface Seeded { tenantId: string; companyId: string; userId: string; token: string; bankId: string; suppliesId: string; contactId: string }
 let a: Seeded;
 let b: Seeded;
 
@@ -61,6 +62,7 @@ async function seedTenant(label: string): Promise<Seeded> {
   }).returning();
   const tenantId = t!.id;
   await db.insert(tenantFeatureFlags).values({ tenantId, flagKey: 'CONDITIONAL_RULES_V1', enabled: true });
+  const [co] = await db.insert(companies).values({ tenantId, businessName: `Eval ${label}`, setupComplete: true }).returning();
   const [u] = await db.insert(users).values({
     tenantId, email: `eval-${label}-${Date.now()}-${Math.random()}@example.com`,
     passwordHash: 'x', role: 'owner', displayName: 'Owner',
@@ -69,7 +71,7 @@ async function seedTenant(label: string): Promise<Seeded> {
   const bankId = (await accountsService.create(tenantId, { name: 'Checking', accountType: 'asset', detailType: 'bank', accountNumber: '1010' })).id;
   const suppliesId = (await accountsService.create(tenantId, { name: 'Supplies', accountType: 'expense', accountNumber: '6000' })).id;
   const [c] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'Cosmos Granite' }).returning();
-  return { tenantId, userId: u!.id, token, bankId, suppliesId, contactId: c!.id };
+  return { tenantId, companyId: co!.id, userId: u!.id, token, bankId, suppliesId, contactId: c!.id };
 }
 
 async function addRule(s: Seeded, name: string, conditions: unknown, actions: unknown, priority = 100) {
@@ -86,6 +88,7 @@ async function cleanup(s: Seeded | undefined) {
   await db.delete(conditionalRules).where(eq(conditionalRules.tenantId, s.tenantId));
   await db.delete(contacts).where(eq(contacts.tenantId, s.tenantId));
   await db.delete(accounts).where(eq(accounts.tenantId, s.tenantId));
+  await db.delete(companies).where(eq(companies.tenantId, s.tenantId));
   await db.delete(tenantFeatureFlags).where(eq(tenantFeatureFlags.tenantId, s.tenantId));
   await db.delete(users).where(eq(users.tenantId, s.tenantId));
   await db.delete(tenants).where(eq(tenants.id, s.tenantId));
@@ -175,6 +178,30 @@ describe('POST /conditional-rules/evaluate', () => {
     const foreignContact = await call({ description: 'amazon', amount: '-3.00', bankAccountId: a.bankId, contactId: b.contactId }, a.token);
     expect(foreignContact.status).toBe(400);
     expect(foreignContact.json.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('refuses a bank account or contact of another company in the same tenant', async () => {
+    // A second company created after the first: requests without
+    // X-Company-Id act in the first one.
+    const [second] = await db.insert(companies).values({
+      tenantId: a.tenantId, businessName: 'Second Co', setupComplete: true, createdAt: new Date(Date.now() + 60_000),
+    }).returning();
+    const [otherBank] = await db.insert(accounts).values({
+      tenantId: a.tenantId, companyId: second!.id, name: 'Second checking', accountType: 'asset', detailType: 'bank', accountNumber: '1020',
+    }).returning();
+    const [otherContact] = await db.insert(contacts).values({
+      tenantId: a.tenantId, companyId: second!.id, contactType: 'vendor', displayName: 'Second vendor',
+    }).returning();
+
+    let r = await call({ description: 'x', amount: '-1.00', bankAccountId: otherBank!.id }, a.token);
+    expect(r.status).toBe(400);
+    expect(r.json.error.code).toBe('VALIDATION_ERROR');
+    r = await call({ description: 'x', amount: '-1.00', bankAccountId: a.bankId, contactId: otherContact!.id }, a.token);
+    expect(r.status).toBe(400);
+    expect(r.json.error.code).toBe('VALIDATION_ERROR');
+
+    // The first company's own (and tenant-wide) records still work.
+    expect((await call({ description: 'x', amount: '-1.00', bankAccountId: a.bankId, contactId: a.contactId }, a.token)).status).toBe(200);
   });
 
   it('validates the body and keeps the CONDITIONAL_RULES_V1 gate', async () => {
