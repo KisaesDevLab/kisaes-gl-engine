@@ -136,7 +136,7 @@ export async function updateCompany(
   await auditLog(tenantId, 'update', 'company', updated.id, existing, updated, userId);
   if (passwordSetNow) {
     await auditLog(tenantId, 'update', 'closing_password', companyId,
-      { closingPasswordSet: false }, { closingPasswordSet: true }, userId);
+      { closingDateProtected: false }, { closingDateProtected: true }, userId);
   }
   return updated;
 }

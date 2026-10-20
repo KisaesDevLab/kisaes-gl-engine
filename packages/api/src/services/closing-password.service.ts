@@ -93,7 +93,8 @@ function canSetFirstPassword(actor: ClosingPasswordActor): boolean {
 /**
  * Set, change or clear the password. With one set, `currentPassword` must
  * match. With none set, only an owner or super admin may set one.
- * Audited as `closing_password` with only a set/not-set flag.
+ * Audited as `closing_password` with only a set/not-set flag
+ * (`closingDateProtected`: a key auditLog() does not strip as secret-looking).
  */
 export async function setClosingPassword(
   tenantId: string,
@@ -118,7 +119,7 @@ export async function setClosingPassword(
     await tx.update(companies).set({ closingPasswordHash: hash, updatedAt: new Date() })
       .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
     await auditLog(tenantId, 'update', 'closing_password', companyId,
-      { closingPasswordSet: wasSet }, { closingPasswordSet: hash !== null }, actor.userId, tx);
+      { closingDateProtected: wasSet }, { closingDateProtected: hash !== null }, actor.userId, tx);
     return { closingPasswordSet: hash !== null };
   });
 }
@@ -170,7 +171,7 @@ export async function resetClosingPassword(
     await tx.update(companies).set({ closingPasswordHash: hash, updatedAt: new Date() })
       .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
     await auditLog(tenantId, 'update', 'closing_password_reset', companyId,
-      { closingPasswordSet: wasSet }, { closingPasswordSet: hash !== null, method: 'account_password' }, actor.userId, tx);
+      { closingDateProtected: wasSet }, { closingDateProtected: hash !== null, method: 'account_password' }, actor.userId, tx);
     return { closingPasswordSet: hash !== null };
   });
 }

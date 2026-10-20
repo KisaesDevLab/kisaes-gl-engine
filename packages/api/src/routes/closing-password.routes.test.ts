@@ -349,7 +349,7 @@ describe('owner reset of a forgotten closing-date password (Q-239)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.userId).toBe(ownerId);
     const after = typeof rows[0]!.afterData === 'string' ? JSON.parse(rows[0]!.afterData) : rows[0]!.afterData;
-    expect(after).toMatchObject({ closingPasswordSet: true, method: 'account_password' });
+    expect(after).toMatchObject({ closingDateProtected: true, method: 'account_password' });
     const [company] = await db.select({ hash: companies.closingPasswordHash }).from(companies).where(eq(companies.id, companyId));
     const audits = await auditText();
     for (const secret of [SIGN_IN, 'fresh-pass', PASSWORD, company!.hash!]) expect(audits).not.toContain(secret);

@@ -531,7 +531,7 @@ tbRouter.put('/closing-date', requireTenantOwnerForTb, closingPasswordLimiter, (
     { closingDate: before.lockDate }, { closingDate }, req.userId);
   if (newHash) {
     await auditLogFn(req.tenantId, 'update', 'closing_password', req.companyId!,
-      { closingPasswordSet: false }, { closingPasswordSet: true }, req.userId);
+      { closingDateProtected: false }, { closingDateProtected: true }, req.userId);
   }
   res.json({ closingDate: after?.lockDate ?? null });
 });
