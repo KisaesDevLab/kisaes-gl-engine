@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { seedEquityRolesBestEffort } from './equity-roles.service.js';
 import { eq, and, notInArray, count } from 'drizzle-orm';
 import type { UpdateCompanyInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -148,6 +149,10 @@ export async function updateCompany(
     }
     return safe;
   });
+  // A new entity type may need other equity roles (U-55).
+  if (updates['entityType'] !== undefined && updates['entityType'] !== existing.entityType) {
+    await seedEquityRolesBestEffort(tenantId, userId);
+  }
   return updated;
 }
 
@@ -278,10 +283,12 @@ export async function updateSmtpSettings(
   return safe;
 }
 
-export async function createCompanyForTenant(tenantId: string, businessName: string) {
+export async function createCompanyForTenant(tenantId: string, businessName: string, entityType?: string) {
   const [company] = await db.insert(companies).values({
     tenantId,
     businessName,
+    // Optional so existing callers keep the column default ('sole_prop').
+    ...(entityType ? { entityType } : {}),
   }).returning();
   return company ? withoutClosingPasswordHash(company) : company;
 }
@@ -317,6 +324,9 @@ export async function createAdditionalCompany(tenantId: string, input: { busines
   }).returning();
 
   if (!company) throw AppError.internal('Failed to create company');
+
+  // Equity roles for the new company's entity type (U-55).
+  await seedEquityRolesBestEffort(tenantId);
 
   return withoutClosingPasswordHash(company);
 }

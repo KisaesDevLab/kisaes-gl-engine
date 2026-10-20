@@ -17,11 +17,13 @@ import {
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
+import { requirePermission, requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
+import * as depositSuggestions from '../services/deposit-suggestions.service.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
 import * as reconciliationSignoffService from '../services/reconciliation-signoff.service.js';
@@ -126,6 +128,24 @@ bankingRouter.post('/feed/:id/approve', async (req, res) => {
 bankingRouter.put('/feed/:id/match', validate(matchSchema), async (req, res) => {
   await bankFeedService.match(req.tenantId, req.params['id']!, req.body.transactionId);
   res.json({ message: 'Matched' });
+});
+
+// Deposit suggestions (U-56, feed-deposit-groupings-v1): sets of items
+// waiting in Payments Clearing (±10 days) that add up to this feed
+// deposit exactly. Read-only; company-scoped; bounded search. The sets
+// list customer payments, so the caller also needs receive_payment (read),
+// the resource that guards the pending-deposits list itself.
+bankingRouter.get('/feed/:id/deposit-groupings', requirePermission('receive_payment', 'read'), describe({
+  summary: 'Payments Clearing sets that add up to a bank-feed deposit (feed-deposit-groupings-v1)',
+  description: 'Permissions: banking and receive_payment (read).',
+  params: z.object({ id: z.string().uuid() }),
+  query: z.object({ limit: z.coerce.number().int().min(1).max(20).optional() }),
+}), async (req, res) => {
+  const id = z.string().uuid().safeParse(req.params['id']);
+  if (!id.success) throw AppError.badRequest('Invalid feed item id', 'VALIDATION_ERROR');
+  const limit = z.coerce.number().int().min(1).max(20).optional().safeParse(req.query['limit']);
+  if (!limit.success) throw AppError.badRequest('limit must be 1 to 20', 'VALIDATION_ERROR');
+  res.json(await depositSuggestions.findDepositGroupings(req.tenantId, req.companyId, id.data, { limit: limit.data }));
 });
 
 bankingRouter.get('/feed/:id/match-candidates', async (req, res) => {

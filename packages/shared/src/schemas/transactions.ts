@@ -89,6 +89,21 @@ const depositLineSchema = z.object({
   // Per-line payee ("Received From"). Null means explicitly none; undefined
   // means the caller isn't sending one. Persisted on journal_lines.contact_id.
   contactId: z.string().uuid().nullable().optional(),
+  // Deposit grouping (U-52, deposit-grouping-v1): the item this line deposits.
+  // A customer payment / sales receipt / other entry sitting in Payments
+  // Clearing (line account must be Payments Clearing, amount must equal the
+  // item's undeposited amount exactly), or a vendor credit being refunded
+  // (U-54, vendor-refund-v1: line account must be A/P, amount at most the
+  // credit's open balance). Absent: a plain deposit line, as before.
+  sourceTransactionId: z.string().uuid().optional(),
+});
+
+// Cash back (U-53, deposit-cashback-v1): part of the deposit kept as cash.
+// The bank gets the line total less this amount; the account is debited.
+export const depositCashBackSchema = z.object({
+  accountId: z.string().uuid(),
+  amount: z.string().min(1),
+  memo: z.string().max(1000).optional(),
 });
 
 export const createDepositSchema = z.object({
@@ -96,6 +111,11 @@ export const createDepositSchema = z.object({
   depositToAccountId: z.string().uuid(),
   lines: z.array(depositLineSchema).min(1).max(MAX_LINES),
   memo: z.string().optional(),
+  cashBack: depositCashBackSchema.nullable().optional(),
+  // true: every line amount must be an exact decimal string (at most 4
+  // places, no exponent), else 400 VALIDATION_ERROR. The desktop app always
+  // sends it; without it plain lines keep the old leniency.
+  strictAmounts: z.boolean().optional(),
 });
 
 const lineItemSchema = z.object({

@@ -457,6 +457,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'journal_lines.item_id': 'tenant-ref:items',
   'journal_lines.company_id': 'tenant-ref:companies',
   'journal_lines.contact_id': 'tenant-ref:contacts',
+  'journal_lines.source_transaction_id': 'tenant-ref:transactions',
   'mcp_request_log.user_id': 'identity',
   'mcp_request_log.api_key_id': 'excluded-ref:api_keys',
   'mcp_request_log.oauth_client_id': 'excluded-ref:oauth_clients',

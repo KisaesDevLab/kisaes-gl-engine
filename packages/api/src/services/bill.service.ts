@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { recomputeVendorCreditBalance as recomputeVendorCreditWithRefunds } from './deposit-links.service.js';
 import { eq, and, sql, count, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
@@ -560,26 +561,7 @@ export async function recomputeBillStatus(executor: DbOrTx, tenantId: string, bi
  * Recalculate a vendor credit's remaining balance from the application table.
  */
 export async function recomputeVendorCreditBalance(executor: DbOrTx, tenantId: string, creditId: string) {
-  const result = await executor.execute(sql`
-    SELECT
-      t.total,
-      COALESCE((SELECT SUM(amount) FROM vendor_credit_applications WHERE credit_id = ${creditId} AND tenant_id = ${tenantId}), 0) AS applied
-    FROM transactions t
-    WHERE t.id = ${creditId} AND t.tenant_id = ${tenantId}
-  `);
-  const row = (result.rows as Array<{ total: string | null; applied: string | number }>)[0];
-  if (!row) return;
-
-  const total = new Decimal(row.total || '0');
-  const applied = new Decimal(String(row.applied));
-  let balanceDue = total.minus(applied);
-  if (balanceDue.isNegative()) balanceDue = new Decimal('0');
-  const tolerance = new Decimal('0.01');
-
-  await executor.update(transactions).set({
-    creditsApplied: applied.toFixed(4),
-    balanceDue: balanceDue.toFixed(4),
-    billStatus: balanceDue.lessThanOrEqualTo(tolerance) ? 'paid' : 'unpaid',
-    updatedAt: new Date(),
-  }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, creditId)));
+  // Open balance = total − bill-payment applications − posted deposit
+  // refunds (U-54). One implementation, shared with the deposit path.
+  await recomputeVendorCreditWithRefunds(executor, tenantId, creditId);
 }

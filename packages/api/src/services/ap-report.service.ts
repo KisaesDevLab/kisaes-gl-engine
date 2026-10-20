@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
@@ -203,45 +203,55 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
   const startDate = range.startDate || `${new Date().getFullYear()}-01-01`;
   const endDate = range.endDate || new Date().toISOString().split('T')[0]!;
 
-  const openingResult = await db.execute(sql`
-    SELECT COALESCE(SUM(
-      CASE
-        WHEN t.txn_type = 'bill' THEN CAST(t.total AS DECIMAL)
-        WHEN t.txn_type = 'vendor_credit' THEN -CAST(t.total AS DECIMAL)
-        WHEN t.txn_type = 'bill_payment' THEN -CAST(t.total AS DECIMAL)
-        ELSE 0
-      END
-    ), 0) AS opening
+  // Documents on the vendor (bills, credits, bill payments: the header
+  // contact and total) plus deposits that put money back on the vendor's
+  // A/P (a vendor refund, U-54: the deposit's A/P lines naming the vendor;
+  // the header contact of a deposit is not the vendor). `amount` is signed
+  // as the vendor balance moves: + charge (bill, refund), − payment.
+  const vendorActivity = (dateCond: SQL) => sql`
+    SELECT t.id, t.txn_type, t.txn_date, t.created_at, t.txn_number, t.vendor_invoice_number, t.memo,
+      CASE WHEN t.txn_type = 'bill' THEN CAST(t.total AS DECIMAL) ELSE -CAST(t.total AS DECIMAL) END AS amount
     FROM transactions t
     WHERE t.tenant_id = ${tenantId}
       AND t.contact_id = ${vendorId}
       AND t.status = 'posted'
       AND t.txn_type IN ('bill', 'vendor_credit', 'bill_payment')
-      AND t.txn_date < ${startDate}
+      AND ${dateCond}
       AND ${companyFilter(companyId)}
+    UNION ALL
+    SELECT t.id, t.txn_type, t.txn_date, t.created_at, t.txn_number, t.vendor_invoice_number, t.memo,
+      SUM(jl.credit - jl.debit) AS amount
+    FROM transactions t
+    JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
+      AND jl.is_void_reversal = false AND jl.contact_id = ${vendorId}
+    JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId} AND a.system_tag = 'accounts_payable'
+    WHERE t.tenant_id = ${tenantId}
+      AND t.status = 'posted'
+      AND t.txn_type = 'deposit'
+      AND ${dateCond}
+      AND ${companyFilter(companyId)}
+    GROUP BY t.id, t.txn_type, t.txn_date, t.created_at, t.txn_number, t.vendor_invoice_number, t.memo
+    HAVING SUM(jl.credit - jl.debit) <> 0
+  `;
+
+  const openingResult = await db.execute(sql`
+    SELECT COALESCE(SUM(v.amount), 0) AS opening
+    FROM (${vendorActivity(sql`t.txn_date < ${startDate}`)}) v
   `);
   const openingBalance = Number(new Decimal((openingResult.rows[0] as { opening: string })?.opening || '0').toFixed(4));
 
   const activity = await db.execute(sql`
-    SELECT t.id, t.txn_type, t.txn_date, t.txn_number, t.vendor_invoice_number,
-      t.total, t.memo
-    FROM transactions t
-    WHERE t.tenant_id = ${tenantId}
-      AND t.contact_id = ${vendorId}
-      AND t.status = 'posted'
-      AND t.txn_type IN ('bill', 'vendor_credit', 'bill_payment')
-      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      AND ${companyFilter(companyId)}
-    ORDER BY t.txn_date, t.created_at
+    SELECT v.* FROM (${vendorActivity(sql`t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}`)}) v
+    ORDER BY v.txn_date, v.created_at, v.id
   `);
 
   let running = openingBalance;
   const lines = (activity.rows as any[]).map((row) => {
-    const amount = Number(new Decimal(row.total || '0').toFixed(4));
+    const signed = Number(new Decimal(row.amount || '0').toFixed(4));
     let charge = 0, payment = 0;
-    if (row.txn_type === 'bill') { charge = amount; running = addMoney(running, amount); }
-    else if (row.txn_type === 'vendor_credit') { payment = amount; running = addMoney(running, -amount); }
-    else if (row.txn_type === 'bill_payment') { payment = amount; running = addMoney(running, -amount); }
+    if (signed >= 0) charge = signed;
+    else payment = -signed;
+    running = addMoney(running, signed);
     return {
       txn_date: row.txn_date,
       txn_type: row.txn_type,

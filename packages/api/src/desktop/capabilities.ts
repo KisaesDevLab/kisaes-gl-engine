@@ -32,4 +32,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'line-billable-v1',
   /** POST /practice/conditional-rules/evaluate: read-only rule match for one entry (U-51). */
   'rules-evaluate-v1',
+  /** Deposit lines take sourceTransactionId (Payments Clearing item, exact amount, once); GET /payments/pending-deposits?exact=1 (U-52). */
+  'deposit-grouping-v1',
+  /** Deposit cashBack {accountId, amount, memo?}; negative line amounts post as debits; total > 0 (U-53). */
+  'deposit-cashback-v1',
+  /** A deposit line with sourceTransactionId = a vendor credit refunds it (A/P, ≤ open balance) (U-54). */
+  'vendor-refund-v1',
+  /** Equity role system tags seeded by entity type; GET /company/equity-roles (U-55). */
+  'equity-roles-v1',
+  /** GET /banking/feed/:id/deposit-groupings: exact-sum Payments Clearing sets (U-56). */
+  'feed-deposit-groupings-v1',
+  /** Daily-sales post/void honour the closing date and closingPassword; company-scoped; string amounts only (U-57). */
+  'daily-sales-lock-v1',
 ];

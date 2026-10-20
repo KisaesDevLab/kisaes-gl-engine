@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { eq, and, sql, asc, inArray } from 'drizzle-orm';
 import type { RegisterInput, LoginInput, AuthTokens, JwtPayload } from '@kis-books/shared';
+import { entityTypes } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tenants, users, sessions, userTenantAccess, companies, passwordResetTokens } from '../db/schema/index.js';
 import { env } from '../config/env.js';
@@ -14,6 +15,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { createCompanyForTenant } from './company.service.js';
 import { seedFromTemplate } from './accounts.service.js';
+import { seedEquityRolesBestEffort } from './equity-roles.service.js';
 import * as systemEmail from './system-email.service.js';
 import { recordStaffEmail } from './staff-email-audit.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
@@ -133,7 +135,7 @@ async function createSession(
  *  flags. Access rows and firm membership are the caller's business —
  *  that's what distinguishes a practice client tenant from a
  *  self-service owned tenant. */
-async function provisionTenant(input: { companyName: string; businessType?: string; systemAccountsOnly?: boolean; tenantId?: string }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
+async function provisionTenant(input: { companyName: string; businessType?: string; systemAccountsOnly?: boolean; tenantId?: string; entityType?: string }): Promise<{ tenantId: string; companyId: string; tenantName: string }> {
   const [tenant] = await db.insert(tenants).values({
     // A caller-chosen id lets the caller clean up a half-provisioned tenant
     // (desktop first company); everyone else gets the column default.
@@ -147,8 +149,14 @@ async function provisionTenant(input: { companyName: string; businessType?: stri
   // just the required system accounts (A/R, A/P, Payments Clearing, Sales
   // Tax Payable, Opening Balances, Retained Earnings, Cash) so the tenant
   // still functions, and skip the rest of the business-type template.
-  await createCompanyForTenant(tenant.id, input.companyName);
+  // The entity type (when it is a known one) is stored with the company so
+  // the equity roles below match it (U-55).
+  const entityType = input.entityType && (entityTypes as readonly string[]).includes(input.entityType)
+    ? input.entityType : undefined;
+  await createCompanyForTenant(tenant.id, input.companyName, entityType);
   await seedFromTemplate(tenant.id, input.businessType || 'default', undefined, { systemOnly: !!input.systemAccountsOnly });
+  // Owner-money accounts for the entity type (U-55); best effort.
+  await seedEquityRolesBestEffort(tenant.id);
 
   // New-tenant default: Practice flags turned ON. The build plan
   // distinguishes pre-Phase-1 tenants (migration seeds disabled)
@@ -336,7 +344,7 @@ export async function createDesktopCompany(
   if (!isDesktop()) throw new Error('createDesktopCompany is desktop-only');
   const tenantId = crypto.randomUUID();
   try {
-    const provisioned = await provisionTenant({ companyName: input.companyName, businessType: input.businessType, tenantId });
+    const provisioned = await provisionTenant({ companyName: input.companyName, businessType: input.businessType, tenantId, entityType: input.entityType });
     if (input.entityType || input.industry) {
       await db.update(companies)
         .set({
@@ -403,6 +411,7 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   // Create company and seed COA
   const company = await createCompanyForTenant(tenant.id, input.companyName);
   await seedFromTemplate(tenant.id, input.businessType || 'default');
+  await seedEquityRolesBestEffort(tenant.id);
 
   // New-tenant Practice flag seed (see createClientTenant above).
   await seedFeatureFlags(tenant.id);

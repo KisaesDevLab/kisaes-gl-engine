@@ -1625,6 +1625,52 @@
         ]
       }
     },
+    "/api/portal/profit-loss": {
+      "get": {
+        "operationId": "get_api_portal_profit_loss",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "PortalSession": []
+          }
+        ],
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/api/portal/profit-loss/accounts/{accountId}/transactions": {
+      "get": {
+        "operationId": "get_api_portal_profit_loss_accounts_by_accountId_transactions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "accountId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "PortalSession": []
+          }
+        ],
+        "tags": [
+          "portal"
+        ]
+      }
+    },
     "/api/portal/questions": {
       "get": {
         "operationId": "get_api_portal_questions",
@@ -14460,6 +14506,50 @@
         ]
       }
     },
+    "/api/v1/banking/feed/{id}/deposit-groupings": {
+      "get": {
+        "description": "Permissions: banking and receive_payment (read).",
+        "operationId": "get_api_v1_banking_feed_by_id_deposit_groupings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Payments Clearing sets that add up to a bank-feed deposit (feed-deposit-groupings-v1)",
+        "tags": [
+          "banking"
+        ]
+      }
+    },
     "/api/v1/banking/feed/{id}/exclude": {
       "put": {
         "operationId": "put_api_v1_banking_feed_by_id_exclude",
@@ -19675,6 +19765,140 @@
         ]
       }
     },
+    "/api/v1/company/equity-roles": {
+      "get": {
+        "operationId": "get_api_v1_company_equity_roles",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "entityType": {
+                      "type": "string"
+                    },
+                    "roles": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "owner_contribution": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "owner_draw": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "paid_in_capital": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "partner_contributions": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "partner_draws": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retained_earnings": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "shareholder_distributions": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "owner_draw",
+                        "owner_contribution",
+                        "partner_draws",
+                        "partner_contributions",
+                        "shareholder_distributions",
+                        "paid_in_capital",
+                        "retained_earnings"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "entityType",
+                    "roles"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Equity role accounts for the company (equity-roles-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
     "/api/v1/company/invite-user": {
       "post": {
         "operationId": "post_api_v1_company_invite_user",
@@ -21975,10 +22199,8 @@
                       "additionalProperties": true,
                       "properties": {
                         "amount": {
-                          "type": [
-                            "string",
-                            "number"
-                          ]
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
                         },
                         "tagId": {
                           "anyOf": [
@@ -22053,10 +22275,8 @@
                       "additionalProperties": true,
                       "properties": {
                         "amount": {
-                          "type": [
-                            "string",
-                            "number"
-                          ]
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
                         },
                         "tagId": {
                           "anyOf": [
@@ -22220,10 +22440,8 @@
                       "additionalProperties": true,
                       "properties": {
                         "amount": {
-                          "type": [
-                            "string",
-                            "number"
-                          ]
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
                         },
                         "tagId": {
                           "anyOf": [
@@ -22288,6 +22506,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -22301,6 +22536,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Post a daily-sales entry (closing date enforced; daily-sales-lock-v1)",
         "tags": [
           "daily-sales"
         ]
@@ -22319,6 +22555,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -22332,6 +22585,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Void a posted daily-sales entry (closing date enforced; daily-sales-lock-v1)",
         "tags": [
           "daily-sales"
         ]
@@ -27005,6 +27259,21 @@
     "/api/v1/payments/pending-deposits": {
       "get": {
         "operationId": "get_api_v1_payments_pending_deposits",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "amounts as 4-place decimal strings",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -27018,6 +27287,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Items waiting in Payments Clearing (deposit-grouping-v1 with exact=1)",
         "tags": [
           "payments"
         ]
@@ -34799,6 +35069,9 @@
                         "financialsAccess": {
                           "type": "boolean"
                         },
+                        "profitLossAccess": {
+                          "type": "boolean"
+                        },
                         "questionsForUsAccess": {
                           "type": "boolean"
                         },
@@ -35159,6 +35432,9 @@
                           "type": "boolean"
                         },
                         "financialsAccess": {
+                          "type": "boolean"
+                        },
+                        "profitLossAccess": {
                           "type": "boolean"
                         },
                         "questionsForUsAccess": {
@@ -49624,6 +49900,12 @@
                                         "maxLength": 200,
                                         "type": "string"
                                       },
+                                      "showHeading": {
+                                        "type": "boolean"
+                                      },
+                                      "showTotal": {
+                                        "type": "boolean"
+                                      },
                                       "style": {
                                         "additionalProperties": false,
                                         "properties": {
@@ -49648,6 +49930,10 @@
                                           }
                                         },
                                         "type": "object"
+                                      },
+                                      "totalCaption": {
+                                        "maxLength": 200,
+                                        "type": "string"
                                       },
                                       "type": {
                                         "const": "leadsheet",
@@ -52886,6 +53172,12 @@
                                         "maxLength": 200,
                                         "type": "string"
                                       },
+                                      "showHeading": {
+                                        "type": "boolean"
+                                      },
+                                      "showTotal": {
+                                        "type": "boolean"
+                                      },
                                       "style": {
                                         "additionalProperties": false,
                                         "properties": {
@@ -52910,6 +53202,10 @@
                                           }
                                         },
                                         "type": "object"
+                                      },
+                                      "totalCaption": {
+                                        "maxLength": 200,
+                                        "type": "string"
                                       },
                                       "type": {
                                         "const": "leadsheet",
@@ -53914,6 +54210,12 @@
                                         "maxLength": 200,
                                         "type": "string"
                                       },
+                                      "showHeading": {
+                                        "type": "boolean"
+                                      },
+                                      "showTotal": {
+                                        "type": "boolean"
+                                      },
                                       "style": {
                                         "additionalProperties": false,
                                         "properties": {
@@ -53938,6 +54240,10 @@
                                           }
                                         },
                                         "type": "object"
+                                      },
+                                      "totalCaption": {
+                                        "maxLength": 200,
+                                        "type": "string"
                                       },
                                       "type": {
                                         "const": "leadsheet",
@@ -54829,6 +55135,13 @@
                           },
                           "variancePct": {
                             "type": "boolean"
+                          },
+                          "ytdOrder": {
+                            "enum": [
+                              "measure",
+                              "year"
+                            ],
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -55170,6 +55483,13 @@
                           },
                           "variancePct": {
                             "type": "boolean"
+                          },
+                          "ytdOrder": {
+                            "enum": [
+                              "measure",
+                              "year"
+                            ],
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -55684,6 +56004,12 @@
                                         "maxLength": 200,
                                         "type": "string"
                                       },
+                                      "showHeading": {
+                                        "type": "boolean"
+                                      },
+                                      "showTotal": {
+                                        "type": "boolean"
+                                      },
                                       "style": {
                                         "additionalProperties": false,
                                         "properties": {
@@ -55708,6 +56034,10 @@
                                           }
                                         },
                                         "type": "object"
+                                      },
+                                      "totalCaption": {
+                                        "maxLength": 200,
+                                        "type": "string"
                                       },
                                       "type": {
                                         "const": "leadsheet",
@@ -56353,6 +56683,13 @@
                           },
                           "variancePct": {
                             "type": "boolean"
+                          },
+                          "ytdOrder": {
+                            "enum": [
+                              "measure",
+                              "year"
+                            ],
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -57515,6 +57852,12 @@
                                         "maxLength": 200,
                                         "type": "string"
                                       },
+                                      "showHeading": {
+                                        "type": "boolean"
+                                      },
+                                      "showTotal": {
+                                        "type": "boolean"
+                                      },
                                       "style": {
                                         "additionalProperties": false,
                                         "properties": {
@@ -57539,6 +57882,10 @@
                                           }
                                         },
                                         "type": "object"
+                                      },
+                                      "totalCaption": {
+                                        "maxLength": 200,
+                                        "type": "string"
                                       },
                                       "type": {
                                         "const": "leadsheet",
@@ -58184,6 +58531,13 @@
                           },
                           "variancePct": {
                             "type": "boolean"
+                          },
+                          "ytdOrder": {
+                            "enum": [
+                              "measure",
+                              "year"
+                            ],
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -59264,6 +59618,12 @@
                                         "maxLength": 200,
                                         "type": "string"
                                       },
+                                      "showHeading": {
+                                        "type": "boolean"
+                                      },
+                                      "showTotal": {
+                                        "type": "boolean"
+                                      },
                                       "style": {
                                         "additionalProperties": false,
                                         "properties": {
@@ -59288,6 +59648,10 @@
                                           }
                                         },
                                         "type": "object"
+                                      },
+                                      "totalCaption": {
+                                        "maxLength": 200,
+                                        "type": "string"
                                       },
                                       "type": {
                                         "const": "leadsheet",
@@ -59933,6 +60297,13 @@
                           },
                           "variancePct": {
                             "type": "boolean"
+                          },
+                          "ytdOrder": {
+                            "enum": [
+                              "measure",
+                              "year"
+                            ],
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -63724,7 +64095,276 @@
         ]
       },
       "post": {
+        "description": "Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting.",
         "operationId": "post_api_v1_transactions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "cashBack": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": true,
+                            "properties": {
+                              "accountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "amount": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "memo": {
+                                "maxLength": 1000,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "accountId",
+                              "amount"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "depositToAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "lines": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accountId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "amount": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "sourceTransactionId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "accountId",
+                            "amount"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 500,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "strictAmounts": {
+                        "type": "boolean"
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "deposit",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "depositToAccountId",
+                      "lines",
+                      "txnType"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "amount": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "fromAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "toAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "transfer",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "fromAccountId",
+                      "toAccountId",
+                      "amount",
+                      "txnType"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "amount": {
+                        "type": "string"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "contactId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "expenseAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "lines": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "amount": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "expenseAccountId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "isBillable": {
+                              "type": "boolean"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "expenseAccountId",
+                            "amount"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 500,
+                        "type": "array"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "payFromAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "tags": {
+                        "items": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnNumber": {
+                        "maxLength": 50,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "expense",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "payFromAccountId",
+                      "txnType"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -63738,6 +64378,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Create a transaction (body per txnType; deposit, transfer and expense documented)",
         "tags": [
           "transactions"
         ]
@@ -63976,6 +64617,7 @@
         ]
       },
       "put": {
+        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404.",
         "operationId": "put_api_v1_transactions_by_id",
         "parameters": [
           {
@@ -63983,10 +64625,279 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "cashBack": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": true,
+                            "properties": {
+                              "accountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "amount": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "memo": {
+                                "maxLength": 1000,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "accountId",
+                              "amount"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "depositToAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "lines": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accountId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "amount": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "sourceTransactionId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "accountId",
+                            "amount"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 500,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "strictAmounts": {
+                        "type": "boolean"
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "deposit",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "depositToAccountId",
+                      "lines",
+                      "txnType"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "amount": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "fromAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "toAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "transfer",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "fromAccountId",
+                      "toAccountId",
+                      "amount",
+                      "txnType"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "amount": {
+                        "type": "string"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "contactId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "expenseAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "lines": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "amount": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "expenseAccountId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "isBillable": {
+                              "type": "boolean"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "expenseAccountId",
+                            "amount"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 500,
+                        "type": "array"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "payFromAccountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "tags": {
+                        "items": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnNumber": {
+                        "maxLength": 50,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "expense",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "payFromAccountId",
+                      "txnType"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -64000,6 +64911,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Edit a transaction (body per txnType; deposit, transfer and expense documented)",
         "tags": [
           "transactions"
         ]

@@ -7,7 +7,7 @@
 // entry (auto Cash Over/Short absorbs any residual) that the user reviews and
 // posts via ledger.postTransaction. See Build Plans/DAILY_SALES_POS_PLAN.md.
 
-import { eq, and, desc, count, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, desc, count, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import {
@@ -49,21 +49,36 @@ const TOLERANCE = new Decimal(BALANCE_TOLERANCE);
 export const DAILY_SALES_ENTRY_ATTACHABLE = 'daily_sales_entry';
 export const DAILY_SALES_TXN_ATTACHABLE = 'daily_sales';
 
+// Company scope (U-57): with a company, templates and entries of another
+// company read as not found. Rows without a company (pre-company data)
+// stay visible to every company of the tenant, as elsewhere.
+function inCompany(rowCompanyId: string | null | undefined, companyId: string | undefined): boolean {
+  return !companyId || !rowCompanyId || rowCompanyId === companyId;
+}
+
+function companyCond(column: typeof dailySalesTemplates.companyId | typeof dailySalesEntries.companyId, companyId: string | undefined) {
+  return companyId ? or(isNull(column), eq(column, companyId)) : undefined;
+}
+
 // ── Templates ───────────────────────────────────────────────────
-export async function getTemplate(tenantId: string, id: string) {
+export async function getTemplate(tenantId: string, id: string, companyId?: string) {
   const tpl = await db.query.dailySalesTemplates.findFirst({
     where: and(eq(dailySalesTemplates.tenantId, tenantId), eq(dailySalesTemplates.id, id)),
   });
-  if (!tpl) throw AppError.notFound('Daily-sales template not found');
+  if (!tpl || !inCompany(tpl.companyId, companyId)) throw AppError.notFound('Daily-sales template not found');
   const lines = await db.select().from(dailySalesTemplateLines)
     .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.templateId, id)))
     .orderBy(dailySalesTemplateLines.sortOrder);
   return { ...tpl, lines };
 }
 
-export async function listTemplates(tenantId: string) {
+export async function listTemplates(tenantId: string, companyId?: string) {
   const rows = await db.select().from(dailySalesTemplates)
-    .where(and(eq(dailySalesTemplates.tenantId, tenantId), eq(dailySalesTemplates.isActive, true)))
+    .where(and(
+      eq(dailySalesTemplates.tenantId, tenantId),
+      eq(dailySalesTemplates.isActive, true),
+      companyCond(dailySalesTemplates.companyId, companyId),
+    ))
     .orderBy(dailySalesTemplates.name);
   return rows;
 }
@@ -107,8 +122,8 @@ export async function createTemplate(tenantId: string, input: CreateDailySalesTe
   return getTemplate(tenantId, tpl!.id);
 }
 
-export async function updateTemplate(tenantId: string, id: string, input: UpdateDailySalesTemplateInput, userId?: string) {
-  const before = await getTemplate(tenantId, id);
+export async function updateTemplate(tenantId: string, id: string, input: UpdateDailySalesTemplateInput, userId?: string, companyId?: string) {
+  const before = await getTemplate(tenantId, id, companyId);
   if (input.defaultTagId) await assertTagsInTenant(tenantId, [input.defaultTagId]);
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) updates['name'] = input.name;
@@ -120,14 +135,15 @@ export async function updateTemplate(tenantId: string, id: string, input: Update
   return getTemplate(tenantId, id);
 }
 
-export async function deleteTemplate(tenantId: string, id: string, userId?: string) {
+export async function deleteTemplate(tenantId: string, id: string, userId?: string, companyId?: string) {
+  await getTemplate(tenantId, id, companyId); // tenant + company scope
   await db.update(dailySalesTemplates).set({ isActive: false, updatedAt: new Date() })
     .where(and(eq(dailySalesTemplates.tenantId, tenantId), eq(dailySalesTemplates.id, id)));
   await auditLog(tenantId, 'delete', 'daily_sales_template', id, null, null, userId);
 }
 
-export async function duplicateTemplate(tenantId: string, id: string, input: DuplicateDailySalesTemplateInput, userId?: string) {
-  const src = await getTemplate(tenantId, id); // tenant-scope + existence check
+export async function duplicateTemplate(tenantId: string, id: string, input: DuplicateDailySalesTemplateInput, userId?: string, companyId?: string) {
+  const src = await getTemplate(tenantId, id, companyId); // tenant/company scope + existence check
   const newId = await db.transaction(async (tx) => {
     const [tpl] = await tx.insert(dailySalesTemplates).values({
       tenantId, companyId: src.companyId, name: input.name?.trim() || `${src.name} (copy)`,
@@ -151,8 +167,8 @@ export async function duplicateTemplate(tenantId: string, id: string, input: Dup
 // Upsert the template's line definitions: update by id, insert new, soft-remove
 // (is_active=false) any existing line not present — preserves provenance for
 // entry values that referenced a removed line.
-export async function replaceTemplateLines(tenantId: string, templateId: string, lines: DailySalesTemplateLineInput[], userId?: string) {
-  await getTemplate(tenantId, templateId); // tenant-scope check
+export async function replaceTemplateLines(tenantId: string, templateId: string, lines: DailySalesTemplateLineInput[], userId?: string, companyId?: string) {
+  await getTemplate(tenantId, templateId, companyId); // tenant/company scope check
   await assertTagsInTenant(tenantId, lines.flatMap((l) => (l.tagId ? [l.tagId] : [])));
   const existing = await db.select({ id: dailySalesTemplateLines.id }).from(dailySalesTemplateLines)
     .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.templateId, templateId)));
@@ -264,11 +280,16 @@ async function saveValues(tenantId: string, entryId: string, values: CreateDaily
   }
 }
 
-export async function getEntry(tenantId: string, id: string) {
+async function loadEntry(tenantId: string, id: string, companyId?: string) {
   const entry = await db.query.dailySalesEntries.findFirst({
     where: and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)),
   });
-  if (!entry) throw AppError.notFound('Daily-sales entry not found');
+  if (!entry || !inCompany(entry.companyId, companyId)) throw AppError.notFound('Daily-sales entry not found');
+  return entry;
+}
+
+export async function getEntry(tenantId: string, id: string, companyId?: string) {
+  const entry = await loadEntry(tenantId, id, companyId);
   const values = await db.select().from(dailySalesEntryValues)
     .where(and(eq(dailySalesEntryValues.tenantId, tenantId), eq(dailySalesEntryValues.entryId, id)));
   const template = await getTemplate(tenantId, entry.templateId);
@@ -296,8 +317,11 @@ export async function listEntries(
     // Server-side column sort (the list paginates). Default: business date desc.
     sortBy?: DailySalesEntrySortKey; sortDir?: 'asc' | 'desc';
   } = {},
+  companyId?: string,
 ) {
   const conds = [eq(dailySalesEntries.tenantId, tenantId)];
+  const scope = companyCond(dailySalesEntries.companyId, companyId);
+  if (scope) conds.push(scope);
   if (filters.status) conds.push(eq(dailySalesEntries.status, filters.status));
   if (filters.templateId) conds.push(eq(dailySalesEntries.templateId, filters.templateId));
   const rows = await db.select({
@@ -344,7 +368,7 @@ export async function listEntries(
 }
 
 export async function createDraft(tenantId: string, input: CreateDailySalesEntryInput, userId?: string, companyId?: string) {
-  await getTemplate(tenantId, input.templateId); // validate + tenant scope
+  await getTemplate(tenantId, input.templateId, companyId); // validate + tenant/company scope
   await assertTagsInTenant(tenantId, entryTagIds(input));
   const [entry] = await db.insert(dailySalesEntries).values({
     tenantId, companyId: companyId ?? null, templateId: input.templateId,
@@ -361,11 +385,8 @@ export async function createDraft(tenantId: string, input: CreateDailySalesEntry
   return getEntry(tenantId, entry!.id);
 }
 
-export async function updateDraft(tenantId: string, id: string, input: UpdateDailySalesEntryInput, userId?: string) {
-  const entry = await db.query.dailySalesEntries.findFirst({
-    where: and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)),
-  });
-  if (!entry) throw AppError.notFound('Daily-sales entry not found');
+export async function updateDraft(tenantId: string, id: string, input: UpdateDailySalesEntryInput, userId?: string, companyId?: string) {
+  const entry = await loadEntry(tenantId, id, companyId);
   if (entry.status !== 'draft') throw AppError.badRequest('Only draft entries can be edited.');
   await assertTagsInTenant(tenantId, entryTagIds(input));
   const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -379,11 +400,8 @@ export async function updateDraft(tenantId: string, id: string, input: UpdateDai
   return getEntry(tenantId, id);
 }
 
-export async function deleteEntry(tenantId: string, id: string, userId?: string) {
-  const entry = await db.query.dailySalesEntries.findFirst({
-    where: and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)),
-  });
-  if (!entry) throw AppError.notFound('Daily-sales entry not found');
+export async function deleteEntry(tenantId: string, id: string, userId?: string, companyId?: string) {
+  const entry = await loadEntry(tenantId, id, companyId);
   if (entry.status === 'posted') throw AppError.badRequest('Void a posted entry instead of deleting it.');
   await db.delete(dailySalesEntryValues).where(and(eq(dailySalesEntryValues.tenantId, tenantId), eq(dailySalesEntryValues.entryId, id)));
   await db.delete(dailySalesEntries).where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
@@ -396,8 +414,8 @@ export async function deleteEntry(tenantId: string, id: string, userId?: string)
 }
 
 // Live balance / over-short for unsaved values (UI preview, no writes).
-export async function previewEntry(tenantId: string, input: PreviewDailySalesEntryInput) {
-  const tpl = await getTemplate(tenantId, input.templateId);
+export async function previewEntry(tenantId: string, input: PreviewDailySalesEntryInput, companyId?: string) {
+  const tpl = await getTemplate(tenantId, input.templateId, companyId);
   const values = input.values.map((v) => ({ templateLineId: v.templateLineId, amount: new Decimal(String(v.amount ?? 0)).toFixed(4), tagId: v.tagId ?? null }));
   const c = computeEntry(tpl.lines, values, null, tpl.defaultTagId ?? null);
   const overShort = new Decimal(c.overShort);
@@ -414,10 +432,7 @@ export async function previewEntry(tenantId: string, input: PreviewDailySalesEnt
 }
 
 export async function postEntry(tenantId: string, id: string, userId?: string, companyId?: string) {
-  const entry = await db.query.dailySalesEntries.findFirst({
-    where: and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)),
-  });
-  if (!entry) throw AppError.notFound('Daily-sales entry not found');
+  const entry = await loadEntry(tenantId, id, companyId);
   if (entry.status !== 'draft') throw AppError.badRequest('This entry has already been posted or voided.');
 
   const tpl = await getTemplate(tenantId, entry.templateId);
@@ -497,11 +512,8 @@ async function moveEntryAttachments(
   return moved.length;
 }
 
-export async function voidEntry(tenantId: string, id: string, userId?: string) {
-  const entry = await db.query.dailySalesEntries.findFirst({
-    where: and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)),
-  });
-  if (!entry) throw AppError.notFound('Daily-sales entry not found');
+export async function voidEntry(tenantId: string, id: string, userId?: string, companyId?: string) {
+  const entry = await loadEntry(tenantId, id, companyId);
   if (entry.status !== 'posted' || !entry.transactionId) throw AppError.badRequest('Only a posted entry can be voided.');
 
   await ledger.voidTransaction(tenantId, entry.transactionId, 'Daily sales entry voided', userId);

@@ -143,6 +143,15 @@ export const journalLines = pgTable('journal_lines', {
   // 'billed' once invoiced (CHECK journal_lines_billed_status_chk).
   isBillable: boolean('is_billable').notNull().default(false),
   billedStatus: text('billed_status'),
+  // The document this line settles (migration 0223): on a deposit, the
+  // Payments Clearing item it deposits (U-52) or the vendor credit it
+  // refunds (U-54). deposit_lines is the settlement registry; this column
+  // ties the registry row to its line for display and editing. No FK
+  // (mirrors deposit_lines).
+  sourceTransactionId: uuid('source_transaction_id'),
+  // The line's job inside its document when lines must be told apart
+  // (migration 0223): 'cash_back' on a deposit (U-53). NULL otherwise.
+  lineRole: varchar('line_role', { length: 20 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),
