@@ -3,11 +3,13 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import { receivePaymentSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
 import * as paymentService from '../services/payment.service.js';
 
 export const paymentsRouter = Router();
@@ -30,8 +32,14 @@ paymentsRouter.get('/for-invoice/:invoiceId', async (req, res) => {
   res.json({ payments });
 });
 
-paymentsRouter.get('/pending-deposits', async (req, res) => {
-  const result = await paymentService.getPendingDeposits(req.tenantId);
+// Items waiting in Payments Clearing (U-52), this company only. `?exact=1`
+// returns amounts as decimal strings (deposit-grouping-v1).
+paymentsRouter.get('/pending-deposits', describe({
+  summary: 'Items waiting in Payments Clearing (deposit-grouping-v1 with exact=1)',
+  query: z.object({ exact: z.enum(['1', 'true']).optional().describe('amounts as 4-place decimal strings') }),
+}), async (req, res) => {
+  const exact = req.query['exact'] === '1' || req.query['exact'] === 'true';
+  const result = await paymentService.getPendingDeposits(req.tenantId, { companyId: req.companyId, exact });
   res.json(result);
 });
 

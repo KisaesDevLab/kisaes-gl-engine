@@ -16,6 +16,7 @@ import { getLockContext } from './lock-context.js';
 import { closingPasswordMatches, closingPasswordInvalid, auditClosingPasswordFailed } from './closing-password.service.js';
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { assertNotDeposited, releaseDepositLinks, liveDepositsForSource } from './deposit-links.service.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -147,6 +148,17 @@ type BillableCols = { isBillable: boolean; billedStatus: string | null };
 type LedgerLine = PostTransactionInput['lines'][number];
 
 /** A transaction's live lines already billed to a customer ('billed'). */
+/**
+ * The settlement columns of a journal line (migration 0223): the document it
+ * settles (deposit grouping U-52 / vendor refund U-54) and its role inside
+ * its document ('cash_back', U-53). Absent on the input → NULL.
+ */
+export function settlementColumns(line: { sourceTransactionId?: string | null; lineRole?: string | null }): {
+  sourceTransactionId: string | null; lineRole: string | null;
+} {
+  return { sourceTransactionId: line.sourceTransactionId ?? null, lineRole: line.lineRole ?? null };
+}
+
 async function loadBilledLines(executor: DbOrTx, tenantId: string, txnId: string) {
   return executor.select().from(journalLines).where(and(
     eq(journalLines.tenantId, tenantId),
@@ -573,6 +585,7 @@ export async function postTransaction(
       lineOrder: i,
       contactId: line.contactId ?? null,
       ...billableColumns(line),
+      ...settlementColumns(line),
       tagId: resolveDefaultTag({
         explicitUserTagId: line.tagId,
         bankRuleTagId: line.bankRuleTagId ?? undefined,
@@ -653,6 +666,13 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
       );
     }
 
+    // A document a posted deposit settles can't be voided under it (the
+    // deposit would keep crediting Payments Clearing / A/P for it): 409
+    // TXN_DEPOSITED. A deposit being voided releases what it settled
+    // (U-52, U-54), so those items are pending again.
+    await assertNotDeposited(tx, tenantId, txnId, 'void');
+    const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
+
     // Get original lines
     const originalLines = await tx.select().from(journalLines)
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
@@ -709,7 +729,8 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
 
     // Full before-image: the header AND the lines as they stood before the
     // void (the reversing lines are new rows, so originalLines is exact).
-    await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines }, { reason }, userId, tx);
+    await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines },
+      releasedLinks.length > 0 ? { reason, releasedDepositLinks: releasedLinks } : { reason }, userId, tx);
   });
 }
 
@@ -831,17 +852,17 @@ export async function deleteTransaction(
       );
     }
 
-    const linked = await tx.execute(sql`
-      SELECT 1 FROM deposit_lines
-      WHERE deposit_id = ${txnId} OR source_transaction_id = ${txnId}
-      LIMIT 1
-    `);
-    if ((linked.rows as unknown[]).length > 0) {
+    // An item a posted deposit settles can't be deleted under it (409
+    // TXN_DELETE_LINKED, as before). A deposit being deleted releases what
+    // it settled (U-52), exactly as a void does.
+    if ((await liveDepositsForSource(tx, tenantId, txnId)).length > 0) {
       throw AppError.conflict(
-        'This transaction is part of a bank deposit of customer payments, so it can’t be deleted. Void it instead.',
+        'This transaction is part of a bank deposit, so it can’t be deleted. Remove it from the deposit first.',
         'TXN_DELETE_LINKED',
+        { links: ['deposit'] },
       );
     }
+    const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
 
     // Other records that point at this transaction and would be left
     // pointing at a deleted one (a matched bank-feed item would also stay
@@ -896,11 +917,39 @@ export async function deleteTransaction(
 
     await auditLog(tenantId, 'delete', 'transaction', txnId,
       { ...txn, lines: originalLines },
-      { status: 'deleted', reason: opts.reason ?? null },
+      releasedLinks.length > 0
+        ? { status: 'deleted', reason: opts.reason ?? null, releasedDepositLinks: releasedLinks }
+        : { status: 'deleted', reason: opts.reason ?? null },
       opts.userId, tx);
 
     return { id: txnId, status: 'deleted' as const };
   });
+}
+
+/**
+ * Edit guard for a transaction a posted deposit settles (U-52, U-54). A
+ * Payments Clearing item must keep exactly the net clearing amount the
+ * deposit took; a vendor credit is not edited through this path. Anything
+ * else about the transaction (memo, other lines, date) may change.
+ */
+async function assertDepositedAmountKept(
+  executor: DbOrTx,
+  tenantId: string,
+  existing: { id: string; txnType: string },
+  input: PostTransactionInput,
+) {
+  const live = await liveDepositsForSource(executor, tenantId, existing.id);
+  if (live.length === 0) return;
+  const deposited = live.reduce((s, l) => s.plus(l.amount), new Decimal(0));
+  const clearing = await executor.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'payments_clearing')))
+    .limit(1);
+  const clearingId = clearing[0]?.id;
+  const held = input.lines
+    .filter((l) => clearingId && l.accountId === clearingId)
+    .reduce((s, l) => s.plus(l.debit || '0').minus(l.credit || '0'), new Decimal(0));
+  if (existing.txnType !== 'vendor_credit' && held.equals(deposited)) return;
+  await assertNotDeposited(executor, tenantId, existing.id, 'edit');
 }
 
 export async function updateTransaction(
@@ -964,6 +1013,11 @@ export async function updateTransaction(
       companyId ?? existing.companyId ?? null,
       input.lines.map((l) => l.accountId),
     );
+
+    // An item a posted deposit settles keeps the amount the deposit took
+    // (U-52): an edit that changes what it holds in Payments Clearing (or a
+    // vendor credit's total) is refused with 409 TXN_DEPOSITED.
+    await assertDepositedAmountKept(tx, tenantId, existing, input);
 
     // Lines already billed to a customer keep their billed state by
     // identity, or the edit is refused (409 LINE_BILLED) — U-50.
@@ -1061,7 +1115,7 @@ export async function updateTransaction(
       // 1. Preserve balance-sheet lines: update tag/description IN PLACE (no
       //    amount/account change → reconciliation references untouched).
       for (const { lineId, input: inLine } of bsPairs) {
-        await tx.update(journalLines).set({ tagId: tagFor(inLine), description: inLine.description || null })
+        await tx.update(journalLines).set({ tagId: tagFor(inLine), description: inLine.description || null, ...settlementColumns(inLine) })
           .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, lineId)));
       }
       // 2. Replace P&L lines: reverse old balances, delete, insert new, apply.
@@ -1080,6 +1134,7 @@ export async function updateTransaction(
         isTaxable: line.isTaxable || false, taxRate: line.taxRate || '0', taxAmount: line.taxAmount || '0',
         lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
         ...billableFor(line),
+        ...settlementColumns(line),
       }));
       if (newPLValues.length > 0) {
         await tx.insert(journalLines).values(newPLValues);
@@ -1166,6 +1221,7 @@ export async function updateTransaction(
       lineOrder: i,
       contactId: line.contactId ?? null,
       ...billableFor(line),
+      ...settlementColumns(line),
       tagId: resolveDefaultTag({
         explicitUserTagId: line.tagId,
         bankRuleTagId: line.bankRuleTagId ?? undefined,
@@ -1268,6 +1324,8 @@ export async function getTransaction(tenantId: string, txnId: string) {
     contactId: journalLines.contactId,
     isBillable: journalLines.isBillable,
     billedStatus: journalLines.billedStatus,
+    sourceTransactionId: journalLines.sourceTransactionId,
+    lineRole: journalLines.lineRole,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     // Exclude the persisted void-reversal rows (rule 23) so the detail
@@ -1279,6 +1337,15 @@ export async function getTransaction(tenantId: string, txnId: string) {
       eq(journalLines.isVoidReversal, false),
     ))
     .orderBy(journalLines.lineOrder);
+
+  // Deposits (U-53): the cash-back line, as the create body takes it.
+  if (txn.txnType === 'deposit') {
+    const cb = lines.find((l) => l.lineRole === 'cash_back');
+    const cashBack = cb
+      ? { accountId: cb.accountId, amount: new Decimal(cb.debit || '0').toFixed(4), memo: cb.description ?? null }
+      : null;
+    return { ...txn, contactName, lines, cashBack };
+  }
 
   return { ...txn, contactName, lines };
 }

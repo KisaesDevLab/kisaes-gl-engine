@@ -159,6 +159,13 @@ export interface JournalLineInput {
   // journal_lines.is_billable; billed_status becomes 'unbilled' when true
   // and stays NULL otherwise. Callers check that contactId is set.
   isBillable?: boolean;
+  // The document this line settles (U-52 deposit grouping, U-54 vendor
+  // refund). Persisted on journal_lines.source_transaction_id.
+  sourceTransactionId?: string | null;
+  // What the line is for inside its document, when the document needs to
+  // tell lines apart: 'cash_back' on a deposit (U-53). Persisted on
+  // journal_lines.line_role.
+  lineRole?: string | null;
   // ADR 0XY §3.2 — when the line references an item, the ledger service
   // batch-loads items.default_tag_id and feeds it into the resolver so
   // item-default resolution runs server-side. Persisted on the journal
@@ -224,8 +231,12 @@ export interface CreateDepositInput {
     tagId?: string | null;
     // Per-line payee ("Received From").
     contactId?: string | null;
+    // The item this line deposits (U-52) or the vendor credit it refunds (U-54).
+    sourceTransactionId?: string;
   }>;
   memo?: string;
+  // Cash kept back from the deposit (U-53).
+  cashBack?: { accountId: string; amount: string; memo?: string } | null;
 }
 
 export interface BulkUpdateTransactionsInput {

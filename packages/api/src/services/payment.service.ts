@@ -7,7 +7,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { ReceivePaymentInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { transactions, accounts, paymentApplications, depositLines } from '../db/schema/index.js';
+import { transactions, accounts, paymentApplications } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
@@ -147,45 +147,100 @@ export async function getPaymentsForInvoice(tenantId: string, invoiceId: string)
   return rows.rows;
 }
 
-export async function getPendingDeposits(tenantId: string) {
-  // Find all payments/cash sales that went to Payments Clearing and haven't been deposited yet
+/**
+ * Items waiting in Payments Clearing to be deposited (U-52): every posted
+ * transaction whose lines hold a net debit on the Payments Clearing account
+ * and that no posted deposit settles yet. One row per transaction, its
+ * amount the net clearing debit (what a grouped deposit line must equal).
+ * Void and deleted transactions are left out; with a company, items of
+ * another company are too (legacy rows without a company stay visible).
+ *
+ * Amounts are numbers by default (the web page); `exact` returns them as
+ * 4-place decimal strings (deposit-grouping-v1).
+ */
+export async function getPendingDeposits(
+  tenantId: string,
+  opts: { companyId?: string; exact?: boolean } = {},
+) {
+  const items = await listPendingDepositItems(tenantId, { companyId: opts.companyId });
+  const balance = items.reduce((s, i) => s.plus(i.amount), new Decimal('0'));
+  if (opts.exact) {
+    return { paymentsClearingBalance: balance.toFixed(4), items };
+  }
+  // Keep amounts as numbers for the existing web contract, summed through
+  // Decimal so the Payments Clearing tile doesn't drift.
+  return {
+    paymentsClearingBalance: Number(balance.toFixed(4)),
+    items: items.map((i) => ({ ...i, amount: Number(i.amount) })),
+  };
+}
+
+export interface PendingDepositRow {
+  transactionId: string;
+  txnType: string;
+  date: string;
+  customerName: string | null;
+  contactId: string | null;
+  refNo: string | null;
+  paymentMethod: string | null;
+  memo: string | null;
+  /** Undeposited amount, 4-place decimal string. */
+  amount: string;
+}
+
+/** Shared by the pending list and the bank-feed deposit suggestions (U-56). */
+export async function listPendingDepositItems(
+  tenantId: string,
+  opts: { companyId?: string; from?: string; to?: string } = {},
+): Promise<PendingDepositRow[]> {
   const pcAccount = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'payments_clearing')),
   });
-  if (!pcAccount) return { paymentsClearingBalance: 0, items: [] };
+  if (!pcAccount) return [];
 
+  const companyCond = opts.companyId
+    ? sql`AND (t.company_id = ${opts.companyId} OR t.company_id IS NULL)`
+    : sql``;
+  const fromCond = opts.from ? sql`AND t.txn_date >= ${opts.from}` : sql``;
+  const toCond = opts.to ? sql`AND t.txn_date <= ${opts.to}` : sql``;
   const rows = await db.execute(sql`
-    SELECT t.id as transaction_id, t.txn_type, t.txn_date as date,
-      COALESCE(t.reference_number, t.txn_number) as ref_no, t.payment_method, t.memo,
-      c.display_name as customer_name,
-      jl.debit as amount
-    FROM journal_lines jl
-    JOIN transactions t ON t.id = jl.transaction_id
-    LEFT JOIN contacts c ON c.id = t.contact_id
-    WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${pcAccount.id}
-      AND jl.debit > 0 AND t.status = 'posted'
-      AND t.id NOT IN (SELECT source_transaction_id FROM deposit_lines)
-    ORDER BY t.txn_date ASC
+    SELECT t.id AS transaction_id, t.txn_type,
+      to_char(t.txn_date, 'YYYY-MM-DD') AS date,
+      COALESCE(t.reference_number, t.txn_number) AS ref_no, t.payment_method, t.memo,
+      t.contact_id, c.display_name AS customer_name,
+      net.amount
+    FROM (
+      SELECT jl.transaction_id, SUM(jl.debit - jl.credit) AS amount
+      FROM journal_lines jl
+      WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${pcAccount.id}
+        AND jl.is_void_reversal = false
+      GROUP BY jl.transaction_id
+      HAVING SUM(jl.debit - jl.credit) > 0
+    ) net
+    JOIN transactions t ON t.id = net.transaction_id AND t.tenant_id = ${tenantId}
+    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    WHERE t.status = 'posted'
+      ${companyCond} ${fromCond} ${toCond}
+      AND NOT EXISTS (
+        SELECT 1 FROM deposit_lines dl
+        JOIN transactions d ON d.id = dl.deposit_id
+        WHERE dl.source_transaction_id = t.id
+          AND d.tenant_id = ${tenantId} AND d.status = 'posted'
+      )
+    ORDER BY t.txn_date ASC, t.created_at ASC, t.id ASC
   `);
 
-  // Keep amounts as numbers in the API response (what the web expects),
-  // but sum them through Decimal so the Payments Clearing tile doesn't
-  // drift when there are many small items.
-  const items = (rows.rows as any[]).map((r) => ({
-    transactionId: r.transaction_id,
-    txnType: r.txn_type,
-    date: r.date,
-    customerName: r.customer_name,
-    refNo: r.ref_no,
-    paymentMethod: r.payment_method ?? null,
-    amount: Number(new Decimal(r.amount || '0').toFixed(4)),
+  return (rows.rows as Array<Record<string, unknown>>).map((r) => ({
+    transactionId: String(r['transaction_id']),
+    txnType: String(r['txn_type']),
+    date: String(r['date']),
+    customerName: (r['customer_name'] as string | null) ?? null,
+    contactId: (r['contact_id'] as string | null) ?? null,
+    refNo: (r['ref_no'] as string | null) ?? null,
+    paymentMethod: (r['payment_method'] as string | null) ?? null,
+    memo: (r['memo'] as string | null) ?? null,
+    amount: new Decimal(String(r['amount'] ?? '0')).toFixed(4),
   }));
-
-  const paymentsClearingBalance = Number(
-    items.reduce((s, i) => s.plus(i.amount), new Decimal('0')).toFixed(4),
-  );
-
-  return { paymentsClearingBalance, items };
 }
 
 export async function unapplyPayment(tenantId: string, paymentId: string, invoiceId: string) {
