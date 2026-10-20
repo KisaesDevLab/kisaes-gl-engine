@@ -27,6 +27,7 @@ import { requireSuperAdmin } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
+import { requirePermission } from '../middleware/permission.js';
 import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiCategorization from '../services/ai-categorization.service.js';
 import * as aiReceiptOcr from '../services/ai-receipt-ocr.service.js';
@@ -743,7 +744,9 @@ const usageSummaryResponse = z.object({
     calls: z.number().int(), inputTokens: z.number().int(), outputTokens: z.number().int(),
   })),
 });
-aiRouter.get('/usage/summary', authenticate,
+// Usage figures are a settings concern: the same right that edits company
+// settings (read-only users and restricted users are refused).
+aiRouter.get('/usage/summary', authenticate, requirePermission('company_settings', 'update'),
   describe({ summary: 'AI token usage per provider, model and job type for a date range', query: usageSummaryQuery, response: usageSummaryResponse }),
   async (req, res) => {
     const q = usageSummaryQuery.parse({ from: req.query['from'], to: req.query['to'] });
