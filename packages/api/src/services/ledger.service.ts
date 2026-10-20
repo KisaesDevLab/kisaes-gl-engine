@@ -658,6 +658,43 @@ export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense
  * Audited as action 'delete' with the full before-image: the header and
  * every journal line as it stood before the delete.
  */
+/**
+ * Kinds of record that refuse a delete while they point at the transaction
+ * (TXN_DELETE_LINKED details.links). Informational links (findings, rule
+ * audit, dismissals, portal questions, tags) don't block: they keep
+ * describing a transaction that still exists with status 'deleted'.
+ */
+export const DELETE_BLOCKING_LINKS = [
+  'bank_feed_match', 'accrual', 'payroll', 'portal_receipt', 'category_suggestion',
+  'recurring_template', 'daily_sales', 'estimated_tax_payment',
+] as const;
+
+export async function findDeleteBlockingLinks(
+  executor: DbOrTx,
+  tenantId: string,
+  txnId: string,
+): Promise<Array<(typeof DELETE_BLOCKING_LINKS)[number]>> {
+  const result = await executor.execute(sql`
+    SELECT
+      EXISTS (SELECT 1 FROM bank_feed_items WHERE tenant_id = ${tenantId} AND matched_transaction_id = ${txnId}) AS bank_feed_match,
+      (EXISTS (SELECT 1 FROM accrual_entries WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId})
+        OR EXISTS (SELECT 1 FROM accrual_schedules WHERE tenant_id = ${tenantId} AND source_transaction_id = ${txnId})) AS accrual,
+      (EXISTS (SELECT 1 FROM payroll_check_register_rows r JOIN payroll_import_sessions ps ON ps.id = r.session_id
+                WHERE ps.tenant_id = ${tenantId} AND r.transaction_id = ${txnId})
+        OR EXISTS (SELECT 1 FROM payroll_import_sessions WHERE tenant_id = ${tenantId}
+                AND (journal_entry_id = ${txnId}
+                  OR (jsonb_typeof(journal_entry_ids) = 'array' AND jsonb_exists(journal_entry_ids, ${txnId}::text))))) AS payroll,
+      EXISTS (SELECT 1 FROM portal_receipts WHERE tenant_id = ${tenantId} AND matched_transaction_id = ${txnId}) AS portal_receipt,
+      EXISTS (SELECT 1 FROM client_category_suggestions WHERE tenant_id = ${tenantId}
+                AND ((transaction_id = ${txnId} AND status = 'pending') OR posted_transaction_id = ${txnId})) AS category_suggestion,
+      EXISTS (SELECT 1 FROM recurring_schedules WHERE tenant_id = ${tenantId} AND template_transaction_id = ${txnId}) AS recurring_template,
+      EXISTS (SELECT 1 FROM daily_sales_entries WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId}) AS daily_sales,
+      EXISTS (SELECT 1 FROM tax_est_payments WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId}) AS estimated_tax_payment
+  `);
+  const row = (result.rows as Array<Record<string, boolean>>)[0] ?? {};
+  return DELETE_BLOCKING_LINKS.filter((k) => row[k] === true);
+}
+
 export async function deleteTransaction(
   tenantId: string,
   txnId: string,
@@ -720,6 +757,19 @@ export async function deleteTransaction(
       throw AppError.conflict(
         'This transaction is part of a bank deposit of customer payments, so it can’t be deleted. Void it instead.',
         'TXN_DELETE_LINKED',
+      );
+    }
+
+    // Other records that point at this transaction and would be left
+    // pointing at a deleted one (a matched bank-feed item would also stay
+    // "matched" and never come back for review). Refused, naming the kinds
+    // in details.links; the owner unmatches / removes the link first.
+    const links = await findDeleteBlockingLinks(tx, tenantId, txnId);
+    if (links.length > 0) {
+      throw AppError.conflict(
+        'Other records point at this transaction (for example a matched bank-feed item), so it can’t be deleted. Undo that link first, or void it instead.',
+        'TXN_DELETE_LINKED',
+        { links },
       );
     }
 

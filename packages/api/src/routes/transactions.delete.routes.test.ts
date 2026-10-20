@@ -19,7 +19,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, accounts, companies, auditLog, contacts, transactions, journalLines, transactionTags,
-  reconciliations, reconciliationLines,
+  reconciliations, reconciliationLines, bankConnections, bankFeedItems,
 } from '../db/schema/index.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { companyRouter } from './company.routes.js';
@@ -122,6 +122,8 @@ afterEach(async () => {
   const recs = await db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tenantId));
   for (const r of recs) await db.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, r.id));
   await db.delete(reconciliations).where(eq(reconciliations.tenantId, tenantId));
+  await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
+  await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
   await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
   await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
   await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
@@ -318,5 +320,44 @@ describe('DELETE /transactions/:id — guards', () => {
     expect(r.status).toBe(403);
     const [row] = await db.select().from(transactions).where(eq(transactions.id, txnId));
     expect(row!.status).toBe('posted');
+  });
+});
+
+describe('DELETE /transactions/:id — records that point at the transaction (L4)', () => {
+  it('a bank-feed item matched to it refuses the delete (409 TXN_DELETE_LINKED) until it is unmatched', async () => {
+    const txnId = await createDeposit('2026-03-05', '75.00');
+    const [conn] = await db.insert(bankConnections).values({ tenantId, accountId: bankId }).returning();
+    const [item] = await db.insert(bankFeedItems).values({
+      tenantId, companyId, bankConnectionId: conn!.id, feedDate: '2026-03-05', amount: '75.0000',
+      description: 'DEPOSIT', status: 'matched', matchedTransactionId: txnId,
+    }).returning();
+    const bankBefore = await balanceOf(bankId);
+
+    const r = await call('DELETE', `/api/v1/transactions/${txnId}`);
+    expect(r.status).toBe(409);
+    expect(r.json.error.code).toBe('TXN_DELETE_LINKED');
+    expect(r.json.error.details.links).toEqual(['bank_feed_match']);
+    const [still] = await db.select({ status: transactions.status }).from(transactions).where(eq(transactions.id, txnId));
+    expect(still!.status).toBe('posted');
+    expect(await balanceOf(bankId)).toBe(bankBefore);
+    expect(await deleteAudits(txnId)).toHaveLength(0);
+
+    await db.update(bankFeedItems).set({ matchedTransactionId: null, status: 'pending' }).where(eq(bankFeedItems.id, item!.id));
+    expect((await call('DELETE', `/api/v1/transactions/${txnId}`)).status).toBe(200);
+  });
+
+  it('findDeleteBlockingLinks names every kind of link it finds', async () => {
+    const { findDeleteBlockingLinks } = await import('../services/ledger.service.js');
+    const txnId = await createDeposit('2026-03-06', '10.00');
+    expect(await findDeleteBlockingLinks(db, tenantId, txnId)).toEqual([]);
+    const [conn] = await db.insert(bankConnections).values({ tenantId, accountId: bankId }).returning();
+    await db.insert(bankFeedItems).values({
+      tenantId, companyId, bankConnectionId: conn!.id, feedDate: '2026-03-06', amount: '10.0000',
+      description: 'DEPOSIT', status: 'matched', matchedTransactionId: txnId,
+    });
+    expect(await findDeleteBlockingLinks(db, tenantId, txnId)).toEqual(['bank_feed_match']);
+    // Another tenant's link to the same id is not this tenant's business.
+    const other = await createDeposit('2026-03-07', '11.00');
+    expect(await findDeleteBlockingLinks(db, '00000000-0000-0000-0000-000000000000', other)).toEqual([]);
   });
 });
