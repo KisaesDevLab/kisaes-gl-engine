@@ -28,7 +28,9 @@
 
 import { Router } from 'express';
 import fs from 'node:fs';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { AppError } from '../utils/errors.js';
@@ -207,7 +209,19 @@ const sessionSecretsResponse = z.record(
   z.object({ present: z.boolean(), fingerprint: z.string().optional() }),
 );
 
-const requireOwner = [authenticate, requireSuperAdmin] as const;
+// The desktop gate exempts the app from the global limiter; this one keeps
+// a looping client from re-registering secrets (and DNS checks) all day.
+const sessionSecretsLimiter = rateLimit({
+  store: getRateLimitStore('desktop:sessionSecrets'),
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.userId || req.ip || 'desktop',
+  message: { error: { message: 'Too many session-secret changes; wait a moment.', code: 'TOO_MANY_REQUESTS' } },
+});
+
+const requireOwner = [authenticate, requireSuperAdmin, sessionSecretsLimiter] as const;
 
 desktopRouter.get(
   '/session-secrets',
