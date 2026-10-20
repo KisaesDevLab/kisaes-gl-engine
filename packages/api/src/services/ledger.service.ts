@@ -250,7 +250,7 @@ export async function checkLockDate(
   txnDate: string,
   companyId?: string | null,
   ctx?: LockDateContext,
-  opts: LockOverrideFacts & { deferAudit?: boolean } = {},
+  opts: LockOverrideFacts & { deferAudit?: boolean; ajeExempt?: boolean } = {},
 ): Promise<LockOverride | undefined> {
   // Explicit ctx wins; otherwise pick up the request-scoped store set
   // by lockContextMiddleware (see services/lock-context.ts).
@@ -271,6 +271,10 @@ export async function checkLockDate(
   const lockDate = row?.lock_date;
   if (!lockDate || txnDate > lockDate) return undefined;
   const passwordSet = row?.password_set === true;
+  // AJEs (TB5) are exempt from the closing date unless the company has a
+  // closing-date password (U-15): then the closed period is locked for
+  // them too and the password is the only way in.
+  if (opts.ajeExempt && !passwordSet) return undefined;
 
   const permit = async (method: LockOverride['method']) => {
     const override: LockOverride = {
@@ -413,9 +417,11 @@ export async function postTransaction(
     // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
     // router is the only path that posts txn_type 'aje', and closing a
     // period is exactly when the firm posts adjusting entries into it.
-    const lockOverride = input.txnType !== 'aje'
-      ? await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null, undefined, { deferAudit: true })
-      : undefined;
+    // Exception (U-15): with a closing-date password set, an AJE dated in
+    // the closed period needs the password like any other posting.
+    const lockOverride = await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null, undefined, {
+      deferAudit: true, ajeExempt: input.txnType === 'aje',
+    });
     await assertAccountsInScope(
       tx,
       tenantId,
@@ -532,12 +538,11 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
 
     // Check lock date against the transaction's date (company-scoped).
-    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
-    if (txn.txnType !== 'aje') {
-      await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
-        txnId, oldDate: txn.txnDate, newDate: null,
-      });
-    }
+    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
+    // unless the company has a closing-date password (U-15).
+    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+      txnId, oldDate: txn.txnDate, newDate: null, ajeExempt: txn.txnType === 'aje',
+    });
 
     // Mirror updateTransaction's reconciliation guard: a transaction
     // whose lines are cleared in a COMPLETED bank rec must not be
@@ -784,13 +789,15 @@ export async function updateTransaction(tenantId: string, txnId: string, input: 
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
     // Check lock date for both old and new dates (company-scoped).
-    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5).
-    if (existing.txnType !== 'aje' && input.txnType !== 'aje') {
-      const oldSide = await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId, undefined, { deferAudit: true });
+    // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
+    // unless the company has a closing-date password (U-15).
+    {
+      const ajeExempt = existing.txnType === 'aje' || input.txnType === 'aje';
+      const oldSide = await checkLockDate(tx, tenantId, existing.txnDate, existing.companyId, undefined, { deferAudit: true, ajeExempt });
       // Only re-check when the date actually moves. Either side's override
       // is audited ONCE, with the old and the new date.
       const newSide = input.txnDate !== existing.txnDate
-        ? await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null, undefined, { deferAudit: true })
+        ? await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null, undefined, { deferAudit: true, ajeExempt })
         : undefined;
       const override = oldSide ?? newSide;
       if (override) {

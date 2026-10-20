@@ -34,6 +34,7 @@ import * as transactionReport from '../services/transaction-report.service.js';
 import * as transactionActivity from '../services/transaction-activity.service.js';
 import * as txnListExport from '../services/transaction-list-export.service.js';
 import { auditLog } from '../middleware/audit.js';
+import * as featureFlags from '../services/feature-flags.service.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
@@ -281,6 +282,11 @@ transactionsRouter.post('/:id/void', validate(voidTransactionSchema), async (req
   const voidType = await ledger.getTransactionType(req.tenantId, req.params['id']!);
   if (voidType === 'aje' && req.userType === 'client') {
     throw AppError.forbidden('Adjusting journal entries are managed by your accounting firm', 'TB_AJE_ROUTE');
+  }
+  // With TRIAL_BALANCE_V1 off the whole AJE lifecycle is absent (as on
+  // /tb), so an AJE can't be voided through this route either.
+  if (voidType === 'aje' && !(await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1'))) {
+    throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
   }
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId);
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
