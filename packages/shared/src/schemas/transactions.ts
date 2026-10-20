@@ -112,6 +112,10 @@ export const createDepositSchema = z.object({
   lines: z.array(depositLineSchema).min(1).max(MAX_LINES),
   memo: z.string().optional(),
   cashBack: depositCashBackSchema.nullable().optional(),
+  // true: every line amount must be an exact decimal string (at most 4
+  // places, no exponent), else 400 VALIDATION_ERROR. The desktop app always
+  // sends it; without it plain lines keep the old leniency.
+  strictAmounts: z.boolean().optional(),
 });
 
 const lineItemSchema = z.object({

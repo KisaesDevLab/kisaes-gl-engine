@@ -4,7 +4,11 @@
 
 import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
+import DecimalLib from 'decimal.js';
+import { listPendingDepositItems } from './payment.service.js';
 import { transactions, journalLines, accounts, bankFeedItems, reconciliations } from '../db/schema/index.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
 
 async function getFiscalYearStart(tenantId: string): Promise<string> {
   const result = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1`);
@@ -250,7 +254,7 @@ export async function getPayablesSummary(tenantId: string) {
   };
 }
 
-export async function getActionItems(tenantId: string) {
+export async function getActionItems(tenantId: string, companyId?: string) {
   // Pending bank feed items
   const feedResult = await db.execute(sql`
     SELECT COUNT(*) as count FROM bank_feed_items
@@ -282,17 +286,14 @@ export async function getActionItems(tenantId: string) {
     return daysSince > 30;
   }).map((r) => ({ accountName: r.name, lastReconciled: r.last_reconciled }));
 
-  // Pending deposits (payments in Payments Clearing not yet deposited)
-  const pendingDepositResult = await db.execute(sql`
-    SELECT COUNT(*) as count, COALESCE(SUM(jl.debit), 0) as total
-    FROM journal_lines jl
-    JOIN transactions t ON t.id = jl.transaction_id
-    JOIN accounts a ON a.id = jl.account_id AND a.system_tag = 'payments_clearing'
-    WHERE jl.tenant_id = ${tenantId} AND jl.debit > 0 AND t.status = 'posted'
-      AND t.id NOT IN (SELECT source_transaction_id FROM deposit_lines)
-  `);
-  const pendingDepositCount = parseInt((pendingDepositResult.rows as any[])[0]?.count || '0');
-  const pendingDepositAmount = parseFloat((pendingDepositResult.rows as any[])[0]?.total || '0');
+  // Pending deposits: the same list the Bank Deposit page shows (net
+  // Payments Clearing debit per posted item, tenant-scoped, items a posted
+  // deposit settles left out), so the tile and the page always agree.
+  const pendingItems = await listPendingDepositItems(tenantId, companyId ? { companyId } : {});
+  const pendingDepositCount = pendingItems.length;
+  const pendingDepositAmount = Number(
+    pendingItems.reduce((s, i) => s.plus(i.amount), new Decimal(0)).toFixed(4),
+  );
 
   // Checks ready to print
   const printQueueResult = await db.execute(sql`

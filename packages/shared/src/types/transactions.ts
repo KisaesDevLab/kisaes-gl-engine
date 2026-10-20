@@ -237,6 +237,8 @@ export interface CreateDepositInput {
   memo?: string;
   // Cash kept back from the deposit (U-53).
   cashBack?: { accountId: string; amount: string; memo?: string } | null;
+  // Every line amount an exact decimal string (the desktop app sends it).
+  strictAmounts?: boolean;
 }
 
 export interface BulkUpdateTransactionsInput {

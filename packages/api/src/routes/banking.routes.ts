@@ -17,7 +17,7 @@ import {
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
+import { requirePermission, requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
@@ -132,9 +132,12 @@ bankingRouter.put('/feed/:id/match', validate(matchSchema), async (req, res) => 
 
 // Deposit suggestions (U-56, feed-deposit-groupings-v1): sets of items
 // waiting in Payments Clearing (±10 days) that add up to this feed
-// deposit exactly. Read-only; company-scoped; bounded search.
-bankingRouter.get('/feed/:id/deposit-groupings', describe({
+// deposit exactly. Read-only; company-scoped; bounded search. The sets
+// list customer payments, so the caller also needs receive_payment (read),
+// the resource that guards the pending-deposits list itself.
+bankingRouter.get('/feed/:id/deposit-groupings', requirePermission('receive_payment', 'read'), describe({
   summary: 'Payments Clearing sets that add up to a bank-feed deposit (feed-deposit-groupings-v1)',
+  description: 'Permissions: banking and receive_payment (read).',
   params: z.object({ id: z.string().uuid() }),
   query: z.object({ limit: z.coerce.number().int().min(1).max(20).optional() }),
 }), async (req, res) => {

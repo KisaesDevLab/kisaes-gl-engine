@@ -41,7 +41,16 @@ export interface EquityRoleSpec {
   name: string;
   accountNumber: string;
   detailType: string;
-  /** Untagged equity accounts this role adopts instead of adding a twin (lower-case names). */
+  /**
+   * Untagged equity accounts this role adopts instead of adding a twin
+   * (lower-case names). Only names that can mean nothing but this role:
+   * generic ones ("distributions", "dividends", "common stock", "capital
+   * stock") are not adopted, because the account may play another part
+   * (common stock is par value, not paid-in capital). Besides these, an
+   * account named exactly as an entity type of the tenant names the role
+   * in EQUITY_ROLES_BY_ENTITY_TYPE is adopted (a C corporation's
+   * "Dividends Paid"); see equityRoleAdoptNames.
+   */
   adoptNames: string[];
   /** Account numbers it adopts (the built-in templates seed 30160 / 30170). */
   adoptAccountNumbers: string[];
@@ -71,12 +80,12 @@ export const EQUITY_ROLE_SPECS: Record<EquityRoleTag, EquityRoleSpec> = {
   shareholder_distributions: {
     systemTag: 'shareholder_distributions', name: 'Shareholder Distributions', accountNumber: '30200', detailType: 'owners_equity',
     adoptAccountNumbers: [],
-    adoptNames: ['shareholder distributions', 'shareholder distribution', 'distributions', 'dividends paid', 'dividends'],
+    adoptNames: ['shareholder distributions', 'shareholder distribution'],
   },
   paid_in_capital: {
     systemTag: 'paid_in_capital', name: 'Paid-in Capital', accountNumber: '30140', detailType: 'owners_equity',
     adoptAccountNumbers: [],
-    adoptNames: ['paid-in capital', 'paid in capital', 'additional paid-in capital', 'additional paid in capital', 'common stock', 'capital stock'],
+    adoptNames: ['paid-in capital', 'paid in capital', 'additional paid-in capital', 'additional paid in capital'],
   },
 };
 
@@ -107,6 +116,20 @@ export const EQUITY_ROLES_BY_ENTITY_TYPE: Record<EntityType, Array<{ tag: Equity
     { tag: 'shareholder_distributions', name: 'Dividends Paid' },
   ],
 };
+
+/**
+ * Lower-case names an untagged equity account may carry to be adopted for
+ * `tag` in a tenant whose companies have `entityTypes`: the role's own
+ * adoptNames plus the exact name each of those entity types gives the role.
+ */
+export function equityRoleAdoptNames(tag: EquityRoleTag, entityTypes: Iterable<string | null | undefined>): string[] {
+  const names = new Set(EQUITY_ROLE_SPECS[tag].adoptNames);
+  for (const et of entityTypes) {
+    const roles = EQUITY_ROLES_BY_ENTITY_TYPE[(et ?? 'sole_prop') as EntityType] ?? [];
+    for (const r of roles) if (r.tag === tag) names.add(r.name.toLowerCase());
+  }
+  return [...names];
+}
 
 export function isEquityRoleTag(tag: string | null | undefined): tag is EquityRoleTag {
   return !!tag && (EQUITY_ROLE_TAGS as readonly string[]).includes(tag);

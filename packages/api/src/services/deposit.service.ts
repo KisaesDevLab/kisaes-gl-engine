@@ -25,8 +25,20 @@
 // editing the deposit releases them (ledger.service / releaseDepositLinks).
 //
 // Lines without a source post exactly as before, so callers that deposit
-// plain Payments Clearing lines (the web Bank Deposit page, MCP, batch
-// entry) keep working.
+// plain Payments Clearing lines (MCP, batch entry, API v2) keep working.
+// Grouping trusts the links: an unlinked Payments Clearing line clears no
+// particular item, so the items it was meant for still read as pending.
+// The web Bank Deposit page sends the links; the POST / PUT /transactions
+// response carries clearingWouldGoNegative so a caller sees when Payments
+// Clearing went below zero (more deposited than ever came in: usually an
+// item deposited twice, once without its link).
+//
+// strictAmounts: true (the desktop app sends it) makes every line amount an
+// exact decimal string (at most 4 places, no exponent), as linked lines and
+// cash back always are; without it plain lines keep the old leniency.
+//
+// Cash back may not go to the deposit-to account or to a control account
+// (Payments Clearing, A/R, A/P, Sales Tax Payable): 400 VALIDATION_ERROR.
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
@@ -77,9 +89,10 @@ function planDeposit(input: CreateDepositInput): DepositPlan {
   const seen = new Set<string>();
   let lineTotal = new Decimal(0);
 
+  const strict = input.strictAmounts === true;
   const lines: JournalLineInput[] = input.lines.map((line, i) => {
     const field = `lines[${i}].amount`;
-    const amount = line.sourceTransactionId ? exactAmount(line.amount, field) : plainAmount(line.amount, field);
+    const amount = line.sourceTransactionId || strict ? exactAmount(line.amount, field) : plainAmount(line.amount, field);
     if (line.sourceTransactionId) {
       if (!amount.greaterThan(0)) {
         throw AppError.badRequest(`${field} must be greater than zero for a line that deposits an item`, 'VALIDATION_ERROR');
@@ -107,6 +120,9 @@ function planDeposit(input: CreateDepositInput): DepositPlan {
   let cashBack: DecimalValue = new Decimal(0);
   const cashBackLines: JournalLineInput[] = [];
   if (input.cashBack) {
+    if (input.cashBack.accountId === input.depositToAccountId) {
+      throw AppError.badRequest('Cash back can’t go to the account the deposit goes into.', 'VALIDATION_ERROR');
+    }
     cashBack = exactAmount(input.cashBack.amount, 'cashBack.amount');
     if (!cashBack.greaterThan(0)) {
       throw AppError.badRequest('cashBack.amount must be greater than zero', 'VALIDATION_ERROR');
@@ -149,6 +165,44 @@ async function systemAccountId(tx: Tx, tenantId: string, tag: string): Promise<s
     .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, tag)))
     .limit(1);
   return row?.id ?? null;
+}
+
+/** Control accounts cash back may not be taken into. */
+const CASH_BACK_REFUSED_TAGS = ['payments_clearing', 'accounts_receivable', 'accounts_payable', 'sales_tax_payable'];
+
+async function validateCashBackAccount(tx: Tx, tenantId: string, input: CreateDepositInput) {
+  if (!input.cashBack) return;
+  const [acct] = await tx.select({ systemTag: accounts.systemTag }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, input.cashBack.accountId)))
+    .limit(1);
+  // A missing or foreign account is left to the ledger's scope check.
+  if (acct?.systemTag && CASH_BACK_REFUSED_TAGS.includes(acct.systemTag)) {
+    throw AppError.badRequest(
+      'Cash back can’t go to Payments Clearing, Accounts Receivable, Accounts Payable or Sales Tax Payable. Choose a cash or expense account.',
+      'VALIDATION_ERROR',
+    );
+  }
+}
+
+/**
+ * True when Payments Clearing (the active company's items and those without
+ * a company, as the pending list counts them) holds a net credit after this
+ * posting. Only checked when the deposit has a Payments Clearing line.
+ */
+async function clearingWentNegative(
+  tx: Tx, tenantId: string, companyId: string | undefined, input: CreateDepositInput,
+): Promise<boolean> {
+  const clearingId = await systemAccountId(tx, tenantId, 'payments_clearing');
+  if (!clearingId || !input.lines.some((l) => l.accountId === clearingId)) return false;
+  const companyCond = companyId ? sql`AND (t.company_id = ${companyId} OR t.company_id IS NULL)` : sql``;
+  const res = await tx.execute(sql`
+    SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS net
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+    WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${clearingId}
+      AND t.status = 'posted' AND jl.is_void_reversal = false ${companyCond}
+  `);
+  return new Decimal(String((res.rows as Array<{ net: string | number }>)[0]?.net ?? '0')).isNegative();
 }
 
 function sourceInvalid(message: string, sourceTransactionId: string) {
@@ -291,8 +345,12 @@ async function writeLinks(
   }
   const touched = [...new Set(plan.sources.map((s) => s.sourceTransactionId))];
   if (touched.length > 0) {
+    // id order, like releaseDepositLinks (these rows are already locked by
+    // lockAndValidateSources; the order keeps the recompute deterministic).
     const credits = await tx.select({ id: transactions.id }).from(transactions)
-      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.txnType, 'vendor_credit'), inArray(transactions.id, touched)));
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.txnType, 'vendor_credit'), inArray(transactions.id, touched)))
+      .orderBy(transactions.id)
+      .for('update');
     for (const c of credits) await recomputeVendorCreditBalance(tx, tenantId, c.id);
   }
   if (plan.sources.length > 0 || released.length > 0) {
@@ -303,35 +361,62 @@ async function writeLinks(
   }
 }
 
-export async function createDeposit(tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string) {
+export interface DepositResult {
+  transaction: Awaited<ReturnType<typeof ledger.postTransaction>>;
+  /** Payments Clearing holds a net credit after this deposit (see header). */
+  clearingWouldGoNegative: boolean;
+}
+
+/** Create, with the Payments Clearing warning (POST /transactions). */
+export async function createDepositWithWarnings(
+  tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string,
+): Promise<DepositResult> {
   const plan = planDeposit(input);
   return db.transaction(async (tx) => {
+    await validateCashBackAccount(tx, tenantId, input);
     await lockAndValidateSources(tx, tenantId, companyId, input, plan, null);
     const posted = await ledger.postTransaction(tenantId, plan.payload, userId, companyId, tx);
     await writeLinks(tx, tenantId, posted.id, plan, [], userId);
-    return posted;
+    return { transaction: posted, clearingWouldGoNegative: await clearingWentNegative(tx, tenantId, companyId, input) };
   });
 }
 
-export async function updateDeposit(tenantId: string, txnId: string, input: CreateDepositInput, userId?: string, companyId?: string) {
+export async function createDeposit(tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string) {
+  return (await createDepositWithWarnings(tenantId, input, userId, companyId)).transaction;
+}
+
+/** Edit, with the Payments Clearing warning (PUT /transactions/:id). */
+export async function updateDepositWithWarnings(
+  tenantId: string, txnId: string, input: CreateDepositInput, userId?: string, companyId?: string,
+) {
   const plan = planDeposit(input);
   return db.transaction(async (tx) => {
     // Deposit row first, then its sources (create locks sources only), so
     // an edit and a create never wait on each other in opposite orders.
-    const [existing] = await tx.select({ id: transactions.id, companyId: transactions.companyId, status: transactions.status })
+    const [existing] = await tx.select({
+      id: transactions.id, companyId: transactions.companyId, status: transactions.status, txnType: transactions.txnType,
+    })
       .from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update')
       .limit(1);
-    if (!existing || existing.status === 'deleted' || (companyId && existing.companyId && existing.companyId !== companyId)) {
+    // Only a deposit can be rewritten as a deposit: anything else (a payment,
+    // an invoice...) reads as not found, before any of its links are touched.
+    if (!existing || existing.txnType !== 'deposit' || existing.status === 'deleted'
+      || (companyId && existing.companyId && existing.companyId !== companyId)) {
       throw AppError.notFound('Transaction not found');
     }
+    await validateCashBackAccount(tx, tenantId, input);
     // A void deposit is refused by updateTransaction; its links were
     // released when it was voided.
     const released = existing.status === 'void' ? [] : await releaseDepositLinks(tx, tenantId, txnId);
     await lockAndValidateSources(tx, tenantId, companyId, input, plan, txnId);
     const updated = await ledger.updateTransaction(tenantId, txnId, plan.payload, userId, companyId, tx);
     await writeLinks(tx, tenantId, txnId, plan, released, userId);
-    return updated;
+    return { transaction: updated, clearingWouldGoNegative: await clearingWentNegative(tx, tenantId, companyId, input) };
   });
+}
+
+export async function updateDeposit(tenantId: string, txnId: string, input: CreateDepositInput, userId?: string, companyId?: string) {
+  return (await updateDepositWithWarnings(tenantId, txnId, input, userId, companyId)).transaction;
 }

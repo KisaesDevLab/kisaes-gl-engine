@@ -14508,6 +14508,7 @@
     },
     "/api/v1/banking/feed/{id}/deposit-groupings": {
       "get": {
+        "description": "Permissions: banking and receive_payment (read).",
         "operationId": "get_api_v1_banking_feed_by_id_deposit_groupings",
         "parameters": [
           {
@@ -64094,6 +64095,7 @@
         ]
       },
       "post": {
+        "description": "Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting.",
         "operationId": "post_api_v1_transactions",
         "requestBody": {
           "content": {
@@ -64194,6 +64196,9 @@
                       },
                       "memo": {
                         "type": "string"
+                      },
+                      "strictAmounts": {
+                        "type": "boolean"
                       },
                       "txnDate": {
                         "minLength": 1,
@@ -64612,6 +64617,7 @@
         ]
       },
       "put": {
+        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404.",
         "operationId": "put_api_v1_transactions_by_id",
         "parameters": [
           {
@@ -64723,6 +64729,9 @@
                       },
                       "memo": {
                         "type": "string"
+                      },
+                      "strictAmounts": {
+                        "type": "boolean"
                       },
                       "txnDate": {
                         "minLength": 1,

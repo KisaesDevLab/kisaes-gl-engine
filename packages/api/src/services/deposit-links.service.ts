@@ -141,10 +141,14 @@ export async function releaseDepositLinks(executor: DbOrTx, tenantId: string, de
       AND EXISTS (SELECT 1 FROM transactions d WHERE d.id = ${depositId} AND d.tenant_id = ${tenantId})
   `);
   const sourceIds = [...new Set(links.map((l) => l.sourceTransactionId))];
+  // Lock the credits in id order (as deposit writeLinks does) so two
+  // writers touching overlapping credits never deadlock.
   const credits = await executor.execute(sql`
     SELECT id FROM transactions
     WHERE tenant_id = ${tenantId} AND txn_type = 'vendor_credit'
       AND id IN (${sql.join(sourceIds.map((id) => sql`${id}`), sql`, `)})
+    ORDER BY id
+    FOR UPDATE
   `);
   for (const c of credits.rows as Array<{ id: string }>) {
     await recomputeVendorCreditBalance(executor, tenantId, c.id);

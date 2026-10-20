@@ -145,10 +145,13 @@ const registerEntryBodyDoc = z.discriminatedUnion('txnType', [
 
 transactionsRouter.post('/', describe({
   summary: 'Create a transaction (body per txnType; deposit, transfer and expense documented)',
+  description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting.',
   body: registerEntryBodyDoc,
 }), async (req, res) => {
   const { txnType, ...body } = req.body;
   let result;
+  // Deposit warnings (clearingWouldGoNegative); empty for other types.
+  let extra: Record<string, unknown> = {};
 
   switch (txnType) {
     case 'aje':
@@ -164,9 +167,12 @@ transactionsRouter.post('/', describe({
     case 'transfer':
       result = await transferService.createTransfer(req.tenantId, createTransferSchema.parse(body), req.userId, req.companyId);
       break;
-    case 'deposit':
-      result = await depositService.createDeposit(req.tenantId, createDepositSchema.parse(body), req.userId, req.companyId);
+    case 'deposit': {
+      const deposit = await depositService.createDepositWithWarnings(req.tenantId, createDepositSchema.parse(body), req.userId, req.companyId);
+      result = deposit.transaction;
+      extra = { clearingWouldGoNegative: deposit.clearingWouldGoNegative };
       break;
+    }
     case 'cash_sale':
       result = await cashSaleService.createCashSale(req.tenantId, createCashSaleSchema.parse(body), req.userId, req.companyId);
       break;
@@ -188,11 +194,12 @@ transactionsRouter.post('/', describe({
     );
   }
 
-  res.status(201).json({ transaction: result });
+  res.status(201).json({ transaction: result, ...extra });
 });
 
 transactionsRouter.put('/:id', describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer and expense documented)',
+  description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404.',
   body: registerEntryBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
@@ -217,9 +224,11 @@ transactionsRouter.put('/:id', describe({
     case 'transfer':
       result = await transferService.updateTransfer(req.tenantId, txnId, createTransferSchema.parse(body), req.userId, req.companyId);
       break;
-    case 'deposit':
-      result = await depositService.updateDeposit(req.tenantId, txnId, createDepositSchema.parse(body), req.userId, req.companyId);
-      break;
+    case 'deposit': {
+      const deposit = await depositService.updateDepositWithWarnings(req.tenantId, txnId, createDepositSchema.parse(body), req.userId, req.companyId);
+      res.json({ transaction: deposit.transaction, clearingWouldGoNegative: deposit.clearingWouldGoNegative });
+      return;
+    }
     case 'cash_sale':
       result = await cashSaleService.updateCashSale(req.tenantId, txnId, createCashSaleSchema.parse(body), req.userId, req.companyId);
       break;

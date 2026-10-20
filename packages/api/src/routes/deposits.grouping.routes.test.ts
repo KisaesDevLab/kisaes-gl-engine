@@ -18,7 +18,10 @@
 //   - vendor refund against an open vendor credit (≤ open balance, void
 //     restores it);
 //   - deposit suggestions for a bank-feed deposit: exact sums only, ±10
-//     days, company-scoped.
+//     days, company-scoped, banking + receive_payment;
+//   - review fixes: PUT on a non-deposit is 404, clearingWouldGoNegative,
+//     refunds on the vendor statement, cash back refuses control accounts,
+//     strictAmounts.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
@@ -31,6 +34,7 @@ import { db } from '../db/index.js';
 import {
   tenants, users, userTenantAccess, sessions, companies, accounts, auditLog, transactions, journalLines,
   contacts, depositLines, bankConnections, bankFeedItems, transactionTags, vendorCreditApplications,
+  userPermissions,
 } from '../db/schema/index.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { paymentsRouter } from './payments.routes.js';
@@ -39,6 +43,7 @@ import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import * as ledger from '../services/ledger.service.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
+import * as apReportService from '../services/ap-report.service.js';
 
 let server: Server | null = null;
 let port = 0;
@@ -88,6 +93,7 @@ async function cleanTenant(tid: string) {
   await db.delete(companies).where(eq(companies.tenantId, tid));
   const staff = await db.select({ id: users.id }).from(users).where(eq(users.tenantId, tid));
   if (staff.length) await db.delete(sessions).where(inArray(sessions.userId, staff.map((u) => u.id)));
+  await db.delete(userPermissions).where(eq(userPermissions.tenantId, tid));
   await db.delete(userTenantAccess).where(eq(userTenantAccess.tenantId, tid));
   await db.delete(users).where(eq(users.tenantId, tid));
   await db.delete(tenants).where(eq(tenants.id, tid));
@@ -556,5 +562,128 @@ describe('deposit suggestions for a feed item (U-56)', () => {
     const resOut = await request('GET', `/api/v1/banking/feed/${out}/deposit-groupings`, c.token);
     expect(resOut.status).toBe(200);
     expect(resOut.json.candidates).toEqual([]);
+  });
+
+  it('needs receive_payment as well as banking (the sets list customer payments)', async () => {
+    await payment(c, '40.0000', '2026-08-10');
+    const id = await feedItem(c, '-40.0000', '2026-08-10');
+    const bookkeeper = async (overrides: Record<string, string>) => {
+      const [u] = await db.insert(users).values({
+        tenantId: c.tenantId, email: `bk-${suffix()}@example.com`, passwordHash: 'x',
+        displayName: 'Bookkeeper', role: 'bookkeeper',
+      }).returning();
+      await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: c.tenantId, role: 'bookkeeper' });
+      await db.insert(userPermissions).values({ tenantId: c.tenantId, userId: u!.id, overrides: overrides as never });
+      return (await authService.issueSession({
+        userId: u!.id, tenantId: c.tenantId, role: 'bookkeeper', email: u!.email,
+      } as never)).accessToken;
+    };
+    const bankingOnly = await bookkeeper({ banking: 'full' });
+    const denied = await request('GET', `/api/v1/banking/feed/${id}/deposit-groupings`, bankingOnly);
+    expect(denied.status).toBe(403);
+    expect(denied.json.error.code).toBe('PERMISSION_DENIED');
+
+    const both = await bookkeeper({ banking: 'full', receive_payment: 'view' });
+    const ok = await request('GET', `/api/v1/banking/feed/${id}/deposit-groupings`, both);
+    expect(ok.status).toBe(200);
+    expect(ok.json.candidates).toHaveLength(1);
+  });
+});
+
+describe('deposit review fixes', () => {
+  it('PUT as a deposit on a transaction that is not a deposit is 404 and changes nothing', async () => {
+    const p1 = await payment(c, '75.0000');
+    const before = await db.select().from(journalLines).where(eq(journalLines.transactionId, p1));
+    const res = await request('PUT', `/api/v1/transactions/${p1}`, c.token, deposit(c, [
+      { accountId: c.fee, amount: '75.0000' },
+    ]));
+    expect(res.status).toBe(404);
+    const row = await db.query.transactions.findFirst({ where: eq(transactions.id, p1) });
+    expect(row!.txnType).toBe('customer_payment');
+    const after = await db.select().from(journalLines).where(eq(journalLines.transactionId, p1));
+    expect(after.map((l) => [l.accountId, l.debit, l.credit]).sort())
+      .toEqual(before.map((l) => [l.accountId, l.debit, l.credit]).sort());
+  });
+
+  it('flags clearingWouldGoNegative when Payments Clearing goes below zero', async () => {
+    const p1 = await payment(c, '60.0000');
+    const linked = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+      { accountId: c.clearing, amount: '60.0000', sourceTransactionId: p1 },
+    ]));
+    expect(linked.status).toBe(201);
+    expect(linked.json.clearingWouldGoNegative).toBe(false);
+
+    // The same money deposited again without its link: clearing goes to −60.
+    const unlinked = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+      { accountId: c.clearing, amount: '60.0000' },
+    ]));
+    expect(unlinked.status).toBe(201);
+    expect(unlinked.json.clearingWouldGoNegative).toBe(true);
+
+    // Editing it down to a non-clearing line clears the flag.
+    const edit = await request('PUT', `/api/v1/transactions/${unlinked.json.transaction.id}`, c.token, deposit(c, [
+      { accountId: c.fee, amount: '60.0000' },
+    ]));
+    expect(edit.status).toBe(200);
+    expect(edit.json.clearingWouldGoNegative).toBe(false);
+  });
+
+  it('shows a vendor refund deposit on the vendor statement', async () => {
+    const credit = await vendorCreditService.createVendorCredit(c.tenantId, {
+      contactId: c.vendor, txnDate: '2026-08-01', lines: [{ accountId: c.fee, amount: '200.00' }],
+    } as any, c.userId, c.companyId);
+    const refund = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+      { accountId: c.ap, amount: '80.00', sourceTransactionId: credit.id },
+    ]));
+    expect(refund.status).toBe(201);
+
+    const stmt = await apReportService.buildVendorStatement(c.tenantId, c.vendor, { startDate: '2026-08-01', endDate: '2026-08-31' });
+    expect(stmt.lines.map((l: any) => [l.txn_type, l.charge, l.payment, l.balance])).toEqual([
+      ['vendor_credit', 0, 200, -200],
+      ['deposit', 80, 0, -120],
+    ]);
+    expect(stmt.closingBalance).toBe(-120);
+
+    // Before the period: both count in the opening balance.
+    const later = await apReportService.buildVendorStatement(c.tenantId, c.vendor, { startDate: '2026-09-01', endDate: '2026-09-30' });
+    expect(later.openingBalance).toBe(-120);
+    expect(later.lines).toEqual([]);
+  });
+
+  it('refuses cash back to a control account or to the deposit-to account', async () => {
+    const tax = await bySystemTag(c.tenantId, 'sales_tax_payable');
+    for (const accountId of [c.clearing, c.ar, c.ap, tax, c.bank]) {
+      const res = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+        { accountId: c.fee, amount: '50.00' },
+      ], { cashBack: { accountId, amount: '10.00' } }));
+      expect(res.status).toBe(400);
+      expect(res.json.error.code).toBe('VALIDATION_ERROR');
+    }
+    const ok = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+      { accountId: c.fee, amount: '50.00' },
+    ], { cashBack: { accountId: c.draw, amount: '10.00' } }));
+    expect(ok.status).toBe(201);
+  });
+
+  it('strictAmounts makes every line amount an exact decimal string', async () => {
+    for (const amount of ['1e2', '10.12345', '1,000.00', ' ']) {
+      const res = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+        { accountId: c.fee, amount },
+      ], { strictAmounts: true }));
+      expect(res.status).toBe(400);
+      expect(res.json.error.code).toBe('VALIDATION_ERROR');
+    }
+    const ok = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+      { accountId: c.fee, amount: '100.1234' },
+    ], { strictAmounts: true }));
+    expect(ok.status).toBe(201);
+    expect(ok.json.transaction.total).toBe('100.1234');
+
+    // Without the flag, a plain line keeps the old leniency.
+    const lenient = await request('POST', '/api/v1/transactions', c.token, deposit(c, [
+      { accountId: c.fee, amount: '1e2' },
+    ]));
+    expect(lenient.status).toBe(201);
+    expect(lenient.json.transaction.total).toBe('100.0000');
   });
 });

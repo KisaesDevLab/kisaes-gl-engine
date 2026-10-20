@@ -19,6 +19,11 @@
 --       "Owner Withdraw" (30170) -> owner_draw and "Owner Contribution"
 --       (30160) -> owner_contribution in every tenant; the other roles'
 --       known names only where a company of the tenant needs that role.
+--       Only names that can mean nothing but the role are adopted; generic
+--       ones ("Distributions", "Dividends", "Common Stock", "Capital
+--       Stock") are left alone, except that "Dividends Paid" (the name a
+--       C corporation gives the role) is adopted in a tenant with a
+--       C corporation.
 --    b) Each tenant then gets the accounts its companies' entity types need
 --       and still lack (sole_prop / single_member_llc: Owner's Draw +
 --       Owner's Contribution; partnership: Partner Draws + Partner
@@ -94,10 +99,15 @@ FROM (
   SELECT DISTINCT ON (a.tenant_id) a.id
   FROM "accounts" a
   WHERE a.system_tag IS NULL AND a.account_type = 'equity'
-    AND (lower(a.name) = ANY(ARRAY['shareholder distributions', 'shareholder distribution', 'distributions', 'dividends paid', 'dividends']::text[]))
     AND NOT EXISTS (SELECT 1 FROM "accounts" x WHERE x.tenant_id = a.tenant_id AND x.system_tag = 'shareholder_distributions')
-    AND EXISTS (SELECT 1 FROM "companies" c WHERE c.tenant_id = a.tenant_id
-                AND c.entity_type IN ('s_corp', 'c_corp'))
+    AND (
+      (lower(a.name) = ANY(ARRAY['shareholder distributions', 'shareholder distribution']::text[])
+        AND EXISTS (SELECT 1 FROM "companies" c WHERE c.tenant_id = a.tenant_id
+                    AND c.entity_type IN ('s_corp', 'c_corp')))
+      OR (lower(a.name) = 'dividends paid'
+        AND EXISTS (SELECT 1 FROM "companies" c WHERE c.tenant_id = a.tenant_id
+                    AND c.entity_type = 'c_corp'))
+    )
   ORDER BY a.tenant_id, a.account_number ASC NULLS LAST, a.created_at ASC, a.id ASC
 ) AS pick
 WHERE t.id = pick.id;
@@ -108,7 +118,7 @@ FROM (
   SELECT DISTINCT ON (a.tenant_id) a.id
   FROM "accounts" a
   WHERE a.system_tag IS NULL AND a.account_type = 'equity'
-    AND (lower(a.name) = ANY(ARRAY['paid-in capital', 'paid in capital', 'additional paid-in capital', 'additional paid in capital', 'common stock', 'capital stock']::text[]))
+    AND (lower(a.name) = ANY(ARRAY['paid-in capital', 'paid in capital', 'additional paid-in capital', 'additional paid in capital']::text[]))
     AND NOT EXISTS (SELECT 1 FROM "accounts" x WHERE x.tenant_id = a.tenant_id AND x.system_tag = 'paid_in_capital')
     AND EXISTS (SELECT 1 FROM "companies" c WHERE c.tenant_id = a.tenant_id
                 AND c.entity_type IN ('s_corp', 'c_corp'))

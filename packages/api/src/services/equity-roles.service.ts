@@ -16,7 +16,7 @@
 import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   EQUITY_ROLE_REPORT_TAGS, EQUITY_ROLE_SPECS, EQUITY_ROLES_BY_ENTITY_TYPE,
-  type EquityRoleTag,
+  equityRoleAdoptNames, type EquityRoleTag,
 } from '@kis-books/shared';
 import { db, type DbOrTx } from '../db/index.js';
 import { accounts, companies } from '../db/schema/index.js';
@@ -27,14 +27,34 @@ function rolesFor(entityType: string | null | undefined): Array<{ tag: EquityRol
   return EQUITY_ROLES_BY_ENTITY_TYPE[(entityType ?? 'sole_prop') as keyof typeof EQUITY_ROLES_BY_ENTITY_TYPE] ?? [];
 }
 
+/** Advisory-lock namespace for equity-role seeding ('EQRL'); the second key is hashtext(tenant_id). */
+const EQUITY_ROLES_LOCK_NAMESPACE = 0x4551524c;
+
 /**
  * Adopts or creates the equity role accounts the tenant's companies need.
  * Returns the tags it assigned. Safe to call repeatedly.
+ *
+ * Runs in one database transaction (a savepoint when the caller already has
+ * one) under a per-tenant transaction advisory lock, so two seeds of one
+ * tenant (two companies created at once, an entity-type change racing a
+ * company create) serialize: the second sees the first one's tags and
+ * neither adopts or creates a twin. A failure leaves no partial roles.
  */
 export async function ensureEquityRoleAccounts(
   tenantId: string,
   actingUserId?: string,
   executor: DbOrTx = db,
+): Promise<EquityRoleTag[]> {
+  return executor.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${EQUITY_ROLES_LOCK_NAMESPACE}, hashtext(${tenantId}::text))`);
+    return ensureEquityRoleAccountsLocked(tenantId, actingUserId, tx);
+  });
+}
+
+async function ensureEquityRoleAccountsLocked(
+  tenantId: string,
+  actingUserId: string | undefined,
+  executor: DbOrTx,
 ): Promise<EquityRoleTag[]> {
   const companyRows = await executor.select({ entityType: companies.entityType }).from(companies)
     .where(eq(companies.tenantId, tenantId))
@@ -53,9 +73,10 @@ export async function ensureEquityRoleAccounts(
   for (const [tag, name] of wanted) {
     if (have.has(tag)) continue;
     const spec = EQUITY_ROLE_SPECS[tag];
+    const adoptNames = equityRoleAdoptNames(tag, companyRows.map((c) => c.entityType));
     const matchers = [
       ...(spec.adoptAccountNumbers.length > 0 ? [inArray(accounts.accountNumber, spec.adoptAccountNumbers)] : []),
-      ...(spec.adoptNames.length > 0 ? [inArray(sql`lower(${accounts.name})`, spec.adoptNames)] : []),
+      ...(adoptNames.length > 0 ? [inArray(sql`lower(${accounts.name})`, adoptNames)] : []),
     ];
     const [candidate] = await executor.select({ id: accounts.id }).from(accounts)
       .where(and(

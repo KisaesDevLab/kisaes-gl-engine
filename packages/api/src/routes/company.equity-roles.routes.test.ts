@@ -8,8 +8,13 @@
 //   - GET /company/equity-roles answers {entityType, roles: {role: id|null}};
 //   - changing the entity type adds that type's roles; seeding is idempotent;
 //   - equity-role accounts stay usable as categories;
+//   - generic names (Common Stock, Distributions, Dividends) are not
+//     adopted; a C corporation's exact "Dividends Paid" is;
+//   - seeding runs under a per-tenant lock: concurrent seeds make no twins;
 //   - migration 0223 tags and adds the roles for existing tenants, and
-//     running it twice (or after its rollback) changes nothing more.
+//     running it twice (or after its rollback) changes nothing more; its
+//     rollback clears is_system on the role accounts and is refused while a
+//     vendor refund link exists.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
@@ -148,6 +153,35 @@ describe('equity roles (U-55)', () => {
     expect(rows.find((r) => r.systemTag === 'shareholder_distributions')!.name).toBe('Dividends Paid');
   });
 
+  it('adopts only role-specific names: not Common Stock or Distributions, but a C corporation\'s Dividends Paid', async () => {
+    const s = await register('generic-s');
+    await db.update(companies).set({ entityType: 's_corp' }).where(eq(companies.id, s.companyId));
+    const [stock] = await db.insert(accounts).values({ tenantId: s.tenantId, name: 'Common Stock', accountType: 'equity', detailType: 'owners_equity' }).returning();
+    const [dist] = await db.insert(accounts).values({ tenantId: s.tenantId, name: 'Distributions', accountType: 'equity', detailType: 'owners_equity' }).returning();
+    const [divPaid] = await db.insert(accounts).values({ tenantId: s.tenantId, name: 'Dividends Paid', accountType: 'equity', detailType: 'owners_equity' }).returning();
+    await ensureEquityRoleAccounts(s.tenantId);
+    const sRows = await tagged(s.tenantId);
+    for (const id of [stock!.id, dist!.id, divPaid!.id]) expect(sRows.find((r) => r.id === id)).toBeUndefined();
+    expect(sRows.find((r) => r.systemTag === 'shareholder_distributions')!.name).toBe('Shareholder Distributions');
+    expect(sRows.find((r) => r.systemTag === 'paid_in_capital')!.name).toBe('Paid-in Capital');
+
+    const cc = await register('generic-c');
+    await db.update(companies).set({ entityType: 'c_corp' }).where(eq(companies.id, cc.companyId));
+    const [cDiv] = await db.insert(accounts).values({ tenantId: cc.tenantId, name: 'Dividends Paid', accountType: 'equity', detailType: 'owners_equity' }).returning();
+    await ensureEquityRoleAccounts(cc.tenantId);
+    const cRows = await tagged(cc.tenantId);
+    expect(cRows.find((r) => r.systemTag === 'shareholder_distributions')).toMatchObject({ id: cDiv!.id, isSystem: false });
+  });
+
+  it('concurrent seeds of one tenant create each role once', async () => {
+    const t = await register('race');
+    await db.update(companies).set({ entityType: 'partnership' }).where(eq(companies.id, t.companyId));
+    await Promise.all([1, 2, 3, 4].map(() => ensureEquityRoleAccounts(t.tenantId)));
+    const rows = await tagged(t.tenantId);
+    expect(rows.filter((r) => r.systemTag === 'partner_draws')).toHaveLength(1);
+    expect(rows.filter((r) => r.systemTag === 'partner_contributions')).toHaveLength(1);
+  });
+
   it('stores the entity type given at tenant creation and seeds its roles', async () => {
     const t = await register('owner');
     const key = SystemSettingsKeys.SELF_SERVICE_TENANT_CREATION;
@@ -197,6 +231,7 @@ describe('migration 0223 (equity roles backfill, journal line columns)', () => {
         VALUES ($1, '30160', 'Owner Contribution', 'equity', 'owners_equity'),
                ($1, '30170', 'Owner Withdraw', 'equity', 'owners_equity'),
                ($1, '30140', 'Common Stock', 'equity', 'owners_equity'),
+               ($1, NULL, 'Distributions', 'equity', 'owners_equity'),
                ($1, '30180', 'Something Else', 'equity', 'owners_equity')`, [tenantId]);
 
       const snapshot = async () => (await client.query(
@@ -208,7 +243,11 @@ describe('migration 0223 (equity roles backfill, journal line columns)', () => {
       const tagOf = (name: string) => first.find((r) => r.name === name)?.system_tag ?? null;
       expect(tagOf('Owner Withdraw')).toBe('owner_draw');
       expect(tagOf('Owner Contribution')).toBe('owner_contribution');
-      expect(tagOf('Common Stock')).toBe('paid_in_capital');
+      // Generic names are not adopted; Paid-in Capital is created (30140 is
+      // taken by Common Stock, so it has no number).
+      expect(tagOf('Common Stock')).toBeNull();
+      expect(tagOf('Distributions')).toBeNull();
+      expect(first.find((r) => r.system_tag === 'paid_in_capital')).toMatchObject({ name: 'Paid-in Capital', account_number: null, is_system: true });
       // Partnership roles created; 30180 was taken, so Partner Draws has no number.
       expect(first.find((r) => r.system_tag === 'partner_draws')).toMatchObject({ name: 'Partner Draws', account_number: null, is_system: true });
       // Adopted accounts keep their flag.
@@ -223,11 +262,31 @@ describe('migration 0223 (equity roles backfill, journal line columns)', () => {
       for (const s of statements(MIGRATION)) await client.query(s);
       expect(await snapshot()).toEqual(first);
 
+      // Rollback is refused while a vendor refund link exists.
+      const credit = await client.query(
+        `INSERT INTO transactions (tenant_id, txn_type, txn_date, total) VALUES ($1, 'vendor_credit', '2026-08-01', 10) RETURNING id`, [tenantId],
+      );
+      const dep = await client.query(
+        `INSERT INTO transactions (tenant_id, txn_type, txn_date, total) VALUES ($1, 'deposit', '2026-08-02', 10) RETURNING id`, [tenantId],
+      );
+      await client.query(`INSERT INTO deposit_lines (deposit_id, source_transaction_id, amount) VALUES ($1, $2, 10)`,
+        [dep.rows[0].id, credit.rows[0].id]);
+      await client.query('SAVEPOINT before_rollback');
+      await expect((async () => { for (const s of statements(ROLLBACK)) await client.query(s); })())
+        .rejects.toThrow(/0223 rollback refused/);
+      await client.query('ROLLBACK TO SAVEPOINT before_rollback');
+      await client.query(`DELETE FROM deposit_lines WHERE deposit_id = $1`, [dep.rows[0].id]);
+
       for (const s of statements(ROLLBACK)) await client.query(s);
       const rolledBack = await snapshot();
       expect(rolledBack.filter((r) => r.system_tag)).toEqual([]);
+      // The role accounts 0223 created are ordinary accounts again.
+      expect(rolledBack.filter((r) => r.is_system)).toEqual([]);
       for (const s of statements(MIGRATION)) await client.query(s);
-      expect(await snapshot()).toEqual(first);
+      // Re-run adopts the accounts it created the first time (same names),
+      // so nothing is duplicated; they keep the cleared flag.
+      const rerun = await snapshot();
+      expect(rerun.map((r) => [r.name, r.account_number, r.system_tag])).toEqual(first.map((r) => [r.name, r.account_number, r.system_tag]));
     } finally {
       await client.query('ROLLBACK');
       await client.end();
