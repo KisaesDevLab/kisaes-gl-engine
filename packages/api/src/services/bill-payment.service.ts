@@ -21,7 +21,7 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
-import { checkLockDate, assertAccountsInScope } from './ledger.service.js';
+import { checkLockDate, assertAccountsInScope, round4 } from './ledger.service.js';
 
 // Precision tolerance for float-style leftover comparisons. Decimal.js
 // already avoids the rounding issues that `parseFloat` produced here;
@@ -222,7 +222,7 @@ export async function payBills(
       if (!bill || !bill.contactId) {
         throw AppError.badRequest(`Bill ${billLine.billId} has no vendor`);
       }
-      const amount = new Decimal(billLine.amount);
+      const amount = round4(billLine.amount);  // ledger scale first (U-65)
       if (amount.lessThanOrEqualTo(0)) throw AppError.badRequest('Payment amount must be positive');
       const balanceDue = new Decimal(bill.balanceDue || '0');
       if (amount.minus(balanceDue).greaterThan(EPSILON)) {
@@ -255,7 +255,7 @@ export async function payBills(
       if (targetBill.contactId !== credit.contactId) {
         throw AppError.badRequest('A vendor credit can only be applied to bills from the same vendor');
       }
-      const amount = new Decimal(credLine.amount);
+      const amount = round4(credLine.amount);  // ledger scale first (U-65)
       if (amount.lessThanOrEqualTo(0)) throw AppError.badRequest('Credit application amount must be positive');
 
       const creditAvailable = new Decimal(credit.balanceDue || '0');

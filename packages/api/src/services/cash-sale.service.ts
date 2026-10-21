@@ -33,12 +33,15 @@ async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput
   const revenueLines = input.lines.map((line) => {
     const qty = new Decimal(line.quantity);
     const price = new Decimal(line.unitPrice);
-    const lineTotal = qty.times(price);
+    // Line amount and line tax rounded to the ledger's 4 places first; the
+    // deposit total adds up the rounded values, so it equals the stored
+    // credits exactly (U-65).
+    const lineTotal = ledger.round4(qty.times(price));
     subtotal = subtotal.plus(lineTotal);
 
     const taxable = line.isTaxable !== false;
     const rate = taxable ? new Decimal(line.taxRate ?? defaultTaxRate.toString()) : new Decimal('0');
-    const lineTax = taxable && rate.greaterThan(0) ? lineTotal.times(rate) : new Decimal('0');
+    const lineTax = taxable && rate.greaterThan(0) ? ledger.round4(lineTotal.times(rate)) : new Decimal('0');
     totalTax = totalTax.plus(lineTax);
 
     return {

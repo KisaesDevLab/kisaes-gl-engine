@@ -29,16 +29,19 @@ export async function createVendorCredit(tenantId: string, input: CreateVendorCr
   if (input.lines.length === 0) throw AppError.badRequest('Vendor credit must have at least one line');
 
   const apAccountId = await getApAccountId(tenantId);
-  const total = input.lines.reduce((s, l) => s + parseFloat(l.amount || '0'), 0);
-  if (total <= 0) throw AppError.badRequest('Vendor credit total must be positive');
+  // Exact decimal: each line rounded to the ledger's 4 places, the A/P
+  // debit the sum of those (U-65). (Was a float sum.)
+  const lineAmounts = input.lines.map((l) => ledger.round4(l.amount));
+  const total = lineAmounts.reduce((s, a) => s.plus(a), ledger.round4('0'));
+  if (!total.greaterThan(0)) throw AppError.badRequest('Vendor credit total must be positive');
 
   // Mirror image of a bill: DR AP, CR Expense (reverses the original expense)
   const journalLines = [
     { accountId: apAccountId, debit: total.toFixed(4), credit: '0' },
-    ...input.lines.map((l) => ({
+    ...input.lines.map((l, i) => ({
       accountId: l.accountId,
       debit: '0',
-      credit: parseFloat(l.amount).toFixed(4),
+      credit: lineAmounts[i]!.toFixed(4),
       description: l.description || input.memo,
     })),
   ];
