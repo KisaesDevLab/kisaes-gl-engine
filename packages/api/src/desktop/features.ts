@@ -107,7 +107,7 @@ export const DESKTOP_KEPT: readonly string[] = [
   '/api/v1/users/me/login-preference', '/api/v1/api-keys', '/api/v1/tenant-settings', '/api/v1/company',
   '/api/v1/coa-templates/options', '/api/v1/fs-fonts',
   // Books.
-  '/api/v1/accounts', '/api/v1/contacts', '/api/v1/transactions', '/api/v1/invoices', '/api/v1/bills',
+  '/api/v1/accounts', '/api/v1/contacts', '/api/v1/transactions', '/api/v1/journal-entries', '/api/v1/invoices', '/api/v1/bills',
   '/api/v1/bill-captures', '/api/v1/vendor-credits', '/api/v1/bill-payments', '/api/v1/estimates', '/api/v1/tags',
   '/api/v1/reports', '/api/v1/banking', '/api/v1/dashboard', '/api/v1/ledger-version', '/api/v1/attachments',
   '/api/v1/recurring', '/api/v1/batch', '/api/v1/daily-sales', '/api/v1/je-templates', '/api/v1/items',

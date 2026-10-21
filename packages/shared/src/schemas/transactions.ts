@@ -37,14 +37,33 @@ const journalLineInputSchema = z.object({
   // ADR 0XX — optional per-line tag. Null means explicitly untagged;
   // undefined (omitted) means the caller is not sending a tag value.
   tagId: z.string().uuid().nullable().optional(),
+  // Per-line name (U-58, je-names-v1): customer, vendor or other contact,
+  // persisted on journal_lines.contact_id. Must belong to the tenant and
+  // the company scope. On a journal entry, an A/R or A/P line requires one.
+  contactId: z.string().uuid().nullable().optional(),
 });
+
+const isoDateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 
 export const createJournalEntrySchema = z.object({
   txnDate: z.string().min(1),
+  // Entry number (U-59, je-number-v1), at most 20 characters. Free text;
+  // GET /journal-entries/next-number suggests the next numeric one.
+  // Duplicates are allowed. On an edit, omitted keeps the stored number and
+  // "" clears it.
+  txnNumber: z.string().trim().max(20).optional(),
   memo: z.string().optional(),
   // Which report bases this entry affects. Default 'both' preserves prior
   // behavior (appears on cash- and accrual-basis reports alike).
   basis: z.enum(['cash', 'accrual', 'both']).default('both'),
+  // Adjusting entry (U-60, je-adjusting-v1). On an edit, omitted keeps the
+  // stored flag.
+  isAdjusting: z.boolean().optional(),
+  // Automatic reversing entry (U-61, je-reversing-v1): a date after txnDate.
+  // Posting the entry also posts its reversal on this date, in the same
+  // database transaction. On an edit the body is the full state: present
+  // re-creates the reversal on that date, omitted (or null) removes it.
+  reverseOn: isoDateOnly.nullable().optional(),
   lines: z.array(journalLineInputSchema).min(2, 'At least 2 lines required').max(MAX_LINES),
 });
 
@@ -214,6 +233,9 @@ export const transactionFiltersSchema = z.object({
   // Report-basis lens for the list: 'cash' → transactions.basis in (both,cash);
   // 'accrual' → (both,accrual). Omitted shows all bases.
   basis: z.enum(['cash', 'accrual']).optional(),
+  // Adjusting-entry lens (U-60, je-adjusting-v1): 'include' (default) all,
+  // 'exclude' leaves adjusting entries out, 'only' keeps just them.
+  adjusting: z.enum(['include', 'exclude', 'only']).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   search: z.string().optional(),

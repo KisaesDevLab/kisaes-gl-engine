@@ -121,6 +121,13 @@ export interface Transaction {
   source?: string | null;
   sourceId?: string | null;
   ajeNumber?: number | null;
+  /** Adjusting entry (U-60, migration 0224). */
+  isAdjusting?: boolean;
+  /** On an automatic reversing entry: the journal entry it reverses (U-61). */
+  reversesTransactionId?: string | null;
+  /** GET /transactions/:id of a journal entry with a live reversal (U-61): its id and date. */
+  reversalTransactionId?: string | null;
+  reverseOn?: string | null;
   companyId?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -180,10 +187,16 @@ export interface JournalLineInput {
 
 export interface CreateJournalEntryInput {
   txnDate: string;
+  /** Entry number, at most 20 characters (U-59). */
+  txnNumber?: string;
   memo?: string;
   // Which report bases this entry affects: 'both' (default), 'cash', or
   // 'accrual'. Excludes the entry from the other basis's reports.
   basis?: 'cash' | 'accrual' | 'both';
+  /** Adjusting entry (U-60). */
+  isAdjusting?: boolean;
+  /** Post an automatic reversing entry on this date, after txnDate (U-61). */
+  reverseOn?: string | null;
   lines: JournalLineInput[];
 }
 
@@ -395,6 +408,8 @@ export interface TransactionFilters {
    *  reports (basis in both/cash); 'accrual' keeps both/accrual. Omitted =
    *  all. Mirrors the reports' basis at the transaction level. */
   basis?: 'cash' | 'accrual';
+  /** Adjusting-entry lens (U-60): 'include' (default), 'exclude', 'only'. */
+  adjusting?: 'include' | 'exclude' | 'only';
   startDate?: string;
   endDate?: string;
   search?: string;
