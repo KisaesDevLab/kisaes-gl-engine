@@ -43,10 +43,16 @@ const journalLineInputSchema = z.object({
   contactId: z.string().uuid().nullable().optional(),
 });
 
-const isoDateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
+// A calendar date, YYYY-MM-DD (no time part, no impossible dates such as
+// 2026-02-30): compared as strings against other dates.
+const isoDateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD').refine((v) => {
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}, 'Not a valid date');
 
 export const createJournalEntrySchema = z.object({
-  txnDate: z.string().min(1),
+  // YYYY-MM-DD: reverseOn is compared with it (U-61).
+  txnDate: isoDateOnly,
   // Entry number (U-59, je-number-v1), at most 20 characters. Free text;
   // GET /journal-entries/next-number suggests the next numeric one.
   // Duplicates are allowed. On an edit, omitted keeps the stored number and
@@ -61,8 +67,9 @@ export const createJournalEntrySchema = z.object({
   isAdjusting: z.boolean().optional(),
   // Automatic reversing entry (U-61, je-reversing-v1): a date after txnDate.
   // Posting the entry also posts its reversal on this date, in the same
-  // database transaction. On an edit the body is the full state: present
-  // re-creates the reversal on that date, omitted (or null) removes it.
+  // database transaction. On an edit: omitted keeps the reversal on its
+  // stored date (re-posted there when the edit changes it), null removes
+  // it, a date moves (or creates) it.
   reverseOn: isoDateOnly.nullable().optional(),
   lines: z.array(journalLineInputSchema).min(2, 'At least 2 lines required').max(MAX_LINES),
 });

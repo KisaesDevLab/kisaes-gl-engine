@@ -11,8 +11,9 @@
 //   - txnNumber (≤ 20) and GET /journal-entries/next-number, company-scoped;
 //   - isAdjusting returned on GET and the list, list lens adjusting=;
 //   - reverseOn: reversal posted in the same db transaction, voided /
-//     deleted with the original, re-created on edit, 409 REVERSAL_EDITED
-//     once changed, closing date on both dates;
+//     deleted with the original; on edit omitted keeps it (re-posted on its
+//     date when it must change), null removes it, a date moves it; 409
+//     REVERSAL_EDITED once changed, closing date on both dates;
 //   - debits = credits exactly (0.0001 off is refused).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -370,27 +371,144 @@ describe('reversing entries (U-61)', () => {
     expect(r.json.error.code).toBe('REVERSAL_EDITED');
   });
 
-  it('editing the original re-creates the reversal from the new lines; no reverseOn removes it', async () => {
+  const live = async (id: string) => (await reversalsOf(c.tenantId, id)).filter((t) => t.status === 'posted');
+  const creditsOf = async (txnId: string) =>
+    (await db.select().from(journalLines).where(eq(journalLines.transactionId, txnId))).map((l) => l.credit).sort();
+
+  it('edit, reverseOn omitted: keeps the reversal; re-posts it on its stored date when the lines change', async () => {
     const a = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { reverseOn: '2026-08-01' }));
     const id = a.json.transaction.id;
-    const [old] = await reversalsOf(c.tenantId, id);
-    const edited = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '1300.5000'), { reverseOn: '2026-08-15' }));
+    const [first] = await reversalsOf(c.tenantId, id);
+
+    // Header-only edit: the same reversal row stays, untouched.
+    const memoOnly = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c), { memo: 'Accrue rent' }));
+    expect(memoOnly.status).toBe(200);
+    expect(memoOnly.json.transaction).toMatchObject({ reversalTransactionId: first!.id, reverseOn: '2026-08-01' });
+    expect((await reversalsOf(c.tenantId, id)).map((t) => [t.id, t.status])).toEqual([[first!.id, 'posted']]);
+
+    // New lines: the old reversal is deleted and a new one posted on the stored date.
+    const edited = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '1300.5000')));
     expect(edited.status).toBe(200);
-    expect(edited.json.transaction.reverseOn).toBe('2026-08-15');
+    expect(edited.json.transaction.reverseOn).toBe('2026-08-01');
     const all = await reversalsOf(c.tenantId, id);
-    expect(all.find((t) => t.id === old!.id)!.status).toBe('deleted');
-    const live = all.filter((t) => t.status === 'posted');
-    expect(live).toHaveLength(1);
-    expect(live[0]!.txnDate).toBe('2026-08-15');
-    const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, live[0]!.id));
-    expect(lines.map((l) => l.credit).sort()).toEqual(['0.0000', '1300.5000']);
+    expect(all.find((t) => t.id === first!.id)!.status).toBe('deleted');
+    const now = await live(id);
+    expect(now).toHaveLength(1);
+    expect(now[0]).toMatchObject({ txnDate: '2026-08-01', id: edited.json.transaction.reversalTransactionId });
+    expect(await creditsOf(now[0]!.id)).toEqual(['0.0000', '1300.5000']);
     expect(Number(await balance(c.expense))).toBe(0);
 
-    const removed = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '1300.5000')));
+    // A new number changes the reversal memo, so it is re-posted too.
+    const numbered = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '1300.5000'), { txnNumber: '77' }));
+    expect(numbered.status).toBe(200);
+    const [renamed] = await live(id);
+    expect(renamed).toMatchObject({ memo: 'Reverses JE 77', txnDate: '2026-08-01' });
+
+    // The kept date must still be after the entry date.
+    const tooLate = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '1300.5000'), { txnDate: '2026-08-01' }));
+    expect(tooLate.status).toBe(400);
+    expect(tooLate.json.error.code).toBe('VALIDATION_ERROR');
+    expect((await live(id))[0]!.id).toBe(renamed!.id);
+
+    // An entry with no reversal does not get one from an omitted reverseOn.
+    const plain = await request('POST', '/api/v1/transactions', c.token, je(accrual(c)));
+    const plainEdit = await request('PUT', `/api/v1/transactions/${plain.json.transaction.id}`, c.token, je(accrual(c, '5')));
+    expect(plainEdit.json.transaction.reversalTransactionId).toBeNull();
+    expect(await reversalsOf(c.tenantId, plain.json.transaction.id)).toHaveLength(0);
+  });
+
+  it('edit, reverseOn null: removes the reversal', async () => {
+    const a = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { reverseOn: '2026-08-01' }));
+    const id = a.json.transaction.id;
+    const removed = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '1300.5000'), { reverseOn: null }));
     expect(removed.status).toBe(200);
-    expect(removed.json.transaction.reversalTransactionId).toBeNull();
-    expect((await reversalsOf(c.tenantId, id)).filter((t) => t.status === 'posted')).toHaveLength(0);
+    expect(removed.json.transaction).toMatchObject({ reversalTransactionId: null, reverseOn: null });
+    expect(await live(id)).toHaveLength(0);
+    expect((await reversalsOf(c.tenantId, id))[0]!.status).toBe('deleted');
     expect(Number(await balance(c.expense))).toBe(1300.5);
+    const got = await request('GET', `/api/v1/transactions/${id}`, c.token);
+    expect(got.json.transaction.reverseOn).toBeNull();
+  });
+
+  it('edit, reverseOn a date: moves (or adds) the reversal; the same date and lines keep it', async () => {
+    const a = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { reverseOn: '2026-08-01' }));
+    const id = a.json.transaction.id;
+    const [first] = await reversalsOf(c.tenantId, id);
+
+    // What the web form sends back: the reverseOn GET returned.
+    const got = await request('GET', `/api/v1/transactions/${id}`, c.token);
+    const roundTrip = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c), { reverseOn: got.json.transaction.reverseOn }));
+    expect(roundTrip.json.transaction.reversalTransactionId).toBe(first!.id);
+    expect(await reversalsOf(c.tenantId, id)).toHaveLength(1);
+
+    const moved = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '1300.5000'), { reverseOn: '2026-08-15' }));
+    expect(moved.status).toBe(200);
+    expect(moved.json.transaction.reverseOn).toBe('2026-08-15');
+    expect((await reversalsOf(c.tenantId, id)).find((t) => t.id === first!.id)!.status).toBe('deleted');
+    const now = await live(id);
+    expect(now.map((t) => t.txnDate)).toEqual(['2026-08-15']);
+    expect(await creditsOf(now[0]!.id)).toEqual(['0.0000', '1300.5000']);
+
+    // An entry without a reversal gets one from a date.
+    const plain = await request('POST', '/api/v1/transactions', c.token, je(accrual(c)));
+    const added = await request('PUT', `/api/v1/transactions/${plain.json.transaction.id}`, c.token, je(accrual(c), { reverseOn: '2026-08-02' }));
+    expect(added.json.transaction.reverseOn).toBe('2026-08-02');
+    expect(await live(plain.json.transaction.id)).toHaveLength(1);
+    expect(Number(await balance(c.expense))).toBe(0);
+  });
+
+  it('a reversal changed by hand still blocks an omitted-reverseOn edit that must re-post it', async () => {
+    const a = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { reverseOn: '2026-08-01' }));
+    const id = a.json.transaction.id;
+    const [rev] = await reversalsOf(c.tenantId, id);
+    await db.update(transactions).set({ updatedAt: new Date(Date.now() + 60_000) }).where(eq(transactions.id, rev!.id));
+    // Nothing about the reversal changes: allowed, reversal kept.
+    expect((await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c), { memo: 'x' }))).status).toBe(200);
+    expect((await live(id))[0]!.id).toBe(rev!.id);
+    // New lines need a re-post: refused, nothing changes.
+    const r = await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c, '9')));
+    expect(r.status).toBe(409);
+    expect(r.json.error.code).toBe('REVERSAL_EDITED');
+    expect(Number(await balance(c.expense))).toBe(0);
+  });
+
+  it('edit and reversal stay in the company of the entry (L5)', async () => {
+    const a = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { reverseOn: '2026-08-01' }), c.companyId);
+    const id = a.json.transaction.id;
+    // Through company B the entry is not found, and nothing changes.
+    const other = await request('PUT', `/api/v1/transactions/${id}`, c.token, je([
+      { accountId: c.expense, debit: '5', credit: '0' },
+      { accountId: c.bank, debit: '0', credit: '5' },
+    ], { reverseOn: null }), c.companyB);
+    expect(other.status).toBe(404);
+    expect(await live(id)).toHaveLength(1);
+    await expect(ledger.updateTransaction(c.tenantId, id, {
+      txnType: 'journal_entry', txnDate: '2026-07-31',
+      lines: [{ accountId: c.expense, debit: '5', credit: '0' }, { accountId: c.bank, debit: '0', credit: '5' }],
+    }, c.userId, c.companyB)).rejects.toMatchObject({ statusCode: 404 });
+    // postReversal refuses a caller company that differs from the entry's.
+    const entry = await db.query.transactions.findFirst({ where: eq(transactions.id, id) });
+    await expect(db.transaction(async (tx) => ledger.postReversal(tx, c.tenantId, { ...entry!, lines: [] }, '2026-08-05', c.userId, c.companyB)))
+      .rejects.toMatchObject({ statusCode: 404 });
+    // The reversal carries the entry's company.
+    expect((await live(id))[0]!.companyId).toBe(c.companyId);
+  });
+
+  it('txnDate must be a calendar date (L8)', async () => {
+    for (const txnDate of ['2026-07-31T00:00:00Z', '2026-02-30', '07/31/2026']) {
+      const r = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { txnDate }));
+      expect(r.status).toBe(400);
+    }
+    expect(await db.select().from(transactions).where(eq(transactions.tenantId, c.tenantId))).toHaveLength(0);
+  });
+
+  it('duplicate copies line names and the adjusting flag (L6)', async () => {
+    const a = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { isAdjusting: true }));
+    const dup = await request('POST', `/api/v1/transactions/${a.json.transaction.id}/duplicate`, c.token, {});
+    expect(dup.status).toBe(201);
+    const got = await request('GET', `/api/v1/transactions/${dup.json.transaction.id}`, c.token);
+    expect(got.json.transaction.isAdjusting).toBe(true);
+    expect(got.json.transaction.lines.map((l: any) => l.contactId ?? 'none').sort()).toEqual([c.vendor, 'none'].sort());
   });
 
   it('closing date applies to both dates (reversing across a closed period)', async () => {

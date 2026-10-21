@@ -208,7 +208,8 @@ transactionsRouter.post('/', describe({
 transactionsRouter.put('/:id', describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
-    'A journal entry edit deletes its automatic reversal and, with reverseOn, posts a new one; a reversal changed since it was created is 409 REVERSAL_EDITED.',
+    'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
+    'a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED.',
   body: registerEntryBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
@@ -370,6 +371,8 @@ transactionsRouter.post('/:id/duplicate', async (req, res) => {
     debit: l.debit,
     credit: l.credit,
     description: l.description || undefined,
+    // Line names (U-58) come along, so a JE's A/R / A/P line stays named.
+    contactId: l.contactId ?? null,
   }));
 
   const result = await ledger.postTransaction(req.tenantId, {
@@ -378,6 +381,8 @@ transactionsRouter.post('/:id/duplicate', async (req, res) => {
     contactId: original.contactId || undefined,
     memo: original.memo || undefined,
     total: original.total || undefined,
+    // A duplicated adjusting entry is still adjusting (U-60).
+    isAdjusting: original.isAdjusting === true,
     lines,
   }, req.userId, req.companyId);
 

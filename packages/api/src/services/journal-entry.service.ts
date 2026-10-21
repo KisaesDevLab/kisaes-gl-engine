@@ -27,8 +27,8 @@ function buildJournalEntryPayload(input: CreateJournalEntryInput) {
 }
 
 /** reverseOn (U-61) must be a date after the entry's own date. */
-function assertReverseOn(input: CreateJournalEntryInput) {
-  if (input.reverseOn && !(input.reverseOn > input.txnDate)) {
+function assertReverseOn(txnDate: string, reverseOn: string | null | undefined) {
+  if (reverseOn && !(reverseOn > txnDate)) {
     throw AppError.badRequest('The reversal date must be after the entry date', 'VALIDATION_ERROR');
   }
 }
@@ -87,68 +87,83 @@ export async function assertJournalEntryNames(
   }
 }
 
-async function withReversal(
-  tx: Tx,
-  tenantId: string,
-  posted: { id: string },
-  reverseOn: string | null | undefined,
-  userId?: string,
-  companyId?: string,
-) {
+async function loadEntry(tx: Tx, tenantId: string, id: string) {
   const [header] = await tx.select().from(transactions)
-    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, posted.id))).limit(1);
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id))).limit(1);
   if (!header) throw AppError.internal('Journal entry vanished while posting');
   const lines = await tx.select().from(journalLines)
-    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, posted.id)))
+    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, id)))
     .orderBy(journalLines.lineOrder);
-  const reversal = reverseOn
-    ? await ledger.postReversal(tx, tenantId, { ...header, lines }, reverseOn, userId, companyId)
-    : null;
-  return { ...header, lines, reversalTransactionId: reversal?.id ?? null, reverseOn: reversal?.txnDate ?? null };
+  return { ...header, lines };
 }
 
 export async function createJournalEntry(
   tenantId: string, input: CreateJournalEntryInput, userId?: string, companyId?: string, opts: JournalEntryOptions = {},
 ) {
-  assertReverseOn(input);
+  assertReverseOn(input.txnDate, input.reverseOn);
   const payload = buildJournalEntryPayload(input);
   return db.transaction(async (tx) => {
     await assertJournalEntryNames(tx, tenantId, companyId, payload.lines, opts);
     const posted = await ledger.postTransaction(tenantId, payload, userId, companyId, tx);
-    return withReversal(tx, tenantId, posted, input.reverseOn, userId, companyId);
+    const entry = await loadEntry(tx, tenantId, posted.id);
+    const reversal = input.reverseOn
+      ? await ledger.postReversal(tx, tenantId, entry, input.reverseOn, userId, companyId)
+      : null;
+    return { ...entry, reversalTransactionId: reversal?.id ?? null, reverseOn: reversal?.txnDate ?? null };
   });
 }
 
 /**
- * Edit (PUT): the body is the entry's full state. A live automatic reversal
- * is deleted (soft, with reversing lines) and, when reverseOn is sent, a new
- * one is posted from the edited lines — all in one database transaction. A
- * reversal changed after it was created refuses the edit (409
- * REVERSAL_EDITED).
+ * Edit (PUT). reverseOn has three states (U-61):
+ *   - omitted: the entry keeps its automatic reversal, if it has one, on
+ *     its stored date; when the edit changes what the reversal must hold
+ *     (lines, number, basis, adjusting flag) it is re-posted on that date;
+ *   - null: the reversal is removed;
+ *   - a date: the reversal moves to (or is created on) that date.
+ * Re-posting or removing deletes the old reversal (soft, with reversing
+ * lines), all in one database transaction; a reversal changed after it was
+ * created refuses that (409 REVERSAL_EDITED). A reversal the edit leaves as
+ * it is stays untouched. The effective reversal date must be after the
+ * entry date (400 VALIDATION_ERROR).
  */
 export async function updateJournalEntry(tenantId: string, txnId: string, input: CreateJournalEntryInput, userId?: string, companyId?: string) {
-  assertReverseOn(input);
+  if (input.reverseOn !== undefined) assertReverseOn(input.txnDate, input.reverseOn);
   const payload = buildJournalEntryPayload(input);
   return db.transaction(async (tx) => {
     await assertJournalEntryNames(tx, tenantId, companyId, payload.lines);
     const [existing] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update').limit(1);
-    const reversal = existing?.txnType === 'journal_entry' && existing.status === 'posted'
+    // Another company's entry is not found (ledger.updateTransaction agrees).
+    if (!existing || (companyId && existing.companyId && existing.companyId !== companyId)) {
+      throw AppError.notFound('Transaction not found');
+    }
+    const reversal = existing.txnType === 'journal_entry' && existing.status === 'posted'
       ? await ledger.findLiveReversal(tx, tenantId, txnId)
       : null;
-    if (reversal) {
-      const originalLines = await tx.select().from(journalLines)
-        .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
-      await ledger.assertReversalUnchanged(tx, tenantId, reversal, originalLines);
+    const targetReverseOn = input.reverseOn === undefined ? (reversal?.txnDate ?? null) : input.reverseOn;
+    assertReverseOn(input.txnDate, targetReverseOn);
+    const originalLines = reversal
+      ? await tx.select().from(journalLines)
+        .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
+      : [];
+
+    await ledger.updateTransaction(tenantId, txnId, payload, userId, companyId, tx);
+    const entry = await loadEntry(tx, tenantId, txnId);
+
+    if (reversal && targetReverseOn && await ledger.reversalMatches(tx, tenantId, reversal, entry, targetReverseOn)) {
+      return { ...entry, reversalTransactionId: reversal.id, reverseOn: reversal.txnDate };
     }
-    const updated = await ledger.updateTransaction(tenantId, txnId, payload, userId, companyId, tx);
     if (reversal) {
+      await ledger.assertReversalUnchanged(tx, tenantId, reversal, originalLines);
       await ledger.deleteTransactionInTx(tx, tenantId, reversal.id, {
         reason: 'Original journal entry edited', userId, companyId,
       });
     }
-    return withReversal(tx, tenantId, updated as { id: string }, input.reverseOn, userId, companyId);
+    const posted = targetReverseOn
+      ? await ledger.postReversal(tx, tenantId, entry, targetReverseOn, userId, companyId)
+      : null;
+    return { ...entry, reversalTransactionId: posted?.id ?? null, reverseOn: posted?.txnDate ?? null };
   });
 }
 

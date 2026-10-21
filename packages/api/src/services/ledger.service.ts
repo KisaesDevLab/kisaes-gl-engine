@@ -475,6 +475,16 @@ interface PostTransactionInput {
 }
 
 /**
+ * A money amount at the scale the ledger stores: 4 places, half away from
+ * zero, as numeric(19,4) rounds. Posting builders round each line amount
+ * with this first and add up the rounded values for the matching total
+ * line (A/R, A/P, deposit account), so the stored lines balance exactly.
+ */
+export function round4(value: string | number | InstanceType<typeof Decimal> | null | undefined): InstanceType<typeof Decimal> {
+  return new Decimal(value == null || value === '' ? '0' : value).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+}
+
+/**
  * Debits must equal credits exactly (U-65), at the scale the ledger stores:
  * each line amount is rounded to 4 places the way numeric(19,4) rounds it
  * (half away from zero), then the sums are compared with no tolerance. So
@@ -1030,7 +1040,11 @@ export async function updateTransaction(
       .for('update')
       .limit(1);
 
-    if (!existing || existing.status === 'deleted') throw AppError.notFound('Transaction not found');
+    // A transaction of another company is not found (as deleteTransaction).
+    if (!existing || existing.status === 'deleted'
+      || (companyId && existing.companyId && existing.companyId !== companyId)) {
+      throw AppError.notFound('Transaction not found');
+    }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
     // Check lock date for both old and new dates (company-scoped).
@@ -1394,12 +1408,50 @@ export async function assertReversalUnchanged(
   }
 }
 
+/** The reversal's memo: "Reverses JE <number>", or the entry's date when it has no number. */
+export function reversalMemo(original: Pick<TxnRow, 'txnNumber' | 'txnDate'>): string {
+  return original.txnNumber ? `Reverses JE ${original.txnNumber}` : `Reverses JE of ${original.txnDate}`;
+}
+
+const reversalContentKey = (l: { accountId: string; debit: string | null; credit: string | null; contactId: string | null; tagId: string | null; description: string | null }) =>
+  `${reversalLineKey(l)}|${l.description ?? ''}`;
+
+/**
+ * True when `reversal` is exactly what postReversal would post for
+ * `original` on `reverseOn`: same date, memo, basis, adjusting flag and
+ * lines (account, swapped amounts, name, tag, description). The edit path
+ * keeps such a reversal instead of re-posting it (U-61).
+ */
+export async function reversalMatches(
+  executor: DbOrTx,
+  tenantId: string,
+  reversal: TxnRow,
+  original: TxnRow & { lines: ReadonlyArray<LineRow> },
+  reverseOn: string,
+): Promise<boolean> {
+  if (reversal.txnDate !== reverseOn || reversal.memo !== reversalMemo(original)
+    || reversal.basis !== original.basis || reversal.isAdjusting !== original.isAdjusting) {
+    return false;
+  }
+  const revLines = await executor.select().from(journalLines).where(and(
+    eq(journalLines.tenantId, tenantId),
+    eq(journalLines.transactionId, reversal.id),
+    eq(journalLines.isVoidReversal, false),
+  ));
+  const expected = original.lines.filter((l) => !l.isVoidReversal)
+    .map((l) => reversalContentKey({ ...l, debit: l.credit, credit: l.debit })).sort();
+  const actual = revLines.map((l) => reversalContentKey(l)).sort();
+  return expected.length === actual.length && expected.every((k, i) => k === actual[i]);
+}
+
 /**
  * Posts the automatic reversal of `original` dated `reverseOn` inside the
  * caller's database transaction (the closing-date check applies to
  * reverseOn). Lines: the original's lines, debit and credit swapped, same
  * account, description, name and tag; not billable. Basis and the
- * adjusting flag follow the original. The reversal has no number of its own.
+ * adjusting flag follow the original. The reversal has no number of its own
+ * and always belongs to the original's company; a caller company that
+ * differs is refused.
  */
 export async function postReversal(
   tx: Tx,
@@ -1409,11 +1461,13 @@ export async function postReversal(
   userId?: string,
   companyId?: string,
 ) {
-  const memo = original.txnNumber ? `Reverses JE ${original.txnNumber}` : `Reverses JE of ${original.txnDate}`;
+  if (companyId && original.companyId && original.companyId !== companyId) {
+    throw AppError.notFound('Transaction not found');
+  }
   return postTransaction(tenantId, {
     txnType: 'journal_entry',
     txnDate: reverseOn,
-    memo,
+    memo: reversalMemo(original),
     basis: (original.basis as 'cash' | 'accrual' | 'both') ?? 'both',
     isAdjusting: original.isAdjusting,
     reversesTransactionId: original.id,
@@ -1425,7 +1479,7 @@ export async function postReversal(
       contactId: l.contactId,
       tagId: l.tagId,
     })),
-  }, userId, companyId ?? original.companyId ?? undefined, tx);
+  }, userId, original.companyId ?? companyId ?? undefined, tx);
 }
 
 // Cheap type probe for route guards (the TB module fences txn_type
