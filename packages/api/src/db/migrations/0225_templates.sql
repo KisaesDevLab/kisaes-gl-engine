@@ -13,7 +13,10 @@
 --    journal_entry, daily_sales) or 'legacy' (a schedule made from a posted
 --    transaction before 0225, or a kind templates can't hold: invoice,
 --    bill...). Money is numeric(19,4). Names are unique per company among
---    live (not deleted) rows, case-insensitive.
+--    live (not deleted) rows, case-insensitive. created_by / updated_by
+--    name the template's owner: an auto run posts only while that user
+--    (the last editor, else the creator) still holds the kind's write
+--    permission; rows the data step makes have no owner and post as before.
 -- 3. template_transaction_lines / template_transaction_tags: the draft's
 --    lines and header tags. They stay out of every ledger query by
 --    construction (no journal_lines, no transactions row).
@@ -79,6 +82,7 @@ CREATE TABLE IF NOT EXISTS "template_transactions" (
   "version" integer DEFAULT 1 NOT NULL,
   "deleted_at" timestamp with time zone,
   "created_by" uuid,
+  "updated_by" uuid,
   "created_at" timestamp with time zone DEFAULT now(),
   "updated_at" timestamp with time zone DEFAULT now(),
   CONSTRAINT "template_transactions_kind_check"

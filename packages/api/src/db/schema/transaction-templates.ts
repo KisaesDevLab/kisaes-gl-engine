@@ -59,6 +59,10 @@ export const templateTransactions = pgTable('template_transactions', {
   version: integer('version').notNull().default(1),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
   createdBy: uuid('created_by'),
+  // The last user who changed the template or its schedule. An auto run
+  // checks that this user (else createdBy) still holds the kind's write
+  // permission (occurrences.service.ts); NULL on both = pre-0225 schedule.
+  updatedBy: uuid('updated_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

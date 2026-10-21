@@ -44,12 +44,16 @@ export interface SourceTxn {
   txnType: string;
 }
 
-/** Loads a transaction of this tenant (and company, when given); null when not found. */
+/**
+ * Loads a transaction of this tenant (and of exactly this company, when
+ * given: a company-less transaction is not the company's); null when not
+ * found. companyId null (tenant-wide callers) reads any.
+ */
 export async function loadSource(exec: DbOrTx, tenantId: string, companyId: string | null, txnId: string) {
   const [txn] = await exec.select().from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId))).limit(1);
   if (!txn) return null;
-  if (companyId && txn.companyId && txn.companyId !== companyId) return null;
+  if (companyId && txn.companyId !== companyId) return null;
   return txn;
 }
 

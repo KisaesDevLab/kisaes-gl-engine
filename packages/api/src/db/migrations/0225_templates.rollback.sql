@@ -14,6 +14,18 @@
 -- Transactions the runner posted stay (they are ordinary postings, marked
 -- source 'recurring'); only the template tables, the occurrence log and the
 -- new recurring_schedules columns go.
+--
+-- What is LOST (not restorable by re-running 0225):
+--   * count limits ("end after N times", recurring_schedules.remaining_count)
+--     and day-of-month anchors (anchor_date): the schedules go back to the
+--     pre-0225 rules (end date only, next date from the last date);
+--   * every template edit: a schedule made before 0225 posts its source
+--     transaction again as it was, so changes made to the template since
+--     (draft lines, amounts, accounts, memo, name, group) are gone;
+--     templates without a schedule are deleted outright;
+--   * template groups, owners (created_by / updated_by) and the occurrence
+--     log (skipped / dismissed / entered dates and their reasons): dates
+--     the runner skipped are no longer listed anywhere, so check them first.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM "recurring_schedules" WHERE "template_transaction_id" IS NULL) THEN

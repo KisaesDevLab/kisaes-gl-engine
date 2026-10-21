@@ -37,6 +37,19 @@
  * crash left behind for more than CLAIM_STALE_MINUTES is listed as
  * skipped / NEEDS_CHECK, never silently lost or posted again.
  *
+ * Authority (security review H1): an auto run posts only while the
+ * template's owner (last editor, else creator) still holds 'recurring' and
+ * the kind's write permission (permissions.ts); else the date is skipped
+ * with reason PERMISSION. Ownerless pre-0225 templates post as before.
+ *
+ * Bounds (M2, L5): one run posts or skips at most CATCH_UP_CAP dates per
+ * schedule; the rest stay due for the next run and the schedule is listed
+ * in `skipped` with reason CATCH_UP_CAPPED (nothing is recorded or lost).
+ * Open skipped dates are listed up to SKIPPED_LIST_CAP with a total; due
+ * reminders up to REMINDER_SCHEDULES_CAP schedules of REMINDER_COUNT_CAP
+ * dates each, with a truncated flag. The server tick handles at most
+ * SERVER_TICK_CAP occurrences per tick.
+ *
  * Money stays exact (decimal strings from the stored draft into the same
  * builders as a live create). Names, memos and amounts are never logged.
  */
@@ -56,6 +69,7 @@ import * as ledger from '../ledger.service.js';
 import { runWithoutOverride } from '../lock-context.js';
 import { postLegacyClone } from '../recurring.service.js';
 import { draftRefs, draftTotal } from './draft.js';
+import { ownerMayPost, templateResource, type OwnerPermissionCache } from './permissions.js';
 import { autoUnsupported, replayDraft } from './replay.js';
 import {
   CLAIM_STALE_MINUTES, adoptOrphanSchedules, legacyDraft, lockSchedule, lockTemplate, templateDraft, templateNotFound,
@@ -65,9 +79,9 @@ import {
 /** Reasons recorded on a skipped occurrence. */
 export type SkipReason =
   | 'CLOSED_PERIOD' | 'INVALID_ACCOUNT' | 'INVALID_CONTACT' | 'INVALID_TAG' | 'TEMPLATE_SOURCE_MISSING'
-  | 'CHECK_NUMBER' | 'VALIDATION' | 'AUTO_UNSUPPORTED' | 'NEEDS_CHECK';
+  | 'CHECK_NUMBER' | 'VALIDATION' | 'AUTO_UNSUPPORTED' | 'NEEDS_CHECK' | 'PERMISSION';
 
-/** Test hooks (never set in production): called after the replay, inside the transaction. */
+/** Test hooks: only honoured when NODE_ENV is 'test' (see testHook). */
 export const __testHooks: {
   /** Inside the replay savepoint, after the posting (auto runs only). */
   inReplay?: (info: { templateId: string; date: string }) => void | Promise<void>;
@@ -82,8 +96,22 @@ export interface Actor {
   userId?: string;
 }
 
+/** Called only under NODE_ENV=test, so a stray assignment can't change production runs. */
+function testHook(name: keyof typeof __testHooks) {
+  return process.env['NODE_ENV'] === 'test' ? __testHooks[name] : undefined;
+}
+
 const REMINDER_DATES_CAP = 24;
-const REMINDER_COUNT_CAP = 9999;
+/** Due dates counted per reminder schedule; `truncated` when reached. */
+export const REMINDER_COUNT_CAP = 400;
+/** Reminder schedules listed per call; `remindersTruncated` when more are due. */
+export const REMINDER_SCHEDULES_CAP = 500;
+/** Dates one run posts or skips per schedule; the rest wait for the next run (CATCH_UP_CAPPED). */
+export const CATCH_UP_CAP = 31;
+/** Open skipped dates listed per response; `skippedTotal` counts them all. */
+export const SKIPPED_LIST_CAP = 200;
+/** Occurrences the server tick handles per tick across every tenant. */
+export const SERVER_TICK_CAP = 5000;
 
 // ── Small helpers ──────────────────────────────────────────────────
 
@@ -228,7 +256,7 @@ type AutoOutcome =
   | { status: 'posted'; occurrenceId: string; date: string; transactionId: string }
   | { status: 'skipped'; occurrenceId: string; date: string; reason: SkipReason };
 
-async function autoStep(actor: Actor, templateId: string, asOf: string, runId: string): Promise<AutoOutcome> {
+async function autoStep(actor: Actor, templateId: string, asOf: string, runId: string, owners: OwnerPermissionCache): Promise<AutoOutcome> {
   return db.transaction(async (tx): Promise<AutoOutcome> => {
     await runLock(tx, actor);
     const tpl = await lockTemplate(tx, actor.tenantId, actor.companyId, templateId, 'share');
@@ -265,6 +293,7 @@ async function autoStep(actor: Actor, templateId: string, asOf: string, runId: s
     };
 
     if (td === null) return skip('TEMPLATE_SOURCE_MISSING');
+    if (!(await ownerMayPost(actor.tenantId, tpl, await templateResource(tx, tpl), owners))) return skip('PERMISSION');
     if (td.kind === 'daily_sales') return skip('AUTO_UNSUPPORTED');
     if (await closedForRunner(tx, actor.tenantId, tpl.companyId, date)) return skip('CLOSED_PERIOD');
     const problem = await refsProblem(tx, actor.tenantId, tpl.companyId, td);
@@ -275,14 +304,16 @@ async function autoStep(actor: Actor, templateId: string, asOf: string, runId: s
       transactionId = await tx.transaction(async (sp) => {
         const r = await replayDraft(sp, actor.tenantId, tpl.companyId, actor.userId, td, date);
         await markProvenance(sp, actor.tenantId, r.id, sched, tpl.id);
-        if (__testHooks.inReplay) await __testHooks.inReplay({ templateId: tpl.id, date });
+        const inReplay = testHook('inReplay');
+        if (inReplay) await inReplay({ templateId: tpl.id, date });
         return r.id;
       });
     } catch (err) {
       if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) return skip(reasonFor(err));
       throw err;
     }
-    if (__testHooks.afterReplay) await __testHooks.afterReplay({ templateId: tpl.id, date });
+    const afterReplay = testHook('afterReplay');
+    if (afterReplay) await afterReplay({ templateId: tpl.id, date });
 
     await tx.update(templateOccurrences).set({ status: 'posted', transactionId, resolvedAt: new Date() })
       .where(and(eq(templateOccurrences.tenantId, actor.tenantId), eq(templateOccurrences.id, claim.id)));
@@ -311,7 +342,8 @@ type LegacyOutcome = AutoOutcome | { status: 'entered'; occurrenceId: string | n
  * caller resolved (manualDate rules).
  */
 async function legacyOccurrence(
-  actor: Actor, templateId: string, mode: 'auto' | 'manual', opts: { asOf?: string; date?: string; runId?: string },
+  actor: Actor, templateId: string, mode: 'auto' | 'manual',
+  opts: { asOf?: string; date?: string; runId?: string; owners?: OwnerPermissionCache },
 ): Promise<LegacyOutcome> {
   const phase1 = await db.transaction(async (tx): Promise<LegacyClaim | LegacyOutcome> => {
     if (mode === 'auto') await runLock(tx, actor);
@@ -358,12 +390,18 @@ async function legacyOccurrence(
       prevStatus = 'skipped';
     }
 
-    if (mode === 'auto' && await closedForRunner(tx, actor.tenantId, tpl.companyId, date)) {
-      await tx.update(templateOccurrences).set({ status: 'skipped', reason: 'CLOSED_PERIOD' })
-        .where(and(eq(templateOccurrences.tenantId, actor.tenantId), eq(templateOccurrences.id, occurrenceId!)));
-      await advance(tx, sched!, date, { consumed: true, posted: false });
-      await auditOccurrence(tx, actor.tenantId, occurrenceId, { templateId: tpl.id, date, status: 'skipped', reason: 'CLOSED_PERIOD' }, actor.userId);
-      return { status: 'skipped', occurrenceId: occurrenceId!, date, reason: 'CLOSED_PERIOD' };
+    if (mode === 'auto') {
+      const reason: SkipReason | null =
+        !(await ownerMayPost(actor.tenantId, tpl, await templateResource(tx, tpl), opts.owners)) ? 'PERMISSION'
+          : await closedForRunner(tx, actor.tenantId, tpl.companyId, date) ? 'CLOSED_PERIOD'
+            : null;
+      if (reason) {
+        await tx.update(templateOccurrences).set({ status: 'skipped', reason })
+          .where(and(eq(templateOccurrences.tenantId, actor.tenantId), eq(templateOccurrences.id, occurrenceId!)));
+        await advance(tx, sched!, date, { consumed: true, posted: false });
+        await auditOccurrence(tx, actor.tenantId, occurrenceId, { templateId: tpl.id, date, status: 'skipped', reason }, actor.userId);
+        return { status: 'skipped', occurrenceId: occurrenceId!, date, reason };
+      }
     }
     const advanced = target === 'insert' && scheduleLive(sched)
       ? await advance(tx, sched, date, { consumed: true, posted: false })
@@ -478,7 +516,8 @@ export async function enterTemplate(actor: Actor, templateId: string, opts: { oc
     const replayed = await replayDraft(tx, actor.tenantId, tpl.companyId, actor.userId, td, date);
     const live = scheduleLive(sched) && target !== 'none' ? sched : null;
     await markProvenance(tx, actor.tenantId, replayed.id, live, tpl.id);
-    if (__testHooks.afterReplay) await __testHooks.afterReplay({ templateId: tpl.id, date });
+    const afterReplay = testHook('afterReplay');
+    if (afterReplay) await afterReplay({ templateId: tpl.id, date });
 
     let occurrenceId: string | null = null;
     if (target === 'insert') {
@@ -568,9 +607,12 @@ export async function resolveOccurrence(actor: Actor, templateId: string, date: 
     const sched = await lockSchedule(tx, actor.tenantId, tpl.id);
     const [txn] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, actor.tenantId), eq(transactions.id, transactionId))).for('update').limit(1);
-    if (!txn || txn.status !== 'posted' || (tpl.companyId && txn.companyId !== tpl.companyId)) {
+    // Same company exactly: a company-less template can't link a company's
+    // transaction, nor a company's template a company-less one.
+    if (!txn || txn.status !== 'posted' || txn.companyId !== tpl.companyId) {
       throw resolveInvalid('The transaction was not found in this company, or it is void or deleted.');
     }
+    if (txn.txnDate !== date) throw resolveInvalid('The transaction’s date is not the template date.');
     let kind: string = tpl.kind;
     if (kind === 'legacy') {
       const td = await legacyDraft(tx, tpl);
@@ -606,7 +648,16 @@ export async function resolveOccurrence(actor: Actor, templateId: string, date: 
     } else {
       throw occurrenceNotDue();
     }
-    await markProvenance(tx, actor.tenantId, transactionId, sched, tpl.id);
+    // Provenance changes an existing posting, so it is audited; a posting in
+    // a closed period is left as it is (linked, not marked): resolve carries
+    // no closing-date password and never edits a closed period.
+    if (!(await closedForRunner(tx, actor.tenantId, txn.companyId, txn.txnDate))) {
+      await markProvenance(tx, actor.tenantId, transactionId, sched, tpl.id);
+      await auditLog(actor.tenantId, 'update', 'transaction', transactionId,
+        { isRecurring: txn.isRecurring, recurringScheduleId: txn.recurringScheduleId, source: txn.source, sourceId: txn.sourceId },
+        { isRecurring: sched !== null, recurringScheduleId: sched?.id ?? null, source: sched ? 'recurring' : 'template', sourceId: tpl.id },
+        actor.userId, tx);
+    }
     await auditOccurrence(tx, actor.tenantId, id, { templateId: tpl.id, date, status: 'entered', transactionId }, actor.userId);
     return { id, templateId: tpl.id, occurrenceDate: date, status: 'entered' as const, transactionId };
   });
@@ -648,21 +699,51 @@ async function postedInRun(actor: Actor, runId: string) {
   }));
 }
 
-async function openSkipped(actor: Actor, fresh: Set<string>) {
-  const res = await db.execute(sql`
-    SELECT o.id, o.template_id, t.name, t.kind, t.client_form, o.occurrence_date::text AS occurrence_date, o.status, o.reason
+interface SkippedEntry {
+  templateId: string; templateName: string; kind: string; clientForm: string | null;
+  occurrenceDate: string; reason: string; new: boolean;
+}
+
+/** Open skipped dates (oldest first, at most SKIPPED_LIST_CAP) and how many there are in all. */
+async function openSkipped(actor: Actor, fresh: Set<string>): Promise<{ items: SkippedEntry[]; total: number }> {
+  const open = sql`
     FROM template_occurrences o
     JOIN template_transactions t ON t.id = o.template_id AND t.tenant_id = o.tenant_id
     WHERE o.tenant_id = ${actor.tenantId} AND ${companyCond('t.company_id', actor.companyId)} AND t.deleted_at IS NULL
       AND (o.status = 'skipped'
-        OR (o.status = 'claiming' AND o.created_at < now() - make_interval(mins => ${CLAIM_STALE_MINUTES})))
+        OR (o.status = 'claiming' AND o.created_at < now() - make_interval(mins => ${CLAIM_STALE_MINUTES})))`;
+  const res = await db.execute(sql`
+    SELECT o.id, o.template_id, t.name, t.kind, t.client_form, o.occurrence_date::text AS occurrence_date, o.status, o.reason
+    ${open}
     ORDER BY o.occurrence_date, lower(t.name), o.id
+    LIMIT ${SKIPPED_LIST_CAP}
   `);
-  return (res.rows as Array<Record<string, string | null>>).map((r) => ({
+  const count = await db.execute(sql`SELECT COUNT(*)::int AS n ${open}`);
+  const total = Number((count.rows as Array<{ n: number }>)[0]?.n ?? 0);
+  const items = (res.rows as Array<Record<string, string | null>>).map((r) => ({
     templateId: r['template_id']!, templateName: r['name']!, kind: r['kind']!, clientForm: r['client_form'] ?? null,
     occurrenceDate: r['occurrence_date']!,
     reason: r['status'] === 'claiming' ? 'NEEDS_CHECK' : (r['reason'] ?? 'VALIDATION'),
     new: fresh.has(r['id']!),
+  }));
+  return { items, total };
+}
+
+/** Schedules a run stopped at CATCH_UP_CAP that are still due: listed as skipped / CATCH_UP_CAPPED. */
+async function cappedEntries(actor: Actor, templateIds: string[], asOf: string): Promise<SkippedEntry[]> {
+  if (templateIds.length === 0) return [];
+  const res = await db.execute(sql`
+    SELECT t.id AS template_id, t.name, t.kind, t.client_form, rs.next_occurrence::text AS occurrence_date
+    FROM recurring_schedules rs
+    JOIN template_transactions t ON t.id = rs.template_id AND t.tenant_id = rs.tenant_id
+    WHERE rs.tenant_id = ${actor.tenantId} AND t.id IN (${sql.join(templateIds.map((i) => sql`${i}`), sql`, `)})
+      AND t.deleted_at IS NULL AND rs.is_active = true AND rs.archived_at IS NULL AND rs.mode = 'auto'
+      AND rs.next_occurrence <= ${asOf}::date
+    ORDER BY rs.next_occurrence, lower(t.name), t.id
+  `);
+  return (res.rows as Array<Record<string, string | null>>).map((r) => ({
+    templateId: r['template_id']!, templateName: r['name']!, kind: r['kind']!, clientForm: r['client_form'] ?? null,
+    occurrenceDate: r['occurrence_date']!, reason: 'CATCH_UP_CAPPED', new: true,
   }));
 }
 
@@ -681,9 +762,11 @@ async function dueReminders(actor: Actor, asOf: string) {
       eq(recurringSchedules.mode, 'reminder'),
       sql`${recurringSchedules.nextOccurrence} <= ${asOf}::date`,
     ))
-    .orderBy(recurringSchedules.nextOccurrence, recurringSchedules.id);
+    .orderBy(recurringSchedules.nextOccurrence, recurringSchedules.id)
+    .limit(REMINDER_SCHEDULES_CAP + 1);
+  const truncated = rows.length > REMINDER_SCHEDULES_CAP;
   const out = [];
-  for (const { tpl, sched } of rows) {
+  for (const { tpl, sched } of rows.slice(0, REMINDER_SCHEDULES_CAP)) {
     const dueDates: string[] = [];
     let count = 0;
     let d = sched.nextOccurrence;
@@ -698,10 +781,11 @@ async function dueReminders(actor: Actor, asOf: string) {
     const td = await templateDraft(db, tpl);
     out.push({
       templateId: tpl.id, templateName: tpl.name, kind: td?.kind ?? tpl.kind, clientForm: tpl.clientForm ?? null,
-      dueDates, dueCount: count, total: td ? draftTotal(td) : null,
+      // truncated: dueCount stopped at REMINDER_COUNT_CAP; more dates are due.
+      dueDates, dueCount: count, truncated: count >= REMINDER_COUNT_CAP, total: td ? draftTotal(td) : null,
     });
   }
-  return out;
+  return { reminders: out, truncated };
 }
 
 export interface RunDueResult {
@@ -709,8 +793,13 @@ export interface RunDueResult {
   runId: string;
   more: boolean;
   posted: Awaited<ReturnType<typeof postedInRun>>;
-  reminders: Awaited<ReturnType<typeof dueReminders>>;
-  skipped: Awaited<ReturnType<typeof openSkipped>>;
+  reminders: Awaited<ReturnType<typeof dueReminders>>['reminders'];
+  /** More reminder schedules are due than REMINDER_SCHEDULES_CAP. */
+  remindersTruncated: boolean;
+  /** Open skipped dates (at most SKIPPED_LIST_CAP), then the schedules this run capped (CATCH_UP_CAPPED). */
+  skipped: SkippedEntry[];
+  /** Every open skipped date plus the capped schedules. */
+  skippedTotal: number;
   failed: Array<{ templateId: string; reason: 'INTERNAL' }>;
 }
 
@@ -724,7 +813,9 @@ export async function runDue(actor: Actor, opts: { asOf?: string; runId?: string
   return (await runDueInternal(actor, opts)).result;
 }
 
-async function runDueInternal(actor: Actor, opts: { asOf?: string; runId?: string; limit?: number }) {
+async function runDueInternal(
+  actor: Actor, opts: { asOf?: string; runId?: string; limit?: number }, owners: OwnerPermissionCache = new Map(),
+) {
   const { today, tomorrow } = await currentDate(db);
   const asOf = opts.asOf ?? today;
   if (asOf > tomorrow) {
@@ -737,14 +828,20 @@ async function runDueInternal(actor: Actor, opts: { asOf?: string; runId?: strin
   let postedNow = 0;
   const fresh = new Set<string>();
   const failed: RunDueResult['failed'] = [];
+  const capped = new Set<string>();
 
   await runWithoutOverride(async () => {
     for (const templateId of await dueAutoSchedules(actor, asOf)) {
+      let steps = 0;
       while (handled < limit) {
+        if (steps >= CATCH_UP_CAP) {
+          capped.add(templateId);
+          break;
+        }
         let outcome: LegacyOutcome;
         try {
-          outcome = await autoStep(actor, templateId, asOf, runId);
-          if (outcome.status === 'legacy') outcome = await legacyOccurrence(actor, templateId, 'auto', { asOf, runId });
+          outcome = await autoStep(actor, templateId, asOf, runId, owners);
+          if (outcome.status === 'legacy') outcome = await legacyOccurrence(actor, templateId, 'auto', { asOf, runId, owners });
         } catch (err) {
           failed.push({ templateId, reason: 'INTERNAL' });
           log.error({
@@ -755,6 +852,7 @@ async function runDueInternal(actor: Actor, opts: { asOf?: string; runId?: strin
         }
         if (outcome.status === 'not_due' || outcome.status === 'legacy') break;
         handled += 1;
+        steps += 1;
         if (outcome.status === 'posted') postedNow += 1;
         if (outcome.status === 'skipped') fresh.add(outcome.occurrenceId);
       }
@@ -762,15 +860,21 @@ async function runDueInternal(actor: Actor, opts: { asOf?: string; runId?: strin
     }
   });
 
-  const more = handled >= limit && (await dueAutoSchedules(actor, asOf)).length > 0;
+  // A capped schedule waits for the next run, so it doesn't make `more`.
+  const more = handled >= limit && (await dueAutoSchedules(actor, asOf)).some((id) => !capped.has(id));
+  const reminders = await dueReminders(actor, asOf);
+  const open = await openSkipped(actor, fresh);
+  const cappedNow = await cappedEntries(actor, [...capped], asOf);
   const result: RunDueResult = {
     asOf, runId, more,
     posted: await postedInRun(actor, runId),
-    reminders: await dueReminders(actor, asOf),
-    skipped: await openSkipped(actor, fresh),
+    reminders: reminders.reminders,
+    remindersTruncated: reminders.truncated,
+    skipped: [...open.items, ...cappedNow],
+    skippedTotal: open.total + cappedNow.length,
     failed,
   };
-  return { result, postedNow };
+  return { result, postedNow, handled };
 }
 
 /** GET /recurring/attention: due reminders and open skipped dates; changes nothing. */
@@ -778,7 +882,12 @@ export async function attention(actor: Actor, asOf?: string) {
   const { today, tomorrow } = await currentDate(db);
   const date = asOf ?? today;
   if (date > tomorrow) throw AppError.badRequest('asOf can’t be later than tomorrow.', 'RUN_DUE_FUTURE');
-  return { asOf: date, reminders: await dueReminders(actor, date), skipped: await openSkipped(actor, new Set()) };
+  const reminders = await dueReminders(actor, date);
+  const open = await openSkipped(actor, new Set());
+  return {
+    asOf: date, reminders: reminders.reminders, remindersTruncated: reminders.truncated,
+    skipped: open.items, skippedTotal: open.total,
+  };
 }
 
 // ── Compatibility: web "Post now" and the server tick ─────────────
@@ -832,13 +941,18 @@ export async function processAllDueSchedules(): Promise<{ processed: number; tot
   `);
   let processed = 0;
   let total = 0;
+  // Global bound per tick: the rest stays due for the next tick.
+  let budget = SERVER_TICK_CAP;
   for (const row of res.rows as Array<{ tenant_id: string; company_id: string | null; n: number }>) {
     total += Number(row.n);
+    if (budget <= 0) continue;
     const actor: Actor = { tenantId: row.tenant_id, companyId: row.company_id };
+    const owners: OwnerPermissionCache = new Map();
     try {
-      for (let i = 0; i < 50; i++) {
-        const { result, postedNow } = await runDueInternal(actor, { asOf: today, limit: 500 });
+      for (let i = 0; i < 50 && budget > 0; i++) {
+        const { result, postedNow, handled } = await runDueInternal(actor, { asOf: today, limit: Math.min(500, budget) }, owners);
         processed += postedNow;
+        budget -= handled;
         if (!result.more) break;
       }
     } catch (err) {

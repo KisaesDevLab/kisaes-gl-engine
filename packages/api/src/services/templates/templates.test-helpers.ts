@@ -25,6 +25,12 @@ import { transactionsRouter } from '../../routes/transactions.routes.js';
 import { checksRouter } from '../../routes/checks.routes.js';
 import { errorHandler } from '../../middleware/error-handler.js';
 import * as authService from '../auth.service.js';
+import { __scheduleClock } from './templates.service.js';
+
+// The fixtures use fixed 2026 dates; pin "today" for the auto-schedule
+// backdate check (AUTO_BACKDATE_MAX_DAYS) so they stay valid as time passes.
+export const PINNED_TODAY = '2026-07-01';
+__scheduleClock.today = PINNED_TODAY;
 
 /** Parsed JSON body (loosely typed on purpose, like JSON.parse). */
 export interface Res { status: number; json: ReturnType<typeof JSON.parse> }

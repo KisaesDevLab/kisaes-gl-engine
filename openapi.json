@@ -40462,6 +40462,7 @@
     },
     "/api/v1/recurring/attention": {
       "get": {
+        "description": "Response `{asOf, reminders, remindersTruncated, skipped, skippedTotal}` with the run-due shapes and bounds.",
         "operationId": "get_api_v1_recurring_attention",
         "parameters": [
           {
@@ -40495,7 +40496,7 @@
     },
     "/api/v1/recurring/run-due": {
       "post": {
-        "description": "Response `{asOf, runId, more, posted:[{templateId,templateName,kind,clientForm,occurrenceDate,transactionId,total}], reminders:[{templateId,templateName,kind,clientForm,dueDates,dueCount,total}], skipped:[{templateId,templateName,kind,clientForm,occurrenceDate,reason,new}], failed:[{templateId,reason}]}`. `posted` includes earlier posts with the same runId. asOf later than tomorrow: 400 RUN_DUE_FUTURE.",
+        "description": "Response `{asOf, runId, more, posted:[{templateId,templateName,kind,clientForm,occurrenceDate,transactionId,total}], reminders:[{templateId,templateName,kind,clientForm,dueDates,dueCount,truncated,total}], remindersTruncated, skipped:[{templateId,templateName,kind,clientForm,occurrenceDate,reason,new}], skippedTotal, failed:[{templateId,reason}]}`. `posted` includes earlier posts with the same runId. A run posts or skips at most 31 dates per schedule; a schedule with more due is listed in `skipped` with reason CATCH_UP_CAPPED (its next due date; nothing recorded, the next run continues) and does not set `more`. A template posts only while its owner (last editor, else creator) holds write access to its kind, else the date is skipped with reason PERMISSION. `skipped` lists at most 200 open dates (oldest first) plus the capped schedules; `skippedTotal` counts them all. Reminders: at most 500 schedules (`remindersTruncated`) and 400 due dates each (`truncated`). asOf later than tomorrow: 400 RUN_DUE_FUTURE.",
         "operationId": "post_api_v1_recurring_run_due",
         "requestBody": {
           "content": {
@@ -63274,7 +63275,7 @@
         ]
       },
       "post": {
-        "description": "The draft is the create body of the kind minus the date and numbers; amounts are decimal strings. 400 TEMPLATE_FIELD_NOT_ALLOWED (details.field), TEMPLATE_DEPOSIT_GROUPING, TEMPLATE_AUTO_UNSUPPORTED, VALIDATION_ERROR; 409 TEMPLATE_NAME_TAKEN.",
+        "description": "The draft is the create body of the kind minus the date and numbers; amounts are decimal strings. Needs write access to the kind (check: checks; expense, transfer, journal_entry: transactions; deposit: banking; daily_sales: daily_sales), else 403 PERMISSION_DENIED; the creator owns the auto runs. An auto schedule whose nextDate is more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate, details.earliest). 400 TEMPLATE_FIELD_NOT_ALLOWED (details.field), TEMPLATE_DEPOSIT_GROUPING, TEMPLATE_AUTO_UNSUPPORTED, VALIDATION_ERROR; 409 TEMPLATE_NAME_TAKEN.",
         "operationId": "post_api_v1_templates",
         "requestBody": {
           "content": {
@@ -63428,7 +63429,7 @@
     },
     "/api/v1/templates/from-transaction": {
       "post": {
-        "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company.",
+        "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company or a transaction without a company.",
         "operationId": "post_api_v1_templates_from_transaction",
         "requestBody": {
           "content": {
@@ -63782,12 +63783,13 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Get a template with its draft and schedule (templates-v1)",
+        "summary": "Get a template with its draft and schedule (templates-v1); needs read access to the kind, else 403 PERMISSION_DENIED",
         "tags": [
           "templates"
         ]
       },
       "put": {
+        "description": "Needs write access to the kind, else 403 PERMISSION_DENIED; the editor becomes the owner of the auto runs. Setting, moving or switching to an auto nextDate more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate).",
         "operationId": "put_api_v1_templates_by_id",
         "parameters": [
           {
@@ -63943,7 +63945,7 @@
     },
     "/api/v1/templates/{id}/draft": {
       "get": {
-        "description": "Response `{kind, clientForm, draft, warnings:[{field, code: ACCOUNT_INACTIVE|CONTACT_INACTIVE|TAG_INACTIVE|NOT_FOUND, id}]}`; a missing reference is nulled in the draft.",
+        "description": "Response `{kind, clientForm, draft, warnings:[{field, code: ACCOUNT_INACTIVE|CONTACT_INACTIVE|TAG_INACTIVE|NOT_FOUND, id}]}`; a missing reference is nulled in the draft. Needs read access to the kind, else 403 PERMISSION_DENIED.",
         "operationId": "get_api_v1_templates_by_id_draft",
         "parameters": [
           {
@@ -63977,7 +63979,7 @@
     },
     "/api/v1/templates/{id}/enter": {
       "post": {
-        "description": "occurrenceDate defaults to the schedule’s next date (today without a schedule); the next date (even early) or an open skipped date only, else 400 OCCURRENCE_NOT_DUE; a date already done: 409 OCCURRENCE_TAKEN. Response 201 `{transaction, occurrence}`.",
+        "description": "occurrenceDate defaults to the schedule’s next date (today without a schedule); the next date (even early) or an open skipped date only, else 400 OCCURRENCE_NOT_DUE; a date already done: 409 OCCURRENCE_TAKEN; without write access to the kind: 403 PERMISSION_DENIED. Response 201 `{transaction, occurrence}`.",
         "operationId": "post_api_v1_templates_by_id_enter",
         "parameters": [
           {
@@ -64028,7 +64030,7 @@
     },
     "/api/v1/templates/{id}/occurrences/{date}/resolve": {
       "post": {
-        "description": "400 OCCURRENCE_RESOLVE_INVALID (not posted, other company, other kind, already linked); 409 OCCURRENCE_TAKEN.",
+        "description": "The transaction must be posted, of the template’s company and kind, dated the occurrence date and not linked yet, else 400 OCCURRENCE_RESOLVE_INVALID; 409 OCCURRENCE_TAKEN; without write access to the kind: 403 PERMISSION_DENIED. The transaction is marked as made from the template (audited) unless it is in a closed period, where it is linked but left unchanged.",
         "operationId": "post_api_v1_templates_by_id_occurrences_by_date_resolve",
         "parameters": [
           {

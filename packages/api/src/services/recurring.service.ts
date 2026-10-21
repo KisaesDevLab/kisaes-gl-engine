@@ -171,6 +171,12 @@ export async function update(tenantId: string, id: string, input: {
       );
     }
     if (!updated) throw AppError.notFound('Recurring schedule not found');
+    // Whoever changes the schedule (mode, cadence) owns its auto runs: they
+    // post only while this user holds the kind's permission (templates/permissions.ts).
+    if (userId && updated.templateId) {
+      await tx.update(templateTransactions).set({ updatedBy: userId })
+        .where(and(eq(templateTransactions.tenantId, tenantId), eq(templateTransactions.id, updated.templateId)));
+    }
     await auditLog(tenantId, 'update', 'recurring_schedule', updated.id, before, updated, userId, tx);
     return updated;
   });

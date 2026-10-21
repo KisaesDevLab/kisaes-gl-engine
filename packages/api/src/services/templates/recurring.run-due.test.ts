@@ -155,7 +155,7 @@ describe('run-due: exactly once, month-end anchoring, provenance', () => {
     expect(r.json.posted).toEqual([]);
     expect(r.json.reminders).toEqual([{
       templateId: t.id, templateName: 'Rent', kind: 'transfer', clientForm: null,
-      dueDates: ['2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30'], dueCount: 4, total: '49.0000',
+      dueDates: ['2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30'], dueCount: 4, truncated: false, total: '49.0000',
     }]);
     expect((await schedOf(t.id)).nextOccurrence).toBe('2026-01-31');
     expect(await txnsOf()).toHaveLength(0);

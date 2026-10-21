@@ -39,6 +39,15 @@ export type ScheduleRow = typeof recurringSchedules.$inferSelect;
 /** Minutes after which a claim the legacy path never finished is shown as NEEDS_CHECK. */
 export const CLAIM_STALE_MINUTES = 10;
 
+/** An auto schedule's next date may be at most this many days before today (security review M2). */
+export const AUTO_BACKDATE_MAX_DAYS = 366;
+
+/**
+ * Test clock for the backdate check: tests use fixed 2026 dates, so they pin
+ * "today". Only honoured when NODE_ENV is 'test'; production uses CURRENT_DATE.
+ */
+export const __scheduleClock: { today?: string } = {};
+
 // ── Errors ─────────────────────────────────────────────────────────
 
 function nameTaken(): AppError {
@@ -233,6 +242,14 @@ export async function getTemplate(tenantId: string, companyId: string, id: strin
   return t!;
 }
 
+/** The live template of the company (no lock), for the route's permission check; 404 otherwise. */
+export async function templateRowForAccess(tenantId: string, companyId: string, id: string): Promise<TemplateRow> {
+  const [row] = await db.select().from(templateTransactions)
+    .where(and(scope(tenantId, companyId), eq(templateTransactions.id, id), isNull(templateTransactions.deletedAt))).limit(1);
+  if (!row) throw templateNotFound();
+  return row;
+}
+
 /** Draft for "Use" (opens the normal form): missing references nulled and listed. Posts nothing. */
 export async function getDraftForUse(tenantId: string, companyId: string, id: string) {
   const [row] = await db.select().from(templateTransactions)
@@ -307,6 +324,24 @@ export async function writeSchedule(
     throw AppError.badRequest('The end date must be on or after the next date', 'VALIDATION_ERROR');
   }
   const mode = input.mode === 'auto' ? 'auto' : 'reminder';
+  // An auto schedule never starts a catch-up of more than a year: a next
+  // date more than AUTO_BACKDATE_MAX_DAYS before today is refused when it is
+  // set, moved or switched to auto (an unchanged backlog stays editable).
+  const setsAutoDate = mode === 'auto'
+    && (!existing || existing.archivedAt !== null || existing.mode !== 'auto' || existing.nextOccurrence !== input.nextDate);
+  if (setsAutoDate) {
+    const pinned = process.env['NODE_ENV'] === 'test' ? __scheduleClock.today : undefined;
+    const r = await tx.execute(pinned
+      ? sql`SELECT (${pinned}::date - ${AUTO_BACKDATE_MAX_DAYS}::int)::text AS earliest`
+      : sql`SELECT (CURRENT_DATE - ${AUTO_BACKDATE_MAX_DAYS}::int)::text AS earliest`);
+    const earliest = (r.rows as Array<{ earliest: string }>)[0]!.earliest;
+    if (input.nextDate < earliest) {
+      throw new AppError(400,
+        `An automatic schedule can't start more than ${AUTO_BACKDATE_MAX_DAYS} days ago. Choose a later next date, or use a reminder.`,
+        'VALIDATION_ERROR', { field: 'schedule.nextDate', earliest },
+      );
+    }
+  }
   const fields = {
     name: tpl.name,
     frequency: input.frequency,
@@ -430,6 +465,8 @@ export async function updateTemplate(tenantId: string, companyId: string, userId
       }
       const patch: Partial<typeof templateTransactions.$inferInsert> = {
         version: tpl.version + 1, updatedAt: new Date(), kind,
+        // The last editor owns the template's auto runs (permissions.ts).
+        ...(userId ? { updatedBy: userId } : {}),
       };
       if (td) {
         await assertDraftRefsInScope(tx, tenantId, companyId, td);
