@@ -34,6 +34,15 @@ function assertReverseOn(input: CreateJournalEntryInput) {
 }
 
 /**
+ * arApNames (default true): enforce the A/R / A/P name rules below. The
+ * entry points that post a JE the owner typed (POST / PUT /transactions,
+ * API v2, MCP) keep the default; system and bulk posters whose input has no
+ * name column (accrual schedules, the batch JE import) pass false and keep
+ * their earlier behavior. Line contacts are always scope-checked.
+ */
+export interface JournalEntryOptions { arApNames?: boolean }
+
+/**
  * Journal entry names (U-58, Q-206):
  *   - every line contactId belongs to the tenant and the company scope
  *     (400 VALIDATION_ERROR);
@@ -46,12 +55,14 @@ export async function assertJournalEntryNames(
   tenantId: string,
   companyId: string | null | undefined,
   lines: ReadonlyArray<{ accountId: string; contactId?: string | null }>,
+  opts: JournalEntryOptions = {},
 ): Promise<void> {
   await assertContactsInScope(
     executor, tenantId, companyId,
     lines.map((l) => l.contactId).filter((v): v is string => !!v),
     'One or more line names do not belong to this company',
   );
+  if (opts.arApNames === false) return;
   const accountIds = [...new Set(lines.map((l) => l.accountId))];
   if (accountIds.length === 0) return;
   const control = await executor.select({ id: accounts.id }).from(accounts).where(and(
@@ -96,11 +107,13 @@ async function withReversal(
   return { ...header, lines, reversalTransactionId: reversal?.id ?? null, reverseOn: reversal?.txnDate ?? null };
 }
 
-export async function createJournalEntry(tenantId: string, input: CreateJournalEntryInput, userId?: string, companyId?: string) {
+export async function createJournalEntry(
+  tenantId: string, input: CreateJournalEntryInput, userId?: string, companyId?: string, opts: JournalEntryOptions = {},
+) {
   assertReverseOn(input);
   const payload = buildJournalEntryPayload(input);
   return db.transaction(async (tx) => {
-    await assertJournalEntryNames(tx, tenantId, companyId, payload.lines);
+    await assertJournalEntryNames(tx, tenantId, companyId, payload.lines, opts);
     const posted = await ledger.postTransaction(tenantId, payload, userId, companyId, tx);
     return withReversal(tx, tenantId, posted, input.reverseOn, userId, companyId);
   });

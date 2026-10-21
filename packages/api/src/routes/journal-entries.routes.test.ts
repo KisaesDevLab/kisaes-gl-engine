@@ -32,6 +32,7 @@ import { journalEntriesRouter } from './journal-entries.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import * as ledger from '../services/ledger.service.js';
+import * as journalEntryService from '../services/journal-entry.service.js';
 import { hashClosingPassword } from '../services/closing-password.service.js';
 
 let server: Server | null = null;
@@ -190,6 +191,21 @@ describe('journal entry names (U-58)', () => {
     ]));
     expect(plain.status).toBe(201);
     expect(await db.select().from(transactions).where(eq(transactions.tenantId, c.tenantId))).toHaveLength(1);
+  });
+
+  it('system and bulk posters can opt out of the A/R / A/P name rule, not the scope check', async () => {
+    const lines = [
+      { accountId: c.expense, debit: '10', credit: '0' },
+      { accountId: c.ap, debit: '0', credit: '10' },
+    ];
+    await expect(journalEntryService.createJournalEntry(c.tenantId, { txnDate: '2026-07-31', lines }, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'JE_AR_AP_NAME_REQUIRED' });
+    const ok = await journalEntryService.createJournalEntry(c.tenantId, { txnDate: '2026-07-31', lines }, c.userId, c.companyId, { arApNames: false });
+    expect(ok.id).toBeDefined();
+    const other = await makeCompany('opt');
+    await expect(journalEntryService.createJournalEntry(c.tenantId, {
+      txnDate: '2026-07-31', lines: [lines[0]!, { ...lines[1]!, contactId: other.vendor }],
+    }, c.userId, c.companyId, { arApNames: false })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
   it('refuses another tenant’s or another company’s contact', async () => {

@@ -238,7 +238,9 @@ export async function postEntry(tenantId: string, entryId: string, userId?: stri
         memo: `Accrual: ${memo}`,
         basis: 'both',
         lines: journalLines(row.s.kind, row.s.balanceAccountId, row.s.recognitionAccountId, String(row.e.amount), memo),
-      }, userId, row.s.companyId ?? undefined);
+        // Accrual schedules carry no line names: the A/R / A/P name rule
+        // (U-58) is for entries the owner types.
+      }, userId, row.s.companyId ?? undefined, { arApNames: false });
       transactionId = txn.id;
     } catch (err) {
       await db.update(accrualEntries).set({ status: 'draft', postedBy: null, postedAt: null })
