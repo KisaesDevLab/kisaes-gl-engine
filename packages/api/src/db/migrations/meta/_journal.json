@@ -1576,6 +1576,13 @@
       "when": 1784800007380,
       "tag": "0224_journal_entry_adjusting_reversing",
       "breakpoints": true
+    },
+    {
+      "idx": 225,
+      "version": "7",
+      "when": 1784800008380,
+      "tag": "0225_templates",
+      "breakpoints": true
     }
   ]
 }

@@ -120,7 +120,8 @@ describe('recurring copy path (U-64)', () => {
     const txn = await recurring.postNext(tenantId, sched!.id) as { id: string };
 
     const [header] = await db.select().from(transactions).where(eq(transactions.id, txn.id));
-    expect(header).toMatchObject({ recurringScheduleId: sched!.id, source: 'recurring', sourceId: sched!.id, txnDate: '2026-02-05', companyId });
+    // Since 0225 every recurring posting names its template (U-62 provenance).
+    expect(header).toMatchObject({ recurringScheduleId: sched!.id, source: 'recurring', sourceId: sched!.templateId, txnDate: '2026-02-05', companyId });
     const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, txn.id)).orderBy(journalLines.lineOrder);
     expect(lines.map((l) => [l.contactId, l.isBillable, l.billedStatus])).toEqual([
       [customerId, true, 'unbilled'],

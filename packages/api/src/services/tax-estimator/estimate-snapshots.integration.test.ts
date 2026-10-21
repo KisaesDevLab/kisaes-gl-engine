@@ -289,8 +289,21 @@ describe('audit hooks (auditLog with the executor)', () => {
     const firm = tenantRows.filter((r) => r.entityType === 'tax_est_firm_settings');
     expect(firm.some((r) => JSON.stringify(r.afterData ?? '').includes('Changed text.') && JSON.stringify(r.beforeData ?? '').includes(FIRM_DISCLAIMER))).toBe(true);
     // D9: no prior-year federal / state figure is ever written to the audit trail.
-    const all = JSON.stringify(tenantRows);
-    for (const secret of ['31500', '182000', '45000', '7050']) expect(all).not.toContain(secret);
+    // Checked on the audit VALUES only: ids and timestamps are left out, a
+    // UUID's hex digits or a time can contain "7050" by chance.
+    const values: string[] = [];
+    const walk = (v: unknown): void => {
+      if (v === null || v === undefined) return;
+      if (typeof v === 'object') { for (const x of Object.values(v as Record<string, unknown>)) walk(x); return; }
+      const str = String(v);
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str) || /^\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}:?\d{2})?$/.test(str)) return;
+      values.push(str);
+    };
+    for (const r of tenantRows) { walk(r.afterData); walk(r.beforeData); }
+    expect(values.length).toBeGreaterThan(0);
+    for (const secret of ['31500', '182000', '45000', '7050']) {
+      expect(values.filter((v) => v.includes(secret)), secret).toEqual([]);
+    }
     const overrides = await db.select({ entityType: auditLog.entityType }).from(auditLog)
       .where(and(eq(auditLog.tenantId, '00000000-0000-0000-0000-000000000000'), eq(auditLog.userId, USER), eq(auditLog.action, 'override')));
     expect(new Set(overrides.map((o) => o.entityType))).toEqual(new Set(['tax_parameter', 'tax_state_rule']));

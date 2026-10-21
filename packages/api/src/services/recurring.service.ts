@@ -2,11 +2,13 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, lte, sql } from 'drizzle-orm';
+import { eq, and, sql, getTableColumns } from 'drizzle-orm';
+import { nextRecurrenceDate } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
-import { recurringSchedules, transactions, journalLines, accounts } from '../db/schema/index.js';
+import { recurringSchedules, accounts, templateTransactions } from '../db/schema/index.js';
+import { templateForSchedule } from './templates/templates.service.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
@@ -16,52 +18,43 @@ import { incCounter, recordSchedulerTick } from '../utils/metrics.js';
 import { log } from '../utils/logger.js';
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
 
-export function calculateNextOccurrence(current: string, frequency: string, interval: number): string {
-  // Date arithmetic uses UTC getters/setters so the schedule advances by
-  // calendar days/months in UTC regardless of the container's local TZ.
-  // Without this, a container in non-UTC TZ would drift schedules by up
-  // to 24h every time it crossed a DST boundary or a tenant in a
-  // different TZ rolled the date.
-  const d = new Date(current);
-  switch (frequency) {
-    case 'daily': d.setUTCDate(d.getUTCDate() + interval); break;
-    case 'weekly': d.setUTCDate(d.getUTCDate() + 7 * interval); break;
-    // Bi-weekly = every two weeks. `interval` still multiplies (interval 2 =
-    // every 4 weeks) so it composes like the other cadences.
-    case 'biweekly': d.setUTCDate(d.getUTCDate() + 14 * interval); break;
-    // Semi-monthly = twice a month on the 1st and the 15th (the standard
-    // interpretation). It ignores `interval` — it's inherently twice monthly.
-    // From any date: on/after the 15th → the 1st of next month; otherwise the
-    // 15th of the current month. Using the 1st/15th anchors keeps every date
-    // valid (no month-length overflow) and converges after the first posting,
-    // which always lands on the user-chosen start date.
-    case 'semimonthly':
-      if (d.getUTCDate() >= 15) d.setUTCMonth(d.getUTCMonth() + 1, 1);
-      else d.setUTCDate(15);
-      break;
-    case 'monthly': d.setUTCMonth(d.getUTCMonth() + interval); break;
-    case 'quarterly': d.setUTCMonth(d.getUTCMonth() + 3 * interval); break;
-    case 'annually': d.setUTCFullYear(d.getUTCFullYear() + interval); break;
-    default: d.setUTCMonth(d.getUTCMonth() + interval);
-  }
-  return d.toISOString().split('T')[0]!;
+/**
+ * Next date after `current` (U-63: shared nextRecurrenceDate). Monthly,
+ * quarterly and annual cadences count from `anchor` (default `current`) and
+ * clamp to the month's last day: Jan 31 -> Feb 28 -> Mar 31.
+ */
+export function calculateNextOccurrence(current: string, frequency: string, interval: number, anchor?: string | null): string {
+  return nextRecurrenceDate(current, frequency, interval, anchor ?? current);
 }
 
+/**
+ * A schedule made from a posted transaction (web "Make recurring", API v2).
+ * Since 0225 every schedule posts a template: the transaction is snapshotted
+ * into one (a draft when it reads as a check, expense, deposit, transfer or
+ * journal entry, else 'legacy'), then the schedule is created for it. The
+ * response row is the schedule plus templateId and templateName.
+ */
 export async function create(tenantId: string, templateTransactionId: string, schedule: {
   frequency: string; intervalValue?: number; mode?: string; startDate: string; endDate?: string | null; name?: string | null;
 }, userId?: string) {
-  const [sched] = await db.insert(recurringSchedules).values({
-    tenantId,
-    name: schedule.name?.trim() || null,
-    templateTransactionId,
-    frequency: schedule.frequency,
-    intervalValue: schedule.intervalValue || 1,
-    mode: schedule.mode || 'auto',
-    startDate: schedule.startDate,
-    endDate: schedule.endDate || null,
-    nextOccurrence: schedule.startDate,
-    isActive: true,
-  }).returning();
+  const sched = await db.transaction(async (tx) => {
+    const tpl = await templateForSchedule(tx, tenantId, templateTransactionId, schedule.name ?? null, userId);
+    const [row] = await tx.insert(recurringSchedules).values({
+      tenantId,
+      companyId: tpl.companyId,
+      name: schedule.name?.trim() || null,
+      templateTransactionId,
+      templateId: tpl.id,
+      frequency: schedule.frequency,
+      intervalValue: schedule.intervalValue || 1,
+      mode: schedule.mode || 'auto',
+      startDate: schedule.startDate,
+      endDate: schedule.endDate || null,
+      nextOccurrence: schedule.startDate,
+      isActive: true,
+    }).returning();
+    return row ? { ...row, templateName: tpl.name } : undefined;
+  });
 
   if (sched) await auditLog(tenantId, 'create', 'recurring_schedule', sched.id, null, sched, userId);
   return sched;
@@ -101,7 +94,15 @@ export async function list(tenantId: string, opts: {
   const offset = Math.max(opts.offset ?? 0, 0);
 
   const dir = (opts.sortDir ?? 'asc') === 'asc' ? sql`ASC` : sql`DESC`;
-  const data = await db.select().from(recurringSchedules).where(where)
+  // templateName (0225): the template the schedule posts — the only label a
+  // desktop-made schedule (templateTransactionId NULL) has.
+  const data = await db.select({ ...getTableColumns(recurringSchedules), templateName: templateTransactions.name })
+    .from(recurringSchedules)
+    .leftJoin(templateTransactions, and(
+      eq(templateTransactions.id, recurringSchedules.templateId),
+      eq(templateTransactions.tenantId, recurringSchedules.tenantId),
+    ))
+    .where(where)
     .orderBy(
       sql`${recurringOrderExpr(opts.sortBy ?? 'nextOccurrence')} ${dir} NULLS LAST`,
       sql`${recurringSchedules.nextOccurrence} ASC`,
@@ -170,6 +171,12 @@ export async function update(tenantId: string, id: string, input: {
       );
     }
     if (!updated) throw AppError.notFound('Recurring schedule not found');
+    // Whoever changes the schedule (mode, cadence) owns its auto runs: they
+    // post only while this user holds the kind's permission (templates/permissions.ts).
+    if (userId && updated.templateId) {
+      await tx.update(templateTransactions).set({ updatedBy: userId })
+        .where(and(eq(templateTransactions.tenantId, tenantId), eq(templateTransactions.id, updated.templateId)));
+    }
     await auditLog(tenantId, 'update', 'recurring_schedule', updated.id, before, updated, userId, tx);
     return updated;
   });
@@ -211,50 +218,20 @@ export async function unarchive(tenantId: string, id: string, userId?: string) {
   return updated;
 }
 
-export async function postNext(tenantId: string, scheduleId: string) {
-  const sched = await getById(tenantId, scheduleId);
-  const claimedOccurrence = sched.nextOccurrence;
-  const nextOcc = calculateNextOccurrence(sched.nextOccurrence, sched.frequency, sched.intervalValue ?? 1);
-  const isExpired = sched.endDate && new Date(nextOcc) > new Date(sched.endDate);
-
-  // Claim this occurrence atomically. The UPDATE only succeeds if the
-  // schedule is still on the occurrence we read above — if another
-  // worker (or a manual trigger racing with the scheduler) already
-  // advanced it, our UPDATE affects zero rows and we bail without
-  // posting a duplicate transaction. This is the conditional-UPDATE
-  // claim pattern from the prior audit, applied to recurring jobs.
-  //
-  // We update next_occurrence and last_posted_at here BEFORE posting
-  // the ledger transaction, so any failure to post leaves the schedule
-  // slightly ahead of where it "should" be — the user can manually
-  // back it up or skip the occurrence. That's less bad than the
-  // alternative, which is double-posting after a retry.
-  const [claimed] = await db.update(recurringSchedules)
-    .set({
-      nextOccurrence: nextOcc,
-      lastPostedAt: new Date(),
-      isActive: !isExpired,
-      updatedAt: new Date(),
-    })
-    .where(and(
-      eq(recurringSchedules.tenantId, tenantId),
-      eq(recurringSchedules.id, scheduleId),
-      eq(recurringSchedules.nextOccurrence, claimedOccurrence),
-      eq(recurringSchedules.isActive, true),
-    ))
-    .returning();
-
-  if (!claimed) {
-    // Another worker already advanced this schedule, or it was deactivated.
-    throw AppError.conflict(
-      `Recurring schedule ${scheduleId} is not on occurrence ${claimedOccurrence} ` +
-      `(either already posted by another worker, or deactivated).`,
-      'RECURRING_ALREADY_CLAIMED',
-    );
-  }
-
+/**
+ * The pre-0225 clone path, kept for 'legacy' templates whose source
+ * transaction templates can't hold (invoice, bill, cash sale...): reads the
+ * source transaction and posts a copy dated `sched.nextOccurrence` through
+ * the type's own service. It posts in its own transaction(s); the runner
+ * (templates/occurrences.service.ts) claims the occurrence before and
+ * records it after, so a crash in between shows as NEEDS_CHECK instead of
+ * being lost or posted twice.
+ */
+export async function postLegacyClone(
+  tenantId: string,
+  sched: { id: string; templateTransactionId: string; nextOccurrence: string },
+) {
   let txn;
-  try {
   // Get template transaction
   const template = await ledger.getTransaction(tenantId, sched.templateTransactionId);
 
@@ -366,63 +343,28 @@ export async function postNext(tenantId: string, scheduleId: string) {
     }, undefined, template.companyId || undefined);
   }
 
-  } catch (err) {
-    // The claim advanced next_occurrence BEFORE posting (double-post
-    // protection). If the post then fails — most commonly a lock date
-    // covering the occurrence — the occurrence used to be silently lost
-    // forever. Since nothing was posted, roll the claim back (guarded on
-    // next_occurrence still being our advanced value so we never stomp a
-    // concurrent manual fix) and rethrow; the next scheduler cycle
-    // retries, and the failure stays visible in processAllDue's log.
-    try {
-      await db.update(recurringSchedules)
-        .set({ nextOccurrence: claimedOccurrence, isActive: true, updatedAt: new Date() })
-        .where(and(
-          eq(recurringSchedules.tenantId, tenantId),
-          eq(recurringSchedules.id, scheduleId),
-          eq(recurringSchedules.nextOccurrence, nextOcc),
-        ));
-    } catch (revertErr) {
-      console.error(`[Recurring] Failed to roll back claim for schedule ${scheduleId}:`, revertErr);
-    }
-    throw err;
-  }
-
-  // Schedule was already claimed + advanced at the top of this function.
-  // `claimed` contains the post-claim row, unused here but referenced
-  // so `void` keeps TypeScript quiet about the unused binding.
-  void claimed;
   return txn;
 }
 
+/**
+ * Post the schedule's next occurrence now (web "Post now", API v2, MCP,
+ * bank-feed match-apply). Same function as the catch-up runner, so the
+ * occurrence is claimed, posted and advanced exactly once (U-63).
+ */
+export async function postNext(tenantId: string, scheduleId: string) {
+  const sched = await getById(tenantId, scheduleId);
+  const { postScheduleNow } = await import('./templates/occurrences.service.js');
+  return postScheduleNow(tenantId, sched);
+}
+
+/**
+ * Server hourly tick: the catch-up run (runDue) for every tenant and company
+ * with an auto schedule due today — the same idempotent function the
+ * desktop app calls through POST /recurring/run-due (U-63).
+ */
 export async function processAllDue() {
-  // Use Postgres CURRENT_DATE rather than a Node-side toISOString() — the
-  // API / worker container runs in UTC, but the recurring schedules are
-  // compared against txn_date (a DATE column that Postgres treats as a
-  // calendar day in the session TZ). CURRENT_DATE stays consistent with
-  // however Postgres is configured. Using it avoids the off-by-one that
-  // toISOString() introduces near UTC midnight.
-  const todayRow = await db.execute(sql`SELECT CURRENT_DATE::text AS today`);
-  const today = (todayRow.rows as { today: string }[])[0]?.today ?? new Date().toISOString().split('T')[0]!;
-
-  const dueSchedules = await db.select().from(recurringSchedules)
-    .where(and(
-      eq(recurringSchedules.isActive, true),
-      eq(recurringSchedules.mode, 'auto'),
-      lte(recurringSchedules.nextOccurrence, today),
-    ));
-
-  let processed = 0;
-  for (const sched of dueSchedules) {
-    try {
-      await postNext(sched.tenantId, sched.id);
-      processed++;
-    } catch (err) {
-      console.error(`[Recurring] Failed to post schedule ${sched.id}:`, err);
-    }
-  }
-
-  return { processed, total: dueSchedules.length };
+  const { processAllDueSchedules } = await import('./templates/occurrences.service.js');
+  return processAllDueSchedules();
 }
 
 // In-process scheduler. Auto-mode recurring schedules must post on their
@@ -445,6 +387,26 @@ async function pruneExpiredSessions(): Promise<{ pruned: number }> {
     .where(sql`${sessions.expiresAt} < NOW() - INTERVAL '1 day'`)
     .returning({ id: sessions.id });
   return { pruned: result.length };
+}
+
+/**
+ * Hourly session prune without the recurring tick (desktop: the app drives
+ * the recurring run through POST /recurring/run-due, U-63).
+ */
+export function startSessionPruneScheduler(): void {
+  const runPrune = async () => {
+    try {
+      const prune = await withSchedulerLock('session-prune', pruneExpiredSessions);
+      if (prune && prune.pruned > 0) {
+        log.info({ component: 'session-prune', event: 'pruned', count: prune.pruned });
+        incCounter('session_prune_total', 'Total expired sessions pruned', undefined, prune.pruned);
+      }
+    } catch (err: unknown) {
+      log.error({ component: 'session-prune', event: 'cycle_error', message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  setTimeout(() => { void runPrune(); }, RECURRING_INITIAL_DELAY_MS).unref();
+  setInterval(() => { void runPrune(); }, RECURRING_CHECK_INTERVAL_MS).unref();
 }
 
 export function startRecurringScheduler(): void {

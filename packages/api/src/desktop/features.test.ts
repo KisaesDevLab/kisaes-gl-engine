@@ -46,8 +46,8 @@ describe('schedulers', () => {
       'balanceValidation',
       'classificationStateBackfill',
       'fingerprint',
-      'recurring',
       'reportPackSweep',
+      'sessionPrune',
       'tagBackfill',
     ]);
   });

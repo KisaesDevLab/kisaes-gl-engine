@@ -8,6 +8,10 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as recurringService from '../services/recurring.service.js';
+import * as occurrences from '../services/templates/occurrences.service.js';
+import { companyContext } from '../middleware/company.js';
+import { describe } from '../middleware/describe.js';
+import { runDueSchema } from '@kis-books/shared';
 import { pickEnum } from '../utils/list-query.js';
 
 // Explicit field allowlists — the previous `{...req.body}` spread into
@@ -68,6 +72,28 @@ recurringRouter.put('/:id', validate(updateScheduleSchema), async (req, res) => 
 recurringRouter.delete('/:id', async (req, res) => {
   await recurringService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Deactivated' });
+});
+
+// The catch-up run (U-63, recurring-run-due-v1). Company-scoped. Not behind
+// lockContextMiddleware and the body is strict: a closingPassword is 400,
+// and the runner itself never opens a closed period (runWithoutOverride).
+recurringRouter.post('/run-due', companyContext, describe({
+  summary: 'Post every due auto template occurrence once (recurring-run-due-v1)',
+  description: 'Response `{asOf, runId, more, posted:[{templateId,templateName,kind,clientForm,occurrenceDate,transactionId,total}], reminders:[{templateId,templateName,kind,clientForm,dueDates,dueCount,truncated,total}], remindersTruncated, skipped:[{templateId,templateName,kind,clientForm,occurrenceDate,reason,new}], skippedTotal, failed:[{templateId,reason}]}`. `posted` includes earlier posts with the same runId. A run posts or skips at most 31 dates per schedule; a schedule with more due is listed in `skipped` with reason CATCH_UP_CAPPED (its next due date; nothing recorded, the next run continues) and does not set `more`. A template posts only while its owner (last editor, else creator) holds write access to its kind, else the date is skipped with reason PERMISSION. `skipped` lists at most 200 open dates (oldest first) plus the capped schedules; `skippedTotal` counts them all. Reminders: at most 500 schedules (`remindersTruncated`) and 400 due dates each (`truncated`). asOf later than tomorrow: 400 RUN_DUE_FUTURE.',
+}), validate(runDueSchema), async (req, res) => {
+  const result = await occurrences.runDue({ tenantId: req.tenantId, companyId: req.companyId, userId: req.userId }, req.body);
+  res.json(result);
+});
+
+const attentionQuery = z.object({ asOf: isoDate.optional() });
+
+recurringRouter.get('/attention', companyContext, describe({
+  summary: 'Due reminders and open skipped dates; changes nothing (recurring-run-due-v1)',
+  description: 'Response `{asOf, reminders, remindersTruncated, skipped, skippedTotal}` with the run-due shapes and bounds.',
+  query: attentionQuery,
+}), async (req, res) => {
+  const { asOf } = attentionQuery.parse(req.query);
+  res.json(await occurrences.attention({ tenantId: req.tenantId, companyId: req.companyId, userId: req.userId }, asOf));
 });
 
 recurringRouter.post('/:id/post-now', async (req, res) => {

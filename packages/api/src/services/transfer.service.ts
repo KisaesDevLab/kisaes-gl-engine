@@ -3,9 +3,10 @@
 // Free for small businesses; see LICENSE for terms.
 
 import type { CreateTransferInput } from '@kis-books/shared';
+import type { Tx } from '../db/index.js';
 import * as ledger from './ledger.service.js';
 
-function buildTransferPayload(input: CreateTransferInput) {
+export function buildTransferPayload(input: CreateTransferInput) {
   return {
     txnType: 'transfer' as const,
     txnDate: input.txnDate,
@@ -18,8 +19,11 @@ function buildTransferPayload(input: CreateTransferInput) {
   };
 }
 
-export async function createTransfer(tenantId: string, input: CreateTransferInput, userId?: string, companyId?: string) {
-  return ledger.postTransaction(tenantId, buildTransferPayload(input), userId, companyId);
+/** `outerTx` (templates, U-62): post inside the caller's transaction. */
+export async function createTransfer(
+  tenantId: string, input: CreateTransferInput, userId?: string, companyId?: string, outerTx?: Tx,
+) {
+  return ledger.postTransaction(tenantId, buildTransferPayload(input), userId, companyId, outerTx);
 }
 
 export async function updateTransfer(tenantId: string, txnId: string, input: CreateTransferInput, userId?: string, companyId?: string) {

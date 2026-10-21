@@ -65,7 +65,7 @@ interface SourceRef {
   lineOrder: number;
 }
 
-interface DepositPlan {
+export interface DepositPlan {
   payload: ledger.PostTransactionInput;
   sources: SourceRef[];
 }
@@ -84,7 +84,7 @@ function plainAmount(value: unknown, field: string): DecimalValue {
   }
 }
 
-function planDeposit(input: CreateDepositInput): DepositPlan {
+export function planDeposit(input: CreateDepositInput): DepositPlan {
   const sources: SourceRef[] = [];
   const seen = new Set<string>();
   let lineTotal = new Decimal(0);
@@ -170,7 +170,7 @@ async function systemAccountId(tx: Tx, tenantId: string, tag: string): Promise<s
 /** Control accounts cash back may not be taken into. */
 const CASH_BACK_REFUSED_TAGS = ['payments_clearing', 'accounts_receivable', 'accounts_payable', 'sales_tax_payable'];
 
-async function validateCashBackAccount(tx: Tx, tenantId: string, input: CreateDepositInput) {
+export async function validateCashBackAccount(tx: Tx, tenantId: string, input: CreateDepositInput) {
   if (!input.cashBack) return;
   const [acct] = await tx.select({ systemTag: accounts.systemTag }).from(accounts)
     .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, input.cashBack.accountId)))
@@ -367,18 +367,22 @@ export interface DepositResult {
   clearingWouldGoNegative: boolean;
 }
 
-/** Create, with the Payments Clearing warning (POST /transactions). */
+/**
+ * Create, with the Payments Clearing warning (POST /transactions).
+ * `outerTx` (templates, U-62): post inside the caller's transaction.
+ */
 export async function createDepositWithWarnings(
-  tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string,
+  tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string, outerTx?: Tx,
 ): Promise<DepositResult> {
   const plan = planDeposit(input);
-  return db.transaction(async (tx) => {
+  const post = async (tx: Tx): Promise<DepositResult> => {
     await validateCashBackAccount(tx, tenantId, input);
     await lockAndValidateSources(tx, tenantId, companyId, input, plan, null);
     const posted = await ledger.postTransaction(tenantId, plan.payload, userId, companyId, tx);
     await writeLinks(tx, tenantId, posted.id, plan, [], userId);
     return { transaction: posted, clearingWouldGoNegative: await clearingWentNegative(tx, tenantId, companyId, input) };
-  });
+  };
+  return outerTx ? post(outerTx) : db.transaction(post);
 }
 
 export async function createDeposit(tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string) {

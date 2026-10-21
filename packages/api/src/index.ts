@@ -11,7 +11,7 @@ import { env } from './config/env.js';
 import { pool } from './db/index.js';
 import { applyMigrations, MIGRATIONS_FOLDER } from './startup/migrations.js';
 import { startBackupScheduler } from './services/backup-scheduler.service.js';
-import { startRecurringScheduler } from './services/recurring.service.js';
+import { startRecurringScheduler, startSessionPruneScheduler } from './services/recurring.service.js';
 import { startFingerprintScheduler } from './services/db-fingerprint.service.js';
 import { startCloudflaredAlerter, stopCloudflaredAlerter } from './services/cloudflared/alert.service.js';
 import { startBackupVerifier, stopBackupVerifier } from './services/backup-verify.service.js';
@@ -313,7 +313,10 @@ async function start() {
     // Desktop mode starts only the schedulers in DESKTOP_SCHEDULERS
     // (desktop/features.ts); the server starts all of them.
     if (schedulerEnabled('backup')) startBackupScheduler();
+    // The recurring tick also prunes sessions; without it (desktop) the
+    // prune runs on its own.
     if (schedulerEnabled('recurring')) startRecurringScheduler();
+    else if (schedulerEnabled('sessionPrune')) startSessionPruneScheduler();
     if (schedulerEnabled('fingerprint')) startFingerprintScheduler();
     // The worker container (when present) also starts these two; the
     // Postgres advisory lock in each scheduler's cycle ensures only

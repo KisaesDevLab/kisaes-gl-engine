@@ -23,7 +23,7 @@ import {
 } from './format.js';
 import { ArchiveError } from './errors.js';
 import { buildPortabilityPlan, TYPE_CHANGES, type PortabilityPlan } from './plan.js';
-import { BACKFILL, COMPAT_BASELINE_SCHEMA_VERSION, DROPPED_COLUMNS, DROPPED_TABLES, checkSchemaCompatibility } from './compat.js';
+import { BACKFILL, COMPAT_BASELINE_SCHEMA_VERSION, DROPPED_COLUMNS, DROPPED_TABLES, RELAXED_COLUMNS, checkSchemaCompatibility } from './compat.js';
 
 const PASS = 'reader test passphrase 2026';
 let dir = '';
@@ -347,6 +347,7 @@ describe('schema compatibility (MT7, B8)', () => {
       ...Object.values(DROPPED_TABLES).map((d) => d.droppedIn),
       ...Object.values(DROPPED_COLUMNS).map((d) => d.droppedIn),
       ...Object.values(BACKFILL).map((d) => d.addedIn),
+      ...Object.values(RELAXED_COLUMNS).map((d) => d.relaxedIn),
     ]);
     const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql') && !f.endsWith('.rollback.sql'));
     const offenders: string[] = [];

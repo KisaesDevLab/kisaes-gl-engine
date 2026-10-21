@@ -3,12 +3,12 @@
 // Free for small businesses; see LICENSE for terms.
 
 import type { CreateExpenseInput, JournalLineInput } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type Tx } from '../db/index.js';
 import * as ledger from './ledger.service.js';
 import { assertLineContacts } from './line-contacts.service.js';
 import { exactAmount } from '../utils/money.js';
 
-function buildExpensePayload(input: CreateExpenseInput) {
+export function buildExpensePayload(input: CreateExpenseInput) {
   const expenseLines = input.lines && input.lines.length > 0
     ? input.lines
     : [{ expenseAccountId: input.expenseAccountId!, amount: input.amount!, description: input.memo }];
@@ -50,12 +50,16 @@ function buildExpensePayload(input: CreateExpenseInput) {
 
 // Line customers are checked on the posting's own transaction, in the
 // company scope (U-49) — the same snapshot the ledger write sees.
-export async function createExpense(tenantId: string, input: CreateExpenseInput, userId?: string, companyId?: string) {
+/** `outerTx` (templates, U-62): post inside the caller's transaction. */
+export async function createExpense(
+  tenantId: string, input: CreateExpenseInput, userId?: string, companyId?: string, outerTx?: Tx,
+) {
   const payload = buildExpensePayload(input);
-  return db.transaction(async (tx) => {
+  const post = async (tx: Tx) => {
     await assertLineContacts(tenantId, payload.lines, tx, companyId);
     return ledger.postTransaction(tenantId, payload, userId, companyId, tx);
-  });
+  };
+  return outerTx ? post(outerTx) : db.transaction(post);
 }
 
 export async function updateExpense(tenantId: string, txnId: string, input: CreateExpenseInput, userId?: string, companyId?: string) {

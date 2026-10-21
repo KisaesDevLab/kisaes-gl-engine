@@ -11,7 +11,7 @@
  * Migration policy note: a non-additive migration (marker
  * `-- migration-policy: non-additive-exception` or an `allow-non-additive_`
  * file name) newer than the E5 baseline must add its DROPPED_TABLES /
- * DROPPED_COLUMNS / TYPE_CHANGES / BACKFILL entry; compat.test.ts checks
+ * DROPPED_COLUMNS / TYPE_CHANGES / BACKFILL / RELAXED_COLUMNS entry; compat.test.ts checks
  * this against the migrations journal.
  */
 
@@ -34,6 +34,19 @@ export const DROPPED_COLUMNS: Record<string, { droppedIn: number }> = {};
  * default that older archives lack.
  */
 export const BACKFILL: Record<string, { addedIn: number; expression: string }> = {};
+
+/**
+ * `table.column` whose NOT NULL was dropped by migration `relaxedIn` (schema
+ * version after it). An older archive always carries a value, so nothing is
+ * done on import; the entry records the non-additive step for the policy.
+ * 0225 (templates, U-62): a schedule of a template made without posting has
+ * no source transaction. A schedule imported from an archive older than
+ * 0225 has no template_id; the runner adopts it on first use
+ * (templates.service adoptOrphanSchedules), as 0225 did.
+ */
+export const RELAXED_COLUMNS: Record<string, { relaxedIn: number }> = {
+  'recurring_schedules.template_transaction_id': { relaxedIn: 226 },
+};
 
 export interface TableCompat {
   table: string;

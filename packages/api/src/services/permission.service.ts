@@ -13,7 +13,8 @@ import {
   type SetUserPermissionsInput,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { permissionTemplates, userPermissions } from '../db/schema/index.js';
+import { permissionTemplates, userPermissions, users, userTenantAccess } from '../db/schema/index.js';
+import { isDesktop } from '../desktop/profile.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
 
@@ -187,4 +188,33 @@ export async function getEffectivePermissions(
     templateMap,
     overrides: row.overrides,
   });
+}
+
+/**
+ * The effective permissions a user holds in a tenant RIGHT NOW, without a
+ * request (background jobs acting for a user, e.g. a template's auto run).
+ * The role is derived as a token refresh derives it (auth.service
+ * refreshTokens): home tenant -> users.role (desktop: the workspace access
+ * row, else readonly); another tenant -> the active access row's role (a
+ * super admin without a row: owner). Null when the user is gone, inactive
+ * or has no access to the tenant.
+ */
+export async function getEffectivePermissionsForUser(tenantId: string, userId: string): Promise<EffectivePermissions | null> {
+  const [u] = await db.select({
+    tenantId: users.tenantId, role: users.role, isActive: users.isActive, userType: users.userType, isSuperAdmin: users.isSuperAdmin,
+  }).from(users).where(eq(users.id, userId)).limit(1);
+  if (!u || u.isActive === false) return null;
+  const superAdmin = u.isSuperAdmin === true;
+  const [access] = await db.select({ role: userTenantAccess.role, isActive: userTenantAccess.isActive }).from(userTenantAccess)
+    .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId))).limit(1);
+  let role: string | null;
+  if (u.tenantId === tenantId) {
+    role = isDesktop() ? (access?.isActive ? (access.role || 'readonly') : 'readonly') : u.role;
+  } else if (access?.isActive) {
+    role = access.role || u.role;
+  } else {
+    role = superAdmin ? 'owner' : null;
+  }
+  if (!role) return null;
+  return getEffectivePermissions(tenantId, userId, role, u.userType === 'client' ? 'client' : 'staff', superAdmin);
 }
