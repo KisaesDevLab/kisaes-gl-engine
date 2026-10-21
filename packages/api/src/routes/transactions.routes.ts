@@ -48,7 +48,11 @@ transactionsRouter.use(requireResource('transactions'));
 transactionsRouter.use(closingPasswordLimiter);
 transactionsRouter.use(lockContextMiddleware);
 
-transactionsRouter.get('/', async (req, res) => {
+transactionsRouter.get('/', describe({
+  summary: 'List transactions',
+  description: 'Rows carry `isAdjusting` and `reversesTransactionId` (je-adjusting-v1, je-reversing-v1); `adjusting=include|exclude|only` filters adjusting entries.',
+  query: transactionFiltersSchema,
+}), async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);
   const result = await ledger.listTransactions(req.tenantId, filters, req.companyId);
   res.json(result);
@@ -134,18 +138,22 @@ transactionsRouter.post('/bulk-update', validate(bulkUpdateTransactionsSchema), 
 });
 
 // OpenAPI only: the request bodies this route takes for the register
-// entry types ClientLedger posts (deposit, transfer, expense). Validation
-// stays per txnType in the handler; other types are documented elsewhere.
+// entry types ClientLedger posts (deposit, transfer, expense, journal
+// entry). Validation stays per txnType in the handler; other types are
+// documented elsewhere.
 const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed');
 const registerEntryBodyDoc = z.discriminatedUnion('txnType', [
   createDepositSchema.extend({ txnType: z.literal('deposit'), closingPassword: closingPasswordDoc }),
   createTransferSchema.extend({ txnType: z.literal('transfer'), closingPassword: closingPasswordDoc }),
   createExpenseSchema.extend({ txnType: z.literal('expense'), closingPassword: closingPasswordDoc }),
+  createJournalEntrySchema.extend({ txnType: z.literal('journal_entry'), closingPassword: closingPasswordDoc }),
 ]);
 
 transactionsRouter.post('/', describe({
-  summary: 'Create a transaction (body per txnType; deposit, transfer and expense documented)',
-  description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting.',
+  summary: 'Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
+  description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
+    'A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): an A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), ' +
+    'at most one such line (400 JE_AR_AP_ONE_PER_ENTRY); with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it.',
   body: registerEntryBodyDoc,
 }), async (req, res) => {
   const { txnType, ...body } = req.body;
@@ -198,8 +206,10 @@ transactionsRouter.post('/', describe({
 });
 
 transactionsRouter.put('/:id', describe({
-  summary: 'Edit a transaction (body per txnType; deposit, transfer and expense documented)',
-  description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404.',
+  summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
+  description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
+    'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
+    'a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED.',
   body: registerEntryBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
@@ -361,6 +371,8 @@ transactionsRouter.post('/:id/duplicate', async (req, res) => {
     debit: l.debit,
     credit: l.credit,
     description: l.description || undefined,
+    // Line names (U-58) come along, so a JE's A/R / A/P line stays named.
+    contactId: l.contactId ?? null,
   }));
 
   const result = await ledger.postTransaction(req.tenantId, {
@@ -369,6 +381,8 @@ transactionsRouter.post('/:id/duplicate', async (req, res) => {
     contactId: original.contactId || undefined,
     memo: original.memo || undefined,
     total: original.total || undefined,
+    // A duplicated adjusting entry is still adjusting (U-60).
+    isAdjusting: original.isAdjusting === true,
     lines,
   }, req.userId, req.companyId);
 

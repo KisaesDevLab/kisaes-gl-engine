@@ -33,6 +33,10 @@ export const updateScheduleSchema = z.object({
   mode: mode.optional(),
   startDate: isoDate.optional(),
   endDate: isoDate.nullable().optional(),
+  // Optimistic concurrency (U-66, recurring-guard-v1): the schedule's
+  // updatedAt as last read. A mismatch is 409 STALE_SCHEDULE.
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional()
+    .describe('updatedAt of the schedule as last read (recurring-guard-v1); a mismatch is 409 STALE_SCHEDULE'),
 }).strict();
 
 export const recurringRouter = Router();

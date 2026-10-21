@@ -19,7 +19,9 @@ export async function createCreditMemo(tenantId: string, input: CreateCreditMemo
 
   let subtotal = new Decimal('0');
   const revenueLines = input.lines.map((line) => {
-    const lineTotal = new Decimal(line.quantity).times(line.unitPrice);
+    // Rounded to the ledger's 4 places first; the A/R credit adds up the
+    // rounded values, so it equals the stored debits exactly (U-65).
+    const lineTotal = ledger.round4(new Decimal(line.quantity).times(line.unitPrice));
     subtotal = subtotal.plus(lineTotal);
     return {
       accountId: line.accountId,

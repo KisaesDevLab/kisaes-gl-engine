@@ -254,21 +254,23 @@ apiV2Router.post('/transactions', async (req, res) => {
   const { txnType, ...body } = req.body;
   let result;
 
+  // Each posts in the request's company (as POST /transactions does), so the
+  // company's closing date, account scope and name scope apply.
   switch (txnType) {
     case 'expense':
-      result = await expenseService.createExpense(req.tenantId, createExpenseSchema.parse(body), req.userId);
+      result = await expenseService.createExpense(req.tenantId, createExpenseSchema.parse(body), req.userId, req.companyId);
       break;
     case 'deposit':
-      result = await depositService.createDeposit(req.tenantId, createDepositSchema.parse(body), req.userId);
+      result = await depositService.createDeposit(req.tenantId, createDepositSchema.parse(body), req.userId, req.companyId);
       break;
     case 'transfer':
-      result = await transferService.createTransfer(req.tenantId, createTransferSchema.parse(body), req.userId);
+      result = await transferService.createTransfer(req.tenantId, createTransferSchema.parse(body), req.userId, req.companyId);
       break;
     case 'journal_entry':
-      result = await journalEntryService.createJournalEntry(req.tenantId, createJournalEntrySchema.parse(body), req.userId);
+      result = await journalEntryService.createJournalEntry(req.tenantId, createJournalEntrySchema.parse(body), req.userId, req.companyId);
       break;
     case 'cash_sale':
-      result = await cashSaleService.createCashSale(req.tenantId, createCashSaleSchema.parse(body), req.userId);
+      result = await cashSaleService.createCashSale(req.tenantId, createCashSaleSchema.parse(body), req.userId, req.companyId);
       break;
     default:
       // Don't echo the caller-supplied txnType — it's user input, and

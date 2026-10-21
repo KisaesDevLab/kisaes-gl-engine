@@ -68,6 +68,12 @@ export const transactions = pgTable('transactions', {
   // alongside txn_number. Claimed from tb_aje_sequences.
   ajeNumber: integer('aje_number'),
   sourceId: varchar('source_id', { length: 100 }), // payroll session ID, bank feed item ID, etc.
+  // Adjusting entry (U-60, migration 0224). Reports take
+  // adjusting=include|exclude|only. AJEs (txn_type 'aje') are always true.
+  isAdjusting: boolean('is_adjusting').notNull().default(false),
+  // On an automatic reversing entry (U-61, migration 0224): the journal
+  // entry it reverses. No FK (like applied_to_invoice_id).
+  reversesTransactionId: uuid('reverses_transaction_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),
   stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
@@ -82,6 +88,8 @@ export const transactions = pgTable('transactions', {
   billStatusIdx: index('idx_txn_bill_status').on(table.tenantId, table.billStatus),
   vendorInvIdx: index('idx_txn_vendor_inv').on(table.tenantId, table.vendorInvoiceNumber),
   sourceIdx: index('idx_txn_source').on(table.tenantId, table.source, table.sourceId),
+  reversesIdx: index('idx_txn_reverses').on(table.tenantId, table.reversesTransactionId)
+    .where(sql`${table.reversesTransactionId} IS NOT NULL`),
 }));
 
 export const billPaymentApplications = pgTable('bill_payment_applications', {

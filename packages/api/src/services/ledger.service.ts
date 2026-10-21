@@ -433,7 +433,8 @@ export async function checkLockDate(
 interface PostTransactionInput {
   txnType: TxnType;
   txnDate: string;
-  txnNumber?: string;
+  // null (edit) clears the stored number; undefined leaves it unchanged.
+  txnNumber?: string | null;
   dueDate?: string;
   status?: TxnStatus;
   // Reporting basis: 'both' (default), 'cash', or 'accrual'. Only meaningful
@@ -462,7 +463,46 @@ interface PostTransactionInput {
   // How a payment was made + the payer/payee's reference for it.
   paymentMethod?: PaymentMethod;
   referenceNumber?: string;
+  // Adjusting entry (U-60). Omitted: false on create (true for an AJE),
+  // unchanged on edit.
+  isAdjusting?: boolean;
+  // Automatic reversing entry (U-61): the journal entry this one reverses.
+  // Create only.
+  reversesTransactionId?: string;
+  // The recurring schedule that posted this transaction (U-64). Create only.
+  recurringScheduleId?: string;
   lines: JournalLineInput[];
+}
+
+/**
+ * A money amount at the scale the ledger stores: 4 places, half away from
+ * zero, as numeric(19,4) rounds. Posting builders round each line amount
+ * with this first and add up the rounded values for the matching total
+ * line (A/R, A/P, deposit account), so the stored lines balance exactly.
+ */
+export function round4(value: string | number | InstanceType<typeof Decimal> | null | undefined): InstanceType<typeof Decimal> {
+  return new Decimal(value == null || value === '' ? '0' : value).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+}
+
+/**
+ * Debits must equal credits exactly (U-65), at the scale the ledger stores:
+ * each line amount is rounded to 4 places the way numeric(19,4) rounds it
+ * (half away from zero), then the sums are compared with no tolerance. So
+ * what is stored always balances; a difference of 0.0001 is refused.
+ */
+export function assertBalanced(lines: ReadonlyArray<{ debit?: string | null; credit?: string | null }>): { debits: InstanceType<typeof Decimal>; credits: InstanceType<typeof Decimal> } {
+  let debits = new Decimal('0');
+  let credits = new Decimal('0');
+  for (const line of lines) {
+    debits = debits.plus(new Decimal(line.debit || '0').toDecimalPlaces(4, Decimal.ROUND_HALF_UP));
+    credits = credits.plus(new Decimal(line.credit || '0').toDecimalPlaces(4, Decimal.ROUND_HALF_UP));
+  }
+  if (!debits.equals(credits)) {
+    throw AppError.badRequest(
+      `Transaction does not balance: debits (${debits.toFixed(4)}) != credits (${credits.toFixed(4)})`,
+    );
+  }
+  return { debits, credits };
 }
 
 export { PostTransactionInput };
@@ -486,19 +526,8 @@ export async function postTransaction(
   // Validate debits = credits BEFORE opening a database transaction —
   // there's no point holding a tx open while we add up two numbers in
   // memory, and a fast-fail on bad input avoids unnecessary lock churn.
-  // Uses Decimal.js to avoid floating-point rounding in monetary sums.
-  let totalDebits = new Decimal('0');
-  let totalCredits = new Decimal('0');
-  for (const line of input.lines) {
-    totalDebits = totalDebits.plus(line.debit || '0');
-    totalCredits = totalCredits.plus(line.credit || '0');
-  }
-
-  if (totalDebits.minus(totalCredits).abs().greaterThan('0.0001')) {
-    throw AppError.badRequest(
-      `Transaction does not balance: debits (${totalDebits.toFixed(4)}) != credits (${totalCredits.toFixed(4)})`,
-    );
-  }
+  // Exact decimal comparison, no tolerance (U-65).
+  const { debits: totalDebits, credits: totalCredits } = assertBalanced(input.lines);
 
   if (totalDebits.isZero() && totalCredits.isZero()) {
     throw AppError.badRequest('Transaction must have non-zero amounts');
@@ -555,6 +584,9 @@ export async function postTransaction(
       sourceId: input.sourceId || null,
       paymentMethod: input.paymentMethod || null,
       referenceNumber: input.referenceNumber?.trim() || null,
+      isAdjusting: input.isAdjusting ?? input.txnType === 'aje',
+      reversesTransactionId: input.reversesTransactionId || null,
+      recurringScheduleId: input.recurringScheduleId || null,
     }).returning();
 
     if (!txn) throw AppError.internal('Failed to create transaction');
@@ -626,7 +658,11 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
   // the trial balance. SELECT … FOR UPDATE serializes the void path so
   // the second caller blocks until the first commits, then reads the
   // already-voided state and throws "already void" cleanly.
-  return await db.transaction(async (tx) => {
+  return await db.transaction((tx) => voidTransactionInTx(tx, tenantId, txnId, reason, userId));
+}
+
+async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: string, reason: string, userId?: string) {
+  {
     const [txn] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update')
@@ -676,6 +712,11 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     // Get original lines
     const originalLines = await tx.select().from(journalLines)
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+
+    // A journal entry's automatic reversal (U-61) is voided with it, in this
+    // database transaction, if nobody changed it (else 409 REVERSAL_EDITED).
+    const reversal = txn.txnType === 'journal_entry' ? await findLiveReversal(tx, tenantId, txnId) : null;
+    if (reversal) await assertReversalUnchanged(tx, tenantId, reversal, originalLines);
 
     // Billable lines stop being billable (U-50); a billed line refuses.
     await releaseBillableLines(tx, tenantId, txnId);
@@ -731,7 +772,9 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
     // void (the reversing lines are new rows, so originalLines is exact).
     await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines },
       releasedLinks.length > 0 ? { reason, releasedDepositLinks: releasedLinks } : { reason }, userId, tx);
-  });
+
+    if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId);
+  }
 }
 
 /**
@@ -804,7 +847,17 @@ export async function deleteTransaction(
   txnId: string,
   opts: { reason?: string; userId?: string; companyId?: string } = {},
 ) {
-  return await db.transaction(async (tx) => {
+  return await db.transaction((tx) => deleteTransactionInTx(tx, tenantId, txnId, opts));
+}
+
+/** deleteTransaction inside the caller's database transaction. */
+export async function deleteTransactionInTx(
+  tx: Tx,
+  tenantId: string,
+  txnId: string,
+  opts: { reason?: string; userId?: string; companyId?: string } = {},
+) {
+  {
     // Row lock: serializes with void / update / a second delete so the
     // reversal can't be applied twice.
     const [txn] = await tx.select().from(transactions)
@@ -883,6 +936,12 @@ export async function deleteTransaction(
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
       .orderBy(journalLines.lineOrder);
 
+    // A journal entry's automatic reversal (U-61) is deleted with it, in
+    // this database transaction, if nobody changed it (else 409
+    // REVERSAL_EDITED).
+    const reversal = txn.txnType === 'journal_entry' ? await findLiveReversal(tx, tenantId, txnId) : null;
+    if (reversal) await assertReversalUnchanged(tx, tenantId, reversal, originalLines);
+
     // Billable lines stop being billable (U-50); a billed line refuses.
     await releaseBillableLines(tx, tenantId, txnId);
 
@@ -922,8 +981,10 @@ export async function deleteTransaction(
         : { status: 'deleted', reason: opts.reason ?? null },
       opts.userId, tx);
 
+    if (reversal) await deleteTransactionInTx(tx, tenantId, reversal.id, opts);
+
     return { id: txnId, status: 'deleted' as const };
-  });
+  }
 }
 
 /**
@@ -963,16 +1024,9 @@ export async function updateTransaction(
   // fields. Omitted, the update opens its own transaction as before.
   outerTx?: Tx,
 ) {
-  // Validate the new lines balance up front (in-memory, no DB access).
-  let totalDebits = new Decimal('0');
-  let totalCredits = new Decimal('0');
-  for (const line of input.lines) {
-    totalDebits = totalDebits.plus(line.debit || '0');
-    totalCredits = totalCredits.plus(line.credit || '0');
-  }
-  if (totalDebits.minus(totalCredits).abs().greaterThan('0.0001')) {
-    throw AppError.badRequest('Transaction does not balance');
-  }
+  // Validate the new lines balance up front (in-memory, no DB access);
+  // exact, no tolerance (U-65).
+  assertBalanced(input.lines);
 
   // Wrap in a database transaction AND lock the row. Without the lock,
   // two concurrent updates of the same transaction can interleave their
@@ -986,7 +1040,11 @@ export async function updateTransaction(
       .for('update')
       .limit(1);
 
-    if (!existing || existing.status === 'deleted') throw AppError.notFound('Transaction not found');
+    // A transaction of another company is not found (as deleteTransaction).
+    if (!existing || existing.status === 'deleted'
+      || (companyId && existing.companyId && existing.companyId !== companyId)) {
+      throw AppError.notFound('Transaction not found');
+    }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
     // Check lock date for both old and new dates (company-scoped).
@@ -1140,11 +1198,14 @@ export async function updateTransaction(
         await tx.insert(journalLines).values(newPLValues);
         await updateAccountBalances(tx, tenantId, newPLLines);
       }
-      // 3. Ledger-neutral header fields (memo / contact / basis).
+      // 3. Ledger-neutral header fields (memo / contact / basis / number /
+      //    adjusting flag).
       await tx.update(transactions).set({
         memo: input.memo || null,
         contactId: input.contactId || null,
         ...(input.basis ? { basis: input.basis } : {}),
+        ...(input.txnNumber !== undefined ? { txnNumber: input.txnNumber } : {}),
+        ...(input.isAdjusting !== undefined ? { isAdjusting: input.isAdjusting } : {}),
         updatedAt: new Date(),
       }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
       // 4. Rebuild transaction_tags from the full (preserved + new) line set.
@@ -1188,6 +1249,8 @@ export async function updateTransaction(
       ...(input.txnNumber !== undefined ? { txnNumber: input.txnNumber } : {}),
       // Editable on a JE edit; other callers omit basis so it's left as 'both'.
       ...(input.basis ? { basis: input.basis } : {}),
+      // Adjusting flag (U-60): only a caller that sends it changes it.
+      ...(input.isAdjusting !== undefined ? { isAdjusting: input.isAdjusting } : {}),
       contactId: input.contactId || null,
       memo: input.memo || null,
       subtotal: input.subtotal || null,
@@ -1277,6 +1340,148 @@ async function updateAccountBalances(
   }
 }
 
+// ─── Automatic reversing entries (U-61, je-reversing-v1) ──────────
+//
+// A journal entry posted with reverseOn gets a second journal entry dated
+// reverseOn: the same lines with debit and credit swapped, memo
+// "Reverses JE <number>", transactions.reverses_transaction_id = the
+// original. Both post in one database transaction and both dates go
+// through the closing-date check. Voiding / deleting the original voids /
+// deletes the reversal with it; editing the original deletes the reversal
+// and posts a new one. Each of those refuses with 409 REVERSAL_EDITED when
+// the reversal was changed after it was created.
+
+type TxnRow = typeof transactions.$inferSelect;
+type LineRow = typeof journalLines.$inferSelect;
+
+/** The live (not void, not deleted) automatic reversal of a journal entry, row-locked. */
+export async function findLiveReversal(executor: DbOrTx, tenantId: string, originalId: string): Promise<TxnRow | null> {
+  const [row] = await executor.select().from(transactions)
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.reversesTransactionId, originalId),
+      notInArray(transactions.status, ['void', 'deleted']),
+    ))
+    .orderBy(transactions.createdAt, transactions.id)
+    .for('update')
+    .limit(1);
+  return row ?? null;
+}
+
+const reversalLineKey = (l: { accountId: string; debit: string | null; credit: string | null; contactId: string | null; tagId: string | null }) =>
+  `${l.accountId}|${new Decimal(l.debit || '0').toFixed(4)}|${new Decimal(l.credit || '0').toFixed(4)}|${l.contactId ?? ''}|${l.tagId ?? ''}`;
+
+/**
+ * A reversal is unchanged when it is still posted, its header was never
+ * updated (updated_at = created_at: every edit, payee change or void moves
+ * updated_at) and its lines are exactly the original's lines with debit and
+ * credit swapped (account, amounts, name and tag). Otherwise 409
+ * REVERSAL_EDITED: the owner voids or deletes the reversal first.
+ */
+export async function assertReversalUnchanged(
+  executor: DbOrTx,
+  tenantId: string,
+  reversal: TxnRow,
+  originalLines: ReadonlyArray<LineRow>,
+): Promise<void> {
+  let unchanged = reversal.status === 'posted'
+    && !!reversal.createdAt && !!reversal.updatedAt
+    && reversal.createdAt.getTime() === reversal.updatedAt.getTime();
+  if (unchanged) {
+    const revLines = await executor.select().from(journalLines).where(and(
+      eq(journalLines.tenantId, tenantId),
+      eq(journalLines.transactionId, reversal.id),
+      eq(journalLines.isVoidReversal, false),
+    ));
+    const expected = originalLines.filter((l) => !l.isVoidReversal)
+      .map((l) => reversalLineKey({ ...l, debit: l.credit, credit: l.debit })).sort();
+    const actual = revLines.map((l) => reversalLineKey(l)).sort();
+    unchanged = expected.length === actual.length && expected.every((k, i) => k === actual[i]);
+  }
+  if (!unchanged) {
+    throw AppError.conflict(
+      `The reversing entry dated ${reversal.txnDate} was changed after it was created, so it can’t be changed automatically. ` +
+        'Void or delete the reversing entry first, then try again.',
+      'REVERSAL_EDITED',
+      { reversalTransactionId: reversal.id, reverseOn: reversal.txnDate },
+    );
+  }
+}
+
+/** The reversal's memo: "Reverses JE <number>", or the entry's date when it has no number. */
+export function reversalMemo(original: Pick<TxnRow, 'txnNumber' | 'txnDate'>): string {
+  return original.txnNumber ? `Reverses JE ${original.txnNumber}` : `Reverses JE of ${original.txnDate}`;
+}
+
+const reversalContentKey = (l: { accountId: string; debit: string | null; credit: string | null; contactId: string | null; tagId: string | null; description: string | null }) =>
+  `${reversalLineKey(l)}|${l.description ?? ''}`;
+
+/**
+ * True when `reversal` is exactly what postReversal would post for
+ * `original` on `reverseOn`: same date, memo, basis, adjusting flag and
+ * lines (account, swapped amounts, name, tag, description). The edit path
+ * keeps such a reversal instead of re-posting it (U-61).
+ */
+export async function reversalMatches(
+  executor: DbOrTx,
+  tenantId: string,
+  reversal: TxnRow,
+  original: TxnRow & { lines: ReadonlyArray<LineRow> },
+  reverseOn: string,
+): Promise<boolean> {
+  if (reversal.txnDate !== reverseOn || reversal.memo !== reversalMemo(original)
+    || reversal.basis !== original.basis || reversal.isAdjusting !== original.isAdjusting) {
+    return false;
+  }
+  const revLines = await executor.select().from(journalLines).where(and(
+    eq(journalLines.tenantId, tenantId),
+    eq(journalLines.transactionId, reversal.id),
+    eq(journalLines.isVoidReversal, false),
+  ));
+  const expected = original.lines.filter((l) => !l.isVoidReversal)
+    .map((l) => reversalContentKey({ ...l, debit: l.credit, credit: l.debit })).sort();
+  const actual = revLines.map((l) => reversalContentKey(l)).sort();
+  return expected.length === actual.length && expected.every((k, i) => k === actual[i]);
+}
+
+/**
+ * Posts the automatic reversal of `original` dated `reverseOn` inside the
+ * caller's database transaction (the closing-date check applies to
+ * reverseOn). Lines: the original's lines, debit and credit swapped, same
+ * account, description, name and tag; not billable. Basis and the
+ * adjusting flag follow the original. The reversal has no number of its own
+ * and always belongs to the original's company; a caller company that
+ * differs is refused.
+ */
+export async function postReversal(
+  tx: Tx,
+  tenantId: string,
+  original: TxnRow & { lines: ReadonlyArray<LineRow> },
+  reverseOn: string,
+  userId?: string,
+  companyId?: string,
+) {
+  if (companyId && original.companyId && original.companyId !== companyId) {
+    throw AppError.notFound('Transaction not found');
+  }
+  return postTransaction(tenantId, {
+    txnType: 'journal_entry',
+    txnDate: reverseOn,
+    memo: reversalMemo(original),
+    basis: (original.basis as 'cash' | 'accrual' | 'both') ?? 'both',
+    isAdjusting: original.isAdjusting,
+    reversesTransactionId: original.id,
+    lines: original.lines.filter((l) => !l.isVoidReversal).map((l) => ({
+      accountId: l.accountId,
+      debit: l.credit,
+      credit: l.debit,
+      description: l.description ?? undefined,
+      contactId: l.contactId,
+      tagId: l.tagId,
+    })),
+  }, userId, original.companyId ?? companyId ?? undefined, tx);
+}
+
 // Cheap type probe for route guards (the TB module fences txn_type
 // 'aje' off from the generic transaction routes — rule TB3).
 export async function getTransactionType(tenantId: string, txnId: string): Promise<string | null> {
@@ -1338,6 +1543,19 @@ export async function getTransaction(tenantId: string, txnId: string) {
     ))
     .orderBy(journalLines.lineOrder);
 
+  // Journal entries (U-61): the live automatic reversal, if any.
+  if (txn.txnType === 'journal_entry') {
+    const [rev] = await db.select({ id: transactions.id, txnDate: transactions.txnDate }).from(transactions)
+      .where(and(
+        eq(transactions.tenantId, tenantId),
+        eq(transactions.reversesTransactionId, txn.id),
+        notInArray(transactions.status, ['void', 'deleted']),
+      ))
+      .orderBy(transactions.createdAt, transactions.id)
+      .limit(1);
+    return { ...txn, contactName, lines, reversalTransactionId: rev?.id ?? null, reverseOn: rev?.txnDate ?? null };
+  }
+
   // Deposits (U-53): the cash-back line, as the create body takes it.
   if (txn.txnType === 'deposit') {
     const cb = lines.find((l) => l.lineRole === 'cash_back');
@@ -1367,6 +1585,8 @@ export async function listTransactions(tenantId: string, filters: {
   /** Report-basis lens: 'cash' keeps transactions.basis in (both,cash);
    *  'accrual' keeps (both,accrual). Mirrors report inclusion per-transaction. */
   basis?: 'cash' | 'accrual';
+  /** Adjusting-entry lens (U-60): include (default) / exclude / only. */
+  adjusting?: 'include' | 'exclude' | 'only';
   search?: string;
   sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status' | 'dueDate' | 'balanceDue' | 'invoiceStatus';
   sortDir?: 'asc' | 'desc';
@@ -1398,6 +1618,9 @@ export async function listTransactions(tenantId: string, filters: {
   // on its own basis. Mirrors report inclusion (report.service basis filter).
   if (filters.basis === 'cash') conditions.push(sql`${transactions.basis} IN ('both', 'cash')`);
   else if (filters.basis === 'accrual') conditions.push(sql`${transactions.basis} IN ('both', 'accrual')`);
+  // Adjusting-entry lens (U-60), as the reports apply it.
+  if (filters.adjusting === 'exclude') conditions.push(eq(transactions.isAdjusting, false));
+  else if (filters.adjusting === 'only') conditions.push(eq(transactions.isAdjusting, true));
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
   if (filters.accountId) {
@@ -1486,6 +1709,9 @@ export async function listTransactions(tenantId: string, filters: {
       txnNumber: transactions.txnNumber,
       // TB module: the list badge shows AJE-nnn when present.
       ajeNumber: transactions.ajeNumber,
+      // U-60 / U-61: adjusting flag and the entry a reversal reverses.
+      isAdjusting: transactions.isAdjusting,
+      reversesTransactionId: transactions.reversesTransactionId,
       txnDate: transactions.txnDate,
       dueDate: transactions.dueDate,
       status: transactions.status,

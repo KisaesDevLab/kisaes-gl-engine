@@ -564,6 +564,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'transactions.recurring_schedule_id': 'tenant-ref:recurring_schedules',
   'transactions.source_estimate_id': 'tenant-ref:transactions',
   'transactions.applied_to_invoice_id': 'tenant-ref:transactions',
+  'transactions.reverses_transaction_id': 'tenant-ref:transactions',
   'transactions.print_batch_id': 'tenant-ref:check_runs',
   'transactions.company_id': 'tenant-ref:companies',
   'transactions.print_signature_id': 'tenant-ref:check_signatures',

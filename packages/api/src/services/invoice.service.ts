@@ -97,12 +97,15 @@ function buildTaxLines(inputLines: CreateInvoiceInput['lines'], defaultTaxRate: 
   const revenueLines = inputLines.map((line) => {
     const qty = new Decimal(line.quantity);
     const price = new Decimal(line.unitPrice);
-    const lineTotal = qty.times(price);
+    // Each line amount and line tax is rounded to the ledger's 4 places
+    // first; the subtotal, tax and A/R total add up the rounded values, so
+    // the A/R debit equals the stored credits exactly (U-65).
+    const lineTotal = ledger.round4(qty.times(price));
     subtotal = subtotal.plus(lineTotal);
 
     const taxable = line.isTaxable !== false; // default true
     const rate = taxable ? new Decimal(line.taxRate ?? defaultTaxRate.toString()) : new Decimal('0');
-    const lineTax = taxable && rate.greaterThan(0) ? lineTotal.times(rate) : new Decimal('0');
+    const lineTax = taxable && rate.greaterThan(0) ? ledger.round4(lineTotal.times(rate)) : new Decimal('0');
     totalTax = totalTax.plus(lineTax);
 
     return {

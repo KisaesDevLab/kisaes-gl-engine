@@ -61,6 +61,28 @@ export function basisTitleSuffix(basis: string): string {
 
 interface DateRange { startDate?: string; endDate?: string }
 
+/**
+ * Adjusting-entry lens (U-60, je-adjusting-v1): 'include' (default) keeps
+ * every entry, 'exclude' leaves out transactions with is_adjusting (manual
+ * adjusting journal entries and the TB module's AJEs), 'only' keeps just
+ * them. Honored by the Profit and Loss, Balance Sheet (including its
+ * retained-earnings and net-income rows), Trial Balance, General Ledger,
+ * Transaction List and Journal Entry Report, on both bases, and by
+ * GET /transactions.
+ */
+export type AdjustingFilter = 'include' | 'exclude' | 'only';
+
+/**
+ * SQL conjunct for the adjusting lens over a transactions column.
+ * `column` is a code-controlled constant ('is_adjusting', 't.is_adjusting',
+ * 'pay.is_adjusting'), never user input.
+ */
+export function adjustingCond(adjusting: AdjustingFilter | null | undefined, column: string) {
+  if (adjusting === 'exclude') return sql`${sql.raw(column)} = false`;
+  if (adjusting === 'only') return sql`${sql.raw(column)} = true`;
+  return sql`TRUE`;
+}
+
 // Helper: get posted txn filter
 function postedFilter(tenantId: string) {
   return sql`jl.tenant_id = ${tenantId} AND jl.transaction_id IN (SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted')`;
@@ -132,6 +154,9 @@ export function cashBasisLinesWith(
   startDate: string | null,
   endDate: string,
   companyId: string | null,
+  // U-60: the adjusting lens, applied to the transaction a virtual line is
+  // recognized on (a payment is never an adjusting entry).
+  adjusting: AdjustingFilter | null = null,
 ) {
   const dateCondT = startDate
     ? sql`t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}`
@@ -183,7 +208,7 @@ export function cashBasisLinesWith(
       ) bp ON bp.payment_id = t.id
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
         AND t.basis <> 'accrual'  -- basis: exclude accrual-only entries from cash-basis reports
-        AND ${dateCondT} AND ${companyT}
+        AND ${dateCondT} AND ${companyT} AND ${adjustingCond(adjusting, 't.is_adjusting')}
         AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit')
 
       UNION ALL
@@ -197,7 +222,7 @@ export function cashBasisLinesWith(
         il.credit::numeric * app.amount / NULLIF(inv.total::numeric, 0) AS credit
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
-        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay}
+        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
       JOIN transactions inv ON inv.id = app.invoice_id AND inv.tenant_id = ${tenantId}
         AND inv.status = 'posted' AND NULLIF(inv.total::numeric, 0) IS NOT NULL
       JOIN journal_lines il ON il.transaction_id = inv.id AND il.tenant_id = ${tenantId}
@@ -216,7 +241,7 @@ export function cashBasisLinesWith(
         bl.credit::numeric * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS credit
       FROM bill_payment_applications app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
-        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay}
+        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
       JOIN transactions bill ON bill.id = app.bill_id AND bill.tenant_id = ${tenantId}
         AND bill.status = 'posted' AND NULLIF(bill.total::numeric, 0) IS NOT NULL
       JOIN journal_lines bl ON bl.transaction_id = bill.id AND bl.tenant_id = ${tenantId}
@@ -363,9 +388,11 @@ export async function buildProfitAndLoss(
   // each entry plus per-section `groups` — additive only; the default
   // (ungrouped) response shape is untouched.
   groupBy: ReportGroupBy | null = null,
-  // Additive: exactAmounts adds PLEntry.amountExact (decimal string).
-  plOpts: { exactAmounts?: boolean } = {},
+  // Additive: exactAmounts adds PLEntry.amountExact (decimal string);
+  // adjusting is the U-60 lens (default include).
+  plOpts: { exactAmounts?: boolean; adjusting?: AdjustingFilter | null } = {},
 ): Promise<PLResult> {
+  const adjusting = plOpts.adjusting ?? null;
   // Cash basis: revenue recognized when cash is received, expenses when
   // cash is paid — implemented by the virtual cash-basis ledger (see
   // cashBasisLinesWith above), which allocates payment applications
@@ -382,7 +409,7 @@ export async function buildProfitAndLoss(
 
   const rows = basis === 'cash'
     ? await db.execute(sql`
-        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
           COALESCE(SUM(jl.debit), 0) as total_debit,
           COALESCE(SUM(jl.credit), 0) as total_credit
@@ -403,7 +430,7 @@ export async function buildProfitAndLoss(
             SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
             AND basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
             AND txn_date >= ${startDate} AND txn_date <= ${endDate}
-            AND ${companyCond}
+            AND ${companyCond} AND ${adjustingCond(adjusting, 'is_adjusting')}
           )${tagJoinClause}
         WHERE a.tenant_id = ${tenantId}
           AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
@@ -518,7 +545,11 @@ export async function buildBalanceSheet(
   // Optional grouping mode (?group_by=detail_type) — additive fields
   // only; see buildProfitAndLoss.
   groupBy: ReportGroupBy | null = null,
+  // U-60 adjusting lens; also applied to the retained-earnings and
+  // current-year net-income rows.
+  bsOpts: { adjusting?: AdjustingFilter | null } = {},
 ) {
+  const adjusting = bsOpts.adjusting ?? null;
   const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const grouped = groupBy !== null;
   // Cash basis balance sheet: built from the virtual cash-basis ledger
@@ -533,7 +564,7 @@ export async function buildBalanceSheet(
 
   const rows = basis === 'cash'
     ? await db.execute(sql`
-        WITH ${cashBasisLinesWith(tenantId, null, asOfDate, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, null, asOfDate, companyId, adjusting)}
         SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
           COALESCE(SUM(jl.debit), 0) as total_debit,
           COALESCE(SUM(jl.credit), 0) as total_credit
@@ -553,7 +584,7 @@ export async function buildBalanceSheet(
             SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND status = 'posted'
             AND basis <> 'cash'  -- basis: exclude cash-only entries from accrual reports
             AND txn_date <= ${asOfDate}
-            AND ${companyCond}
+            AND ${companyCond} AND ${adjustingCond(adjusting, 'is_adjusting')}
           )${tagClause}
         WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
         GROUP BY a.id ORDER BY a.account_number, a.name
@@ -622,7 +653,7 @@ export async function buildBalanceSheet(
     const d = new Date(currentFYStart + 'T00:00:00Z');
     d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().split('T')[0]!;
-  })(), basis, companyId, tagId);
+  })(), basis, companyId, tagId, null, { adjusting });
   // Prior-years retained earnings. When a system Retained Earnings account is
   // designated (systemTag='retained_earnings'), FOLD the accumulated prior-year
   // net income into that account's line — one "Retained Earnings" line = posted
@@ -647,7 +678,7 @@ export async function buildBalanceSheet(
   }
 
   // Current year net income
-  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId);
+  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId, null, { adjusting });
   if (currentPL.netIncome !== 0) {
     const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: currentPL.netIncome };
     equity.push(row);
@@ -2225,7 +2256,10 @@ export async function buildGeneralLedger(
   // (never widens, never leaks). An explicitly selected account with
   // no activity still gets an (empty) section. Null/empty = all.
   accountIds: string[] | null = null,
+  // U-60 adjusting lens (beginning balances and period lines alike).
+  glOpts: { adjusting?: AdjustingFilter | null } = {},
 ) {
+  const adjusting = glOpts.adjusting ?? null;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
   // colRef is a code-controlled constant, never user input; the ids
   // themselves are bound parameters.
@@ -2276,7 +2310,7 @@ export async function buildGeneralLedger(
   //    statement accounts, only count activity from the fiscal year start.
   const beginResult = basis === 'cash'
     ? await db.execute(sql`
-        WITH ${cashBasisLinesWith(tenantId, null, dayBeforeStart, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, null, dayBeforeStart, companyId, adjusting)}
         SELECT a.id,
           COALESCE(SUM(
             CASE WHEN a.account_type IN ('asset','liability','equity') THEN cb.debit
@@ -2315,6 +2349,7 @@ export async function buildGeneralLedger(
         WHERE tenant_id = ${tenantId} AND status = 'posted' AND txn_date < ${startDate}
         AND basis <> 'cash'  -- basis: exclude cash-only entries from the accrual ledger
         AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
+        AND ${adjustingCond(adjusting, 'is_adjusting')}
       )${tagClause}
     LEFT JOIN transactions t
       ON t.id = jl.transaction_id
@@ -2325,7 +2360,7 @@ export async function buildGeneralLedger(
   // 3. Period activity (all journal lines in [startDate, endDate])
   const linesResult = basis === 'cash'
     ? await db.execute(sql`
-        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT
           (row_number() OVER (ORDER BY cb.account_id, cb.txn_date, cb.line_order))::text AS line_id,
           cb.account_id, cb.debit, cb.credit,
@@ -2368,6 +2403,7 @@ export async function buildGeneralLedger(
       AND t.basis <> 'cash'  -- basis: exclude cash-only entries from the accrual ledger
       AND t.txn_date >= ${startDate}
       AND t.txn_date <= ${endDate}
+      AND ${adjustingCond(adjusting, 't.is_adjusting')}
       AND ${companyFilter(companyId)}${tagClause}${idFilter('jl.account_id')}
     ORDER BY jl.account_id, t.txn_date, t.created_at, jl.line_order
   `);
@@ -2526,7 +2562,10 @@ export async function buildTrialBalance(
   // touched.
   tagId: string | null = null,
   basis: Basis = 'accrual',
+  // U-60 adjusting lens; also applied to the prior-years retained-earnings row.
+  tbOpts: { adjusting?: AdjustingFilter | null } = {},
 ) {
+  const adjusting = tbOpts.adjusting ?? null;
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
 
   // Compute current fiscal year start based on the report end date.
@@ -2550,7 +2589,7 @@ export async function buildTrialBalance(
   const cashTagClause = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const rows = basis === 'cash'
     ? await db.execute(sql`
-        WITH ${cashBasisLinesWith(tenantId, null, endDate, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, null, endDate, companyId, adjusting)}
         SELECT a.id, a.account_number, a.name, a.account_type,
           COALESCE(SUM(
             CASE WHEN a.account_type IN ('asset', 'liability', 'equity')
@@ -2588,6 +2627,7 @@ export async function buildTrialBalance(
         WHERE tenant_id = ${tenantId} AND status = 'posted' AND txn_date <= ${endDate}
         AND basis <> 'cash'  -- basis: exclude cash-only entries from the accrual trial balance
         AND ${companyId ? sql`company_id = ${companyId}` : sql`TRUE`}
+        AND ${adjustingCond(adjusting, 'is_adjusting')}
         ${tagExistsClause}
       )
     LEFT JOIN transactions t ON t.id = jl.transaction_id
@@ -2653,7 +2693,7 @@ export async function buildTrialBalance(
     const priorEndDate = new Date(fyStart + 'T00:00:00Z');
     priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
     const priorEnd = priorEndDate.toISOString().split('T')[0]!;
-    const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId, tagId);
+    const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId, tagId, null, { adjusting });
     if (retainedPL.netIncome !== 0) {
       // Retained earnings is a credit-balance equity account. Numbered
       // 30120 to sort beside the posted Retained Earnings account (the
@@ -2765,6 +2805,8 @@ export async function buildTransactionList(tenantId: string, filters?: {
   // any of its journal_lines carries this tag.
   tagId?: string;
   basis?: Basis;
+  /** U-60 adjusting lens (default include). */
+  adjusting?: AdjustingFilter | null;
 }, companyId: string | null = null) {
   // Cash basis: list the virtual cash-basis ledger (income/expense recognition
   // moved to payment dates), one row per cash-basis line. Accrual: the posted
@@ -2776,7 +2818,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
     const acctCond = filters?.accountId ? sql`AND cb.account_id = ${filters.accountId}` : sql``;
     const tagCond = filters?.tagId ? sql`AND cb.tag_id IN ${tagIn(filters.tagId)}` : sql``;
     const cashRows = await db.execute(sql`
-      WITH ${cashBasisLinesWith(tenantId, start, end, companyId)}
+      WITH ${cashBasisLinesWith(tenantId, start, end, companyId, filters?.adjusting ?? null)}
       SELECT cb.transaction_id AS id, cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
         c.display_name AS contact_name,
         a.account_number, a.name AS account_name,
@@ -2796,7 +2838,8 @@ export async function buildTransactionList(tenantId: string, filters?: {
     return { title: 'Transaction List', data: cashRows.rows };
   }
 
-  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.status = 'posted'`, companyFilter(companyId), sql`t.basis <> 'cash'`];
+  const conditions = [sql`t.tenant_id = ${tenantId}`, sql`t.status = 'posted'`, companyFilter(companyId), sql`t.basis <> 'cash'`,
+    adjustingCond(filters?.adjusting ?? null, 't.is_adjusting')];
   if (filters?.startDate) conditions.push(sql`t.txn_date >= ${filters.startDate}`);
   if (filters?.endDate) conditions.push(sql`t.txn_date <= ${filters.endDate}`);
   if (filters?.txnType) conditions.push(sql`t.txn_type = ${filters.txnType}`);
@@ -2844,10 +2887,11 @@ export async function buildJournalEntryReport(
   // the tag. Line-level fidelity is still available in the GL / Account
   // Detail views, which filter line-by-line.
   tagId: string | null = null,
+  adjusting: AdjustingFilter | null = null,
 ) {
   return buildTransactionList(
     tenantId,
-    { ...dateRange, txnType: 'journal_entry', ...(tagId ? { tagId } : {}) },
+    { ...dateRange, txnType: 'journal_entry', ...(tagId ? { tagId } : {}), adjusting },
     companyId,
   );
 }

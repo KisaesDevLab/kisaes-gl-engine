@@ -105,13 +105,15 @@ export async function createBill(tenantId: string, input: CreateBillInput, userI
   // multi-line bills and makes the AP credit ≠ sum of expense debits
   // by a sub-cent, which ledger.postTransaction then rejects as an
   // unbalanced transaction.
-  const total = input.lines.reduce((sum, l) => sum.plus(l.amount || '0'), new Decimal('0'));
+  // Each line rounded to the ledger's 4 places first (U-65): the A/P credit
+  // is the sum of the stored debits.
+  const total = input.lines.reduce((sum, l) => sum.plus(ledger.round4(l.amount)), new Decimal('0'));
   if (total.lessThanOrEqualTo(0)) throw AppError.badRequest('Bill total must be positive');
 
   const journalLines = [
     ...input.lines.map((l) => ({
       accountId: l.accountId,
-      debit: new Decimal(l.amount).toFixed(4),
+      debit: ledger.round4(l.amount).toFixed(4),
       credit: '0',
       description: l.description || input.memo,
       tagId: l.tagId,
@@ -207,7 +209,9 @@ export async function updateBill(tenantId: string, billId: string, input: Create
     ? (existing.dueDate || undefined)
     : (input.dueDate || computeBillDueDate(resolvedTxnDate, paymentTerms, termsDays));
 
-  const total = input.lines.reduce((sum, l) => sum.plus(l.amount || '0'), new Decimal('0'));
+  // Each line rounded to the ledger's 4 places first (U-65): the A/P credit
+  // is the sum of the stored debits.
+  const total = input.lines.reduce((sum, l) => sum.plus(ledger.round4(l.amount)), new Decimal('0'));
   if (total.lessThanOrEqualTo(0)) throw AppError.badRequest('Bill total must be positive');
 
   // Total-lock enforcement. The same 0.01 tolerance used elsewhere
@@ -226,7 +230,7 @@ export async function updateBill(tenantId: string, billId: string, input: Create
   const journalLines = [
     ...input.lines.map((l) => ({
       accountId: l.accountId,
-      debit: new Decimal(l.amount).toFixed(4),
+      debit: ledger.round4(l.amount).toFixed(4),
       credit: '0',
       description: l.description || input.memo,
       tagId: l.tagId,

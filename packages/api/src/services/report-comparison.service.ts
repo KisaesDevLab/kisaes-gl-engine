@@ -264,8 +264,11 @@ export async function buildComparativePL(
   // Optional grouping mode (?group_by=detail_type) -- additive `groups`
   // field per section; existing comparative shape untouched.
   groupBy: reportService.ReportGroupBy | null = null,
+  // U-60 adjusting lens (default include), applied to every column.
+  opts: { adjusting?: reportService.AdjustingFilter | null } = {},
 ) {
   const grouped = groupBy !== null;
+  const lens = { adjusting: opts.adjusting ?? null };
   if (compareMode === 'multi_period') {
     const fyStartMonth = periodType === 'year'
       ? await reportService.getFiscalYearStart(tenantId, companyId)
@@ -277,7 +280,7 @@ export async function buildComparativePL(
     columns.push({ label: 'Total', startDate: '', endDate: '' });
 
     // Get P&L for each period
-    const plResults = await Promise.all(ranges.map((r) => reportService.buildProfitAndLoss(tenantId, r.startDate, r.endDate, basis, companyId, null, groupBy)));
+    const plResults = await Promise.all(ranges.map((r) => reportService.buildProfitAndLoss(tenantId, r.startDate, r.endDate, basis, companyId, null, groupBy, lens)));
 
     type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
     const sectionKey: Record<PLType, 'revenue' | 'cogs' | 'expenses' | 'otherRevenue' | 'otherExpenses'> = {
@@ -346,7 +349,7 @@ export async function buildComparativePL(
   }
 
   // Two-column comparison modes
-  const currentPL = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId, null, groupBy);
+  const currentPL = await reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId, null, groupBy, lens);
   let priorRange: DateRange;
 
   if (compareMode === 'previous_year') {
@@ -357,7 +360,7 @@ export async function buildComparativePL(
     priorRange = getPriorPeriodRange(startDate, endDate);
   }
 
-  const priorPL = await reportService.buildProfitAndLoss(tenantId, priorRange.startDate, priorRange.endDate, basis, companyId, null, groupBy);
+  const priorPL = await reportService.buildProfitAndLoss(tenantId, priorRange.startDate, priorRange.endDate, basis, companyId, null, groupBy, lens);
 
   const columns = [
     { label: formatLabel(new Date(startDate), new Date(endDate)), startDate, endDate },
@@ -439,9 +442,12 @@ export async function buildComparativeBS(
   // Optional grouping mode (?group_by=detail_type) -- additive `groups`
   // field per section; existing comparative shape untouched.
   groupBy: reportService.ReportGroupBy | null = null,
+  // U-60 adjusting lens (default include), applied to both columns.
+  opts: { adjusting?: reportService.AdjustingFilter | null } = {},
 ) {
   const grouped = groupBy !== null;
-  const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis, companyId, null, groupBy);
+  const lens = { adjusting: opts.adjusting ?? null };
+  const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis, companyId, null, groupBy, lens);
   let priorDate: string;
 
   if (compareMode === 'previous_year') {
@@ -456,7 +462,7 @@ export async function buildComparativeBS(
     priorDate = d.toISOString().split('T')[0]!;
   }
 
-  const priorBS = await reportService.buildBalanceSheet(tenantId, priorDate, basis, companyId, null, groupBy);
+  const priorBS = await reportService.buildBalanceSheet(tenantId, priorDate, basis, companyId, null, groupBy, lens);
 
   // Per-column asOfDate lets the web's QuickZoom drill-down build the right
   // transaction filter for each period. Variance columns carry no date.
@@ -564,8 +570,11 @@ export async function buildPLByTag(
   tagIdList: string,
   companyId: string | null = null,
   groupBy: reportService.ReportGroupBy | null = null,
+  // U-60 adjusting lens (default include), applied to every tag column.
+  opts: { adjusting?: reportService.AdjustingFilter | null } = {},
 ) {
   const grouped = groupBy !== null;
+  const lens = { adjusting: opts.adjusting ?? null };
   const requested = tagIdList.split(',').map((s) => s.trim()).filter(Boolean);
   const tagRows = await db.select({ id: tags.id, name: tags.name }).from(tags)
     .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, requested)));
@@ -580,7 +589,7 @@ export async function buildPLByTag(
   columns.push({ label: 'Total', startDate: '', endDate: '' });
 
   const plResults = await Promise.all(selected.map((t) =>
-    reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId, t.id, groupBy)));
+    reportService.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId, t.id, groupBy, lens)));
 
   type PLType = 'revenue' | 'cogs' | 'expense' | 'other_revenue' | 'other_expense';
   const sectionKey: Record<PLType, 'revenue' | 'cogs' | 'expenses' | 'otherRevenue' | 'otherExpenses'> = {

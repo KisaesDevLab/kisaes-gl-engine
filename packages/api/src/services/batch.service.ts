@@ -475,11 +475,13 @@ export async function saveBatch(
         });
       }
 
+      // The batch JE grid has no name column: the A/R / A/P name rule
+      // (U-58) is not applied to it.
       const txn = await journalEntryService.createJournalEntry(tenantId, {
         txnDate: groupRows[0]!.date!,
         memo: groupRows[0]!.memo,
         lines,
-      }, userId, companyId);
+      }, userId, companyId, { arApNames: false });
 
       for (const row of groupRows) {
         savedTxns.push({ id: txn.id, txnNumber: txn.txnNumber, rowNumber: row.rowNumber });

@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import DecimalLib from 'decimal.js';
 import { createInvoiceSchema, transactionFiltersSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -10,6 +11,8 @@ import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as ledger from '../services/ledger.service.js';
 import * as invoiceService from '../services/invoice.service.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
 
 export const estimatesRouter = Router();
 estimatesRouter.use(authenticate);
@@ -34,7 +37,8 @@ estimatesRouter.post('/', validate(createInvoiceSchema), async (req, res) => {
     status: 'draft',
     invoiceStatus: 'draft',
     lines: req.body.lines.map((l: { accountId: string; quantity: string; unitPrice: string; description?: string }) => {
-      const lineTotal = parseFloat(l.quantity) * parseFloat(l.unitPrice);
+      // Exact decimal at the ledger's scale (was float math).
+      const lineTotal = ledger.round4(new Decimal(l.quantity).times(l.unitPrice));
       return { accountId: l.accountId, debit: '0', credit: lineTotal.toFixed(4), description: l.description };
     }),
   }, req.userId, req.companyId);

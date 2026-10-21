@@ -122,33 +122,57 @@ export async function getById(tenantId: string, id: string) {
   return sched;
 }
 
+/**
+ * Edit a schedule. `expectedUpdatedAt` (U-66, recurring-guard-v1) is the
+ * updatedAt the caller last read: when given, the update applies only if
+ * the stored updated_at still equals it (to the millisecond, as JSON carries
+ * it), else 409 STALE_SCHEDULE and nothing changes. Checked in the UPDATE
+ * itself, so two concurrent edits can't both pass.
+ */
 export async function update(tenantId: string, id: string, input: {
   name?: string | null; frequency?: string; intervalValue?: number; mode?: string;
   startDate?: string; endDate?: string | null;
+  expectedUpdatedAt?: string;
 }, userId?: string) {
-  const before = await db.query.recurringSchedules.findFirst({
-    where: and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)),
+  // One database transaction: the row is read FOR UPDATE, so the audit
+  // "before" image is the row the guarded UPDATE replaces.
+  return db.transaction(async (tx) => {
+    const [before] = await tx.select().from(recurringSchedules)
+      .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)))
+      .for('update')
+      .limit(1);
+    if (!before) throw AppError.notFound('Recurring schedule not found');
+    // Explicit field pick — never spread the caller's object into .set(), so
+    // no route can smuggle tenantId/companyId/nextOccurrence/isActive through.
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (input.frequency !== undefined) patch['frequency'] = input.frequency;
+    if (input.intervalValue !== undefined) patch['intervalValue'] = input.intervalValue;
+    if (input.mode !== undefined) patch['mode'] = input.mode;
+    if (input.startDate !== undefined) patch['startDate'] = input.startDate;
+    if (input.endDate !== undefined) patch['endDate'] = input.endDate;
+    if (input.name !== undefined) patch['name'] = (typeof input.name === 'string' && input.name.trim()) || null;
+    // Moving the start date before anything has posted drags nextOccurrence with
+    // it (otherwise the next run would still fire on the old start date).
+    if (input.startDate && !before.lastPostedAt) patch['nextOccurrence'] = input.startDate;
+    const conds = [eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)];
+    if (input.expectedUpdatedAt !== undefined) {
+      conds.push(sql`date_trunc('milliseconds', ${recurringSchedules.updatedAt}) = ${input.expectedUpdatedAt}::timestamptz`);
+    }
+    const [updated] = await tx.update(recurringSchedules)
+      .set(patch)
+      .where(and(...conds))
+      .returning();
+    if (!updated && input.expectedUpdatedAt !== undefined) {
+      throw AppError.conflict(
+        'This recurring schedule was changed by someone else since you opened it. Reload it and make your change again.',
+        'STALE_SCHEDULE',
+        { updatedAt: before.updatedAt },
+      );
+    }
+    if (!updated) throw AppError.notFound('Recurring schedule not found');
+    await auditLog(tenantId, 'update', 'recurring_schedule', updated.id, before, updated, userId, tx);
+    return updated;
   });
-  if (!before) throw AppError.notFound('Recurring schedule not found');
-  // Explicit field pick — never spread the caller's object into .set(), so
-  // no route can smuggle tenantId/companyId/nextOccurrence/isActive through.
-  const patch: Record<string, unknown> = { updatedAt: new Date() };
-  if (input.frequency !== undefined) patch['frequency'] = input.frequency;
-  if (input.intervalValue !== undefined) patch['intervalValue'] = input.intervalValue;
-  if (input.mode !== undefined) patch['mode'] = input.mode;
-  if (input.startDate !== undefined) patch['startDate'] = input.startDate;
-  if (input.endDate !== undefined) patch['endDate'] = input.endDate;
-  if (input.name !== undefined) patch['name'] = (typeof input.name === 'string' && input.name.trim()) || null;
-  // Moving the start date before anything has posted drags nextOccurrence with
-  // it (otherwise the next run would still fire on the old start date).
-  if (input.startDate && !before.lastPostedAt) patch['nextOccurrence'] = input.startDate;
-  const [updated] = await db.update(recurringSchedules)
-    .set(patch)
-    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)))
-    .returning();
-  if (!updated) throw AppError.notFound('Recurring schedule not found');
-  await auditLog(tenantId, 'update', 'recurring_schedule', updated.id, before ?? null, updated, userId);
-  return updated;
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
@@ -242,11 +266,12 @@ export async function postNext(tenantId: string, scheduleId: string) {
     const apAccount = await db.query.accounts.findFirst({
       where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_payable')),
     });
+    // Exact decimal (U-64): the template's stored amount, all 4 places.
     const expenseLines = template.lines
-      .filter((l) => parseFloat(l.debit) > 0 && (!apAccount || l.accountId !== apAccount.id))
+      .filter((l) => new Decimal(l.debit || '0').greaterThan(0) && (!apAccount || l.accountId !== apAccount.id))
       .map((l) => ({
         accountId: l.accountId,
-        amount: parseFloat(l.debit).toFixed(2),
+        amount: new Decimal(l.debit).toFixed(4),
         description: l.description || undefined,
         // ADR 0XX §7.2 — carry the template line's tag onto each
         // generated instance so segment-scoped recurrences keep their
@@ -279,7 +304,7 @@ export async function postNext(tenantId: string, scheduleId: string) {
       db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'sales_tax_payable')) }),
     ]);
     const revenueLines = template.lines
-      .filter((l) => parseFloat(l.credit) > 0
+      .filter((l) => new Decimal(l.credit || '0').greaterThan(0)
         && l.accountId !== arAccount?.id
         && l.accountId !== taxAccount?.id)
       .map((l) => {
@@ -318,6 +343,10 @@ export async function postNext(tenantId: string, scheduleId: string) {
       description: l.description || undefined,
       // ADR 0XX §7.2 — preserve per-line tag on every recurring instance.
       tagId: l.tagId ?? null,
+      // U-64: the line's name, and its billable mark — a new occurrence's
+      // billable line starts 'unbilled' (ledger billableColumns).
+      contactId: l.contactId ?? null,
+      isBillable: l.isBillable === true,
     }));
 
     txn = await ledger.postTransaction(tenantId, {
@@ -326,6 +355,13 @@ export async function postNext(tenantId: string, scheduleId: string) {
       contactId: template.contactId || undefined,
       memo: template.memo || undefined,
       total: template.total || undefined,
+      // A journal entry's reporting basis and adjusting flag carry over.
+      basis: (template.basis as 'cash' | 'accrual' | 'both' | null) ?? 'both',
+      isAdjusting: template.isAdjusting === true,
+      // U-64: provenance — which schedule posted it.
+      recurringScheduleId: sched.id,
+      source: 'recurring',
+      sourceId: sched.id,
       lines,
     }, undefined, template.companyId || undefined);
   }

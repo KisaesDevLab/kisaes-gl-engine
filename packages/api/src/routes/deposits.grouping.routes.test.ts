@@ -361,7 +361,8 @@ describe('deposit grouping (U-52)', () => {
       txnType: 'journal_entry', txnDate: '2026-08-10',
       lines: [
         { accountId: c.clearing, debit: '13.0000', credit: '0' },
-        { accountId: c.ar, debit: '0', credit: '13.0000' },
+        // An A/R line of a journal entry names its customer (U-58).
+        { accountId: c.ar, debit: '0', credit: '13.0000', contactId: c.customer },
       ],
     });
     expect(editAmount.status).toBe(409);
@@ -370,7 +371,8 @@ describe('deposit grouping (U-52)', () => {
       txnType: 'journal_entry', txnDate: '2026-08-10', memo: 'keeps the amount',
       lines: [
         { accountId: c.clearing, debit: '12.0000', credit: '0' },
-        { accountId: c.ar, debit: '0', credit: '12.0000' },
+        // An A/R line of a journal entry names its customer (U-58).
+        { accountId: c.ar, debit: '0', credit: '12.0000', contactId: c.customer },
       ],
     });
     expect(editMemo.status).toBe(200);
