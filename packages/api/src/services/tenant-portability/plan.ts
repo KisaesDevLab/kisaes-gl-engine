@@ -573,6 +573,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'template_transactions.daily_sales_template_id': 'tenant-ref:daily_sales_templates',
   'template_transactions.source_transaction_id': 'tenant-ref:transactions',
   'template_transactions.to_account_id': 'tenant-ref:accounts',
+  'template_transactions.updated_by': 'identity',
   'transaction_classification_state.company_id': 'tenant-ref:companies',
   'transaction_classification_state.transaction_id': 'tenant-ref:transactions',
   'transaction_classification_state.suggested_account_id': 'tenant-ref:accounts',

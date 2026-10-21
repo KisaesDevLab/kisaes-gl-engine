@@ -9,7 +9,7 @@
  * same draft on the same date posts: same builders, same scope checks, the
  * same closing-date rule, check numbers allocated on the transaction.
  * Expense header tags (E3: the expense create body has none) are added on
- * the same transaction.
+ * the same transaction. A journal entry takes the next JE number.
  */
 
 import { and, eq } from 'drizzle-orm';
@@ -60,8 +60,13 @@ export async function replayDraft(
       return { id: t.id, txnType: t.txnType };
     }
     case 'journal_entry': {
-      const input = journalEntryInput(td.draft, date) as CreateJournalEntryInput;
-      const t = await journalEntryService.createJournalEntry(tenantId, input, userId, company, tx);
+      // A template holds no number; each posting takes the company's next
+      // journal entry number (U-59), read on the posting transaction.
+      const input = {
+        ...(journalEntryInput(td.draft, date) as CreateJournalEntryInput),
+        txnNumber: await journalEntryService.nextJournalEntryNumber(tenantId, companyId, tx),
+      };
+      const t = await journalEntryService.createJournalEntry(tenantId, input, userId, company, {}, tx);
       return { id: t.id, txnType: t.txnType };
     }
     case 'daily_sales':

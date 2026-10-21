@@ -166,6 +166,7 @@ export async function snapshotTransaction(
         draft: {
           ...(txn.memo ? { memo: txn.memo } : {}),
           basis: (txn.basis as 'cash' | 'accrual' | 'both' | null) ?? 'both',
+          ...(txn.isAdjusting ? { isAdjusting: true } : {}),
           lines: lines.map((l) => ({
             accountId: l.accountId, debit: s4(l.debit), credit: s4(l.credit), ...optStr(l.description),
             tagId: l.tagId ?? null, ...(l.contactId ? { contactId: l.contactId } : {}),

@@ -176,8 +176,8 @@ export async function updateJournalEntry(tenantId: string, txnId: string, input:
  * and deleted entries count, so a number is not suggested twice. AJEs keep
  * their own numbering and are not counted.
  */
-export async function nextJournalEntryNumber(tenantId: string, companyId?: string | null): Promise<string> {
-  const result = await db.execute(sql`
+export async function nextJournalEntryNumber(tenantId: string, companyId?: string | null, executor: DbOrTx = db): Promise<string> {
+  const result = await executor.execute(sql`
     SELECT (COALESCE(MAX(txn_number::numeric), 0) + 1)::text AS next
     FROM transactions
     WHERE tenant_id = ${tenantId}

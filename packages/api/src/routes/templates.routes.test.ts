@@ -283,3 +283,24 @@ describe('from-transaction', () => {
     void journalLines; void and;
   });
 });
+
+describe('journal entry templates after je-adjusting-v1 / je-names-v1 / je-number-v1', () => {
+  it('hold isAdjusting and line names; each entry takes the next JE number', async () => {
+    const t = await post({
+      name: 'Accrual', kind: 'journal_entry',
+      draft: { isAdjusting: true, lines: [{ accountId: c.ar, debit: '25.0000', contactId: c.customer }, { accountId: c.income, credit: '25.0000' }] },
+    });
+    expect(t.status, JSON.stringify(t.json)).toBe(201);
+    expect(t.json.template.draft).toMatchObject({ isAdjusting: true, lines: [{ contactId: c.customer }, {}] });
+    const first = await srv.request('POST', `/api/v1/templates/${t.json.template.id}/enter`, c.token, { occurrenceDate: '2026-03-31' }, c.companyId);
+    expect(first.status, JSON.stringify(first.json)).toBe(201);
+    const second = await srv.request('POST', `/api/v1/templates/${t.json.template.id}/enter`, c.token, { occurrenceDate: '2026-04-30' }, c.companyId);
+    const rows = await db.select().from(transactions).where(eq(transactions.tenantId, c.tenantId)).orderBy(transactions.txnDate);
+    expect(rows.map((r) => [r.txnNumber, r.isAdjusting])).toEqual([['1', true], ['2', true]]);
+    const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, second.json.transaction.id)).orderBy(journalLines.lineOrder);
+    expect(lines.map((l) => l.contactId)).toEqual([c.customer, null]);
+    // from-transaction snapshots the adjusting flag.
+    const copy = await srv.request('POST', '/api/v1/templates/from-transaction', c.token, { transactionId: first.json.transaction.id, name: 'Copy' }, c.companyId);
+    expect(copy.json.template.draft).toMatchObject({ isAdjusting: true, lines: [{ contactId: c.customer }, {}] });
+  });
+});
