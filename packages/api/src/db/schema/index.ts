@@ -57,6 +57,7 @@ export * from './imports.js';
 export * from './extraction.js';
 export * from './daily-sales.js';
 export * from './je-templates.js';
+export * from './transaction-templates.js';
 export * from './permissions.js';
 export * from './firm-integrations.js';
 export * from './firm-peers.js';

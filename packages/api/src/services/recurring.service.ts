@@ -213,6 +213,7 @@ export async function unarchive(tenantId: string, id: string, userId?: string) {
 
 export async function postNext(tenantId: string, scheduleId: string) {
   const sched = await getById(tenantId, scheduleId);
+  if (!sched.templateTransactionId) throw AppError.badRequest('This schedule has no source transaction');
   const claimedOccurrence = sched.nextOccurrence;
   const nextOcc = calculateNextOccurrence(sched.nextOccurrence, sched.frequency, sched.intervalValue ?? 1);
   const isExpired = sched.endDate && new Date(nextOcc) > new Date(sched.endDate);

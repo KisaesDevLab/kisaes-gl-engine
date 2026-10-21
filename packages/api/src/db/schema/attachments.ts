@@ -43,7 +43,17 @@ export const recurringSchedules = pgTable('recurring_schedules', {
   // Optional friendly name for the schedule (e.g. "Monthly rent"). Falls back
   // to the template transaction's memo/number in the UI when unset.
   name: varchar('name', { length: 255 }),
-  templateTransactionId: uuid('template_transaction_id').notNull(),
+  // The posted transaction the schedule was made from (web, API v2). NULL
+  // for a schedule of a template made without posting (0225, U-62).
+  templateTransactionId: uuid('template_transaction_id'),
+  // The template the schedule posts (0225). Set for every schedule; legacy
+  // schedules got a 'legacy' template in the migration.
+  templateId: uuid('template_id'),
+  // Occurrences left (NULL = no limit); the schedule stops at 0.
+  remainingCount: integer('remaining_count'),
+  // Day-of-month anchor for monthly cadences (Jan 31 -> Feb 28 -> Mar 31);
+  // NULL reads as start_date.
+  anchorDate: date('anchor_date'),
   frequency: varchar('frequency', { length: 20 }).notNull(),
   intervalValue: integer('interval_value').default(1),
   mode: varchar('mode', { length: 20 }).default('auto'),
