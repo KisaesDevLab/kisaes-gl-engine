@@ -4,7 +4,7 @@
 
 import { eq, and, sql, count, inArray } from 'drizzle-orm';
 import type { WriteCheckInput, UpdateCheckInput } from '@kis-books/shared';
-import { db, type DbOrTx } from '../db/index.js';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import {
   transactions, companies, journalLines as journalLinesTable, tags, transactionTags,
 } from '../db/schema/index.js';
@@ -117,7 +117,7 @@ type CheckBody = Pick<WriteCheckInput, 'amount' | 'lines' | 'bankAccountId'>;
  * database-backed scope checks (line customers, header tags) run inside
  * the posting transaction — assertCheckRefsInScope.
  */
-function buildCheckLines(input: CheckBody) {
+export function buildCheckLines(input: CheckBody) {
   const amount = exactAmount(input.amount, 'amount');
   if (!amount.greaterThan(0)) {
     throw AppError.badRequest('The check amount must be greater than zero', 'VALIDATION_ERROR');
@@ -152,7 +152,7 @@ function buildCheckLines(input: CheckBody) {
  * must the header tagIds — 400 VALIDATION_ERROR otherwise. Line accounts
  * and the bank account are checked by the ledger (assertAccountsInScope).
  */
-async function assertCheckRefsInScope(
+export async function assertCheckRefsInScope(
   tx: DbOrTx, tenantId: string, companyId: string | undefined,
   input: { lines: WriteCheckInput['lines']; tagIds?: string[] },
 ) {
@@ -167,8 +167,16 @@ async function assertCheckRefsInScope(
   }
 }
 
-export async function createCheck(tenantId: string, input: WriteCheckInput, userId?: string, companyId?: string) {
+/**
+ * `outerTx` (templates, U-62): post inside the caller's transaction. The
+ * check number is then allocated on that transaction too, so a rollback of
+ * the caller's work leaves the counter where it was.
+ */
+export async function createCheck(
+  tenantId: string, input: WriteCheckInput, userId?: string, companyId?: string, outerTx?: Tx,
+) {
   const journalLines = buildCheckLines(input);
+  const numbering: DbOrTx = outerTx ?? db;
 
   // Determine check number
   let checkNumber: number | null = null;
@@ -182,12 +190,12 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
     // account (banks reject them, and a silent duplicate corrupts the
     // register), then advance the auto counter past the manual number
     // so the next auto-assigned check can't collide with it.
-    await assertCheckNumberFree(db, tenantId, input.bankAccountId, input.checkNumber);
-    await advanceCounterPast(db, tenantId, input.bankAccountId, input.checkNumber);
+    await assertCheckNumberFree(numbering, tenantId, input.bankAccountId, input.checkNumber);
+    await advanceCounterPast(numbering, tenantId, input.bankAccountId, input.checkNumber);
     checkNumber = input.checkNumber;
     printStatus = 'hand_written';
   } else {
-    checkNumber = await allocateCheckNumber(db, tenantId, input.bankAccountId);
+    checkNumber = await allocateCheckNumber(numbering, tenantId, input.bankAccountId);
     printStatus = 'hand_written';
   }
 
@@ -196,7 +204,7 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
   // back. Without this, a crash between the ledger commit and the
   // check-fields UPDATE would leave a transaction posted that lacks a
   // check number — orphaned check-allocation that's hard to reconcile.
-  const txn = await db.transaction(async (tx) => {
+  const post = async (tx: Tx) => {
     await assertCheckRefsInScope(tx, tenantId, companyId, input);
     const t = await ledger.postTransaction(tenantId, {
       txnType: 'expense',
@@ -223,7 +231,8 @@ export async function createCheck(tenantId: string, input: WriteCheckInput, user
       }
     }
     return t;
-  });
+  };
+  const txn = outerTx ? await post(outerTx) : await db.transaction(post);
 
   return { ...txn, checkNumber, printStatus, payeeNameOnCheck: input.payeeNameOnCheck };
 }

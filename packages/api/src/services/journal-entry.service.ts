@@ -12,7 +12,7 @@ import { assertContactsInScope } from './line-contacts.service.js';
 
 const CONTROL_TAGS = ['accounts_receivable', 'accounts_payable'];
 
-function buildJournalEntryPayload(input: CreateJournalEntryInput) {
+export function buildJournalEntryPayload(input: CreateJournalEntryInput) {
   return {
     txnType: 'journal_entry' as const,
     txnDate: input.txnDate,
@@ -97,12 +97,14 @@ async function loadEntry(tx: Tx, tenantId: string, id: string) {
   return { ...header, lines };
 }
 
+/** `outerTx` (templates, U-62): post inside the caller's transaction. */
 export async function createJournalEntry(
   tenantId: string, input: CreateJournalEntryInput, userId?: string, companyId?: string, opts: JournalEntryOptions = {},
+  outerTx?: Tx,
 ) {
   assertReverseOn(input.txnDate, input.reverseOn);
   const payload = buildJournalEntryPayload(input);
-  return db.transaction(async (tx) => {
+  const inner = async (tx: Tx) => {
     await assertJournalEntryNames(tx, tenantId, companyId, payload.lines, opts);
     const posted = await ledger.postTransaction(tenantId, payload, userId, companyId, tx);
     const entry = await loadEntry(tx, tenantId, posted.id);
@@ -110,7 +112,8 @@ export async function createJournalEntry(
       ? await ledger.postReversal(tx, tenantId, entry, input.reverseOn, userId, companyId)
       : null;
     return { ...entry, reversalTransactionId: reversal?.id ?? null, reverseOn: reversal?.txnDate ?? null };
-  });
+  };
+  return outerTx ? inner(outerTx) : db.transaction(inner);
 }
 
 /**

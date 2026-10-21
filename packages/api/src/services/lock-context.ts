@@ -53,6 +53,16 @@ export function clearLockContextSecrets(ctx: LockDateContext): void {
 // request may check several dates (an update checks the old and the new
 // one, a payment may post more than one transaction). They are cleared
 // once the response has finished or the connection closed.
+/**
+ * Runs `fn` with a closed-period context that can never open a closed
+ * period: no closing-date password and no staff override (the recurring
+ * catch-up run, U-63). Anything `fn` posts into a closed period gets the
+ * hard 423, whatever the surrounding request carried.
+ */
+export function runWithoutOverride<T>(fn: () => Promise<T>): Promise<T> {
+  return storage.run({ userType: 'client', overrideConfirmed: false }, fn);
+}
+
 export function lockContextMiddleware(req: Request, res: Response, next: NextFunction) {
   const closingPassword = takeClosingPassword(req);
   const ctx: LockDateContext = {
