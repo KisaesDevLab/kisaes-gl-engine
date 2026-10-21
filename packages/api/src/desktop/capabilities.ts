@@ -44,4 +44,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'feed-deposit-groupings-v1',
   /** Daily-sales post/void honour the closing date and closingPassword; company-scoped; string amounts only (U-57). */
   'daily-sales-lock-v1',
+  /** Journal entry lines take contactId; an A/R or A/P line needs one, one such line per entry (U-58). */
+  'je-names-v1',
+  /** Journal entry txnNumber (≤ 20 characters); GET /journal-entries/next-number (U-59). */
+  'je-number-v1',
+  /** isAdjusting on journal entries; adjusting=include|exclude|only on reports and the transaction list (U-60). */
+  'je-adjusting-v1',
+  /** Journal entry reverseOn: automatic reversing entry, voided / deleted / re-created with the original (U-61). */
+  'je-reversing-v1',
+  /** Debits must equal credits exactly at 4 places; no tolerance (U-65). */
+  'balance-exact-v1',
+  /** Recurring copies line names and billable marks; PUT /recurring/:id takes expectedUpdatedAt (409 STALE_SCHEDULE) (U-64, U-66). */
+  'recurring-guard-v1',
 ];

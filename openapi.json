@@ -27000,6 +27000,48 @@
         ]
       }
     },
+    "/api/v1/journal-entries/next-number": {
+      "get": {
+        "description": "The highest all-digit journal entry number in the company plus one, as a string; \"1\" when there is none. Void and deleted entries count. Numbers are not reserved and duplicates are allowed.",
+        "operationId": "get_api_v1_journal_entries_next_number",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "next": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "next"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Suggested next journal entry number (je-number-v1)",
+        "tags": [
+          "journal-entries"
+        ]
+      }
+    },
     "/api/v1/knowledge": {
       "get": {
         "operationId": "get_api_v1_knowledge",
@@ -40477,6 +40519,11 @@
                       }
                     ]
                   },
+                  "expectedUpdatedAt": {
+                    "description": "updatedAt of the schedule as last read (recurring-guard-v1); a mismatch is 409 STALE_SCHEDULE",
+                    "format": "date-time",
+                    "type": "string"
+                  },
                   "frequency": {
                     "enum": [
                       "daily",
@@ -47913,6 +47960,9 @@
                     "format": "uuid",
                     "type": "string"
                   },
+                  "isAdjusting": {
+                    "type": "boolean"
+                  },
                   "lines": {
                     "items": {
                       "additionalProperties": true,
@@ -47920,6 +47970,17 @@
                         "accountId": {
                           "format": "uuid",
                           "type": "string"
+                        },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "credit": {
                           "default": "0",
@@ -47974,8 +48035,23 @@
                   "memo": {
                     "type": "string"
                   },
+                  "reverseOn": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "txnDate": {
                     "minLength": 1,
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 20,
                     "type": "string"
                   }
                 },
@@ -48039,6 +48115,9 @@
                     "format": "uuid",
                     "type": "string"
                   },
+                  "isAdjusting": {
+                    "type": "boolean"
+                  },
                   "lines": {
                     "items": {
                       "additionalProperties": true,
@@ -48046,6 +48125,17 @@
                         "accountId": {
                           "format": "uuid",
                           "type": "string"
+                        },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "credit": {
                           "default": "0",
@@ -48100,8 +48190,23 @@
                   "memo": {
                     "type": "string"
                   },
+                  "reverseOn": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "txnDate": {
                     "minLength": 1,
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 20,
                     "type": "string"
                   }
                 },
@@ -64076,7 +64181,223 @@
     },
     "/api/v1/transactions": {
       "get": {
+        "description": "Rows carry `isAdjusting` and `reversesTransactionId` (je-adjusting-v1, je-reversing-v1); `adjusting=include|exclude|only` filters adjusting entries.",
         "operationId": "get_api_v1_transactions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "txnType",
+            "required": false,
+            "schema": {
+              "enum": [
+                "invoice",
+                "customer_payment",
+                "cash_sale",
+                "expense",
+                "deposit",
+                "transfer",
+                "journal_entry",
+                "credit_memo",
+                "customer_refund",
+                "bill",
+                "vendor_credit",
+                "bill_payment",
+                "daily_sales",
+                "aje"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "draft",
+                "posted",
+                "void",
+                "deleted"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "items": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "invoiceStatus",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [
+                  "draft",
+                  "sent",
+                  "viewed",
+                  "partial",
+                  "paid",
+                  "void"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accountId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tagId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "pattern": "^[a-zA-Z0-9_-]{1,40}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "cash",
+                "accrual"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "date",
+                "type",
+                "number",
+                "payee",
+                "memo",
+                "category",
+                "amount",
+                "status",
+                "dueDate",
+                "balanceDue",
+                "invoiceStatus"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeDeleted",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -64090,12 +64411,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List transactions",
         "tags": [
           "transactions"
         ]
       },
       "post": {
-        "description": "Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting.",
+        "description": "Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): an A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), at most one such line (400 JE_AR_AP_ONE_PER_ENTRY); with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it.",
         "operationId": "post_api_v1_transactions",
         "requestBody": {
           "content": {
@@ -64358,6 +64680,128 @@
                       "txnType"
                     ],
                     "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "basis": {
+                        "default": "both",
+                        "enum": [
+                          "cash",
+                          "accrual",
+                          "both"
+                        ],
+                        "type": "string"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "isAdjusting": {
+                        "type": "boolean"
+                      },
+                      "lines": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accountId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "credit": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "debit": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "isTaxable": {
+                              "default": false,
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "string"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "taxAmount": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "taxRate": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "unitPrice": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "accountId"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 500,
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "reverseOn": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnNumber": {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "journal_entry",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "lines",
+                      "txnType"
+                    ],
+                    "type": "object"
                   }
                 ]
               }
@@ -64378,7 +64822,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Create a transaction (body per txnType; deposit, transfer and expense documented)",
+        "summary": "Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)",
         "tags": [
           "transactions"
         ]
@@ -64617,7 +65061,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404.",
+        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. A journal entry edit deletes its automatic reversal and, with reverseOn, posts a new one; a reversal changed since it was created is 409 REVERSAL_EDITED.",
         "operationId": "put_api_v1_transactions_by_id",
         "parameters": [
           {
@@ -64891,6 +65335,128 @@
                       "txnType"
                     ],
                     "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "basis": {
+                        "default": "both",
+                        "enum": [
+                          "cash",
+                          "accrual",
+                          "both"
+                        ],
+                        "type": "string"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
+                        "type": "string"
+                      },
+                      "isAdjusting": {
+                        "type": "boolean"
+                      },
+                      "lines": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accountId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "credit": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "debit": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "isTaxable": {
+                              "default": false,
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "string"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "taxAmount": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "taxRate": {
+                              "default": "0",
+                              "type": "string"
+                            },
+                            "unitPrice": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "accountId"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 500,
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "memo": {
+                        "type": "string"
+                      },
+                      "reverseOn": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "txnDate": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "txnNumber": {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
+                      "txnType": {
+                        "const": "journal_entry",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txnDate",
+                      "lines",
+                      "txnType"
+                    ],
+                    "type": "object"
                   }
                 ]
               }
@@ -64911,7 +65477,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Edit a transaction (body per txnType; deposit, transfer and expense documented)",
+        "summary": "Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)",
         "tags": [
           "transactions"
         ]

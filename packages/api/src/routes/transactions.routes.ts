@@ -48,7 +48,11 @@ transactionsRouter.use(requireResource('transactions'));
 transactionsRouter.use(closingPasswordLimiter);
 transactionsRouter.use(lockContextMiddleware);
 
-transactionsRouter.get('/', async (req, res) => {
+transactionsRouter.get('/', describe({
+  summary: 'List transactions',
+  description: 'Rows carry `isAdjusting` and `reversesTransactionId` (je-adjusting-v1, je-reversing-v1); `adjusting=include|exclude|only` filters adjusting entries.',
+  query: transactionFiltersSchema,
+}), async (req, res) => {
   const filters = transactionFiltersSchema.parse(req.query);
   const result = await ledger.listTransactions(req.tenantId, filters, req.companyId);
   res.json(result);
