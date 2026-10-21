@@ -966,6 +966,16 @@ function readBasis(req: { query: Record<string, unknown> }): 'cash' | 'accrual' 
   return req.query['basis'] === 'cash' ? 'cash' : 'accrual';
 }
 
+// ?adjusting=include | exclude | only (U-60, je-adjusting-v1; default
+// include). Unlike basis, an unknown value is 400: silently including
+// adjusting entries would show the wrong numbers.
+function readAdjusting(req: { query: Record<string, unknown> }): reportService.AdjustingFilter {
+  const v = req.query['adjusting'];
+  if (v === undefined || v === '') return 'include';
+  if (v === 'include' || v === 'exclude' || v === 'only') return v;
+  throw AppError.badRequest('adjusting must be include, exclude or only', 'VALIDATION_ERROR');
+}
+
 // ?account_numbers=0 mirrors the on-screen "Account #" toggle into exports —
 // the PDF/CSV drops account numbers from labels to match the screen.
 function readHideAcctNums(req: { query: Record<string, unknown> }): { _hideAccountNumbers?: true } {
@@ -1021,7 +1031,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
     const data = tagId
       ? await comparisonService.buildPLByTag(req.tenantId, sd, ed, b, tagId, companyId, readGroupBy(req))
       : null;
-    const fallback = data ?? await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
+    const fallback = data ?? await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req), { adjusting: readAdjusting(req) });
     await respond(res, { ...fallback, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   } else if (compare) {
     const data = await comparisonService.buildComparativePL(
@@ -1037,7 +1047,7 @@ reportsRouter.get('/profit-loss', async (req, res) => {
     const wide = Array.isArray(data.columns) && data.columns.length > 7;
     await respond(res, { ...data, ...(wide ? { _landscape: true } : {}), ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   } else {
-    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req));
+    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req), { adjusting: readAdjusting(req) });
     await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   }
 });
@@ -1066,6 +1076,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     companyId,
     tagId,
     readGroupBy(req),
+    { adjusting: readAdjusting(req) },
   );
   await respond(res, { ...data, ...(display ? { display } : {}), ...readHideAcctNums(req) }, format);
 });
@@ -1696,6 +1707,7 @@ reportsRouter.get('/general-ledger', async (req, res) => {
     // ?account_ids= — whole-section filter; foreign/malformed ids are
     // dropped (readAccountIds + the tenant-scoped accounts query).
     readAccountIds(req),
+    { adjusting: readAdjusting(req) },
   );
   const hide = readHideAcctNums(req);
   const headerNote = glAccountFilterNote(data.accountFilter, hide._hideAccountNumbers === true);
@@ -1713,6 +1725,7 @@ reportsRouter.get('/trial-balance', async (req, res) => {
     resolveCompanyScope(req),
     readTagFilter(req),
     readBasis(req),
+    { adjusting: readAdjusting(req) },
   );
   await respond(res, { ...data, _exportColumns: [
     { key: 'account_number', label: '#' },
@@ -1869,7 +1882,7 @@ reportsRouter.get('/tax-estimate', async (req, res) => {
 reportsRouter.get('/transaction-list', async (req, res) => {
   const { start_date, end_date, txn_type, account_id, format } = req.query as Record<string, string>;
   const tagId = readTagFilter(req);
-  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id, ...(tagId ? { tagId } : {}), basis: readBasis(req) }, resolveCompanyScope(req));
+  const data = await reportService.buildTransactionList(req.tenantId, { startDate: start_date, endDate: end_date, txnType: txn_type, accountId: account_id, ...(tagId ? { tagId } : {}), basis: readBasis(req), adjusting: readAdjusting(req) }, resolveCompanyScope(req));
   // One row per journal line: mark the first line of each transaction so the
   // PDF draws a thicker rule between transactions. Wide 8-column layout →
   // landscape.
@@ -1893,7 +1906,7 @@ reportsRouter.get('/transaction-list', async (req, res) => {
 
 reportsRouter.get('/journal-entry-report', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
-  const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: start_date, endDate: end_date }, resolveCompanyScope(req), readTagFilter(req));
+  const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: start_date, endDate: end_date }, resolveCompanyScope(req), readTagFilter(req), readAdjusting(req));
   // One row per journal line so every debit/credit of each entry is shown.
   await respond(res, { ...data, title: 'Journal Entry Report', _exportColumns: [
     { key: 'txn_date', label: 'Date' },
