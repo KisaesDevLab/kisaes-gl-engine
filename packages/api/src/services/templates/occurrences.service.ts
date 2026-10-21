@@ -68,7 +68,12 @@ export type SkipReason =
   | 'CHECK_NUMBER' | 'VALIDATION' | 'AUTO_UNSUPPORTED' | 'NEEDS_CHECK';
 
 /** Test hooks (never set in production): called after the replay, inside the transaction. */
-export const __testHooks: { afterReplay?: (info: { templateId: string; date: string }) => void | Promise<void> } = {};
+export const __testHooks: {
+  /** Inside the replay savepoint, after the posting (auto runs only). */
+  inReplay?: (info: { templateId: string; date: string }) => void | Promise<void>;
+  /** After the replay, outside the savepoint, inside the occurrence transaction. */
+  afterReplay?: (info: { templateId: string; date: string }) => void | Promise<void>;
+} = {};
 
 export interface Actor {
   tenantId: string;
@@ -270,6 +275,7 @@ async function autoStep(actor: Actor, templateId: string, asOf: string, runId: s
       transactionId = await tx.transaction(async (sp) => {
         const r = await replayDraft(sp, actor.tenantId, tpl.companyId, actor.userId, td, date);
         await markProvenance(sp, actor.tenantId, r.id, sched, tpl.id);
+        if (__testHooks.inReplay) await __testHooks.inReplay({ templateId: tpl.id, date });
         return r.id;
       });
     } catch (err) {

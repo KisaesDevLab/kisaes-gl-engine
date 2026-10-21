@@ -37,6 +37,7 @@ import {
 import * as ledger from '../ledger.service.js';
 import * as recurringService from '../recurring.service.js';
 import { hashClosingPassword } from '../closing-password.service.js';
+import { AppError } from '../../utils/errors.js';
 import * as occurrences from './occurrences.service.js';
 import { TestServer, makeCompany, cleanTenant, transferDraft, monthlyAuto, type Co } from './templates.test-helpers.js';
 
@@ -53,6 +54,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   occurrences.__testHooks.afterReplay = undefined;
+  occurrences.__testHooks.inReplay = undefined;
   await srv.stop();
   while (tenantIds.length) await cleanTenant(tenantIds.pop()!);
 });
@@ -259,6 +261,31 @@ describe('failure paths', () => {
     expect({ bank: await balance(c.bank), exp: await balance(c.expense) }).toEqual(before);
     expect(await txnsOf()).toHaveLength(0);
     expect(await db.select().from(journalLines).where(eq(journalLines.tenantId, c.tenantId))).toHaveLength(0);
+  });
+
+  it('a refusal raised while posting rolls back to the savepoint: skipped with a reason, the run goes on', async () => {
+    const t = await createTemplate({
+      name: 'Rent', kind: 'check',
+      draft: { bankAccountId: c.bank, payeeNameOnCheck: 'Landlord', amount: '1500.0000', printLater: false, lines: [{ accountId: c.expense, amount: '1500.0000' }] },
+      schedule: monthlyAuto('2026-01-01'),
+    });
+    const [co] = await db.select({ s: companies.checkSettings }).from(companies).where(eq(companies.id, c.companyId));
+    let calls = 0;
+    occurrences.__testHooks.inReplay = () => {
+      calls += 1;
+      if (calls === 1) throw AppError.conflict('Check #1001 already exists on this bank account.');
+    };
+    const r = await runDue({ asOf: '2026-02-01' });
+    expect(r.json.failed).toEqual([]);
+    expect(r.json.skipped).toMatchObject([{ templateId: t.id, occurrenceDate: '2026-01-01', reason: 'CHECK_NUMBER', new: true }]);
+    expect(r.json.posted.map((p: { occurrenceDate: string }) => p.occurrenceDate)).toEqual(['2026-02-01']);
+    const posted = await txnsOf();
+    expect(posted.map((x) => [x.txnDate, x.checkNumber])).toEqual([['2026-02-01', 1001]]);
+    // The refused posting's check number went back with the savepoint.
+    const [coAfter] = await db.select({ s: companies.checkSettings }).from(companies).where(eq(companies.id, c.companyId));
+    const next = (v: unknown) => (v as { nextCheckNumbers?: Record<string, number> })?.nextCheckNumbers?.[c.bank];
+    expect(next(coAfter!.s)).toBe(1002);
+    void co;
   });
 
   it('a crash between claim and post leaves nothing; the next run posts once', async () => {
