@@ -16,10 +16,11 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, users, sessions, companies, accounts, auditLog, transactions, journalLines, userTenantAccess, userPermissions } from '../db/schema/index.js';
+import { tenants, users, sessions, companies, accounts, auditLog, transactions, journalLines, userTenantAccess, userPermissions, tags, transactionTags } from '../db/schema/index.js';
 import * as authService from './auth.service.js';
 import * as ledger from './ledger.service.js';
 import * as reportSvc from './report.service.js';
+import * as comparisonSvc from './report-comparison.service.js';
 import { reportsRouter } from '../routes/reports.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
@@ -27,10 +28,12 @@ let tenantId = '', userId = '', token = '', companyId = '', bankId = '', expId =
 
 async function cleanDb() {
   if (!tenantId) return;
+  await db.delete(transactionTags).where(eq(transactionTags.tenantId, tenantId));
   await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
   await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
   await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
   await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
+  await db.delete(tags).where(eq(tags.tenantId, tenantId));
   await db.delete(companies).where(eq(companies.tenantId, tenantId));
   const staff = await db.select({ id: users.id }).from(users).where(eq(users.tenantId, tenantId));
   if (staff.length) await db.delete(sessions).where(inArray(sessions.userId, staff.map((u) => u.id)));
@@ -155,5 +158,36 @@ describe('adjusting lens (U-60)', () => {
     const deflt = await get('/api/v1/reports/profit-loss?start_date=2026-01-01&end_date=2026-12-31');
     expect(deflt.json.totalExpenses).toBe(129.75);
     expect((await get('/api/v1/reports/profit-loss?adjusting=sometimes')).status).toBe(400);
+  });
+
+  it('the comparative and by-tag paths apply the lens to every column (M3)', async () => {
+    // Previous year: 2026 vs 2025.
+    for (const [adjusting, current, prior] of MODES) {
+      const cpl = await comparisonSvc.buildComparativePL(tenantId, '2026-01-01', '2026-12-31', 'accrual', 'previous_year', null, 'month', companyId, null, { adjusting });
+      expect(cpl.totalExpenses.slice(0, 2)).toEqual([current, prior]);
+      const cbs = await comparisonSvc.buildComparativeBS(tenantId, '2026-12-31', 'accrual', 'previous_year', companyId, null, { adjusting });
+      expect(cbs.assets.find((a) => a.accountId === bankId)!.values.slice(0, 2)).toEqual([neg(current + prior), neg(prior)]);
+    }
+    const months = await comparisonSvc.buildComparativePL(tenantId, '2026-01-01', '2026-03-31', 'accrual', 'multi_period', null, 'month', companyId, null, { adjusting: 'only' });
+    expect(months.totalExpenses).toEqual([0, 0, 29.75, 29.75]);
+
+    const [tag] = await db.insert(tags).values({ tenantId, name: 'Job 1' }).returning();
+    for (const [amount, isAdjusting] of [['7.0000', false], ['3.0000', true]] as const) {
+      await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-04-01', isAdjusting,
+        lines: [{ accountId: expId, debit: amount, credit: '0', tagId: tag!.id }, { accountId: bankId, debit: '0', credit: amount, tagId: tag!.id }],
+      }, userId, companyId);
+    }
+    const byTag = await comparisonSvc.buildPLByTag(tenantId, '2026-01-01', '2026-12-31', 'accrual', tag!.id, companyId, null, { adjusting: 'exclude' });
+    expect(byTag!.totalExpenses).toEqual([7, 7]);
+
+    // Through the routes.
+    const r1 = await get('/api/v1/reports/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=previous_year&adjusting=exclude');
+    expect(r1.json.totalExpenses.slice(0, 2)).toEqual([107, 0]);
+    const r2 = await get('/api/v1/reports/balance-sheet?as_of_date=2026-12-31&compare=previous_year&adjusting=only');
+    expect(r2.json.assets.find((a: any) => a.accountId === bankId).values.slice(0, 2)).toEqual([-42.75, -10]);
+    const r3 = await get(`/api/v1/reports/profit-loss?start_date=2026-01-01&end_date=2026-12-31&compare=by_tag&tag_id=${tag!.id}&adjusting=only`);
+    expect(r3.json.totalExpenses).toEqual([3, 3]);
+    expect((await get('/api/v1/reports/profit-loss?compare=previous_year&adjusting=x')).status).toBe(400);
   });
 });

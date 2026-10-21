@@ -1021,6 +1021,8 @@ reportsRouter.get('/profit-loss', async (req, res) => {
   const tagId = readTagFilter(req);
 
   const display = readDisplay(req);
+  // U-60: one lens for every path below, the comparative ones included.
+  const adjusting = readAdjusting(req);
   // ?show_pct=1 mirrors the on-screen "% of Revenue" toggle into the
   // standard P&L export (PDF/CSV gain the column).
   const showPct = req.query['show_pct'] === '1' || req.query['show_pct'] === 'true';
@@ -1029,9 +1031,9 @@ reportsRouter.get('/profit-loss', async (req, res) => {
   // the column view is not allowed and the standard P&L is returned.
   if (compare === 'by_tag') {
     const data = tagId
-      ? await comparisonService.buildPLByTag(req.tenantId, sd, ed, b, tagId, companyId, readGroupBy(req))
+      ? await comparisonService.buildPLByTag(req.tenantId, sd, ed, b, tagId, companyId, readGroupBy(req), { adjusting })
       : null;
-    const fallback = data ?? await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req), { adjusting: readAdjusting(req) });
+    const fallback = data ?? await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req), { adjusting });
     await respond(res, { ...fallback, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   } else if (compare) {
     const data = await comparisonService.buildComparativePL(
@@ -1041,13 +1043,14 @@ reportsRouter.get('/profit-loss', async (req, res) => {
       (period_type as any) || 'month',
       companyId,
       readGroupBy(req),
+      { adjusting },
     );
     // A full-year Monthly Breakdown is 13 amount columns — too wide for
     // portrait letter, so the PDF goes landscape past a handful of columns.
     const wide = Array.isArray(data.columns) && data.columns.length > 7;
     await respond(res, { ...data, ...(wide ? { _landscape: true } : {}), ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   } else {
-    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req), { adjusting: readAdjusting(req) });
+    const data = await reportService.buildProfitAndLoss(req.tenantId, sd, ed, b, companyId, tagId, readGroupBy(req), { adjusting });
     await respond(res, { ...data, ...(display ? { display } : {}), ...(showPct ? { showPct: true } : {}), ...readHideAcctNums(req) }, format);
   }
 });
@@ -1057,6 +1060,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
   const companyId = resolveCompanyScope(req);
   const tagId = readTagFilter(req);
   const display = readDisplay(req);
+  const adjusting = readAdjusting(req);
   if (compare) {
     const data = await comparisonService.buildComparativeBS(
       req.tenantId,
@@ -1065,6 +1069,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
       compare as any,
       companyId,
       readGroupBy(req),
+      { adjusting },
     );
     await respond(res, { ...data, ...(display ? { display } : {}), ...readHideAcctNums(req) }, format);
     return;
@@ -1076,7 +1081,7 @@ reportsRouter.get('/balance-sheet', async (req, res) => {
     companyId,
     tagId,
     readGroupBy(req),
-    { adjusting: readAdjusting(req) },
+    { adjusting },
   );
   await respond(res, { ...data, ...(display ? { display } : {}), ...readHideAcctNums(req) }, format);
 });
