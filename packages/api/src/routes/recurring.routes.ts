@@ -8,6 +8,10 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import * as recurringService from '../services/recurring.service.js';
+import * as occurrences from '../services/templates/occurrences.service.js';
+import { companyContext } from '../middleware/company.js';
+import { describe } from '../middleware/describe.js';
+import { runDueSchema } from '@kis-books/shared';
 import { pickEnum } from '../utils/list-query.js';
 
 // Explicit field allowlists — the previous `{...req.body}` spread into
@@ -68,6 +72,27 @@ recurringRouter.put('/:id', validate(updateScheduleSchema), async (req, res) => 
 recurringRouter.delete('/:id', async (req, res) => {
   await recurringService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Deactivated' });
+});
+
+// The catch-up run (U-63, recurring-run-due-v1). Company-scoped. Not behind
+// lockContextMiddleware and the body is strict: a closingPassword is 400,
+// and the runner itself never opens a closed period (runWithoutOverride).
+recurringRouter.post('/run-due', companyContext, describe({
+  summary: 'Post every due auto template occurrence once (recurring-run-due-v1)',
+  description: 'Response `{asOf, runId, more, posted:[{templateId,templateName,kind,clientForm,occurrenceDate,transactionId,total}], reminders:[{templateId,templateName,kind,clientForm,dueDates,dueCount,total}], skipped:[{templateId,templateName,kind,clientForm,occurrenceDate,reason,new}], failed:[{templateId,reason}]}`. `posted` includes earlier posts with the same runId. asOf later than tomorrow: 400 RUN_DUE_FUTURE.',
+}), validate(runDueSchema), async (req, res) => {
+  const result = await occurrences.runDue({ tenantId: req.tenantId, companyId: req.companyId, userId: req.userId }, req.body);
+  res.json(result);
+});
+
+const attentionQuery = z.object({ asOf: isoDate.optional() });
+
+recurringRouter.get('/attention', companyContext, describe({
+  summary: 'Due reminders and open skipped dates; changes nothing (recurring-run-due-v1)',
+  query: attentionQuery,
+}), async (req, res) => {
+  const { asOf } = attentionQuery.parse(req.query);
+  res.json(await occurrences.attention({ tenantId: req.tenantId, companyId: req.companyId, userId: req.userId }, asOf));
 });
 
 recurringRouter.post('/:id/post-now', async (req, res) => {

@@ -56,4 +56,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'balance-exact-v1',
   /** Recurring copies line names and billable marks; PUT /recurring/:id takes expectedUpdatedAt (409 STALE_SCHEDULE) (U-64, U-66). */
   'recurring-guard-v1',
+  /** /templates CRUD, groups, from-transaction, GET /templates/:id/draft, enter, skip, resolve; templates post nothing until entered (U-62). */
+  'templates-v1',
+  /** POST /recurring/run-due (exactly once per template and date, closed periods skipped) and GET /recurring/attention (U-63). */
+  'recurring-run-due-v1',
 ];

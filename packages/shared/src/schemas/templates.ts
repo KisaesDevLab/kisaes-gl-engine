@@ -20,8 +20,8 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 const uuid = z.string().uuid();
 const MAX_LINES = 500;
 
-export const templateKinds = ['check', 'expense', 'deposit', 'transfer', 'journal_entry', 'daily_sales'] as const;
-export type TemplateDraftKind = (typeof templateKinds)[number];
+export const txnTemplateKinds = ['check', 'expense', 'deposit', 'transfer', 'journal_entry', 'daily_sales'] as const;
+export type TemplateDraftKind = (typeof txnTemplateKinds)[number];
 
 export const checkTemplateDraftSchema = z.object({
   bankAccountId: uuid,
@@ -134,53 +134,53 @@ export type TemplateDraft =
   | { kind: 'journal_entry'; draft: JournalEntryTemplateDraft }
   | { kind: 'daily_sales'; draft: DailySalesTemplateDraft };
 
-export const templateFrequencies = ['daily', 'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly', 'annually'] as const;
+export const txnTemplateFrequencies = ['daily', 'weekly', 'biweekly', 'semimonthly', 'monthly', 'quarterly', 'annually'] as const;
 
-export const templateScheduleSchema = z.object({
+export const txnTemplateScheduleSchema = z.object({
   mode: z.enum(['remind', 'auto']),
-  frequency: z.enum(templateFrequencies),
+  frequency: z.enum(txnTemplateFrequencies),
   intervalValue: z.number().int().min(1).max(365).default(1),
   nextDate: isoDate,
   endDate: isoDate.nullable().optional(),
   remainingCount: z.number().int().min(1).max(9999).nullable().optional(),
 }).strict();
-export type TemplateScheduleInput = z.infer<typeof templateScheduleSchema>;
+export type TemplateScheduleInput = z.infer<typeof txnTemplateScheduleSchema>;
 
 const draftBody = z.record(z.string(), z.unknown())
   .describe('the create body of the kind (see the templates-v1 shapes); amounts are decimal strings');
 
-export const createTemplateSchema = z.object({
+export const createTxnTemplateSchema = z.object({
   name: z.string().trim().min(1).max(255),
   groupId: uuid.nullable().optional(),
-  kind: z.enum(templateKinds),
+  kind: z.enum(txnTemplateKinds),
   clientForm: z.string().trim().max(30).nullable().optional(),
   draft: draftBody,
-  schedule: templateScheduleSchema.nullable().optional(),
+  schedule: txnTemplateScheduleSchema.nullable().optional(),
 }).strict();
 
-export const createTemplateFromTransactionSchema = z.object({
+export const createTxnTemplateFromTransactionSchema = z.object({
   transactionId: uuid,
   name: z.string().trim().min(1).max(255),
   groupId: uuid.nullable().optional(),
   clientForm: z.string().trim().max(30).nullable().optional(),
-  schedule: templateScheduleSchema.nullable().optional(),
+  schedule: txnTemplateScheduleSchema.nullable().optional(),
 }).strict();
 
-export const updateTemplateSchema = z.object({
+export const updateTxnTemplateSchema = z.object({
   version: z.number().int().min(1),
   name: z.string().trim().min(1).max(255).optional(),
   groupId: uuid.nullable().optional(),
   clientForm: z.string().trim().max(30).nullable().optional(),
   draft: draftBody.optional(),
   // null removes the schedule ("Don't remind me").
-  schedule: templateScheduleSchema.nullable().optional(),
+  schedule: txnTemplateScheduleSchema.nullable().optional(),
 }).strict();
 
-export const templateGroupSchema = z.object({
+export const txnTemplateGroupSchema = z.object({
   name: z.string().trim().min(1).max(100),
 }).strict();
 
-export const enterTemplateSchema = z.object({
+export const enterTxnTemplateSchema = z.object({
   occurrenceDate: isoDate.optional(),
 }).strict();
 

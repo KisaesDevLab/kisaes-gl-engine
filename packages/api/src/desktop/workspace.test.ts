@@ -592,7 +592,9 @@ describe('desktop workspace: initialize without a company', () => {
   it('one tick of each enabled scheduler runs with zero companies', async () => {
     if (!dbReady) return;
     const { schedulerEnabled } = await import('./features.js');
-    expect(['recurring', 'fingerprint', 'aiRetention'].every((n) => schedulerEnabled(n as 'recurring'))).toBe(true);
+    expect(['sessionPrune', 'fingerprint', 'aiRetention'].every((n) => schedulerEnabled(n as 'recurring'))).toBe(true);
+    // The app drives the recurring run (POST /recurring/run-due, U-63); the timer is off.
+    expect(schedulerEnabled('recurring')).toBe(false);
     const recurring = await import('../services/recurring.service.js');
     const fp = await import('../services/db-fingerprint.service.js');
     const ai = await import('../services/ai-retention.service.js');
