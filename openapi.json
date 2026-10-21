@@ -40460,6 +40460,89 @@
         ]
       }
     },
+    "/api/v1/recurring/attention": {
+      "get": {
+        "operationId": "get_api_v1_recurring_attention",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Due reminders and open skipped dates; changes nothing (recurring-run-due-v1)",
+        "tags": [
+          "recurring"
+        ]
+      }
+    },
+    "/api/v1/recurring/run-due": {
+      "post": {
+        "description": "Response `{asOf, runId, more, posted:[{templateId,templateName,kind,clientForm,occurrenceDate,transactionId,total}], reminders:[{templateId,templateName,kind,clientForm,dueDates,dueCount,total}], skipped:[{templateId,templateName,kind,clientForm,occurrenceDate,reason,new}], failed:[{templateId,reason}]}`. `posted` includes earlier posts with the same runId. asOf later than tomorrow: 400 RUN_DUE_FUTURE.",
+        "operationId": "post_api_v1_recurring_run_due",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "asOf": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 200,
+                    "maximum": 500,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "runId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Post every due auto template occurrence once (recurring-run-due-v1)",
+        "tags": [
+          "recurring"
+        ]
+      }
+    },
     "/api/v1/recurring/{id}": {
       "delete": {
         "operationId": "delete_api_v1_recurring_by_id",
@@ -63118,6 +63201,933 @@
         ],
         "tags": [
           "tb"
+        ]
+      }
+    },
+    "/api/v1/templates": {
+      "get": {
+        "description": "Response `{templates:[{id,name,kind,draftKind,clientForm,groupId,groupName,accountId,contactId,total,schedule,lastEnteredDate,openSkipped,legacy,version}], total}`. `total` is the header amount as a 4-place decimal string.",
+        "operationId": "get_api_v1_templates",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "groupId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "enum": [
+                "check",
+                "expense",
+                "deposit",
+                "transfer",
+                "journal_entry",
+                "daily_sales",
+                "legacy"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List templates (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      },
+      "post": {
+        "description": "The draft is the create body of the kind minus the date and numbers; amounts are decimal strings. 400 TEMPLATE_FIELD_NOT_ALLOWED (details.field), TEMPLATE_DEPOSIT_GROUPING, TEMPLATE_AUTO_UNSUPPORTED, VALIDATION_ERROR; 409 TEMPLATE_NAME_TAKEN.",
+        "operationId": "post_api_v1_templates",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "clientForm": {
+                    "anyOf": [
+                      {
+                        "maxLength": 30,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "draft": {
+                    "additionalProperties": {},
+                    "description": "the create body of the kind (see the templates-v1 shapes); amounts are decimal strings",
+                    "type": "object"
+                  },
+                  "groupId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "kind": {
+                    "enum": [
+                      "check",
+                      "expense",
+                      "deposit",
+                      "transfer",
+                      "journal_entry",
+                      "daily_sales"
+                    ],
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "schedule": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "endDate": {
+                            "anyOf": [
+                              {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "frequency": {
+                            "enum": [
+                              "daily",
+                              "weekly",
+                              "biweekly",
+                              "semimonthly",
+                              "monthly",
+                              "quarterly",
+                              "annually"
+                            ],
+                            "type": "string"
+                          },
+                          "intervalValue": {
+                            "default": 1,
+                            "maximum": 365,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "mode": {
+                            "enum": [
+                              "remind",
+                              "auto"
+                            ],
+                            "type": "string"
+                          },
+                          "nextDate": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          "remainingCount": {
+                            "anyOf": [
+                              {
+                                "maximum": 9999,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "frequency",
+                          "nextDate"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "kind",
+                  "draft"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a template; posts nothing (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/from-transaction": {
+      "post": {
+        "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company.",
+        "operationId": "post_api_v1_templates_from_transaction",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "clientForm": {
+                    "anyOf": [
+                      {
+                        "maxLength": 30,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "groupId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "schedule": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "endDate": {
+                            "anyOf": [
+                              {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "frequency": {
+                            "enum": [
+                              "daily",
+                              "weekly",
+                              "biweekly",
+                              "semimonthly",
+                              "monthly",
+                              "quarterly",
+                              "annually"
+                            ],
+                            "type": "string"
+                          },
+                          "intervalValue": {
+                            "default": 1,
+                            "maximum": 365,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "mode": {
+                            "enum": [
+                              "remind",
+                              "auto"
+                            ],
+                            "type": "string"
+                          },
+                          "nextDate": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          "remainingCount": {
+                            "anyOf": [
+                              {
+                                "maximum": 9999,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "frequency",
+                          "nextDate"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "transactionId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "transactionId",
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Save a posted transaction as a template (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/groups": {
+      "get": {
+        "operationId": "get_api_v1_templates_groups",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List template groups (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      },
+      "post": {
+        "operationId": "post_api_v1_templates_groups",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a template group (templates-v1); name taken: 409 TEMPLATE_GROUP_NAME_TAKEN",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/groups/{id}": {
+      "delete": {
+        "operationId": "delete_api_v1_templates_groups_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a template group; its templates move to no group (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      },
+      "put": {
+        "operationId": "put_api_v1_templates_groups_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Rename a template group (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/{id}": {
+      "delete": {
+        "operationId": "delete_api_v1_templates_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a template (soft); its schedule stops; posted transactions stay (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      },
+      "get": {
+        "operationId": "get_api_v1_templates_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a template with its draft and schedule (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      },
+      "put": {
+        "operationId": "put_api_v1_templates_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "clientForm": {
+                    "anyOf": [
+                      {
+                        "maxLength": 30,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "draft": {
+                    "additionalProperties": {},
+                    "description": "the create body of the kind (see the templates-v1 shapes); amounts are decimal strings",
+                    "type": "object"
+                  },
+                  "groupId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "schedule": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "endDate": {
+                            "anyOf": [
+                              {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "frequency": {
+                            "enum": [
+                              "daily",
+                              "weekly",
+                              "biweekly",
+                              "semimonthly",
+                              "monthly",
+                              "quarterly",
+                              "annually"
+                            ],
+                            "type": "string"
+                          },
+                          "intervalValue": {
+                            "default": 1,
+                            "maximum": 365,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "mode": {
+                            "enum": [
+                              "remind",
+                              "auto"
+                            ],
+                            "type": "string"
+                          },
+                          "nextDate": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          "remainingCount": {
+                            "anyOf": [
+                              {
+                                "maximum": 9999,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "frequency",
+                          "nextDate"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "version": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Change a template (templates-v1); version mismatch: 409 STALE (details.version); schedule null removes it",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/{id}/draft": {
+      "get": {
+        "description": "Response `{kind, clientForm, draft, warnings:[{field, code: ACCOUNT_INACTIVE|CONTACT_INACTIVE|TAG_INACTIVE|NOT_FOUND, id}]}`; a missing reference is nulled in the draft.",
+        "operationId": "get_api_v1_templates_by_id_draft",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The template as a create body for the normal form; posts nothing (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/{id}/enter": {
+      "post": {
+        "description": "occurrenceDate defaults to the schedule’s next date (today without a schedule); the next date (even early) or an open skipped date only, else 400 OCCURRENCE_NOT_DUE; a date already done: 409 OCCURRENCE_TAKEN. Response 201 `{transaction, occurrence}`.",
+        "operationId": "post_api_v1_templates_by_id_enter",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurrenceDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Post the template now (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/{id}/occurrences/{date}/resolve": {
+      "post": {
+        "description": "400 OCCURRENCE_RESOLVE_INVALID (not posted, other company, other kind, already linked); 409 OCCURRENCE_TAKEN.",
+        "operationId": "post_api_v1_templates_by_id_occurrences_by_date_resolve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "transactionId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "transactionId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Link a transaction saved through the normal form to a date (entered) (templates-v1)",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/v1/templates/{id}/occurrences/{date}/skip": {
+      "post": {
+        "operationId": "post_api_v1_templates_by_id_occurrences_by_date_skip",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Skip a date (dismissed); the schedule moves on when it is the next date (templates-v1)",
+        "tags": [
+          "templates"
         ]
       }
     },
