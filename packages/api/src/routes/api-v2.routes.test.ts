@@ -424,16 +424,30 @@ describe('api-v2 integration (new endpoints)', () => {
     expect(expenseLine?.tagId).toBe(tagId);
   });
 
+  it('POST /transactions posts every type in the request company', async () => {
+    const bodies = [
+      { txnType: 'expense', txnDate: '2026-04-11', payFromAccountId: bankAccountId, lines: [{ expenseAccountId, amount: '3.00' }] },
+      { txnType: 'deposit', txnDate: '2026-04-11', depositToAccountId: bankAccountId, lines: [{ accountId: revenueAccountId, amount: '4.00' }] },
+      { txnType: 'journal_entry', txnDate: '2026-04-11', lines: [
+        { accountId: expenseAccountId, debit: '5.00', credit: '0' },
+        { accountId: bankAccountId, debit: '0', credit: '5.00' },
+      ] },
+    ];
+    for (const body of bodies) {
+      const r = await req('POST', '/transactions', body);
+      expect(r.status).toBe(201);
+      const row = await db.query.transactions.findFirst({ where: (t, { eq }) => eq(t.id, r.json.transaction.id) });
+      expect(row?.companyId).toBe(companyId);
+    }
+  });
+
   it('GET /reports/profit-loss with tag_id scopes the P&L to that tag', async () => {
     const tag = await req('POST', '/tags', { name: `PLScope-${Date.now()}` });
     const tagId = tag.json.tag.id;
 
-    // One expense tagged with this tag, one without. The POST /transactions
-    // path doesn't thread req.companyId through to the expense service
-    // today (separate issue, outside tags scope), so written transactions
-    // end up with company_id=NULL. Run the P&L in ?scope=consolidated so
-    // the test doesn't depend on that wiring — the tag filter behavior is
-    // identical either way.
+    // One expense tagged with this tag, one without. Run the P&L in
+    // ?scope=consolidated so the test doesn't depend on company wiring —
+    // the tag filter behavior is identical either way.
     await req('POST', '/transactions', {
       txnType: 'expense',
       txnDate: '2026-04-10',
