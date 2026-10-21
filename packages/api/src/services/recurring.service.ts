@@ -134,40 +134,45 @@ export async function update(tenantId: string, id: string, input: {
   startDate?: string; endDate?: string | null;
   expectedUpdatedAt?: string;
 }, userId?: string) {
-  const before = await db.query.recurringSchedules.findFirst({
-    where: and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)),
+  // One database transaction: the row is read FOR UPDATE, so the audit
+  // "before" image is the row the guarded UPDATE replaces.
+  return db.transaction(async (tx) => {
+    const [before] = await tx.select().from(recurringSchedules)
+      .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)))
+      .for('update')
+      .limit(1);
+    if (!before) throw AppError.notFound('Recurring schedule not found');
+    // Explicit field pick — never spread the caller's object into .set(), so
+    // no route can smuggle tenantId/companyId/nextOccurrence/isActive through.
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (input.frequency !== undefined) patch['frequency'] = input.frequency;
+    if (input.intervalValue !== undefined) patch['intervalValue'] = input.intervalValue;
+    if (input.mode !== undefined) patch['mode'] = input.mode;
+    if (input.startDate !== undefined) patch['startDate'] = input.startDate;
+    if (input.endDate !== undefined) patch['endDate'] = input.endDate;
+    if (input.name !== undefined) patch['name'] = (typeof input.name === 'string' && input.name.trim()) || null;
+    // Moving the start date before anything has posted drags nextOccurrence with
+    // it (otherwise the next run would still fire on the old start date).
+    if (input.startDate && !before.lastPostedAt) patch['nextOccurrence'] = input.startDate;
+    const conds = [eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)];
+    if (input.expectedUpdatedAt !== undefined) {
+      conds.push(sql`date_trunc('milliseconds', ${recurringSchedules.updatedAt}) = ${input.expectedUpdatedAt}::timestamptz`);
+    }
+    const [updated] = await tx.update(recurringSchedules)
+      .set(patch)
+      .where(and(...conds))
+      .returning();
+    if (!updated && input.expectedUpdatedAt !== undefined) {
+      throw AppError.conflict(
+        'This recurring schedule was changed by someone else since you opened it. Reload it and make your change again.',
+        'STALE_SCHEDULE',
+        { updatedAt: before.updatedAt },
+      );
+    }
+    if (!updated) throw AppError.notFound('Recurring schedule not found');
+    await auditLog(tenantId, 'update', 'recurring_schedule', updated.id, before, updated, userId, tx);
+    return updated;
   });
-  if (!before) throw AppError.notFound('Recurring schedule not found');
-  // Explicit field pick — never spread the caller's object into .set(), so
-  // no route can smuggle tenantId/companyId/nextOccurrence/isActive through.
-  const patch: Record<string, unknown> = { updatedAt: new Date() };
-  if (input.frequency !== undefined) patch['frequency'] = input.frequency;
-  if (input.intervalValue !== undefined) patch['intervalValue'] = input.intervalValue;
-  if (input.mode !== undefined) patch['mode'] = input.mode;
-  if (input.startDate !== undefined) patch['startDate'] = input.startDate;
-  if (input.endDate !== undefined) patch['endDate'] = input.endDate;
-  if (input.name !== undefined) patch['name'] = (typeof input.name === 'string' && input.name.trim()) || null;
-  // Moving the start date before anything has posted drags nextOccurrence with
-  // it (otherwise the next run would still fire on the old start date).
-  if (input.startDate && !before.lastPostedAt) patch['nextOccurrence'] = input.startDate;
-  const conds = [eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)];
-  if (input.expectedUpdatedAt !== undefined) {
-    conds.push(sql`date_trunc('milliseconds', ${recurringSchedules.updatedAt}) = ${input.expectedUpdatedAt}::timestamptz`);
-  }
-  const [updated] = await db.update(recurringSchedules)
-    .set(patch)
-    .where(and(...conds))
-    .returning();
-  if (!updated && input.expectedUpdatedAt !== undefined) {
-    throw AppError.conflict(
-      'This recurring schedule was changed by someone else since you opened it. Reload it and make your change again.',
-      'STALE_SCHEDULE',
-      { updatedAt: before.updatedAt },
-    );
-  }
-  if (!updated) throw AppError.notFound('Recurring schedule not found');
-  await auditLog(tenantId, 'update', 'recurring_schedule', updated.id, before ?? null, updated, userId);
-  return updated;
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {

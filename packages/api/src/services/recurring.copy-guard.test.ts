@@ -180,4 +180,31 @@ describe('recurring PUT version guard (U-66)', () => {
     expect(unguarded.status).toBe(200);
     expect((await call('PUT', `/api/v1/recurring/${id}`, { expectedUpdatedAt: 'yesterday' })).status).toBe(400);
   });
+
+  it('concurrent edits: one guarded edit wins, and each audit row shows the row it replaced (L7)', async () => {
+    const template = await ledger.postTransaction(tenantId, {
+      txnType: 'journal_entry', txnDate: '2026-01-31',
+      lines: [{ accountId: expId, debit: '5', credit: '0' }, { accountId: bankId, debit: '0', credit: '5' }],
+    }, userId, companyId);
+    const sched = await recurring.create(tenantId, template.id, { frequency: 'monthly', startDate: '2026-02-28' }, userId);
+    const readAt = sched!.updatedAt!.toISOString();
+
+    const guarded = await Promise.allSettled([
+      recurring.update(tenantId, sched!.id, { name: 'One', expectedUpdatedAt: readAt }, userId),
+      recurring.update(tenantId, sched!.id, { name: 'Two', expectedUpdatedAt: readAt }, userId),
+    ]);
+    expect(guarded.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const lost = guarded.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(lost.reason.code).toBe('STALE_SCHEDULE');
+
+    await Promise.all(['A', 'B', 'C'].map((name) => recurring.update(tenantId, sched!.id, { name }, userId)));
+    const rows = await db.select().from(auditLog).where(and(
+      eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'recurring_schedule'),
+      eq(auditLog.entityId, sched!.id), eq(auditLog.action, 'update'),
+    )).orderBy(auditLog.id);
+    expect(rows).toHaveLength(4);
+    for (let i = 1; i < rows.length; i++) {
+      expect((rows[i]!.beforeData as any).name).toBe((rows[i - 1]!.afterData as any).name);
+    }
+  });
 });
