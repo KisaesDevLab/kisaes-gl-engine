@@ -48047,7 +48047,7 @@
                     ]
                   },
                   "txnDate": {
-                    "minLength": 1,
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
                   "txnNumber": {
@@ -48202,7 +48202,7 @@
                     ]
                   },
                   "txnDate": {
-                    "minLength": 1,
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
                   "txnNumber": {
@@ -64784,7 +64784,7 @@
                         ]
                       },
                       "txnDate": {
-                        "minLength": 1,
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                         "type": "string"
                       },
                       "txnNumber": {
@@ -65061,7 +65061,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. A journal entry edit deletes its automatic reversal and, with reverseOn, posts a new one; a reversal changed since it was created is 409 REVERSAL_EDITED.",
+        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED.",
         "operationId": "put_api_v1_transactions_by_id",
         "parameters": [
           {
@@ -65439,7 +65439,7 @@
                         ]
                       },
                       "txnDate": {
-                        "minLength": 1,
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                         "type": "string"
                       },
                       "txnNumber": {
