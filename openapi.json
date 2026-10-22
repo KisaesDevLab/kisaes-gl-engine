@@ -15825,150 +15825,307 @@
     },
     "/api/v1/batch/save": {
       "post": {
+        "description": "Grouped shape (ClientLedger Bulk Entry, batch-mixed-v1): `{groups: [{txn_type: check|expense|credit_card_charge|credit_card_credit|deposit|journal_entry, context_account_id, rows}]}`, at most 10000 rows in all, rowNumber unique across groups; amount / debit / credit are decimal strings (a JSON number is 400 VALIDATION_ERROR), at most 15 integer digits and 4 places, never rounded; debit and credit are never negative. context_account_id: a bank account (asset; detail type bank, checking, savings, cash or petty_cash) for check and deposit groups, a credit card account (liability, credit_card) for card groups, either for expense groups. Rows other than journal entry rows cannot post to Accounts Receivable / Payable (row error BATCH_ACCOUNT_AR_AP). Permissions: besides batch_entry, each group needs create on the resource of its row type (check: checks; expense, credit_card_charge, journal_entry: transactions; deposit, credit_card_credit: banking) and auto_create_contacts needs create on contacts, else 403 PERMISSION_DENIED with `details.groupIndex` and `details.resource` (contacts: `details.resource` only). The single-type shape `{txn_type, context_account_id, rows}` (numbers or strings, every txn_type) is unchanged. Grouped save: all or nothing. 201 `{batchId, savedCount, createdContacts: [{displayName, id, contactType}], transactions: [{rowNumber, id, txnType, txnNumber, checkNumber?}]}`; every transaction has source 'batch' and source_id = batchId. Errors (nothing posted): 400 BATCH_INVALID / BATCH_CONTACT_NOT_FOUND with `details.rowNumbers` and `details.rows: [{rowNumber, errors}]`; a posting failure keeps its status and code and adds `details.rowNumbers` / `details.rows`; a database refusal at a row is 400 BATCH_ROW_OUT_OF_RANGE / BATCH_ROW_REJECTED or 409 BATCH_ROW_CONFLICT (else 500 BATCH_ROW_FAILED), with the rows; 409 BATCH_BUSY: another batch save of the tenant is running, or a lock was not free within 5 s (retry; with the same Idempotency-Key a finished save replays); 409 BATCH_TIMEOUT: a statement ran over 120 s; 423 TB_PERIOD_LOCKED and 403 CLOSING_PASSWORD_INVALID add `details.rowNumbers` (the rows dated on or before the closing date); 409 IDEMPOTENCY_KEY_REUSED (same Idempotency-Key, different body or another user); 400 IDEMPOTENCY_KEY_INVALID / IDEMPOTENCY_UNSUPPORTED. A replay answers 201 with the stored body and header `Idempotent-Replayed: true`. Check rows: refNo is the check number (unique per bank account, counter advanced; empty = next number), printLater queues it (no number); validate simulates the counter in row order, so a typed number that an earlier empty row would take automatically is a row error (CHECK_NUMBER_DUPLICATE). Card credits post as a deposit into the card account. Journal entry rows with the same `entry` key (else the same date and refNo) form one entry that must balance exactly; an A/R or A/P row needs a name. auto_create_contacts creates unknown vendors (customers on deposit rows); without it an unknown name is 400 BATCH_CONTACT_NOT_FOUND.",
         "operationId": "post_api_v1_batch_save",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "properties": {
-                  "auto_create_contacts": {
-                    "type": "boolean"
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "auto_create_contacts": {
+                        "type": "boolean"
+                      },
+                      "context_account_id": {
+                        "anyOf": [
+                          {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "rows": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accountId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "accountName": {
+                              "maxLength": 255,
+                              "type": "string"
+                            },
+                            "amount": {
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "contactName": {
+                              "maxLength": 255,
+                              "type": "string"
+                            },
+                            "credit": {
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            "date": {
+                              "maxLength": 40,
+                              "type": "string"
+                            },
+                            "debit": {
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            "description": {
+                              "maxLength": 2000,
+                              "type": "string"
+                            },
+                            "dueDate": {
+                              "maxLength": 40,
+                              "type": "string"
+                            },
+                            "invoiceNo": {
+                              "maxLength": 80,
+                              "type": "string"
+                            },
+                            "memo": {
+                              "maxLength": 2000,
+                              "type": "string"
+                            },
+                            "refNo": {
+                              "maxLength": 80,
+                              "type": "string"
+                            },
+                            "rowNumber": {
+                              "type": "integer"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "rowNumber"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10000,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "skip_invalid": {
+                        "type": "boolean"
+                      },
+                      "txn_type": {
+                        "enum": [
+                          "expense",
+                          "credit_card_charge",
+                          "deposit",
+                          "credit_card_credit",
+                          "invoice",
+                          "bill",
+                          "credit_memo",
+                          "journal_entry",
+                          "customer_payment"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "txn_type",
+                      "rows"
+                    ],
+                    "type": "object"
                   },
-                  "context_account_id": {
-                    "anyOf": [
-                      {
-                        "format": "uuid",
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "auto_create_contacts": {
+                        "type": "boolean"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1); never stored or echoed",
                         "type": "string"
                       },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "rows": {
-                    "items": {
-                      "additionalProperties": true,
-                      "properties": {
-                        "accountId": {
-                          "anyOf": [
-                            {
-                              "format": "uuid",
-                              "type": "string"
+                      "groups": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "context_account_id": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "accountName": {
-                          "maxLength": 255,
-                          "type": "string"
-                        },
-                        "amount": {
-                          "type": [
-                            "number",
-                            "string"
-                          ]
-                        },
-                        "contactId": {
-                          "anyOf": [
-                            {
-                              "format": "uuid",
-                              "type": "string"
+                            "rows": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "accountId": {
+                                    "anyOf": [
+                                      {
+                                        "format": "uuid",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "accountName": {
+                                    "maxLength": 255,
+                                    "type": "string"
+                                  },
+                                  "amount": {
+                                    "maxLength": 32,
+                                    "type": "string"
+                                  },
+                                  "contactId": {
+                                    "anyOf": [
+                                      {
+                                        "format": "uuid",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "contactName": {
+                                    "maxLength": 255,
+                                    "type": "string"
+                                  },
+                                  "credit": {
+                                    "maxLength": 32,
+                                    "type": "string"
+                                  },
+                                  "date": {
+                                    "maxLength": 40,
+                                    "type": "string"
+                                  },
+                                  "debit": {
+                                    "maxLength": 32,
+                                    "type": "string"
+                                  },
+                                  "description": {
+                                    "maxLength": 2000,
+                                    "type": "string"
+                                  },
+                                  "entry": {
+                                    "maxLength": 80,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "memo": {
+                                    "maxLength": 2000,
+                                    "type": "string"
+                                  },
+                                  "printLater": {
+                                    "type": "boolean"
+                                  },
+                                  "refNo": {
+                                    "maxLength": 80,
+                                    "type": "string"
+                                  },
+                                  "rowNumber": {
+                                    "maximum": 1000000,
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  },
+                                  "tagId": {
+                                    "anyOf": [
+                                      {
+                                        "format": "uuid",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "rowNumber"
+                                ],
+                                "type": "object"
+                              },
+                              "maxItems": 10000,
+                              "minItems": 1,
+                              "type": "array"
                             },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "contactName": {
-                          "maxLength": 255,
-                          "type": "string"
-                        },
-                        "credit": {
-                          "type": [
-                            "number",
-                            "string"
-                          ]
-                        },
-                        "date": {
-                          "maxLength": 40,
-                          "type": "string"
-                        },
-                        "debit": {
-                          "type": [
-                            "number",
-                            "string"
-                          ]
-                        },
-                        "description": {
-                          "maxLength": 2000,
-                          "type": "string"
-                        },
-                        "dueDate": {
-                          "maxLength": 40,
-                          "type": "string"
-                        },
-                        "invoiceNo": {
-                          "maxLength": 80,
-                          "type": "string"
-                        },
-                        "memo": {
-                          "maxLength": 2000,
-                          "type": "string"
-                        },
-                        "refNo": {
-                          "maxLength": 80,
-                          "type": "string"
-                        },
-                        "rowNumber": {
-                          "type": "integer"
-                        },
-                        "tagId": {
-                          "anyOf": [
-                            {
-                              "format": "uuid",
+                            "txn_type": {
+                              "enum": [
+                                "check",
+                                "expense",
+                                "credit_card_charge",
+                                "credit_card_credit",
+                                "deposit",
+                                "journal_entry"
+                              ],
                               "type": "string"
-                            },
-                            {
-                              "type": "null"
                             }
-                          ]
-                        }
+                          },
+                          "required": [
+                            "txn_type",
+                            "rows"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 50,
+                        "minItems": 1,
+                        "type": "array"
                       },
-                      "required": [
-                        "rowNumber"
-                      ],
-                      "type": "object"
+                      "overrideConfirmed": {
+                        "type": "boolean"
+                      }
                     },
-                    "maxItems": 10000,
-                    "minItems": 1,
-                    "type": "array"
-                  },
-                  "skip_invalid": {
-                    "type": "boolean"
-                  },
-                  "txn_type": {
-                    "enum": [
-                      "expense",
-                      "credit_card_charge",
-                      "deposit",
-                      "credit_card_credit",
-                      "invoice",
-                      "bill",
-                      "credit_memo",
-                      "journal_entry",
-                      "customer_payment"
+                    "required": [
+                      "groups"
                     ],
-                    "type": "string"
+                    "type": "object"
                   }
-                },
-                "required": [
-                  "txn_type",
-                  "rows"
-                ],
-                "type": "object"
+                ]
               }
             }
           },
@@ -15987,6 +16144,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Save batch rows",
         "tags": [
           "batch"
         ]
@@ -16015,144 +16173,294 @@
     },
     "/api/v1/batch/validate": {
       "post": {
+        "description": "Grouped shape (ClientLedger Bulk Entry, batch-mixed-v1): `{groups: [{txn_type: check|expense|credit_card_charge|credit_card_credit|deposit|journal_entry, context_account_id, rows}]}`, at most 10000 rows in all, rowNumber unique across groups; amount / debit / credit are decimal strings (a JSON number is 400 VALIDATION_ERROR), at most 15 integer digits and 4 places, never rounded; debit and credit are never negative. context_account_id: a bank account (asset; detail type bank, checking, savings, cash or petty_cash) for check and deposit groups, a credit card account (liability, credit_card) for card groups, either for expense groups. Rows other than journal entry rows cannot post to Accounts Receivable / Payable (row error BATCH_ACCOUNT_AR_AP). Permissions: besides batch_entry, each group needs create on the resource of its row type (check: checks; expense, credit_card_charge, journal_entry: transactions; deposit, credit_card_credit: banking) and auto_create_contacts needs create on contacts, else 403 PERMISSION_DENIED with `details.groupIndex` and `details.resource` (contacts: `details.resource` only). The single-type shape `{txn_type, context_account_id, rows}` (numbers or strings, every txn_type) is unchanged. Grouped response: `{validCount, invalidCount, closingDate, closingPasswordRequired, closedPeriodRowNumbers, rows: [{rowNumber, groupIndex, txnType, status: valid|warning|invalid, resolvedContactId, resolvedAccountId, errors: [{field, message, code?}], newContact?, closedPeriod, entryKey?}]}`; a missing or wrong context account is 400 BATCH_CONTEXT_ACCOUNT_REQUIRED / BATCH_CONTEXT_ACCOUNT_INVALID with `details.groupIndex`.",
         "operationId": "post_api_v1_batch_validate",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "properties": {
-                  "context_account_id": {
-                    "anyOf": [
-                      {
-                        "format": "uuid",
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "context_account_id": {
+                        "anyOf": [
+                          {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "rows": {
+                        "items": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accountId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "accountName": {
+                              "maxLength": 255,
+                              "type": "string"
+                            },
+                            "amount": {
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            "contactId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "contactName": {
+                              "maxLength": 255,
+                              "type": "string"
+                            },
+                            "credit": {
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            "date": {
+                              "maxLength": 40,
+                              "type": "string"
+                            },
+                            "debit": {
+                              "type": [
+                                "number",
+                                "string"
+                              ]
+                            },
+                            "description": {
+                              "maxLength": 2000,
+                              "type": "string"
+                            },
+                            "dueDate": {
+                              "maxLength": 40,
+                              "type": "string"
+                            },
+                            "invoiceNo": {
+                              "maxLength": 80,
+                              "type": "string"
+                            },
+                            "memo": {
+                              "maxLength": 2000,
+                              "type": "string"
+                            },
+                            "refNo": {
+                              "maxLength": 80,
+                              "type": "string"
+                            },
+                            "rowNumber": {
+                              "type": "integer"
+                            },
+                            "tagId": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "rowNumber"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10000,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "txn_type": {
+                        "enum": [
+                          "expense",
+                          "credit_card_charge",
+                          "deposit",
+                          "credit_card_credit",
+                          "invoice",
+                          "bill",
+                          "credit_memo",
+                          "journal_entry",
+                          "customer_payment"
+                        ],
                         "type": "string"
-                      },
-                      {
-                        "type": "null"
                       }
-                    ]
-                  },
-                  "rows": {
-                    "items": {
-                      "additionalProperties": true,
-                      "properties": {
-                        "accountId": {
-                          "anyOf": [
-                            {
-                              "format": "uuid",
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "accountName": {
-                          "maxLength": 255,
-                          "type": "string"
-                        },
-                        "amount": {
-                          "type": [
-                            "number",
-                            "string"
-                          ]
-                        },
-                        "contactId": {
-                          "anyOf": [
-                            {
-                              "format": "uuid",
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "contactName": {
-                          "maxLength": 255,
-                          "type": "string"
-                        },
-                        "credit": {
-                          "type": [
-                            "number",
-                            "string"
-                          ]
-                        },
-                        "date": {
-                          "maxLength": 40,
-                          "type": "string"
-                        },
-                        "debit": {
-                          "type": [
-                            "number",
-                            "string"
-                          ]
-                        },
-                        "description": {
-                          "maxLength": 2000,
-                          "type": "string"
-                        },
-                        "dueDate": {
-                          "maxLength": 40,
-                          "type": "string"
-                        },
-                        "invoiceNo": {
-                          "maxLength": 80,
-                          "type": "string"
-                        },
-                        "memo": {
-                          "maxLength": 2000,
-                          "type": "string"
-                        },
-                        "refNo": {
-                          "maxLength": 80,
-                          "type": "string"
-                        },
-                        "rowNumber": {
-                          "type": "integer"
-                        },
-                        "tagId": {
-                          "anyOf": [
-                            {
-                              "format": "uuid",
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "rowNumber"
-                      ],
-                      "type": "object"
                     },
-                    "maxItems": 10000,
-                    "minItems": 1,
-                    "type": "array"
-                  },
-                  "txn_type": {
-                    "enum": [
-                      "expense",
-                      "credit_card_charge",
-                      "deposit",
-                      "credit_card_credit",
-                      "invoice",
-                      "bill",
-                      "credit_memo",
-                      "journal_entry",
-                      "customer_payment"
+                    "required": [
+                      "txn_type",
+                      "rows"
                     ],
-                    "type": "string"
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "groups": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "context_account_id": {
+                              "anyOf": [
+                                {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "rows": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "accountId": {
+                                    "anyOf": [
+                                      {
+                                        "format": "uuid",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "accountName": {
+                                    "maxLength": 255,
+                                    "type": "string"
+                                  },
+                                  "amount": {
+                                    "maxLength": 32,
+                                    "type": "string"
+                                  },
+                                  "contactId": {
+                                    "anyOf": [
+                                      {
+                                        "format": "uuid",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "contactName": {
+                                    "maxLength": 255,
+                                    "type": "string"
+                                  },
+                                  "credit": {
+                                    "maxLength": 32,
+                                    "type": "string"
+                                  },
+                                  "date": {
+                                    "maxLength": 40,
+                                    "type": "string"
+                                  },
+                                  "debit": {
+                                    "maxLength": 32,
+                                    "type": "string"
+                                  },
+                                  "description": {
+                                    "maxLength": 2000,
+                                    "type": "string"
+                                  },
+                                  "entry": {
+                                    "maxLength": 80,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "memo": {
+                                    "maxLength": 2000,
+                                    "type": "string"
+                                  },
+                                  "printLater": {
+                                    "type": "boolean"
+                                  },
+                                  "refNo": {
+                                    "maxLength": 80,
+                                    "type": "string"
+                                  },
+                                  "rowNumber": {
+                                    "maximum": 1000000,
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  },
+                                  "tagId": {
+                                    "anyOf": [
+                                      {
+                                        "format": "uuid",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "rowNumber"
+                                ],
+                                "type": "object"
+                              },
+                              "maxItems": 10000,
+                              "minItems": 1,
+                              "type": "array"
+                            },
+                            "txn_type": {
+                              "enum": [
+                                "check",
+                                "expense",
+                                "credit_card_charge",
+                                "credit_card_credit",
+                                "deposit",
+                                "journal_entry"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "txn_type",
+                            "rows"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 50,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "overrideConfirmed": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "groups"
+                    ],
+                    "type": "object"
                   }
-                },
-                "required": [
-                  "txn_type",
-                  "rows"
-                ],
-                "type": "object"
+                ]
               }
             }
           },
@@ -16171,6 +16479,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Validate batch rows; saves nothing",
         "tags": [
           "batch"
         ]

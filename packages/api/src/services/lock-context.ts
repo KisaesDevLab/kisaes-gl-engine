@@ -44,6 +44,7 @@ export function takeClosingPassword(req: Request): string | undefined {
  */
 export function clearLockContextSecrets(ctx: LockDateContext): void {
   delete ctx.closingPassword;
+  delete ctx.verifiedClosingPasswordHashes;
   ctx.overrideConfirmed = false;
 }
 

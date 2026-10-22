@@ -60,4 +60,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'templates-v1',
   /** POST /recurring/run-due (exactly once per template and date, closed periods skipped) and GET /recurring/attention (U-63). */
   'recurring-run-due-v1',
+  /** POST /batch/save (grouped shape) posts every row in ONE database transaction; any failing row rolls back all, with its rowNumber (U-67). */
+  'batch-atomic-v1',
+  /** Batch check rows: refNo is the check number (unique per bank account, counter advanced), printLater per row (U-70). */
+  'batch-check-v1',
+  /** POST /batch/validate and /batch/save take groups: [{txn_type, context_account_id, rows}] in one request (U-69). */
+  'batch-mixed-v1',
+  /** Grouped batch amounts are exact decimal strings; journal entries balance exactly; parse-csv returns string amounts (U-71, U-73). */
+  'batch-exact-v1',
+  /** Idempotency-Key on POST /batch/save: same key and body replays, a different body is 409 IDEMPOTENCY_KEY_REUSED (U-72). */
+  'batch-idempotent-v1',
+  /** Batch rows dated on or before the closing date need closingPassword; 423 / 403 list the row numbers (U-68). */
+  'batch-closing-v1',
 ];

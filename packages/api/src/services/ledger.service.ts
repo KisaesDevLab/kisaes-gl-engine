@@ -284,6 +284,10 @@ export interface LockDateContext {
   // Closing-date password from the request body (U-15). Lives only in the
   // request-scoped store; lockContextMiddleware removes it from req.body.
   closingPassword?: string;
+  // Hashes the request's closingPassword already matched (request-scoped,
+  // cleared with the password). A batch posting many rows into a closed
+  // period compares the password once per hash instead of once per row.
+  verifiedClosingPasswordHashes?: Set<string>;
 }
 
 /** A permitted closed-period posting, for the closing_date_override audit row. */
@@ -399,7 +403,9 @@ export async function checkLockDate(
     let ok = hashes.length > 0;
     for (const hash of hashes) {
       if (!ok) break;
+      if (hash && ctx.verifiedClosingPasswordHashes?.has(hash)) continue;
       ok = await closingPasswordMatches(hash, ctx.closingPassword);
+      if (ok && hash) (ctx.verifiedClosingPasswordHashes ??= new Set()).add(hash);
     }
     if (!ok) {
       await auditClosingPasswordFailed(tenantId, companyId ?? null, ctx.userId, 'posting', {

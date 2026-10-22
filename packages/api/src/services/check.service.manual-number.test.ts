@@ -10,7 +10,7 @@
 // the expense "Ref no." (txn_number) round-trip.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, companies, accounts, auditLog, transactions, journalLines, transactionTags } from '../db/schema/index.js';
 import * as checkService from './check.service.js';
@@ -152,5 +152,47 @@ describe('print-path duplicate backstop', () => {
     const q = await checkService.createCheck(tenantId, checkInput({ printLater: true, bankAccountId: b2!.id }), undefined, companyId);
     const res = await checkService.printChecks(tenantId, b2!.id, [q.id], 3000, 'voucher', undefined);
     expect(res.checksPrinted).toBe(1);
+  });
+});
+
+describe('check counter: company scope and concurrency (#163 review)', () => {
+  it('a second save of a typed number waits for the first, then is refused', async () => {
+    // The first save is posted but not committed yet; the second starts
+    // meanwhile. It must wait on the counter lock and then see the first
+    // check, instead of passing the duplicate check before it commits.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let firstPosted!: () => void;
+    const posted = new Promise<void>((r) => { firstPosted = r; });
+    const holder = db.transaction(async (tx) => {
+      await checkService.createCheck(tenantId, checkInput({ checkNumber: 8100 }), undefined, companyId, tx);
+      firstPosted();
+      await gate;
+    });
+    await posted;
+    const second = checkService.createCheck(tenantId, checkInput({ checkNumber: 8100 }), undefined, companyId)
+      .then(() => 'posted', (e: Error) => e.message);
+    // Wait until the second save is blocked on the counter row lock.
+    for (let i = 0; i < 100; i++) {
+      const res = await db.execute(sql`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple')`);
+      if ((res.rows[0] as { n: number }).n > 0) break;
+      await new Promise((r) => setImmediate(r));
+    }
+    release();
+    await holder;
+    expect(await second).toMatch(/already exists/);
+    const rows = await db.select().from(transactions).where(eq(transactions.tenantId, tenantId));
+    expect(rows.filter((t) => t.checkNumber === 8100)).toHaveLength(1);
+  });
+
+  it('advances only the active company counter, not every company of the tenant', async () => {
+    const [other] = await db.insert(companies).values({
+      tenantId, businessName: 'Other Co', checkSettings: { nextCheckNumbers: { [bankId]: 42 } } as never,
+    }).returning();
+    await checkService.createCheck(tenantId, checkInput({ checkNumber: 9000 }), undefined, companyId);
+    const auto = await checkService.createCheck(tenantId, checkInput(), undefined, companyId);
+    expect(auto.checkNumber).toBe(9001);
+    const [o] = await db.select().from(companies).where(eq(companies.id, other!.id));
+    expect((o!.checkSettings as { nextCheckNumbers: Record<string, number> }).nextCheckNumbers[bankId]).toBe(42);
   });
 });
