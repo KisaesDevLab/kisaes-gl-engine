@@ -162,15 +162,48 @@ describe('Batch Service', () => {
       expect(rows.length).toBe(2);
       expect(rows[0]!.date).toBe('2026-03-15');
       expect(rows[0]!.contactName).toBe('Office Depot');
-      expect(rows[0]!.amount).toBe(127.5);
+      expect(rows[0]!.amount).toBe('127.50');
       expect(rows[1]!.date).toBe('2026-03-16');
     });
 
     it('should handle currency symbols and commas', () => {
       const csv = 'Date,Amount\n2026-03-15,"$1,234.56"\n2026-03-16,(500.00)';
       const rows = batchService.parseCsv(csv, 'expense');
-      expect(rows[0]!.amount).toBe(1234.56);
-      expect(rows[1]!.amount).toBe(-500);
+      expect(rows[0]!.amount).toBe('1234.56');
+      expect(rows[1]!.amount).toBe('-500.00');
+    });
+
+    // U-73: exact strings, never floats.
+    it('returns amounts as exact strings in every common spelling', () => {
+      const cells = ['(12.50)', '12.50-', '-$7.25', '.5', '0.10', '0001.20', '12.345', '-0.00', '1,000,000.0001', 'abc', ''];
+      const csv = 'Date,Amount\n' + cells.map((c) => `2026-03-15,"${c}"`).join('\n');
+      const rows = batchService.parseCsv(csv, 'expense');
+      expect(rows.map((r) => r.amount)).toEqual([
+        '-12.50', '-12.50', '-7.25', '0.5', '0.10', '1.20', '12.345', '0.00', '1000000.0001', 'abc', undefined,
+      ]);
+    });
+
+    it('drops a UTF-8 byte-order mark and keeps line breaks inside quoted fields', () => {
+      const csv = '﻿Date,Payee,Memo,Amount\r\n2026-03-15,"Smith, Jones","line one\r\nline ""two""",10.00\r\n\r\n2026-03-16,Acme,x,1\r\n';
+      const rows = batchService.parseCsv(csv, 'expense');
+      expect(rows).toHaveLength(2);
+      expect(rows[0]!.date).toBe('2026-03-15');
+      expect(rows[0]!.contactName).toBe('Smith, Jones');
+      expect(rows[0]!.memo).toBe('line one\r\nline "two"');
+      expect(rows[0]!.amount).toBe('10.00');
+      expect(rows[1]!.rowNumber).toBe(2);
+    });
+
+    it('refuses an unterminated quote and more than 10,000 rows with clear errors', () => {
+      expect(() => batchService.parseCsv('Date,Memo\n2026-03-15,"open', 'expense'))
+        .toThrow(expect.objectContaining({ code: 'CSV_MALFORMED', statusCode: 400 }));
+      const many = 'Date,Amount\n' + Array.from({ length: 10_001 }, () => '2026-03-15,1').join('\n');
+      expect(() => batchService.parseCsv(many, 'expense'))
+        .toThrow(expect.objectContaining({ code: 'CSV_TOO_MANY_ROWS', statusCode: 400 }));
+      const max = 'Date,Amount\n' + Array.from({ length: 10_000 }, () => '2026-03-15,1').join('\n');
+      expect(batchService.parseCsv(max, 'expense')).toHaveLength(10_000);
+      expect(() => batchService.parseCsv('Date,Amount\n', 'expense'))
+        .toThrow(expect.objectContaining({ code: 'CSV_EMPTY' }));
     });
   });
 

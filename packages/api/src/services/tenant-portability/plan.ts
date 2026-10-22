@@ -236,6 +236,7 @@ export const EXCLUDED_TENANT_ARCHIVE_TABLES: Record<string, ExcludedTable> = {
   // job-bookkeeping ──────────────────────────────────────────────────
   backup_runs: { category: 'job-bookkeeping', scope: 'none', reason: 'appliance backup run log (tenant_id is nulled on delete)' },
   storage_migrations: { category: 'job-bookkeeping', scope: 'tenant', reason: 'storage-provider migration job records' },
+  batch_save_requests: { category: 'job-bookkeeping', scope: 'tenant', reason: 'POST /batch/save Idempotency-Key replay records (0226); a restored company starts with none' },
   // derived ──────────────────────────────────────────────────────────
   gl_version_stamps: { category: 'derived', scope: 'tenant', reason: 'rebuilt by the 0144 triggers on insert; archived rows would violate uniq_gl_version_stamps' },
   // provenance ───────────────────────────────────────────────────────

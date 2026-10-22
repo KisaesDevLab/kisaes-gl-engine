@@ -15,6 +15,22 @@ import * as journalEntryService from './journal-entry.service.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+import DecimalLib from 'decimal.js';
+import { BATCH_MAX_ROWS } from '@kis-books/shared';
+
+const Decimal = DecimalLib.default || DecimalLib;
+type DecimalValue = InstanceType<typeof Decimal>;
+
+/** A number or numeric string as a Decimal; anything unparseable is 0 (the single-type shape's old leniency). */
+function lenientDecimal(v: number | string | undefined): DecimalValue {
+  if (v === undefined || v === '') return new Decimal(0);
+  try {
+    const d = new Decimal(typeof v === 'number' ? String(v) : v.trim());
+    return d.isFinite() ? d : new Decimal(0);
+  } catch {
+    return new Decimal(0);
+  }
+}
 
 // ─── Fuzzy Matching ──────────────────────────────────────────────
 
@@ -186,13 +202,13 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
 
     // Amount required (except JE which uses debit/credit)
     if (txnType !== 'journal_entry') {
-      const amt = parseFloat(String(row.amount || '0'));
-      if (!amt || amt <= 0) errors.push({ field: 'amount', message: 'Amount must be greater than 0' });
+      const amt = lenientDecimal(row.amount);
+      if (!amt.greaterThan(0)) errors.push({ field: 'amount', message: 'Amount must be greater than 0' });
     } else {
-      const d = parseFloat(String(row.debit || '0'));
-      const c = parseFloat(String(row.credit || '0'));
-      if (d === 0 && c === 0) errors.push({ field: 'debit', message: 'Debit or credit is required' });
-      if (d > 0 && c > 0) errors.push({ field: 'debit', message: 'Cannot have both debit and credit' });
+      const d = lenientDecimal(row.debit);
+      const c = lenientDecimal(row.credit);
+      if (d.isZero() && c.isZero()) errors.push({ field: 'debit', message: 'Debit or credit is required' });
+      if (d.greaterThan(0) && c.greaterThan(0)) errors.push({ field: 'debit', message: 'Cannot have both debit and credit' });
     }
 
     // Resolve account: the picked id first (tenant-scoped), else by name.
@@ -245,26 +261,26 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
     results.push({ rowNumber: row.rowNumber, status, resolvedContactId, resolvedAccountId, errors, newContact });
   }
 
-  // JE balance validation per ref group
+  // JE balance validation per ref group: exact decimals, no tolerance
+  // (U-71), the same rule the ledger applies when the entry posts (U-65).
   if (txnType === 'journal_entry') {
-    const groups = new Map<string, { debits: number; credits: number; rowNumbers: number[] }>();
+    const groups = new Map<string, { debits: DecimalValue; credits: DecimalValue; rowNumbers: number[] }>();
     for (const row of rows) {
       const key = `${row.date}|${row.refNo || row.rowNumber}`;
-      if (!groups.has(key)) groups.set(key, { debits: 0, credits: 0, rowNumbers: [] });
+      if (!groups.has(key)) groups.set(key, { debits: new Decimal(0), credits: new Decimal(0), rowNumbers: [] });
       const g = groups.get(key)!;
-      g.debits += parseFloat(String(row.debit || '0'));
-      g.credits += parseFloat(String(row.credit || '0'));
+      g.debits = g.debits.plus(lenientDecimal(row.debit));
+      g.credits = g.credits.plus(lenientDecimal(row.credit));
       g.rowNumbers.push(row.rowNumber);
     }
     for (const [, group] of groups) {
-      if (Math.abs(group.debits - group.credits) > 0.01) {
+      if (!group.debits.equals(group.credits)) {
         for (const rn of group.rowNumbers) {
           const r = results.find((r) => r.rowNumber === rn);
           if (r) {
+            if (r.status !== 'invalid') { invalidCount++; validCount--; }
             r.status = 'invalid';
             r.errors.push({ field: 'debit', message: `Journal entry group does not balance: debits ${group.debits.toFixed(2)} != credits ${group.credits.toFixed(2)}` });
-            invalidCount++;
-            validCount--;
           }
         }
       }
@@ -507,51 +523,90 @@ export async function saveBatch(
 
 // ─── CSV Parsing ─────────────────────────────────────────────────
 
-// Parse a single CSV line respecting quoted fields
-function parseCsvLine(line: string, delimiter: string): string[] {
-  const fields: string[] = [];
-  let current = '';
+/**
+ * Splits CSV text into records (RFC 4180): quoted fields may hold the
+ * delimiter, doubled quotes and line breaks; CRLF, LF and CR all end a
+ * record. A UTF-8 byte-order mark is dropped; blank records are skipped.
+ * An unterminated quote is a 400 CSV_MALFORMED naming the record it starts
+ * in. The delimiter is a tab when the header line has one, else a comma.
+ */
+export function parseCsvRecords(text: string): string[][] {
+  const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  let headerEnd = 0;
+  for (let q = false; headerEnd < src.length; headerEnd++) {
+    const ch = src[headerEnd];
+    if (ch === '"') q = !q;
+    else if (!q && (ch === '\n' || ch === '\r')) break;
+  }
+  const delim = src.slice(0, headerEnd).includes('\t') ? '\t' : ',';
+
+  const records: string[][] = [];
+  let field = '';
+  let record: string[] = [];
   let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]!;
+  let quoteStartRecord = 0;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!;
+    if (inQuotes) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
-      else inQuotes = !inQuotes;
-    } else if (ch === delimiter && !inQuotes) {
-      fields.push(current.trim());
-      current = '';
+      inQuotes = true;
+      quoteStartRecord = records.length + 1;
+    } else if (ch === delim) {
+      record.push(field.trim());
+      field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && src[i + 1] === '\n') i++;
+      record.push(field.trim());
+      records.push(record);
+      record = [];
+      field = '';
     } else {
-      current += ch;
+      field += ch;
     }
   }
-  fields.push(current.trim());
-  return fields;
+  if (inQuotes) {
+    throw AppError.badRequest(
+      `The CSV file has a quoted field that never ends (it starts on line ${quoteStartRecord} of the file's records).`,
+      'CSV_MALFORMED',
+    );
+  }
+  if (field !== '' || record.length > 0) {
+    record.push(field.trim());
+    records.push(record);
+  }
+  return records.filter((r) => r.some((f) => f !== ''));
 }
 
 export function parseCsv(csvText: string, txnType: string, columnMapping?: Record<string, number>): BatchRow[] {
-  const lines = csvText.split('\n').filter((l) => l.trim());
-  if (lines.length < 2) throw AppError.badRequest('CSV must have header + data rows');
+  const records = parseCsvRecords(csvText);
+  if (records.length < 2) throw AppError.badRequest('The CSV file needs a header row and at least one data row.', 'CSV_EMPTY');
+  if (records.length - 1 > BATCH_MAX_ROWS) {
+    throw AppError.badRequest(
+      `The CSV file has ${records.length - 1} data rows; a batch can have at most ${BATCH_MAX_ROWS}. Split the file and import it in parts.`,
+      'CSV_TOO_MANY_ROWS',
+    );
+  }
 
-  // Auto-detect delimiter
-  const firstLine = lines[0]!;
-  const delimiter = firstLine.includes('\t') ? '\t' : ',';
-
-  const headers = parseCsvLine(firstLine, delimiter).map((h) => h.toLowerCase());
+  const headers = records[0]!.map((h) => h.toLowerCase());
 
   // Auto-map columns if no mapping provided
   const mapping = columnMapping || autoMapColumns(headers, txnType);
 
   const rows: BatchRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = parseCsvLine(lines[i]!, delimiter);
+  for (let i = 1; i < records.length; i++) {
+    const cols = records[i]!;
 
     const getCol = (key: string) => {
       const idx = mapping[key];
       return idx !== undefined ? cols[idx] : undefined;
     };
-
-    const amountRaw = getCol('amount') || '0';
-    const amount = parseAmount(amountRaw);
 
     rows.push({
       rowNumber: i,
@@ -560,9 +615,9 @@ export function parseCsv(csvText: string, txnType: string, columnMapping?: Recor
       contactName: getCol('payee') || getCol('customer') || getCol('contact') || getCol('received_from') || getCol('name') || undefined,
       accountName: getCol('account') || getCol('category') || undefined,
       memo: getCol('memo') || getCol('description') || undefined,
-      amount,
-      debit: parseAmount(getCol('debit') || '0'),
-      credit: parseAmount(getCol('credit') || '0'),
+      amount: parseAmount(getCol('amount')),
+      debit: parseAmount(getCol('debit')),
+      credit: parseAmount(getCol('credit')),
       description: getCol('description') || undefined,
       dueDate: normalizeDate(getCol('due_date') || ''),
       invoiceNo: getCol('invoice_no') || getCol('invoice') || undefined,
@@ -612,13 +667,27 @@ function normalizeDate(raw: string): string {
   return raw;
 }
 
-function parseAmount(raw: string): number {
-  if (!raw) return 0;
-  // Remove currency symbols, commas, whitespace
-  const cleaned = raw.replace(/[$£€,\s]/g, '');
-  // Handle parentheses for negatives: (500.00) → -500.00
-  if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
-    return -parseFloat(cleaned.slice(1, -1));
-  }
-  return parseFloat(cleaned) || 0;
+/**
+ * A CSV amount as an exact decimal STRING (U-73), never a float: currency
+ * signs, thousands separators and spaces dropped, "(12.50)" and "12.50-"
+ * become "-12.50", ".5" becomes "0.5", the digits otherwise as written. No
+ * rounding: a third decimal stays for the client to round (Q-232). An empty
+ * cell is undefined; text that is not a number comes back trimmed, as it
+ * was, so row validation names it.
+ */
+export function parseAmount(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const text = raw.trim();
+  if (!text) return undefined;
+  let cleaned = text.replace(/[$£€,\s]/g, '');
+  let negative = false;
+  if (cleaned.startsWith('(') && cleaned.endsWith(')')) { negative = true; cleaned = cleaned.slice(1, -1); }
+  if (cleaned.endsWith('-')) { negative = !negative; cleaned = cleaned.slice(0, -1); }
+  if (cleaned.startsWith('-')) { negative = !negative; cleaned = cleaned.slice(1); }
+  else if (cleaned.startsWith('+')) cleaned = cleaned.slice(1);
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(cleaned)) return text;
+  const [intPart = '', frac = ''] = cleaned.split('.');
+  const int = intPart.replace(/^0+(?=\d)/, '') || '0';
+  const value = frac ? `${int}.${frac}` : int;
+  return negative && !/^0(\.0*)?$/.test(value) ? `-${value}` : value;
 }
