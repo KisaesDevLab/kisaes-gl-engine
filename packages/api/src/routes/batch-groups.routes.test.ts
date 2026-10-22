@@ -116,9 +116,10 @@ describe('atomic save', () => {
       // Row 5 names a payee that does not exist yet: auto-created, then rolled back.
       ...(i === 4 ? { contactName: 'Brand New Vendor' } : {}),
     }));
-    // Row 1 takes the next check number (1001); row 37 asks for it by hand.
-    // Validation can't see an auto number in advance: createCheck refuses it.
-    checks.push({ rowNumber: 37, date: '2026-04-01', accountId: c.expense, amount: '1.00', refNo: '1001' } as typeof checks[number]);
+    // Row 37 is a valid amount (15 integer digits, what numeric(19,4)
+    // holds), but on top of rows 1-36 it takes the expense account's
+    // balance past numeric(19,4): the database refuses it at posting.
+    checks.push({ rowNumber: 37, date: '2026-04-01', accountId: c.expense, amount: '999999999999999.9999' } as typeof checks[number]);
     const deposits = Array.from({ length: 13 }, (_, i) => ({
       rowNumber: 38 + i, date: '2026-04-02', accountId: c.income, amount: '25.00',
     }));
@@ -129,10 +130,13 @@ describe('atomic save', () => {
         { txn_type: 'deposit', context_account_id: c.bank, rows: deposits },
       ],
     });
-    expect(res.status, JSON.stringify(res.json)).toBe(409);
+    // A database error at a row: classified (not a bare 500) and named.
+    expect(res.status, JSON.stringify(res.json)).toBe(400);
+    expect(res.json.error.code).toBe('BATCH_ROW_OUT_OF_RANGE');
     expect(res.json.error.details.rowNumbers).toEqual([37]);
     expect(res.json.error.details.rows[0].rowNumber).toBe(37);
     expect(res.json.error.message).toContain('Row 37');
+    expect(JSON.stringify(res.json)).not.toContain('999999999999999');
 
     expect(await txns()).toHaveLength(0);
     expect(await db.select().from(journalLines).where(eq(journalLines.tenantId, c.tenantId))).toHaveLength(0);

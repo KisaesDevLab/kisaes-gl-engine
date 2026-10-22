@@ -8,9 +8,10 @@ import { z } from 'zod';
 import {
   batchValidateSchema, batchSaveSchema, batchParseCsvSchema,
   batchValidateGroupsSchema, batchSaveGroupsSchema, BATCH_MAX_ROWS,
+  can, type BatchGroupTxnType, type ResourceKey,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
@@ -33,6 +34,49 @@ function isGrouped(req: Request): boolean {
   return !!body && typeof body === 'object' && 'groups' in body;
 }
 
+/**
+ * What a grouped batch creates, by row type: the permission the single
+ * form for that row type needs (create on its resource). batch_entry
+ * (above) opens the endpoint; it does not stand in for these.
+ */
+const GROUP_RESOURCE: Record<BatchGroupTxnType, ResourceKey> = {
+  check: 'checks',
+  journal_entry: 'transactions',
+  expense: 'transactions',
+  credit_card_charge: 'transactions',
+  deposit: 'banking',
+  credit_card_credit: 'banking',
+};
+
+/**
+ * Grouped shape (validate and save): 403 PERMISSION_DENIED with
+ * `details.groupIndex` for the first group whose row type the user may not
+ * create, and with `details.resource: 'contacts'` when auto_create_contacts
+ * is set without create on contacts. Runs after the body is validated.
+ */
+async function requireGroupPermissions(req: Request, _res: Response, next: NextFunction) {
+  if (!isGrouped(req)) { next(); return; }
+  const perms = await resolvePermissionsForRequest(req);
+  const groups = (req.body as { groups: Array<{ txn_type: BatchGroupTxnType }> }).groups;
+  for (let gi = 0; gi < groups.length; gi++) {
+    const resource = GROUP_RESOURCE[groups[gi]!.txn_type];
+    if (!can(perms, resource, 'create')) {
+      throw new AppError(403, `You do not have permission to add ${groups[gi]!.txn_type.replace(/_/g, ' ')} transactions`, 'PERMISSION_DENIED', {
+        groupIndex: gi, resource,
+      });
+    }
+  }
+  if ((req.body as { auto_create_contacts?: boolean }).auto_create_contacts === true && !can(perms, 'contacts', 'create')) {
+    throw new AppError(403, 'You do not have permission to add names; turn off creating new names or ask for access', 'PERMISSION_DENIED', {
+      resource: 'contacts',
+    });
+  }
+  next();
+}
+
+/** column_mapping of parse-csv: field name to 0-based column index. */
+const columnMappingSchema = z.record(z.number().int().min(0).max(10_000));
+
 /** validate() with the schema of the body's shape. */
 function validateShape(single: Parameters<typeof validate>[0], grouped: Parameters<typeof validate>[0]) {
   const v1 = validate(single);
@@ -41,14 +85,17 @@ function validateShape(single: Parameters<typeof validate>[0], grouped: Paramete
 }
 
 const groupsDoc = 'Grouped shape (ClientLedger Bulk Entry, batch-mixed-v1): `{groups: [{txn_type: check|expense|credit_card_charge|credit_card_credit|deposit|journal_entry, context_account_id, rows}]}`, '
-  + `at most ${BATCH_MAX_ROWS} rows in all, rowNumber unique across groups; amount / debit / credit are decimal strings (a JSON number is 400 VALIDATION_ERROR), at most 4 places, never rounded. `
+  + `at most ${BATCH_MAX_ROWS} rows in all, rowNumber unique across groups; amount / debit / credit are decimal strings (a JSON number is 400 VALIDATION_ERROR), at most 15 integer digits and 4 places, never rounded; debit and credit are never negative. `
+  + 'context_account_id: a bank account (asset; detail type bank, checking, savings, cash or petty_cash) for check and deposit groups, a credit card account (liability, credit_card) for card groups, either for expense groups. '
+  + 'Rows other than journal entry rows cannot post to Accounts Receivable / Payable (row error BATCH_ACCOUNT_AR_AP). '
+  + 'Permissions: besides batch_entry, each group needs create on the resource of its row type (check: checks; expense, credit_card_charge, journal_entry: transactions; deposit, credit_card_credit: banking) and auto_create_contacts needs create on contacts, else 403 PERMISSION_DENIED with `details.groupIndex` and `details.resource` (contacts: `details.resource` only). '
   + 'The single-type shape `{txn_type, context_account_id, rows}` (numbers or strings, every txn_type) is unchanged.';
 
 batchRouter.post('/validate', describe({
   summary: 'Validate batch rows; saves nothing',
   description: `${groupsDoc} Grouped response: \`{validCount, invalidCount, closingDate, closingPasswordRequired, closedPeriodRowNumbers, rows: [{rowNumber, groupIndex, txnType, status: valid|warning|invalid, resolvedContactId, resolvedAccountId, errors: [{field, message, code?}], newContact?, closedPeriod, entryKey?}]}\`; a missing or wrong context account is 400 BATCH_CONTEXT_ACCOUNT_REQUIRED / BATCH_CONTEXT_ACCOUNT_INVALID with \`details.groupIndex\`.`,
   body: z.union([batchValidateSchema, batchValidateGroupsSchema]),
-}), validateShape(batchValidateSchema, batchValidateGroupsSchema), async (req, res) => {
+}), validateShape(batchValidateSchema, batchValidateGroupsSchema), requireGroupPermissions, async (req, res) => {
   if (isGrouped(req)) {
     res.json(await batchGroups.validateBatchGroups(req.tenantId, req.companyId, req.body.groups));
     return;
@@ -67,16 +114,17 @@ batchRouter.post('/validate', describe({
 batchRouter.post('/save', closingPasswordLimiter, lockContextMiddleware, describe({
   summary: 'Save batch rows',
   description: `${groupsDoc} Grouped save: all or nothing. 201 \`{batchId, savedCount, createdContacts: [{displayName, id, contactType}], transactions: [{rowNumber, id, txnType, txnNumber, checkNumber?}]}\`; every transaction has source 'batch' and source_id = batchId. `
-    + 'Errors (nothing posted): 400 BATCH_INVALID / BATCH_CONTACT_NOT_FOUND with `details.rowNumbers` and `details.rows: [{rowNumber, errors}]`; a posting failure keeps its status and code and adds `details.rowNumbers` / `details.rows`; '
-    + '423 TB_PERIOD_LOCKED and 403 CLOSING_PASSWORD_INVALID add `details.rowNumbers` (the rows dated on or before the closing date); 409 IDEMPOTENCY_KEY_REUSED (same Idempotency-Key, different body); 400 IDEMPOTENCY_KEY_INVALID / IDEMPOTENCY_UNSUPPORTED. A replay answers 201 with the stored body and header `Idempotent-Replayed: true`. '
-    + 'Check rows: refNo is the check number (unique per bank account, counter advanced; empty = next number), printLater queues it (no number). Card credits post as a deposit into the card account. Journal entry rows with the same `entry` key (else the same date and refNo) form one entry that must balance exactly; an A/R or A/P row needs a name. auto_create_contacts creates unknown vendors (customers on deposit rows); without it an unknown name is 400 BATCH_CONTACT_NOT_FOUND.',
+    + 'Errors (nothing posted): 400 BATCH_INVALID / BATCH_CONTACT_NOT_FOUND with `details.rowNumbers` and `details.rows: [{rowNumber, errors}]`; a posting failure keeps its status and code and adds `details.rowNumbers` / `details.rows`; a database refusal at a row is 400 BATCH_ROW_OUT_OF_RANGE / BATCH_ROW_REJECTED or 409 BATCH_ROW_CONFLICT (else 500 BATCH_ROW_FAILED), with the rows; '
+    + '409 BATCH_BUSY: another batch save of the tenant is running, or a lock was not free within 5 s (retry; with the same Idempotency-Key a finished save replays); 409 BATCH_TIMEOUT: a statement ran over 120 s; '
+    + '423 TB_PERIOD_LOCKED and 403 CLOSING_PASSWORD_INVALID add `details.rowNumbers` (the rows dated on or before the closing date); 409 IDEMPOTENCY_KEY_REUSED (same Idempotency-Key, different body or another user); 400 IDEMPOTENCY_KEY_INVALID / IDEMPOTENCY_UNSUPPORTED. A replay answers 201 with the stored body and header `Idempotent-Replayed: true`. '
+    + 'Check rows: refNo is the check number (unique per bank account, counter advanced; empty = next number), printLater queues it (no number); validate simulates the counter in row order, so a typed number that an earlier empty row would take automatically is a row error (CHECK_NUMBER_DUPLICATE). Card credits post as a deposit into the card account. Journal entry rows with the same `entry` key (else the same date and refNo) form one entry that must balance exactly; an A/R or A/P row needs a name. auto_create_contacts creates unknown vendors (customers on deposit rows); without it an unknown name is 400 BATCH_CONTACT_NOT_FOUND.',
   body: z.union([
     batchSaveSchema,
     batchSaveGroupsSchema.innerType().extend({
       closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
     }),
   ]),
-}), validateShape(batchSaveSchema, batchSaveGroupsSchema), async (req, res) => {
+}), validateShape(batchSaveSchema, batchSaveGroupsSchema), requireGroupPermissions, async (req, res) => {
   const header = req.get('Idempotency-Key');
   if (isGrouped(req)) {
     const outcome = await batchGroups.saveBatchGroups(req.tenantId, req.companyId, req.body, {
@@ -120,16 +168,23 @@ batchRouter.post('/parse-csv', upload.single('file'), async (req, res) => {
   const { txn_type, column_mapping } = parsed.data;
   let mapping: Record<string, number> | undefined;
   if (column_mapping) {
+    let raw: unknown = column_mapping;
     if (typeof column_mapping === 'string') {
       try {
-        mapping = JSON.parse(column_mapping);
+        raw = JSON.parse(column_mapping);
       } catch {
-        res.status(400).json({ error: { message: 'column_mapping must be valid JSON' } });
+        res.status(400).json({ error: { message: 'column_mapping must be valid JSON', code: 'VALIDATION_ERROR' } });
         return;
       }
-    } else {
-      mapping = column_mapping;
     }
+    // The multipart string is parsed here, so its shape is checked here:
+    // an object of field name to a whole column index of 0 or more.
+    const checked = columnMappingSchema.safeParse(raw);
+    if (!checked.success) {
+      res.status(400).json({ error: { message: 'column_mapping must map field names to column numbers (0 or more)', code: 'VALIDATION_ERROR' } });
+      return;
+    }
+    mapping = checked.data;
   }
   const rows = batchService.parseCsv(req.file.buffer.toString('utf-8'), txn_type || 'expense', mapping);
   res.json({ rows, count: rows.length });

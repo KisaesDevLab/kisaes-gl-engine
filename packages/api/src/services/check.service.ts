@@ -65,17 +65,51 @@ async function assertCheckNumberFree(
   }
 }
 
+// The companies row(s) holding the counter: the active company when the
+// caller knows it (every route does), else every company of the tenant
+// (legacy callers without a company context, e.g. the MCP tool).
+function counterScope(tenantId: string, companyId: string | undefined) {
+  return companyId ? sql`tenant_id = ${tenantId} AND id = ${companyId}` : sql`tenant_id = ${tenantId}`;
+}
+
+/**
+ * Row-lock the counter's companies row(s) until the end of the
+ * transaction. Taken BEFORE assertCheckNumberFree on the manual paths, so
+ * two concurrent saves of the same number serialize: the second one sees
+ * the first one's check once it commits and is refused (409).
+ */
+export async function lockCheckCounter(executor: DbOrTx, tenantId: string, companyId: string | undefined) {
+  await executor.execute(sql`SELECT 1 FROM companies WHERE ${counterScope(tenantId, companyId)} FOR UPDATE`);
+}
+
 // Advance the bank account's auto counter past a manually entered number
 // so the next auto-assigned check can't collide with it (never backwards).
-async function advanceCounterPast(executor: DbOrTx, tenantId: string, bankAccountId: string, checkNumber: number) {
+// The UPDATE row-locks the counter until the transaction ends.
+async function advanceCounterPast(
+  executor: DbOrTx, tenantId: string, bankAccountId: string, checkNumber: number, companyId: string | undefined,
+) {
   await executor.execute(sql`
     UPDATE companies
     SET check_settings = ${setNextNumSql(
       bankAccountId,
       sql`to_jsonb(GREATEST(${nextNumFor(bankAccountId)}, ${checkNumber} + 1))`,
     )}
-    WHERE tenant_id = ${tenantId}
+    WHERE ${counterScope(tenantId, companyId)}
   `);
+}
+
+/**
+ * The next number the counter would hand out for a bank account, without
+ * taking it (batch validation simulates the counter with it).
+ */
+export async function peekNextCheckNumber(
+  executor: DbOrTx, tenantId: string, bankAccountId: string, companyId: string,
+): Promise<number> {
+  const res = await executor.execute(sql`
+    SELECT ${nextNumFor(bankAccountId)} AS next FROM companies WHERE ${counterScope(tenantId, companyId)}
+  `);
+  const next = (res.rows[0] as { next: number | string | null } | undefined)?.next;
+  return next === null || next === undefined ? 1001 : Number(next);
 }
 
 // Hand-written: atomically allocate the next check number.
@@ -90,14 +124,16 @@ async function advanceCounterPast(executor: DbOrTx, tenantId: string, bankAccoun
 // atomically increment the counter. Postgres serializes UPDATEs on
 // the same row so each caller gets a distinct number, even with no
 // application-level locking.
-async function allocateCheckNumber(executor: DbOrTx, tenantId: string, bankAccountId: string): Promise<number> {
+async function allocateCheckNumber(
+  executor: DbOrTx, tenantId: string, bankAccountId: string, companyId: string | undefined,
+): Promise<number> {
   const result = await executor.execute(sql`
     UPDATE companies
     SET check_settings = ${setNextNumSql(
       bankAccountId,
       sql`to_jsonb(${nextNumFor(bankAccountId)} + 1)`,
     )}
-    WHERE tenant_id = ${tenantId}
+    WHERE ${counterScope(tenantId, companyId)}
     RETURNING (check_settings->'nextCheckNumbers'->>${bankAccountId})::int - 1 AS assigned_number
   `);
   const assigned = (result.rows[0] as { assigned_number: number | null } | undefined)?.assigned_number;
@@ -182,20 +218,15 @@ export async function createCheck(
   let checkNumber: number | null = null;
   let printStatus: string;
 
+  const manualNumber = !input.printLater && input.checkNumber ? input.checkNumber : null;
   if (input.printLater) {
     printStatus = 'queue';
-  } else if (input.checkNumber) {
-    // Manual override — the physical checkbook is the source of truth
-    // for hand-written checks. Refuse duplicates on the same bank
-    // account (banks reject them, and a silent duplicate corrupts the
-    // register), then advance the auto counter past the manual number
-    // so the next auto-assigned check can't collide with it.
-    await assertCheckNumberFree(numbering, tenantId, input.bankAccountId, input.checkNumber);
-    await advanceCounterPast(numbering, tenantId, input.bankAccountId, input.checkNumber);
-    checkNumber = input.checkNumber;
+  } else if (manualNumber !== null) {
+    // Manual override: numbered inside the posting transaction (below).
+    checkNumber = manualNumber;
     printStatus = 'hand_written';
   } else {
-    checkNumber = await allocateCheckNumber(numbering, tenantId, input.bankAccountId);
+    checkNumber = await allocateCheckNumber(numbering, tenantId, input.bankAccountId, companyId);
     printStatus = 'hand_written';
   }
 
@@ -205,6 +236,16 @@ export async function createCheck(
   // check-fields UPDATE would leave a transaction posted that lacks a
   // check number — orphaned check-allocation that's hard to reconcile.
   const post = async (tx: Tx) => {
+    if (manualNumber !== null) {
+      // Manual override — the physical checkbook is the source of truth
+      // for hand-written checks. Advance the auto counter past the manual
+      // number first: that UPDATE row-locks the counter until commit, so a
+      // concurrent save of the same number waits, then sees this check.
+      // Then refuse duplicates on the same bank account (banks reject
+      // them, and a silent duplicate corrupts the register).
+      await advanceCounterPast(tx, tenantId, input.bankAccountId, manualNumber, companyId);
+      await assertCheckNumberFree(tx, tenantId, input.bankAccountId, manualNumber);
+    }
     await assertCheckRefsInScope(tx, tenantId, companyId, input);
     const t = await ledger.postTransaction(tenantId, {
       txnType: 'expense',
@@ -371,10 +412,10 @@ export async function updateCheck(
     } else if (printedChange === 'keep_number') {
       checkNumber = input.checkNumber ?? existing.checkNumber;
       if (checkNumber === null) {
-        checkNumber = await allocateCheckNumber(tx, tenantId, input.bankAccountId);
+        checkNumber = await allocateCheckNumber(tx, tenantId, input.bankAccountId, companyId);
       } else {
+        await advanceCounterPast(tx, tenantId, input.bankAccountId, checkNumber, companyId);
         await assertCheckNumberFree(tx, tenantId, input.bankAccountId, checkNumber, checkId);
-        await advanceCounterPast(tx, tenantId, input.bankAccountId, checkNumber);
       }
       printStatus = 'hand_written';
       clearPrintStamp = true;
@@ -384,16 +425,17 @@ export async function updateCheck(
       printStatus = 'printed';
     } else if (input.checkNumber) {
       checkNumber = input.checkNumber;
+      await advanceCounterPast(tx, tenantId, input.bankAccountId, checkNumber, companyId);
       await assertCheckNumberFree(tx, tenantId, input.bankAccountId, checkNumber, checkId);
-      await advanceCounterPast(tx, tenantId, input.bankAccountId, checkNumber);
       printStatus = 'hand_written';
       clearPrintStamp = true;
     } else if (existing.checkNumber !== null && existing.printStatus !== 'queue') {
       checkNumber = existing.checkNumber;
       printStatus = existing.printStatus!;
+      await lockCheckCounter(tx, tenantId, companyId);
       await assertCheckNumberFree(tx, tenantId, input.bankAccountId, checkNumber, checkId);
     } else if (input.printLater === false) {
-      checkNumber = await allocateCheckNumber(tx, tenantId, input.bankAccountId);
+      checkNumber = await allocateCheckNumber(tx, tenantId, input.bankAccountId, companyId);
       printStatus = 'hand_written';
       clearPrintStamp = true;
     } else {

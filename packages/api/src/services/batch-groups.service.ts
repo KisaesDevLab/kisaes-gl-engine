@@ -32,15 +32,22 @@ import { accounts, batchSaveRequests, contacts, tags, transactions } from '../db
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { errorSummaryForLog } from '../utils/log-safe.js';
+import { isDesktop } from '../desktop/profile.js';
 import * as ledger from './ledger.service.js';
 import * as checkService from './check.service.js';
 import * as expenseService from './expense.service.js';
 import * as depositService from './deposit.service.js';
 import * as journalEntryService from './journal-entry.service.js';
 
-const Decimal = DecimalLib.default || DecimalLib;
+// 40 significant digits: a money value is at most 15 integer + 4 decimal
+// digits (numeric(19,4)), and the sum of 10,000 of them is at most 23 + 4
+// digits, so every sum and comparison here is exact. decimal.js's default
+// of 20 would round a large journal entry's totals before comparing them.
+const Decimal = (DecimalLib.default || DecimalLib).clone({ precision: 40 });
 type DecimalValue = InstanceType<typeof Decimal>;
 
+// At most 15 integer digits and 4 places: what numeric(19,4) holds.
 const MONEY_RE = /^-?\d{1,15}(\.\d{1,4})?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const CHECK_NUMBER_RE = /^\d{1,9}$/;
@@ -87,14 +94,34 @@ const CONTACT_TYPE: Record<BatchGroupTxnType, 'vendor' | 'customer' | null> = {
   deposit: 'customer', journal_entry: null,
 };
 
-/** Context account type each group posts against. */
-const CONTEXT_TYPES: Record<Exclude<BatchGroupTxnType, 'journal_entry'>, string[]> = {
-  check: ['asset'],
-  deposit: ['asset'],
-  expense: ['asset', 'liability'],
-  credit_card_charge: ['liability'],
-  credit_card_credit: ['liability'],
+// Bank-like registers (both detail-type vocabularies in use: the default
+// chart's umbrella 'bank' and the import path's 'checking' / 'savings';
+// cash on hand and petty cash are registers too).
+const BANK_DETAIL_TYPES = ['bank', 'checking', 'savings', 'cash', 'petty_cash'];
+const CARD_DETAIL_TYPES = ['credit_card'];
+type ContextKind = 'bank' | 'card';
+
+function contextKind(acct: AccountRef): ContextKind | null {
+  if (acct.accountType === 'asset' && acct.detailType && BANK_DETAIL_TYPES.includes(acct.detailType)) return 'bank';
+  if (acct.accountType === 'liability' && acct.detailType && CARD_DETAIL_TYPES.includes(acct.detailType)) return 'card';
+  return null;
+}
+
+/** Context account kinds each group may post against. */
+const CONTEXT_KINDS: Record<Exclude<BatchGroupTxnType, 'journal_entry'>, ContextKind[]> = {
+  check: ['bank'],
+  deposit: ['bank'],
+  expense: ['bank', 'card'],
+  credit_card_charge: ['card'],
+  credit_card_credit: ['card'],
 };
+
+/** A/R and A/P control accounts (the journal entry name rule's set). */
+const CONTROL_TAGS = ['accounts_receivable', 'accounts_payable'];
+function isControlAccount(acct: AccountRef): boolean {
+  return (!!acct.detailType && CONTROL_TAGS.includes(acct.detailType))
+    || (!!acct.systemTag && CONTROL_TAGS.includes(acct.systemTag));
+}
 
 function isValidDate(v: string): boolean {
   if (!DATE_RE.test(v)) return false;
@@ -116,11 +143,16 @@ function inScope<T extends { companyId: string | null }>(companyId: string) {
   return (r: T) => r.companyId === null || r.companyId === companyId;
 }
 
+const ACCOUNT_COLS = {
+  id: accounts.id, accountType: accounts.accountType, detailType: accounts.detailType, systemTag: accounts.systemTag,
+};
+type AccountRef = { id: string; accountType: string; detailType: string | null; systemTag: string | null };
+
 // Per-request lookup caches: a 10,000-row paste names the same few accounts
 // and payees over and over.
 class Resolver {
-  private accountsById = new Map<string, { id: string; accountType: string } | null>();
-  private accountsByName = new Map<string, { id: string; accountType: string } | null>();
+  private accountsById = new Map<string, AccountRef | null>();
+  private accountsByName = new Map<string, AccountRef | null>();
   private contactsById = new Map<string, { id: string; displayName: string } | null>();
   private contactsByName = new Map<string, { id: string; displayName: string } | null>();
   private tagsById = new Map<string, boolean>();
@@ -137,7 +169,7 @@ class Resolver {
 
   async accountById(id: string) {
     if (!this.accountsById.has(id)) {
-      const [row] = await this.ex.select({ id: accounts.id, accountType: accounts.accountType }).from(accounts)
+      const [row] = await this.ex.select(ACCOUNT_COLS).from(accounts)
         .where(and(this.accountScope(), eq(accounts.id, id))).limit(1);
       this.accountsById.set(id, row ?? null);
     }
@@ -148,7 +180,7 @@ class Resolver {
   async accountByName(name: string) {
     const key = name.trim();
     if (!this.accountsByName.has(key)) {
-      const cols = { id: accounts.id, accountType: accounts.accountType };
+      const cols = ACCOUNT_COLS;
       let [row] = await this.ex.select(cols).from(accounts).where(and(this.accountScope(), eq(accounts.name, key))).limit(1);
       if (!row) [row] = await this.ex.select(cols).from(accounts).where(and(this.accountScope(), eq(accounts.accountNumber, key))).limit(1);
       if (!row) [row] = await this.ex.select(cols).from(accounts).where(and(this.accountScope(), ilike(accounts.name, escapeLike(key)))).limit(1);
@@ -205,7 +237,10 @@ interface PlannedRow {
   debit: DecimalValue | null;
   credit: DecimalValue | null;
   contactName: string | null;
+  /** check rows: the number typed in the row. */
   checkNumber: number | null;
+  /** check rows: no number and not printed later, so the counter numbers it. */
+  autoNumber: boolean;
 }
 
 interface PlannedGroup {
@@ -243,8 +278,12 @@ async function validateContextAccount(resolver: Resolver, group: BatchGroup, gro
   if (!acct) {
     throw new AppError(400, 'The bank or credit card account was not found in this company', 'BATCH_CONTEXT_ACCOUNT_INVALID', { groupIndex });
   }
-  if (!CONTEXT_TYPES[group.txn_type].includes(acct.accountType)) {
-    throw new AppError(400, `This account can't be used for ${group.txn_type.replace(/_/g, ' ')} rows`, 'BATCH_CONTEXT_ACCOUNT_INVALID', { groupIndex });
+  const kind = contextKind(acct);
+  const allowed = CONTEXT_KINDS[group.txn_type];
+  if (!kind || !allowed.includes(kind)) {
+    const want = allowed.length === 2 ? 'a bank or credit card account' : allowed[0] === 'bank' ? 'a bank account' : 'a credit card account';
+    const label = group.txn_type.replace(/_/g, ' ');
+    throw new AppError(400, `${label[0]!.toUpperCase()}${label.slice(1)} rows need ${want}`, 'BATCH_CONTEXT_ACCOUNT_INVALID', { groupIndex });
   }
 }
 
@@ -286,6 +325,16 @@ async function planGroups(
         if (row.amount !== undefined) errors.push({ field: 'amount', message: 'Journal entry rows take a debit or a credit, not an amount' });
         debit = parseMoney(row.debit, 'debit', errors);
         credit = parseMoney(row.credit, 'credit', errors);
+        // A negative debit is a credit in disguise (and vice versa): refused,
+        // so the entry posts exactly the sides the rows show.
+        if (debit?.lessThan(0)) {
+          errors.push({ field: 'debit', message: 'Debit cannot be negative; enter the amount as a credit', code: 'VALIDATION_ERROR' });
+          debit = null;
+        }
+        if (credit?.lessThan(0)) {
+          errors.push({ field: 'credit', message: 'Credit cannot be negative; enter the amount as a debit', code: 'VALIDATION_ERROR' });
+          credit = null;
+        }
         const d = debit && !debit.isZero();
         const c = credit && !credit.isZero();
         if (!d && !c && !errors.some((e) => e.field === 'debit' || e.field === 'credit')) {
@@ -323,16 +372,28 @@ async function planGroups(
       }
 
       // Account
+      let rowAccount: AccountRef | null = null;
       if (row.accountId) {
-        const acct = await resolver.accountById(row.accountId);
-        if (acct) result.resolvedAccountId = acct.id;
-        else errors.push({ field: 'account_name', message: 'Selected account was not found in this company' });
+        rowAccount = await resolver.accountById(row.accountId);
+        if (!rowAccount) errors.push({ field: 'account_name', message: 'Selected account was not found in this company' });
       } else if (row.accountName?.trim()) {
-        const acct = await resolver.accountByName(row.accountName);
-        if (acct) result.resolvedAccountId = acct.id;
-        else errors.push({ field: 'account_name', message: `Account '${row.accountName.trim()}' not found` });
+        rowAccount = await resolver.accountByName(row.accountName);
+        if (!rowAccount) errors.push({ field: 'account_name', message: `Account '${row.accountName.trim()}' not found` });
       } else {
         errors.push({ field: 'account_name', message: 'Account is required' });
+      }
+      if (rowAccount) {
+        result.resolvedAccountId = rowAccount.id;
+        // A/R and A/P balances belong to invoices, bills and payments (or a
+        // journal entry naming the customer / vendor): a check, deposit or
+        // card row would move them with no open item behind it.
+        if (type !== 'journal_entry' && isControlAccount(rowAccount)) {
+          errors.push({
+            field: 'account_name',
+            message: 'Accounts Receivable and Accounts Payable can\'t be used here; record an invoice, bill or payment, or use a journal entry row with a name',
+            code: 'BATCH_ACCOUNT_AR_AP',
+          });
+        }
       }
       if (result.resolvedAccountId && result.resolvedAccountId === group.context_account_id) {
         errors.push({ field: 'account_name', message: 'The account must differ from the bank or card account of the group' });
@@ -365,12 +426,13 @@ async function planGroups(
       }
 
       if (type === 'journal_entry') result.entryKey = jeEntryKey(row);
-      pg.rows.push({ row, result, amount, debit, credit, contactName, checkNumber });
+      const autoNumber = type === 'check' && row.printLater !== true && ref === '';
+      pg.rows.push({ row, result, amount, debit, credit, contactName, checkNumber, autoNumber });
     }
     planned.push(pg);
   }
 
-  await checkCheckNumbers(ex, tenantId, planned);
+  await checkCheckNumbers(ex, tenantId, companyId, planned);
   await checkJournalEntries(ex, tenantId, companyId, planned);
 
   const rows: GroupRowResult[] = [];
@@ -391,31 +453,31 @@ async function planGroups(
   };
 }
 
-/** Check numbers: unique per bank account, in the batch and in the books. */
-async function checkCheckNumbers(ex: DbOrTx, tenantId: string, planned: PlannedGroup[]) {
+/**
+ * Check numbers, unique per bank account in the batch and in the books.
+ * The counter is simulated in posting order (groups in order, rows in
+ * order), exactly as createCheck will number them: a row without a number
+ * takes the counter's next number, a typed number moves the counter past
+ * itself. A typed number is refused when an earlier row of the batch has
+ * it (typed, or given automatically) or a transaction on the bank account
+ * already holds it, so validate predicts what save would refuse.
+ */
+async function checkCheckNumbers(ex: DbOrTx, tenantId: string, companyId: string, planned: PlannedGroup[]) {
   const byBank = new Map<string, PlannedRow[]>();
   for (const pg of planned) {
     if (pg.group.txn_type !== 'check') continue;
     const bank = pg.group.context_account_id!;
     const list = byBank.get(bank) ?? [];
-    list.push(...pg.rows.filter((r) => r.checkNumber !== null));
+    list.push(...pg.rows.filter((r) => r.checkNumber !== null || r.autoNumber));
     byBank.set(bank, list);
   }
   for (const [bank, rows] of byBank) {
-    if (rows.length === 0) continue;
-    const seen = new Map<number, number>();
-    for (const r of rows) {
-      const first = seen.get(r.checkNumber!);
-      if (first !== undefined) {
-        r.result.errors.push({ field: 'ref_no', message: `Check #${r.checkNumber} is also on row ${first}`, code: 'CHECK_NUMBER_DUPLICATE' });
-      } else {
-        seen.set(r.checkNumber!, r.row.rowNumber);
-      }
-    }
-    const numbers = [...seen.keys()];
+    const typed = [...new Set(rows.filter((r) => r.checkNumber !== null).map((r) => r.checkNumber!))];
+    // Automatic numbers only: createCheck hands them out one by one.
+    if (typed.length === 0) continue;
     const taken = new Set<number>();
-    for (let i = 0; i < numbers.length; i += 1000) {
-      const chunk = numbers.slice(i, i + 1000);
+    for (let i = 0; i < typed.length; i += 1000) {
+      const chunk = typed.slice(i, i + 1000);
       const res = await ex.execute(sql`
         SELECT DISTINCT t.check_number FROM transactions t
         JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bank}
@@ -425,10 +487,30 @@ async function checkCheckNumbers(ex: DbOrTx, tenantId: string, planned: PlannedG
       `);
       for (const row of res.rows as Array<{ check_number: number }>) taken.add(Number(row.check_number));
     }
+    let next = await checkService.peekNextCheckNumber(ex, tenantId, bank, companyId);
+    const holder = new Map<number, { rowNumber: number; auto: boolean }>();
     for (const r of rows) {
-      if (taken.has(r.checkNumber!)) {
-        r.result.errors.push({ field: 'ref_no', message: `Check #${r.checkNumber} already exists on this bank account`, code: 'CHECK_NUMBER_DUPLICATE' });
+      if (r.autoNumber) {
+        if (!holder.has(next)) holder.set(next, { rowNumber: r.row.rowNumber, auto: true });
+        next += 1;
+        continue;
       }
+      const n = r.checkNumber!;
+      const prior = holder.get(n);
+      if (prior?.auto) {
+        r.result.errors.push({
+          field: 'ref_no',
+          message: `Check #${n} is the next automatic number, which row ${prior.rowNumber} takes; choose another number or leave this one empty`,
+          code: 'CHECK_NUMBER_DUPLICATE',
+        });
+      } else if (prior) {
+        r.result.errors.push({ field: 'ref_no', message: `Check #${n} is also on row ${prior.rowNumber}`, code: 'CHECK_NUMBER_DUPLICATE' });
+      } else if (taken.has(n)) {
+        r.result.errors.push({ field: 'ref_no', message: `Check #${n} already exists on this bank account`, code: 'CHECK_NUMBER_DUPLICATE' });
+      } else {
+        holder.set(n, { rowNumber: r.row.rowNumber, auto: false });
+      }
+      next = Math.max(next, n + 1);
     }
   }
 }
@@ -500,12 +582,66 @@ export interface BatchSaveResult {
   transactions: SavedTxn[];
 }
 
-/** Re-throws a posting failure with the row numbers it belongs to. */
+/** The PostgreSQL SQLSTATE of a driver error (drizzle wraps pg's error in `cause`). */
+export function pgErrorCode(err: unknown): string | null {
+  for (let e: unknown = err, depth = 0; e && typeof e === 'object' && depth < 4; e = (e as { cause?: unknown }).cause, depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code)) return code;
+  }
+  return null;
+}
+
+/**
+ * A database error as an AppError the client can act on. The message is
+ * fixed wording: pg's own text and detail can carry amounts and names.
+ */
+export function classifyDbError(err: unknown): AppError | null {
+  const code = pgErrorCode(err);
+  if (!code) return null;
+  if (code === '55P03') {
+    return new AppError(409, 'The books are busy with another change; try again in a moment.', 'BATCH_BUSY');
+  }
+  if (code === '57014') {
+    return new AppError(409, 'Saving took too long and was stopped; nothing was saved. Try again, or save fewer rows at a time.', 'BATCH_TIMEOUT');
+  }
+  if (code === '40001' || code === '40P01') {
+    return new AppError(409, 'Another change got in the way; nothing was saved. Try again.', 'BATCH_ROW_CONFLICT');
+  }
+  if (code === '23505') {
+    return new AppError(409, 'This row duplicates something already in the books.', 'BATCH_ROW_CONFLICT');
+  }
+  if (code === '22003') {
+    return new AppError(400, 'An amount is too large for the books (or makes a balance too large).', 'BATCH_ROW_OUT_OF_RANGE');
+  }
+  if (code.startsWith('22') || code.startsWith('23')) {
+    return new AppError(400, 'The books refused a value in this row.', 'BATCH_ROW_REJECTED');
+  }
+  return null;
+}
+
+/**
+ * Re-throws a posting failure with the row numbers it belongs to. An
+ * AppError keeps its status and code; a database error becomes 400 / 409
+ * where its SQLSTATE says what went wrong, else a 500 BATCH_ROW_FAILED
+ * (logged here, as the error handler would have) — always with the rows.
+ */
 function rowFailure(err: unknown, rowNumbers: number[]): unknown {
-  if (!(err instanceof AppError)) return err;
-  const errors = [{ field: 'row', message: err.message, ...(err.code ? { code: err.code } : {}) }];
-  return new AppError(err.statusCode, `Row ${rowNumbers.join(', ')}: ${err.message}`, err.code ?? 'BATCH_ROW_FAILED', {
-    ...(err.details ?? {}),
+  let app: AppError;
+  if (err instanceof AppError) {
+    app = err;
+  } else {
+    const classified = classifyDbError(err);
+    if (classified) {
+      app = classified;
+    } else {
+      if (isDesktop()) console.error(`Batch row ${rowNumbers.join(', ')} failed: ${errorSummaryForLog(err)}`);
+      else console.error(`Batch row ${rowNumbers.join(', ')} failed:`, err);
+      app = new AppError(500, 'Something went wrong saving this row; nothing was saved.', 'BATCH_ROW_FAILED');
+    }
+  }
+  const errors = [{ field: 'row', message: app.message, ...(app.code ? { code: app.code } : {}) }];
+  return new AppError(app.statusCode, `Row ${rowNumbers.join(', ')}: ${app.message}`, app.code ?? 'BATCH_ROW_FAILED', {
+    ...(app.details ?? {}),
     rowNumbers,
     rows: rowNumbers.map((rowNumber) => ({ rowNumber, errors })),
   });
@@ -658,6 +794,12 @@ async function postGroups(
 // ─── Idempotency-Key ─────────────────────────────────────────────
 
 const IDEMPOTENCY_KEY_RE = /^[\x21-\x7e]{1,255}$/;
+/**
+ * Bounds of the batch transaction (SET LOCAL): a row lock is waited for at
+ * most `lock` (then 409 BATCH_BUSY), one statement runs at most `statement`
+ * (then 409 BATCH_TIMEOUT). Mutable for tests only.
+ */
+export const batchTimeouts = { lock: '5s', statement: '120s' };
 /** Replay records older than this are pruned when the company saves a batch. */
 const IDEMPOTENCY_RETENTION_DAYS = 30;
 
@@ -684,75 +826,123 @@ export async function saveBatchGroups(
   if (key !== undefined) assertIdempotencyKey(key);
   const requestSha256 = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
 
-  return db.transaction(async (tx) => {
-    if (key !== undefined) {
-      // Same key at the same time: the second waits for the first, then
-      // replays its committed result.
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`batch-save:${tenantId}:${companyId}:${key}`}, 0))`);
-      const [prev] = await tx.select().from(batchSaveRequests).where(and(
-        eq(batchSaveRequests.tenantId, tenantId),
-        eq(batchSaveRequests.companyId, companyId),
-        eq(batchSaveRequests.idempotencyKey, key),
-      )).limit(1);
-      if (prev) {
-        if (prev.requestSha256 !== requestSha256) {
-          throw AppError.conflict('This Idempotency-Key was already used for a different batch', 'IDEMPOTENCY_KEY_REUSED', { batchId: prev.batchId });
-        }
-        return { status: prev.responseStatus, body: prev.responseBody, replayed: true };
-      }
-    }
+  try {
+    return await db.transaction(async (tx) => saveInTransaction(tx, tenantId, companyId, body, opts, requestSha256));
+  } catch (err) {
+    // A lock wait or statement timeout outside a row (validation, the
+    // closing-date check): 409 BATCH_BUSY / BATCH_TIMEOUT, not a 500.
+    if (err instanceof AppError) throw err;
+    const code = pgErrorCode(err);
+    if (code === '55P03' || code === '57014') throw classifyDbError(err)!;
+    throw err;
+  }
+}
 
-    const { validation, planned } = await planGroups(tx, tenantId, companyId, body.groups);
-    if (validation.invalidCount > 0) {
-      const bad = validation.rows.filter((r) => r.status === 'invalid');
-      throw new AppError(400, `Batch has ${bad.length} invalid row(s); nothing was saved.`, 'BATCH_INVALID', {
-        rowNumbers: bad.map((r) => r.rowNumber),
-        rows: bad.map((r) => ({ rowNumber: r.rowNumber, errors: r.errors })),
+async function saveInTransaction(
+  tx: Tx,
+  tenantId: string,
+  companyId: string,
+  body: { groups: BatchGroup[]; auto_create_contacts?: boolean; overrideConfirmed?: boolean },
+  opts: { userId?: string; idempotencyKey?: string },
+  requestSha256: string,
+): Promise<SaveOutcome> {
+  const key = opts.idempotencyKey;
+  // A batch is one long transaction: bound how long it waits for a row
+  // lock and how long any one statement may run, so a stuck save can't
+  // hold the company's counters and balances indefinitely (SET LOCAL:
+  // this transaction only; the pooled connection is reset at commit).
+  await tx.execute(sql`SELECT set_config('lock_timeout', ${batchTimeouts.lock}, true), set_config('statement_timeout', ${batchTimeouts.statement}, true)`);
+
+  // One batch save per tenant at a time; a second one gets 409
+  // BATCH_BUSY at once instead of queueing behind a 10,000-row save.
+  // A retry with the same Idempotency-Key then replays the first one.
+  const [busy] = (await tx.execute(sql`
+    SELECT pg_try_advisory_xact_lock(hashtextextended(${`batch-save-tenant:${tenantId}`}, 0)) AS ok
+  `)).rows as Array<{ ok: boolean }>;
+  if (!busy?.ok) {
+    throw AppError.conflict('Another batch is being saved for this business; try again when it finishes.', 'BATCH_BUSY');
+  }
+
+  if (key !== undefined) {
+    // Same key at the same time: the second waits for the first, then
+    // replays its committed result (the tenant lock above already
+    // serializes batch saves; this keeps the key's own guarantee).
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`batch-save:${tenantId}:${companyId}:${key}`}, 0))`);
+    const [prev] = await tx.select().from(batchSaveRequests).where(and(
+      eq(batchSaveRequests.tenantId, tenantId),
+      eq(batchSaveRequests.companyId, companyId),
+      eq(batchSaveRequests.idempotencyKey, key),
+    )).limit(1);
+    if (prev) {
+      // A key belongs to the user who used it first: another user (or a
+      // call without a user) never sees that user's stored result.
+      if ((prev.userId ?? null) !== (opts.userId ?? null)) {
+        throw AppError.conflict('This Idempotency-Key was already used by another user', 'IDEMPOTENCY_KEY_REUSED');
+      }
+      if (prev.requestSha256 !== requestSha256) {
+        throw AppError.conflict('This Idempotency-Key was already used for a different batch', 'IDEMPOTENCY_KEY_REUSED', { batchId: prev.batchId });
+      }
+      return { status: prev.responseStatus, body: prev.responseBody, replayed: true };
+    }
+  }
+
+  // Check rows: hold the company's check counter from validation to
+  // commit, so the numbers validation predicts (and finds free) are the
+  // numbers the postings get — a single check saved meanwhile waits.
+  if (body.groups.some((g) => g.txn_type === 'check')) {
+    await checkService.lockCheckCounter(tx, tenantId, companyId);
+  }
+
+  const { validation, planned } = await planGroups(tx, tenantId, companyId, body.groups);
+  if (validation.invalidCount > 0) {
+    const bad = validation.rows.filter((r) => r.status === 'invalid');
+    throw new AppError(400, `Batch has ${bad.length} invalid row(s); nothing was saved.`, 'BATCH_INVALID', {
+      rowNumbers: bad.map((r) => r.rowNumber),
+      rows: bad.map((r) => ({ rowNumber: r.rowNumber, errors: r.errors })),
+    });
+  }
+  if (!body.auto_create_contacts) {
+    const unknown = validation.rows.filter((r) => r.newContact);
+    if (unknown.length > 0) {
+      throw new AppError(400, `${unknown.length} row(s) name a payee that does not exist; nothing was saved.`, 'BATCH_CONTACT_NOT_FOUND', {
+        rowNumbers: unknown.map((r) => r.rowNumber),
+        rows: unknown.map((r) => ({
+          rowNumber: r.rowNumber,
+          errors: [{ field: 'contact_name', message: `Name '${r.newContact!.displayName}' not found` }],
+        })),
       });
     }
-    if (!body.auto_create_contacts) {
-      const unknown = validation.rows.filter((r) => r.newContact);
-      if (unknown.length > 0) {
-        throw new AppError(400, `${unknown.length} row(s) name a payee that does not exist; nothing was saved.`, 'BATCH_CONTACT_NOT_FOUND', {
-          rowNumbers: unknown.map((r) => r.rowNumber),
-          rows: unknown.map((r) => ({
-            rowNumber: r.rowNumber,
-            errors: [{ field: 'contact_name', message: `Name '${r.newContact!.displayName}' not found` }],
-          })),
-        });
+  }
+
+  // Closed period: one check up front so the refusal lists every row
+  // dated on or before the closing date. The postings check again (and
+  // audit each permitted override); the password is compared once.
+  const locked = validation.closedPeriodRowNumbers;
+  if (locked.length > 0) {
+    const firstDate = validation.rows.find((r) => r.closedPeriod)!;
+    const date = planned.flatMap((p) => p.rows).find((p) => p.row.rowNumber === firstDate.rowNumber)!.row.date!;
+    try {
+      await ledger.checkLockDate(tx, tenantId, date, companyId, undefined, { deferAudit: true });
+    } catch (err) {
+      if (err instanceof AppError) {
+        throw new AppError(err.statusCode, err.message, err.code, { ...(err.details ?? {}), rowNumbers: locked });
       }
+      throw err;
     }
+  }
 
-    // Closed period: one check up front so the refusal lists every row
-    // dated on or before the closing date. The postings check again (and
-    // audit each permitted override); the password is compared once.
-    const locked = validation.closedPeriodRowNumbers;
-    if (locked.length > 0) {
-      const firstDate = validation.rows.find((r) => r.closedPeriod)!;
-      const date = planned.flatMap((p) => p.rows).find((p) => p.row.rowNumber === firstDate.rowNumber)!.row.date!;
-      try {
-        await ledger.checkLockDate(tx, tenantId, date, companyId, undefined, { deferAudit: true });
-      } catch (err) {
-        if (err instanceof AppError) {
-          throw new AppError(err.statusCode, err.message, err.code, { ...(err.details ?? {}), rowNumbers: locked });
-        }
-        throw err;
-      }
-    }
+  const batchId = crypto.randomUUID();
+  const result = await postGroups(tx, tenantId, companyId, planned, batchId, body.auto_create_contacts === true, opts.userId);
 
-    const batchId = crypto.randomUUID();
-    const result = await postGroups(tx, tenantId, companyId, planned, batchId, body.auto_create_contacts === true, opts.userId);
-
-    if (key !== undefined) {
-      await tx.insert(batchSaveRequests).values({
-        tenantId, companyId, idempotencyKey: key, requestSha256, batchId,
-        responseStatus: 201, responseBody: result, userId: opts.userId ?? null,
-      });
-      await tx.delete(batchSaveRequests).where(and(
-        eq(batchSaveRequests.tenantId, tenantId),
-        lt(batchSaveRequests.createdAt, sql`now() - make_interval(days => ${IDEMPOTENCY_RETENTION_DAYS})`),
-      ));
-    }
-    return { status: 201, body: result, replayed: false };
-  });
+  if (key !== undefined) {
+    await tx.insert(batchSaveRequests).values({
+      tenantId, companyId, idempotencyKey: key, requestSha256, batchId,
+      responseStatus: 201, responseBody: result, userId: opts.userId ?? null,
+    });
+    await tx.delete(batchSaveRequests).where(and(
+      eq(batchSaveRequests.tenantId, tenantId),
+      lt(batchSaveRequests.createdAt, sql`now() - make_interval(days => ${IDEMPOTENCY_RETENTION_DAYS})`),
+    ));
+  }
+  return { status: 201, body: result, replayed: false };
 }
