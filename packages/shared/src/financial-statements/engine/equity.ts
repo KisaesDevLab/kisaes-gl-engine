@@ -177,6 +177,10 @@ export function buildEquity(ctx: EngineCtx, stmt: FsStatementConfig, inp: Equity
   if (!rf) return null;
   const { cols, blocks, rounded } = rf;
   const entity = ctx.source.entityKind;
+  if (stmt.equity?.layout === 'columns') {
+    const side = buildEquityByColumns(ctx, stmt, inp, rf);
+    if (side) return side;
+  }
 
   // Columns (+ Total when several).
   const showTotal = cols.length > 1;
@@ -221,5 +225,41 @@ export function buildEquity(ctx: EngineCtx, stmt: FsStatementConfig, inp: Equity
   applyDollarSigns(ctx, rows);
 
   const pageSetup = fsStatementPageSetup(ctx, stmt as FsStatementConfig, columns);
+  return { id: stmt.id, kind: 'equity', title: inp.title, dateLine: inp.dateLine, pageSetup, columns, rows };
+}
+
+// One column per planned range, in the income statement's column order, so
+// the two statements line up (period, YTD, prior-year period, prior-year
+// YTD). Equity accounts are combined: each cell is the sum of the already
+// rounded per-account amounts, so the column still foots to the balance sheet.
+function buildEquityByColumns(ctx: EngineCtx, stmt: FsStatementConfig, inp: EquityInputs, rf: EquityRollforward): FsRenderedStatement | null {
+  const ranges = ctx.plan.isRanges.filter((r) => rf.rounded.has(rangeId(r)));
+  if (!ranges.length) return null;
+  const cap = { ...captionsFor(ctx.source.entityKind), ...stmt.equity?.captions };
+  const columns: FsColumnDef[] = ranges.map((r) => ({ key: r.key, label: r.label, ...(r.sublabel ? { sublabel: r.sublabel } : {}), kind: 'amount' as const }));
+  const sum = (k: RowKey): number[] => ranges.map((r) => rf.rounded.get(rangeId(r))![k].reduce((a, v) => a + v, 0));
+  const rows: FsRow[] = [];
+  const mk = (key: string, caption: string, vals: number[], kind: FsRow['kind'], extra: Partial<FsRow> = {}): FsRow => ({
+    key, kind, caption, level: kind === 'detail' ? 1 : 0, styleRole: kind === 'detail' ? 'detail' : kind === 'total' ? 'total' : 'subtotal',
+    values: vals.map((v) => toDisplay(v)), dollarSign: false, ruleAbove: 'none', ruleBelow: 'none', ...extra,
+  });
+  rows.push(mk('begin', cap.beginning ?? 'Balance, beginning of period', sum('begin'), 'subtotal'));
+  const activity: Array<[RowKey, string]> = [
+    ['ni', cap.netIncome ?? 'Net income'],
+    ['contrib', cap.contributions],
+    ['dist', cap.distributions],
+    ['other', cap.other ?? 'Other changes'],
+  ];
+  for (const [k, caption] of activity) {
+    const vals = sum(k);
+    if (k !== 'ni' && vals.every((v) => v === 0)) continue;
+    rows.push(mk(k, caption, vals, 'detail'));
+  }
+  const termRows = rows.map((_, i) => i);
+  rows.push(mk('end', cap.ending ?? 'Balance, end of period', sum('end'), 'total', {
+    ruleAbove: 'single', ruleBelow: 'double', formula: formulaOf(termRows.map((row) => ({ row, sign: 1 }))),
+  }));
+  applyDollarSigns(ctx, rows);
+  const pageSetup = fsStatementPageSetup(ctx, stmt, columns);
   return { id: stmt.id, kind: 'equity', title: inp.title, dateLine: inp.dateLine, pageSetup, columns, rows };
 }

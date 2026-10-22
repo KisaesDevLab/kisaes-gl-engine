@@ -293,6 +293,10 @@ export const fsStatementConfigSchema = z.object({
     columns: z.enum(['auto', 'single', 'by_account']).optional(),
     // Per-column caption overrides keyed by account id.
     columnCaptions: z.record(z.string(), caption).optional(),
+    // 'stacked' = one roll-forward block per period, stacked down the page.
+    // 'columns' = one column per period, mirroring the income statement's
+    // columns (equity accounts are combined into one amount per period).
+    layout: z.enum(['stacked', 'columns']).optional(),
   }).optional(),
   cashFlow: z.object({
     captions: fsCashFlowCaptionsSchema.optional(),

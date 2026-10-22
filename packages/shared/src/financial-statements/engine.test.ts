@@ -445,3 +445,27 @@ describe('period + YTD vs last year column order', () => {
     expect(is.columns.filter((c) => c.kind === 'amount').map((c) => c.sublabel)).toEqual(['2025', '2025', '2024', '2024']);
   });
 });
+
+describe('equity statement laid out in columns', () => {
+  it('mirrors the income statement columns and foots to the rounded balance sheet', () => {
+    const layout = buildDefaultLayout('corporation');
+    const eqSt = layout.statements.find((x) => x.kind === 'equity')!;
+    eqSt.enabled = true;
+    eqSt.equity = { layout: 'columns' };
+    const rep = run({ layout, settings: { period: { type: 'quarter', start: '2025-10-01' }, periodEnd: '2025-12-31', columns: { mode: 'period_ytd_py', pctOfRevenue: false, varianceAmt: false, variancePct: false, ytdOrder: 'year' } } });
+    const is = stmt(rep, 'income_statement');
+    const eq = stmt(rep, 'equity');
+    const amt = (s: FsRenderedStatement) => s.columns.filter((c) => c.kind === 'amount').map((c) => `${c.label}|${c.sublabel}`);
+    expect(amt(eq)).toEqual(amt(is));
+    const end = eq.rows.find((r) => r.key === 'end')!;
+    const ni = eq.rows.find((r) => r.key === 'ni')!;
+    const isNi = is.rows.find((r) => r.caption.toUpperCase() === 'NET INCOME')!;
+    // Same net income as the income statement in every column.
+    ni.values.forEach((v, i) => expect(v).toBe(isNi.values[i]));
+    // Each column rolls forward: begin + activity = end.
+    eq.columns.forEach((_, ci) => {
+      const parts = eq.rows.filter((r) => r.key !== 'end').reduce((a, r) => a + (r.values[ci] ?? 0), 0);
+      expect(Math.round(parts * 100) / 100).toBe(end.values[ci]);
+    });
+  });
+});

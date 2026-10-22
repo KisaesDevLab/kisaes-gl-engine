@@ -184,7 +184,7 @@ export function computeFsReport(
     if (st.kind === 'equity') {
       const colMode = st.equity?.columns ?? 'auto';
       const byAccount = colMode === 'by_account' || (colMode === 'auto' && source.entityKind === 'corporation');
-      const eq = buildEquity(ctx, st, { title: titleFor(st, byAccount ? 'by_account' : 'single'), dateLine: eqDateLine, niRounded, equityTarget });
+      const eq = buildEquity(ctx, st, { title: titleFor(st, byAccount ? 'by_account' : 'single'), dateLine: st.equity?.layout === 'columns' ? isDateLine : eqDateLine, niRounded, equityTarget });
       if (eq) out.push(eq);
     } else if (st.kind === 'cash_flows') {
       const cf = buildCashFlows(ctx, st, { title: titleFor(st), dateLine: cfDateLine, niRounded, cashTarget });
