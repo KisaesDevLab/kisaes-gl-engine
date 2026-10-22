@@ -448,5 +448,14 @@ describe('isolation and limits', () => {
     ] });
     expect(res.status, JSON.stringify(res.json)).toBe(201);
     expect(res.json.savedCount).toBe(1);
+
+    // Its lookups are company scoped too.
+    const [expB] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyB, name: 'Old Shape B', accountType: 'expense' }).returning();
+    const v = await validate({ txn_type: 'expense', context_account_id: c.bank, rows: [
+      { rowNumber: 1, date: '2026-04-01', accountId: expB!.id, amount: 1 },
+      { rowNumber: 2, date: '2026-04-01', accountName: 'Old Shape B', amount: 1 },
+    ] });
+    expect(v.status).toBe(200);
+    expect(v.json.invalidCount).toBe(2);
   });
 });

@@ -526,8 +526,9 @@ async function postGroups(
     const key = `${nc.contactType}|${nc.displayName.toLowerCase()}`;
     const known = created.get(key);
     if (known) return known;
+    // Tenant-wide (company_id NULL), as POST /contacts creates them.
     const [row] = await tx.insert(contacts).values({
-      tenantId, companyId, contactType: nc.contactType, displayName: nc.displayName,
+      tenantId, contactType: nc.contactType, displayName: nc.displayName,
     }).returning({ id: contacts.id, displayName: contacts.displayName });
     if (!row) throw AppError.internal('Failed to create contact');
     await auditLog(tenantId, 'create', 'contact', row.id, null, {

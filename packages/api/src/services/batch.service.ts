@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, ilike, inArray, desc } from 'drizzle-orm';
+import { eq, and, sql, ilike, inArray, desc, or, isNull } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
 import { accounts, contacts, transactions, journalLines } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -34,53 +34,70 @@ function lenientDecimal(v: number | string | undefined): DecimalValue {
 
 // ─── Fuzzy Matching ──────────────────────────────────────────────
 
-export async function resolveContactByName(tenantId: string, name: string, contactType?: string) {
+// With a companyId, lookups see only tenant-wide rows (company_id NULL) and
+// that company's: the same scope rule the ledger applies when posting.
+function contactScope(tenantId: string, companyId?: string) {
+  return companyId
+    ? and(eq(contacts.tenantId, tenantId), or(isNull(contacts.companyId), eq(contacts.companyId, companyId)))
+    : eq(contacts.tenantId, tenantId);
+}
+
+function accountScope(tenantId: string, companyId?: string) {
+  return companyId
+    ? and(eq(accounts.tenantId, tenantId), or(isNull(accounts.companyId), eq(accounts.companyId, companyId)))
+    : eq(accounts.tenantId, tenantId);
+}
+
+/**
+ * Exact display name, then case-insensitive, then up to three partial
+ * suggestions. Among several contacts with the name, one of `contactType`
+ * (or 'both') wins.
+ */
+export async function resolveContactByName(tenantId: string, name: string, contactType?: string, companyId?: string) {
   if (!name.trim()) return { match: null, suggestions: [], isExact: false };
+  const scope = contactScope(tenantId, companyId);
+  const pick = <T extends { contactType: string }>(rows: T[]) =>
+    (contactType ? rows.find((r) => r.contactType === contactType || r.contactType === 'both') : undefined) ?? rows[0];
 
   // Exact match
-  const exact = await db.query.contacts.findFirst({
-    where: and(eq(contacts.tenantId, tenantId), eq(contacts.displayName, name.trim())),
-  });
+  const exact = pick(await db.select().from(contacts)
+    .where(and(scope, eq(contacts.displayName, name.trim()))).limit(20));
   if (exact) return { match: exact, suggestions: [], isExact: true };
 
   // Case-insensitive
-  const ciRows = await db.select().from(contacts)
-    .where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, escapeLike(name.trim()))))
-    .limit(1);
-  if (ciRows.length > 0) return { match: ciRows[0]!, suggestions: [], isExact: false };
+  const ci = pick(await db.select().from(contacts)
+    .where(and(scope, ilike(contacts.displayName, escapeLike(name.trim())))).limit(20));
+  if (ci) return { match: ci, suggestions: [], isExact: false };
 
   // Fuzzy — search for partial matches
   const fuzzyRows = await db.select().from(contacts)
-    .where(and(eq(contacts.tenantId, tenantId), ilike(contacts.displayName, `%${escapeLike(name.trim())}%`)))
+    .where(and(scope, ilike(contacts.displayName, `%${escapeLike(name.trim())}%`)))
     .limit(3);
 
   return { match: null, suggestions: fuzzyRows, isExact: false };
 }
 
-export async function resolveAccountByName(tenantId: string, name: string) {
+export async function resolveAccountByName(tenantId: string, name: string, companyId?: string) {
   if (!name.trim()) return { match: null, suggestions: [], isExact: false };
+  const scope = accountScope(tenantId, companyId);
 
   // Exact match by name
-  const exact = await db.query.accounts.findFirst({
-    where: and(eq(accounts.tenantId, tenantId), eq(accounts.name, name.trim())),
-  });
+  const [exact] = await db.select().from(accounts).where(and(scope, eq(accounts.name, name.trim()))).limit(1);
   if (exact) return { match: exact, suggestions: [], isExact: true };
 
   // Exact match by account number
-  const byNum = await db.query.accounts.findFirst({
-    where: and(eq(accounts.tenantId, tenantId), eq(accounts.accountNumber, name.trim())),
-  });
+  const [byNum] = await db.select().from(accounts).where(and(scope, eq(accounts.accountNumber, name.trim()))).limit(1);
   if (byNum) return { match: byNum, suggestions: [], isExact: true };
 
   // Case-insensitive
   const ciRows = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), ilike(accounts.name, escapeLike(name.trim()))))
+    .where(and(scope, ilike(accounts.name, escapeLike(name.trim()))))
     .limit(1);
   if (ciRows.length > 0) return { match: ciRows[0]!, suggestions: [], isExact: false };
 
   // Fuzzy
   const fuzzyRows = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), ilike(accounts.name, `%${escapeLike(name.trim())}%`)))
+    .where(and(scope, ilike(accounts.name, `%${escapeLike(name.trim())}%`)))
     .limit(3);
 
   return { match: null, suggestions: fuzzyRows, isExact: false };
@@ -175,7 +192,7 @@ interface RowResult {
   newContact?: { displayName: string; contactType: string };
 }
 
-export async function validateBatch(tenantId: string, txnType: string, contextAccountId: string | null, rows: BatchRow[]): Promise<{ validCount: number; invalidCount: number; rows: RowResult[] }> {
+export async function validateBatch(tenantId: string, txnType: string, contextAccountId: string | null, rows: BatchRow[], companyId?: string): Promise<{ validCount: number; invalidCount: number; rows: RowResult[] }> {
   const results: RowResult[] = [];
   let validCount = 0, invalidCount = 0;
 
@@ -186,7 +203,7 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
   // Validate context account exists (if required)
   if (contextAccountId) {
     const ctxAccount = await db.query.accounts.findFirst({
-      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, contextAccountId)),
+      where: and(accountScope(tenantId, companyId), eq(accounts.id, contextAccountId)),
     });
     if (!ctxAccount) throw AppError.badRequest('Context account not found');
   }
@@ -214,12 +231,12 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
     // Resolve account: the picked id first (tenant-scoped), else by name.
     if (row.accountId) {
       const picked = await db.query.accounts.findFirst({
-        where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, row.accountId)),
+        where: and(accountScope(tenantId, companyId), eq(accounts.id, row.accountId)),
       });
       if (picked) resolvedAccountId = picked.id;
       else errors.push({ field: 'account_name', message: 'Selected account was not found' });
     } else if (row.accountName) {
-      const resolved = await resolveAccountByName(tenantId, row.accountName);
+      const resolved = await resolveAccountByName(tenantId, row.accountName, companyId);
       if (resolved.match) {
         resolvedAccountId = resolved.match.id;
       } else if (resolved.suggestions.length > 0) {
@@ -235,13 +252,13 @@ export async function validateBatch(tenantId: string, txnType: string, contextAc
     // Resolve contact: the picked id first (tenant-scoped), else by name.
     if (row.contactId) {
       const picked = await db.query.contacts.findFirst({
-        where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, row.contactId)),
+        where: and(contactScope(tenantId, companyId), eq(contacts.id, row.contactId)),
       });
       if (picked) resolvedContactId = picked.id;
       else errors.push({ field: 'contact_name', message: 'Selected contact was not found' });
     } else if (row.contactName) {
       const contactTypeForResolve = ['invoice', 'credit_memo', 'customer_payment'].includes(txnType) ? 'customer' : 'vendor';
-      const resolved = await resolveContactByName(tenantId, row.contactName, contactTypeForResolve);
+      const resolved = await resolveContactByName(tenantId, row.contactName, contactTypeForResolve, companyId);
       if (resolved.match) {
         resolvedContactId = resolved.match.id;
       } else {
@@ -302,7 +319,7 @@ export async function saveBatch(
   companyId?: string,
 ) {
   // Validate first
-  const validation = await validateBatch(tenantId, txnType, contextAccountId, rows);
+  const validation = await validateBatch(tenantId, txnType, contextAccountId, rows, companyId);
 
   if (!options.skipInvalid && validation.invalidCount > 0) {
     throw AppError.badRequest(`Batch has ${validation.invalidCount} invalid rows. Fix errors or enable skip_invalid.`);

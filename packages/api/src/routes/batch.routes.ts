@@ -54,7 +54,7 @@ batchRouter.post('/validate', describe({
     return;
   }
   const { txn_type, context_account_id, rows } = req.body;
-  const result = await batchService.validateBatch(req.tenantId, txn_type, context_account_id ?? null, rows);
+  const result = await batchService.validateBatch(req.tenantId, txn_type, context_account_id ?? null, rows, req.companyId);
   res.json(result);
 });
 
