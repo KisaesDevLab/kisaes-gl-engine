@@ -50919,6 +50919,13 @@
                                     "by_account"
                                   ],
                                   "type": "string"
+                                },
+                                "layout": {
+                                  "enum": [
+                                    "stacked",
+                                    "columns"
+                                  ],
+                                  "type": "string"
                                 }
                               },
                               "type": "object"
@@ -54191,6 +54198,13 @@
                                     "by_account"
                                   ],
                                   "type": "string"
+                                },
+                                "layout": {
+                                  "enum": [
+                                    "stacked",
+                                    "columns"
+                                  ],
+                                  "type": "string"
                                 }
                               },
                               "type": "object"
@@ -55227,6 +55241,13 @@
                                     "auto",
                                     "single",
                                     "by_account"
+                                  ],
+                                  "type": "string"
+                                },
+                                "layout": {
+                                  "enum": [
+                                    "stacked",
+                                    "columns"
                                   ],
                                   "type": "string"
                                 }
@@ -57021,6 +57042,13 @@
                                     "auto",
                                     "single",
                                     "by_account"
+                                  ],
+                                  "type": "string"
+                                },
+                                "layout": {
+                                  "enum": [
+                                    "stacked",
+                                    "columns"
                                   ],
                                   "type": "string"
                                 }
@@ -58871,6 +58899,13 @@
                                     "by_account"
                                   ],
                                   "type": "string"
+                                },
+                                "layout": {
+                                  "enum": [
+                                    "stacked",
+                                    "columns"
+                                  ],
+                                  "type": "string"
                                 }
                               },
                               "type": "object"
@@ -60635,6 +60670,13 @@
                                     "auto",
                                     "single",
                                     "by_account"
+                                  ],
+                                  "type": "string"
+                                },
+                                "layout": {
+                                  "enum": [
+                                    "stacked",
+                                    "columns"
                                   ],
                                   "type": "string"
                                 }
