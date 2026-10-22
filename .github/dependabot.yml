@@ -16,11 +16,10 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
-      # Security fixes (repo setting "Dependabot security updates" is on)
-      # arrive as one PR as soon as an advisory lands, not on Monday.
-      security:
-        applies-to: security-updates
-        patterns: ["*"]
+    # Security updates (repo setting "Dependabot security updates" is on)
+    # open as soon as an advisory lands, one PR per package. Deliberately
+    # NOT grouped: a grouped security job fails as a whole when any one fix
+    # needs a major upgrade (tinypool → vitest 4), and then none arrive.
     ignore:
       # Majors are reviewed by hand (puppeteer 25 changes the browser
       # download/launch contract; react-router 7 is a routing rewrite).
