@@ -122,7 +122,7 @@ describe('sendPortalInvite', () => {
     expect(r.sent).toBe(true);
     // Asking from the portal's front page sends one of these PER tenancy;
     // without the client name they arrive identical and unusable.
-    expect(sentMail[0]!.subject).toBe(`Your portal sign-in link for TimberStone ${stamp}`);
+    expect(sentMail[0]!.subject).toBe(`Your portal sign-in code for TimberStone ${stamp}`);
   });
 
   it('never puts the token in the log preview', async () => {

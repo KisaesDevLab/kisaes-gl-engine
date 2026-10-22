@@ -4,7 +4,7 @@
 
 import crypto from 'node:crypto';
 import { createMailTransport } from '../utils/mail-transport.js';
-import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
@@ -34,6 +34,7 @@ import {
   verifyPassword as verifyIdentityPassword,
 } from './portal-identity.service.js';
 import { escapeHtml } from '../utils/html-escape.js';
+import { normalizePhone } from './sms-suppression.service.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 9 — magic-link auth +
 // portal session lifecycle. Distinct from staff JWT auth.
@@ -108,30 +109,98 @@ async function ensureSmtpTransport(): Promise<{
   };
 }
 
-// 9.2 — request magic link.
-//   - looks up active portal_contact by email + tenant
-//   - rate limits to 5 requests per email per hour
-//   - invalidates prior unconsumed links
-//   - emails the magic-link URL
+// 9.2 — request a sign-in (link + 6-digit code).
+//   - looks up the active portal_contact by email, or by mobile number
+//   - rate limits to 5 requests per contact per hour
+//   - invalidates prior unconsumed sign-ins for the contact
+//   - delivers by the channel the person typed: an email address gets an
+//     email; a mobile number gets an SMS (system SMS provider), falling back
+//     to the contact's email when SMS can't be sent (no provider, the
+//     number STOPped, or the send failed)
 //
-// Always returns ok: true regardless of whether the contact exists,
-// to prevent email-enumeration. The action only happens when a real
-// contact is found.
-export async function requestMagicLink(args: {
+// Always returns ok: true regardless of whether the contact exists, to
+// prevent enumeration. The action only happens when a real contact is found.
+
+export type PortalLoginIdentifier = { kind: 'email'; value: string } | { kind: 'phone'; value: string };
+
+/**
+ * Classify what the person typed on the sign-in page. An "@" means email;
+ * otherwise 10–15 digits (punctuation and a leading + allowed) is a mobile
+ * number, normalized like the SMS suppression list (NANP "1" dropped).
+ * Anything else is null.
+ */
+export function parseLoginIdentifier(raw: string): PortalLoginIdentifier | null {
+  const v = raw.trim();
+  if (!v) return null;
+  if (v.includes('@')) {
+    const email = normalizeEmail(v);
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 320 ? { kind: 'email', value: email } : null;
+  }
+  if (!/^\+?[\d\s().-]+$/.test(v)) return null;
+  const digits = v.replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) return null;
+  return { kind: 'phone', value: normalizePhone(v) };
+}
+
+type ContactRow = typeof portalContacts.$inferSelect;
+
+/** Active contacts of a tenant whose stored phone normalizes to `phone`, most recently seen first. */
+async function activeContactsByPhone(phone: string, tenantId?: string): Promise<ContactRow[]> {
+  const rows = await db.select().from(portalContacts).where(and(
+    eq(portalContacts.status, 'active'),
+    isNotNull(portalContacts.phone),
+    ...(tenantId ? [eq(portalContacts.tenantId, tenantId)] : []),
+  ));
+  return rows
+    .filter((c) => !!c.phone && normalizePhone(c.phone) === phone)
+    .sort((a, b) => (b.lastSeenAt?.getTime() ?? 0) - (a.lastSeenAt?.getTime() ?? 0));
+}
+
+/** Tenants with an active contact on this mobile number (one sign-in is sent per tenant). */
+export async function resolveActiveContactTenantsByPhone(phone: string): Promise<string[]> {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return [];
+  return Array.from(new Set((await activeContactsByPhone(normalized)).map((c) => c.tenantId)));
+}
+
+function generateCode(): string {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
+
+function codeHashFor(tokenHash: string, code: string): string {
+  return sha256Hex(`${tokenHash}:${code}`);
+}
+
+/** SMS sender when the system provider is configured, else null. */
+async function smsSender(): Promise<((to: string, body: string) => Promise<boolean>) | null> {
+  const tfa = await import('./tfa-config.service.js');
+  const raw = await tfa.getRawConfig();
+  if (!raw?.smsProvider) return null;
+  const { getSmsProvider } = await import('./sms-providers/index.js');
+  let provider;
+  try {
+    provider = getSmsProvider(raw);
+  } catch {
+    return null;
+  }
+  return async (to, body) => (await provider.sendText(to, body)).success;
+}
+
+export async function requestPortalSignIn(args: {
   tenantId: string;
-  email: string;
+  identifier: PortalLoginIdentifier;
   baseUrl: string;
   ipAddress?: string;
-}): Promise<{ ok: true; sent: boolean; viaStub: boolean; rateLimited?: boolean }> {
-  const email = normalizeEmail(args.email);
-  if (!email.includes('@')) return { ok: true, sent: false, viaStub: false };
-
-  const contact = await db.query.portalContacts.findFirst({
-    where: and(eq(portalContacts.tenantId, args.tenantId), eq(portalContacts.email, email)),
-  });
+}): Promise<{ ok: true; sent: boolean; viaStub: boolean; rateLimited?: boolean; channel?: 'email' | 'sms' }> {
+  const { identifier } = args;
+  const contact = identifier.kind === 'email'
+    ? await db.query.portalContacts.findFirst({
+      where: and(eq(portalContacts.tenantId, args.tenantId), eq(portalContacts.email, identifier.value)),
+    })
+    : (await activeContactsByPhone(identifier.value, args.tenantId))[0];
   if (!contact || contact.status !== 'active') return { ok: true, sent: false, viaStub: false };
 
-  // Rate limit window: per-email, last hour.
+  // Rate limit window: per-contact, last hour.
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
   const recent = await db
     .select({ n: sql<number>`COUNT(*)::int` })
@@ -144,16 +213,16 @@ export async function requestMagicLink(args: {
     );
   const recentCount = Number(recent[0]?.n ?? 0);
   if (recentCount >= RATE_LIMIT_PER_HOUR) {
-    // Do NOT throw. A 429 that only fires for emails with an existing
-    // active contact is an enumeration oracle on the public request-link
-    // endpoint (unknown emails can never hit this path) — and in the
-    // multi-tenancy loop a throw aborts remaining tenancies mid-way.
-    // Callers that can afford to be honest (the staff-initiated send)
-    // check the flag and surface their own 429.
+    // Do NOT throw. A 429 that only fires for an existing active contact
+    // is an enumeration oracle on the public request endpoint (unknown
+    // identifiers can never hit this path) — and in the multi-tenancy loop
+    // a throw aborts remaining tenancies mid-way. Callers that can afford
+    // to be honest (the staff-initiated send) check the flag and surface
+    // their own 429.
     return { ok: true, sent: false, viaStub: false, rateLimited: true };
   }
 
-  // Invalidate every prior unconsumed link for this contact.
+  // Invalidate every prior unconsumed sign-in for this contact.
   await db
     .update(portalMagicLinks)
     .set({ invalidatedAt: new Date() })
@@ -165,44 +234,77 @@ export async function requestMagicLink(args: {
       ),
     );
 
+  // Channel: SMS only for a mobile number the system can text and that
+  // has not STOPped; otherwise the contact's email.
+  let sms: ((to: string, body: string) => Promise<boolean>) | null = null;
+  if (identifier.kind === 'phone' && contact.phone) {
+    const { isPhoneSuppressed } = await import('./sms-suppression.service.js');
+    if (!(await isPhoneSuppressed(contact.phone))) sms = await smsSender();
+  }
+
   const token = generateToken();
   const tokenHash = sha256Hex(token);
+  const code = generateCode();
   const expiresAt = new Date(Date.now() + MAGIC_LINK_TTL_MIN * 60 * 1000);
+  const email = normalizeEmail(contact.email);
 
-  await db.insert(portalMagicLinks).values({
+  const [row] = await db.insert(portalMagicLinks).values({
     tenantId: args.tenantId,
     contactId: contact.id,
     tokenHash,
     emailSentTo: email,
     ipAddress: args.ipAddress ?? null,
     expiresAt,
-  });
+    codeHash: codeHashFor(tokenHash, code),
+    sentVia: sms ? 'sms' : 'email',
+    loginIdentifier: identifier.value,
+  }).returning({ id: portalMagicLinks.id });
 
   const link = `${args.baseUrl.replace(/\/$/, '')}/portal/auth/verify?token=${encodeURIComponent(
     token,
   )}`;
   // WHICH portal this opens. The same address can be a contact of two
-  // different clients, and asking for a link from the front page sends one
-  // per tenancy — two identical emails, where the only difference that
-  // matters (whose books) was invisible. tenants.name IS the client here.
+  // different clients, and asking from the front page sends one per
+  // tenancy — the only difference that matters (whose books) must be in
+  // the message. tenants.name IS the client here.
   const clientName = await tenantName(args.tenantId);
   const forClient = clientName ? ` for ${clientName}` : '';
-  const greeting = contact.firstName ? `Hi ${contact.firstName},` : 'Hello,';
-  const text = `${greeting}\n\nUse the link below to sign in to the${clientName ? ` ${clientName}` : ''} portal. It expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.\n\n${link}\n\nIf you didn't request this, you can ignore this email.`;
-  const html = `<p>${escapeHtml(greeting)}</p><p>Use the button below to sign in${clientName ? ` to <strong>${escapeHtml(clientName)}</strong>` : ''}. The link expires in ${MAGIC_LINK_TTL_MIN} minutes and can only be used once.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Sign in to the portal</a></p><p>Or copy and paste this URL: <code>${link}</code></p><p style="color:#888;font-size:12px">If you didn't request this, you can ignore this email.</p>`;
 
-  const mailer = await ensureSmtpTransport();
-  // Swallow send failures: an unhandled throw here 500s the request,
-  // which (a) leaks contact existence — an unknown email returns ok:true
-  // while a real one 500s when SMTP is down — and (b) leaves the
-  // just-inserted magic-link row orphaned. Log it; the enumeration-safe
-  // contract is that request-link always looks the same to the caller.
-  let sent = true;
-  try {
-    await mailer.send(email, `Your portal sign-in link${forClient}`, html, text);
-  } catch (err) {
-    sent = false;
-    console.error(`[portal-auth] magic-link email send failed for contact ${contact.id}:`, err instanceof Error ? err.message : err);
+  let sent = false;
+  let viaStub = false;
+  let channel: 'email' | 'sms' = 'email';
+  if (sms && contact.phone) {
+    channel = 'sms';
+    const body = `${clientName ? `${clientName} portal` : 'Portal'} sign-in code: ${code}. Expires in ${MAGIC_LINK_TTL_MIN} min. Or tap to sign in: ${link}`;
+    try {
+      sent = await sms(contact.phone, body);
+    } catch (err) {
+      console.error(`[portal-auth] sign-in SMS send failed for contact ${contact.id}:`, err instanceof Error ? err.message : err);
+    }
+    if (!sent) {
+      // Fall back to email so the person can still get in; the row now
+      // records the channel that actually carried it.
+      channel = 'email';
+      await db.update(portalMagicLinks).set({ sentVia: 'email' }).where(eq(portalMagicLinks.id, row!.id));
+    }
+  }
+
+  if (channel === 'email') {
+    const greeting = contact.firstName ? `Hi ${contact.firstName},` : 'Hello,';
+    const text = `${greeting}\n\nYour sign-in code${forClient} is ${code}. Enter it on the sign-in page, or use the link below. Both expire in ${MAGIC_LINK_TTL_MIN} minutes and work once.\n\n${link}\n\nIf you didn't request this, you can ignore this email.`;
+    const html = `<p>${escapeHtml(greeting)}</p><p>Your sign-in code${clientName ? ` for <strong>${escapeHtml(clientName)}</strong>` : ''} is:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px;font-family:monospace;margin:8px 0">${code}</p><p>Enter it on the sign-in page, or use the button below. Both expire in ${MAGIC_LINK_TTL_MIN} minutes and work once.</p><p><a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px">Sign in to the portal</a></p><p>Or copy and paste this URL: <code>${link}</code></p><p style="color:#888;font-size:12px">If you didn't request this, you can ignore this email.</p>`;
+    const mailer = await ensureSmtpTransport();
+    viaStub = mailer.isStub;
+    // Swallow send failures: an unhandled throw 500s the request, which
+    // leaks contact existence and orphans the row. Log it; request always
+    // looks the same to the caller.
+    try {
+      await mailer.send(email, `Your portal sign-in code${forClient}`, html, text);
+      sent = true;
+    } catch (err) {
+      sent = false;
+      console.error(`[portal-auth] sign-in email send failed for contact ${contact.id}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   await auditLog(
@@ -211,13 +313,28 @@ export async function requestMagicLink(args: {
     'portal_magic_link',
     null,
     null,
-    { contactId: contact.id, email, viaStub: mailer.isStub, sent },
+    { contactId: contact.id, channel, requestedAs: identifier.kind, viaStub, sent },
   );
 
   // viaStub lets the staff-initiated send surface "SMTP isn't configured
-  // — nothing was actually delivered". The PUBLIC request-link route
-  // must keep ignoring it (it always answers a bare ok:true).
-  return { ok: true, sent, viaStub: mailer.isStub };
+  // — nothing was actually delivered". The PUBLIC request route must keep
+  // ignoring it (it always answers a bare ok:true).
+  return { ok: true, sent, viaStub, channel };
+}
+
+/** Email sign-in (the staff "send sign-in link" button and older callers). */
+export async function requestMagicLink(args: {
+  tenantId: string;
+  email: string;
+  baseUrl: string;
+  ipAddress?: string;
+}): Promise<{ ok: true; sent: boolean; viaStub: boolean; rateLimited?: boolean }> {
+  const email = normalizeEmail(args.email);
+  if (!email.includes('@')) return { ok: true, sent: false, viaStub: false };
+  const { channel: _channel, ...out } = await requestPortalSignIn({
+    tenantId: args.tenantId, identifier: { kind: 'email', value: email }, baseUrl: args.baseUrl, ipAddress: args.ipAddress,
+  });
+  return out;
 }
 
 // ── Invitation ────────────────────────────────────────────────────
@@ -359,7 +476,7 @@ export interface VerifiedSession {
   companies: Array<{ companyId: string; companyName: string; role: string }>;
 }
 
-// 9.3 — verify magic link, mint session.
+// 9.3 — verify a sign-in link, mint session.
 export async function verifyMagicLink(args: {
   token: string;
   ipAddress?: string;
@@ -375,7 +492,51 @@ export async function verifyMagicLink(args: {
   if (link.expiresAt.getTime() < Date.now()) {
     throw AppError.unauthorized('This sign-in link has expired', 'TOKEN_EXPIRED');
   }
+  return mintSessionFromLink(link, args);
+}
 
+const MAX_CODE_ATTEMPTS = 5;
+
+/**
+ * 9.3b — sign in with the 6-digit code. The code is checked against the
+ * live sign-ins issued to what the person typed (email or mobile number),
+ * across tenants: a person on several tenants got one code per tenant, and
+ * the code they enter picks the tenant. Every wrong code counts against
+ * each of those sign-ins; at 5 they stop accepting codes (the link in the
+ * same message still works until it expires).
+ */
+export async function verifyLoginCode(args: {
+  identifier: PortalLoginIdentifier;
+  code: string;
+  ipAddress?: string;
+  userAgent?: string;
+}): Promise<VerifiedSession> {
+  const bad = () => AppError.unauthorized('That code is not valid or has expired. Request a new one.', 'BAD_CODE');
+  if (!/^\d{6}$/.test(args.code)) throw bad();
+  const live = await db.select().from(portalMagicLinks).where(and(
+    eq(portalMagicLinks.loginIdentifier, args.identifier.value),
+    isNull(portalMagicLinks.consumedAt),
+    isNull(portalMagicLinks.invalidatedAt),
+    isNotNull(portalMagicLinks.codeHash),
+    sql`${portalMagicLinks.expiresAt} > now()`,
+    sql`${portalMagicLinks.codeAttempts} < ${MAX_CODE_ATTEMPTS}`,
+  ));
+  const hit = live.find((l) => l.codeHash === codeHashFor(l.tokenHash, args.code));
+  if (!hit) {
+    if (live.length) {
+      await db.update(portalMagicLinks)
+        .set({ codeAttempts: sql`${portalMagicLinks.codeAttempts} + 1` })
+        .where(inArray(portalMagicLinks.id, live.map((l) => l.id)));
+    }
+    throw bad();
+  }
+  return mintSessionFromLink(hit, args);
+}
+
+async function mintSessionFromLink(
+  link: typeof portalMagicLinks.$inferSelect,
+  args: { ipAddress?: string; userAgent?: string },
+): Promise<VerifiedSession> {
   const contact = await db.query.portalContacts.findFirst({
     where: eq(portalContacts.id, link.contactId),
   });
@@ -388,11 +549,14 @@ export async function verifyMagicLink(args: {
   const expiresAt = new Date(Date.now() + SESSION_TTL_HOURS * 60 * 60 * 1000);
 
   return db.transaction(async (tx) => {
-    // Mark the link consumed atomically with the session insert.
-    await tx
+    // Mark the link consumed atomically with the session insert; the
+    // guard makes a racing second use of the same link/code lose.
+    const claimed = await tx
       .update(portalMagicLinks)
       .set({ consumedAt: new Date() })
-      .where(eq(portalMagicLinks.id, link.id));
+      .where(and(eq(portalMagicLinks.id, link.id), isNull(portalMagicLinks.consumedAt)))
+      .returning({ id: portalMagicLinks.id });
+    if (!claimed.length) throw AppError.unauthorized('This link has already been used', 'TOKEN_USED');
 
     await tx.insert(portalContactSessions).values({
       tenantId: link.tenantId,
@@ -406,7 +570,9 @@ export async function verifyMagicLink(args: {
       identityId: isLinkingEnabled() ? contact.identityId ?? null : null,
       tokenHash: sessionHash,
       // The address whose control was proved to mint this session (0182).
-      verifiedEmail: normalizeEmail(contact.email),
+      // A sign-in delivered by SMS proves the phone, not the email, so it
+      // records none — the email-based tenant switcher stays closed to it.
+      verifiedEmail: link.sentVia === 'sms' ? null : normalizeEmail(contact.email),
       expiresAt,
       ipAddress: args.ipAddress ?? null,
       userAgent: args.userAgent ?? null,

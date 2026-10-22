@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import { eq } from 'drizzle-orm';
@@ -35,12 +35,22 @@ const requestLinkLimiter = rateLimit({
 });
 
 const requestLinkSchema = z.object({
-  email: z.string().email().max(320),
+  // What the person typed: an email address or a mobile number. `email`
+  // is the older field name and is still accepted.
+  identifier: z.string().trim().min(1).max(320).optional(),
+  email: z.string().email().max(320).optional(),
   // Either tenantSlug (when the portal is reached via the firm's app URL
   // and the contact picks the firm explicitly) or omitted (when the host
   // header maps to a custom domain in portal_settings_per_practice).
   tenantSlug: z.string().min(1).max(100).optional(),
-});
+}).refine((b) => !!(b.identifier || b.email), { message: 'Enter your email or mobile number', path: ['identifier'] });
+
+/** The parsed identifier, or a 400 the page can show. */
+function loginIdentifierOf(raw: string): portalAuth.PortalLoginIdentifier {
+  const id = portalAuth.parseLoginIdentifier(raw);
+  if (!id) throw AppError.badRequest('Enter a valid email address or mobile number', 'BAD_IDENTIFIER');
+  return id;
+}
 
 /**
  * Base URL for the emailed magic link: the operator-configured
@@ -80,7 +90,9 @@ portalAuthRouter.post(
   requestLinkLimiter,
   validate(requestLinkSchema),
   async (req, res) => {
-    const { email, tenantSlug } = req.body as { email: string; tenantSlug?: string };
+    const body = req.body as { identifier?: string; email?: string; tenantSlug?: string };
+    const identifier = loginIdentifierOf(body.identifier ?? body.email ?? '');
+    const tenantSlug = body.tenantSlug;
     const { tenantId, viaCustomDomain } = await resolveTenantId(req.headers.host, tenantSlug);
 
     // When the tenant was resolved via a CONFIGURED custom portal
@@ -105,7 +117,7 @@ portalAuthRouter.post(
         try {
           if (tenantId) {
             const baseUrl = viaCustomDomain ? `${proto}://${req.headers.host}` : trustedBaseUrl;
-            await portalAuth.requestMagicLink({ tenantId, email, baseUrl, ipAddress });
+            await portalAuth.requestPortalSignIn({ tenantId, identifier, baseUrl, ipAddress });
             return;
           }
           // No firm context (bare /portal/login, no ?firm=, no custom
@@ -114,9 +126,12 @@ portalAuthRouter.post(
           // resolve to []. The emailed link always targets the trusted
           // PUBLIC_URL, and verify recovers the tenant from the token,
           // so a slug-less link still works.
-          const tenantIds = await portalAuth.resolveActiveContactTenants(email);
+          // A mobile number resolves the same way: one message per tenant.
+          const tenantIds = identifier.kind === 'email'
+            ? await portalAuth.resolveActiveContactTenants(identifier.value)
+            : await portalAuth.resolveActiveContactTenantsByPhone(identifier.value);
           for (const t of tenantIds) {
-            await portalAuth.requestMagicLink({ tenantId: t, email, baseUrl: trustedBaseUrl, ipAddress });
+            await portalAuth.requestPortalSignIn({ tenantId: t, identifier, baseUrl: trustedBaseUrl, ipAddress });
           }
         } catch (err) {
           console.error('[portal-auth] background request-link failed:', err instanceof Error ? err.message : err);
@@ -143,14 +158,7 @@ const verifyLimiter = rateLimit({
   message: { error: { message: 'Too many requests. Try again later.' } },
 });
 
-portalAuthRouter.post('/auth/verify', verifyLimiter, validate(verifySchema), async (req, res) => {
-  const { token } = req.body as { token: string };
-  const session = await portalAuth.verifyMagicLink({
-    token,
-    ipAddress: req.ip,
-    userAgent: req.headers['user-agent'],
-  });
-
+function sendSession(res: Response, session: portalAuth.VerifiedSession): void {
   // Set the session cookie. SameSite=Lax matches the staff cookie pattern;
   // Secure follows resolvedSecure() — honoring COOKIE_SECURE override so
   // the appliance's emergency-access proxy (plain HTTP at port 5171) can
@@ -178,6 +186,32 @@ portalAuthRouter.post('/auth/verify', verifyLimiter, validate(verifySchema), asy
     expiresAt: session.expiresAt.toISOString(),
     companies: session.companies,
   });
+}
+
+portalAuthRouter.post('/auth/verify', verifyLimiter, validate(verifySchema), async (req, res) => {
+  const { token } = req.body as { token: string };
+  sendSession(res, await portalAuth.verifyMagicLink({
+    token,
+    ipAddress: req.ip,
+    userAgent: req.headers['user-agent'],
+  }));
+});
+
+const verifyCodeSchema = z.object({
+  identifier: z.string().trim().min(1).max(320),
+  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+});
+
+// 9.3b — sign in with the 6-digit code from the email or text. Same
+// limiter and session cookie as the link.
+portalAuthRouter.post('/auth/verify-code', verifyLimiter, validate(verifyCodeSchema), async (req, res) => {
+  const { identifier, code } = req.body as { identifier: string; code: string };
+  sendSession(res, await portalAuth.verifyLoginCode({
+    identifier: loginIdentifierOf(identifier),
+    code,
+    ipAddress: req.ip,
+    userAgent: req.headers['user-agent'],
+  }));
 });
 
 // 9.4 — password sign-in alternate flow. Same cookie shape as

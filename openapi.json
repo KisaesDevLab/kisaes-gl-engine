@@ -1007,15 +1007,17 @@
                     "maxLength": 320,
                     "type": "string"
                   },
+                  "identifier": {
+                    "maxLength": 320,
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "tenantSlug": {
                     "maxLength": 100,
                     "minLength": 1,
                     "type": "string"
                   }
                 },
-                "required": [
-                  "email"
-                ],
                 "type": "object"
               }
             }
@@ -1126,6 +1128,45 @@
                 },
                 "required": [
                   "token"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/api/portal/auth/verify-code": {
+      "post": {
+        "operationId": "post_api_portal_auth_verify_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "code": {
+                    "pattern": "^\\d{6}$",
+                    "type": "string"
+                  },
+                  "identifier": {
+                    "maxLength": 320,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "identifier",
+                  "code"
                 ],
                 "type": "object"
               }

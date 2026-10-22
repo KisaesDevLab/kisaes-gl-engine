@@ -34,6 +34,13 @@ export const portalMagicLinks = pgTable('portal_magic_links', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
+  // 0227 — 6-digit code beside the link: SHA-256 of tokenHash + ':' + code.
+  codeHash: varchar('code_hash', { length: 64 }),
+  codeAttempts: integer('code_attempts').notNull().default(0),
+  // 'email' | 'sms'. An SMS sign-in does not prove the email address.
+  sentVia: varchar('sent_via', { length: 10 }).notNull().default('email'),
+  // What the person typed, normalized (email lower-case or phone digits).
+  loginIdentifier: varchar('login_identifier', { length: 320 }),
 }, (table) => ({
   hashIdx: uniqueIndex('uq_portal_magic_links_hash').on(table.tokenHash),
   contactIdx: index('idx_portal_magic_links_contact').on(table.contactId, table.createdAt),
