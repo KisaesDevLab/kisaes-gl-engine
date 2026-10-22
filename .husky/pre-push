@@ -1,0 +1,41 @@
+#!/usr/bin/env sh
+# Copyright 2026 Kisaes LLC
+# Licensed under the PolyForm Small Business License 1.0.0.
+# Free for small businesses; see LICENSE for terms.
+#
+# Fail the push when openapi.json is out of date (the CI openapi test fails
+# on it, and a v* tag's Docker publish waits on CI). Only runs when the
+# pushed commits touch the API or shared sources. Skip once with
+# `git push --no-verify`.
+
+zero=0000000000000000000000000000000000000000
+changed=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue          # deleting a ref
+  case "$local_ref" in refs/tags/*) continue ;; esac # tags carry no new code
+  # New branch: compare with where it forked from origin/main.
+  base="$remote_sha"
+  [ "$base" = "$zero" ] && base=$(git merge-base "$local_sha" origin/main 2>/dev/null)
+  if [ -n "$base" ]; then
+    files=$(git diff --name-only "$base" "$local_sha")
+  else
+    files="packages/api/src/"  # unknown base: check to be safe
+  fi
+  changed="$changed
+$files"
+done
+
+if ! printf '%s\n' "$changed" | grep -qE '^(packages/api/src|packages/shared/src)/|^openapi\.json$'; then
+  exit 0
+fi
+
+echo "pre-push: checking openapi.json (API/shared sources changed)…"
+npm run build --workspace=@kis-books/shared --silent >/dev/null 2>&1 || {
+  echo "pre-push: building packages/shared failed; run 'npm run build --workspace=@kis-books/shared' to see why." >&2
+  exit 1
+}
+if ! npm run openapi:check --silent; then
+  echo "" >&2
+  echo "pre-push: openapi.json is out of date. Run 'npm run openapi:export', commit openapi.json, and push again." >&2
+  exit 1
+fi
