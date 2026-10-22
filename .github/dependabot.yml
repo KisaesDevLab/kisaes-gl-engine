@@ -25,12 +25,21 @@ updates:
       # download/launch contract; react-router 7 is a routing rewrite).
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+  # Base images stay on the current Node LTS line. Odd majors (25, 27…) are
+  # short-lived "Current" releases and never become LTS, so Dependabot must
+  # not propose a Node major; moving to the next even LTS is done by hand.
   - package-ecosystem: docker
     directory: "/packages/api"
     schedule: { interval: weekly, day: monday }
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker
     directory: "/packages/web"
     schedule: { interval: weekly, day: monday }
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule: { interval: weekly, day: monday }
