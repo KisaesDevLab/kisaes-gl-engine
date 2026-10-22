@@ -22,11 +22,16 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, auditLog, batchSaveRequests, companies, contacts, journalLines, tags, transactions } from '../db/schema/index.js';
+import {
+  accounts, auditLog, batchSaveRequests, companies, contacts, journalLines, tags, transactions,
+  users, userTenantAccess, userPermissions,
+} from '../db/schema/index.js';
 import { batchRouter } from './batch.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { hashClosingPassword } from '../services/closing-password.service.js';
-import { makeCompany, cleanTenant, type Co, type Res } from '../services/templates/templates.test-helpers.js';
+import { makeCompany, cleanTenant, suffix, type Co, type Res } from '../services/templates/templates.test-helpers.js';
+import * as authService from '../services/auth.service.js';
+import { batchTimeouts, classifyDbError } from '../services/batch-groups.service.js';
 
 class BatchServer {
   server: Server | null = null;
@@ -461,5 +466,267 @@ describe('isolation and limits', () => {
     ] });
     expect(v.status).toBe(200);
     expect(v.json.invalidCount).toBe(2);
+  });
+});
+
+// ─── Security review of #163 ─────────────────────────────────────
+
+/** A bookkeeper of c's tenant with exactly these permissions (null: no permission row = full). */
+async function bookkeeper(overrides: Record<string, string> | null) {
+  const [u] = await db.insert(users).values({
+    tenantId: c.tenantId, email: `bk-${suffix()}@example.com`, passwordHash: 'x', displayName: 'Bookkeeper', role: 'bookkeeper',
+  }).returning();
+  await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: c.tenantId, role: 'bookkeeper' });
+  if (overrides) await db.insert(userPermissions).values({ tenantId: c.tenantId, userId: u!.id, overrides: overrides as never });
+  const token = (await authService.issueSession({ userId: u!.id, tenantId: c.tenantId, role: 'bookkeeper', email: u!.email } as never)).accessToken;
+  return { id: u!.id, token };
+}
+
+const depositRow = (n: number) => ({ rowNumber: n, date: '2026-04-01', accountId: c.income, amount: '1.00' });
+const checkRow = (n: number, extra: Record<string, unknown> = {}) => ({ rowNumber: n, date: '2026-04-01', accountId: c.expense, amount: '1.00', ...extra });
+
+describe('permissions per row type (H1)', () => {
+  it('needs create on the row type resource for validate and save, and on contacts to create names', async () => {
+    const bk = await bookkeeper({ batch_entry: 'full', transactions: 'full', banking: 'full', checks: 'view', contacts: 'view' });
+    const body = { groups: [
+      { txn_type: 'deposit', context_account_id: c.bank, rows: [depositRow(1)] },
+      { txn_type: 'check', context_account_id: c.bank, rows: [checkRow(2)] },
+    ] };
+    const v = await srv.request('/api/v1/batch/validate', bk.token, body, c.companyId);
+    expect(v.status).toBe(403);
+    expect(v.json.error).toMatchObject({ code: 'PERMISSION_DENIED', details: { groupIndex: 1, resource: 'checks' } });
+    const s1 = await srv.request('/api/v1/batch/save', bk.token, body, c.companyId);
+    expect(s1.status).toBe(403);
+    expect(s1.json.error.details).toMatchObject({ groupIndex: 1, resource: 'checks' });
+    expect(await txns()).toHaveLength(0);
+
+    const named = { auto_create_contacts: true, groups: [{ txn_type: 'deposit', context_account_id: c.bank, rows: [{ ...depositRow(1), contactName: 'Brand New Customer' }] }] };
+    const s2 = await srv.request('/api/v1/batch/save', bk.token, named, c.companyId);
+    expect(s2.status).toBe(403);
+    expect(s2.json.error.details).toEqual({ resource: 'contacts' });
+    expect(await txns()).toHaveLength(0);
+
+    const ok = await srv.request('/api/v1/batch/save', bk.token, { groups: [body.groups[0]] }, c.companyId);
+    expect(ok.status, JSON.stringify(ok.json)).toBe(201);
+  });
+
+  it('maps each row type to its resource', async () => {
+    const cases: Array<[string, string, string | null]> = [
+      ['journal_entry', 'transactions', null],
+      ['expense', 'transactions', c.bank],
+      ['credit_card_charge', 'transactions', card],
+      ['credit_card_credit', 'banking', card],
+      ['deposit', 'banking', c.bank],
+      ['check', 'checks', c.bank],
+    ];
+    const bk = await bookkeeper({ batch_entry: 'full', transactions: 'none', banking: 'none', checks: 'none' });
+    for (const [type, resource, ctx] of cases) {
+      const res = await srv.request('/api/v1/batch/validate', bk.token, { groups: [
+        { txn_type: type, ...(ctx ? { context_account_id: ctx } : {}), rows: [checkRow(1)] },
+      ] }, c.companyId);
+      expect(res.status, type).toBe(403);
+      expect(res.json.error.details, type).toEqual({ groupIndex: 0, resource });
+    }
+  });
+});
+
+describe('journal entry sides (M2)', () => {
+  it('refuses a negative debit or credit, even when the entry balances', async () => {
+    const res = await validate({ groups: [{ txn_type: 'journal_entry', rows: [
+      { rowNumber: 1, date: '2026-04-01', entry: 'a', accountId: c.expense, debit: '-5.00' },
+      { rowNumber: 2, date: '2026-04-01', entry: 'a', accountId: c.savings, credit: '-5.00' },
+    ] }] });
+    expect(res.status).toBe(200);
+    expect(res.json.invalidCount).toBe(2);
+    expect(res.json.rows[0].errors).toContainEqual(expect.objectContaining({ field: 'debit', code: 'VALIDATION_ERROR' }));
+    expect(res.json.rows[1].errors).toContainEqual(expect.objectContaining({ field: 'credit', code: 'VALIDATION_ERROR' }));
+    const zero = await validate({ groups: [{ txn_type: 'journal_entry', rows: [
+      { rowNumber: 1, date: '2026-04-01', entry: 'a', accountId: c.expense, debit: '5', credit: '-0' },
+      { rowNumber: 2, date: '2026-04-01', entry: 'a', accountId: c.savings, credit: '5' },
+    ] }] });
+    expect(zero.json.invalidCount).toBe(0);
+  });
+});
+
+describe('account kinds (M3)', () => {
+  it('limits group accounts to bank / credit card kinds by row type', async () => {
+    const [prepaid] = await db.insert(accounts).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: 'Prepaid', accountType: 'asset', detailType: 'prepaid_expense',
+    }).returning();
+    const [loan] = await db.insert(accounts).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: 'Loan', accountType: 'liability', detailType: 'long_term_liability',
+    }).returning();
+    const refused: Array<[string, string]> = [
+      ['deposit', card], ['check', card], ['credit_card_charge', c.bank], ['credit_card_credit', c.bank],
+      ['check', prepaid!.id], ['deposit', c.ar], ['expense', loan!.id], ['expense', c.ap], ['credit_card_charge', loan!.id],
+    ];
+    for (const [type, ctx] of refused) {
+      const res = await validate({ groups: [{ txn_type: type, context_account_id: ctx, rows: [checkRow(1)] }] });
+      expect(res.status, `${type} ${ctx}`).toBe(400);
+      expect(res.json.error).toMatchObject({ code: 'BATCH_CONTEXT_ACCOUNT_INVALID', details: { groupIndex: 0 } });
+    }
+    for (const [type, ctx] of [['expense', c.bank], ['expense', card], ['check', c.bank], ['deposit', c.savings]] as const) {
+      const res = await validate({ groups: [{ txn_type: type, context_account_id: ctx, rows: [checkRow(1)] }] });
+      expect(res.status, `${type} ${ctx}`).toBe(200);
+    }
+  });
+
+  it('refuses A/R and A/P as the account of non-journal rows; journal rows keep the name rule', async () => {
+    const res = await validate({ groups: [
+      { txn_type: 'deposit', context_account_id: c.bank, rows: [{ ...depositRow(1), accountId: c.ar, contactId: c.customer }] },
+      { txn_type: 'check', context_account_id: c.bank, rows: [checkRow(2, { accountId: c.ap, contactId: c.vendor })] },
+      { txn_type: 'journal_entry', rows: [
+        { rowNumber: 4, date: '2026-04-01', entry: 'a', accountId: c.ar, debit: '5', contactId: c.customer },
+        { rowNumber: 5, date: '2026-04-01', entry: 'a', accountId: c.income, credit: '5' },
+      ] },
+    ] });
+    expect(res.status).toBe(200);
+    const byRow = new Map<number, { status: string; errors: Array<{ field: string; code?: string }> }>(
+      res.json.rows.map((r: { rowNumber: number }) => [r.rowNumber, r]),
+    );
+    for (const n of [1, 2]) {
+      expect(byRow.get(n)!.errors).toContainEqual(expect.objectContaining({ field: 'account_name', code: 'BATCH_ACCOUNT_AR_AP' }));
+    }
+    expect(byRow.get(4)!.status).toBe('valid');
+    expect(byRow.get(5)!.status).toBe('valid');
+  });
+});
+
+describe('bounded batch transaction (M4)', () => {
+  /** Holds a lock in another transaction until the returned function is called. */
+  async function holdLock(statement: ReturnType<typeof sql>) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let ready!: () => void;
+    const held = new Promise<void>((r) => { ready = r; });
+    const holder = db.transaction(async (tx) => { await tx.execute(statement); ready(); await gate; });
+    await held;
+    return async () => { release(); await holder; };
+  }
+
+  it('a second batch save of the tenant is 409 BATCH_BUSY at once; nothing is posted', async () => {
+    const body = { groups: [{ txn_type: 'deposit', context_account_id: c.bank, rows: [depositRow(1)] }] };
+    const free = await holdLock(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`batch-save-tenant:${c.tenantId}`}, 0))`);
+    try {
+      const res = await save(body, { 'Idempotency-Key': 'busy-1' });
+      expect(res.status).toBe(409);
+      expect(res.json.error.code).toBe('BATCH_BUSY');
+    } finally {
+      await free();
+    }
+    expect(await txns()).toHaveLength(0);
+    // The retry with the same key now saves.
+    expect((await save(body, { 'Idempotency-Key': 'busy-1' })).status).toBe(201);
+  });
+
+  it('gives up on a held row lock after lock_timeout: 409 BATCH_BUSY', async () => {
+    const before = batchTimeouts.lock;
+    batchTimeouts.lock = '200ms';
+    const free = await holdLock(sql`SELECT 1 FROM companies WHERE id = ${c.companyId} FOR UPDATE`);
+    try {
+      const res = await save({ groups: [{ txn_type: 'check', context_account_id: c.bank, rows: [checkRow(1)] }] });
+      expect(res.status, JSON.stringify(res.json)).toBe(409);
+      expect(res.json.error.code).toBe('BATCH_BUSY');
+    } finally {
+      batchTimeouts.lock = before;
+      await free();
+    }
+    expect(await txns()).toHaveLength(0);
+  });
+
+  it('advances the check counter of the active company only', async () => {
+    await db.update(companies).set({ checkSettings: { nextCheckNumbers: { [c.bank]: 77 } } as never }).where(eq(companies.id, c.companyB));
+    const res = await save({ groups: [{ txn_type: 'check', context_account_id: c.bank, rows: [checkRow(1), checkRow(2, { refNo: '4000' })] }] });
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(await nextCheckNumber(c.bank)).toBe('4001');
+    const [b] = await db.select().from(companies).where(eq(companies.id, c.companyB));
+    expect((b!.checkSettings as { nextCheckNumbers: Record<string, number> }).nextCheckNumbers[c.bank]).toBe(77);
+  });
+});
+
+describe('Idempotency-Key per user (L5)', () => {
+  it('another user with the same key is refused, not replayed', async () => {
+    const body = { groups: [{ txn_type: 'deposit', context_account_id: c.bank, rows: [depositRow(1)] }] };
+    const key = { 'Idempotency-Key': 'per-user-1' };
+    expect((await save(body, key)).status).toBe(201);
+    const bk = await bookkeeper(null);
+    const other = await srv.request('/api/v1/batch/save', bk.token, body, c.companyId, key);
+    expect(other.status).toBe(409);
+    expect(other.json.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    expect(other.json.error.details).toBeUndefined();
+    expect(other.headers['idempotent-replayed']).toBeUndefined();
+    expect(await txns()).toHaveLength(1);
+  });
+});
+
+describe('check counter simulation (L6)', () => {
+  it('a typed number an earlier empty row takes automatically is a row error on validate', async () => {
+    const next = Number((await nextCheckNumber(c.bank)) ?? 1001);
+    const clash = await validate({ groups: [{ txn_type: 'check', context_account_id: c.bank, rows: [
+      checkRow(1), checkRow(2, { refNo: String(next) }),
+    ] }] });
+    expect(clash.status).toBe(200);
+    expect(clash.json.rows[0].status).toBe('valid');
+    expect(clash.json.rows[1].errors).toContainEqual(expect.objectContaining({ field: 'ref_no', code: 'CHECK_NUMBER_DUPLICATE' }));
+
+    // Typed first, then automatic: the counter moves past the typed number.
+    const fine = await save({ groups: [{ txn_type: 'check', context_account_id: c.bank, rows: [
+      checkRow(1, { refNo: String(next) }), checkRow(2),
+    ] }] });
+    expect(fine.status, JSON.stringify(fine.json)).toBe(201);
+    expect(fine.json.transactions.map((t: { checkNumber: number }) => t.checkNumber)).toEqual([next, next + 1]);
+  });
+});
+
+describe('database errors and exact sums (L7, L8)', () => {
+  it('classifies database errors and leaves others alone', () => {
+    const wrapped = (code: string) => Object.assign(new Error('Failed query'), { cause: Object.assign(new Error('pg'), { code }) });
+    expect(classifyDbError(wrapped('22003'))).toMatchObject({ statusCode: 400, code: 'BATCH_ROW_OUT_OF_RANGE' });
+    expect(classifyDbError(wrapped('23503'))).toMatchObject({ statusCode: 400, code: 'BATCH_ROW_REJECTED' });
+    expect(classifyDbError(wrapped('23505'))).toMatchObject({ statusCode: 409, code: 'BATCH_ROW_CONFLICT' });
+    expect(classifyDbError(wrapped('40P01'))).toMatchObject({ statusCode: 409, code: 'BATCH_ROW_CONFLICT' });
+    expect(classifyDbError(wrapped('55P03'))).toMatchObject({ statusCode: 409, code: 'BATCH_BUSY' });
+    expect(classifyDbError(wrapped('57014'))).toMatchObject({ statusCode: 409, code: 'BATCH_TIMEOUT' });
+    expect(classifyDbError(wrapped('XX000'))).toBeNull();
+    expect(classifyDbError(new Error('no code'))).toBeNull();
+  });
+
+  it('compares journal entry totals beyond 20 significant digits exactly', async () => {
+    // 11 x 999,999,999,999,999.9999 against 10 of them plus ...9998: off
+    // by 0.0001 at 21 significant digits (decimal.js's default precision
+    // of 20 would round both totals to the same value).
+    const big = '999999999999999.9999';
+    const rows = [
+      ...Array.from({ length: 11 }, (_, i) => ({ rowNumber: i + 1, date: '2026-04-01', entry: 'a', accountId: c.expense, debit: big })),
+      ...Array.from({ length: 10 }, (_, i) => ({ rowNumber: 12 + i, date: '2026-04-01', entry: 'a', accountId: c.savings, credit: big })),
+      { rowNumber: 22, date: '2026-04-01', entry: 'a', accountId: c.savings, credit: '999999999999999.9998' },
+    ];
+    const res = await validate({ groups: [{ txn_type: 'journal_entry', rows }] });
+    expect(res.status).toBe(200);
+    expect(res.json.rows[0].errors).toContainEqual(expect.objectContaining({ code: 'TXN_UNBALANCED' }));
+    const tooBig = await validate({ groups: [{ txn_type: 'deposit', context_account_id: c.bank, rows: [{ ...depositRow(1), amount: '1000000000000000' }] }] });
+    expect(tooBig.json.rows[0].errors).toContainEqual(expect.objectContaining({ field: 'amount' }));
+  });
+});
+
+describe('parse-csv column_mapping (L9)', () => {
+  async function parseCsv(mapping: string) {
+    const form = new FormData();
+    form.append('file', new Blob(['date,amount\n2026-04-01,5.00\n'], { type: 'text/csv' }), 'rows.csv');
+    form.append('txn_type', 'expense');
+    form.append('column_mapping', mapping);
+    const res = await fetch(`http://127.0.0.1:${srv.port}/api/v1/batch/parse-csv`, {
+      method: 'POST', body: form, headers: { Authorization: `Bearer ${c.token}`, 'X-Company-Id': c.companyId },
+    });
+    return { status: res.status, json: await res.json() as Res['json'] };
+  }
+
+  it('accepts field -> column index (0 or more) and refuses anything else', async () => {
+    expect((await parseCsv('{"date":0,"amount":1}')).status).toBe(200);
+    for (const bad of ['{"date":-1}', '{"date":"0"}', '{"date":1.5}', '[0,1]', '"x"', '{"date":{"a":1}}', 'not json']) {
+      const res = await parseCsv(bad);
+      expect(res.status, bad).toBe(400);
+      expect(res.json.error.code, bad).toBe('VALIDATION_ERROR');
+    }
   });
 });

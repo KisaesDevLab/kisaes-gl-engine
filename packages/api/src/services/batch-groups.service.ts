@@ -849,8 +849,8 @@ async function saveInTransaction(
   const key = opts.idempotencyKey;
   // A batch is one long transaction: bound how long it waits for a row
   // lock and how long any one statement may run, so a stuck save can't
-  // hold the company's counters and balances indefinitely (SET LOCAL:
-  // this transaction only; the pooled connection is reset at commit).
+  // hold the company's counters and balances indefinitely. set_config(...,
+  // true) is SET LOCAL: this transaction only, gone at commit or rollback.
   await tx.execute(sql`SELECT set_config('lock_timeout', ${batchTimeouts.lock}, true), set_config('statement_timeout', ${batchTimeouts.statement}, true)`);
 
   // One batch save per tenant at a time; a second one gets 409
@@ -864,9 +864,9 @@ async function saveInTransaction(
   }
 
   if (key !== undefined) {
-    // Same key at the same time: the second waits for the first, then
-    // replays its committed result (the tenant lock above already
-    // serializes batch saves; this keeps the key's own guarantee).
+    // The tenant lock above already turns a concurrent save with the same
+    // key away (409 BATCH_BUSY; its retry replays). The key lock keeps the
+    // key's own guarantee should that lock ever be relaxed.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`batch-save:${tenantId}:${companyId}:${key}`}, 0))`);
     const [prev] = await tx.select().from(batchSaveRequests).where(and(
       eq(batchSaveRequests.tenantId, tenantId),
