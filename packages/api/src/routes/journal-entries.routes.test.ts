@@ -6,8 +6,8 @@
 // je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1,
 // balance-exact-v1):
 //   - line names: contactId per line, tenant + company scoped; an A/R or
-//     A/P line needs one (JE_AR_AP_NAME_REQUIRED), one such line per entry
-//     (JE_AR_AP_ONE_PER_ENTRY); returned on GET;
+//     A/P line needs one (JE_AR_AP_NAME_REQUIRED), any number per entry;
+//     returned on GET;
 //   - txnNumber (≤ 20) and GET /journal-entries/next-number, company-scoped;
 //   - isAdjusting returned on GET and the list, list lens adjusting=;
 //   - reverseOn: reversal posted in the same db transaction, voided /
@@ -170,7 +170,7 @@ describe('journal entry names (U-58)', () => {
     expect(got.json.transaction.lines[0].contactName).toBe('Rivera Remodel');
   });
 
-  it('an A/R or A/P line needs a name; one such line per entry', async () => {
+  it('an A/R or A/P line needs a name; several such lines are allowed in one entry', async () => {
     const noName = await request('POST', '/api/v1/transactions', c.token, je([
       { accountId: c.expense, debit: '10', credit: '0' },
       { accountId: c.ap, debit: '0', credit: '10' },
@@ -182,8 +182,7 @@ describe('journal entry names (U-58)', () => {
       { accountId: c.ar, debit: '10', credit: '0', contactId: c.customer },
       { accountId: c.ap, debit: '0', credit: '10', contactId: c.vendor },
     ]));
-    expect(two.status).toBe(400);
-    expect(two.json.error.code).toBe('JE_AR_AP_ONE_PER_ENTRY');
+    expect(two.status).toBe(201);
 
     // Lines on other accounts need no name.
     const plain = await request('POST', '/api/v1/transactions', c.token, je([
@@ -191,7 +190,7 @@ describe('journal entry names (U-58)', () => {
       { accountId: c.bank, debit: '0', credit: '10' },
     ]));
     expect(plain.status).toBe(201);
-    expect(await db.select().from(transactions).where(eq(transactions.tenantId, c.tenantId))).toHaveLength(1);
+    expect(await db.select().from(transactions).where(eq(transactions.tenantId, c.tenantId))).toHaveLength(2);
   });
 
   it('system and bulk posters can opt out of the A/R / A/P name rule, not the scope check', async () => {

@@ -46,9 +46,10 @@ export interface JournalEntryOptions { arApNames?: boolean }
  * Journal entry names (U-58, Q-206):
  *   - every line contactId belongs to the tenant and the company scope
  *     (400 VALIDATION_ERROR);
- *   - at most one line posts to an A/R or A/P account — detail type or system
- *     tag accounts_receivable / accounts_payable (400 JE_AR_AP_ONE_PER_ENTRY);
- *   - that line names its customer or vendor (400 JE_AR_AP_NAME_REQUIRED).
+ *   - every line that posts to an A/R or A/P account — detail type or system
+ *     tag accounts_receivable / accounts_payable — names its customer or
+ *     vendor (400 JE_AR_AP_NAME_REQUIRED). An entry may have any number of
+ *     such lines.
  */
 export async function assertJournalEntryNames(
   executor: DbOrTx,
@@ -72,12 +73,6 @@ export async function assertJournalEntryNames(
   ));
   const controlIds = new Set(control.map((a) => a.id));
   const controlLines = lines.map((l, i) => ({ l, i })).filter(({ l }) => controlIds.has(l.accountId));
-  if (controlLines.length > 1) {
-    throw AppError.badRequest(
-      'A journal entry can have only one Accounts Receivable or Accounts Payable line. Split it into separate entries.',
-      'JE_AR_AP_ONE_PER_ENTRY',
-    );
-  }
   const unnamed = controlLines.find(({ l }) => !l.contactId);
   if (unnamed) {
     throw AppError.badRequest(

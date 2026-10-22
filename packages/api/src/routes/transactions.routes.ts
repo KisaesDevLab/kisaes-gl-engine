@@ -152,8 +152,8 @@ const registerEntryBodyDoc = z.discriminatedUnion('txnType', [
 transactionsRouter.post('/', describe({
   summary: 'Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
-    'A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): an A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), ' +
-    'at most one such line (400 JE_AR_AP_ONE_PER_ENTRY); with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it.',
+    'A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): every A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), any number of such lines is allowed; ' +
+    'with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it.',
   body: registerEntryBodyDoc,
 }), async (req, res) => {
   const { txnType, ...body } = req.body;
