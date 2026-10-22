@@ -37,7 +37,8 @@ import * as packService from '../services/report-pack.service.js';
 import * as templateService from '../services/report-pack-templates.service.js';
 import { listActiveLetters } from '../services/report-letter.service.js';
 import { getReportPackQueueHealth } from '../services/extraction/queue.js';
-import { REPORT_CATALOG, TAX_ESTIMATOR_REPORT_IDS } from '@kis-books/shared';
+import { FINANCIAL_STATEMENT_REPORT_IDS, REPORT_CATALOG, TAX_ESTIMATOR_REPORT_IDS } from '@kis-books/shared';
+import * as featureFlags from '../services/feature-flags.service.js';
 import { taxEstimateReportScope } from '../middleware/tax-estimator-scope.js';
 
 export const reportPacksRouter = Router();
@@ -73,8 +74,17 @@ async function loadGatedPack(req: Request, id: string) {
   return pack;
 }
 
+/** Financial Statements sections need both the Trial Balance and Financial Statements flags. */
+async function financialStatementsEnabled(req: Request): Promise<boolean> {
+  return (await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1')) && (await featureFlags.isEnabled(req.tenantId, 'FINANCIAL_STATEMENTS_V1'));
+}
+
 /** The section cannot be added by a caller who could not see it in the catalog. */
 async function assertItemsAllowed(req: Request, items: Array<{ reportId: string }>) {
+  const fsItem = items.find((i) => FINANCIAL_STATEMENT_REPORT_IDS.includes(i.reportId));
+  if (fsItem && !(await financialStatementsEnabled(req))) {
+    throw AppError.badRequest(`Unknown report id: ${fsItem.reportId}`, 'PACK_UNKNOWN_REPORT');
+  }
   if (!packService.hasTaxEstimateItem(items) || (await passesTaxGate(req))) return;
   const id = items.find((i) => TAX_ESTIMATOR_REPORT_IDS.includes(i.reportId))!.reportId;
   throw AppError.badRequest(`Unknown report id: ${id}`, 'PACK_UNKNOWN_REPORT');
@@ -132,7 +142,10 @@ const runBodySchema = z.object({
 // The Tax Estimator section (Phase 13) is listed only for callers who pass its gates.
 reportPacksRouter.get('/catalog', readPerm, async (req, res) => {
   const taxOk = await passesTaxGate(req);
-  res.json({ catalog: taxOk ? REPORT_CATALOG : REPORT_CATALOG.filter((d) => !TAX_ESTIMATOR_REPORT_IDS.includes(d.id)) });
+  const fsOk = await financialStatementsEnabled(req);
+  res.json({
+    catalog: REPORT_CATALOG.filter((d) => (taxOk || !TAX_ESTIMATOR_REPORT_IDS.includes(d.id)) && (fsOk || !FINANCIAL_STATEMENT_REPORT_IDS.includes(d.id))),
+  });
 });
 
 // Active engagement letters, for the pack builder's letter picker. Read-only

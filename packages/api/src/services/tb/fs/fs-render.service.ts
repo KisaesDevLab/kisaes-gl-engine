@@ -27,6 +27,8 @@ export interface FsPdfInput {
   letterhead: FsLetterhead | null;
   letter: { title: string; bodyHtml: string } | null;
   draft?: boolean;
+  /** Stamp the statements' own footer text and page numbers (default). Off when another document supplies them, e.g. a report pack. */
+  chrome?: boolean;
 }
 
 export interface FsPdfResult {
@@ -109,7 +111,7 @@ export async function renderFsPdf(input: FsPdfInput): Promise<FsPdfResult> {
     }
 
     const font = await merged.embedFont(fsFontBytes(file), { subset: false, features: { liga: false, clig: false, dlig: false, calt: false } });
-    stampChrome(merged, ranges, input.style, font, numberedTotal);
+    if (input.chrome !== false) stampChrome(merged, ranges, input.style, font, numberedTotal);
 
     const out = Buffer.from(await merged.save());
     return { bytes: out, pageCount: merged.getPageCount(), sectionPages };

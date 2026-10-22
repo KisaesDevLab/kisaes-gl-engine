@@ -42,6 +42,9 @@ export interface ReportOptionSpec {
   // tax-estimate: pick the taxpayer (and optionally a scenario) the section
   // prints. Choices = taxpayers linked to the pack's company (firm-scoped).
   taxpayer?: boolean;
+  // financial-statements: pick a saved financial-statements report (its
+  // layout, style and settings); rendered live for the pack's period.
+  financialStatements?: boolean;
   // Comparison modes this report supports (mirrors the standalone report's
   // Compare selector). Present only when `compare` is true.
   compareModes?: ReportCompareMode[];
@@ -186,7 +189,13 @@ export const REPORT_CATALOG: ReportDef[] = [
   // as-of date sets "actuals through" to that month (else the last
   // closed month). Generating it freezes a snapshot (reason report_pack).
   { id: 'tax-estimate', label: 'Tax Estimate', group: 'Tax', endpoint: 'tax-estimate', temporal: 'as-of', orientation: 'portrait', kind: 'document', options: { taxpayer: true } },
+  // Financial Statements (FINANCIAL_STATEMENTS_V1): the report-ready statements
+  // built in the Financial Statements builder, rendered live from the books.
+  { id: 'financial-statements', label: 'Financial Statements', group: 'Financial Statements', endpoint: 'financial-statements', temporal: 'date-range', orientation: 'portrait', kind: 'document', options: { financialStatements: true } },
 ];
+
+/** Report ids that need the Financial Statements flags (TRIAL_BALANCE_V1 + FINANCIAL_STATEMENTS_V1). */
+export const FINANCIAL_STATEMENT_REPORT_IDS: readonly string[] = ['financial-statements'];
 
 /** Report ids that answer to the Tax Estimator gates (flag + resource + firm staff). */
 export const TAX_ESTIMATOR_REPORT_IDS: readonly string[] = ['tax-estimate'];
@@ -311,6 +320,10 @@ export const reportPackItemOptionsSchema = z
     // an optional scenario (default = the year's base scenario).
     taxpayerId: z.string().uuid().optional(),
     scenarioId: z.string().uuid().optional(),
+    // financial-statements: the saved report to render live, and whether to
+    // keep its own period (default: follow the pack's period).
+    fsReportId: z.string().uuid().optional(),
+    fsOwnPeriod: z.boolean().optional(),
   })
   .strict();
 

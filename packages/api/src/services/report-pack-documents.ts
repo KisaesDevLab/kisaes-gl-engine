@@ -16,6 +16,10 @@
 
 import { sql } from 'drizzle-orm';
 import { PDFDocument, StandardFonts, type PDFFont } from 'pdf-lib';
+import { fsReportSettingsSchema, type FsFrontMatter } from '@kis-books/shared';
+import { isEnabled } from './feature-flags.service.js';
+import * as fsReports from './tb/fs/fs-reports.service.js';
+import { renderFsPdf } from './tb/fs/fs-render.service.js';
 import { formatIsoUS, reconMoney, reconSignoffShortText, type ReconSignoffEntry, type ReportPackItemOptions } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { log } from '../utils/logger.js';
@@ -429,7 +433,34 @@ const renderTaxEstimate: DocumentSectionRenderer = async (ctx) => {
   return pdf.bytes;
 };
 
+// ─── Financial Statements ────────────────────────────────────────
+
+/**
+ * A saved financial-statements report rendered LIVE from the books: its layout,
+ * style and settings, with the pack's period substituted unless the item keeps the
+ * report's own period. The pack supplies the cover, contents, letter and page
+ * numbers, so the statements' own front matter and footer chrome are left off.
+ */
+const renderFinancialStatements: DocumentSectionRenderer = async (ctx) => {
+  const reportId = ctx.options.fsReportId;
+  if (!reportId) throw new Error('Pick a saved financial-statements report for this section.');
+  if (!(await isEnabled(ctx.tenantId, 'TRIAL_BALANCE_V1')) || !(await isEnabled(ctx.tenantId, 'FINANCIAL_STATEMENTS_V1'))) {
+    throw new Error('Financial Statements are not enabled.');
+  }
+  const draft = await fsReports.resolveDraft(ctx.tenantId, ctx.companyId, reportId);
+  const settings = ctx.options.fsOwnPeriod
+    ? draft.settings
+    : fsReportSettingsSchema.parse({ ...draft.settings, periodEnd: ctx.rangeEnd, period: { type: 'custom', start: ctx.rangeStart } });
+  const frontMatter: FsFrontMatter = {
+    cover: { enabled: false }, toc: { enabled: false }, letter: { enabled: false },
+  };
+  const computed = await fsReports.computeDraft(ctx.tenantId, ctx.companyId, reportId, { settings, frontMatter });
+  const pdf = await renderFsPdf({ report: computed.model, style: computed.style, frontMatter, letterhead: null, letter: null, chrome: false });
+  return pdf.bytes;
+};
+
 export const REPORT_PACK_DOCUMENT_RENDERERS: Record<string, DocumentSectionRenderer> = {
+  'financial-statements': renderFinancialStatements,
   'bank-reconciliations': renderBankReconciliations,
   'bank-statements': renderBankStatements,
   'transaction-report': renderTransactionReport,

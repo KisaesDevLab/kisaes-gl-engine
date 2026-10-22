@@ -42017,6 +42017,13 @@
                                 }
                               ]
                             },
+                            "fsOwnPeriod": {
+                              "type": "boolean"
+                            },
+                            "fsReportId": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
                             "groupBy": {
                               "anyOf": [
                                 {
@@ -42429,6 +42436,13 @@
                                   "type": "string"
                                 }
                               ]
+                            },
+                            "fsOwnPeriod": {
+                              "type": "boolean"
+                            },
+                            "fsReportId": {
+                              "format": "uuid",
+                              "type": "string"
                             },
                             "groupBy": {
                               "anyOf": [

@@ -26,8 +26,10 @@ import { errorHandler } from '../../../middleware/error-handler.js';
 
 // Chromium is not available in every test environment; the PDF itself is
 // covered by a manual / smoke render. Here it is a real (tiny) PDF.
+const renderCalls = vi.hoisted(() => ({ last: null as null | { chrome?: boolean; frontMatter: { cover: { enabled: boolean }; toc: { enabled: boolean }; letter: { enabled: boolean } }; report: { statements: Array<{ dateLine: string }> } } }));
 vi.mock('./fs-render.service.js', () => ({
-  renderFsPdf: async () => {
+  renderFsPdf: async (input: NonNullable<typeof renderCalls.last>) => {
+    renderCalls.last = input;
     const d = await PDFDocument.create();
     d.addPage();
     d.addPage();
@@ -171,6 +173,27 @@ describe('financial statements API', () => {
     expect(res.status).toBe(200);
     expect(res.json.presets.map((p: any) => p.builtinKey).sort()).toEqual(['classic_serif', 'modern_sans']);
     expect(res.json.ownedByFirm).toBe(false);
+  });
+
+  it('report-pack section renders the saved report live for the pack period, without its own chrome or front matter', async () => {
+    const { REPORT_PACK_DOCUMENT_RENDERERS } = await import('../../report-pack-documents.js');
+    const render = REPORT_PACK_DOCUMENT_RENDERERS['financial-statements']!;
+    const base = { tenantId, companyId, companyName: 'Acme', allowAttachments: false, allowTransactions: false, renderHtml: async () => new Uint8Array() };
+    const created = await call('POST', '/reports', { body: { name: 'Pack source', settings: { ...SETTINGS, columns: { ...SETTINGS.columns, mode: 'single' } }, layoutSource: { kind: 'default' } } });
+    const id = created.json.report.id as string;
+
+    const bytes = await render({ ...base, rangeStart: '2025-01-01', rangeEnd: '2025-06-30', options: { fsReportId: id } });
+    expect((await PDFDocument.load(bytes)).getPageCount()).toBe(2);
+    expect(renderCalls.last!.chrome).toBe(false);
+    expect(renderCalls.last!.frontMatter).toEqual({ cover: { enabled: false }, toc: { enabled: false }, letter: { enabled: false } });
+    expect(renderCalls.last!.report.statements.some((st) => st.dateLine.includes('June 30, 2025'))).toBe(true);
+
+    // Keeping the report's own period ignores the pack's range.
+    await render({ ...base, rangeStart: '2025-01-01', rangeEnd: '2025-06-30', options: { fsReportId: id, fsOwnPeriod: true } });
+    expect(renderCalls.last!.report.statements.some((st) => st.dateLine.includes('December 31, 2025'))).toBe(true);
+
+    await expect(render({ ...base, rangeStart: '2025-01-01', rangeEnd: '2025-06-30', options: {} })).rejects.toThrow(/Pick a saved/);
+    await expect(render({ ...base, companyId: otherCompanyId, rangeStart: '2025-01-01', rangeEnd: '2025-06-30', options: { fsReportId: id } })).rejects.toThrow();
   });
 
   it('creates a report from the default layout and computes statements that tie to the GL', async () => {
