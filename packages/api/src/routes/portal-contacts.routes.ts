@@ -64,6 +64,8 @@ const createContactSchema = z.object({
   // contact who never logs in. Staff can untick it for a contact they are
   // setting up ahead of time.
   sendInvite: z.boolean().optional(),
+  // The email is already a live contact: add these companies to it.
+  mergeIntoExisting: z.boolean().optional(),
 });
 
 const updateContactSchema = z.object({

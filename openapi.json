@@ -35510,6 +35510,9 @@
                       }
                     ]
                   },
+                  "mergeIntoExisting": {
+                    "type": "boolean"
+                  },
                   "phone": {
                     "anyOf": [
                       {

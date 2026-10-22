@@ -50,6 +50,8 @@ export interface CreatePortalContactInput {
   firstName?: string | null;
   lastName?: string | null;
   companies: PortalContactCompanyAssignment[];
+  /** When the email is already a live contact: add these companies to it instead of refusing. */
+  mergeIntoExisting?: boolean;
 }
 
 export interface UpdatePortalContactInput {
@@ -227,7 +229,7 @@ export async function createContact(
   input: CreatePortalContactInput,
   actorUserId?: string,
   grant: TaxEstimatesGrantOptions = {},
-): Promise<{ id: string }> {
+): Promise<{ id: string; outcome: 'created' | 'restored' | 'merged' }> {
   if (!input.email || !input.email.includes('@')) {
     throw AppError.badRequest('Email is required', 'EMAIL_REQUIRED');
   }
@@ -241,16 +243,59 @@ export async function createContact(
   const companyIds = input.companies.map((c) => c.companyId);
   await ensureCompaniesBelongToTenant(tenantId, companyIds);
 
-  // Duplicate-detection per 8.5: surface the existing contact id so the
-  // UI can offer "link to existing" instead of erroring.
+  // Duplicate-detection per 8.5. The email is unique per tenant, deleted
+  // contacts included (soft delete keeps the row), so:
+  //   - a DELETED contact is restored with what was entered — otherwise the
+  //     person could never be added again;
+  //   - a live contact is refused with its id and status so the UI can offer
+  //     "add these companies to the existing contact", which it sends back as
+  //     mergeIntoExisting: true.
   const existing = await db.query.portalContacts.findFirst({
     where: and(eq(portalContacts.tenantId, tenantId), eq(portalContacts.email, email)),
   });
+  if (existing && existing.status === 'deleted') {
+    await db.update(portalContacts).set({
+      status: 'active',
+      phone: input.phone ?? null,
+      firstName: input.firstName ?? null,
+      lastName: input.lastName ?? null,
+      updatedAt: new Date(),
+    }).where(and(eq(portalContacts.tenantId, tenantId), eq(portalContacts.id, existing.id)));
+    // Fresh company access: the old assignments are replaced, not revived.
+    await setCompanyAssignments(tenantId, existing.id, input.companies, actorUserId, grant);
+    await auditLog(tenantId, 'update', 'portal_contact', existing.id, existing, { ...existing, status: 'active', restored: true }, actorUserId);
+    return { id: existing.id, outcome: 'restored' };
+  }
+  if (existing && input.mergeIntoExisting) {
+    // Keep every current assignment as it is; add only the new companies.
+    // Name and phone fill in only where the contact has none.
+    const current = await db.select().from(portalContactCompanies).where(eq(portalContactCompanies.contactId, existing.id));
+    const have = new Set(current.map((c) => c.companyId));
+    const added = input.companies.filter((c) => !have.has(c.companyId));
+    if (added.length) {
+      await setCompanyAssignments(tenantId, existing.id, [
+        ...current.map((c) => ({ ...c, role: c.role as PortalContactCompanyAssignment['role'] })),
+        ...added,
+      ], actorUserId, grant);
+    }
+    const fill: { phone?: string; firstName?: string; lastName?: string; updatedAt: Date } = { updatedAt: new Date() };
+    if (!existing.phone && input.phone) fill.phone = input.phone;
+    if (!existing.firstName && input.firstName) fill.firstName = input.firstName;
+    if (!existing.lastName && input.lastName) fill.lastName = input.lastName;
+    if (Object.keys(fill).length > 1) {
+      await db.update(portalContacts).set(fill).where(and(eq(portalContacts.tenantId, tenantId), eq(portalContacts.id, existing.id)));
+    }
+    return { id: existing.id, outcome: 'merged' };
+  }
   if (existing) {
     throw AppError.conflict(
       'A portal contact with this email already exists',
       'DUPLICATE_EMAIL',
-      { contactId: existing.id, status: existing.status },
+      {
+        contactId: existing.id,
+        status: existing.status,
+        name: [existing.firstName, existing.lastName].filter(Boolean).join(' ') || null,
+      },
     );
   }
 
@@ -293,7 +338,7 @@ export async function createContact(
     if (taxGranted.length > 0) {
       await auditLog(tenantId, 'create', 'tax_est_contact_access', row.id, null, { granted: taxGranted }, actorUserId, tx);
     }
-    return { id: row.id };
+    return { id: row.id, outcome: 'created' as const };
   });
 
   // PORTAL_IDENTITY_LINKING_V1 — auto-link to an existing identity by
