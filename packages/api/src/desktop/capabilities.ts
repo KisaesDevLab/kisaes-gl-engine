@@ -72,4 +72,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'batch-idempotent-v1',
   /** Batch rows dated on or before the closing date need closingPassword; 423 / 403 list the row numbers (U-68). */
   'batch-closing-v1',
+  /**
+   * PUT /transactions/:id refuses a deposit edit that drops its links (409 DEPOSIT_LINKS_DROPPED) and a printed
+   * check's face change as an expense (409 CHECK_PRINTED); checks keep header tags (U-80). Void reversal lines keep
+   * the line contact; the check print routes (memo, print, requeue, reprint) honour the closing date (U-81).
+   */
+  'ledger-guards-v1',
 ];
