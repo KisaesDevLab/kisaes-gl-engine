@@ -72,4 +72,6 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'batch-idempotent-v1',
   /** Batch rows dated on or before the closing date need closingPassword; 423 / 403 list the row numbers (U-68). */
   'batch-closing-v1',
+  /** tags.tag_number: optional, unique per tenant when set (409 TAG_NUMBER_EXISTS); list sorts by it and search matches it (U-75). */
+  'tag-number-v1',
 ];

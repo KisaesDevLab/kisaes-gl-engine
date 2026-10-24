@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, integer, index, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, integer, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const transactions = pgTable('transactions', {
@@ -188,6 +188,8 @@ export const tags = pgTable('tags', {
   companyId: uuid('company_id'),
   groupId: uuid('group_id'),
   name: varchar('name', { length: 100 }).notNull(),
+  // Optional number (tag-number-v1, migration 0228), unique per tenant when set.
+  tagNumber: varchar('tag_number', { length: 20 }),
   color: varchar('color', { length: 7 }),
   description: text('description'),
   isActive: boolean('is_active').default(true),
@@ -199,6 +201,7 @@ export const tags = pgTable('tags', {
   tenantIdx: index('idx_tags_tenant').on(table.tenantId),
   groupIdx: index('idx_tags_group').on(table.tenantId, table.groupId),
   activeIdx: index('idx_tags_active').on(table.tenantId, table.isActive),
+  tenantTagNumberIdx: uniqueIndex('idx_tags_tenant_tag_number').on(table.tenantId, table.tagNumber).where(sql`tag_number IS NOT NULL`),
 }));
 
 export const transactionTags = pgTable('transaction_tags', {
