@@ -6,45 +6,315 @@ import { recomputeVendorCreditBalance as recomputeVendorCreditWithRefunds } from
 import { eq, and, sql, count, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
-import type { CreateBillInput, BillFilters } from '@kis-books/shared';
-import { db, type DbOrTx } from '../db/index.js';
-import { transactions, accounts, contacts } from '../db/schema/index.js';
+type DecimalValue = InstanceType<typeof Decimal>;
+import { findPaymentTerm, type CreateBillInput, type BillFilters } from '@kis-books/shared';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
+import { transactions, accounts, contacts, items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { addCalendarDays } from '../utils/calendar-date.js';
+import { lineAmountFromQuantity, parseQuantity, parseUnitPrice, fitsMoneyColumn, sameAmount } from '../utils/line-amount.js';
+import { assertLineContacts } from './line-contacts.service.js';
+import { relinkDraftAttachments } from './attachment.service.js';
 
-const TERM_DAYS: Record<string, number> = {
-  due_on_receipt: 0,
-  net_10: 10,
-  net_15: 15,
-  net_30: 30,
-  net_45: 45,
-  net_60: 60,
-  net_90: 90,
-};
+// ─── Terms (U-86, bill-terms-v1) ────────────────────────────────
+
+/** The terms fields a bill stores, resolved from the request and the vendor. */
+export interface ResolvedBillTerms {
+  paymentTerms: string | null;
+  termsDays: number | null;
+  discountPercent: string | null;
+  discountDays: number | null;
+  dueDate: string | null;
+  discountDate: string | null;
+  dueDateOverridden: boolean;
+  discountDateOverridden: boolean;
+  /** Where the terms came from: the request, the vendor's defaults, or none. */
+  source: 'input' | 'vendor' | 'none';
+}
+
+export interface BillTermsRequest {
+  txnDate: string;
+  paymentTerms?: string;
+  termsDays?: number;
+  discountPercent?: string;
+  discountDays?: number;
+  dueDate?: string;
+  discountDate?: string;
+}
+
+export interface VendorTermsDefaults {
+  defaultPaymentTerms?: string | null;
+  defaultTermsDays?: number | null;
+  defaultDiscountPercent?: string | null;
+  defaultDiscountDays?: number | null;
+}
+
+function termsError(message: string): AppError {
+  return AppError.badRequest(message, 'VALIDATION_ERROR');
+}
+
+/** A discount percent as stored (numeric(7,4)): 0 < p < 100. */
+function normalizePercent(value: string): string {
+  const p = new Decimal(value);
+  if (!p.greaterThan(0) || !p.lessThan(100)) throw termsError('discountPercent must be greater than 0 and less than 100');
+  return p.toFixed(4);
+}
 
 /**
- * Compute due date from a bill date + payment terms.
- * Custom terms use input.termsDays directly.
+ * Resolves a bill's terms, due date and discount date (U-86). The one
+ * function create, edit and GET /bills/terms-dates use. Dates are pure
+ * calendar arithmetic (no time zone).
+ *
+ * Terms: the request's paymentTerms, else the vendor's default, else none.
+ * A fixed code takes its net days and discount from PAYMENT_TERMS (sending
+ * discountPercent / discountDays with one is 400). `custom` takes termsDays
+ * (the request's, else the vendor's; without one there is no computed due
+ * date) and an optional discount (discountPercent + discountDays, both or
+ * neither; days fewer than the net days); with vendor custom terms the
+ * request's own termsDays / discount win over the vendor's. An unknown vendor code (free text from before the
+ * table) is kept as is with no computed dates.
+ *
+ * An explicit dueDate / discountDate is the owner's override and wins; it
+ * is flagged so an edit doesn't recompute it.
+ */
+export function resolveBillTerms(req: BillTermsRequest, vendor: VendorTermsDefaults | null): ResolvedBillTerms {
+  const fromInput = !!req.paymentTerms;
+  const code = req.paymentTerms || vendor?.defaultPaymentTerms || null;
+  const source: ResolvedBillTerms['source'] = fromInput ? 'input' : code ? 'vendor' : 'none';
+  const def = findPaymentTerm(code);
+  const sentDiscount = req.discountPercent !== undefined || req.discountDays !== undefined;
+
+  let termsDays: number | null = null;
+  let discountPercent: string | null = null;
+  let discountDays: number | null = null;
+  let known = true;
+
+  if (!code) {
+    if (sentDiscount) throw termsError('discountPercent and discountDays go with custom payment terms');
+    termsDays = req.termsDays ?? null;
+    known = false;
+  } else if (!def) {
+    // A legacy free-text vendor code: stored as before, no computed dates.
+    if (sentDiscount) throw termsError('discountPercent and discountDays go with custom payment terms');
+    termsDays = req.termsDays ?? vendor?.defaultTermsDays ?? null;
+    known = false;
+  } else if (def.code === 'custom') {
+    // Without termsDays (from the request, else the vendor) there is no
+    // computed due date, as before; the owner may still send dueDate.
+    termsDays = req.termsDays ?? vendor?.defaultTermsDays ?? null;
+    if (sentDiscount) {
+      if (req.discountPercent === undefined || req.discountDays === undefined) {
+        throw termsError('Send discountPercent and discountDays together');
+      }
+      discountPercent = normalizePercent(req.discountPercent);
+      discountDays = req.discountDays;
+      if (termsDays !== null && discountDays >= termsDays) {
+        throw termsError('discountDays must be fewer than the net days (termsDays)');
+      }
+    } else if (!fromInput && vendor?.defaultDiscountPercent && vendor.defaultDiscountDays != null) {
+      // The vendor's custom discount, when it is consistent with the net days.
+      const p = new Decimal(vendor.defaultDiscountPercent);
+      if (p.greaterThan(0) && p.lessThan(100) && (termsDays === null || vendor.defaultDiscountDays < termsDays)) {
+        discountPercent = p.toFixed(4);
+        discountDays = vendor.defaultDiscountDays;
+      }
+    }
+  } else {
+    if (sentDiscount) throw termsError('discountPercent and discountDays go with custom payment terms');
+    termsDays = def.netDays;
+    discountPercent = def.discountPercent;
+    discountDays = def.discountDays;
+  }
+
+  const dueDateOverridden = !!req.dueDate;
+  const dueDate = req.dueDate
+    || (known && termsDays !== null ? addCalendarDays(req.txnDate, termsDays) : null);
+
+  const discountDateOverridden = !!req.discountDate;
+  if (req.discountDate && discountPercent === null) {
+    throw termsError('discountDate needs payment terms with an early-payment discount');
+  }
+  const discountDate = req.discountDate
+    || (discountPercent !== null && discountDays !== null ? addCalendarDays(req.txnDate, discountDays) : null);
+
+  return {
+    paymentTerms: code,
+    termsDays,
+    discountPercent,
+    discountDays,
+    dueDate,
+    discountDate,
+    dueDateOverridden,
+    discountDateOverridden,
+    source,
+  };
+}
+
+/**
+ * Compute due date from a bill date + payment terms (kept for callers of the
+ * old helper). Custom terms use customDays. Calendar arithmetic (U-86): the
+ * old local-time setDate came out a day early across the March DST change.
  */
 export function computeBillDueDate(txnDate: string, terms: string | undefined, customDays: number | undefined): string | undefined {
   if (!terms) return undefined;
-  let days: number | undefined;
-  if (terms === 'custom') {
-    days = customDays;
-  } else if (terms in TERM_DAYS) {
-    days = TERM_DAYS[terms];
-  }
+  const def = findPaymentTerm(terms);
+  const days = !def ? undefined : def.code === 'custom' ? customDays : def.netDays ?? undefined;
   if (days === undefined) return undefined;
-  const date = new Date(txnDate);
-  date.setDate(date.getDate() + days);
-  return date.toISOString().split('T')[0];
+  return addCalendarDays(txnDate, days);
 }
 
-async function getApAccountId(tenantId: string): Promise<string> {
-  const account = await db.query.accounts.findFirst({
-    where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_payable')),
+/** GET /bills/terms-dates: what create would compute, read-only (U-86). */
+export async function getTermsDates(
+  tenantId: string,
+  query: BillTermsRequest & { contactId?: string },
+  companyId?: string,
+) {
+  const vendor = query.contactId ? await loadVendorDefaults(db, tenantId, query.contactId, companyId) : null;
+  const t = resolveBillTerms({ ...query, dueDate: undefined, discountDate: undefined }, vendor);
+  return {
+    dueDate: t.dueDate,
+    discountDate: t.discountDate,
+    paymentTerms: t.paymentTerms,
+    termsDays: t.termsDays,
+    discountPercent: t.discountPercent,
+    discountDays: t.discountDays,
+    source: t.source,
+  };
+}
+
+// ─── Lines (U-85, bill-lines-v1) ────────────────────────────────
+
+/** A bill or vendor-credit line as the request carries it. */
+export interface ApLineInput {
+  accountId: string;
+  description?: string;
+  amount: string;
+  itemId?: string | null;
+  quantity?: string | null;
+  unitPrice?: string | null;
+  tagId?: string | null;
+  contactId?: string | null;
+  isBillable?: boolean;
+}
+
+export interface BuiltApLine {
+  accountId: string;
+  amount: DecimalValue;
+  description?: string;
+  itemId: string | null;
+  quantity: string | null;
+  unitPrice: string | null;
+  tagId?: string | null;
+  contactId: string | null;
+  isBillable: boolean;
+}
+
+// A line amount as bills have always taken it (balance-exact-v1): a plain
+// decimal string, optionally negative, rounded to the ledger's 4 places
+// (half away from zero). Exponents, separators, currency signs or anything
+// non-numeric are 400 VALIDATION_ERROR (they used to reach the database).
+const AP_AMOUNT_RE = /^-?\d{1,15}(\.\d+)?$/;
+function apLineAmount(value: unknown, field: string): DecimalValue {
+  const s = typeof value === 'string' ? value.trim() : '';
+  if (!AP_AMOUNT_RE.test(s)) {
+    throw AppError.badRequest(`${field} must be a decimal amount`, 'VALIDATION_ERROR');
+  }
+  const amount = ledger.round4(s);
+  if (!fitsMoneyColumn(amount)) throw AppError.badRequest(`${field} is too large`, 'VALIDATION_ERROR');
+  return amount;
+}
+
+/**
+ * Validates a bill's or vendor credit's lines in memory (400s): amount a
+ * plain decimal string, rounded to 4 places (VALIDATION_ERROR); unitPrice
+ * without quantity → LINE_QTY_RATE_INCOMPLETE; quantity and unitPrice both
+ * given → amount must equal round(quantity x unitPrice, 2, half away from
+ * zero), else LINE_AMOUNT_MISMATCH (details.lineIndex, details.expected);
+ * quantity with amount and no unitPrice is fine. `isBillable` only where
+ * allowed (bills), and only with a line contactId. The total must fit a
+ * money column.
+ */
+export function buildApLines(lines: readonly ApLineInput[], opts: { allowBillable: boolean }): { lines: BuiltApLine[]; total: DecimalValue } {
+  const built = lines.map((l, i): BuiltApLine => {
+    const field = `lines[${i}]`;
+    const amount = apLineAmount(l.amount, `${field}.amount`);
+    const hasQty = l.quantity !== undefined && l.quantity !== null;
+    const hasPrice = l.unitPrice !== undefined && l.unitPrice !== null;
+    if (hasPrice && !hasQty) {
+      throw AppError.badRequest(`Line ${i + 1} has a cost (unitPrice) but no quantity`, 'LINE_QTY_RATE_INCOMPLETE', { lineIndex: i });
+    }
+    let quantity: string | null = null;
+    let unitPrice: string | null = null;
+    if (hasQty) {
+      quantity = parseQuantity(l.quantity, `${field}.quantity`).toFixed();
+      if (hasPrice) {
+        unitPrice = parseUnitPrice(l.unitPrice, `${field}.unitPrice`).toFixed();
+        const expected = lineAmountFromQuantity(quantity, unitPrice, field);
+        if (!sameAmount(expected, amount.toFixed(4))) {
+          throw AppError.badRequest(
+            `Line ${i + 1}: amount ${amount.toFixed(2)} is not quantity x cost (${expected})`,
+            'LINE_AMOUNT_MISMATCH',
+            { lineIndex: i, expected },
+          );
+        }
+      }
+    }
+    if (l.isBillable === true && !opts.allowBillable) {
+      throw AppError.badRequest(`Line ${i + 1}: a vendor credit line cannot be billable`, 'VALIDATION_ERROR');
+    }
+    return {
+      accountId: l.accountId,
+      amount,
+      description: l.description,
+      itemId: l.itemId || null,
+      quantity,
+      unitPrice,
+      tagId: l.tagId,
+      contactId: l.contactId || null,
+      isBillable: l.isBillable === true,
+    };
   });
+  const total = built.reduce((s, l) => s.plus(l.amount), new Decimal('0'));
+  if (!fitsMoneyColumn(total)) throw AppError.badRequest('The total is too large', 'VALIDATION_ERROR');
+  return { lines: built, total };
+}
+
+/** Items named on lines must be this tenant's (and in the company scope). */
+export async function assertItemsInScope(executor: DbOrTx, tenantId: string, companyId: string | null | undefined, itemIds: Array<string | null>) {
+  const ids = [...new Set(itemIds.filter((v): v is string => !!v))];
+  if (ids.length === 0) return;
+  const rows = await executor.select({ id: items.id, companyId: items.companyId }).from(items)
+    .where(and(eq(items.tenantId, tenantId), inArray(items.id, ids)));
+  if (rows.length !== ids.length || (companyId && rows.some((r) => r.companyId !== null && r.companyId !== companyId))) {
+    throw AppError.badRequest('One or more line items do not belong to this company', 'VALIDATION_ERROR');
+  }
+}
+
+/** Database-backed line checks, on the posting's transaction. */
+export async function assertApLineRefs(executor: DbOrTx, tenantId: string, companyId: string | undefined, lines: BuiltApLine[]) {
+  await assertAccountsInTenant(executor, tenantId, lines.map((l) => l.accountId));
+  await assertItemsInScope(executor, tenantId, companyId, lines.map((l) => l.itemId));
+  await assertLineContacts(tenantId, lines, executor, companyId);
+}
+
+function lineExtras(l: BuiltApLine) {
+  return {
+    itemId: l.itemId ?? undefined,
+    quantity: l.quantity ?? undefined,
+    unitPrice: l.unitPrice ?? undefined,
+    contactId: l.contactId,
+    isBillable: l.isBillable,
+  };
+}
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+async function getApAccountId(executor: DbOrTx, tenantId: string): Promise<string> {
+  const [account] = await executor.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_payable')))
+    .limit(1);
   if (!account) throw AppError.internal("System account 'accounts_payable' not found. Seed COA first.");
   return account.id;
 }
@@ -61,11 +331,13 @@ async function getNextBillNumber(tenantId: string): Promise<string> {
   return `BILL-${String(next).padStart(5, '0')}`;
 }
 
-async function loadVendorDefaults(tenantId: string, contactId: string) {
-  const vendor = await db.query.contacts.findFirst({
-    where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)),
-  });
-  if (!vendor) throw AppError.badRequest('Vendor not found');
+async function loadVendorDefaults(executor: DbOrTx, tenantId: string, contactId: string, companyId?: string) {
+  const [vendor] = await executor.select().from(contacts)
+    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)))
+    .limit(1);
+  if (!vendor || (companyId && vendor.companyId && vendor.companyId !== companyId)) {
+    throw AppError.badRequest('Vendor not found');
+  }
   return vendor;
 }
 
@@ -77,10 +349,10 @@ async function loadVendorDefaults(tenantId: string, contactId: string) {
  * at the bill layer keeps the error message specific to what the
  * user actually submitted.
  */
-async function assertAccountsInTenant(tenantId: string, accountIds: string[]): Promise<void> {
+async function assertAccountsInTenant(executor: DbOrTx, tenantId: string, accountIds: string[]): Promise<void> {
   if (accountIds.length === 0) return;
   const unique = [...new Set(accountIds)];
-  const rows = await db
+  const rows = await executor
     .select({ id: accounts.id })
     .from(accounts)
     .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, unique)));
@@ -89,58 +361,80 @@ async function assertAccountsInTenant(tenantId: string, accountIds: string[]): P
   }
 }
 
-export async function createBill(tenantId: string, input: CreateBillInput, userId?: string, companyId?: string) {
+/** Number of payment and credit applications on a bill (read on the caller's tx). */
+async function countBillApplications(executor: DbOrTx, tenantId: string, billId: string): Promise<number> {
+  const res = await executor.execute(sql`
+    SELECT
+      (SELECT COUNT(*) FROM bill_payment_applications WHERE tenant_id = ${tenantId} AND bill_id = ${billId})::int
+      + (SELECT COUNT(*) FROM vendor_credit_applications WHERE tenant_id = ${tenantId} AND bill_id = ${billId})::int AS n
+  `);
+  return (res.rows as Array<{ n: number }>)[0]?.n ?? 0;
+}
+
+// ─── Create / read / edit / void ────────────────────────────────
+
+/**
+ * Posts a bill: DR each line's account, CR Accounts Payable for the exact
+ * sum. Validation, terms, the posting and the draft-attachment relink run
+ * in one database transaction (`outerTx` to join the caller's).
+ */
+export async function createBill(tenantId: string, input: CreateBillInput, userId?: string, companyId?: string, outerTx?: Tx) {
   if (input.lines.length === 0) throw AppError.badRequest('Bill must have at least one line');
-
-  await assertAccountsInTenant(tenantId, input.lines.map((l) => l.accountId));
-  const apAccountId = await getApAccountId(tenantId);
-  const vendor = await loadVendorDefaults(tenantId, input.contactId);
-
-  // Resolve terms: explicit > vendor default
-  const paymentTerms = input.paymentTerms || vendor.defaultPaymentTerms || undefined;
-  const termsDays = input.termsDays ?? vendor.defaultTermsDays ?? undefined;
-  const dueDate = input.dueDate || computeBillDueDate(input.txnDate, paymentTerms, termsDays);
-
-  // Sum line amounts through Decimal — float arithmetic drifts on
-  // multi-line bills and makes the AP credit ≠ sum of expense debits
-  // by a sub-cent, which ledger.postTransaction then rejects as an
-  // unbalanced transaction.
-  // Each line rounded to the ledger's 4 places first (U-65): the A/P credit
-  // is the sum of the stored debits.
-  const total = input.lines.reduce((sum, l) => sum.plus(ledger.round4(l.amount)), new Decimal('0'));
+  const { lines, total } = buildApLines(input.lines, { allowBillable: true });
+  // Each line is an exact 4-place amount (U-65): the A/P credit is their sum.
   if (total.lessThanOrEqualTo(0)) throw AppError.badRequest('Bill total must be positive');
 
-  const journalLines = [
-    ...input.lines.map((l) => ({
-      accountId: l.accountId,
-      debit: ledger.round4(l.amount).toFixed(4),
-      credit: '0',
-      description: l.description || input.memo,
-      tagId: l.tagId,
-    })),
-    { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
-  ];
+  const run = async (tx: Tx) => {
+    await assertApLineRefs(tx, tenantId, companyId, lines);
+    const apAccountId = await getApAccountId(tx, tenantId);
+    const vendor = await loadVendorDefaults(tx, tenantId, input.contactId, companyId);
+    const terms = resolveBillTerms(input, vendor);
 
-  const txnNumber = await getNextBillNumber(tenantId);
+    const journalLines = [
+      ...lines.map((l) => ({
+        accountId: l.accountId,
+        debit: l.amount.toFixed(4),
+        credit: '0',
+        description: l.description || input.memo,
+        tagId: l.tagId,
+        ...lineExtras(l),
+      })),
+      { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
+    ];
 
-  return ledger.postTransaction(tenantId, {
-    txnType: 'bill',
-    txnNumber,
-    txnDate: input.txnDate,
-    dueDate,
-    contactId: input.contactId,
-    memo: input.memo,
-    internalNotes: input.internalNotes,
-    paymentTerms,
-    termsDays,
-    vendorInvoiceNumber: input.vendorInvoiceNumber,
-    total: total.toFixed(4),
-    balanceDue: total.toFixed(4),
-    amountPaid: '0',
-    creditsApplied: '0',
-    billStatus: 'unpaid',
-    lines: journalLines,
-  }, userId, companyId);
+    const txnNumber = await getNextBillNumber(tenantId);
+
+    const bill = await ledger.postTransaction(tenantId, {
+      txnType: 'bill',
+      txnNumber,
+      txnDate: input.txnDate,
+      dueDate: terms.dueDate ?? undefined,
+      contactId: input.contactId,
+      memo: input.memo,
+      internalNotes: input.internalNotes,
+      paymentTerms: terms.paymentTerms ?? undefined,
+      termsDays: terms.termsDays ?? undefined,
+      discountPercent: terms.discountPercent,
+      discountDays: terms.discountDays,
+      discountDate: terms.discountDate,
+      dueDateOverridden: terms.dueDateOverridden,
+      discountDateOverridden: terms.discountDateOverridden,
+      billReceived: input.billReceived ?? true,
+      vendorInvoiceNumber: input.vendorInvoiceNumber,
+      total: total.toFixed(4),
+      balanceDue: total.toFixed(4),
+      amountPaid: '0',
+      creditsApplied: '0',
+      billStatus: 'unpaid',
+      lines: journalLines,
+    }, userId, companyId, tx);
+
+    if (input.draftAttachmentId) {
+      await relinkDraftAttachments(tx, tenantId, input.draftAttachmentId, 'bill', bill.id, userId);
+    }
+    return bill;
+  };
+  return outerTx ? run(outerTx) : db.transaction(run);
 }
 
 export async function getBill(tenantId: string, billId: string) {
@@ -149,156 +443,157 @@ export async function getBill(tenantId: string, billId: string) {
   return bill;
 }
 
+/**
+ * Edits a bill in one database transaction (review B1, B3): the row is
+ * locked FOR UPDATE, `expectedUpdatedAt` checked (409 STALE), and "locked"
+ * decided from the application rows under that lock. The ledger edit, the
+ * bill's own columns and the payment status are written in the same
+ * transaction; the reply is the bill as committed.
+ */
 export async function updateBill(tenantId: string, billId: string, input: CreateBillInput, userId?: string, companyId?: string) {
-  const existing = await ledger.getTransaction(tenantId, billId);
-  if (existing.txnType !== 'bill') throw AppError.badRequest('Not a bill');
-  if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void bill');
-
-  await assertAccountsInTenant(tenantId, input.lines.map((l) => l.accountId));
-
-  // A bill is considered "locked" for total/vendor/date edits as soon
-  // as any payment or vendor credit has been applied to it. The user
-  // can still reallocate the expense lines (move money between
-  // accounts, split a line, add or remove lines, edit descriptions)
-  // but the AMOUNT TOTAL must stay the same so existing payment /
-  // credit applications remain consistent, the VENDOR must stay the
-  // same so payments don't end up pointing at a different contact,
-  // and the BILL DATE must stay the same so the payment can't end up
-  // dated before the bill.
-  const isLocked = !!existing.billStatus && existing.billStatus !== 'unpaid';
-
-  const apAccountId = await getApAccountId(tenantId);
-
-  // Vendor resolution depends on whether we're locked to the existing
-  // vendor. If locked, we re-use the existing contactId verbatim and
-  // ignore whatever the client sent, so a tampered payload can't sneak
-  // through a vendor swap. If unlocked, we accept the new vendor.
-  let resolvedContactId: string;
-  if (isLocked) {
-    if (!existing.contactId) throw AppError.internal('Paid bill missing contactId');
-    if (input.contactId && input.contactId !== existing.contactId) {
-      throw AppError.badRequest(
-        'Cannot change the vendor on a bill that has payments or credits applied. ' +
-        'Void the payments first, or create a new bill with the correct vendor.',
-      );
-    }
-    resolvedContactId = existing.contactId;
-  } else {
-    resolvedContactId = input.contactId;
-  }
-  const vendor = await loadVendorDefaults(tenantId, resolvedContactId);
-
-  // Date resolution: locked bills keep the original txnDate. Payment
-  // transactions already reference this date; letting it move forward
-  // would create a paid-before-billed state, and moving it backward
-  // could push it behind the lock date.
-  const resolvedTxnDate = isLocked ? existing.txnDate : input.txnDate;
-  if (isLocked && input.txnDate && input.txnDate !== existing.txnDate) {
-    throw AppError.badRequest(
-      'Cannot change the bill date on a bill that has payments or credits applied.',
-    );
-  }
-
-  const paymentTerms = isLocked
-    ? (existing.paymentTerms || undefined)
-    : (input.paymentTerms || vendor.defaultPaymentTerms || undefined);
-  const termsDays = isLocked
-    ? (existing.termsDays ?? undefined)
-    : (input.termsDays ?? vendor.defaultTermsDays ?? undefined);
-  const dueDate = isLocked
-    ? (existing.dueDate || undefined)
-    : (input.dueDate || computeBillDueDate(resolvedTxnDate, paymentTerms, termsDays));
-
-  // Each line rounded to the ledger's 4 places first (U-65): the A/P credit
-  // is the sum of the stored debits.
-  const total = input.lines.reduce((sum, l) => sum.plus(ledger.round4(l.amount)), new Decimal('0'));
+  if (input.lines.length === 0) throw AppError.badRequest('Bill must have at least one line');
+  const { lines, total } = buildApLines(input.lines, { allowBillable: true });
   if (total.lessThanOrEqualTo(0)) throw AppError.badRequest('Bill total must be positive');
 
-  // Total-lock enforcement. The same 0.01 tolerance used elsewhere
-  // absorbs tax and per-line rounding drift without letting meaningful
-  // changes slip through.
-  const existingTotal = new Decimal(existing.total || '0');
-  const tolerance = new Decimal('0.01');
-  if (isLocked && total.minus(existingTotal).abs().greaterThan(tolerance)) {
-    throw AppError.badRequest(
-      `Cannot change the total on a paid bill. Expected $${existingTotal.toFixed(2)}, ` +
-      `got $${total.toFixed(2)}. Reallocate between expense accounts instead — ` +
-      `the sum of all lines must equal the original total.`,
-    );
-  }
+  await db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, billId)))
+      .for('update')
+      .limit(1);
+    if (!existing || existing.status === 'deleted'
+      || (companyId && existing.companyId && existing.companyId !== companyId)) {
+      throw AppError.notFound('Transaction not found');
+    }
+    if (existing.txnType !== 'bill') throw AppError.badRequest('Not a bill');
+    if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void bill');
+    ledger.assertNotStale(existing, input.expectedUpdatedAt, 'This bill');
 
-  const journalLines = [
-    ...input.lines.map((l) => ({
-      accountId: l.accountId,
-      debit: ledger.round4(l.amount).toFixed(4),
-      credit: '0',
-      description: l.description || input.memo,
-      tagId: l.tagId,
-    })),
-    { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
-  ];
+    await assertApLineRefs(tx, tenantId, companyId, lines);
 
-  // Post the expense/AP journal change via the ledger. For a locked
-  // bill total is unchanged, so the AP credit nets out to zero net
-  // movement; only the expense-account allocation shifts. For an
-  // unlocked bill the AP balance moves with the new total.
-  const updated = await ledger.updateTransaction(tenantId, billId, {
-    txnType: 'bill',
-    txnDate: resolvedTxnDate,
-    dueDate,
-    contactId: resolvedContactId,
-    memo: input.memo,
-    internalNotes: input.internalNotes,
-    paymentTerms,
-    termsDays,
-    vendorInvoiceNumber: input.vendorInvoiceNumber,
-    total: total.toFixed(4),
-    // For locked bills, preserve the existing balance_due (which
-    // reflects payments / credits already applied). For unlocked
-    // bills, balance_due equals the full total.
-    balanceDue: isLocked ? (existing.balanceDue || '0') : total.toFixed(4),
-    lines: journalLines,
-  }, userId, companyId);
+    // A bill is "locked" for total/vendor/date edits as soon as any payment
+    // or vendor credit is applied to it — read from the application rows
+    // under the row lock (not bill_status, which a racing payment may not
+    // have written yet). The lines can still be reallocated, but the TOTAL,
+    // the VENDOR and the BILL DATE stay, so the applications stay right.
+    const isLocked = (await countBillApplications(tx, tenantId, billId)) > 0;
 
-  if (isLocked) {
-    // Preserve payment-derived state, but update the bill-specific
-    // columns that ledger.updateTransaction doesn't touch
-    // (vendorInvoiceNumber, paymentTerms, termsDays). Do NOT reset
-    // amountPaid/creditsApplied/billStatus — recompute them from the
-    // application tables so any drift between ledger.updateTransaction's
-    // total write and the sum of applications gets corrected.
-    await db.update(transactions).set({
-      paymentTerms: paymentTerms || null,
-      termsDays: termsDays ?? null,
+    const apAccountId = await getApAccountId(tx, tenantId);
+
+    let resolvedContactId: string;
+    if (isLocked) {
+      if (!existing.contactId) throw AppError.internal('Paid bill missing contactId');
+      if (input.contactId && input.contactId !== existing.contactId) {
+        throw AppError.badRequest(
+          'Cannot change the vendor on a bill that has payments or credits applied. ' +
+          'Void the payments first, or create a new bill with the correct vendor.',
+        );
+      }
+      resolvedContactId = existing.contactId;
+    } else {
+      resolvedContactId = input.contactId;
+    }
+    const vendor = await loadVendorDefaults(tx, tenantId, resolvedContactId, companyId);
+
+    if (isLocked && input.txnDate && input.txnDate !== existing.txnDate) {
+      throw AppError.badRequest('Cannot change the bill date on a bill that has payments or credits applied.');
+    }
+    const resolvedTxnDate = isLocked ? existing.txnDate : input.txnDate;
+
+    // Received flag (U-87): omitted keeps it; it can't go back to "not
+    // received" once something is applied to the bill (review S4).
+    const billReceived = input.billReceived ?? existing.billReceived;
+    if (isLocked && billReceived === false && existing.billReceived !== false) {
+      throw AppError.conflict(
+        'This bill has payments or credits applied, so it can’t be marked not received.',
+        'BILL_HAS_PAYMENTS',
+      );
+    }
+
+    // Terms: a locked bill keeps its terms and dates; otherwise they are
+    // resolved as on create (an omitted dueDate is recomputed).
+    const terms: Omit<ResolvedBillTerms, 'source'> = isLocked
+      ? {
+        paymentTerms: existing.paymentTerms,
+        termsDays: existing.termsDays,
+        discountPercent: existing.discountPercent,
+        discountDays: existing.discountDays,
+        dueDate: existing.dueDate,
+        discountDate: existing.discountDate,
+        dueDateOverridden: existing.dueDateOverridden,
+        discountDateOverridden: existing.discountDateOverridden,
+      }
+      : resolveBillTerms({ ...input, txnDate: resolvedTxnDate }, vendor);
+
+    // Total lock, exact (review S1; was a 0.01 tolerance).
+    const existingTotal = new Decimal(existing.total || '0');
+    if (isLocked && !total.equals(existingTotal)) {
+      throw AppError.badRequest(
+        `Cannot change the total on a paid bill. Expected $${existingTotal.toFixed(2)}, ` +
+        `got $${total.toFixed(2)}. Reallocate between expense accounts instead — ` +
+        `the sum of all lines must equal the original total.`,
+      );
+    }
+
+    const journalLines = [
+      ...lines.map((l) => ({
+        accountId: l.accountId,
+        debit: l.amount.toFixed(4),
+        credit: '0',
+        description: l.description || input.memo,
+        tagId: l.tagId,
+        ...lineExtras(l),
+      })),
+      { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
+    ];
+
+    // The expense/AP journal change, on this transaction. For a locked bill
+    // the total is unchanged, so A/P doesn't move; only the expense-account
+    // allocation shifts. For an unlocked bill A/P moves with the new total.
+    await ledger.updateTransaction(tenantId, billId, {
+      txnType: 'bill',
+      txnDate: resolvedTxnDate,
+      dueDate: terms.dueDate ?? undefined,
+      contactId: resolvedContactId,
+      memo: input.memo,
+      internalNotes: input.internalNotes,
+      paymentTerms: terms.paymentTerms ?? undefined,
+      termsDays: terms.termsDays ?? undefined,
+      vendorInvoiceNumber: input.vendorInvoiceNumber,
+      total: total.toFixed(4),
+      balanceDue: isLocked ? (existing.balanceDue || '0') : total.toFixed(4),
+      lines: journalLines,
+    }, userId, companyId, tx, { apDocumentEdit: true });
+
+    // The bill's own columns (the ledger edit doesn't write them), then the
+    // payment status recomputed from the application rows — same
+    // transaction, so the reply's updatedAt is the final one (review B3).
+    await tx.update(transactions).set({
+      paymentTerms: terms.paymentTerms || null,
+      termsDays: terms.termsDays ?? null,
+      discountPercent: terms.discountPercent,
+      discountDays: terms.discountDays,
+      discountDate: terms.discountDate,
+      dueDateOverridden: terms.dueDateOverridden,
+      discountDateOverridden: terms.discountDateOverridden,
+      billReceived,
       vendorInvoiceNumber: input.vendorInvoiceNumber || null,
+      ...(input.internalNotes !== undefined ? { internalNotes: input.internalNotes || null } : {}),
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, billId)));
 
-    await recomputeBillStatus(db, tenantId, billId);
-  } else {
-    // Unpaid edit path: safe to hard-reset the payment fields since
-    // nothing has been applied yet.
-    await db.update(transactions).set({
-      paymentTerms: paymentTerms || null,
-      termsDays: termsDays ?? null,
-      vendorInvoiceNumber: input.vendorInvoiceNumber || null,
-      billStatus: 'unpaid',
-      creditsApplied: '0',
-      amountPaid: '0',
-      updatedAt: new Date(),
-    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, billId)));
-  }
+    await recomputeBillStatus(tx, tenantId, billId);
+  });
 
-  return updated;
+  return getBill(tenantId, billId);
 }
 
-export async function voidBill(tenantId: string, billId: string, reason: string, userId?: string) {
-  const existing = await ledger.getTransaction(tenantId, billId);
-  if (existing.txnType !== 'bill') throw AppError.badRequest('Not a bill');
-  if (existing.billStatus && existing.billStatus !== 'unpaid') {
-    throw AppError.badRequest('Cannot void a bill that has payments applied. Void the payments first.');
-  }
-  return ledger.voidTransaction(tenantId, billId, reason, userId);
+/**
+ * Voids a bill. Refused while anything is applied to it (409
+ * BILL_HAS_PAYMENTS, read under the row lock) or on an expectedUpdatedAt
+ * mismatch (409 STALE).
+ */
+export async function voidBill(tenantId: string, billId: string, reason: string, userId?: string, opts: { expectedUpdatedAt?: string } = {}) {
+  return ledger.voidTransaction(tenantId, billId, reason, userId, { ...opts, expectType: 'bill' });
 }
 
 export async function listBills(tenantId: string, filters: BillFilters, companyId?: string) {
@@ -373,6 +668,8 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
       contactName: contacts.displayName,
       vendorInvoiceNumber: transactions.vendorInvoiceNumber,
       paymentTerms: transactions.paymentTerms,
+      discountDate: transactions.discountDate,
+      billReceived: transactions.billReceived,
       total: transactions.total,
       amountPaid: transactions.amountPaid,
       creditsApplied: transactions.creditsApplied,
@@ -381,6 +678,11 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
       memo: transactions.memo,
       status: transactions.status,
       createdAt: transactions.createdAt,
+      updatedAt: transactions.updatedAt,
+      // Derived, from the database's own date (one "today" with the
+      // CURRENT_DATE filters above; review S3).
+      daysOverdue: sql<number>`CASE WHEN ${transactions.dueDate} < CURRENT_DATE AND ${transactions.billStatus} IS DISTINCT FROM 'paid'
+        THEN (CURRENT_DATE - ${transactions.dueDate}) ELSE 0 END::int`,
     }).from(transactions)
       .leftJoin(contacts, eq(transactions.contactId, contacts.id))
       .where(where)
@@ -392,28 +694,22 @@ export async function listBills(tenantId: string, filters: BillFilters, companyI
       .where(where),
   ]);
 
-  // Augment with daysOverdue (derived field, not stored)
-  const today = new Date().toISOString().split('T')[0]!;
-  const augmented = data.map((row) => ({
-    ...row,
-    daysOverdue: row.dueDate && row.dueDate < today && row.billStatus !== 'paid'
-      ? Math.floor((Date.parse(today) - Date.parse(row.dueDate)) / 86400000)
-      : 0,
-  }));
-
-  return { data: augmented, total: totalRow[0]?.c ?? 0 };
+  return { data, total: totalRow[0]?.c ?? 0 };
 }
 
 /**
  * SQL-aggregated AP roll-up for one vendor. The contact detail page used to
  * derive these numbers from its (paginated) bill list, which understated the
- * balance for vendors with more bills than one page.
+ * balance for vendors with more bills than one page. Posted documents only
+ * (U-84d): a void or deleted bill or credit keeps its old balance_due and
+ * used to be counted.
  */
 export async function getVendorApSummary(tenantId: string, contactId: string, companyId?: string) {
   const conditions = [
     eq(transactions.tenantId, tenantId),
     eq(transactions.contactId, contactId),
     inArray(transactions.txnType, ['bill', 'vendor_credit']),
+    eq(transactions.status, 'posted'),
   ];
   if (companyId) conditions.push(eq(transactions.companyId, companyId));
 
@@ -432,7 +728,8 @@ export async function getVendorApSummary(tenantId: string, contactId: string, co
 /**
  * Returns all unpaid/partial bills for the tenant (optionally filtered to one
  * vendor), plus the available vendor credits whose vendors appear in the
- * payable bill list. Used by the Pay Bills page.
+ * payable bill list. Used by the Pay Bills page. A bill not marked received
+ * (U-87) is left out: it is in A/P but not payable yet.
  */
 export async function getPayableBills(
   tenantId: string,
@@ -442,6 +739,7 @@ export async function getPayableBills(
     eq(transactions.tenantId, tenantId),
     eq(transactions.txnType, 'bill'),
     eq(transactions.status, 'posted'),
+    eq(transactions.billReceived, true),
     sql`${transactions.billStatus} IN ('unpaid', 'partial', 'overdue')`,
     sql`COALESCE(${transactions.balanceDue}, 0) > 0`,
   ];
@@ -465,6 +763,8 @@ export async function getPayableBills(
     contactName: contacts.displayName,
     txnDate: transactions.txnDate,
     dueDate: transactions.dueDate,
+    discountDate: transactions.discountDate,
+    discountPercent: transactions.discountPercent,
     vendorInvoiceNumber: transactions.vendorInvoiceNumber,
     total: transactions.total,
     amountPaid: transactions.amountPaid,
@@ -473,18 +773,11 @@ export async function getPayableBills(
     billStatus: transactions.billStatus,
     paymentTerms: transactions.paymentTerms,
     memo: transactions.memo,
+    daysOverdue: sql<number>`CASE WHEN ${transactions.dueDate} < CURRENT_DATE THEN (CURRENT_DATE - ${transactions.dueDate}) ELSE 0 END::int`,
   }).from(transactions)
     .leftJoin(contacts, eq(transactions.contactId, contacts.id))
     .where(and(...billConds))
     .orderBy(sql`${transactions.dueDate} ASC NULLS LAST`);
-
-  const today = new Date().toISOString().split('T')[0]!;
-  const billsWithAge = bills.map((b) => ({
-    ...b,
-    daysOverdue: b.dueDate && b.dueDate < today
-      ? Math.floor((Date.parse(today) - Date.parse(b.dueDate)) / 86400000)
-      : 0,
-  }));
 
   // Pull vendor credits with available balance for the same vendors
   const vendorIds = [...new Set(bills.map((b) => b.contactId).filter((v): v is string => !!v))];
@@ -520,36 +813,41 @@ export async function getPayableBills(
       .orderBy(sql`${transactions.txnDate} ASC`);
   }
 
-  return { bills: billsWithAge, credits };
+  return { bills, credits };
 }
 
 /**
  * Recalculate amount_paid, credits_applied, balance_due, and bill_status from
  * the underlying application tables. Called by the bill payment service when
- * payments or voids change a bill's state.
+ * payments or voids change a bill's state, and by a bill edit. A payment's
+ * early-payment discount (bill_payment_applications.discount_amount, P18)
+ * counts toward the bill with its cash. Exact (review S1): "paid" only when
+ * nothing at all is left (was a 0.01 tolerance that dropped the cent from
+ * aging and Pay Bills while A/P kept it).
  */
 export async function recomputeBillStatus(executor: DbOrTx, tenantId: string, billId: string) {
   const result = await executor.execute(sql`
     SELECT
       t.total,
       COALESCE((SELECT SUM(amount) FROM bill_payment_applications WHERE bill_id = ${billId} AND tenant_id = ${tenantId}), 0) AS paid,
+      COALESCE((SELECT SUM(discount_amount) FROM bill_payment_applications WHERE bill_id = ${billId} AND tenant_id = ${tenantId}), 0) AS discounts,
       COALESCE((SELECT SUM(amount) FROM vendor_credit_applications WHERE bill_id = ${billId} AND tenant_id = ${tenantId}), 0) AS credits
     FROM transactions t
     WHERE t.id = ${billId} AND t.tenant_id = ${tenantId}
   `);
-  const row = (result.rows as Array<{ total: string | null; paid: string | number; credits: string | number }>)[0];
+  const row = (result.rows as Array<{ total: string | null; paid: string | number; discounts: string | number; credits: string | number }>)[0];
   if (!row) return;
 
   const total = new Decimal(row.total || '0');
   const paid = new Decimal(String(row.paid));
+  const discounts = new Decimal(String(row.discounts));
   const credits = new Decimal(String(row.credits));
-  let balanceDue = total.minus(paid).minus(credits);
+  let balanceDue = total.minus(paid).minus(discounts).minus(credits);
   if (balanceDue.isNegative()) balanceDue = new Decimal('0');
 
-  const tolerance = new Decimal('0.01');
   let status: 'unpaid' | 'partial' | 'paid' = 'unpaid';
-  if (balanceDue.lessThanOrEqualTo(tolerance)) status = 'paid';
-  else if (paid.greaterThan(0) || credits.greaterThan(0)) status = 'partial';
+  if (balanceDue.isZero()) status = 'paid';
+  else if (paid.greaterThan(0) || discounts.greaterThan(0) || credits.greaterThan(0)) status = 'partial';
 
   await executor.update(transactions).set({
     amountPaid: paid.toFixed(4),

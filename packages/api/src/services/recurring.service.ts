@@ -265,6 +265,10 @@ export async function postLegacyClone(
       txnDate: sched.nextOccurrence,
       paymentTerms: template.paymentTerms || undefined,
       termsDays: template.termsDays ?? undefined,
+      // A custom-terms discount comes along (U-86); fixed codes carry theirs.
+      ...(template.paymentTerms === 'custom' && template.discountPercent && template.discountDays != null
+        ? { discountPercent: template.discountPercent, discountDays: template.discountDays }
+        : {}),
       vendorInvoiceNumber: template.vendorInvoiceNumber || undefined,
       memo: template.memo || undefined,
       lines: expenseLines,

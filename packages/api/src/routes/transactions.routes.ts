@@ -327,14 +327,22 @@ transactionsRouter.post('/:id/void', validate(voidTransactionSchema), async (req
   if (voidType === 'aje' && !(await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1'))) {
     throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
   }
-  await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId);
+  // A/P documents keep their sub-ledger right here too (ap-edit-v1, review
+  // B1): a bill or vendor credit with anything applied is 409
+  // BILL_HAS_PAYMENTS / CREDIT_APPLIED; a bill payment is voided with its
+  // applications (the bills and credits it settled reopen).
+  await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
+    expectedUpdatedAt: req.body.expectedUpdatedAt,
+  });
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });
 });
 
 // Soft delete (P12 R7, capability txn-delete-v1). Body optional:
-// { reason?, closingPassword? } — the password is taken out of the body by
-// lockContextMiddleware and opens a closed period exactly as for void.
+// { reason?, closingPassword?, expectedUpdatedAt? } — the password is taken
+// out of the body by lockContextMiddleware and opens a closed period exactly
+// as for void. Bills and vendor credits with nothing applied are deletable
+// (ap-edit-v1): 409 BILL_HAS_PAYMENTS / CREDIT_APPLIED otherwise.
 // Same router permission as void (transactions: update). The transaction
 // keeps its lines plus reversing lines and becomes status 'deleted', hidden
 // from registers, reports, balances and lists. Errors: 404 not found,
@@ -351,6 +359,8 @@ transactionsRouter.delete('/:id', (req, _res, next) => {
   next();
 }, validate(deleteTransactionSchema), describe({
   summary: 'Delete a transaction (soft delete with reversing lines; txn-delete-v1)',
+  description: 'ap-edit-v1: bills and vendor credits are deletable while nothing is applied (409 BILL_HAS_PAYMENTS / CREDIT_APPLIED; a refunded credit 409 TXN_DELETE_LINKED; ' +
+    'a bill entered from a bill capture 409 TXN_DELETE_LINKED with links ["bill_capture"]). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt).',
   body: deleteTransactionBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
@@ -358,6 +368,7 @@ transactionsRouter.delete('/:id', (req, _res, next) => {
   if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
   await ledger.deleteTransaction(req.tenantId, parsed.data, {
     reason: req.body.reason, userId: req.userId, companyId: req.companyId,
+    expectedUpdatedAt: req.body.expectedUpdatedAt,
   });
   const txn = await ledger.getTransaction(req.tenantId, parsed.data);
   res.json({ transaction: txn });
@@ -368,6 +379,14 @@ transactionsRouter.post('/:id/duplicate', async (req, res) => {
   // AJE duplication runs through /tb (numbering + firm gate, rule TB3).
   if (original.txnType === 'aje') {
     throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
+  }
+  // An A/P document posted as a bare copy would hit A/P with no bill status,
+  // balance due or applications behind it (review Notes): enter a new bill
+  // or credit instead.
+  if (ledger.AP_DOCUMENT_TYPES.includes(original.txnType)) {
+    throw AppError.badRequest('Bills, vendor credits and bill payments can’t be duplicated here. Enter a new one instead.', 'TXN_DUPLICATE_UNSUPPORTED', {
+      txnType: original.txnType,
+    });
   }
   const lines = original.lines.map((l) => ({
     accountId: l.accountId,
