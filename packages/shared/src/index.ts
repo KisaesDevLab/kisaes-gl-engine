@@ -115,6 +115,7 @@ export * from './constants/imports.js';
 export * from './constants/permissions.js';
 export * from './constants/firm-capabilities.js';
 export * from './constants/payment-methods.js';
+export * from './constants/payment-terms.js';
 
 // Reports
 export * from './reports/registry.js';

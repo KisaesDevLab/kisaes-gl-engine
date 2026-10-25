@@ -210,13 +210,18 @@ export const createCustomerRefundSchema = z.object({
 
 export const voidTransactionSchema = z.object({
   reason: z.string().min(1, 'Void reason is required'),
+  // ap-edit-v1 (U-84): the transaction's updatedAt as last read; a mismatch
+  // is 409 STALE (details.updatedAt) and nothing changes. Omitted: no check.
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
-// DELETE /transactions/:id (txn-delete-v1). Both optional; the closing-date
+// DELETE /transactions/:id (txn-delete-v1). All optional; the closing-date
 // password is taken out of the body by lockContextMiddleware before this runs.
 export const deleteTransactionSchema = z.object({
   reason: z.string().max(500).optional(),
   overrideConfirmed: z.boolean().optional(),
+  // ap-edit-v1 (U-84), as on void.
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
 export const transactionSortKeys = ['date', 'type', 'number', 'payee', 'memo', 'category', 'amount', 'status', 'dueDate', 'balanceDue', 'invoiceStatus'] as const;

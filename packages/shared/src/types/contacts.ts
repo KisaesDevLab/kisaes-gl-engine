@@ -27,6 +27,9 @@ export interface Contact {
   shippingZip: string | null;
   shippingCountry: string;
   defaultPaymentTerms: string | null;
+  defaultTermsDays?: number | null;
+  defaultDiscountPercent?: string | null;
+  defaultDiscountDays?: number | null;
   openingBalance: string;
   openingBalanceDate: string | null;
   defaultExpenseAccountId: string | null;
@@ -70,6 +73,9 @@ export interface CreateContactInput {
   shippingZip?: string | null;
   shippingCountry?: string;
   defaultPaymentTerms?: string | null;
+  defaultTermsDays?: number | null;
+  defaultDiscountPercent?: string | null;
+  defaultDiscountDays?: number | null;
   openingBalance?: string;
   openingBalanceDate?: string | null;
   defaultExpenseAccountId?: string | null;
@@ -101,6 +107,9 @@ export interface UpdateContactInput {
   shippingZip?: string | null;
   shippingCountry?: string;
   defaultPaymentTerms?: string | null;
+  defaultTermsDays?: number | null;
+  defaultDiscountPercent?: string | null;
+  defaultDiscountDays?: number | null;
   defaultExpenseAccountId?: string | null;
   defaultTagId?: string | null;
   taxId?: string | null;

@@ -13,8 +13,13 @@ export interface BillLineInput {
   accountId: string;
   description?: string;
   amount: string;
-  itemId?: string;
+  itemId?: string | null;
+  /** bill-lines-v1: decimal strings; amount must equal quantity x unitPrice (cents, half away from zero). */
+  quantity?: string | null;
+  unitPrice?: string | null;
   tagId?: string | null;
+  contactId?: string | null;
+  isBillable?: boolean;
 }
 
 export interface CreateBillInput {
@@ -23,9 +28,18 @@ export interface CreateBillInput {
   dueDate?: string;
   paymentTerms?: string;
   termsDays?: number;
+  /** bill-terms-v1: custom-terms discount ("2" = 2 %) and days. */
+  discountPercent?: string;
+  discountDays?: number;
+  discountDate?: string;
+  /** bill-received-v1: default true. */
+  billReceived?: boolean;
   vendorInvoiceNumber?: string;
   memo?: string;
   internalNotes?: string;
+  draftAttachmentId?: string;
+  /** ap-edit-v1: updatedAt as last read (PUT only). */
+  expectedUpdatedAt?: string;
   lines: BillLineInput[];
 }
 
@@ -33,7 +47,13 @@ export interface VendorCreditLineInput {
   accountId: string;
   description?: string;
   amount: string;
+  itemId?: string | null;
+  quantity?: string | null;
+  unitPrice?: string | null;
   tagId?: string | null;
+  contactId?: string | null;
+  /** Never true on a vendor credit line. */
+  isBillable?: false;
 }
 
 export interface CreateVendorCreditInput {
@@ -41,6 +61,8 @@ export interface CreateVendorCreditInput {
   txnDate: string;
   vendorInvoiceNumber?: string;
   memo?: string;
+  draftAttachmentId?: string;
+  expectedUpdatedAt?: string;
   lines: VendorCreditLineInput[];
 }
 
