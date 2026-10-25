@@ -188,8 +188,18 @@ export const resolveOccurrenceSchema = z.object({
   transactionId: uuid,
 }).strict();
 
+// Template filter (ClientLedger U-82, run-due-filter-v1): `templateIds` runs
+// only these templates, `excludeTemplateIds` runs all but these; both may be
+// given (only these, minus the excluded). Ids that match no due template are
+// ignored. The filter narrows what this call posts or skips; `posted` still
+// lists every post with the same runId, and `reminders` / `skipped` stay
+// company-wide.
+const runDueTemplateIds = z.array(uuid).max(500);
+
 export const runDueSchema = z.object({
   asOf: isoDate.optional(),
   runId: uuid.optional(),
   limit: z.number().int().min(1).max(500).default(200),
+  templateIds: runDueTemplateIds.min(1).optional(),
+  excludeTemplateIds: runDueTemplateIds.optional(),
 }).strict();
