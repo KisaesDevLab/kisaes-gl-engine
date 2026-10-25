@@ -441,6 +441,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 | `recurring-guard-v1` | Recurring copies keep line names and billable marks; `PUT /recurring/:id` takes `expectedUpdatedAt` (409 `STALE_SCHEDULE`) (below). |
 | `ledger-guards-v1` | `PUT /transactions/:id`: a deposit edit that sends a linked line back without its `sourceTransactionId` while keeping an unlinked line on that account is 409 `DEPOSIT_LINKS_DROPPED` (`details.sourceTransactionIds`); an expense edit that changes a printed check's face is 409 `CHECK_PRINTED` (`details.checkNumber`, `printedAt`, `changedFields`; edit it with `PUT /checks/:id`); a check keeps its own header tags with `TAGS_SPLIT_LEVEL_V2` on. Void reversal lines keep the line contact. `PATCH /checks/:id/memo`, `POST /checks/print`, `/checks/requeue` and `/checks/reprint/:batchId` honour the closing date and `closingPassword` (423 / 403) (U-80, U-81). |
 | `merge-closing-date-v1` | `POST /contacts/merge` and `POST /tags/merge` honour the closing date and `closingPassword`; the audit row is written in the merge's transaction and lists the transaction ids (below). |
+| `bill-ocr-v2` | `POST /bills/extract-from-attachment/:id` adds `fieldConfidence` and `lineItems[].confidence` (`high`, `medium`, `low`); amounts are decimal strings or `null`. No OCR or AI on upload in desktop mode; `POST /attachments/:id/ocr` honours the AI gates (below). |
 
 ## Account register
 
@@ -547,6 +548,18 @@ Voiding (`POST /transactions/:id/void`) or deleting (`DELETE /transactions/:id`)
 ## Recurring
 
 The generic copy path (journal entries, expenses, checks, transfers, deposits…; bills and invoices go through their own services) copies each template line's `contactId` and billable mark (a billable line of the new occurrence is `unbilled`), a journal entry's `basis` and `isAdjusting`, and records `recurringScheduleId` and `source: "recurring"` (`sourceId` = the schedule id) on the posted transaction. A recurring bill copies the template's line amounts exactly (all 4 places; it used to round to cents). `PUT /api/v1/recurring/:id` takes `expectedUpdatedAt` (`recurring-guard-v1`; the schedule's `updatedAt` as last read, ISO 8601 with offset): the update applies only while the stored `updated_at`, to the millisecond, still equals it, else 409 `STALE_SCHEDULE` (`details.updatedAt`) and nothing changes. Omitted, the update applies as before.
+
+## Bill reading (`bill-ocr-v2`)
+
+**Nothing on upload.** In desktop mode `POST /api/v1/attachments` never starts OCR or AI processing: neither the legacy receipt stub nor the image classifier (`attachment.service.upload` checks the same switch for every caller). On the server appliance the system setting `attachments.autoOcr` decides (absent → on, as before; `'false'` or `'0'` → off), and any client may send `?autoOcr=0` (or `false`) to skip it for one upload. The query only turns it off; it never turns it on where the mode or the setting says off.
+
+**Reading is an explicit request.** `POST /api/v1/bills/extract-from-attachment/:id` reads a bill only when called. `POST /api/v1/attachments/:id/ocr` in desktop mode first applies the same gates: AI on, the OCR function on with a provider, and the company's `receipt_ocr` consent; otherwise 400 with `code` `ai_disabled`, `ai_function_disabled` or `ai_consent_blocked` and nothing changes.
+
+**Response.** `{"extraction":{"jobId","vendor","vendorAddress","vendorInvoiceNumber","billDate","dueDate","paymentTerms","total","subtotal","tax","lineItems":[{"description","amount","quantity","confidence"}],"notes","confidence","fieldConfidence":{"vendor","billDate","dueDate","vendorInvoiceNumber","total","subtotal","tax","paymentTerms"},"contactId","defaultExpenseAccountId","qualityWarnings","status","rawText"}}`.
+
+- `total`, `subtotal`, `tax` and `lineItems[].amount` are plain decimal strings (`"1234.56"`, `"-12.5"`) or `null`, never JSON numbers. A number from the model is turned into its decimal spelling; `$`, `USD`, spaces, US thousands commas and accounting parentheses are removed; anything else (`"12,50"`, `"1.234,56"`, exponent notation, text) is `null`.
+- `fieldConfidence.*` and `lineItems[].confidence` are `high`, `medium` or `low`. The model's own per-field score is used when it gives one, else the document score; `high` ≥ 0.85, `medium` ≥ 0.6, else `low` (a 1–100 score is read as a percentage). An empty field, or an amount that did not read, is `low`.
+- `confidence` (document level, a JSON number 0–1) stays for older clients.
 
 ## Host requirements
 

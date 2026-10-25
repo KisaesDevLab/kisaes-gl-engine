@@ -3,6 +3,8 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
+import { describe } from '../middleware/describe.js';
 import { createBillSchema, billFiltersSchema, payableBillsQuerySchema, voidTransactionSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -77,7 +79,49 @@ billsRouter.post('/:id/void', validate(voidTransactionSchema), async (req, res) 
 // draft set via POST /attachments/:id/link {attachableType:'draft'},
 // then steps 2-4 run unchanged (extract-from-attachment works on any
 // tenant attachment id, and honors the same consent/PII gates).
-billsRouter.post('/extract-from-attachment/:attachmentId', async (req, res) => {
+const ocrMoney = z.string().nullable().describe('plain decimal string, e.g. "1234.56"; never a JSON number (bill-ocr-v2)');
+const ocrConfidence = z.enum(['high', 'medium', 'low']);
+const extractionResponse = z.object({
+  extraction: z.object({
+    jobId: z.string(),
+    vendor: z.string().nullable(),
+    vendorAddress: z.object({
+      line1: z.string().nullable(), line2: z.string().nullable(), city: z.string().nullable(),
+      state: z.string().nullable(), zip: z.string().nullable(),
+    }).nullable(),
+    vendorInvoiceNumber: z.string().nullable(),
+    billDate: z.string().nullable().describe('YYYY-MM-DD as read'),
+    dueDate: z.string().nullable(),
+    paymentTerms: z.string().nullable(),
+    total: ocrMoney,
+    subtotal: ocrMoney,
+    tax: ocrMoney,
+    lineItems: z.array(z.object({
+      description: z.string().nullable(),
+      amount: ocrMoney,
+      quantity: z.string().nullable(),
+      confidence: ocrConfidence.describe('bill-ocr-v2; low when the amount did not read'),
+    })),
+    notes: z.string().nullable(),
+    confidence: z.number().describe('document-level 0–1 score, kept for older clients'),
+    fieldConfidence: z.object({
+      vendor: ocrConfidence, billDate: ocrConfidence, dueDate: ocrConfidence,
+      vendorInvoiceNumber: ocrConfidence, total: ocrConfidence, subtotal: ocrConfidence,
+      tax: ocrConfidence, paymentTerms: ocrConfidence,
+    }).describe('bill-ocr-v2: high ≥ 0.85, medium ≥ 0.6, else low; an empty field is low'),
+    contactId: z.string().nullable(),
+    defaultExpenseAccountId: z.string().nullable(),
+    qualityWarnings: z.array(z.string()),
+    status: z.enum(['ok', 'ocr_only']).optional(),
+    rawText: z.string().optional(),
+  }),
+});
+
+billsRouter.post('/extract-from-attachment/:attachmentId', describe({
+  summary: 'Read a bill from an attachment with AI (an explicit owner request)',
+  params: z.object({ attachmentId: z.string() }),
+  response: extractionResponse,
+}), async (req, res) => {
   const result = await billOcrService.extractBillFromAttachment(req.tenantId, req.params['attachmentId']!);
   res.json({ extraction: result });
 });
