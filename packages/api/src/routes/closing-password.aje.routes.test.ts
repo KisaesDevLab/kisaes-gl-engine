@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
 import express from 'express';
 import http from 'http';
+import crypto from 'node:crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import jwt from 'jsonwebtoken';
@@ -39,7 +40,7 @@ let ownerToken = '';
 let cashId = '';
 let expenseId = '';
 
-function call(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
+function call(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<{ status: number; json: any; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const data = body !== undefined ? Buffer.from(JSON.stringify(body)) : undefined;
     const req = http.request({
@@ -49,6 +50,7 @@ function call(method: string, path: string, body?: unknown): Promise<{ status: n
         Authorization: `Bearer ${ownerToken}`,
         'X-Company-Id': companyId,
         ...(data ? { 'Content-Length': String(data.length) } : {}),
+        ...extra,
       },
     }, (res) => {
       const chunks: Buffer[] = [];
@@ -57,7 +59,7 @@ function call(method: string, path: string, body?: unknown): Promise<{ status: n
         const raw = Buffer.concat(chunks).toString('utf8');
         let json: any = null;
         try { json = raw ? JSON.parse(raw) : null; } catch { json = raw; }
-        resolve({ status: res.statusCode ?? 0, json });
+        resolve({ status: res.statusCode ?? 0, json, headers: res.headers });
       });
     });
     req.on('error', reject);
@@ -213,5 +215,24 @@ describe('POST /transactions/:id/void and the TRIAL_BALANCE_V1 flag', () => {
     expect(r.json.error.code).toBe('TB_AJE_ROUTE');
     const [row] = await db.select({ status: transactions.status }).from(transactions).where(eq(transactions.id, id));
     expect(row!.status).toBe('posted');
+  });
+
+  it('a keyed void replay is refused like a first attempt once the module is off (U-18 L1)', async () => {
+    const created = await call('POST', '/api/v1/tb/ajes', aje('2026-07-15'));
+    expect(created.status).toBe(201);
+    const id = created.json.aje.id as string;
+    const key = crypto.randomUUID();
+    const first = await call('POST', `/api/v1/transactions/${id}/void`, { reason: 'dup' }, { 'Idempotency-Key': key });
+    expect(first.status, JSON.stringify(first.json)).toBe(200);
+    // While the module is on, the retry is a replay.
+    const replay = await call('POST', `/api/v1/transactions/${id}/void`, { reason: 'dup' }, { 'Idempotency-Key': key });
+    expect(replay.status).toBe(200);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    // The AJE rule runs ahead of idempotent(): no replay once it refuses.
+    await setTbFlag(false);
+    const refused = await call('POST', `/api/v1/transactions/${id}/void`, { reason: 'dup' }, { 'Idempotency-Key': key });
+    expect(refused.status).toBe(400);
+    expect(refused.json.error.code).toBe('TB_AJE_ROUTE');
+    expect(refused.headers['idempotent-replayed']).toBeUndefined();
   });
 });

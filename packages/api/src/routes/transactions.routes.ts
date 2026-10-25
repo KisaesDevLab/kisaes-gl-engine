@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import {
   createJournalEntrySchema, createExpenseSchema, createTransferSchema,
@@ -325,7 +325,9 @@ transactionsRouter.get('/:id', async (req, res) => {
   res.json({ transaction: txn });
 });
 
-transactionsRouter.post('/:id/void', keyedById, validate(voidTransactionSchema), async (req, res) => {
+// The AJE rules of void run as middleware ahead of idempotent(), so a
+// replay of a void is refused exactly like a first attempt (U-18).
+async function voidAjeGuard(req: Request, _res: Response, next: NextFunction) {
   // AJE lifecycle is firm-only regardless of ledger permissions (TB3):
   // client-type users never touch it, staff can void here or via /tb.
   const voidType = await ledger.getTransactionType(req.tenantId, req.params['id']!);
@@ -337,6 +339,10 @@ transactionsRouter.post('/:id/void', keyedById, validate(voidTransactionSchema),
   if (voidType === 'aje' && !(await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1'))) {
     throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
   }
+  next();
+}
+
+transactionsRouter.post('/:id/void', voidAjeGuard, keyedById, validate(voidTransactionSchema), async (req, res) => {
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId);
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });

@@ -76,13 +76,21 @@ const actor = (req: { tenantId: string; companyId: string; userId?: string }) =>
   ({ tenantId: req.tenantId, companyId: req.companyId, userId: req.userId });
 
 // Idempotency-Key (idempotency-v1, U-18) on create, from-transaction, enter,
-// skip and resolve. The permission checks run as middleware BEFORE
-// idempotent(), so a replay still needs the permission today.
+// skip and resolve. Every access check runs as middleware BEFORE
+// idempotent() (a replay never reaches the handler), so a replay still
+// needs the access today: the kind's permission on create, from-transaction,
+// enter and resolve; on skip, which needs only the router's 'recurring'
+// permission, the template must still be this company's (404 otherwise).
 const templateAccessMw = (action: PermissionAction) =>
   async (req: Request, _res: Response, next: NextFunction) => {
     await requireTemplateAccess(req, uuidParam(req.params['id']), action);
     next();
   };
+
+async function templateInCompanyMw(req: Request, _res: Response, next: NextFunction) {
+  await templates.templateRowForAccess(req.tenantId, req.companyId, uuidParam(req.params['id']));
+  next();
+}
 
 async function readOccurrence(tenantId: string, id: string) {
   const [row] = await db.select({
@@ -228,7 +236,7 @@ templatesRouter.post('/:id/enter', describe({
 templatesRouter.post('/:id/occurrences/:date/skip', describe({
   summary: 'Skip a date (dismissed); the schedule moves on when it is the next date (templates-v1)',
   params: occurrenceParams,
-}), idempotent({
+}), templateInCompanyMw, idempotent({
   successStatus: 200,
   replay: async (req, entity) => {
     const { transactionId: _t, ...occurrence } = await readOccurrence(req.tenantId, entity!.id);
