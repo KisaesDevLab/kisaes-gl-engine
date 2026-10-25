@@ -149,7 +149,9 @@ export function normalizeBillMoney(raw: unknown): string | null {
   if (raw == null) return null;
   let s: string;
   if (typeof raw === 'number') {
-    if (!Number.isFinite(raw)) return null;
+    // Beyond 2^53 a JSON number no longer holds its own digits exactly, so
+    // its decimal spelling would be a guess (bill-ocr-v2).
+    if (!Number.isFinite(raw) || !Number.isSafeInteger(Math.trunc(raw))) return null;
     s = String(raw);
     if (/e/i.test(s)) return null;
   } else if (typeof raw === 'string') {
@@ -180,13 +182,32 @@ export function normalizeBillMoney(raw: unknown): string | null {
 }
 
 /**
+ * A model's date → "YYYY-MM-DD" when it is exactly that shape and a real
+ * calendar date ("2026-02-30", "07/01/2026", "2026-7-1" → null).
+ */
+export function normalizeBillDate(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (y < 1 || mo < 1 || mo > 12 || d < 1) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  dt.setUTCFullYear(y);
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return s;
+}
+
+/**
  * Per-field confidence: the model's own per-field score when it gave one,
- * else the document score; a field the reading left empty (or an amount
- * that did not parse) is 'low'.
+ * else the document score; a field the reading left empty or blank (or an
+ * amount or date that did not parse) is 'low'.
  */
 export function fieldConfidenceFrom(
   modelFieldConfidence: unknown,
-  values: Record<BillOcrConfidenceField, string | null>,
+  values: Record<BillOcrConfidenceField, unknown>,
   documentConfidence: BillOcrConfidence,
 ): Record<BillOcrConfidenceField, BillOcrConfidence> {
   const given = modelFieldConfidence && typeof modelFieldConfidence === 'object' && !Array.isArray(modelFieldConfidence)
@@ -194,7 +215,8 @@ export function fieldConfidenceFrom(
     : {};
   const out = {} as Record<BillOcrConfidenceField, BillOcrConfidence>;
   for (const field of BILL_OCR_CONFIDENCE_FIELDS) {
-    if (values[field] == null) { out[field] = 'low'; continue; }
+    const v = values[field];
+    if (v == null || (typeof v === 'string' && v.trim() === '')) { out[field] = 'low'; continue; }
     out[field] = bucketConfidence(given[FIELD_MODEL_KEY[field]] ?? given[field]) ?? documentConfidence;
   }
   return out;
@@ -513,7 +535,7 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
           return {
             description: li?.description ?? null,
             amount,
-            quantity: li?.quantity != null ? String(li.quantity) : null,
+            quantity: normalizeBillMoney(li?.quantity),
             confidence: amount == null ? 'low' : (bucketConfidence(li?.confidence) ?? documentConfidence),
           };
         })
@@ -522,10 +544,12 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
     const total = normalizeBillMoney(parsed.total);
     const subtotal = normalizeBillMoney(parsed.subtotal);
     const tax = normalizeBillMoney(parsed.tax);
+    const billDate = normalizeBillDate(parsed.bill_date);
+    const dueDate = normalizeBillDate(parsed.due_date);
     const fieldConfidence = fieldConfidenceFrom(parsed.field_confidence, {
       vendor: parsed.vendor ?? null,
-      billDate: parsed.bill_date ?? null,
-      dueDate: parsed.due_date ?? null,
+      billDate,
+      dueDate,
       vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
       total,
       subtotal,
@@ -543,8 +567,8 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
       vendor: parsed.vendor ?? null,
       vendorAddress,
       vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
-      billDate: parsed.bill_date ?? null,
-      dueDate: parsed.due_date ?? null,
+      billDate,
+      dueDate,
       paymentTerms: parsed.payment_terms ?? null,
       total,
       subtotal,

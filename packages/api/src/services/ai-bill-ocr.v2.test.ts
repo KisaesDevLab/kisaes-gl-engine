@@ -69,6 +69,7 @@ vi.mock('./ai-vision-fallback.js', () => ({ completeVisionWithFallback: async ()
 import {
   extractBillFromAttachment,
   normalizeBillMoney,
+  normalizeBillDate,
   bucketConfidence,
   BILL_OCR_CONFIDENCE_THRESHOLDS,
 } from './ai-bill-ocr.service.js';
@@ -106,6 +107,27 @@ describe('normalizeBillMoney', () => {
     [Infinity], ['1e5'], [{}], [true],
   ])('%j → null', (raw) => {
     expect(normalizeBillMoney(raw)).toBeNull();
+  });
+
+  it('a JSON number whose integer part is not a safe integer is null', () => {
+    expect(normalizeBillMoney(1e20)).toBeNull();
+    expect(normalizeBillMoney(9007199254740993)).toBeNull();
+    expect(normalizeBillMoney(-1e17)).toBeNull();
+    expect(normalizeBillMoney(Number.MAX_SAFE_INTEGER)).toBe('9007199254740991');
+    expect(normalizeBillMoney(123456789.25)).toBe('123456789.25');
+  });
+});
+
+describe('normalizeBillDate', () => {
+  it.each([['2026-07-01'], ['2024-02-29'], [' 2026-12-31 ']])('%j is kept', (raw) => {
+    expect(normalizeBillDate(raw)).toBe(raw.trim());
+  });
+
+  it.each([
+    ['2026-02-30'], ['2025-02-29'], ['2026-13-01'], ['2026-00-10'], ['2026-04-31'], ['2026-7-1'],
+    ['07/01/2026'], ['2026-07-01T00:00:00Z'], ['July 1, 2026'], [''], [20260701], [null], [undefined],
+  ])('%j → null', (raw) => {
+    expect(normalizeBillDate(raw)).toBeNull();
   });
 });
 
@@ -202,6 +224,47 @@ describe('extractBillFromAttachment — bill-ocr-v2 response', () => {
     expect(x.fieldConfidence.subtotal).toBe('low');
     expect(x.fieldConfidence.tax).toBe('high');
     expect(x.lineItems[0]).toMatchObject({ amount: null, confidence: 'low' });
+  });
+
+  it('a blank field is empty: low confidence, even when the model was sure', async () => {
+    modelReply = {
+      vendor: '   ', vendor_invoice_number: '', payment_terms: '\t', bill_date: '2026-07-01', total: '5.00',
+      confidence: 0.95, field_confidence: { vendor: 0.99, vendor_invoice_number: 'high', payment_terms: 0.99 },
+    };
+    const x = await extractBillFromAttachment('t1', 'a1');
+    expect(x.fieldConfidence.vendor).toBe('low');
+    expect(x.fieldConfidence.vendorInvoiceNumber).toBe('low');
+    expect(x.fieldConfidence.paymentTerms).toBe('low');
+    expect(x.fieldConfidence.billDate).toBe('high');
+  });
+
+  it('line quantity gets the amount clean-up: a decimal string or null', async () => {
+    modelReply = {
+      vendor: 'ACME', total: '10.00',
+      line_items: [
+        { description: 'A', amount: '1.00', quantity: 2 },
+        { description: 'B', amount: '1.00', quantity: ' 1,500 ' },
+        { description: 'C', amount: '1.00', quantity: '1.5' },
+        { description: 'D', amount: '1.00', quantity: 'two boxes' },
+        { description: 'E', amount: '1.00', quantity: 1e21 },
+        { description: 'F', amount: '1.00' },
+      ],
+      confidence: 0.9,
+    };
+    const x = await extractBillFromAttachment('t1', 'a1');
+    expect(x.lineItems.map((l) => l.quantity)).toEqual(['2', '1500', '1.5', null, null, null]);
+  });
+
+  it('a bill or due date that is not a real YYYY-MM-DD is null with low confidence', async () => {
+    modelReply = {
+      vendor: 'ACME', bill_date: '2026-02-30', due_date: '07/31/2026', total: '5.00',
+      confidence: 0.95, field_confidence: { bill_date: 0.99, due_date: 0.99 },
+    };
+    const x = await extractBillFromAttachment('t1', 'a1');
+    expect(x.billDate).toBeNull();
+    expect(x.dueDate).toBeNull();
+    expect(x.fieldConfidence.billDate).toBe('low');
+    expect(x.fieldConfidence.dueDate).toBe('low');
   });
 
   it('a malformed field_confidence does not fail the read', async () => {
