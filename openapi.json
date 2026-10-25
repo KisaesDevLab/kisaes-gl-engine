@@ -17213,6 +17213,16 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -17262,7 +17272,8 @@
         "summary": "Void a bill payment",
         "tags": [
           "bill-payments"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/bills": {
@@ -17844,7 +17855,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 {bill} as committed (its updatedAt is the next expectedUpdatedAt). A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1). expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. With payments or credits applied the vendor, date and total stay (400), the terms stay, and billReceived can't become false (409 BILL_HAS_PAYMENTS). Lines (bill-lines-v1): itemId?, quantity? (decimal string > 0, at most 4 places, below 100,000,000), unitPrice? (decimal string >= 0, at most 4 places), amount (decimal string, at most 4 places), accountId, description?, tagId?, contactId? (a customer of the company), isBillable? (needs contactId). quantity and unitPrice both: amount must equal round(quantity x unitPrice, 2, half away from zero), else 400 LINE_AMOUNT_MISMATCH (details.lineIndex, details.expected); unitPrice without quantity 400 LINE_QTY_RATE_INCOMPLETE (details.lineIndex); quantity with amount and no unitPrice is accepted. Terms (bill-terms-v1): paymentTerms is a code from GET /payment-terms; custom takes termsDays and optional discountPercent + discountDays (both or neither, days fewer than termsDays). The due date and discount date are computed by calendar arithmetic unless dueDate / discountDate is sent (the owner override, stored as dueDateOverridden / discountDateOverridden). billReceived (bill-received-v1): default true; false keeps the bill out of /bills/payable and Pay Bills.",
+        "description": "Response 200 {bill} as committed (its updatedAt is the next expectedUpdatedAt). A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1). expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. With payments or credits applied the vendor, date and total stay (400), the terms stay, and billReceived can't become false (409 BILL_HAS_PAYMENTS). paymentTerms may also be the bill's stored free-text terms from before the table, sent back unchanged (its stored due date is kept unless dueDate is sent). A line sent back unchanged (same position, account, amount and description) that omits itemId, quantity, unitPrice, contactId and isBillable keeps its stored ones; null clears them. Lines (bill-lines-v1): itemId?, quantity? (decimal string > 0, at most 4 places, below 100,000,000), unitPrice? (decimal string >= 0, at most 4 places), amount (decimal string, at most 4 places), accountId, description?, tagId?, contactId? (a customer of the company), isBillable? (needs contactId). quantity and unitPrice both: amount must equal round(quantity x unitPrice, 2, half away from zero), else 400 LINE_AMOUNT_MISMATCH (details.lineIndex, details.expected); unitPrice without quantity 400 LINE_QTY_RATE_INCOMPLETE (details.lineIndex); quantity with amount and no unitPrice is accepted. Terms (bill-terms-v1): paymentTerms is a code from GET /payment-terms; custom takes termsDays and optional discountPercent + discountDays (both or neither, days fewer than termsDays). The due date and discount date are computed by calendar arithmetic unless dueDate / discountDate is sent (the owner override, stored as dueDateOverridden / discountDateOverridden). billReceived (bill-received-v1): default true; false keeps the bill out of /bills/payable and Pay Bills.",
         "operationId": "put_api_v1_bills_by_id",
         "parameters": [
           {
@@ -17853,6 +17864,16 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -17993,18 +18014,7 @@
                     "type": "boolean"
                   },
                   "paymentTerms": {
-                    "enum": [
-                      "due_on_receipt",
-                      "net_10",
-                      "net_15",
-                      "net_30",
-                      "net_45",
-                      "net_60",
-                      "net_90",
-                      "1_10_net_30",
-                      "2_10_net_30",
-                      "custom"
-                    ],
+                    "maxLength": 50,
                     "type": "string"
                   },
                   "termsDays": {
@@ -18048,7 +18058,8 @@
         "summary": "Edit a bill",
         "tags": [
           "bills"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/bills/{id}/attach-draft": {
@@ -18106,7 +18117,7 @@
     },
     "/api/v1/bills/{id}/void": {
       "post": {
-        "description": "Response 200 {bill}. A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1). Refused while payments or credits are applied: 409 BILL_HAS_PAYMENTS. expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE.",
+        "description": "Response 200 {bill}. A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1). Refused while payments or credits are applied: 409 BILL_HAS_PAYMENTS. expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE. A bill of another company is 404.",
         "operationId": "post_api_v1_bills_by_id_void",
         "parameters": [
           {
@@ -18115,6 +18126,16 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -18166,7 +18187,8 @@
         "summary": "Void a bill",
         "tags": [
           "bills"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/budgets": {
@@ -69806,6 +69828,18 @@
       "post": {
         "description": "Response 201 {credit}. A credit dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1). Lines take itemId, quantity, unitPrice, tagId and contactId as bill lines do (bill-lines-v1); isBillable may only be false or absent. draftAttachmentId: relinked (attachable type \"vendor_credit\") in the same database transaction.",
         "operationId": "post_api_v1_vendor_credits",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -69955,7 +69989,8 @@
         "summary": "Enter a vendor credit",
         "tags": [
           "vendor-credits"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/vendor-credits/available/{vendorId}": {
@@ -70031,6 +70066,16 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -70184,7 +70229,8 @@
         "summary": "Edit a vendor credit",
         "tags": [
           "vendor-credits"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/vendor-credits/{id}/void": {
@@ -70198,6 +70244,16 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -70249,7 +70305,8 @@
         "summary": "Void a vendor credit",
         "tags": [
           "vendor-credits"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v2/accounts": {
