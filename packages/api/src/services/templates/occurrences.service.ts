@@ -58,6 +58,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { nextRecurrenceDate, type TemplateDraft } from '@kis-books/shared';
 import { db, type Tx } from '../../db/index.js';
+import { claimAndRecord } from '../idempotency.service.js';
 import {
   accounts, contacts, recurringSchedules, tags, templateOccurrences, templateTransactions, transactions,
 } from '../../db/schema/index.js';
@@ -574,6 +575,7 @@ export async function skipOccurrence(actor: Actor, templateId: string, date: str
     } else {
       throw occurrenceNotDue();
     }
+    await claimAndRecord(tx, 'template_occurrence', id);
     await auditOccurrence(tx, actor.tenantId, id, { templateId: tpl.id, date, status: 'dismissed' }, actor.userId);
     return { id, templateId: tpl.id, occurrenceDate: date, status: 'dismissed' as const };
   });
@@ -658,6 +660,7 @@ export async function resolveOccurrence(actor: Actor, templateId: string, date: 
         { isRecurring: sched !== null, recurringScheduleId: sched?.id ?? null, source: sched ? 'recurring' : 'template', sourceId: tpl.id },
         actor.userId, tx);
     }
+    await claimAndRecord(tx, 'template_occurrence', id);
     await auditOccurrence(tx, actor.tenantId, id, { templateId: tpl.id, date, status: 'entered', transactionId }, actor.userId);
     return { id, templateId: tpl.id, occurrenceDate: date, status: 'entered' as const, transactionId };
   });

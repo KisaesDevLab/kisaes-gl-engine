@@ -13,6 +13,7 @@ import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { getLockContext } from './lock-context.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { closingPasswordMatches, closingPasswordInvalid, auditClosingPasswordFailed } from './closing-password.service.js';
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 import { escapeLike } from '../utils/sql-like.js';
@@ -569,6 +570,9 @@ export async function postTransaction(
   // error between any two of these steps leaves torn state — a transaction
   // missing its lines, or lines whose accounts.balance was never updated.
   const inner = async (tx: Tx) => {
+    // Idempotency-Key (U-18): claimed first, in this transaction, so the
+    // key row commits or rolls back with the posting. No-op without one.
+    await claimIdempotency(tx);
     // AJEs bypass the closing-date lock by design (TB module D10 /
     // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
     // router is the only path that posts txn_type 'aje', and closing a
@@ -621,6 +625,7 @@ export async function postTransaction(
     }).returning();
 
     if (!txn) throw AppError.internal('Failed to create transaction');
+    await recordIdempotentEntity(tx, 'transaction', txn.id);
 
     // ADR 0XY §3.2 — resolve default tags once per transaction before
     // inserting lines. Contact + item defaults are batch-loaded here;
@@ -692,8 +697,11 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
   return await db.transaction((tx) => voidTransactionInTx(tx, tenantId, txnId, reason, userId));
 }
 
-async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: string, reason: string, userId?: string) {
+/** voidTransaction inside the caller's database transaction. */
+export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: string, reason: string, userId?: string) {
   {
+    await claimIdempotency(tx);
+    await recordIdempotentEntity(tx, 'transaction', txnId);
     const [txn] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update')
@@ -892,6 +900,8 @@ export async function deleteTransactionInTx(
   opts: { reason?: string; userId?: string; companyId?: string } = {},
 ) {
   {
+    await claimIdempotency(tx);
+    await recordIdempotentEntity(tx, 'transaction', txnId);
     // Row lock: serializes with void / update / a second delete so the
     // reversal can't be applied twice.
     const [txn] = await tx.select().from(transactions)
@@ -1069,6 +1079,8 @@ export async function updateTransaction(
   // missing journal lines. SELECT … FOR UPDATE serializes them.
   const run = <T>(fn: (tx: Tx) => Promise<T>): Promise<T> => (outerTx ? fn(outerTx) : db.transaction(fn));
   return await run(async (tx) => {
+    await claimIdempotency(tx);
+    await recordIdempotentEntity(tx, 'transaction', txnId);
     const [existing] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update')

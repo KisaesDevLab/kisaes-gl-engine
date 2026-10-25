@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import {
   createJournalEntrySchema, createExpenseSchema, createTransferSchema,
@@ -16,6 +16,7 @@ import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
@@ -47,6 +48,18 @@ transactionsRouter.use(requireResource('transactions'));
 // body before lockContextMiddleware strips the password from it.
 transactionsRouter.use(closingPasswordLimiter);
 transactionsRouter.use(lockContextMiddleware);
+
+// Idempotency-Key (idempotency-v1, U-18) on create, edit, void and delete.
+// The readers replay the record as it is now, in the route's shape, when
+// no stored response is left (the settle failed or the body was too big).
+const keyedCreate = idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ transaction: await ledger.getTransaction(req.tenantId, entity!.id) }),
+});
+const keyedById = idempotent({
+  successStatus: 200,
+  replay: async (req) => ({ transaction: await ledger.getTransaction(req.tenantId, req.params['id']!) }),
+});
 
 transactionsRouter.get('/', describe({
   summary: 'List transactions',
@@ -149,7 +162,7 @@ const registerEntryBodyDoc = z.discriminatedUnion('txnType', [
   createJournalEntrySchema.extend({ txnType: z.literal('journal_entry'), closingPassword: closingPasswordDoc }),
 ]);
 
-transactionsRouter.post('/', describe({
+transactionsRouter.post('/', keyedCreate, describe({
   summary: 'Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
     'A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): every A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), any number of such lines is allowed; ' +
@@ -205,7 +218,7 @@ transactionsRouter.post('/', describe({
   res.status(201).json({ transaction: result, ...extra });
 });
 
-transactionsRouter.put('/:id', describe({
+transactionsRouter.put('/:id', keyedById, describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
     'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
@@ -315,7 +328,9 @@ transactionsRouter.get('/:id', async (req, res) => {
   res.json({ transaction: txn });
 });
 
-transactionsRouter.post('/:id/void', validate(voidTransactionSchema), async (req, res) => {
+// The AJE rules of void run as middleware ahead of idempotent(), so a
+// replay of a void is refused exactly like a first attempt (U-18).
+async function voidAjeGuard(req: Request, _res: Response, next: NextFunction) {
   // AJE lifecycle is firm-only regardless of ledger permissions (TB3):
   // client-type users never touch it, staff can void here or via /tb.
   const voidType = await ledger.getTransactionType(req.tenantId, req.params['id']!);
@@ -327,6 +342,10 @@ transactionsRouter.post('/:id/void', validate(voidTransactionSchema), async (req
   if (voidType === 'aje' && !(await featureFlags.isEnabled(req.tenantId, 'TRIAL_BALANCE_V1'))) {
     throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
   }
+  next();
+}
+
+transactionsRouter.post('/:id/void', voidAjeGuard, keyedById, validate(voidTransactionSchema), async (req, res) => {
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId);
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });
@@ -345,7 +364,7 @@ const deleteTransactionBodyDoc = deleteTransactionSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-transactionsRouter.delete('/:id', (req, _res, next) => {
+transactionsRouter.delete('/:id', keyedById, (req, _res, next) => {
   // A DELETE often has no body at all.
   if (!req.body || typeof req.body !== 'object') req.body = {};
   next();
