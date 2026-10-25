@@ -7,7 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import archiver from 'archiver';
 import { eq, and, count, inArray, desc } from 'drizzle-orm';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { attachments } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -314,9 +314,9 @@ export async function updateOcrResults(tenantId: string, id: string, results: {
 }
 
 export async function reassignDraftAttachments(
-  tenantId: string, draftId: string, newType: string, newId: string,
+  tenantId: string, draftId: string, newType: string, newId: string, executor: DbOrTx = db,
 ): Promise<number> {
-  const result = await db.update(attachments)
+  const result = await executor.update(attachments)
     .set({ attachableType: newType, attachableId: newId })
     .where(and(
       eq(attachments.tenantId, tenantId),
