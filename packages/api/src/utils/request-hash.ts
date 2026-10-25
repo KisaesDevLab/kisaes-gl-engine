@@ -19,7 +19,7 @@
 
 import crypto from 'node:crypto';
 import { canonicalize } from './canonical-json.js';
-import { stripSecretKeys } from './secret-keys.js';
+import { isSecretKey } from './secret-keys.js';
 
 export interface RequestHashInput {
   method: string;
@@ -32,15 +32,21 @@ export interface RequestHashInput {
   body?: unknown;
 }
 
-/** `undefined` values are dropped (as JSON.stringify drops them), at every depth. */
-function jsonOnly(value: unknown): unknown {
+/**
+ * `undefined` values are dropped (as JSON.stringify drops them), at every
+ * depth; with `strip`, secret-looking keys too. Objects are rebuilt without
+ * a prototype, so an own `__proto__` key (JSON.parse keeps one) is kept and
+ * hashed like any other key instead of being swallowed by the setter.
+ */
+function jsonOnly(value: unknown, strip = false): unknown {
   if (value === undefined) return undefined;
-  if (Array.isArray(value)) return value.map((v) => (v === undefined ? null : jsonOnly(v)));
+  if (Array.isArray(value)) return value.map((v) => (v === undefined ? null : jsonOnly(v, strip)));
   if (value !== null && typeof value === 'object') {
     if (value instanceof Date) return value.toISOString();
-    const out: Record<string, unknown> = {};
+    const out = Object.create(null) as Record<string, unknown>;
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (v !== undefined) out[k] = jsonOnly(v);
+      if (v === undefined || (strip && isSecretKey(k))) continue;
+      out[k] = jsonOnly(v, strip);
     }
     return out;
   }
@@ -51,16 +57,16 @@ function jsonOnly(value: unknown): unknown {
 export function requestHashInput(input: RequestHashInput): string {
   const method = input.method.toUpperCase();
   const body = input.body === undefined || input.body === null ? {} : input.body;
-  return canonicalize(jsonOnly({
+  return canonicalize({
     v: 1,
     method,
     route: `${method} ${input.route}`,
-    params: { ...(input.params ?? {}) },
-    query: { ...(input.query ?? {}) },
+    params: jsonOnly(input.params ?? {}),
+    query: jsonOnly(input.query ?? {}),
     companyId: input.companyId ?? null,
     ifMatch: input.ifMatch ?? null,
-    body: stripSecretKeys(body),
-  }));
+    body: jsonOnly(body, true),
+  });
 }
 
 /** Hex SHA-256 of the canonical request (64 characters). */

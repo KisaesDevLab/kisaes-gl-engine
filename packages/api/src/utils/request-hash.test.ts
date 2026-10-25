@@ -105,6 +105,17 @@ describe('E1 canonical JSON', () => {
     expect(requestHash({ ...base, body: undefined })).toBe(h);
     expect(requestHash({ ...base, body: null })).toBe(h);
   });
+
+  it('an own __proto__ key is hashed, not dropped (JSON.parse keeps it as a key)', () => {
+    const plain = JSON.parse('{"amount":"1.00"}');
+    const withProto = JSON.parse('{"amount":"1.00","__proto__":{"amount":"9.00"}}');
+    const nested = JSON.parse('{"amount":"1.00","lines":[{"__proto__":"x"}]}');
+    expect(requestHash({ ...base, body: withProto })).not.toBe(requestHash({ ...base, body: plain }));
+    expect(requestHashInput({ ...base, body: withProto })).toContain('"__proto__":{"amount":"9.00"}');
+    expect(requestHashInput({ ...base, body: nested })).toContain('"lines":[{"__proto__":"x"}]');
+    expect(requestHash({ ...base, params: JSON.parse('{"__proto__":"y"}'), body: plain }))
+      .not.toBe(requestHash({ ...base, body: plain }));
+  });
 });
 
 describe('E2 secret keys are not hashed', () => {
