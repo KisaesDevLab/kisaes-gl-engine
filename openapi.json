@@ -2520,6 +2520,18 @@
       },
       "post": {
         "operationId": "post_api_v1_accounts",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2609,7 +2621,8 @@
         ],
         "tags": [
           "accounts"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/accounts/bulk": {
@@ -17170,6 +17183,18 @@
       },
       "post": {
         "operationId": "post_api_v1_bills",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -17272,7 +17297,8 @@
         ],
         "tags": [
           "bills"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/bills/extract-from-attachment/{attachmentId}": {
@@ -18838,6 +18864,18 @@
       },
       "post": {
         "operationId": "post_api_v1_checks",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -18974,7 +19012,8 @@
         ],
         "tags": [
           "checks"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/checks/envelopes": {
@@ -19383,6 +19422,16 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -19528,7 +19577,8 @@
         "summary": "Edit a check: lines, amount, payee, date, number and print status (check-edit-v1)",
         "tags": [
           "checks"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/checks/{id}/memo": {
@@ -21439,6 +21489,18 @@
       },
       "post": {
         "operationId": "post_api_v1_contacts",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21750,7 +21812,8 @@
         ],
         "tags": [
           "contacts"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/contacts/bulk-type": {
@@ -22502,6 +22565,18 @@
       },
       "post": {
         "operationId": "post_api_v1_daily_sales_entries",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -22603,7 +22678,8 @@
         ],
         "tags": [
           "daily-sales"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/daily-sales/entries/preview": {
@@ -22854,6 +22930,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -22889,7 +22975,8 @@
         "summary": "Post a daily-sales entry (closing date enforced; daily-sales-lock-v1)",
         "tags": [
           "daily-sales"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/daily-sales/entries/{id}/void": {
@@ -22901,6 +22988,16 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -22938,7 +23035,8 @@
         "summary": "Void a posted daily-sales entry (closing date enforced; daily-sales-lock-v1)",
         "tags": [
           "daily-sales"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/daily-sales/templates": {
@@ -26065,6 +26163,18 @@
       },
       "post": {
         "operationId": "post_api_v1_invoices",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -26172,7 +26282,8 @@
         ],
         "tags": [
           "invoices"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/invoices/{id}": {
@@ -26693,6 +26804,18 @@
       },
       "post": {
         "operationId": "post_api_v1_items",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -26750,7 +26873,8 @@
         ],
         "tags": [
           "items"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/items/export": {
@@ -44448,6 +44572,18 @@
       },
       "post": {
         "operationId": "post_api_v1_tags",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -44512,7 +44648,8 @@
         ],
         "tags": [
           "tags"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/tags/bulk-tag": {
@@ -63686,6 +63823,18 @@
       "post": {
         "description": "The draft is the create body of the kind minus the date and numbers; amounts are decimal strings. Needs write access to the kind (check: checks; expense, transfer, journal_entry: transactions; deposit: banking; daily_sales: daily_sales), else 403 PERMISSION_DENIED; the creator owns the auto runs. An auto schedule whose nextDate is more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate, details.earliest). 400 TEMPLATE_FIELD_NOT_ALLOWED (details.field), TEMPLATE_DEPOSIT_GROUPING, TEMPLATE_AUTO_UNSUPPORTED, VALIDATION_ERROR; 409 TEMPLATE_NAME_TAKEN.",
         "operationId": "post_api_v1_templates",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -63833,13 +63982,26 @@
         "summary": "Create a template; posts nothing (templates-v1)",
         "tags": [
           "templates"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/templates/from-transaction": {
       "post": {
         "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company or a transaction without a company.",
         "operationId": "post_api_v1_templates_from_transaction",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -63974,7 +64136,8 @@
         "summary": "Save a posted transaction as a template (templates-v1)",
         "tags": [
           "templates"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/templates/groups": {
@@ -64399,6 +64562,16 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -64434,7 +64607,8 @@
         "summary": "Post the template now (templates-v1)",
         "tags": [
           "templates"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/templates/{id}/occurrences/{date}/resolve": {
@@ -64457,6 +64631,16 @@
             "required": true,
             "schema": {
               "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -64497,7 +64681,8 @@
         "summary": "Link a transaction saved through the normal form to a date (entered) (templates-v1)",
         "tags": [
           "templates"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/templates/{id}/occurrences/{date}/skip": {
@@ -64521,6 +64706,16 @@
               "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -64539,7 +64734,8 @@
         "summary": "Skip a date (dismissed); the schedule moves on when it is the next date (templates-v1)",
         "tags": [
           "templates"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/tenant-archives/import": {
@@ -65840,6 +66036,18 @@
       "post": {
         "description": "Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): every A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), any number of such lines is allowed; with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it.",
         "operationId": "post_api_v1_transactions",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -66246,7 +66454,8 @@
         "summary": "Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)",
         "tags": [
           "transactions"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/transactions/bulk-update": {
@@ -66408,6 +66617,16 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -66450,7 +66669,8 @@
         "summary": "Delete a transaction (soft delete with reversing lines; txn-delete-v1)",
         "tags": [
           "transactions"
-        ]
+        ],
+        "x-idempotency": true
       },
       "get": {
         "operationId": "get_api_v1_transactions_by_id",
@@ -66491,6 +66711,16 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -66901,7 +67131,8 @@
         "summary": "Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)",
         "tags": [
           "transactions"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/transactions/{id}/activity": {
@@ -67070,6 +67301,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -67107,7 +67348,8 @@
         ],
         "tags": [
           "transactions"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/users/me/login-preference": {

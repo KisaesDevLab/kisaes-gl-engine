@@ -72,4 +72,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'batch-idempotent-v1',
   /** Batch rows dated on or before the closing date need closingPassword; 423 / 403 list the row numbers (U-68). */
   'batch-closing-v1',
+  /**
+   * Idempotency-Key header (16-64 of [A-Za-z0-9_-]) on exactly these routes
+   * (U-18); each carries `x-idempotency: true` in openapi.json:
+   *   POST /transactions, PUT /transactions/:id, POST /transactions/:id/void,
+   *   DELETE /transactions/:id, POST /checks, PUT /checks/:id, POST /invoices,
+   *   POST /bills, POST /daily-sales/entries, POST /daily-sales/entries/:id/post,
+   *   POST /daily-sales/entries/:id/void, POST /templates,
+   *   POST /templates/from-transaction, POST /templates/:id/enter,
+   *   POST /templates/:id/occurrences/:date/skip,
+   *   POST /templates/:id/occurrences/:date/resolve, POST /accounts,
+   *   POST /contacts, POST /items, POST /tags.
+   * Same user, key and request: the stored result replays (header
+   * Idempotent-Replayed: true); another request: 422 IDEMPOTENCY_KEY_REUSED
+   * with details {entityType, entityId}; still running: 409
+   * IDEMPOTENCY_IN_PROGRESS with Retry-After: 1. Kept 24 hours. The set is
+   * fixed: more routes get a new name. /batch/save keeps batch-idempotent-v1.
+   */
+  'idempotency-v1',
 ];

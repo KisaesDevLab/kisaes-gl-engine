@@ -439,6 +439,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 | `je-reversing-v1` | Journal entry `reverseOn`: an automatic reversing entry, voided / deleted with the original; on edit kept (omitted), removed (`null`) or moved (a date) (below). |
 | `balance-exact-v1` | Every posting's debits must equal its credits exactly at 4 places; no tolerance (below). |
 | `recurring-guard-v1` | Recurring copies keep line names and billable marks; `PUT /recurring/:id` takes `expectedUpdatedAt` (409 `STALE_SCHEDULE`) (below). |
+| `idempotency-v1` | `Idempotency-Key` header on the posting and master-data routes marked `x-idempotency: true` in `openapi.json`: a retry replays the stored result, another request with the key is 422 `IDEMPOTENCY_KEY_REUSED` (below). |
 
 ## Account register
 
@@ -539,6 +540,26 @@ Voiding (`POST /transactions/:id/void`) or deleting (`DELETE /transactions/:id`)
 ## Recurring
 
 The generic copy path (journal entries, expenses, checks, transfers, deposits…; bills and invoices go through their own services) copies each template line's `contactId` and billable mark (a billable line of the new occurrence is `unbilled`), a journal entry's `basis` and `isAdjusting`, and records `recurringScheduleId` and `source: "recurring"` (`sourceId` = the schedule id) on the posted transaction. A recurring bill copies the template's line amounts exactly (all 4 places; it used to round to cents). `PUT /api/v1/recurring/:id` takes `expectedUpdatedAt` (`recurring-guard-v1`; the schedule's `updatedAt` as last read, ISO 8601 with offset): the update applies only while the stored `updated_at`, to the millisecond, still equals it, else 409 `STALE_SCHEDULE` (`details.updatedAt`) and nothing changes. Omitted, the update applies as before.
+
+## Request idempotency (Idempotency-Key)
+
+`idempotency-v1` (U-18): a client that does not know whether a save went through (a lost reply, a timeout) sends the same request again with the same `Idempotency-Key` and gets the first result back instead of a second posting.
+
+**Routes.** Exactly these, each with the `Idempotency-Key` header parameter and `x-idempotency: true` in `openapi.json`: `POST /transactions`, `PUT /transactions/:id`, `POST /transactions/:id/void`, `DELETE /transactions/:id`, `POST /checks`, `PUT /checks/:id`, `POST /invoices`, `POST /bills`, `POST /daily-sales/entries`, `POST /daily-sales/entries/:id/post`, `POST /daily-sales/entries/:id/void`, `POST /templates`, `POST /templates/from-transaction`, `POST /templates/:id/enter`, `POST /templates/:id/occurrences/:date/skip`, `POST /templates/:id/occurrences/:date/resolve`, `POST /accounts`, `POST /contacts`, `POST /items`, `POST /tags`. The set is fixed for this name: routes added later get a new capability name. Not covered: `/batch/save` (its own `batch-idempotent-v1`, below), `/recurring/run-due` (its own run id), tenant creation (`/auth/create-tenant`, `POST /tenants`: provisioning spans several transactions and the key would belong to a tenant that does not exist yet), attachment uploads, and master-data `PUT`/`DELETE` (a retry of the same body is harmless there).
+
+**Header.** 16 to 64 characters of `[A-Za-z0-9_-]` (a UUID); anything else is 400 `IDEMPOTENCY_KEY_INVALID`. Without the header every route behaves exactly as before (the web app, MCP and the server appliance send none). A key belongs to the user who sent it in the tenant: another user's same key is independent, and nothing tells them it was used.
+
+**Same request.** The request is identified by a SHA-256 over canonical JSON (object keys sorted, array order kept) of the method, the route template, the path parameters, the query, the company (`X-Company-Id`), the `If-Match` header and the body. `closingPassword` and every other secret-looking key are left out of the hash, so re-sending a refused save with the closing-date password typed in is the same request; `overrideConfirmed` and every amount string (as sent) are in it.
+
+**Answers.**
+- First request: runs normally. Its key record is written in the posting's own database transaction, so it exists only if the posting committed.
+- Same key, same request, after a success: the stored status and body (201 or 200), with header `Idempotent-Replayed: true`. Nothing runs again: no validation, no closed-period or closing-password check, no posting, no audit row. A record without a stored body (the body was over 512 KiB, or recording it failed after the commit) replays the record as it is now in the route's response shape, with the route's success status; if that record is gone, the answer is 200 `{"idempotency":{"state":"committed","entityType","entityId"}}`.
+- Same key, another request (body, route, path parameters, company or `If-Match`): 422 `IDEMPOTENCY_KEY_REUSED`, `details {entityType, entityId}` of what the first request saved, so the client can open it. Nothing runs. (`/batch/save` answers 409 for this under `batch-idempotent-v1`; that contract is unchanged.)
+- Same key while the first request is still running: 409 `IDEMPOTENCY_IN_PROGRESS` with `Retry-After: 1`; nothing posts. Concurrent requests with one key are serialized by a transaction-scoped advisory lock, so a crash or a killed connection releases it and rolls everything back; a retry then runs afresh.
+- A refusal (400, 403, 404, 409, 423, ...) is never stored: the retry runs again. When a retry's own run is refused because the first request committed meanwhile (for example "check number already used" on Write Check), the answer is the replay of that first request instead.
+- Permission is checked before the replay, so a user who lost the right gets 403.
+
+**Kept 24 hours.** After that the key is forgotten and a retry runs again; an hourly sweep deletes expired records (skipped while a tenant export or import runs). Records are tenant-scoped, excluded from tenant archives (`job-bookkeeping`, migration `0229`, additive) and removed with the tenant, company or user. A stored body holds what the route returned (names, memos, decimal-string amounts) with the values of secret-looking keys removed; it never holds request bodies, headers, passwords or tokens, and logs carry at most the first 8 characters of a key. Whole-cluster backups (`pg_dump`) include the records; they expire within 24 hours.
 
 ## Host requirements
 
