@@ -16,10 +16,14 @@ import { db } from '../db/index.js';
 import { users, attachments, transactions, contacts } from '../db/schema/index.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as ocrService from '../services/ocr.service.js';
+import { billOcrAvailability, type BillOcrUnavailableReason } from '../services/ai-bill-ocr.service.js';
+import { isDesktop } from '../desktop/profile.js';
+import { AppError } from '../utils/errors.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
 import { log } from '../utils/logger.js';
 import { workspaceFence } from '../desktop/workspace.js';
+import { describe } from '../middleware/describe.js';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -242,7 +246,13 @@ attachmentsRouter.post('/bulk-download', authenticate, requirePermission('attach
 attachmentsRouter.use(authenticate);
 attachmentsRouter.use(requireResource('attachments'));
 
-attachmentsRouter.post('/', upload.single('file'), async (req, res) => {
+attachmentsRouter.post('/', describe({
+  summary: 'Upload an attachment',
+  query: z.object({
+    autoOcr: z.enum(['0', '1', 'false', 'true']).optional()
+      .describe('0 / false: start no OCR or AI processing for this upload. It never turns OCR on: desktop mode and the attachments.autoOcr server setting decide that (bill-ocr-v2).'),
+  }),
+}), upload.single('file'), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: { message: 'No file uploaded' } }); return; }
 
   const { attachableType, attachableId } = req.body;
@@ -258,7 +268,16 @@ attachmentsRouter.post('/', upload.single('file'), async (req, res) => {
     return;
   }
 
-  const attachment = await attachmentService.upload(req.tenantId, req.file, attachableType, attachableId);
+  // U-89: OCR / AI on upload only where the server allows it (never in
+  // desktop mode; the `attachments.autoOcr` setting elsewhere), and a caller
+  // can opt out per upload with ?autoOcr=0.
+  const autoOcrQuery = typeof req.query['autoOcr'] === 'string' ? req.query['autoOcr'].trim().toLowerCase() : undefined;
+  const autoOcr = autoOcrQuery !== '0' && autoOcrQuery !== 'false'
+    && await attachmentService.autoOcrOnUploadAllowed();
+
+  const attachment = await attachmentService.upload(
+    req.tenantId, req.file, attachableType, attachableId, { skipAutoClassify: !autoOcr },
+  );
 
   await auditLog(
     req.tenantId,
@@ -273,7 +292,7 @@ attachmentsRouter.post('/', upload.single('file'), async (req, res) => {
   // Auto-trigger OCR for receipt images. Fire-and-forget by design (the
   // upload response must not block on OCR), but a swallowed empty catch hid
   // failures in processReceipt's pre-try DB writes entirely — log them.
-  if (req.file.mimetype.startsWith('image/')) {
+  if (autoOcr && req.file.mimetype.startsWith('image/')) {
     ocrService.processReceipt(req.tenantId, attachment!.id).catch((err) => {
       log.error({
         component: 'attachments',
@@ -389,7 +408,22 @@ attachmentsRouter.delete('/:id', async (req, res) => {
   res.json({ message: 'Attachment deleted' });
 });
 
+const OCR_GATE_MESSAGES: Record<BillOcrUnavailableReason, string> = {
+  ai_disabled: 'AI is turned off. Turn it on in AI settings before reading documents.',
+  ai_function_disabled: 'Document reading is turned off in AI settings.',
+  ai_consent_blocked: 'AI document reading is not allowed for this company (consent).',
+};
+
+// An explicit request to read one attachment. In desktop mode it is held to
+// the same AI on / function / consent gates as
+// POST /bills/extract-from-attachment (U-89): 400 with code
+// ai_disabled | ai_function_disabled | ai_consent_blocked, nothing changed.
 attachmentsRouter.post('/:id/ocr', async (req, res) => {
+  if (isDesktop()) {
+    const target = await attachmentService.getById(req.tenantId, req.params['id']!);
+    const gate = await billOcrAvailability(req.tenantId, target.companyId ?? null);
+    if (!gate.ok) throw AppError.badRequest(OCR_GATE_MESSAGES[gate.reason], gate.reason);
+  }
   await ocrService.processReceipt(req.tenantId, req.params['id']!);
   const attachment = await attachmentService.getById(req.tenantId, req.params['id']!);
   res.json({ attachment });

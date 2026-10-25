@@ -8,11 +8,38 @@ import crypto from 'crypto';
 import archiver from 'archiver';
 import { eq, and, count, inArray, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { attachments } from '../db/schema/index.js';
+import { attachments, systemSettings } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
 import { keyBelongsToTenant } from '../utils/contained-path.js';
+import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
+import { isDesktop } from '../desktop/profile.js';
+
+/**
+ * Whether an upload may start OCR / AI processing on its own (U-89).
+ *
+ * - Desktop mode: never. AI runs only when the owner asks for it
+ *   (POST /bills/extract-from-attachment/:id, POST /attachments/:id/ocr).
+ * - Elsewhere: the `attachments.autoOcr` system setting; absent or any value
+ *   other than 'false' / '0' keeps today's behavior (on).
+ *
+ * A caller can only turn it off further (POST /attachments?autoOcr=0); it
+ * can never turn it on where this returns false.
+ */
+export async function autoOcrOnUploadAllowed(): Promise<boolean> {
+  if (isDesktop()) return false;
+  try {
+    const row = await db.query.systemSettings.findFirst({
+      where: eq(systemSettings.key, SystemSettingsKeys.ATTACHMENTS_AUTO_OCR),
+    });
+    const v = row?.value?.trim().toLowerCase();
+    return !(v === 'false' || v === '0');
+  } catch {
+    // Settings unreadable: keep the server's historical default.
+    return true;
+  }
+}
 
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -93,8 +120,12 @@ export async function upload(
     providerFileId: providerFileId || null,
   }).returning();
 
-  // Auto-trigger AI classification + OCR for images
-  if (attachment && file.mimetype.startsWith('image/') && !opts.skipAutoClassify) {
+  // Auto-trigger AI classification + OCR for images. Never in desktop mode
+  // and never when the `attachments.autoOcr` setting is off (U-89).
+  if (
+    attachment && file.mimetype.startsWith('image/') && !opts.skipAutoClassify
+    && await autoOcrOnUploadAllowed()
+  ) {
     triggerAutoClassify(tenantId, attachment.id).catch(() => {});
   }
 
