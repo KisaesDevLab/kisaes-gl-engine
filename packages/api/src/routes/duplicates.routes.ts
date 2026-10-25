@@ -6,11 +6,14 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
+import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import * as duplicateService from '../services/duplicate-detection.service.js';
 
 export const duplicatesRouter = Router();
 duplicatesRouter.use(authenticate);
+// Sets req.companyId so a merge voids only within the active company.
+duplicatesRouter.use(companyContext);
 duplicatesRouter.use(requireResource('duplicates'));
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
@@ -59,6 +62,6 @@ const mergeSchema = z.object({ keepId: z.string().uuid(), voidId: z.string().uui
   .refine((b) => b.keepId !== b.voidId, { message: 'keepId and voidId must differ' });
 
 duplicatesRouter.post('/merge', validate(mergeSchema), async (req, res) => {
-  await duplicateService.mergeDuplicate(req.tenantId, req.body.keepId, req.body.voidId, req.userId);
+  await duplicateService.mergeDuplicate(req.tenantId, req.body.keepId, req.body.voidId, req.userId, req.companyId);
   res.json({ message: 'Merged' });
 });

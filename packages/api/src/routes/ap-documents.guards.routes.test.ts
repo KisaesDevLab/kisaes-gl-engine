@@ -3,8 +3,9 @@
 // Free for small businesses; see LICENSE for terms.
 //
 // A/P documents, security-review fix pass (PR #173):
-//   H1  the generic void / delete / duplicate / edit routes need the A/P
-//       document's own permission (bills, vendor_credits, pay_bills)
+//   H1  the generic void / delete / duplicate / edit routes (and v2 void)
+//       need the A/P document's own permission (bills, vendor_credits,
+//       pay_bills); duplicates merge refuses A/P documents
 //   M2  POST /attachments/:id/link checks the attachment's and the target's
 //       company (two companies in one tenant)
 //   M3  an accountant excluded from a company can't void or pay its bills,
@@ -39,6 +40,8 @@ import { billsRouter } from './bills.routes.js';
 import { vendorCreditsRouter } from './vendor-credits.routes.js';
 import { billPaymentsRouter } from './bill-payments.routes.js';
 import { attachmentsRouter } from './attachments.routes.js';
+import { duplicatesRouter } from './duplicates.routes.js';
+import { apiV2Router } from './api-v2.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -146,6 +149,8 @@ beforeEach(async () => {
   app.use('/api/v1/vendor-credits', vendorCreditsRouter);
   app.use('/api/v1/bill-payments', billPaymentsRouter);
   app.use('/api/v1/attachments', attachmentsRouter);
+  app.use('/api/v1/duplicates', duplicatesRouter);
+  app.use('/api/v2', apiV2Router);
   app.use(errorHandler);
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => { port = (server!.address() as AddressInfo).port; resolve(); });
@@ -257,6 +262,69 @@ describe('H1: the generic routes need the A/P document\'s own permission', () =>
     const r = await request('POST', `/api/v1/transactions/${bill.id}/void`, bk.token, { reason: 'x' });
     expect(r.status).toBe(403);
   });
+
+  it('v2 POST /transactions/:id/void: transactions without pay_bills can\'t void a bill payment; scoped to the company', async () => {
+    const bill = await postBill();
+    const paymentId = await payBill(bill.id);
+    const bk = await bookkeeper({ transactions: 'full', bills: 'full', vendor_credits: 'full', pay_bills: 'none' });
+    let r = await request('POST', `/api/v2/transactions/${paymentId}/void`, bk.token, { reason: 'x' });
+    expect(r.status, JSON.stringify(r.json)).toBe(403);
+    expect(r.json.error.code).toBe('PERMISSION_DENIED');
+    expect((await row(paymentId)).status).toBe('posted');
+    expect((await row(bill.id)).billStatus).toBe('paid');
+
+    // Another company's document is not found from company A.
+    const billB = await postBill({ vendorInvoiceNumber: 'INV-B' });
+    await moveToB(billB.id);
+    r = await request('POST', `/api/v2/transactions/${billB.id}/void`, c.token, { reason: 'x' });
+    expect(r.status).toBe(404);
+    expect((await row(billB.id)).status).toBe('posted');
+
+    // With pay_bills the v2 void goes through and frees the bill.
+    const full = await bookkeeper(ALL_AP);
+    r = await request('POST', `/api/v2/transactions/${paymentId}/void`, full.token, { reason: 'x' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect((await row(paymentId)).status).toBe('void');
+    expect((await row(bill.id)).billStatus).toBe('unpaid');
+  });
+
+  it('POST /duplicates/merge refuses A/P documents (409 TXN_DUPLICATE_UNSUPPORTED) and is scoped to the company', async () => {
+    const bill = await postBill();
+    const bill2 = await postBill({ vendorInvoiceNumber: 'INV-2' });
+    const credit = await postCredit();
+    const paid = await postBill({ vendorInvoiceNumber: 'INV-3' });
+    const paymentId = await payBill(paid.id);
+    const expense = async (amount: string) => {
+      const r = await request('POST', '/api/v1/transactions', c.token, {
+        txnType: 'expense', txnDate: '2026-11-04', payFromAccountId: c.bank, contactId: c.vendor,
+        lines: [{ expenseAccountId: c.expense, amount }],
+      });
+      expect(r.status, JSON.stringify(r.json)).toBe(201);
+      return r.json.transaction.id as string;
+    };
+    const exp1 = await expense('1480.00');
+
+    for (const [keepId, voidId] of [[bill.id, bill2.id], [exp1, bill2.id], [bill.id, exp1], [exp1, credit.id], [exp1, paymentId]]) {
+      const r = await request('POST', '/api/v1/duplicates/merge', c.token, { keepId, voidId });
+      expect(r.status, JSON.stringify(r.json)).toBe(409);
+      expect(r.json.error.code).toBe('TXN_DUPLICATE_UNSUPPORTED');
+    }
+    for (const id of [bill.id, bill2.id, credit.id, paymentId, exp1]) expect((await row(id)).status).toBe('posted');
+    expect((await row(paid.id)).billStatus).toBe('paid');
+
+    // Another company's expense is not found from company A.
+    const exp2 = await expense('1480.00');
+    const expB = await expense('1480.00');
+    await moveToB(expB);
+    let r = await request('POST', '/api/v1/duplicates/merge', c.token, { keepId: exp1, voidId: expB });
+    expect(r.status).toBe(404);
+    expect((await row(expB)).status).toBe('posted');
+
+    // Two plain expenses still merge.
+    r = await request('POST', '/api/v1/duplicates/merge', c.token, { keepId: exp1, voidId: exp2 });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect((await row(exp2)).status).toBe('void');
+  });
 });
 
 describe('M2: attachment links check both companies', () => {
@@ -291,6 +359,23 @@ describe('M2: attachment links check both companies', () => {
     expect(r.status).toBe(200);
     r = await request('POST', `/api/v1/attachments/${crypto.randomUUID()}/link`, c.token, { attachableType: 'bill', attachableId: billA.id });
     expect(r.status).toBe(404);
+  });
+
+  it('extract-from-attachment: another company\'s attachment is 404 before any OCR runs', async () => {
+    const insertAtt = async (companyId: string | null) => (await db.insert(attachments).values({
+      tenantId: c.tenantId, companyId, fileName: 'f.pdf', filePath: 'x/f.pdf', attachableType: 'draft', attachableId: crypto.randomUUID(),
+    }).returning())[0]!;
+    const attB = await insertAtt(c.companyB);
+    let r = await request('POST', `/api/v1/bills/extract-from-attachment/${attB.id}`, c.token);
+    expect(r.status, JSON.stringify(r.json)).toBe(404);
+    // Its own company's, or a tenant-wide one, passes the check (and then
+    // stops at the AI gates, not found-ness).
+    for (const att of [await insertAtt(c.companyId), await insertAtt(null)]) {
+      r = await request('POST', `/api/v1/bills/extract-from-attachment/${att.id}`, c.token);
+      expect(r.status, JSON.stringify(r.json)).not.toBe(404);
+    }
+    r = await request('POST', `/api/v1/bills/extract-from-attachment/${attB.id}`, c.token, undefined, { 'X-Company-Id': c.companyB });
+    expect(r.status).not.toBe(404);
   });
 
   it('attach-draft and draftAttachmentId leave another company\'s draft alone', async () => {

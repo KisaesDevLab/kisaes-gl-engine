@@ -162,6 +162,21 @@ describe('extractBillFromAttachment — PDF at strict/standard (cloud provider)'
   });
 });
 
+describe('extractBillFromAttachment — company scope', () => {
+  it("another company's attachment is 404 and nothing is read or sent", async () => {
+    await expect(extractBillFromAttachment('t1', 'a1', 'c2')).rejects.toMatchObject({ statusCode: 404 });
+    expect(extractLocallyMock).not.toHaveBeenCalled();
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(completeWithImageMock).not.toHaveBeenCalled();
+  });
+
+  it("the request's own company passes", async () => {
+    extractLocallyMock.mockResolvedValueOnce({ kind: 'pdf_text', text: 'ACME invoice text', numPages: 1 });
+    const result = await extractBillFromAttachment('t1', 'a1', 'c1');
+    expect(result.vendor).toBe('ACME Supplies');
+  });
+});
+
 describe('extractBillFromAttachment — Permissive + cloud vision', () => {
   it('falls back to cloud vision with rasterized PNG pages, never the raw PDF', async () => {
     state.cloudVisionAllowed = true;

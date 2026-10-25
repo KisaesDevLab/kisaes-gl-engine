@@ -164,7 +164,9 @@ billsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, key
 // then steps 2-4 run unchanged (extract-from-attachment works on any
 // tenant attachment id, and honors the same consent/PII gates).
 billsRouter.post('/extract-from-attachment/:attachmentId', async (req, res) => {
-  const result = await billOcrService.extractBillFromAttachment(req.tenantId, req.params['attachmentId']!);
+  // An attachment of another company is 404 (one with no company passes),
+  // as in relinkDraftAttachments.
+  const result = await billOcrService.extractBillFromAttachment(req.tenantId, req.params['attachmentId']!, req.companyId);
   res.json({ extraction: result });
 });
 

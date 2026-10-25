@@ -176,11 +176,18 @@ export async function billOcrAvailability(
   return { ok: true };
 }
 
-export async function extractBillFromAttachment(tenantId: string, attachmentId: string): Promise<BillOcrResult> {
+/**
+ * With `companyId`, an attachment that belongs to another company is 404, the
+ * same rule as relinkDraftAttachments (an attachment with no company passes).
+ */
+export async function extractBillFromAttachment(tenantId: string, attachmentId: string, companyId?: string | null): Promise<BillOcrResult> {
   const attachment = await db.query.attachments.findFirst({
     where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)),
   });
   if (!attachment) throw AppError.notFound('Attachment not found');
+  if (companyId && attachment.companyId && attachment.companyId !== companyId) {
+    throw AppError.notFound('Attachment not found');
+  }
 
   const config = await aiConfigService.getConfig();
   // Per-function AI settings (AI_FUNCTION_SETTINGS_PLAN.md).

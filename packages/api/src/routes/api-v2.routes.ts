@@ -9,6 +9,7 @@ import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
 import { auditLog } from '../middleware/audit.js';
 import { resolvePermissionsForRequest } from '../middleware/permission.js';
+import { apDocumentPermission } from '../middleware/ap-document-permission.js';
 import { AppError } from '../utils/errors.js';
 import { can, type ResourceKey, type PermissionAction } from '@kis-books/shared';
 import * as authService from '../services/auth.service.js';
@@ -283,9 +284,11 @@ apiV2Router.post('/transactions', async (req, res) => {
   res.status(201).json({ transaction: result });
 });
 
-apiV2Router.post('/transactions/:id/void', async (req, res) => {
+// A bill, vendor credit or bill payment also needs its own permission (review
+// H1), as on v1; the void is scoped to the request's company.
+apiV2Router.post('/transactions/:id/void', apDocumentPermission('update'), async (req, res) => {
   const { reason } = voidTransactionSchema.parse(req.body);
-  await ledger.voidTransaction(req.tenantId, req.params['id']!, reason, req.userId);
+  await ledger.voidTransaction(req.tenantId, req.params['id']!, reason, req.userId, { companyId: req.companyId });
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });
 });

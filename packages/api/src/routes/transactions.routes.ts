@@ -9,7 +9,6 @@ import {
   createDepositSchema, createCashSaleSchema, createCreditMemoSchema,
   createCustomerRefundSchema, voidTransactionSchema, deleteTransactionSchema, transactionFiltersSchema,
   bulkUpdateTransactionsSchema, transactionRangeReportSchema, can,
-  type PermissionAction, type ResourceKey,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
@@ -18,6 +17,7 @@ import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { idempotent } from '../middleware/idempotent.js';
+import { apDocumentPermission } from '../middleware/ap-document-permission.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
@@ -61,28 +61,6 @@ const keyedById = idempotent({
   successStatus: 200,
   replay: async (req) => ({ transaction: await ledger.getTransaction(req.tenantId, req.params['id']!) }),
 });
-
-// The permission that owns an A/P document (review H1). The generic edit,
-// void, delete and duplicate routes run under `transactions`, but a bill,
-// vendor credit or bill payment reached through them also needs its own
-// screen's permission, so `transactions` alone can't void a bill. Middleware
-// ahead of idempotent(), so a replay is checked too.
-const AP_DOCUMENT_RESOURCE: Readonly<Record<string, ResourceKey>> = {
-  bill: 'bills', vendor_credit: 'vendor_credits', bill_payment: 'pay_bills',
-};
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function apDocumentPermission(action: PermissionAction) {
-  return async (req: Request, _res: Response, next: NextFunction) => {
-    const id = req.params['id'] ?? '';
-    const type = UUID_RE.test(id) ? await ledger.getTransactionType(req.tenantId, id) : null;
-    const resource = type ? AP_DOCUMENT_RESOURCE[type] : undefined;
-    if (resource && !can(await resolvePermissionsForRequest(req), resource, action)) {
-      throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
-    }
-    next();
-  };
-}
 
 transactionsRouter.get('/', describe({
   summary: 'List transactions',

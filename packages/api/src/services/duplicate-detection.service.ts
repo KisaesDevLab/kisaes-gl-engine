@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { transactions, duplicateDismissals } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -124,8 +124,28 @@ export async function dismissDuplicate(tenantId: string, txnIdA: string, txnIdB:
   });
 }
 
-export async function mergeDuplicate(tenantId: string, keepTxnId: string, voidTxnId: string, userId?: string) {
-  await ledger.voidTransaction(tenantId, voidTxnId, 'Merged as duplicate', userId);
+/**
+ * Merge a duplicate pair: void `voidTxnId`, dismiss the pair. Both rows must
+ * exist in the tenant and, with `companyId`, not belong to another company
+ * (404 otherwise). A bill, vendor credit or bill payment on either side is
+ * 409 TXN_DUPLICATE_UNSUPPORTED (review H1): voiding one here would skip its
+ * own permission and application rules; void it from its own screen.
+ */
+export async function mergeDuplicate(tenantId: string, keepTxnId: string, voidTxnId: string, userId?: string, companyId?: string) {
+  const rows = await db.select({ id: transactions.id, txnType: transactions.txnType, companyId: transactions.companyId, status: transactions.status })
+    .from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, [keepTxnId, voidTxnId])));
+  for (const id of [keepTxnId, voidTxnId]) {
+    const row = rows.find((r) => r.id === id);
+    if (!row || row.status === 'deleted' || ledger.inOtherCompany(row, companyId)) throw AppError.notFound('Transaction not found');
+  }
+  const apRow = rows.find((r) => ledger.AP_DOCUMENT_TYPES.includes(r.txnType));
+  if (apRow) {
+    throw AppError.conflict('Bills, vendor credits and bill payments can’t be merged as duplicates. Void the extra one from its own screen.', 'TXN_DUPLICATE_UNSUPPORTED', {
+      txnType: apRow.txnType,
+    });
+  }
+  await ledger.voidTransaction(tenantId, voidTxnId, 'Merged as duplicate', userId, { companyId });
   // Dismiss the pair so it doesn't show again
   await dismissDuplicate(tenantId, keepTxnId, voidTxnId, userId);
 }
