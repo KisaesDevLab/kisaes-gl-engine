@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { guardMergeTransactions } from './merge-lock.service.js';
 
@@ -106,22 +107,31 @@ export async function create(tenantId: string, input: CreateTagInput, userId?: s
   const tagNumber = input.tagNumber?.trim() || null;
   if (tagNumber) await assertTagNumberFree(tenantId, tagNumber);
 
-  let tag: typeof tags.$inferSelect | undefined;
+  // The insert, its audit row and an Idempotency-Key (U-18) commit together.
+  // A tag-number race (23505 on the partial unique index) aborts the
+  // transaction, so the claim rolls back with it and the 409 is mapped
+  // after the rollback; a refusal is never stored for replay.
   try {
-    [tag] = await db.insert(tags).values({
-      tenantId,
-      name: input.name,
-      tagNumber,
-      color: input.color || null,
-      groupId: input.groupId || null,
-      description: input.description || null,
-    }).returning();
+    return await db.transaction(async (tx) => {
+      await claimIdempotency(tx);
+      const [tag] = await tx.insert(tags).values({
+        tenantId,
+        name: input.name,
+        tagNumber,
+        color: input.color || null,
+        groupId: input.groupId || null,
+        description: input.description || null,
+      }).returning();
+      if (tag) {
+        await recordIdempotentEntity(tx, 'tag', tag.id);
+        await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId, tx);
+      }
+      return tag;
+    });
   } catch (err) {
     if (tagNumber && isTagNumberViolation(err)) throw tagNumberTaken(tagNumber);
     throw err;
   }
-  if (tag) await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId);
-  return tag;
 }
 
 export async function update(tenantId: string, id: string, input: UpdateTagInput, userId?: string) {
