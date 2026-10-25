@@ -9,6 +9,7 @@ import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import * as coaTemplatesService from './coa-templates.service.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
@@ -88,17 +89,22 @@ export async function create(tenantId: string, input: CreateAccountInput, userId
     }
   }
 
-  const [account] = await db.insert(accounts).values({
-    tenantId,
-    ...input,
-  }).returning();
+  // The insert, its audit row and an Idempotency-Key (U-18) commit together.
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const [account] = await tx.insert(accounts).values({
+      tenantId,
+      ...input,
+    }).returning();
 
-  if (!account) {
-    throw AppError.internal('Failed to create account');
-  }
+    if (!account) {
+      throw AppError.internal('Failed to create account');
+    }
+    await recordIdempotentEntity(tx, 'account', account.id);
 
-  await auditLog(tenantId, 'create', 'account', account.id, null, account, userId);
-  return account;
+    await auditLog(tenantId, 'create', 'account', account.id, null, account, userId, tx);
+    return account;
+  });
 }
 
 export async function update(tenantId: string, id: string, input: UpdateAccountInput, userId?: string) {

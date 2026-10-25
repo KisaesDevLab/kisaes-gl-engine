@@ -21,6 +21,7 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { TemplateDraft, TemplateDraftKind, TemplateScheduleInput } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../../db/index.js';
+import { claimAndRecord } from '../idempotency.service.js';
 import {
   recurringSchedules, templateGroups, templateTransactionLines, templateTransactions,
   templateTransactionTags, transactions,
@@ -389,6 +390,7 @@ export async function createTemplate(tenantId: string, companyId: string, userId
         tenantId, companyId, name: input.name, groupId: input.groupId ?? null, kind: td.kind,
         clientForm: input.clientForm ?? null, createdBy: userId ?? null,
       }).returning();
+      await claimAndRecord(tx, 'template', tpl!.id);
       const header = await writeDraftRows(tx, tpl!, td);
       const [withHeader] = await tx.update(templateTransactions).set(header)
         .where(and(eq(templateTransactions.tenantId, tenantId), eq(templateTransactions.id, tpl!.id))).returning();
@@ -421,6 +423,7 @@ export async function createFromTransaction(tenantId: string, companyId: string,
         clientForm: input.clientForm ?? null, sourceTransactionId: txn.id, createdBy: userId ?? null,
       }).returning();
       let row = tpl!;
+      await claimAndRecord(tx, 'template', row.id);
       if (snap.kind === 'draft') {
         await assertDraftRefsInScope(tx, tenantId, companyId, snap.draft);
         const header = await writeDraftRows(tx, row, snap.draft);

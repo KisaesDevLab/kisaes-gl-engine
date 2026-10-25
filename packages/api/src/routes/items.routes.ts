@@ -7,6 +7,7 @@ import { createItemSchema, updateItemSchema, itemsImportSchema, itemFiltersSchem
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as itemsService from '../services/items.service.js';
 
 export const itemsRouter = Router();
@@ -18,7 +19,11 @@ itemsRouter.get('/', async (req, res) => {
   res.json(result);
 });
 
-itemsRouter.post('/', validate(createItemSchema), async (req, res) => {
+// Idempotency-Key (idempotency-v1, U-18).
+itemsRouter.post('/', idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ item: await itemsService.getById(req.tenantId, entity!.id) }),
+}), validate(createItemSchema), async (req, res) => {
   const item = await itemsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ item });
 });

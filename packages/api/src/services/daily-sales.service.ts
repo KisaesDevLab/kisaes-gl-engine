@@ -38,6 +38,7 @@ import * as ledger from './ledger.service.js';
 import { getOrCreateSystemAccount } from './system-accounts.service.js';
 import { assertTagsInTenant } from './tags.service.js';
 import { reassignDraftAttachments } from './attachment.service.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 
 const TOLERANCE = new Decimal(BALANCE_TOLERANCE);
 
@@ -269,11 +270,11 @@ function entryTagIds(input: { tagId?: string | null; values?: Array<{ tagId?: st
   return [input.tagId, ...(input.values ?? []).map((v) => v.tagId)].filter((t): t is string => !!t);
 }
 
-async function saveValues(tenantId: string, entryId: string, values: CreateDailySalesEntryInput['values']) {
-  await db.delete(dailySalesEntryValues)
+async function saveValues(tenantId: string, entryId: string, values: CreateDailySalesEntryInput['values'], executor: DbOrTx = db) {
+  await executor.delete(dailySalesEntryValues)
     .where(and(eq(dailySalesEntryValues.tenantId, tenantId), eq(dailySalesEntryValues.entryId, entryId)));
   if (values && values.length) {
-    await db.insert(dailySalesEntryValues).values(values.map((v) => ({
+    await executor.insert(dailySalesEntryValues).values(values.map((v) => ({
       tenantId, entryId, templateLineId: v.templateLineId,
       amount: new Decimal(String(v.amount ?? 0)).toFixed(4), tagId: v.tagId ?? null,
     })));
@@ -370,19 +371,26 @@ export async function listEntries(
 export async function createDraft(tenantId: string, input: CreateDailySalesEntryInput, userId?: string, companyId?: string) {
   await getTemplate(tenantId, input.templateId, companyId); // validate + tenant/company scope
   await assertTagsInTenant(tenantId, entryTagIds(input));
-  const [entry] = await db.insert(dailySalesEntries).values({
-    tenantId, companyId: companyId ?? null, templateId: input.templateId,
-    businessDate: input.businessDate, status: 'draft',
-    tagId: input.tagId ?? null, notes: input.notes ?? null, createdBy: userId ?? null,
-  }).returning();
-  await saveValues(tenantId, entry!.id, input.values);
-  // Files attached on the new-entry screen before this draft existed.
-  const attachmentsLinked = input.draftAttachmentId
-    ? await reassignDraftAttachments(tenantId, input.draftAttachmentId, DAILY_SALES_ENTRY_ATTACHABLE, entry!.id)
-    : 0;
-  await auditLog(tenantId, 'create', 'daily_sales_entry', entry!.id, null,
-    attachmentsLinked ? { ...entry, attachmentsLinked } : entry, userId);
-  return getEntry(tenantId, entry!.id);
+  // One database transaction: the draft, its values, the files it takes
+  // over and the audit row (and an Idempotency-Key with them, U-18).
+  const entryId = await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const [entry] = await tx.insert(dailySalesEntries).values({
+      tenantId, companyId: companyId ?? null, templateId: input.templateId,
+      businessDate: input.businessDate, status: 'draft',
+      tagId: input.tagId ?? null, notes: input.notes ?? null, createdBy: userId ?? null,
+    }).returning();
+    await recordIdempotentEntity(tx, 'daily_sales_entry', entry!.id);
+    await saveValues(tenantId, entry!.id, input.values, tx);
+    // Files attached on the new-entry screen before this draft existed.
+    const attachmentsLinked = input.draftAttachmentId
+      ? await reassignDraftAttachments(tenantId, input.draftAttachmentId, DAILY_SALES_ENTRY_ATTACHABLE, entry!.id, tx)
+      : 0;
+    await auditLog(tenantId, 'create', 'daily_sales_entry', entry!.id, null,
+      attachmentsLinked ? { ...entry, attachmentsLinked } : entry, userId, tx);
+    return entry!.id;
+  });
+  return getEntry(tenantId, entryId);
 }
 
 export async function updateDraft(tenantId: string, id: string, input: UpdateDailySalesEntryInput, userId?: string, companyId?: string) {
@@ -516,9 +524,14 @@ export async function voidEntry(tenantId: string, id: string, userId?: string, c
   const entry = await loadEntry(tenantId, id, companyId);
   if (entry.status !== 'posted' || !entry.transactionId) throw AppError.badRequest('Only a posted entry can be voided.');
 
-  await ledger.voidTransaction(tenantId, entry.transactionId, 'Daily sales entry voided', userId);
-  await db.update(dailySalesEntries).set({ status: 'void', updatedAt: new Date() })
-    .where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
-  await auditLog(tenantId, 'void', 'daily_sales_entry', id, entry, null, userId);
+  // One database transaction: the void, the entry's status and its audit
+  // row commit together (and an Idempotency-Key with them, U-18).
+  const txnId = entry.transactionId;
+  await db.transaction(async (tx) => {
+    await ledger.voidTransactionInTx(tx, tenantId, txnId, 'Daily sales entry voided', userId);
+    await tx.update(dailySalesEntries).set({ status: 'void', updatedAt: new Date() })
+      .where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
+    await auditLog(tenantId, 'void', 'daily_sales_entry', id, entry, null, userId, tx);
+  });
   return getEntry(tenantId, id);
 }

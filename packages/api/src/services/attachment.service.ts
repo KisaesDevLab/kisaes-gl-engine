@@ -315,9 +315,9 @@ export async function updateOcrResults(tenantId: string, id: string, results: {
 }
 
 export async function reassignDraftAttachments(
-  tenantId: string, draftId: string, newType: string, newId: string,
+  tenantId: string, draftId: string, newType: string, newId: string, executor: DbOrTx = db,
 ): Promise<number> {
-  const result = await db.update(attachments)
+  const result = await executor.update(attachments)
     .set({ attachableType: newType, attachableId: newId })
     .where(and(
       eq(attachments.tenantId, tenantId),

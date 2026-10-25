@@ -12,6 +12,7 @@ import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
+import { idempotent } from '../middleware/idempotent.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
 import * as billService from '../services/bill.service.js';
@@ -87,7 +88,12 @@ billsRouter.get('/terms-dates', describe({
   res.json(await billService.getTermsDates(req.tenantId, parsed.data, req.companyId));
 });
 
-billsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, validate(createBillSchema), describe({
+// Idempotency-Key (idempotency-v1, U-18): after the closed-period
+// middleware (transactions.routes.ts order), before validation.
+billsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ bill: await billService.getBill(req.tenantId, entity!.id) }),
+}), validate(createBillSchema), describe({
   summary: 'Enter a bill',
   description: `Response 201 {bill}. ${closedPeriodNote} ${lineRules} ${termsRules} ` +
     'draftAttachmentId: the draft\'s attachments are relinked to the bill (attachable type "bill") in the same database transaction, one audit row each.',
