@@ -8,8 +8,14 @@
  *
  *   router.post('/', idempotent({ successStatus: 201, replay: reader }), ..., handler)
  *
- * Mounted after authentication, the company context and the route's
- * permission middleware, so a replay still needs current permission.
+ * Mounted after authentication, the company context and EVERY permission
+ * check of the route (router-level requireResource and any route-level
+ * check, such as the firm-only AJE rule on void or the template access
+ * checks), so a replay still needs current permission. A replay never runs
+ * the handler: a permission check left inside a handler or service would
+ * not run for it, so covered routes keep theirs in middleware ahead of
+ * idempotent(). Business rules that only the posting itself checks
+ * (validation, closed period, balances) are not re-run on a replay.
  *
  * Without the header the middleware does nothing. With one:
  *
@@ -25,7 +31,17 @@
  *   4. `res.json` is wrapped to settle the outcome: a 2xx marks the row
  *      'done' with the (redacted, capped) response; any other status looks
  *      the key up once more and replays a matching row that committed
- *      meanwhile instead of sending the error. Errors are never stored.
+ *      meanwhile instead of sending the error. Errors are not stored, with
+ *      one exception: a route bug (a claim in a second database
+ *      transaction or inside a savepoint, 500 IDEMPOTENCY_MULTI_TX /
+ *      IDEMPOTENCY_SAVEPOINT) is stored as the request's outcome, since
+ *      part of it may have committed; a retry replays that 500.
+ *
+ * Claims stop once the handler answers. A client that disconnects first
+ * (a timeout) does not stop them: the handler runs on, its posting claims
+ * the key, and the client's retry replays it (409 IDEMPOTENCY_IN_PROGRESS
+ * while it still runs). Work a request starts in the background, outside
+ * its own posting, runs under runWithoutIdempotency().
  *
  * A replay answers with the original status and body and the header
  * `Idempotent-Replayed: true`. A row without a stored body (the settle
@@ -42,7 +58,7 @@ import { requestHash } from '../utils/request-hash.js';
 import { log } from '../utils/logger.js';
 import { runWithIdemContext, type IdemCtx, type IdemEntity } from '../services/idempotency-context.js';
 import {
-  IDEMPOTENCY_KEY_RE, findLive, keyInvalid, keyReused, keyPrefix, settleDone,
+  IDEMPOTENCY_KEY_RE, findLive, keyInvalid, keyReused, keyPrefix, settleDone, settleRouteBug, routeBugError,
   __idempotencyDiagnostics, type IdempotencyRow,
 } from '../services/idempotency.service.js';
 import { AppError } from '../utils/errors.js';
@@ -127,7 +143,7 @@ export function idempotent(opts: IdempotentOptions) {
     // Pre-check: replay or refuse before anything runs.
     const prev = await findLive(req.tenantId, req.userId, key);
     if (prev) {
-      if (prev.requestSha256 !== hash) throw keyReused(prev);
+      if (prev.requestSha256 !== hash) throw keyReused(prev, companyId);
       const r = await replayOf(req, prev, opts);
       log.debug({ component: 'idempotency', event: 'replayed', route, state: prev.state, key: keyPrefix(key) });
       send(r.status, r.body, true, (b) => res.json(b));
@@ -138,17 +154,37 @@ export function idempotent(opts: IdempotentOptions) {
       tenantId: req.tenantId, companyId, userId: req.userId, key, requestHash: hash, route,
       successStatus: opts.successStatus, closed: false,
     };
-    const close = () => { ctx.closed = true; };
-    res.once('finish', close);
-    res.once('close', close);
-
+    // Claims stop once the handler answers (settleJson below) or the
+    // response finished (a route that answers without res.json). Not on
+    // 'close': a client that disconnects (a timeout) leaves the handler
+    // running, and its posting must still claim the key so the client's
+    // retry replays it instead of posting a second time.
+    res.once('finish', () => { ctx.closed = true; });
     const original = res.json.bind(res);
     let settling = false;
     res.json = function settleJson(body: unknown): Response {
       if (settling) return original(body);
       settling = true;
+      ctx.closed = true;
       const status = res.statusCode;
       void (async () => {
+        if (ctx.failed) {
+          // A route bug (a claim in a second transaction or a savepoint):
+          // part of the request may have committed. The error is stored, so
+          // a retry with the key replays it: never a second posting, never
+          // a success. A handler that swallowed the error and answered 2xx
+          // gets the route bug's 500 instead.
+          let outStatus = status;
+          let outBody = body;
+          if (isSuccess(status)) {
+            const err = routeBugError(ctx.failed);
+            outStatus = 500;
+            outBody = { error: { message: err.message, code: err.code } };
+          }
+          await settleRouteBug(ctx, outStatus, outBody);
+          send(outStatus, outBody, false, original);
+          return;
+        }
         if (isSuccess(status)) {
           if (ctx.rowId) {
             await settleDone(ctx, status, body);
@@ -166,10 +202,7 @@ export function idempotent(opts: IdempotentOptions) {
         const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
         let row: IdempotencyRow | undefined;
         try {
-          // A route bug reported under NODE_ENV=test is never hidden by a replay.
-          row = code === 'IDEMPOTENCY_MULTI_TX' || code === 'IDEMPOTENCY_SAVEPOINT'
-            ? undefined
-            : await findLive(ctx.tenantId, ctx.userId, ctx.key);
+          row = await findLive(ctx.tenantId, ctx.userId, ctx.key);
         } catch {
           row = undefined;
         }

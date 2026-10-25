@@ -301,22 +301,15 @@ async function start() {
     setInterval(() => { void sweepArchives(); }, 60 * 60 * 1000).unref();
   }
 
-  // Idempotency-Key records (U-18) expire after 24 hours: deleted at boot and
-  // hourly on every install, skipped while a tenant export or import runs.
-  const sweepIdempotencyKeys = async () => {
-    try {
-      const { sweepExpired } = await import('./services/idempotency.service.js');
-      const removed = await sweepExpired();
-      if (removed > 0) console.log(`[idempotency] sweep removed ${removed} expired key record(s)`);
-    } catch (err) {
-      console.error('Idempotency-Key sweep failed:', errorSummaryForLog(err));
-    }
-  };
-  await sweepIdempotencyKeys();
-  setInterval(() => { void sweepIdempotencyKeys(); }, 60 * 60 * 1000).unref();
-
   // Background work that starts once the HTTP server is listening.
   const startBackground = () => {
+    // Idempotency-Key records (U-18) expire after 24 hours: swept right
+    // after the server listens and then hourly on every install, capped per
+    // sweep, postponed (never skipped for good) while a tenant export or
+    // import runs. Lookups ignore expired rows, so a late sweep is harmless.
+    void import('./services/idempotency.service.js')
+      .then((m) => { m.startIdempotencySweeper(); })
+      .catch((err) => { console.error('Idempotency-Key sweeper failed to start:', errorSummaryForLog(err)); });
     // MIG-2: router mode only; non-blocking with retry — AI features fail
     // closed at the router until registration lands, which is correct.
     // Load the Admin -> AI router connection (overrides env) before registering.

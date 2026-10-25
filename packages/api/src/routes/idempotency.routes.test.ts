@@ -226,9 +226,14 @@ describe('E5 reuse', () => {
   it('the same body on the same route with another company is a reuse', async () => {
     const key = newKey();
     const body = expense();
-    expect((await request('POST', '/transactions', body, { key })).status).toBe(201);
+    const first = await request('POST', '/transactions', body, { key });
+    expect(first.status).toBe(201);
     const r = await request('POST', '/transactions', body, { key, company: c.companyB });
     expect(r.status).toBe(422);
+    expect(r.json.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    // The record of the other company is not named (L2).
+    expect(r.json.error.details).toBeUndefined();
+    expect(JSON.stringify(r.json)).not.toContain(first.json.transaction.id);
   });
 });
 
@@ -725,8 +730,14 @@ describe('E15 templates', () => {
     const replay = await request('POST', `/templates/${id}/occurrences/${PINNED_TODAY}/skip`, {}, { key });
     expect(replay.status).toBe(200);
     expect(replay.json).toEqual(skip.json);
+    // The access check runs ahead of idempotent(): a template that is gone
+    // (deleted, or not this company's) is 404, not a replay (L1).
+    await db.execute(sql`UPDATE template_transactions SET deleted_at = now() WHERE tenant_id = ${c.tenantId} AND id = ${id}`);
+    const gone = await request('POST', `/templates/${id}/occurrences/${PINNED_TODAY}/skip`, {}, { key });
+    expect(gone.status, JSON.stringify(gone.json)).toBe(404);
+    expect(gone.headers['idempotent-replayed']).toBeUndefined();
 
-    const id2 = await newTemplate(monthlyAuto(PINNED_TODAY));
+    const id2 =await newTemplate(monthlyAuto(PINNED_TODAY));
     const txn = (await request('POST', '/transactions', { txnType: 'transfer', txnDate: PINNED_TODAY, fromAccountId: c.bank, toAccountId: c.savings, amount: '49.0000' })).json.transaction.id;
     const key2 = newKey();
     __idempotencyTestHooks.settle = () => { throw new Error('settle failed'); };

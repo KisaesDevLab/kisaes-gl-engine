@@ -33,9 +33,22 @@ export interface IdemCtx {
   rowId?: string;
   /** The primary record the request created or changed (first record wins). */
   entity?: IdemEntity;
-  /** True once the response finished or the connection closed: no more claims. */
+  /**
+   * True once the handler answered (res.json) or the response finished: no
+   * more claims. A client that disconnects first does NOT close it; the
+   * handler still runs and its posting still claims the key, so a retry
+   * replays it instead of posting again.
+   */
   closed: boolean;
+  /**
+   * Set when the route claimed in a second database transaction or inside a
+   * savepoint (a route bug). Every later claim of the request fails too, and
+   * the outcome is stored as the error, never replayed as a success.
+   */
+  failed?: IdemRouteBug;
 }
+
+export type IdemRouteBug = 'IDEMPOTENCY_MULTI_TX' | 'IDEMPOTENCY_SAVEPOINT';
 
 const storage = new AsyncLocalStorage<IdemCtx>();
 

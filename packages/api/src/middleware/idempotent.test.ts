@@ -23,7 +23,8 @@ import { idempotencyKeys } from '../db/schema/index.js';
 import { idempotent, routeTemplate } from './idempotent.js';
 import { errorHandler } from './error-handler.js';
 import {
-  claimIdempotency, recordIdempotentEntity, sweepExpired, findLive, redactResponse,
+  claimIdempotency, recordIdempotentEntity, sweepExpired, findLive, redactResponse, keyReused, nextSweep,
+  SWEEP_MAX_POSTPONES, SWEEP_RETRY_MS, SWEEP_INTERVAL_MS,
   __idempotencyDiagnostics, __idempotencyTestHooks,
 } from '../services/idempotency.service.js';
 import { AppError } from '../utils/errors.js';
@@ -36,6 +37,7 @@ const tenantIds: string[] = [];
 let server: Server;
 let port = 0;
 let executions = 0;
+const slow: { entered?: () => void; done?: () => void } = {};
 
 function fakeAuth(req: express.Request, _res: express.Response, next: express.NextFunction) {
   req.tenantId = c.tenantId;
@@ -74,8 +76,36 @@ beforeAll(async () => {
   r.post('/unclaimed', idempotent({ successStatus: 200 }), async (_req, res) => { res.json({ ok: true }); });
   r.post('/two-tx', idempotent({ successStatus: 200 }), async (_req, res) => {
     await db.transaction(async (tx) => { await claimIdempotency(tx); });
+    executions++;
     await db.transaction(async (tx) => { await claimIdempotency(tx); });
     res.json({ ok: true });
+  });
+  // A handler that swallows the savepoint error and commits the outer transaction.
+  r.post('/savepoint-swallowed', idempotent({ successStatus: 200 }), async (req, res) => {
+    await db.transaction(async (tx) => {
+      try { await tx.transaction(async (sp) => { await claimIdempotency(sp); }); } catch { /* swallowed */ }
+      // Sticky: a later claim of the request fails as well and rolls the outer back.
+      if ((req.body as { claimAgain?: boolean }).claimAgain) await claimIdempotency(tx);
+    });
+    executions++;
+    res.json({ ok: true });
+  });
+  // Waits for the client to disconnect before it posts (H1).
+  r.post('/slow', idempotent({
+    successStatus: 201,
+    replay: async (_req, entity) => ({ thing: { id: entity?.id, reread: true } }),
+  }), async (_req, res) => {
+    const disconnected = new Promise<void>((resolve) => { res.once('close', () => resolve()); });
+    slow.entered?.();
+    await disconnected;
+    const id = crypto.randomUUID();
+    await db.transaction(async (tx) => {
+      await claimIdempotency(tx);
+      await recordIdempotentEntity(tx, 'thing', id);
+    });
+    executions++;
+    res.status(201).json({ thing: { id } });
+    slow.done?.();
   });
   r.post('/savepoint', idempotent({ successStatus: 200 }), async (_req, res) => {
     await db.transaction(async (tx) => { await tx.transaction(async (sp) => { await claimIdempotency(sp); }); });
@@ -246,6 +276,109 @@ describe('route bugs are caught in tests', () => {
   });
 });
 
+describe('M1 route bugs fail closed in production too', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it.each(['test', 'production'])('NODE_ENV=%s: MULTI_TX is a 500; the retry replays the 500, never posts again or reports success', async (env) => {
+    vi.stubEnv('NODE_ENV', env);
+    const key = newKey();
+    const a = await post('/api/v1/test/two-tx', {}, { 'Idempotency-Key': key });
+    expect(a.status).toBe(500);
+    expect(a.json.error.code).toBe('IDEMPOTENCY_MULTI_TX');
+    // The first transaction committed (its part of the posting and the key row).
+    expect(executions).toBe(1);
+    const [row] = await rowsOf(key);
+    expect(row).toMatchObject({ state: 'done', responseStatus: 500 });
+    const b = await post('/api/v1/test/two-tx', {}, { 'Idempotency-Key': key });
+    expect(b.status).toBe(500);
+    expect(b.json.error.code).toBe('IDEMPOTENCY_MULTI_TX');
+    expect(b.headers['idempotent-replayed']).toBe('true');
+    expect(executions).toBe(1);
+  });
+
+  it('NODE_ENV=production: SAVEPOINT is a 500, not a warning and an unclaimed posting', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const r = await post('/api/v1/test/savepoint', {}, { 'Idempotency-Key': newKey() });
+    expect(r.status).toBe(500);
+    expect(r.json.error.code).toBe('IDEMPOTENCY_SAVEPOINT');
+  });
+
+  it('a swallowed savepoint error: a later claim fails too, and a 2xx is answered and stored as the 500', async () => {
+    const sticky = newKey();
+    const s = await post('/api/v1/test/savepoint-swallowed', { claimAgain: true }, { 'Idempotency-Key': sticky });
+    expect(s.status).toBe(500);
+    expect(s.json.error.code).toBe('IDEMPOTENCY_SAVEPOINT');
+    expect(executions).toBe(0);
+
+    const key = newKey();
+    const a = await post('/api/v1/test/savepoint-swallowed', {}, { 'Idempotency-Key': key });
+    expect(a.status).toBe(500);
+    expect(a.json.error.code).toBe('IDEMPOTENCY_SAVEPOINT');
+    expect(executions).toBe(1);
+    const b = await post('/api/v1/test/savepoint-swallowed', {}, { 'Idempotency-Key': key });
+    expect(b.status).toBe(500);
+    expect(b.headers['idempotent-replayed']).toBe('true');
+    expect(executions).toBe(1);
+  });
+});
+
+describe('H1 a client that disconnects', () => {
+  it('the handler still claims the key; the retry replays: one posting', async () => {
+    const key = newKey();
+    const entered = new Promise<void>((resolve) => { slow.entered = resolve; });
+    const done = new Promise<void>((resolve) => { slow.done = resolve; });
+    try {
+      const data = Buffer.from(JSON.stringify({ n: 1 }));
+      const req = http.request({
+        hostname: '127.0.0.1', port, path: '/api/v1/test/slow', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(data.length), 'Idempotency-Key': key },
+      });
+      req.on('error', () => { /* the socket is destroyed on purpose */ });
+      req.write(data);
+      req.end();
+      // Past the pre-check, before the claim: the client gives up (a timeout).
+      await entered;
+      req.destroy();
+      await done;
+    } finally {
+      delete slow.entered;
+      delete slow.done;
+    }
+    expect(executions).toBe(1);
+    const [row] = await rowsOf(key);
+    expect(row).toBeDefined();
+    expect(row!.entityType).toBe('thing');
+
+    const retry = await post('/api/v1/test/slow', { n: 1 }, { 'Idempotency-Key': key });
+    expect(retry.status).toBe(201);
+    expect(retry.headers['idempotent-replayed']).toBe('true');
+    expect(retry.json.thing.id).toBe(row!.entityId);
+    expect(executions).toBe(1);
+    expect(await rowsOf(key)).toHaveLength(1);
+  });
+});
+
+describe('L2 reuse across companies', () => {
+  it('names the stored record only for the same company', () => {
+    const row = { companyId: c.companyId, entityType: 'transaction', entityId: c.companyB };
+    expect(keyReused(row, c.companyId).details).toEqual({ entityType: 'transaction', entityId: c.companyB });
+    expect(keyReused(row, c.companyB).details).toBeUndefined();
+    expect(keyReused({ ...row, companyId: null }, null).details).toEqual({ entityType: 'transaction', entityId: c.companyB });
+    expect(keyReused({ ...row, companyId: null }, c.companyId).details).toBeUndefined();
+  });
+
+  it('a reused key from another company is 422 without the other record', async () => {
+    const key = newKey();
+    const a = await post('/api/v1/test/things', { n: 1 }, { 'Idempotency-Key': key });
+    expect(a.status).toBe(201);
+    const b = await post('/api/v1/test/things', { n: 1 }, { 'Idempotency-Key': key, 'X-Company-Id': c.companyB });
+    expect(b.status).toBe(422);
+    expect(b.json.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    expect(b.json.error.details).toBeUndefined();
+    expect(JSON.stringify(b.json)).not.toContain(a.json.thing.id);
+  });
+});
+
 describe('E16 no context', () => {
   it('claim and record are no-ops outside a keyed request', async () => {
     const before = (await db.select().from(idempotencyKeys).where(eq(idempotencyKeys.tenantId, c.tenantId))).length;
@@ -310,8 +443,36 @@ describe('E18 TTL', () => {
       tenantId: c.tenantId, companyId: c.companyId, userId: c.userId, idempotencyKey: old, route: 'POST /test/things',
       requestSha256: '0'.repeat(64), state: 'done', successStatus: 201, createdAt: new Date(Date.now() - 25 * 3600 * 1000),
     });
-    expect(await sweepExpired()).toBeGreaterThanOrEqual(1);
+    expect((await sweepExpired()).removed).toBeGreaterThanOrEqual(1);
     expect(await rowsOf(old)).toHaveLength(0);
     expect(await rowsOf(key)).toHaveLength(1);
+  });
+
+  it('a sweep stops at its cap and reports more; the next one finishes', async () => {
+    const olds = [newKey(), newKey(), newKey()];
+    await db.insert(idempotencyKeys).values(olds.map((k) => ({
+      tenantId: c.tenantId, companyId: c.companyId, userId: c.userId, idempotencyKey: k, route: 'POST /test/things',
+      requestSha256: '0'.repeat(64), state: 'done', successStatus: 201, createdAt: new Date(Date.now() - 25 * 3600 * 1000),
+    })));
+    const first = await sweepExpired({ maxRows: 2 });
+    expect(first).toEqual({ removed: 2, postponed: false, more: true });
+    const rest = await sweepExpired();
+    expect(rest.more).toBe(false);
+    for (const k of olds) expect(await rowsOf(k)).toHaveLength(0);
+  });
+
+  it('postponed while a job runs, retried soon, forced after SWEEP_MAX_POSTPONES', () => {
+    const postponed = { removed: 0, postponed: true, more: false };
+    let n = 0;
+    for (let i = 0; i < SWEEP_MAX_POSTPONES; i++) {
+      const next = nextSweep(postponed, n);
+      expect(next.delayMs).toBe(SWEEP_RETRY_MS);
+      n = next.postpones;
+    }
+    // The sweeper forces the run once postpones reaches the maximum.
+    expect(n).toBe(SWEEP_MAX_POSTPONES);
+    expect(nextSweep({ removed: 5, postponed: false, more: true }, n)).toEqual({ delayMs: SWEEP_RETRY_MS, postpones: 0 });
+    expect(nextSweep({ removed: 5, postponed: false, more: false }, n)).toEqual({ delayMs: SWEEP_INTERVAL_MS, postpones: 0 });
+    expect(nextSweep(null, 3)).toEqual({ delayMs: SWEEP_INTERVAL_MS, postpones: 0 });
   });
 });
