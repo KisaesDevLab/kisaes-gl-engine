@@ -212,7 +212,7 @@ transactionsRouter.post('/', keyedCreate, describe({
   // Reassign any draft attachments to the newly created transaction
   if (req.body.draftAttachmentId && result?.id) {
     await attachmentService.reassignDraftAttachments(
-      req.tenantId, req.body.draftAttachmentId, txnType, result.id,
+      req.tenantId, req.body.draftAttachmentId, txnType, result.id, undefined, req.companyId,
     );
   }
 

@@ -15,6 +15,7 @@ import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
 import { checkTenantTaskConsent } from './ai-consent.service.js';
+import * as attachmentService from './attachment.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { extractLocally, extractTextFromPdf } from './local-ocr.service.js';
 import { unwrapParsedResult, validateModelOutput } from './ai-providers/json-utils.js';
@@ -321,17 +322,14 @@ export async function billOcrAvailability(
 }
 
 /**
- * With `companyId`, an attachment that belongs to another company is 404, the
- * same rule as relinkDraftAttachments (an attachment with no company passes).
+ * With `companyId`, an attachment the company may not see is 404
+ * (attachmentService.companyScope).
  */
 export async function extractBillFromAttachment(tenantId: string, attachmentId: string, companyId?: string | null): Promise<BillOcrResult> {
-  const attachment = await db.query.attachments.findFirst({
-    where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)),
-  });
-  if (!attachment) throw AppError.notFound('Attachment not found');
-  if (companyId && attachment.companyId && attachment.companyId !== companyId) {
-    throw AppError.notFound('Attachment not found');
-  }
+  // U-90 review M2: the full company rule (attachmentService.companyScope),
+  // so a file with no company that is filed on another company's record is
+  // 404 too. 404 for a bad id, as before.
+  const attachment = await attachmentService.getById(tenantId, attachmentId, companyId);
 
   const config = await aiConfigService.getConfig();
   // Per-function AI settings (AI_FUNCTION_SETTINGS_PLAN.md).

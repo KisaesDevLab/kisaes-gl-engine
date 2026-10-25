@@ -365,4 +365,48 @@ describe('MCP server integration', () => {
     // Filtered expenses include only the tag=40 line.
     expect(Number(filteredData.totalExpenses)).toBe(40);
   });
+
+  // U-90 review M1: list_attachments passes the resolved company to the
+  // service, so a key whose user is excluded from company A lists only
+  // company B's files (and tenant-wide ones), never A's.
+  it('list_attachments is scoped to the resolved company', async () => {
+    const { attachments, users, transactions, accountantCompanyExclusions } = await import('../db/schema/index.js');
+    const [companyA] = await db.select().from(companies).where(eq(companies.tenantId, tenantId)).limit(1);
+    const [companyB] = await db.insert(companies).values({ tenantId, businessName: 'MCP B Co', setupComplete: true, mcpEnabled: true } as never).returning();
+    const [bk] = await db.insert(users).values({
+      tenantId, email: `mcp-bk-${Date.now()}@example.com`, passwordHash: 'x', displayName: 'BK', role: 'bookkeeper',
+    }).returning();
+    await db.insert(accountantCompanyExclusions).values({ userId: bk!.id, companyId: companyA!.id } as never);
+    const bkKey = 'sk_live_' + crypto.randomBytes(32).toString('hex');
+    await db.insert(apiKeys).values({
+      tenantId, userId: bk!.id, name: 'mcp-bk-key', keyPrefix: bkKey.slice(0, 12),
+      keyHash: crypto.createHash('sha256').update(bkKey).digest('hex'), role: 'bookkeeper', scopes: 'all',
+    });
+    const [txnA] = await db.insert(transactions).values({
+      tenantId, companyId: companyA!.id, txnType: 'expense', txnDate: '2026-10-01', total: '1.0000',
+    }).returning();
+    const file = (companyId: string | null, attachableType: string, attachableId: string) => ({
+      tenantId, companyId, fileName: 'f.pdf', filePath: '/uploads/f.pdf', attachableType, attachableId,
+    });
+    const rows = await db.insert(attachments).values([
+      file(companyA!.id, 'draft', crypto.randomUUID()),
+      file(null, 'expense', txnA!.id),
+      file(companyB!.id, 'draft', crypto.randomUUID()),
+      file(null, 'draft', crypto.randomUUID()),
+    ]).returning();
+    try {
+      const { req, res, captured } = mockReq(
+        { method: 'tools/call', params: { name: 'list_attachments', arguments: {} }, id: 1 },
+        `Bearer ${bkKey}`,
+      );
+      await handleMcpRequest(req, res);
+      expect(captured.body.error, JSON.stringify(captured.body)).toBeUndefined();
+      const data = JSON.parse(captured.body.result.content[0].text);
+      expect(data.data.map((a: any) => a.id).sort()).toEqual([rows[2]!.id, rows[3]!.id].sort());
+      expect(Number(data.total)).toBe(2);
+    } finally {
+      await db.delete(attachments).where(eq(attachments.tenantId, tenantId));
+      await db.delete(accountantCompanyExclusions).where(eq(accountantCompanyExclusions.userId, bk!.id));
+    }
+  });
 });

@@ -12419,6 +12419,14 @@
             "description": "Response not yet documented in this specification."
           }
         },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "tags": [
           "attachments"
         ]

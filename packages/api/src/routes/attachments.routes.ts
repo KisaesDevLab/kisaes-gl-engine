@@ -4,34 +4,22 @@
 
 import { Router } from 'express';
 import multer from 'multer';
-import jwt from 'jsonwebtoken';
 import { z } from 'zod';
-import { eq, and, sql, count } from 'drizzle-orm';
-import type { JwtPayload } from '@kis-books/shared';
+import { eq, and, or, isNull, sql, count } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource, requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { auditLog } from '../middleware/audit.js';
-import { env } from '../config/env.js';
 import { db } from '../db/index.js';
-import { users, attachments, transactions, contacts } from '../db/schema/index.js';
+import { attachments, transactions, contacts } from '../db/schema/index.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as ocrService from '../services/ocr.service.js';
 import { billOcrAvailability, type BillOcrUnavailableReason } from '../services/ai-bill-ocr.service.js';
 import { isDesktop } from '../desktop/profile.js';
 import { AppError } from '../utils/errors.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
-import { consumeDownloadToken } from '../utils/download-token.js';
 import { log } from '../utils/logger.js';
-import { workspaceFence } from '../desktop/workspace.js';
 import { describe } from '../middleware/describe.js';
-
-// Attachable types that name a transaction (its txn_type): POST /:id/link
-// checks such a target exists in the tenant (and company).
-const TXN_ATTACHABLE_TYPES = new Set([
-  'invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry',
-  'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje',
-]);
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -140,56 +128,26 @@ export function verifyAttachmentContent(mime: string, buf: Buffer): void {
 
 export const attachmentsRouter = Router();
 
-// Download route supports two auth modes:
+// Download route supports two auth modes, both through authenticate():
 //   1. Authorization: Bearer <JWT> — standard API call from the SPA fetch
-//      client.
-//   2. ?_dl=<download-token> — a single-use, ~60-second token issued by
+//      client, with the full session-shape and active-user checks.
+//   2. ?_dl=<download-token> — a ~60-second signed token issued by
 //      /api/v1/downloads/token, suitable for <a>/<img>/<iframe> where
-//      custom headers can't be set.
+//      custom headers can't be set (replayable within its TTL; see
+//      utils/download-token.ts). Its company wins over X-Company-Id.
 // The legacy `?token=<JWT>` path is deliberately removed: putting a full
 // 15-minute access token in a URL leaks it into server logs, browser
 // history, referer headers, and proxy logs. Clients that were using it
 // should switch to /api/v1/downloads/token + ?_dl=.
-attachmentsRouter.get('/:id/download', async (req, res) => {
-  const dlTokenRaw = req.query['_dl'];
-  const dlToken = typeof dlTokenRaw === 'string' ? dlTokenRaw : undefined;
-
-  let tenantId: string | undefined;
-  if (dlToken) {
-    const payload = consumeDownloadToken(dlToken);
-    if (!payload) {
-      res.status(401).json({ error: { message: 'Invalid or expired download token' } });
-      return;
-    }
-    tenantId = payload.tenantId;
-  } else {
-    const header = req.headers.authorization;
-    if (!header?.startsWith('Bearer ')) {
-      res.status(401).json({ error: { message: 'Authentication required' } });
-      return;
-    }
-    let payload: JwtPayload;
-    try {
-      payload = jwt.verify(header.slice(7), env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
-    } catch (err) {
-      const isExpired = err instanceof Error && err.name === 'TokenExpiredError';
-      res.status(401).json({ error: { message: isExpired ? 'Token expired' : 'Invalid token' } });
-      return;
-    }
-    const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });
-    if (!user || !user.isActive) {
-      res.status(401).json({ error: { message: 'Account is deactivated' } });
-      return;
-    }
-    tenantId = payload.tenantId;
-  }
-
-  // Desktop: this route authenticates by hand, so apply the workspace
-  // fence that authenticate() would (a workspace session has no books).
-  req.tenantId = tenantId!;
-  await workspaceFence(req);
-
-  const { stream, attachment } = await attachmentService.download(tenantId!, req.params['id']!);
+//
+// U-90 review M5: the attachments read permission and the session checks
+// run first, then the company is resolved (X-Company-Id or the token's
+// company, else the first company the user may open, with the exclusion
+// checks of every company-scoped router), then only a file that company may
+// see is downloaded.
+attachmentsRouter.get('/:id/download', authenticate, requirePermission('attachments', 'read'), companyContext, async (req, res) => {
+  const tenantId = req.tenantId;
+  const { stream, attachment } = await attachmentService.download(tenantId, req.params['id']!, req.companyId);
   res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
   const disposition = req.query['inline'] === '1' ? 'inline' : 'attachment';
   // Content-Disposition filename escapement — quote any internal quote so a
@@ -209,7 +167,7 @@ const bulkDownloadSchema = z.object({
 // requireResource guard (which maps POST to the 'update' action) with an
 // explicit 'read' permission — downloading is semantically a read, same as
 // GET /:id/download.
-attachmentsRouter.post('/bulk-download', authenticate, requirePermission('attachments', 'read'), async (req, res) => {
+attachmentsRouter.post('/bulk-download', authenticate, requirePermission('attachments', 'read'), companyContext, async (req, res) => {
   const parsed = bulkDownloadSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: { message: 'attachmentIds must be an array of 1-200 attachment UUIDs' } });
@@ -218,7 +176,7 @@ attachmentsRouter.post('/bulk-download', authenticate, requirePermission('attach
 
   // Throws 404 before any headers are sent if any id isn't this tenant's —
   // same behavior as the single download route's tenant-scoped lookup.
-  const { archive, done } = await attachmentService.bulkDownload(req.tenantId, parsed.data.attachmentIds);
+  const { archive, done } = await attachmentService.bulkDownload(req.tenantId, parsed.data.attachmentIds, req.companyId);
 
   const stamp = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'application/zip');
@@ -253,6 +211,11 @@ attachmentsRouter.post('/bulk-download', authenticate, requirePermission('attach
 
 attachmentsRouter.use(authenticate);
 attachmentsRouter.use(requireResource('attachments'));
+// U-90: every route below works in one company. Uploads are stamped with it
+// and reads/writes see only that company's files plus tenant-wide ones
+// (attachmentService.companyScope), so an accountant excluded from a company
+// can't list, read, download, delete, OCR or link its files from another.
+attachmentsRouter.use(companyContext);
 
 attachmentsRouter.post('/', describe({
   summary: 'Upload an attachment',
@@ -286,8 +249,13 @@ attachmentsRouter.post('/', describe({
   const autoOcr = autoOcrQuery !== '0' && autoOcrQuery !== 'false'
     && await attachmentService.autoOcrOnUploadAllowed();
 
+  // Review M3: the record the file is filed on must be one this company may
+  // use, the same check as POST /:id/link (404, nothing stored).
+  await attachmentService.assertAttachTarget(req.tenantId, attachableType, attachableId, req.companyId);
+
   const attachment = await attachmentService.upload(
-    req.tenantId, req.file, attachableType, attachableId, { skipAutoClassify: !autoOcr },
+    req.tenantId, req.file, attachableType, attachableId,
+    { skipAutoClassify: !autoOcr, companyId: req.companyId },
   );
 
   await auditLog(
@@ -323,65 +291,32 @@ attachmentsRouter.get('/', async (req, res) => {
     attachableId: req.query['attachable_id'] as string,
     limit: parseLimit(req.query['limit']),
     offset: parseOffset(req.query['offset']),
+    companyId: req.companyId,
   });
   res.json(result);
 });
 
 attachmentsRouter.get('/unlinked', async (req, res) => {
-  const data = await attachmentService.listUnlinked(req.tenantId);
+  const data = await attachmentService.listUnlinked(req.tenantId, req.companyId);
   res.json({ data });
 });
 
-/**
- * The company an attachment belongs to: its own company_id, else the
- * company of the transaction it is attached to; null for a tenant-wide one
- * (a draft, a receipt, a contact file…).
- */
-async function attachmentCompany(tenantId: string, att: { companyId: string | null; attachableType: string; attachableId: string }) {
-  if (att.companyId) return att.companyId;
-  if (!TXN_ATTACHABLE_TYPES.has(att.attachableType)) return null;
-  const [txn] = await db.select({ companyId: transactions.companyId }).from(transactions)
-    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, att.attachableId)))
-    .limit(1);
-  return txn?.companyId ?? null;
-}
-
-// companyContext here (review M2): the router is tenant-scoped, so without
-// it req.companyId was never set and the company checks below were dead. An
-// accountant excluded from a company can't move its files.
-attachmentsRouter.post('/:id/link', companyContext, async (req, res) => {
+// companyContext (review M2, now router-wide since U-90): an accountant
+// excluded from a company can't move its files.
+attachmentsRouter.post('/:id/link', async (req, res) => {
   const { attachableType, attachableId } = req.body;
   if (!attachableType || !attachableId) {
     res.status(400).json({ error: { message: 'attachableType and attachableId required' } });
     return;
   }
   const attachmentId = req.params['id']!;
-  // The attachment itself must be this company's (or tenant-wide): its own
-  // company, or the company of the transaction it is attached to now.
-  const [att] = /^[0-9a-f-]{36}$/i.test(attachmentId)
-    ? await db.select({ companyId: attachments.companyId, attachableType: attachments.attachableType, attachableId: attachments.attachableId })
-      .from(attachments)
-      .where(and(eq(attachments.tenantId, req.tenantId), eq(attachments.id, attachmentId)))
-      .limit(1)
-    : [];
-  if (!att) throw AppError.notFound('Attachment not found');
-  const ownCompany = await attachmentCompany(req.tenantId, att);
-  if (ownCompany && ownCompany !== req.companyId) throw AppError.notFound('Attachment not found');
-  // A transaction target must exist in this tenant (and company) with that
-  // type (review Notes: the target id was taken unchecked). Other attachable
-  // types (draft, receipt, contact…) are unchanged.
-  if (typeof attachableType === 'string' && TXN_ATTACHABLE_TYPES.has(attachableType)) {
-    const [target] = typeof attachableId === 'string' && /^[0-9a-f-]{36}$/i.test(attachableId)
-      ? await db.select({ id: transactions.id, companyId: transactions.companyId, status: transactions.status })
-        .from(transactions)
-        .where(and(eq(transactions.tenantId, req.tenantId), eq(transactions.id, attachableId), eq(transactions.txnType, attachableType)))
-        .limit(1)
-      : [];
-    if (!target || target.status === 'deleted' || (req.companyId && target.companyId && target.companyId !== req.companyId)) {
-      throw AppError.notFound('The transaction to attach to was not found');
-    }
-  }
-  await attachmentService.linkAttachment(req.tenantId, attachmentId, attachableType, attachableId);
+  // The attachment itself must be one this company may see (companyScope:
+  // its own company, else the company of the record it is filed on).
+  await attachmentService.getById(req.tenantId, attachmentId, req.companyId);
+  // The target must be one this company may use: a transaction of that type
+  // in this tenant (and company), or a record with no other company.
+  await attachmentService.assertAttachTarget(req.tenantId, attachableType, attachableId, req.companyId);
+  await attachmentService.linkAttachment(req.tenantId, attachmentId, attachableType, attachableId, req.companyId);
   await auditLog(
     req.tenantId,
     'update',
@@ -400,7 +335,7 @@ attachmentsRouter.get('/library', async (req, res) => {
   const limit = parseLimit(req.query['limit'], 100, 500);
   const offset = parseOffset(req.query['offset']);
 
-  const where = eq(attachments.tenantId, req.tenantId);
+  const where = and(eq(attachments.tenantId, req.tenantId), attachmentService.companyScope(req.companyId));
 
   const [rows, totalRows] = await Promise.all([
     db
@@ -421,13 +356,18 @@ attachmentsRouter.get('/library', async (req, res) => {
         contactName: contacts.displayName,
       })
       .from(attachments)
+      // Review M3: join only a transaction (and its contact) this company
+      // may see, so a row's txn/contact columns never come from another
+      // company's records.
       .leftJoin(transactions, and(
         eq(attachments.attachableId, transactions.id),
         eq(attachments.tenantId, transactions.tenantId),
+        or(isNull(transactions.companyId), eq(transactions.companyId, req.companyId)),
       ))
       .leftJoin(contacts, and(
         eq(transactions.contactId, contacts.id),
         eq(transactions.tenantId, contacts.tenantId),
+        or(isNull(contacts.companyId), eq(contacts.companyId, req.companyId)),
       ))
       .where(where)
       .orderBy(sql`${attachments.createdAt} desc`)
@@ -440,15 +380,15 @@ attachmentsRouter.get('/library', async (req, res) => {
 });
 
 attachmentsRouter.get('/:id', async (req, res) => {
-  const attachment = await attachmentService.getById(req.tenantId, req.params['id']!);
+  const attachment = await attachmentService.getById(req.tenantId, req.params['id']!, req.companyId);
   res.json({ attachment });
 });
 
 
 attachmentsRouter.delete('/:id', async (req, res) => {
   const attachmentId = req.params['id']!;
-  const before = await attachmentService.getById(req.tenantId, attachmentId).catch(() => null);
-  await attachmentService.remove(req.tenantId, attachmentId);
+  const before = await attachmentService.getById(req.tenantId, attachmentId, req.companyId).catch(() => null);
+  await attachmentService.remove(req.tenantId, attachmentId, req.companyId);
   await auditLog(
     req.tenantId,
     'delete',
@@ -472,12 +412,13 @@ const OCR_GATE_MESSAGES: Record<BillOcrUnavailableReason, string> = {
 // POST /bills/extract-from-attachment (U-89): 400 with code
 // ai_disabled | ai_function_disabled | ai_consent_blocked, nothing changed.
 attachmentsRouter.post('/:id/ocr', async (req, res) => {
+  // U-90: 404 for a file the request's company may not see, before any AI.
+  const target = await attachmentService.getById(req.tenantId, req.params['id']!, req.companyId);
   if (isDesktop()) {
-    const target = await attachmentService.getById(req.tenantId, req.params['id']!);
     const gate = await billOcrAvailability(req.tenantId, target.companyId ?? null);
     if (!gate.ok) throw AppError.badRequest(OCR_GATE_MESSAGES[gate.reason], gate.reason);
   }
-  await ocrService.processReceipt(req.tenantId, req.params['id']!);
-  const attachment = await attachmentService.getById(req.tenantId, req.params['id']!);
+  await ocrService.processReceipt(req.tenantId, target.id);
+  const attachment = await attachmentService.getById(req.tenantId, target.id, req.companyId);
   res.json({ attachment });
 });

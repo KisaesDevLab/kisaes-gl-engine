@@ -141,6 +141,7 @@ portal1099Router.get('/vendors/:contactId/w9', async (req, res) => {
   const { stream, fileName, mimeType } = await svc.getW9Document(
     req.tenantId,
     req.params['contactId']!,
+    { userId: req.userId, isSuperAdmin: req.isSuperAdmin },
   );
   res.set('Content-Type', mimeType);
   res.set('Content-Disposition', `inline; filename="${fileName.replace(/"/g, '')}"`);

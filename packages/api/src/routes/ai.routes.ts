@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
@@ -34,6 +34,7 @@ import * as aiReceiptOcr from '../services/ai-receipt-ocr.service.js';
 import * as aiStatementParser from '../services/ai-statement-parser.service.js';
 import { pickEnum, parseCsvSet } from '../utils/list-query.js';
 import * as aiDocClassifier from '../services/ai-document-classifier.service.js';
+import * as attachmentService from '../services/attachment.service.js';
 import * as aiOrchestrator from '../services/ai-orchestrator.service.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
@@ -46,6 +47,27 @@ import { companies } from '../db/schema/index.js';
 import { eq, and } from 'drizzle-orm';
 
 export const aiRouter = Router();
+
+// U-90: a route that reads one attachment by `attachmentId` (body) reads
+// only a file the request's company may see (attachmentService.companyScope):
+// 404 otherwise, before any AI runs. Use after companyContext.
+async function attachmentInCompany(req: Request, _res: Response, next: NextFunction) {
+  const id = req.body?.attachmentId;
+  if (typeof id !== 'string') throw AppError.notFound('Attachment not found');
+  await attachmentService.getById(req.tenantId, id, req.companyId);
+  next();
+}
+
+// U-90 review M6: a statement-parse job (`:jobId`, or body `jobId` on
+// import) whose statement file the request's company may not see is 404.
+// Use after companyContext.
+async function statementJobInCompany(req: Request, _res: Response, next: NextFunction) {
+  const raw = req.params['jobId'] ?? req.body?.jobId;
+  if (typeof raw === 'string' && raw) {
+    await aiStatementParser.assertJobInCompany(req.tenantId, raw, req.companyId);
+  }
+  next();
+}
 
 // Per-user rate limit for AI processing endpoints. Each call hits a
 // paid LLM, so uncapped access is a direct billing DoS. 60 requests
@@ -320,7 +342,7 @@ aiRouter.post('/categorize/accept', authenticate, validate(aiCategorizeAcceptSch
 
 // ─── Processing — Receipt OCR ──────────────────────────────────
 
-aiRouter.post('/ocr/receipt', authenticate, aiProcessingLimiter, validate(aiOcrSchema), async (req, res) => {
+aiRouter.post('/ocr/receipt', authenticate, aiProcessingLimiter, validate(aiOcrSchema), companyContext, attachmentInCompany, async (req, res) => {
   const result = await aiReceiptOcr.processReceipt(req.tenantId, req.body.attachmentId);
   res.json(result);
 });
@@ -331,7 +353,7 @@ aiRouter.post('/ocr/receipt', authenticate, aiProcessingLimiter, validate(aiOcrS
 // follows /parse/statement/:jobId/progress (SSE) for staged progress and the
 // final result, rather than holding this request open for a slow multi-page
 // OCR. Validation/consent/budget errors still surface synchronously here.
-aiRouter.post('/parse/statement', authenticate, aiProcessingLimiter, validate(aiParseStatementSchema), async (req, res) => {
+aiRouter.post('/parse/statement', authenticate, aiProcessingLimiter, validate(aiParseStatementSchema), companyContext, attachmentInCompany, async (req, res) => {
   const { jobId } = await aiStatementParser.startStatementParse(req.tenantId, req.body.attachmentId, { forceOcr: req.body.forceOcr === true });
   res.status(202).json({ jobId });
 });
@@ -340,7 +362,7 @@ aiRouter.post('/parse/statement', authenticate, aiProcessingLimiter, validate(ai
 // 1.5s while the job advances through its stages, a heartbeat comment when
 // unchanged, and a final snapshot (with `result`) on completion — then closes.
 // Matches the transaction-converter's /:id/progress design.
-aiRouter.get('/parse/statement/:jobId/progress', authenticate, async (req, res) => {
+aiRouter.get('/parse/statement/:jobId/progress', authenticate, companyContext, statementJobInCompany, async (req, res) => {
   const jobId = String(req.params['jobId']);
   const initial = await aiOrchestrator.getJobForTenant(req.tenantId, jobId);
   if (!initial) {
@@ -401,7 +423,7 @@ aiRouter.get('/parse/statement/:jobId/progress', authenticate, async (req, res) 
 // Plain JSON status snapshot for a statement parse job. The browser polls this
 // (proxy-safe everywhere, unlike SSE which a reverse proxy may buffer). Returns
 // the final result on the terminal `complete` snapshot.
-aiRouter.get('/parse/statement/:jobId/status', authenticate, async (req, res) => {
+aiRouter.get('/parse/statement/:jobId/status', authenticate, companyContext, statementJobInCompany, async (req, res) => {
   const job = await aiOrchestrator.getJobForTenant(req.tenantId, String(req.params['jobId']));
   if (!job) {
     res.status(404).json({ error: { message: 'Job not found', code: 'NOT_FOUND' } });
@@ -417,7 +439,7 @@ aiRouter.get('/parse/statement/:jobId/status', authenticate, async (req, res) =>
   });
 });
 
-aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, validate(aiImportStatementSchema), async (req, res) => {
+aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, validate(aiImportStatementSchema), companyContext, statementJobInCompany, async (req, res) => {
   // Reconciliation-only mode (Statement Match Engine wave 1): the books are
   // already entered (manual entry / live bank feed), so create the
   // bank_statements record + bank_statement_lines for matching and import
@@ -533,7 +555,7 @@ aiRouter.post('/parse/statement/import', authenticate, aiProcessingLimiter, vali
 // Surfaces persisted statement parses so a user can upload a batch and work the
 // imports over multiple sessions. NOTE: registered with the literal "jobs"
 // segment, distinct from /parse/statement/:jobId/{progress,status}.
-aiRouter.get('/parse/statement/jobs', authenticate, async (req, res) => {
+aiRouter.get('/parse/statement/jobs', authenticate, companyContext, async (req, res) => {
   const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
   const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
   const data = await aiStatementParser.listStatementJobs(req.tenantId, {
@@ -541,23 +563,24 @@ aiRouter.get('/parse/statement/jobs', authenticate, async (req, res) => {
     sortBy: pickEnum(req.query['sortBy'], aiStatementParser.STATEMENT_JOB_SORT_KEYS),
     sortDir: pickEnum(req.query['sortDir'], ['asc', 'desc'] as const),
     status: parseCsvSet(req.query['status'], aiStatementParser.STATEMENT_JOB_DISPOSITIONS),
+    companyId: req.companyId,
   });
   res.json(data);
 });
 
-aiRouter.get('/parse/statement/jobs/:jobId', authenticate, async (req, res) => {
+aiRouter.get('/parse/statement/jobs/:jobId', authenticate, companyContext, statementJobInCompany, async (req, res) => {
   const data = await aiStatementParser.getStatementJobResult(req.tenantId, String(req.params['jobId']));
   res.json(data);
 });
 
-aiRouter.delete('/parse/statement/jobs/:jobId', authenticate, async (req, res) => {
+aiRouter.delete('/parse/statement/jobs/:jobId', authenticate, companyContext, statementJobInCompany, async (req, res) => {
   await aiStatementParser.deleteStatementJob(req.tenantId, String(req.params['jobId']));
   res.json({ deleted: true });
 });
 
 // Re-run a failed or pending-review parse from its original attachment. Rides
 // the same limiter as /parse/statement — it starts the identical pipeline.
-aiRouter.post('/parse/statement/jobs/:jobId/reprocess', authenticate, aiProcessingLimiter, async (req, res) => {
+aiRouter.post('/parse/statement/jobs/:jobId/reprocess', authenticate, aiProcessingLimiter, companyContext, statementJobInCompany, async (req, res) => {
   const result = await aiStatementParser.reprocessStatementJob(req.tenantId, String(req.params['jobId']));
   res.status(202).json(result);
 });
@@ -571,21 +594,21 @@ aiRouter.post('/parse/statement/jobs/:jobId/reprocess', authenticate, aiProcessi
 // the parse job so BOTH import paths (feed items and statement lines) use the
 // corrected row. Re-runs the Golden Rule + suspect-row check and returns the
 // new verdict for the review banner. 409 once the statement is saved.
-aiRouter.patch('/parse/statement/jobs/:jobId/transactions', authenticate, validate(aiEditStatementTransactionsSchema), async (req, res) => {
+aiRouter.patch('/parse/statement/jobs/:jobId/transactions', authenticate, validate(aiEditStatementTransactionsSchema), companyContext, statementJobInCompany, async (req, res) => {
   const result = await aiStatementParser.updateStatementJobTransactions(
     req.tenantId, String(req.params['jobId']), req.body.edits, req.userId,
   );
   res.json(result);
 });
 
-aiRouter.post('/parse/statement/jobs/:jobId/reread-checks', authenticate, aiProcessingLimiter, async (req, res) => {
+aiRouter.post('/parse/statement/jobs/:jobId/reread-checks', authenticate, aiProcessingLimiter, companyContext, statementJobInCompany, async (req, res) => {
   const result = await aiStatementParser.rereadCheckImages(req.tenantId, String(req.params['jobId']));
   res.json(result);
 });
 
 // ─── Processing — Document Classification ──────────────────────
 
-aiRouter.post('/classify', authenticate, aiProcessingLimiter, validate(aiClassifySchema), async (req, res) => {
+aiRouter.post('/classify', authenticate, aiProcessingLimiter, validate(aiClassifySchema), companyContext, attachmentInCompany, async (req, res) => {
   const result = await aiDocClassifier.classifyAndRoute(req.tenantId, req.body.attachmentId);
   res.json(result);
 });

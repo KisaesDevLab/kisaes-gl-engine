@@ -449,6 +449,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 | `bill-lines-v1` | Bill and vendor-credit lines take `itemId`, `quantity`, `unitPrice` (amount = quantity × cost to the cent, 400 `LINE_AMOUNT_MISMATCH` / `LINE_QTY_RATE_INCOMPLETE`), `contactId`, `isBillable` (bills only) and `tagId`; `draftAttachmentId` on create relinks in the same transaction (U-85, below). |
 | `bill-terms-v1` | `GET /payment-terms`; discount terms (`1_10_net_30`, `2_10_net_30`, custom `discountPercent` + `discountDays`); bills store `discountPercent`, `discountDays`, `discountDate`, `dueDateOverridden`, `discountDateOverridden`; `GET /bills/terms-dates`; due dates by calendar arithmetic (bills and invoices); vendor `defaultTermsDays`, `defaultDiscountPercent`, `defaultDiscountDays` (U-86, below). |
 | `bill-received-v1` | `billReceived` on bills (default true); a bill not received stays in A/P, aging and vendor-summary but is left out of `/bills/payable` and refused by `POST /bill-payments` (409 `BILL_NOT_RECEIVED`) (U-87, below). |
+| `attachments-company-v1` | Attachments are scoped by company: uploads record the request's company and every attachment route sees only that company's files and tenant-wide ones (U-90, below, Attachments and companies). |
 
 ## Account register
 
@@ -572,6 +573,27 @@ The generic copy path (journal entries, expenses, checks, transfers, deposits…
 - `fieldConfidence.*` and `lineItems[].confidence` are `high`, `medium` or `low`. The model's own per-field score is used when it gives one, else the document score; `high` ≥ 0.85, `medium` ≥ 0.6, else `low` (a 1–100 score is read as a percentage). An empty or blank field, or an amount or date that did not read, is `low`.
 - Confidence is what the model reports about its own reading, not a check of the bill. A client may use it to point the owner at fields to look at, but never as a reason to skip the owner's review: every read value is a suggestion the owner confirms before the bill is saved.
 - `confidence` (document level, a JSON number 0–1) stays for older clients.
+
+## Attachments and companies (`attachments-company-v1`)
+
+Every `/api/v1/attachments` route works in one company, resolved like every company-scoped router: `X-Company-Id`, else the first company the user may open; a company the user is excluded from (`accountant_company_exclusions`) is 403. A `?_dl=` download token that names a company works in that company only, whatever `X-Company-Id` or `?_company=` says. `POST /attachments` stores that company on the row (`attachments.company_id`). Bill Capture, TB row PDFs, the portal and W-9 PDFs (the vendor's company; none for a tenant-wide vendor) store theirs.
+
+An attachment is visible to a company when it carries that company, or it carries no company and the record it is filed on is not another company's. The record is looked up by `attachableId` in transactions, contacts (W-9s are filed on the vendor), daily-sales entries, tax entries, TB lead sheets, Bill Captures, bank-feed items and portal receipts. Everything else is treated as not there:
+
+- `GET /attachments`, `GET /attachments/library` (rows and `total`) and `GET /attachments/unlinked` leave it out.
+- `GET /attachments/:id`, `GET /attachments/:id/download` (Bearer or `?_dl=`), `DELETE /attachments/:id`, `POST /attachments/:id/ocr` and `POST /attachments/:id/link` are 404, with nothing changed and no AI run.
+- `POST /attachments/bulk-download` is 404 when any id is not visible.
+- API v2 `GET /attachments` and `/attachments/:id`, and `POST /ai/ocr/receipt`, `/ai/parse/statement` and `/ai/classify` (body `attachmentId`), follow the same rule.
+- Draft relinks on create (`draftAttachmentId` on checks, transactions, AJEs, tax entries, daily sales, bills and vendor credits) move only the draft's files that are tenant-wide or the request's company's.
+- MCP `list_attachments`, bill OCR (`POST /bills/extract-from-attachment/:id`) and the statement-parse jobs (`GET /ai/parse/statement/jobs`, `/jobs/:jobId` read, edit, delete, `reprocess`, `reread-checks`, `/:jobId/status` and `/progress`, and `POST /ai/parse/statement/import` with a `jobId`) follow the same rule; a job is judged by its statement file. The 1099 W-9 PDF (`GET /portal-1099/vendors/:contactId/w9`) is 404 for a user excluded from the vendor's company.
+
+Writing: `POST /attachments` and `POST /attachments/:id/link` check their target. A transaction type (`expense`, `bill`, …) must name a transaction of that type in the tenant that is not deleted and is tenant-wide or the request's company's; any other type must not name a record of another company. Otherwise 404 and nothing is stored. Linking, draft relinks and daily-sales posting fill in the company on a row that has none (`coalesce`), never replacing one it has. `GET /attachments/library` joins only a transaction and contact that are tenant-wide or the request's company's.
+
+`GET /attachments/:id/download` authenticates like every route (session shape, active user, or a `?_dl=` token), then needs the attachments read permission (403 `PERMISSION_DENIED`), then resolves the company. `POST /downloads/token` with `X-Company-Id` checks that company the same way (403) before putting it in the token. Download tokens are signed and stateless, so they are not single-use: they can be replayed for their 60 seconds, GET and HEAD only.
+
+**Callers with no company.** The rule applies wherever a request has a company. Internal callers that pass none (background OCR and classification of a file just uploaded, storage migration, tenant export, portal flows that look a file up by its own contact) apply only the tenant check; they act on a file they already hold by id, not on a user's choice.
+
+**Rows from before this change.** Migration `0231` (data only, idempotent, rollback a no-op) copies each attachment's company from the record it is filed on, for every parent listed above. Rows that stay without a company (drafts, receipts, files of a tenant-wide or deleted record) are tenant-wide: visible to every company of the tenant unless later filed on another company's record, and they take the company of the request that files them.
 
 ## Bills and vendor credits (A/P documents)
 

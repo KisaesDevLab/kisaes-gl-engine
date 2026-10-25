@@ -68,7 +68,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, attachments, systemSettings } from '../db/schema/index.js';
+import { tenants, companies, attachments, systemSettings } from '../db/schema/index.js';
 import { attachmentsRouter } from './attachments.routes.js';
 import { invalidateSystemProviderCache } from '../services/storage/storage-provider.factory.js';
 
@@ -132,6 +132,8 @@ beforeAll(async () => {
   await db.delete(tenants).where(eq(tenants.slug, SLUG));
   const [t] = await db.insert(tenants).values({ name: 'Auto OCR U-89', slug: SLUG }).returning();
   state.tenantId = t!.id;
+  // The attachments router works in a company (U-90).
+  await db.insert(companies).values({ tenantId: t!.id, businessName: 'Auto OCR U-89' });
 
   globalThis.fetch = ((...a: Parameters<typeof fetch>) => { fetchSpy(...a); return realFetch(...a); }) as typeof fetch;
 
@@ -152,6 +154,7 @@ afterAll(async () => {
   await setSetting(null);
   if (state.tenantId) {
     await db.delete(attachments).where(eq(attachments.tenantId, state.tenantId));
+    await db.delete(companies).where(eq(companies.tenantId, state.tenantId));
     await db.delete(tenants).where(eq(tenants.id, state.tenantId));
   }
   fs.rmSync(TMP_UPLOAD_DIR, { recursive: true, force: true });

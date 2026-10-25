@@ -384,7 +384,7 @@ export async function createDraft(tenantId: string, input: CreateDailySalesEntry
     await saveValues(tenantId, entry!.id, input.values, tx);
     // Files attached on the new-entry screen before this draft existed.
     const attachmentsLinked = input.draftAttachmentId
-      ? await reassignDraftAttachments(tenantId, input.draftAttachmentId, DAILY_SALES_ENTRY_ATTACHABLE, entry!.id, tx)
+      ? await reassignDraftAttachments(tenantId, input.draftAttachmentId, DAILY_SALES_ENTRY_ATTACHABLE, entry!.id, tx, companyId)
       : 0;
     await auditLog(tenantId, 'create', 'daily_sales_entry', entry!.id, null,
       attachmentsLinked ? { ...entry, attachmentsLinked } : entry, userId, tx);
@@ -416,7 +416,7 @@ export async function deleteEntry(tenantId: string, id: string, userId?: string,
   // Don't strand the entry's files: return them to the unfiled pool
   // ('draft', same as an unsaved form's uploads) so they stay in the
   // attachment library and can be attached elsewhere.
-  const attachmentsUnfiled = await moveEntryAttachments(db, tenantId, id, 'draft', id);
+  const attachmentsUnfiled = await moveEntryAttachments(db, tenantId, id, 'draft', id, entry.companyId);
   await auditLog(tenantId, 'delete', 'daily_sales_entry', id, entry,
     attachmentsUnfiled ? { attachmentsUnfiled } : null, userId);
 }
@@ -494,7 +494,7 @@ export async function postEntry(tenantId: string, id: string, userId?: string, c
 
     // The draft's files follow it onto the posted journal entry (same
     // transaction, so a failed post leaves them on the draft).
-    const attachmentsMoved = await moveEntryAttachments(tx, tenantId, id, DAILY_SALES_TXN_ATTACHABLE, posted.id);
+    const attachmentsMoved = await moveEntryAttachments(tx, tenantId, id, DAILY_SALES_TXN_ATTACHABLE, posted.id, entry.companyId);
 
     await auditLog(tenantId, 'create', 'daily_sales_entry_post', id, null, {
       transactionId: posted.id, overShort: delta.toFixed(4),
@@ -508,9 +508,16 @@ export async function postEntry(tenantId: string, id: string, userId?: string, c
 
 async function moveEntryAttachments(
   conn: DbOrTx, tenantId: string, entryId: string, newType: string, newId: string,
+  entryCompanyId: string | null,
 ): Promise<number> {
+  // U-90 review M4: the files keep the entry's company (filled in only when
+  // a row has none), so they stay that company's after the entry is gone.
   const moved = await conn.update(attachments)
-    .set({ attachableType: newType, attachableId: newId })
+    .set({
+      attachableType: newType,
+      attachableId: newId,
+      ...(entryCompanyId ? { companyId: sql`coalesce(${attachments.companyId}, ${entryCompanyId}::uuid)` } : {}),
+    })
     .where(and(
       eq(attachments.tenantId, tenantId),
       eq(attachments.attachableType, DAILY_SALES_ENTRY_ATTACHABLE),

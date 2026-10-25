@@ -866,10 +866,13 @@ registerTool('list_attachments', 'List attachment metadata (optionally filtered 
   company_id: 'string?', attachable_type: 'string?', attachable_id: 'string?', limit: 'number?',
 }, async (p, auth) => {
   checkScope(auth, 'read');
-  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const companyId = await resolveCompany(auth, p);
+  const tenantId = await getTenantId(companyId);
   const { list } = await import('../services/attachment.service.js');
+  // U-90 review M1: only the files this company may see (companyScope).
   return list(tenantId, {
     attachableType: p.attachable_type, attachableId: p.attachable_id, limit: p.limit || 50, offset: 0,
+    companyId,
   });
 });
 

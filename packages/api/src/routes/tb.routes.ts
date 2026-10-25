@@ -146,7 +146,7 @@ tbRouter.get('/ajes', async (req, res) => {
 tbRouter.post('/ajes', closingPasswordLimiter, lockContextMiddleware, validate(createAjeSchema), async (req, res) => {
   const aje = await ajeService.createAje(req.tenantId, req.companyId!, req.body, req.userId);
   if (req.body.draftAttachmentId) {
-    await attachmentService.reassignDraftAttachments(req.tenantId, req.body.draftAttachmentId, 'journal_entry', aje.id);
+    await attachmentService.reassignDraftAttachments(req.tenantId, req.body.draftAttachmentId, 'journal_entry', aje.id, undefined, req.companyId);
   }
   res.status(201).json({ aje });
 });
@@ -625,7 +625,7 @@ tbRouter.get('/tax-entries', async (req, res) => {
 tbRouter.post('/tax-entries', validate(createTaxEntrySchema), async (req, res) => {
   const entry = await taxEntriesService.createTaxEntry(req.tenantId, req.companyId!, req.body, req.userId);
   if (req.body.draftAttachmentId) {
-    await attachmentService.reassignDraftAttachments(req.tenantId, req.body.draftAttachmentId, 'tb_tax_entry', entry.id);
+    await attachmentService.reassignDraftAttachments(req.tenantId, req.body.draftAttachmentId, 'tb_tax_entry', entry.id, undefined, req.companyId);
   }
   res.status(201).json({ entry });
 });

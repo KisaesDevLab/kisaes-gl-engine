@@ -29,7 +29,7 @@ import jwt from 'jsonwebtoken';
 import * as unzipper from 'unzipper';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, users, attachments } from '../db/schema/index.js';
+import { tenants, companies, users, attachments } from '../db/schema/index.js';
 import { auditLog } from '../db/schema/audit-log.js';
 import { attachmentsRouter } from './attachments.routes.js';
 import * as attachmentService from '../services/attachment.service.js';
@@ -102,6 +102,7 @@ async function cleanDb() {
   if (tenantIds.length > 0) {
     await db.delete(auditLog).where(inArray(auditLog.tenantId, tenantIds));
     await db.delete(attachments).where(inArray(attachments.tenantId, tenantIds));
+    await db.delete(companies).where(inArray(companies.tenantId, tenantIds));
   }
   await db.delete(users).where(eq(users.email, USER_EMAIL));
   await db.delete(tenants).where(inArray(tenants.slug, [TENANT_A_SLUG, TENANT_B_SLUG]));
@@ -117,6 +118,11 @@ beforeAll(async () => {
   const [tenantB] = await db.insert(tenants).values({ name: 'Bulk DL Test B', slug: TENANT_B_SLUG }).returning();
   tenantAId = tenantA!.id;
   tenantBId = tenantB!.id;
+  // The attachments router works in a company (U-90).
+  await db.insert(companies).values([
+    { tenantId: tenantAId, businessName: 'Bulk DL Test A' },
+    { tenantId: tenantBId, businessName: 'Bulk DL Test B' },
+  ]);
 
   const [user] = await db.insert(users).values({
     tenantId: tenantAId,

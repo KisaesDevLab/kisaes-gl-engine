@@ -45,7 +45,7 @@ checksRouter.post('/', idempotent({
   // transaction detail page reads — keep them in step.
   if (req.body.draftAttachmentId && check?.id) {
     await attachmentService.reassignDraftAttachments(
-      req.tenantId, req.body.draftAttachmentId, 'expense', check.id,
+      req.tenantId, req.body.draftAttachmentId, 'expense', check.id, undefined, req.companyId,
     );
   }
   res.status(201).json({ check });

@@ -676,12 +676,13 @@ apiV2Router.get('/attachments', async (req, res) => {
     attachableId: req.query['attachableId'] as string | undefined,
     limit: req.query['limit'] ? Number(req.query['limit']) : undefined,
     offset: req.query['offset'] ? Number(req.query['offset']) : undefined,
+    companyId: req.companyId,
   });
   res.json(result);
 });
 
 apiV2Router.get('/attachments/:id', async (req, res) => {
-  const attachment = await attachmentService.getById(req.tenantId, req.params['id']!);
+  const attachment = await attachmentService.getById(req.tenantId, req.params['id']!, req.companyId);
   res.json({ attachment });
 });
 

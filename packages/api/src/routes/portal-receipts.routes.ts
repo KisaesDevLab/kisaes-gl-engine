@@ -58,7 +58,7 @@ portalReceiptsRouter.get('/:id', async (req, res) => {
 
 // Inline view / download of the stored file. Serves the Open document
 // requests grid ("view what the client actually sent") and the receipts
-// inbox. Accepts a ?_dl= single-use token via `authenticate`, so an
+// inbox. Accepts a ?_dl= download token via `authenticate`, so an
 // <iframe>/<img>/new-tab can load it without custom headers; ?inline=1
 // renders in place instead of prompting a save, matching the attachments
 // download route.

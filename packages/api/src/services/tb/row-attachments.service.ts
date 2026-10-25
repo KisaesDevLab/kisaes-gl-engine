@@ -87,7 +87,7 @@ export async function attachRowPdf(
       mimetype: 'application/pdf',
       buffer: input.buffer,
       size: input.buffer.length,
-    }, 'tb_leadsheet', input.groupingId);
+    }, 'tb_leadsheet', input.groupingId, { companyId });
     if (!uploaded) throw AppError.internal('Attachment upload failed');
 
     try {

@@ -34,7 +34,7 @@ declare global {
        *  originally authenticated (survives refresh/switch). */
       authTime?: number;
       /** How this request authenticated. 'session' = Bearer JWT (default);
-       *  'api_key' = x-api-key; 'download_token' = ?_dl= single-use token.
+       *  'api_key' = x-api-key; 'download_token' = ?_dl= ~60s download token.
        *  Routes that mint sessions (switch-tenant) or credentials must
        *  refuse anything but a real session — a scoped/expiring API key
        *  must never be upgradable into a full JWT+refresh pair. */
@@ -78,7 +78,8 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   }
 
   // Preferred URL-auth path for direct-navigation exports (open PDF in new
-  // tab): single-use ~60s download tokens issued by /api/v1/downloads/token.
+  // tab): ~60s signed download tokens issued by /api/v1/downloads/token
+  // (stateless, so replayable within the TTL; utils/download-token.ts).
   // The token carries the session context forward without exposing the JWT
   // in URLs, history, or proxy logs.
   const dlTokenRaw = req.query['_dl'];
@@ -101,15 +102,18 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     req.userType = 'staff';
     req.isSuperAdmin = payload.isSuperAdmin;
     req.authKind = 'download_token';
-    if (payload.companyId && !req.headers['x-company-id']) {
+    // U-90 review L1: a token issued for a company works in that company
+    // only; an X-Company-Id header or ?_company= on the URL is ignored.
+    if (payload.companyId) {
       req.headers['x-company-id'] = payload.companyId;
+      delete (req.query as Record<string, unknown>)['_company'];
     }
     if (isDesktop()) await workspaceFence(req);
     next();
     return;
   }
 
-  // URL-auth happens ONLY via the single-use ~60s ?_dl= tokens above. The
+  // URL-auth happens ONLY via the ~60s ?_dl= tokens above. The
   // legacy ?_token= path (full session JWT in the query string) is gone:
   // URLs land in browser history, proxy/analytics logs, and Referer
   // headers, so a leaked link stayed replayable until token expiry. No
@@ -130,7 +134,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     // (typ:'dl'), tfa-pending handoffs, check-signature step-up proofs,
     // portal preview tokens. None of them is a session, and accepting any
     // of them here would let a narrow-purpose token authenticate API calls
-    // (e.g. a ?_dl= token bypassing its single-use consumption by riding
+    // (e.g. a ?_dl= token bypassing its GET-only, short-TTL path by riding
     // the Authorization header). Require the full session claim set and
     // reject explicit non-session markers.
     if (!payload.userId || !payload.tenantId || !payload.role
@@ -222,7 +226,7 @@ export function assertAdminSessionFresh(req: Request): void {
 }
 
 /**
- * Refuse non-session principals. API keys and single-use download tokens
+ * Refuse non-session principals. API keys and short-lived download tokens
  * are deliberately narrow (tenant-bound, scoped, expiring/revocable);
  * letting them reach endpoints that mint a full JWT + refresh session
  * (switch-tenant) or plant durable credentials (API keys, passkeys) would

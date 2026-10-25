@@ -139,4 +139,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Bills, P18). The set is fixed: more routes get a new name.
    */
   'idempotency-ap-v1',
+  /**
+   * Attachments are scoped by company (U-90): POST /attachments stamps the request's company; list, library, unlinked,
+   * GET/download/delete/OCR/link, bulk-download, API v2 and the AI attachment routes see only that company's files and
+   * those with no company that are not filed on another company's transaction; others are 404 or left out.
+   */
+  'attachments-company-v1',
 ];

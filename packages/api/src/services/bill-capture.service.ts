@@ -689,7 +689,7 @@ export async function enterBill(
   const bill = await billService.createBill(tenantId, billInput, userId, companyId);
 
   // 4. Idempotent follow-ups.
-  await attachmentService.linkAttachment(tenantId, row.attachmentId, 'bill', bill.id);
+  await attachmentService.linkAttachment(tenantId, row.attachmentId, 'bill', bill.id, companyId);
   await db.update(billCaptures).set({
     status: 'entered',
     billId: bill.id,

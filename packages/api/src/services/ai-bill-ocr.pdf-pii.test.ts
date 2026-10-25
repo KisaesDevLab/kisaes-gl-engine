@@ -70,6 +70,19 @@ const state = {
   cloudVisionAllowed: false,
 };
 
+// U-90: the service reads the file through attachmentService.getById (the
+// company scope rule); a row stamped with another company is 404.
+vi.mock('./attachment.service.js', async () => {
+  const { AppError } = await import('../utils/errors.js');
+  const row = { id: 'a1', tenantId: 't1', companyId: 'c1', filePath: '/x.pdf', mimeType: 'application/pdf' };
+  return {
+    getById: async (_t: string, _id: string, companyId?: string | null) => {
+      if (companyId && row.companyId !== companyId) throw AppError.notFound('Attachment not found');
+      return row;
+    },
+  };
+});
+
 vi.mock('./ai-config.service.js', () => ({
   getConfig: async () => ({ isEnabled: true, ocrProvider: 'anthropic', categorizationProvider: 'anthropic', ocrModel: null }),
   getRawConfig: async () => ({ openaiCompatBaseUrl: null }),

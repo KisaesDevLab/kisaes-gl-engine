@@ -84,3 +84,8 @@ scripts/license-inventory.json
 .env.bak*
 docker-compose.local.yml
 scripts/host-backup.sh
+
+# Attachment test upload dirs (auto-OCR route tests)
+.tmp-auto-ocr-test-*
+.tmp-att-company-test-*
+.tmp-att-review-test-*

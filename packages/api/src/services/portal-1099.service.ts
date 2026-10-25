@@ -7,6 +7,7 @@ import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   accounts,
+  accountantCompanyExclusions,
   attachments,
   contacts,
   vendor1099Profile,
@@ -1248,10 +1249,18 @@ export async function completeW9(input: CompleteW9Input): Promise<{ ok: true }> 
       mimeType: 'application/pdf',
       sizeBytes: pdfBuf.length,
     });
+    // U-90 review H1: the W-9 belongs to the vendor's company, so a user
+    // excluded from that company can't list or download it. A tenant-wide
+    // vendor (contacts.company_id NULL) gives a tenant-wide file.
+    const vendor = await db.query.contacts.findFirst({
+      where: and(eq(contacts.tenantId, req.tenantId), eq(contacts.id, req.contactId)),
+      columns: { companyId: true },
+    });
     const inserted = await db
       .insert(attachments)
       .values({
         tenantId: req.tenantId,
+        companyId: vendor?.companyId ?? null,
         fileName: `W-9 ${input.legalName}.pdf`.replace(/[\\/:*?"<>|]/g, '_'),
         filePath: `/uploads/${storageKey}`,
         fileSize: pdfBuf.length,
@@ -1744,9 +1753,14 @@ export async function listRequestsForContact(tenantId: string, contactId: string
 // tenant's configured storage provider, falling back to the local
 // filesystem path stored on the attachments row. Tenant-scoped on
 // purpose: the PDF contains the masked TIN + signature audit trail.
+//
+// U-90 review H1: the 1099 screens are tenant-wide, so with `viewer` the PDF
+// is refused (404) when it belongs to a company the viewer is excluded from
+// (accountant_company_exclusions; super-admins never are).
 export async function getW9Document(
   tenantId: string,
   contactId: string,
+  viewer?: { userId: string; isSuperAdmin?: boolean },
 ): Promise<{ stream: NodeJS.ReadableStream; fileName: string; mimeType: string }> {
   const profile = await db.query.vendor1099Profile.findFirst({
     where: and(
@@ -1761,6 +1775,25 @@ export async function getW9Document(
     where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, profile.w9DocumentId)),
   });
   if (!att) throw AppError.notFound('W-9 document not found');
+  if (viewer && !viewer.isSuperAdmin) {
+    // Rows from before the W-9 recorded its company: the vendor's company.
+    const companyId = att.companyId
+      ?? (await db.query.contacts.findFirst({
+        where: and(eq(contacts.tenantId, tenantId), eq(contacts.id, contactId)),
+        columns: { companyId: true },
+      }))?.companyId
+      ?? null;
+    if (companyId) {
+      const [excluded] = await db.select({ companyId: accountantCompanyExclusions.companyId })
+        .from(accountantCompanyExclusions)
+        .where(and(
+          eq(accountantCompanyExclusions.userId, viewer.userId),
+          eq(accountantCompanyExclusions.companyId, companyId),
+        ))
+        .limit(1);
+      if (excluded) throw AppError.notFound('W-9 document not found');
+    }
+  }
 
   const provider = await getProviderForTenant(tenantId);
   const key = att.providerFileId || att.storageKey || att.filePath;

@@ -35,6 +35,7 @@ import { log } from '../utils/logger.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
+import { companyScope } from './attachment.service.js';
 import { sanitize, type SanitizerMode } from './pii-sanitizer.service.js';
 import { unwrapParsedResult } from './ai-providers/json-utils.js';
 import { renderPdfToPngPages, isRenderablePdf, isPassthroughImage } from './extraction/pdf-render.service.js';
@@ -1011,7 +1012,7 @@ export const STATEMENT_JOB_DISPOSITIONS: readonly StatementJobDisposition[] = ['
 
 export async function listStatementJobs(
   tenantId: string,
-  opts: { limit?: number; offset?: number; sortBy?: StatementJobSortKey; sortDir?: 'asc' | 'desc'; status?: StatementJobDisposition[] } = {},
+  opts: { limit?: number; offset?: number; sortBy?: StatementJobSortKey; sortDir?: 'asc' | 'desc'; status?: StatementJobDisposition[]; companyId?: string | null } = {},
 ): Promise<{ jobs: StatementJobSummary[]; total: number }> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const offset = Math.max(opts.offset ?? 0, 0);
@@ -1025,6 +1026,10 @@ export async function listStatementJobs(
   const txnCountExpr = sql`CASE WHEN jsonb_typeof(${aiJobs.outputData}->'transactions') = 'array'
     THEN jsonb_array_length(${aiJobs.outputData}->'transactions') ELSE 0 END`;
   const conds = [eq(aiJobs.tenantId, tenantId), eq(aiJobs.jobType, 'ocr_statement')];
+  // U-90 review M6: only parses of statements the company may see (the
+  // joined attachment passes companyScope; a job whose file is gone stays).
+  const scope = companyScope(opts.companyId);
+  if (scope) conds.push(scope);
   if (opts.status && opts.status.length > 0) {
     conds.push(sql`${dispositionExpr} IN (${sql.join(opts.status.map((s) => sql`${s}`), sql`, `)})`);
   }
@@ -1054,13 +1059,13 @@ export async function listStatementJobs(
     fileName: attachments.fileName,
   })
     .from(aiJobs)
-    .leftJoin(attachments, eq(attachments.id, aiJobs.inputId))
+    .leftJoin(attachments, and(eq(attachments.id, aiJobs.inputId), eq(attachments.tenantId, aiJobs.tenantId)))
     .where(where)
     .orderBy(...orderBy)
     .limit(limit)
     .offset(offset);
   const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(aiJobs)
-    .leftJoin(attachments, eq(attachments.id, aiJobs.inputId))
+    .leftJoin(attachments, and(eq(attachments.id, aiJobs.inputId), eq(attachments.tenantId, aiJobs.tenantId)))
     .where(where);
   return {
     total: Number(countRow?.count ?? 0),
@@ -1076,6 +1081,30 @@ export async function listStatementJobs(
       error: r.errorMessage ?? null,
     })),
   };
+}
+
+const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * U-90 review M6: a parse job of a statement file the request's company may
+ * not see (companyScope on the job's input attachment) is 404, so a user
+ * excluded from company A can't read, edit, reprocess, re-read, import or
+ * delete A's statement parses from company B. A job with no attachment (or
+ * whose file is gone) is left to the route's own lookup. `companyId` absent:
+ * no check.
+ */
+export async function assertJobInCompany(tenantId: string, jobId: string, companyId?: string | null): Promise<void> {
+  if (!companyId || !JOB_ID_RE.test(jobId)) return;
+  const [job] = await db.select({ id: aiJobs.id, attachmentId: attachments.id })
+    .from(aiJobs)
+    .leftJoin(attachments, and(eq(attachments.id, aiJobs.inputId), eq(attachments.tenantId, aiJobs.tenantId)))
+    .where(and(eq(aiJobs.tenantId, tenantId), eq(aiJobs.id, jobId)))
+    .limit(1);
+  if (!job?.attachmentId) return;
+  const [visible] = await db.select({ id: attachments.id }).from(attachments)
+    .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, job.attachmentId), companyScope(companyId)))
+    .limit(1);
+  if (!visible) throw AppError.notFound('Statement parse job not found');
 }
 
 export async function getStatementJobResult(tenantId: string, jobId: string) {
@@ -1225,7 +1254,9 @@ export async function rereadCheckImages(
   }
   if (!job.inputId) throw AppError.notFound('The original statement file is no longer available.');
 
-  const attachment = await db.query.attachments.findFirst({ where: eq(attachments.id, job.inputId) });
+  const attachment = await db.query.attachments.findFirst({
+    where: and(eq(attachments.tenantId, tenantId), eq(attachments.id, job.inputId)),
+  });
   if (!attachment) throw AppError.notFound('The original statement file is no longer available.');
 
   // Same gates the normal parse path gets: the AI master switch and the
