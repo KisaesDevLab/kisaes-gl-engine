@@ -34,6 +34,10 @@ export interface OpenApiMeta {
   /** JSON schema of the 200 response. */
   response?: ZodTypeAny;
   deprecated?: boolean;
+  /** Request header parameters (e.g. Idempotency-Key, attached by idempotent()). Merged across the chain. */
+  headers?: Array<{ name: string; required?: boolean; description?: string; schema: ZodTypeAny }>;
+  /** `x-` extensions copied onto the operation (e.g. `x-idempotency: true`). Merged across the chain. */
+  extensions?: Record<`x-${string}`, string | number | boolean>;
 }
 
 const META = Symbol.for('mybooks.openapi.meta');

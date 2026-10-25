@@ -112,7 +112,14 @@ function mergedMeta(chain: RecordedRoute['chain']): OpenApiMeta {
   const meta: OpenApiMeta = {};
   for (const fn of chain) {
     const m = getOpenApiMeta(fn);
-    if (m) Object.assign(meta, m);
+    if (!m) continue;
+    // Header parameters and x- extensions add up across the chain; the
+    // rest is last-wins.
+    const headers = [...(meta.headers ?? []), ...(m.headers ?? [])];
+    const extensions = { ...(meta.extensions ?? {}), ...(m.extensions ?? {}) };
+    Object.assign(meta, m);
+    if (headers.length > 0) meta.headers = headers;
+    if (Object.keys(extensions).length > 0) meta.extensions = extensions;
   }
   return meta;
 }
@@ -203,7 +210,17 @@ export function buildOpenApiDocument(routes: RecordedRoute[], opts: BuildOptions
         },
     );
     if (meta.query) params.push(...objectParams(meta.query, 'query'));
+    for (const h of meta.headers ?? []) {
+      params.push({
+        name: h.name,
+        in: 'header',
+        required: h.required ?? false,
+        ...(h.description ? { description: h.description } : {}),
+        schema: zodToOpenApiSchema(h.schema),
+      });
+    }
     if (params.length > 0) op['parameters'] = params;
+    for (const [k, v] of Object.entries(meta.extensions ?? {})) op[k] = v;
 
     if (meta.body && route.method !== 'get' && route.method !== 'head') {
       op['requestBody'] = {
