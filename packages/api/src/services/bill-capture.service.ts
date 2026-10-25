@@ -16,7 +16,9 @@
  * `discarded`. AI availability is decided at UPLOAD time: when AI is off or
  * consent is missing the row goes straight to `ready` with
  * extraction_skipped_reason set, so the queue doubles as a manual-keying
- * surface with the image beside the form.
+ * surface with the image beside the form. In desktop mode an upload never
+ * starts AI: every row goes to `ready` with `manual_only`, and a read runs
+ * only on POST /:id/reprocess (the same gates as bill reading) (U-89).
  *
  * enterBill() posts through bill.service.createBill — the same path as Enter
  * Bill — so the result flows into Pay Bills / check printing unchanged. The
@@ -55,6 +57,7 @@ import { recordStaffEmail } from './staff-email-audit.service.js';
 import { getCompanySettings } from './portal-contact.service.js';
 import { matchByName } from './ai-name-match.js';
 import { verifyAttachmentContent } from '../routes/attachments.routes.js';
+import { isDesktop } from '../desktop/profile.js';
 import {
   billOcrAvailability,
   extractBillFromAttachment,
@@ -225,7 +228,11 @@ export async function createCapturesFromUpload(input: CreateCapturesInput): Prom
   });
   if (!company) throw AppError.notFound('Company not found');
 
-  const availability = await billOcrAvailability(tenantId, companyId);
+  // U-89: in desktop mode an upload never starts AI. Each capture waits at
+  // 'ready' (manual_only) until the owner asks for a read with
+  // POST /:id/reprocess, which applies the bill-reading gates.
+  const desktop = isDesktop();
+  const availability = desktop ? null : await billOcrAvailability(tenantId, companyId);
   const results: CreatedCapture[] = [];
 
   for (const file of input.files) {
@@ -258,6 +265,9 @@ export async function createCapturesFromUpload(input: CreateCapturesInput): Prom
     if (!isImageOrPdf(file.mimetype)) {
       status = 'ready';
       skipped = 'unsupported_type';
+    } else if (!availability) {
+      status = 'ready';
+      skipped = 'manual_only';
     } else if (!availability.ok) {
       status = 'ready';
       skipped = availability.reason;
