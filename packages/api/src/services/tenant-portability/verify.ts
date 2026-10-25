@@ -19,7 +19,7 @@ import type { ArchiveManifest, TrialBalanceRow } from './format.js';
 import type { ArchivedAccess, ArchivedUser, IdentityResult } from './identity.js';
 import { userRowJson } from './identity.js';
 import { scopeSql, type PortabilityPlan } from './plan.js';
-import { digestFor, type IdMap } from './remap.js';
+import { digestFor, isJsonbType, reorderJsonKeys, reorderJsonbFields, type IdMap } from './remap.js';
 import type { ArchiveClient } from './session.js';
 import type { CompatResult } from './compat.js';
 import { USERS_PROJECTION } from './format.js';
@@ -174,6 +174,19 @@ function sortTb(rows: TrialBalanceRow[]): TrialBalanceRow[] {
     || a.status.localeCompare(b.status) || a.basis.localeCompare(b.basis));
 }
 
+/**
+ * Two in-memory JSON values are equal: same JSON text once object keys are
+ * in jsonb order (arrays keep their order). A map keyed by ids comes back
+ * from PostgreSQL ordered by the new ids, so key order alone is no
+ * difference (U-91). `undefined` equals nothing.
+ */
+export function sameJson(a: unknown, b: unknown): boolean {
+  const sa = JSON.stringify(a);
+  const sb = JSON.stringify(b);
+  if (sa === undefined || sb === undefined) return false;
+  return reorderJsonKeys(sa) === reorderJsonKeys(sb);
+}
+
 export async function verifyImport(input: VerifyInput): Promise<VerificationSummary> {
   const { client, plan, manifest, compat, idMap, newTenantId } = input;
   const failures: Failure[] = [];
@@ -201,6 +214,8 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
       if (!ty) throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (canonical column ${mt.name}.${c}).`);
       return `a."${c}"::${ty} AS "${c}"`;
     });
+    // jsonb columns: object keys back in jsonb order over the original ids (U-91).
+    const jsonbColumns = canonical.filter((c) => isJsonbType(types.get(c)!));
     const digest = digestFor(mt.pk);
     const cursor = `v_${mt.name}`;
     const sql = mt.pk === 'uuid'
@@ -212,7 +227,7 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
       for (;;) {
         const r = await client.query(`FETCH ${FETCH} FROM ${cursor}`);
         if (r.rows.length === 0) break;
-        for (const row of r.rows as Array<{ j: string }>) digest.add(idMap.inverse(row.j));
+        for (const row of r.rows as Array<{ j: string }>) digest.add(reorderJsonbFields(idMap.inverse(row.j), jsonbColumns));
       }
     } finally {
       await client.query(`CLOSE ${cursor}`).catch(() => undefined);
@@ -283,7 +298,7 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
     for (const c of USERS_PROJECTION) {
       const a = c === 'email' ? String(archived[c]).trim().toLowerCase() : archived[c];
       const l = live[c];
-      const same = c === 'id' ? String(l).toLowerCase() === String(a).toLowerCase() : JSON.stringify(l) === JSON.stringify(a ?? null);
+      const same = c === 'id' ? String(l).toLowerCase() === String(a).toLowerCase() : sameJson(l, a ?? null);
       if (!same && !(c === 'is_active' && a === null && l === true)) failures.push({ check: `identity.created.${c}`, table: 'users' });
     }
     const home = (await client.query('SELECT is_super_admin, tfa_enabled FROM users WHERE id = $1', [newId])).rows[0] as { is_super_admin: boolean; tfa_enabled: boolean };
@@ -311,8 +326,9 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
   const tenantRow = (await client.query('SELECT report_settings, practice_settings, share_settings, is_workspace FROM tenants WHERE id = $1', [newTenantId])).rows[0] as Record<string, unknown>;
   for (const c of ['report_settings', 'practice_settings', 'share_settings']) {
     // Both sides carry new ids (the archived row was substituted before the insert): compare them mapped back.
-    const live = idMap.inverse(JSON.stringify(tenantRow[c] ?? null));
-    const archived = idMap.inverse(JSON.stringify(input.archivedTenant[c] ?? null));
+    // Key order follows the ids on each side, so it is normalized after mapping back (U-91).
+    const live = reorderJsonKeys(idMap.inverse(JSON.stringify(tenantRow[c] ?? null)));
+    const archived = reorderJsonKeys(idMap.inverse(JSON.stringify(input.archivedTenant[c] ?? null)));
     if (live !== archived) failures.push({ check: `tenant.${c}`, table: 'tenants' });
   }
   if (tenantRow['is_workspace'] !== false) failures.push({ check: 'tenant.is_workspace', table: 'tenants' });

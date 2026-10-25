@@ -221,6 +221,129 @@ export function pkOfLine(line: string, pkColumn: string): string {
   return v.toLowerCase();
 }
 
+// ── jsonb key order (U-91) ───────────────────────────────────────────
+
+/**
+ * PostgreSQL stores jsonb object keys sorted by UTF-8 byte length, then
+ * bytewise, and prints them in that order. An object keyed by ids (for
+ * example companies.check_settings.nextCheckNumbers, keyed by bank
+ * account id) is therefore re-sorted when the import substitutes new ids,
+ * and mapping the ids back on the text leaves the keys in new-id order.
+ * Same keys and values, other order: a content digest of the raw text
+ * differs. These helpers put the members back in PostgreSQL's order.
+ */
+export function compareJsonbKeys(a: string, b: string): number {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  return ab.length - bb.length || Buffer.compare(ab, bb);
+}
+
+const JSON_WS = new Set([' ', '\t', '\n', '\r']);
+
+/**
+ * Reorders the members of every object in a JSON text into jsonb key order,
+ * recursively. Everything else is kept verbatim: array order, number
+ * literals (never parsed, so numeric precision is untouched), string
+ * escapes and the separators the text used. For a jsonb value printed by
+ * PostgreSQL whose keys are already in jsonb order this is the identity.
+ * Throws on malformed JSON.
+ */
+export function reorderJsonKeys(text: string): string {
+  const s = text;
+  const ws = (i: number): number => {
+    while (i < s.length && JSON_WS.has(s[i]!)) i++;
+    return i;
+  };
+  const value = (i: number): { end: number; out: string } => {
+    const ch = s[i];
+    if (ch === '"') {
+      const end = scanString(s, i);
+      if (s[end - 1] !== '"' || end - 1 === i) throw new Error('unterminated JSON string');
+      return { end, out: s.slice(i, end) };
+    }
+    if (ch === '{' || ch === '[') {
+      const isObject = ch === '{';
+      const close = isObject ? '}' : ']';
+      const lead = ws(i + 1);
+      const parts: Array<{ key: string; out: string; sep: string }> = [];
+      let j = lead;
+      let tail = '';
+      if (s[j] === close) {
+        return { end: j + 1, out: s.slice(i, j + 1) };
+      }
+      for (;;) {
+        let key = '';
+        let head = '';
+        if (isObject) {
+          if (s[j] !== '"') throw new Error('expected JSON object key');
+          const keyEnd = scanString(s, j);
+          key = JSON.parse(s.slice(j, keyEnd)) as string;
+          let k = ws(keyEnd);
+          if (s[k] !== ':') throw new Error('expected ":" in JSON object');
+          k = ws(k + 1);
+          head = s.slice(j, k);
+          j = k;
+        }
+        const v = value(j);
+        const after = ws(v.end);
+        if (s[after] === ',') {
+          const next = ws(after + 1);
+          parts.push({ key, out: head + v.out, sep: s.slice(v.end, next) });
+          j = next;
+          continue;
+        }
+        if (s[after] !== close) throw new Error('expected "," or a closing bracket in JSON');
+        parts.push({ key, out: head + v.out, sep: '' });
+        tail = s.slice(v.end, after);
+        j = after + 1;
+        break;
+      }
+      const open = s.slice(i, lead);
+      if (!isObject) {
+        return { end: j, out: open + parts.map((p) => p.out + p.sep).join('') + tail + close };
+      }
+      const sep = parts[0]!.sep || ', ';
+      const sorted = [...parts].sort((a, b) => compareJsonbKeys(a.key, b.key));
+      return { end: j, out: open + sorted.map((p) => p.out).join(sep) + tail + close };
+    }
+    let j = i;
+    while (j < s.length && !JSON_WS.has(s[j]!) && s[j] !== ',' && s[j] !== '}' && s[j] !== ']') j++;
+    if (j === i) throw new Error('expected a JSON value');
+    return { end: j, out: s.slice(i, j) };
+  };
+  const start = ws(0);
+  const v = value(start);
+  if (ws(v.end) !== s.length) throw new Error('trailing text after JSON value');
+  return s.slice(0, start) + v.out + s.slice(v.end);
+}
+
+/** True for a declared (format_type) type whose values PostgreSQL re-sorts: jsonb and jsonb arrays. */
+export function isJsonbType(type: string): boolean {
+  return /^jsonb(\[\])*$/.test(type.trim());
+}
+
+/**
+ * Puts the object keys of the named top-level fields of a row line back in
+ * jsonb key order (see compareJsonbKeys). Apply after IdMap.inverse so the
+ * order is taken over the original ids. A field that is absent or does not
+ * parse is left as it is, so the digest still differs and the check fails.
+ */
+export function reorderJsonbFields(line: string, columns: readonly string[]): string {
+  let out = line;
+  for (const c of columns) {
+    const span = topLevelField(out, c);
+    if (!span || span.raw === 'null') continue;
+    let raw: string;
+    try {
+      raw = reorderJsonKeys(span.raw);
+    } catch {
+      continue;
+    }
+    if (raw !== span.raw) out = `${out.slice(0, span.start)}${raw}${out.slice(span.end)}`;
+  }
+  return out;
+}
+
 // ── Digests ──────────────────────────────────────────────────────────
 
 /** SHA-256 over the canonical lines joined by "\n", in order (uuid-pk tables). */
