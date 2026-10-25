@@ -7,7 +7,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 type Decimal = InstanceType<typeof Decimal>;
 import { CHECK_MEMO_PRINT_LIMIT, vendorAccountMemo, toStoredPaymentMethod, type PayBillsInput } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type Tx } from '../db/index.js';
 import {
   transactions,
   journalLines,
@@ -21,13 +21,14 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
-import { checkLockDate, assertAccountsInScope, round4 } from './ledger.service.js';
+import { checkLockDate, auditLockOverride, assertAccountsInScope, assertNotStale, inOtherCompany, round4 } from './ledger.service.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 
-// Precision tolerance for float-style leftover comparisons. Decimal.js
-// already avoids the rounding issues that `parseFloat` produced here;
-// this threshold only handles the case where user-typed amounts may
-// legitimately carry a sub-penny mismatch (e.g. 0.005 rounding).
-const EPSILON = new Decimal('0.0001');
+// Comparisons are exact (review S1): every amount is rounded to the
+// ledger's 4 places first (round4), so a payment may not exceed a balance
+// due, or a credit its open balance, by even 0.0001. (Was a 0.0001
+// tolerance.)
+const EPSILON = new Decimal('0');
 
 async function getApAccountId(tenantId: string): Promise<string> {
   const account = await db.query.accounts.findFirst({
@@ -177,39 +178,63 @@ export async function payBills(
     // directly (header + lines + balances) and used to skip both,
     // letting a bill payment land in a locked prior year or credit a
     // bank account outside the caller's tenant/company scope.
-    await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null);
+    // The closed-period override is audited once per payment, with its id
+    // and date, after the payments exist (review M4).
+    const lockOverride = await checkLockDate(tx, tenantId, input.txnDate, companyId ?? null, undefined, { deferAudit: true });
     await assertAccountsInScope(tx, tenantId, companyId ?? null, [input.bankAccountId]);
 
-    // Lock the bills + credits for the duration of the transaction
-    const lockedBills = await tx.select().from(transactions)
+    // Lock the bills + credits for the duration of the transaction. A bill
+    // or credit of another company in the tenant is not found (review M3),
+    // checked after the lock.
+    const lockedBills = (await tx.select().from(transactions)
       .where(and(
         eq(transactions.tenantId, tenantId),
         eq(transactions.txnType, 'bill'),
         inArray(transactions.id, billIds),
       ))
-      .for('update');
+      .for('update'))
+      .filter((b) => !inOtherCompany(b, companyId));
 
     if (lockedBills.length !== billIds.length) {
       throw AppError.badRequest('One or more bills not found');
     }
 
     for (const bill of lockedBills) {
-      if (bill.status === 'void') throw AppError.badRequest(`Bill ${bill.txnNumber || bill.id} is void`);
+      // Only a posted bill can be paid (review B2): a void or deleted bill
+      // keeps its old balance_due, which must not be paid again.
+      if (bill.status !== 'posted') {
+        throw AppError.badRequest(`Bill ${bill.txnNumber || bill.id} is ${bill.status}`, 'BILL_NOT_PAYABLE', { billId: bill.id, status: bill.status });
+      }
       if (bill.billStatus === 'paid') throw AppError.badRequest(`Bill ${bill.txnNumber || bill.id} is already fully paid`);
+      // Not received yet (U-87): in A/P, but not payable until it is ticked.
+      if (bill.billReceived === false) {
+        throw AppError.conflict(
+          `Bill ${bill.txnNumber || bill.id} is not marked received yet. Mark it received, then pay it.`,
+          'BILL_NOT_RECEIVED',
+          { billId: bill.id },
+        );
+      }
     }
 
     const lockedCredits = creditIds.length > 0
-      ? await tx.select().from(transactions)
+      ? (await tx.select().from(transactions)
           .where(and(
             eq(transactions.tenantId, tenantId),
             eq(transactions.txnType, 'vendor_credit'),
             inArray(transactions.id, creditIds),
           ))
-          .for('update')
+          .for('update'))
+          .filter((cr) => !inOtherCompany(cr, companyId))
       : [];
 
     if (lockedCredits.length !== creditIds.length) {
       throw AppError.badRequest('One or more vendor credits not found');
+    }
+    // Only a posted credit can be applied (review B2).
+    for (const credit of lockedCredits) {
+      if (credit.status !== 'posted') {
+        throw AppError.badRequest(`Vendor credit ${credit.txnNumber || credit.id} is ${credit.status}`, 'CREDIT_NOT_AVAILABLE', { creditId: credit.id, status: credit.status });
+      }
     }
 
     // Group by vendor: one bill_payment transaction per vendor.
@@ -485,6 +510,9 @@ export async function payBills(
         net: grp.netPayment.toFixed(4),
         ...(origin ? { source: origin.source, sourceId: origin.sourceId } : {}),
       }, userId, tx);
+      if (lockOverride) {
+        await auditLockOverride(tx, tenantId, lockOverride, { txnId: payment.id, oldDate: null, newDate: input.txnDate });
+      }
 
       createdPayments.push({ payment, group: grp });
     }
@@ -539,8 +567,34 @@ export async function listBillPayments(tenantId: string, filters: {
     .offset(filters.offset ?? 0);
 }
 
-export async function voidBillPayment(tenantId: string, paymentId: string, reason: string, userId?: string) {
-  return await db.transaction(async (tx) => {
+export interface VoidBillPaymentOptions {
+  /** ap-edit-v1: updatedAt as last read; mismatch is 409 STALE. */
+  expectedUpdatedAt?: string;
+  /** The request's company: another company's payment is not found (review M3). */
+  companyId?: string;
+}
+
+export async function voidBillPayment(
+  tenantId: string, paymentId: string, reason: string, userId?: string, opts: VoidBillPaymentOptions = {},
+) {
+  return await db.transaction((tx) => voidBillPaymentInTx(tx, tenantId, paymentId, reason, userId, opts));
+}
+
+/**
+ * voidBillPayment inside the caller's database transaction. ledger
+ * voidTransaction routes bill payments here (review B1), so voiding one
+ * from the register (POST /transactions/:id/void) also removes its
+ * applications and reopens the bills and credits it settled.
+ */
+export async function voidBillPaymentInTx(
+  tx: Tx, tenantId: string, paymentId: string, reason: string, userId?: string, opts: VoidBillPaymentOptions = {},
+) {
+  {
+    // Idempotency-Key (idempotency-ap-v1): claimed in this transaction; a
+    // no-op without a key, or when ledger.voidTransaction already claimed
+    // on this transaction (POST /transactions/:id/void).
+    await claimIdempotency(tx);
+    await recordIdempotentEntity(tx, 'transaction', paymentId);
     const [payment] = await tx.select().from(transactions)
       .where(and(
         eq(transactions.tenantId, tenantId),
@@ -549,14 +603,20 @@ export async function voidBillPayment(tenantId: string, paymentId: string, reaso
       ))
       .for('update');
 
-    if (!payment) throw AppError.notFound('Bill payment not found');
+    if (!payment || payment.status === 'deleted' || inOtherCompany(payment, opts.companyId)) {
+      throw AppError.notFound('Bill payment not found');
+    }
     if (payment.status === 'void') throw AppError.badRequest('Bill payment is already void');
+    assertNotStale(payment, opts.expectedUpdatedAt, 'This bill payment');
 
     // Same guards as ledger.voidTransaction — this custom void path used
     // to skip both, so a bill payment in a LOCKED prior year could be
     // voided (silently changing closed-year Cash/AP), and voiding a
     // payment cleared in a completed bank rec left the rec unreconcilable.
-    await checkLockDate(tx, tenantId, payment.txnDate, payment.companyId);
+    // An override's audit row names the payment and its date (review M4).
+    await checkLockDate(tx, tenantId, payment.txnDate, payment.companyId, undefined, {
+      txnId: paymentId, oldDate: payment.txnDate, newDate: null,
+    });
     const clearedInCompleted = await tx.execute(sql`
       SELECT 1
       FROM ${reconciliationLines} rl
@@ -643,5 +703,5 @@ export async function voidBillPayment(tenantId: string, paymentId: string, reaso
     }
 
     await auditLog(tenantId, 'void', 'transaction', paymentId, payment, { reason }, userId, tx);
-  });
+  }
 }

@@ -110,4 +110,33 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * POST /attachments/:id/ocr honours the AI on / consent gates in desktop mode (U-89).
    */
   'bill-ocr-v2',
+  /**
+   * Bills, vendor credits, bill payments and bill-capture enter take closingPassword / overrideConfirmed for a date on or
+   * before the closing date (423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID) (U-83).
+   */
+  'ap-closing-v1',
+  /**
+   * PUT /vendor-credits/:id (409 CREDIT_APPLIED); bills and vendor credits deletable via DELETE /transactions/:id while
+   * unapplied (409 BILL_HAS_PAYMENTS / CREDIT_APPLIED); expectedUpdatedAt on bill / credit PUT and void and on transaction
+   * void / delete (409 STALE, details.updatedAt); A/P checks under the row lock; bill-payment voids keep applications right;
+   * vendor-summary counts posted documents only; exact paid status (U-84).
+   */
+  'ap-edit-v1',
+  /** Bill and vendor-credit lines: itemId, quantity, unitPrice (400 LINE_AMOUNT_MISMATCH / LINE_QTY_RATE_INCOMPLETE), contactId, isBillable (bills), tagId; draftAttachmentId on create (U-85). */
+  'bill-lines-v1',
+  /** PAYMENT_TERMS with discount terms; bills store discountPercent/Days/Date and override flags; GET /bills/terms-dates, GET /payment-terms; calendar-day due dates (U-86). */
+  'bill-terms-v1',
+  /** billReceived on bills (default true); false is left out of /bills/payable and refused by Pay Bills (409 BILL_NOT_RECEIVED) (U-87). */
+  'bill-received-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on exactly these A/P
+   * routes added after it (each `x-idempotency: true` in openapi.json):
+   *   PUT /bills/:id, POST /bills/:id/void, POST /vendor-credits,
+   *   PUT /vendor-credits/:id, POST /vendor-credits/:id/void,
+   *   POST /bill-payments/:id/void.
+   * Refusals (409 STALE, BILL_HAS_PAYMENTS, CREDIT_APPLIED, TXN_DEPOSITED,
+   * 423, 403, 400) are never stored. POST /bill-payments is not keyed (Pay
+   * Bills, P18). The set is fixed: more routes get a new name.
+   */
+  'idempotency-ap-v1',
 ];

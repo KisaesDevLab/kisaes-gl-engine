@@ -487,6 +487,14 @@ interface PostTransactionInput {
   termsDays?: number;
   creditsApplied?: string;
   vendorInvoiceNumber?: string;
+  // Bill terms and received flag (U-86, U-87; create only — the bill
+  // service writes them on edit).
+  discountPercent?: string | null;
+  discountDays?: number | null;
+  discountDate?: string | null;
+  dueDateOverridden?: boolean;
+  discountDateOverridden?: boolean;
+  billReceived?: boolean;
   appliedToInvoiceId?: string;
   sourceEstimateId?: string;
   // Source tracking
@@ -613,6 +621,12 @@ export async function postTransaction(
       termsDays: input.termsDays ?? null,
       creditsApplied: input.creditsApplied || '0',
       vendorInvoiceNumber: input.vendorInvoiceNumber || null,
+      discountPercent: input.discountPercent ?? null,
+      discountDays: input.discountDays ?? null,
+      discountDate: input.discountDate || null,
+      dueDateOverridden: input.dueDateOverridden ?? false,
+      discountDateOverridden: input.discountDateOverridden ?? false,
+      billReceived: input.billReceived ?? true,
       appliedToInvoiceId: input.appliedToInvoiceId || null,
       sourceEstimateId: input.sourceEstimateId || null,
       source: input.source || null,
@@ -686,7 +700,25 @@ export async function postTransaction(
   return await db.transaction(inner);
 }
 
-export async function voidTransaction(tenantId: string, txnId: string, reason: string, userId?: string) {
+export interface VoidTransactionOptions {
+  /** ap-edit-v1 (U-84): updatedAt as last read; mismatch is 409 STALE. */
+  expectedUpdatedAt?: string;
+  /** Only this txn type may be voided (the bills / vendor-credits routes); else 400. */
+  expectType?: string;
+  /**
+   * The request's company: a transaction of another company in the tenant
+   * is not found (404), checked after the row lock (review M3). Omitted
+   * (jobs, daily sales): tenant scope only.
+   */
+  companyId?: string;
+}
+
+/** A row of another company than the request's (a tenant-wide row, company null, is in every company). */
+export function inOtherCompany(row: { companyId: string | null }, companyId: string | null | undefined): boolean {
+  return !!companyId && !!row.companyId && row.companyId !== companyId;
+}
+
+export async function voidTransaction(tenantId: string, txnId: string, reason: string, userId?: string, opts: VoidTransactionOptions = {}) {
   // Wrap in a database transaction AND lock the row up front. Without the
   // row lock, two concurrent void calls on the same transaction can both
   // observe status='posted', both pass the check below, and both call
@@ -694,11 +726,11 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
   // the trial balance. SELECT … FOR UPDATE serializes the void path so
   // the second caller blocks until the first commits, then reads the
   // already-voided state and throws "already void" cleanly.
-  return await db.transaction((tx) => voidTransactionInTx(tx, tenantId, txnId, reason, userId));
+  return await db.transaction((tx) => voidTransactionInTx(tx, tenantId, txnId, reason, userId, opts));
 }
 
 /** voidTransaction inside the caller's database transaction. */
-export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: string, reason: string, userId?: string) {
+export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: string, reason: string, userId?: string, opts: VoidTransactionOptions = {}) {
   {
     await claimIdempotency(tx);
     await recordIdempotentEntity(tx, 'transaction', txnId);
@@ -707,8 +739,25 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       .for('update')
       .limit(1);
 
-    if (!txn || txn.status === 'deleted') throw AppError.notFound('Transaction not found');
+    if (!txn || txn.status === 'deleted' || inOtherCompany(txn, opts.companyId)) throw AppError.notFound('Transaction not found');
+    if (opts.expectType && txn.txnType !== opts.expectType) {
+      throw AppError.badRequest(opts.expectType === 'bill' ? 'Not a bill' : opts.expectType === 'vendor_credit' ? 'Not a vendor credit' : 'Wrong transaction type');
+    }
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
+    assertNotStale(txn, opts.expectedUpdatedAt);
+
+    // A bill payment carries its applications (review B1): voiding it as a
+    // plain transaction would leave the bills it paid marked paid. It goes
+    // through the bill-payment void, in this database transaction.
+    if (txn.txnType === 'bill_payment') {
+      const { voidBillPaymentInTx } = await import('./bill-payment.service.js');
+      await voidBillPaymentInTx(tx, tenantId, txnId, reason, userId, { companyId: opts.companyId });
+      return;
+    }
+    // A bill or vendor credit with anything applied can't be voided (U-84):
+    // 409 BILL_HAS_PAYMENTS / CREDIT_APPLIED, read from the application rows
+    // under this row lock.
+    await assertApDocumentUnapplied(tx, tenantId, txn);
 
     // Check lock date against the transaction's date (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
@@ -815,18 +864,96 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines },
       releasedLinks.length > 0 ? { reason, releasedDepositLinks: releasedLinks } : { reason }, userId, tx);
 
-    if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId);
+    if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId, { companyId: opts.companyId });
+  }
+}
+
+/**
+ * Optimistic concurrency on a locked row (U-84, ap-edit-v1): `expected` is
+ * the record's updatedAt as the caller last read it (ISO 8601). Compared to
+ * the millisecond, as JSON carries it, after the row is read FOR UPDATE, so
+ * two writers can't both pass. Mismatch: 409 STALE, details.updatedAt = the
+ * stored value; nothing changes. Omitted: no check (old behaviour).
+ */
+export function assertNotStale(
+  row: { updatedAt: Date | null },
+  expected: string | undefined,
+  what = 'This transaction',
+): void {
+  if (expected === undefined) return;
+  const stored = row.updatedAt ? row.updatedAt.getTime() : null;
+  const wanted = Date.parse(expected);
+  if (stored === null || Number.isNaN(wanted) || stored !== wanted) {
+    throw AppError.conflict(
+      `${what} was changed by someone else since you opened it. Reload it and make your change again.`,
+      'STALE',
+      { updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null },
+    );
+  }
+}
+
+/** A/P documents with a sub-ledger kept by their own services. */
+export const AP_DOCUMENT_TYPES: readonly string[] = ['bill', 'vendor_credit', 'bill_payment'];
+
+/**
+ * A bill or vendor credit may be voided, deleted or freely edited only while
+ * nothing is applied to it (U-84, review B1). Reads the application rows
+ * themselves (not the bill_status column), on the caller's transaction after
+ * the document row is locked FOR UPDATE, so a payment racing the change
+ * either commits first (and is seen here) or waits for the lock.
+ *   bill: bill_payment_applications or vendor_credit_applications for it →
+ *         409 BILL_HAS_PAYMENTS
+ *   vendor credit: vendor_credit_applications for it → 409 CREDIT_APPLIED
+ *         (a refund deposit is TXN_DEPOSITED / TXN_DELETE_LINKED, checked
+ *         by the void / delete paths; `includeRefunds` folds it in here)
+ */
+export async function assertApDocumentUnapplied(
+  executor: DbOrTx,
+  tenantId: string,
+  txn: { id: string; txnType: string },
+  opts: { includeRefunds?: boolean } = {},
+): Promise<void> {
+  if (txn.txnType === 'bill') {
+    const res = await executor.execute(sql`
+      SELECT
+        (SELECT COUNT(*) FROM bill_payment_applications WHERE tenant_id = ${tenantId} AND bill_id = ${txn.id})::int AS paid,
+        (SELECT COUNT(*) FROM vendor_credit_applications WHERE tenant_id = ${tenantId} AND bill_id = ${txn.id})::int AS credited
+    `);
+    const row = (res.rows as Array<{ paid: number; credited: number }>)[0];
+    if ((row?.paid ?? 0) > 0 || (row?.credited ?? 0) > 0) {
+      throw AppError.conflict(
+        'This bill has payments applied (bill payments or vendor credits). Void those bill payments first.',
+        'BILL_HAS_PAYMENTS',
+        { payments: row?.paid ?? 0, creditsApplied: row?.credited ?? 0 },
+      );
+    }
+    return;
+  }
+  if (txn.txnType === 'vendor_credit') {
+    const res = await executor.execute(sql`
+      SELECT (SELECT COUNT(*) FROM vendor_credit_applications WHERE tenant_id = ${tenantId} AND credit_id = ${txn.id})::int AS applied
+    `);
+    const applied = (res.rows as Array<{ applied: number }>)[0]?.applied ?? 0;
+    const refunds = opts.includeRefunds ? await liveDepositsForSource(executor, tenantId, txn.id) : [];
+    if (applied > 0 || refunds.length > 0) {
+      throw AppError.conflict(
+        'This vendor credit has been applied to bills or refunded. Void those bill payments or refund deposits first.',
+        'CREDIT_APPLIED',
+        { applications: applied, refundDepositIds: [...new Set(refunds.map((r) => r.depositId))] },
+      );
+    }
   }
 }
 
 /**
  * Transaction types DELETE /transactions/:id accepts (txn-delete-v1): the
  * plain register entries whose only effect is their own journal lines (the
- * types PUT /transactions/:id edits; checks post as 'expense'). Documents
- * with a sub-ledger (invoices, bills, payments, credits, AJEs, daily sales)
- * keep their own void paths and are refused with TXN_DELETE_UNSUPPORTED.
+ * types PUT /transactions/:id edits; checks post as 'expense'), plus bills
+ * and vendor credits with nothing applied (ap-edit-v1, U-84). Documents with
+ * a sub-ledger otherwise (invoices, payments, AJEs, daily sales) keep their
+ * own void paths and are refused with TXN_DELETE_UNSUPPORTED.
  */
-export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense', 'transfer', 'deposit', 'cash_sale'];
+export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense', 'transfer', 'deposit', 'cash_sale', 'bill', 'vendor_credit'];
 
 /**
  * Soft delete (P12 R7, capability txn-delete-v1). Nothing is physically
@@ -855,7 +982,7 @@ export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense
  */
 export const DELETE_BLOCKING_LINKS = [
   'bank_feed_match', 'accrual', 'payroll', 'portal_receipt', 'category_suggestion',
-  'recurring_template', 'daily_sales', 'estimated_tax_payment',
+  'recurring_template', 'daily_sales', 'estimated_tax_payment', 'bill_capture',
 ] as const;
 
 export async function findDeleteBlockingLinks(
@@ -878,16 +1005,25 @@ export async function findDeleteBlockingLinks(
                 AND ((transaction_id = ${txnId} AND status = 'pending') OR posted_transaction_id = ${txnId})) AS category_suggestion,
       EXISTS (SELECT 1 FROM recurring_schedules WHERE tenant_id = ${tenantId} AND template_transaction_id = ${txnId}) AS recurring_template,
       EXISTS (SELECT 1 FROM daily_sales_entries WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId}) AS daily_sales,
-      EXISTS (SELECT 1 FROM tax_est_payments WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId}) AS estimated_tax_payment
+      EXISTS (SELECT 1 FROM tax_est_payments WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId}) AS estimated_tax_payment,
+      EXISTS (SELECT 1 FROM bill_captures WHERE tenant_id = ${tenantId} AND bill_id = ${txnId}) AS bill_capture
   `);
   const row = (result.rows as Array<Record<string, boolean>>)[0] ?? {};
   return DELETE_BLOCKING_LINKS.filter((k) => row[k] === true);
 }
 
+export interface DeleteTransactionOptions {
+  reason?: string;
+  userId?: string;
+  companyId?: string;
+  /** ap-edit-v1 (U-84): updatedAt as last read; mismatch is 409 STALE. */
+  expectedUpdatedAt?: string;
+}
+
 export async function deleteTransaction(
   tenantId: string,
   txnId: string,
-  opts: { reason?: string; userId?: string; companyId?: string } = {},
+  opts: DeleteTransactionOptions = {},
 ) {
   return await db.transaction((tx) => deleteTransactionInTx(tx, tenantId, txnId, opts));
 }
@@ -897,7 +1033,7 @@ export async function deleteTransactionInTx(
   tx: Tx,
   tenantId: string,
   txnId: string,
-  opts: { reason?: string; userId?: string; companyId?: string } = {},
+  opts: DeleteTransactionOptions = {},
 ) {
   {
     await claimIdempotency(tx);
@@ -925,6 +1061,11 @@ export async function deleteTransactionInTx(
         { txnType: txn.txnType },
       );
     }
+    assertNotStale(txn, opts.expectedUpdatedAt);
+    // A bill or vendor credit is deletable only while nothing is applied to
+    // it (U-84): 409 BILL_HAS_PAYMENTS / CREDIT_APPLIED (a refunded credit
+    // is TXN_DELETE_LINKED below, as any deposited item).
+    await assertApDocumentUnapplied(tx, tenantId, txn);
 
     await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
       txnId, oldDate: txn.txnDate, newDate: null,
@@ -1025,7 +1166,8 @@ export async function deleteTransactionInTx(
         : { status: 'deleted', reason: opts.reason ?? null },
       opts.userId, tx);
 
-    if (reversal) await deleteTransactionInTx(tx, tenantId, reversal.id, opts);
+    // The reversal has its own updatedAt; the caller's token was for the original.
+    if (reversal) await deleteTransactionInTx(tx, tenantId, reversal.id, { ...opts, expectedUpdatedAt: undefined });
 
     return { id: txnId, status: 'deleted' as const };
   }
@@ -1067,6 +1209,10 @@ export async function updateTransaction(
   // (PUT /checks/:id) commit the ledger edit together with its own header
   // fields. Omitted, the update opens its own transaction as before.
   outerTx?: Tx,
+  // apDocumentEdit: the caller is the A/P document's own service (bills,
+  // vendor credits), which keeps its sub-ledger fields right. Every other
+  // caller is refused on an A/P document (review B1).
+  opts: { apDocumentEdit?: boolean } = {},
 ) {
   // Validate the new lines balance up front (in-memory, no DB access);
   // exact, no tolerance (U-65).
@@ -1092,6 +1238,19 @@ export async function updateTransaction(
       throw AppError.notFound('Transaction not found');
     }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
+
+    // A bill, vendor credit or bill payment is edited only through its own
+    // service (review B1): a generic edit (PUT /transactions/:id sent as an
+    // expense against a bill id, say) would rewrite its lines and blank
+    // balance_due behind its payments. 400 TXN_EDIT_UNSUPPORTED.
+    if (AP_DOCUMENT_TYPES.includes(existing.txnType)
+      && (!opts.apDocumentEdit || existing.txnType === 'bill_payment' || input.txnType !== existing.txnType)) {
+      throw AppError.badRequest(
+        'This is an accounts payable document; edit it from its own screen.',
+        'TXN_EDIT_UNSUPPORTED',
+        { txnType: existing.txnType },
+      );
+    }
 
     // Check lock date for both old and new dates (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
@@ -2057,6 +2216,10 @@ export async function bulkUpdateTransactions(
       // TB3: AJE lifecycle is firm-only and runs through the tb router —
       // bulk recategorize/retag must never rewrite an adjusting entry.
       if (txn.txnType === 'aje') { skipped.push({ id: txnId, reason: 'aje' }); continue; }
+      // A/P documents keep their sub-ledger in their own services (review
+      // M5): a bulk payee change would move a bill to another vendor under
+      // its payments, a category or source move would rewrite its lines.
+      if (AP_DOCUMENT_TYPES.includes(txn.txnType)) { skipped.push({ id: txnId, reason: 'ap_document' }); continue; }
       const lockDate = txn.companyId ? (lockByCompany.get(txn.companyId) ?? null) : maxLock;
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
 

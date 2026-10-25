@@ -35,6 +35,16 @@ export const transactions = pgTable('transactions', {
   termsDays: integer('terms_days'),
   creditsApplied: decimal('credits_applied', { precision: 19, scale: 4 }).default('0'),
   vendorInvoiceNumber: varchar('vendor_invoice_number', { length: 100 }),
+  // Bill terms (U-86, migration 0230): the early-payment discount of the
+  // terms, the discount date, and whether the owner typed the due / discount
+  // date instead of the engine computing it.
+  discountPercent: decimal('discount_percent', { precision: 7, scale: 4 }),
+  discountDays: integer('discount_days'),
+  discountDate: date('discount_date'),
+  dueDateOverridden: boolean('due_date_overridden').notNull().default(false),
+  discountDateOverridden: boolean('discount_date_overridden').notNull().default(false),
+  // Bill received (U-87, migration 0230): false = in A/P, not payable yet.
+  billReceived: boolean('bill_received').notNull().default(true),
   sentAt: timestamp('sent_at', { withTimezone: true }),
   viewedAt: timestamp('viewed_at', { withTimezone: true }),
   paidAt: timestamp('paid_at', { withTimezone: true }),
@@ -99,6 +109,9 @@ export const billPaymentApplications = pgTable('bill_payment_applications', {
   paymentId: uuid('payment_id').notNull(),
   billId: uuid('bill_id').notNull(),
   amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
+  // Early-payment discount this payment took on the bill (migration 0230,
+  // P18). Counts toward the bill with the cash amount; 0 until P18 writes it.
+  discountAmount: decimal('discount_amount', { precision: 19, scale: 4 }).notNull().default('0'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   paymentIdx: index('idx_bpa_payment').on(table.paymentId),

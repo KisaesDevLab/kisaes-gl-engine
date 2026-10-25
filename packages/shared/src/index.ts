@@ -115,6 +115,7 @@ export * from './constants/imports.js';
 export * from './constants/permissions.js';
 export * from './constants/firm-capabilities.js';
 export * from './constants/payment-methods.js';
+export * from './constants/payment-terms.js';
 
 // Reports
 export * from './reports/registry.js';
@@ -126,6 +127,7 @@ export * from './tax-estimator/index.js';
 // Utils
 export * from './utils/money.js';
 export * from './utils/dates.js';
+export * from './utils/calendar-date.js';
 export * from './utils/number-to-words.js';
 export * from './utils/accrual-schedule.js';
 export * from './utils/account-types.js';

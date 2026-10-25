@@ -6,9 +6,10 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import archiver from 'archiver';
-import { eq, and, count, inArray, desc } from 'drizzle-orm';
-import { db, type DbOrTx } from '../db/index.js';
+import { eq, and, or, isNull, count, inArray, desc } from 'drizzle-orm';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { attachments, systemSettings } from '../db/schema/index.js';
+import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { tenantStorageKey } from './storage/storage-keys.js';
@@ -355,6 +356,44 @@ export async function reassignDraftAttachments(
       eq(attachments.attachableId, draftId),
     ));
   return (result as any).rowCount ?? 0;
+}
+
+/**
+ * Relinks a draft's attachments to a document on the caller's executor (a
+ * posting's own transaction, so the document and its files commit
+ * together), with one audit row per attachment (`update` / `attachment`,
+ * before `{attachableType: 'draft', attachableId: draftId}`, after the new
+ * link). Returns the relinked attachment ids.
+ *
+ * `companyId` (the request's company, review M3): a draft attachment stamped
+ * with another company is left alone; tenant-wide ones (company null, every
+ * upload today) are relinked.
+ */
+export async function relinkDraftAttachments(
+  executor: DbOrTx,
+  tenantId: string,
+  draftId: string,
+  newType: string,
+  newId: string,
+  userId?: string,
+  companyId?: string | null,
+): Promise<string[]> {
+  const rows = await executor.update(attachments)
+    .set({ attachableType: newType, attachableId: newId })
+    .where(and(
+      eq(attachments.tenantId, tenantId),
+      eq(attachments.attachableType, 'draft'),
+      eq(attachments.attachableId, draftId),
+      ...(companyId ? [or(isNull(attachments.companyId), eq(attachments.companyId, companyId))] : []),
+    ))
+    .returning({ id: attachments.id });
+  for (const row of rows) {
+    await auditLog(tenantId, 'update', 'attachment', row.id,
+      { attachableType: 'draft', attachableId: draftId },
+      { attachableType: newType, attachableId: newId },
+      userId, executor as Tx);
+  }
+  return rows.map((r) => r.id);
 }
 
 export async function listUnlinked(tenantId: string) {

@@ -12,19 +12,25 @@ import { transactions, accounts, companies } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
+import { addCalendarDays, isCalendarDate } from '../utils/calendar-date.js';
 
-function computeDueDate(txnDate: string, terms: string | undefined): string | undefined {
+// Calendar arithmetic (U-86, review S3): the old `new Date(d).setDate(+n)`
+// worked in local time, so in a US time zone a term window crossing the
+// March DST change came out a day early. One helper for bills and invoices.
+export function computeDueDate(txnDate: string, terms: string | undefined): string | undefined {
   if (!terms) return undefined;
-  const date = new Date(txnDate);
+  if (terms === 'due_on_receipt') return txnDate;
+  // Invoice dates are not schema-checked as YYYY-MM-DD; use the calendar
+  // day they start with (a date-time keeps its date, as before).
+  const day = txnDate.slice(0, 10);
+  if (!isCalendarDate(day)) return undefined;
   switch (terms) {
-    case 'due_on_receipt': return txnDate;
-    case 'net_15': date.setDate(date.getDate() + 15); break;
-    case 'net_30': date.setDate(date.getDate() + 30); break;
-    case 'net_60': date.setDate(date.getDate() + 60); break;
-    case 'net_90': date.setDate(date.getDate() + 90); break;
+    case 'net_15': return addCalendarDays(day, 15);
+    case 'net_30': return addCalendarDays(day, 30);
+    case 'net_60': return addCalendarDays(day, 60);
+    case 'net_90': return addCalendarDays(day, 90);
     default: return undefined;
   }
-  return date.toISOString().split('T')[0]!;
 }
 
 async function getNextInvoiceNumber(tenantId: string): Promise<string> {

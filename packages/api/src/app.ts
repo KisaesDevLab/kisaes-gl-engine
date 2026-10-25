@@ -22,6 +22,7 @@ import { billsRouter } from './routes/bills.routes.js';
 import { billCapturesRouter } from './routes/bill-captures.routes.js';
 import { vendorCreditsRouter } from './routes/vendor-credits.routes.js';
 import { billPaymentsRouter } from './routes/bill-payments.routes.js';
+import { paymentTermsRouter } from './routes/payment-terms.routes.js';
 import { estimatesRouter } from './routes/estimates.routes.js';
 import { tagsRouter } from './routes/tags.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
@@ -540,6 +541,7 @@ app.use('/api/v1/bills', billsRouter);
 app.use('/api/v1/bill-captures', billCapturesRouter);
 app.use('/api/v1/vendor-credits', vendorCreditsRouter);
 app.use('/api/v1/bill-payments', billPaymentsRouter);
+app.use('/api/v1/payment-terms', paymentTermsRouter);
 app.use('/api/v1/estimates', estimatesRouter);
 app.use('/api/v1/tags', tagsRouter);
 // Report Packs share the /reports base; mount BEFORE reportsRouter so the

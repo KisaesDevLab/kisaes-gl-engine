@@ -1,0 +1,33 @@
+{
+  "_comment": "Golden cases shared by the engine (vitest: packages/api/src/utils/line-amount.test.ts) and ClientLedger (cargo). lineAmount: amount = round(quantity x unitPrice, 2 places, half away from zero). termsDiscount: discount = round(amount x percent / 100, 2 places, half away from zero). error = the engine refuses the line (400 VALIDATION_ERROR).",
+  "lineAmount": [
+    { "quantity": "1", "unitPrice": "1330", "amount": "1330.00" },
+    { "quantity": "1", "unitPrice": "150.00", "amount": "150.00" },
+    { "quantity": "4", "unitPrice": "218.44", "amount": "873.76" },
+    { "quantity": "3", "unitPrice": "49.995", "amount": "149.99" },
+    { "quantity": "3", "unitPrice": "0.005", "amount": "0.02" },
+    { "quantity": "7", "unitPrice": "0.005", "amount": "0.04" },
+    { "quantity": "0.5", "unitPrice": "0.01", "amount": "0.01" },
+    { "quantity": "2.5", "unitPrice": "0.333", "amount": "0.83" },
+    { "quantity": "1.5", "unitPrice": "0.3333", "amount": "0.50" },
+    { "quantity": "0.0001", "unitPrice": "0.0001", "amount": "0.00" },
+    { "quantity": "12.3456", "unitPrice": "98.7654", "amount": "1219.32" },
+    { "quantity": "99999999.9999", "unitPrice": "0.0001", "amount": "10000.00" },
+    { "quantity": "10", "unitPrice": "0", "amount": "0.00" },
+    { "quantity": "2", "unitPrice": "499999999999999.9999", "error": "VALIDATION_ERROR" },
+    { "quantity": "100000000", "unitPrice": "1", "error": "VALIDATION_ERROR" },
+    { "quantity": "0", "unitPrice": "1", "error": "VALIDATION_ERROR" },
+    { "quantity": "1.00001", "unitPrice": "1", "error": "VALIDATION_ERROR" },
+    { "quantity": "1", "unitPrice": "1.00001", "error": "VALIDATION_ERROR" },
+    { "quantity": "1", "unitPrice": "-1", "error": "VALIDATION_ERROR" },
+    { "quantity": "1e2", "unitPrice": "1", "error": "VALIDATION_ERROR" }
+  ],
+  "termsDiscount": [
+    { "amount": "218.44", "percent": "2", "discount": "4.37" },
+    { "amount": "1480.00", "percent": "1", "discount": "14.80" },
+    { "amount": "0.25", "percent": "2", "discount": "0.01" },
+    { "amount": "0.24", "percent": "2", "discount": "0.00" },
+    { "amount": "1000.00", "percent": "1.5", "discount": "15.00" },
+    { "amount": "333.33", "percent": "2.125", "discount": "7.08" }
+  ]
+}

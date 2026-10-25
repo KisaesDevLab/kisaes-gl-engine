@@ -17,6 +17,7 @@ import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { idempotent } from '../middleware/idempotent.js';
+import { apDocumentPermission } from '../middleware/ap-document-permission.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
@@ -218,7 +219,7 @@ transactionsRouter.post('/', keyedCreate, describe({
   res.status(201).json({ transaction: result, ...extra });
 });
 
-transactionsRouter.put('/:id', keyedById, describe({
+transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
     'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
@@ -345,15 +346,24 @@ async function voidAjeGuard(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
-transactionsRouter.post('/:id/void', voidAjeGuard, keyedById, validate(voidTransactionSchema), async (req, res) => {
-  await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId);
+transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'), keyedById, validate(voidTransactionSchema), async (req, res) => {
+  // A/P documents keep their sub-ledger right here too (ap-edit-v1, review
+  // B1): a bill or vendor credit with anything applied is 409
+  // BILL_HAS_PAYMENTS / CREDIT_APPLIED; a bill payment is voided with its
+  // applications (the bills and credits it settled reopen). A transaction
+  // of another company is 404 (review M3).
+  await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
+    expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
+  });
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });
 });
 
 // Soft delete (P12 R7, capability txn-delete-v1). Body optional:
-// { reason?, closingPassword? } — the password is taken out of the body by
-// lockContextMiddleware and opens a closed period exactly as for void.
+// { reason?, closingPassword?, expectedUpdatedAt? } — the password is taken
+// out of the body by lockContextMiddleware and opens a closed period exactly
+// as for void. Bills and vendor credits with nothing applied are deletable
+// (ap-edit-v1): 409 BILL_HAS_PAYMENTS / CREDIT_APPLIED otherwise.
 // Same router permission as void (transactions: update). The transaction
 // keeps its lines plus reversing lines and becomes status 'deleted', hidden
 // from registers, reports, balances and lists. Errors: 404 not found,
@@ -364,12 +374,14 @@ const deleteTransactionBodyDoc = deleteTransactionSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-transactionsRouter.delete('/:id', keyedById, (req, _res, next) => {
+transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, (req, _res, next) => {
   // A DELETE often has no body at all.
   if (!req.body || typeof req.body !== 'object') req.body = {};
   next();
 }, validate(deleteTransactionSchema), describe({
   summary: 'Delete a transaction (soft delete with reversing lines; txn-delete-v1)',
+  description: 'ap-edit-v1: bills and vendor credits are deletable while nothing is applied (409 BILL_HAS_PAYMENTS / CREDIT_APPLIED; a refunded credit 409 TXN_DELETE_LINKED; ' +
+    'a bill entered from a bill capture 409 TXN_DELETE_LINKED with links ["bill_capture"]). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt).',
   body: deleteTransactionBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
@@ -377,16 +389,25 @@ transactionsRouter.delete('/:id', keyedById, (req, _res, next) => {
   if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
   await ledger.deleteTransaction(req.tenantId, parsed.data, {
     reason: req.body.reason, userId: req.userId, companyId: req.companyId,
+    expectedUpdatedAt: req.body.expectedUpdatedAt,
   });
   const txn = await ledger.getTransaction(req.tenantId, parsed.data);
   res.json({ transaction: txn });
 });
 
-transactionsRouter.post('/:id/duplicate', async (req, res) => {
+transactionsRouter.post('/:id/duplicate', apDocumentPermission('create'), async (req, res) => {
   const original = await ledger.getTransaction(req.tenantId, req.params['id']!);
   // AJE duplication runs through /tb (numbering + firm gate, rule TB3).
   if (original.txnType === 'aje') {
     throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
+  }
+  // An A/P document posted as a bare copy would hit A/P with no bill status,
+  // balance due or applications behind it (review Notes): enter a new bill
+  // or credit instead.
+  if (ledger.AP_DOCUMENT_TYPES.includes(original.txnType)) {
+    throw AppError.badRequest('Bills, vendor credits and bill payments can’t be duplicated here. Enter a new one instead.', 'TXN_DUPLICATE_UNSUPPORTED', {
+      txnType: original.txnType,
+    });
   }
   const lines = original.lines.map((l) => ({
     accountId: l.accountId,

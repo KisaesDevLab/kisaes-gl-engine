@@ -117,12 +117,13 @@ export async function recomputeVendorCreditBalance(executor: DbOrTx, tenantId: s
   const used = new Decimal(String(row.applied)).plus(String(row.refunded));
   let balanceDue = total.minus(used);
   if (balanceDue.isNegative()) balanceDue = new Decimal('0');
-  const tolerance = new Decimal('0.01');
 
+  // Exact (review S1): a credit with 0.01 left is still open (was a 0.01
+  // tolerance that marked it used up while the cent stayed in A/P).
   await executor.update(transactions).set({
     creditsApplied: used.toFixed(4),
     balanceDue: balanceDue.toFixed(4),
-    billStatus: balanceDue.lessThanOrEqualTo(tolerance) ? 'paid' : 'unpaid',
+    billStatus: balanceDue.isZero() ? 'paid' : 'unpaid',
     updatedAt: new Date(),
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, creditId)));
 }

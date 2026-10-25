@@ -28,6 +28,13 @@ export const createContactSchema = z.object({
   shippingZip: z.string().max(20).nullish(),
   shippingCountry: z.string().max(3).default('US'),
   defaultPaymentTerms: z.string().max(50).nullish(),
+  // Vendor custom terms (U-86, bill-terms-v1): days to the due date and an
+  // optional early-payment discount, used when defaultPaymentTerms is
+  // 'custom' and the bill sends no terms of its own.
+  defaultTermsDays: z.number().int().min(0).max(3650).nullish(),
+  defaultDiscountPercent: z.string().regex(/^\d{1,2}(\.\d{1,4})?$/, 'A percent with at most 4 decimal places')
+    .refine((v) => /[1-9]/.test(v), 'The discount percent must be greater than 0').nullish(),
+  defaultDiscountDays: z.number().int().min(0).max(365).nullish(),
   openingBalance: z.string().default('0'),
   openingBalanceDate: z.string().nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
@@ -63,6 +70,13 @@ export const updateContactSchema = z.object({
   shippingZip: z.string().max(20).nullish(),
   shippingCountry: z.string().max(3).optional(),
   defaultPaymentTerms: z.string().max(50).nullish(),
+  // Vendor custom terms (U-86, bill-terms-v1): days to the due date and an
+  // optional early-payment discount, used when defaultPaymentTerms is
+  // 'custom' and the bill sends no terms of its own.
+  defaultTermsDays: z.number().int().min(0).max(3650).nullish(),
+  defaultDiscountPercent: z.string().regex(/^\d{1,2}(\.\d{1,4})?$/, 'A percent with at most 4 decimal places')
+    .refine((v) => /[1-9]/.test(v), 'The discount percent must be greater than 0').nullish(),
+  defaultDiscountDays: z.number().int().min(0).max(365).nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and

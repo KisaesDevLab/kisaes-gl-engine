@@ -15,6 +15,8 @@ import { companyContext } from '../middleware/company.js';
 import { requireResource } from '../middleware/permission.js';
 import { requireFeatureFlag } from '../middleware/feature-flag.js';
 import { validate } from '../middleware/validate.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware } from '../services/lock-context.js';
 import { AppError } from '../utils/errors.js';
 import * as captureService from '../services/bill-capture.service.js';
 
@@ -88,7 +90,9 @@ billCapturesRouter.get('/:id/file', async (req, res) => {
   stream.pipe(res);
 });
 
-billCapturesRouter.post('/:id/enter', validate(enterBillCaptureSchema), async (req, res) => {
+// A bill dated on or before the closing date takes closingPassword, as
+// POST /bills does (U-83, ap-closing-v1).
+billCapturesRouter.post('/:id/enter', closingPasswordLimiter, lockContextMiddleware, validate(enterBillCaptureSchema), async (req, res) => {
   const result = await captureService.enterBill(req.tenantId, requireCompany(req), req.params['id']!, req.body, req.userId);
   res.status(201).json(result);
 });

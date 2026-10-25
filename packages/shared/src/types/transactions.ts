@@ -46,6 +46,11 @@ export interface JournalLine {
   tagId: string | null;
   // Per-line payee ("Received From"). Null when none.
   contactId: string | null;
+  // Item on the line (bill-lines-v1 on bills and vendor credits; invoices).
+  itemId?: string | null;
+  // Billable to the line's customer (U-50) and its billed state.
+  isBillable?: boolean;
+  billedStatus?: string | null;
   // The document this line settles (U-52 deposit grouping, U-54 vendor
   // refund); a deposit edit sends it back to keep the link (U-80).
   sourceTransactionId?: string | null;
@@ -98,6 +103,14 @@ export interface Transaction {
   invoiceStatus: InvoiceStatus | null;
   billStatus: BillStatus | null;
   termsDays: number | null;
+  // Bills (bill-terms-v1, bill-received-v1): early-payment discount terms,
+  // the owner-override flags of the dates, and the received mark.
+  discountPercent?: string | null;
+  discountDays?: number | null;
+  discountDate?: string | null;
+  dueDateOverridden?: boolean;
+  discountDateOverridden?: boolean;
+  billReceived?: boolean;
   creditsApplied: string | null;
   vendorInvoiceNumber: string | null;
   sentAt: string | null;
