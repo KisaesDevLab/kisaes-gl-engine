@@ -8,6 +8,7 @@ import { createTagSchema, updateTagSchema, mergeTagsSchema, createTagGroupSchema
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
+import { idempotent } from '../middleware/idempotent.js';
 import { describe } from '../middleware/describe.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
@@ -64,10 +65,15 @@ tagsRouter.get('/', describe({
   res.json({ tags: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
+// Idempotency-Key (idempotency-v1, U-18). A refusal (409 TAG_NUMBER_EXISTS,
+// duplicate name) rolls the claim back and is never stored for replay.
 tagsRouter.post('/', describe({
   summary: 'Create a tag',
   description: tagNumberConflict,
   response: tagEnvelope,
+}), idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ tag: await tagsService.getById(req.tenantId, entity!.id) }),
 }), validate(createTagSchema), async (req, res) => {
   const tag = await tagsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ tag });

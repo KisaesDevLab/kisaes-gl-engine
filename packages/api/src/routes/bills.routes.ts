@@ -10,6 +10,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as billService from '../services/bill.service.js';
 import * as billOcrService from '../services/ai-bill-ocr.service.js';
 import * as attachmentService from '../services/attachment.service.js';
@@ -41,7 +42,11 @@ billsRouter.get('/vendor-summary', async (req, res) => {
   res.json({ summary });
 });
 
-billsRouter.post('/', validate(createBillSchema), async (req, res) => {
+// Idempotency-Key (idempotency-v1, U-18).
+billsRouter.post('/', idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ bill: await billService.getBill(req.tenantId, entity!.id) }),
+}), validate(createBillSchema), async (req, res) => {
   const bill = await billService.createBill(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ bill });
 });
