@@ -12242,6 +12242,23 @@
       },
       "post": {
         "operationId": "post_api_v1_attachments",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "autoOcr",
+            "required": false,
+            "schema": {
+              "description": "0 / false: start no OCR or AI processing for this upload. It never turns OCR on: desktop mode and the attachments.autoOcr server setting decide that (bill-ocr-v2).",
+              "enum": [
+                "0",
+                "1",
+                "false",
+                "true"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -12255,6 +12272,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Upload an attachment",
         "tags": [
           "attachments"
         ]
@@ -17315,6 +17333,314 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "extraction": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "billDate": {
+                          "description": "YYYY-MM-DD as read",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "confidence": {
+                          "description": "document-level 0–1 score, kept for older clients",
+                          "type": "number"
+                        },
+                        "contactId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "defaultExpenseAccountId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "dueDate": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "fieldConfidence": {
+                          "additionalProperties": true,
+                          "description": "bill-ocr-v2: high ≥ 0.85, medium ≥ 0.6, else low; an empty field is low",
+                          "properties": {
+                            "billDate": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "dueDate": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "paymentTerms": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "subtotal": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "tax": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "total": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "vendor": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "vendorInvoiceNumber": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "vendor",
+                            "billDate",
+                            "dueDate",
+                            "vendorInvoiceNumber",
+                            "total",
+                            "subtotal",
+                            "tax",
+                            "paymentTerms"
+                          ],
+                          "type": "object"
+                        },
+                        "jobId": {
+                          "type": "string"
+                        },
+                        "lineItems": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "amount": {
+                                "description": "plain decimal string, e.g. \"1234.56\"; never a JSON number (bill-ocr-v2)",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "confidence": {
+                                "description": "bill-ocr-v2; low when the amount did not read",
+                                "enum": [
+                                  "high",
+                                  "medium",
+                                  "low"
+                                ],
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "quantity": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "description",
+                              "amount",
+                              "quantity",
+                              "confidence"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "notes": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "paymentTerms": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "qualityWarnings": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "rawText": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "ok",
+                            "ocr_only"
+                          ],
+                          "type": "string"
+                        },
+                        "subtotal": {
+                          "description": "plain decimal string, e.g. \"1234.56\"; never a JSON number (bill-ocr-v2)",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tax": {
+                          "description": "plain decimal string, e.g. \"1234.56\"; never a JSON number (bill-ocr-v2)",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "total": {
+                          "description": "plain decimal string, e.g. \"1234.56\"; never a JSON number (bill-ocr-v2)",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "vendor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "vendorAddress": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "city": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "line1": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "line2": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "state": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "zip": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "line1",
+                                "line2",
+                                "city",
+                                "state",
+                                "zip"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "vendorInvoiceNumber": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "jobId",
+                        "vendor",
+                        "vendorAddress",
+                        "vendorInvoiceNumber",
+                        "billDate",
+                        "dueDate",
+                        "paymentTerms",
+                        "total",
+                        "subtotal",
+                        "tax",
+                        "lineItems",
+                        "notes",
+                        "confidence",
+                        "fieldConfidence",
+                        "contactId",
+                        "defaultExpenseAccountId",
+                        "qualityWarnings"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "extraction"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -17327,6 +17653,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Read a bill from an attachment with AI (an explicit owner request)",
         "tags": [
           "bills"
         ]

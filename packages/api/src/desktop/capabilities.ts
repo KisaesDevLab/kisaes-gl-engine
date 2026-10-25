@@ -104,4 +104,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'merge-closing-date-v1',
   /** POST /recurring/run-due takes templateIds (only these) and excludeTemplateIds (all but these); others stay due, untouched (U-82). */
   'run-due-filter-v1',
+  /**
+   * POST /bills/extract-from-attachment/:id: fieldConfidence and lineItems[].confidence as 'high'|'medium'|'low',
+   * amounts as decimal strings or null. No OCR or AI on upload in desktop mode (?autoOcr=0, attachments.autoOcr);
+   * POST /attachments/:id/ocr honours the AI on / consent gates in desktop mode (U-89).
+   */
+  'bill-ocr-v2',
 ];

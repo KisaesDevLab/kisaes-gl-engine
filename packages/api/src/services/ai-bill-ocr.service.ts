@@ -50,6 +50,10 @@ export const billOcrOutputSchema = z
       .nullish(),
     notes: z.string().nullish(),
     confidence: z.union([z.number(), z.string()]).nullish(),
+    // bill-ocr-v2: optional per-field confidence. Lenient (any shape) so a
+    // custom prompt or an odd model reply never fails the whole read; it is
+    // normalized by fieldConfidenceFrom().
+    field_confidence: z.unknown().optional(),
     raw_text: z.string().nullish(),
     // Bill Capture uses this to pre-fill a new vendor's address.
     vendor_address: z
@@ -86,10 +90,145 @@ export const billOcrOutputSchema = z
 // short documents; extra pages are dropped with a quality warning.
 const MAX_VISION_PDF_PAGES = 4;
 
+/** bill-ocr-v2: how sure the reading is, as a word (never a number). */
+export type BillOcrConfidence = 'high' | 'medium' | 'low';
+
+/**
+ * Thresholds for turning a model's 0–1 score into a word. They live here,
+ * in the engine, so every client shows the same answer.
+ */
+export const BILL_OCR_CONFIDENCE_THRESHOLDS = { high: 0.85, medium: 0.6 } as const;
+
+export const BILL_OCR_CONFIDENCE_FIELDS = [
+  'vendor', 'billDate', 'dueDate', 'vendorInvoiceNumber', 'total', 'subtotal', 'tax', 'paymentTerms',
+] as const;
+export type BillOcrConfidenceField = (typeof BILL_OCR_CONFIDENCE_FIELDS)[number];
+
+/** Model (snake_case) key for each response field. */
+const FIELD_MODEL_KEY: Record<BillOcrConfidenceField, string> = {
+  vendor: 'vendor',
+  billDate: 'bill_date',
+  dueDate: 'due_date',
+  vendorInvoiceNumber: 'vendor_invoice_number',
+  total: 'total',
+  subtotal: 'subtotal',
+  tax: 'tax',
+  paymentTerms: 'payment_terms',
+};
+
+/**
+ * A 0–1 score (number or numeric string) or a word → 'high'|'medium'|'low'.
+ * Anything else → null (the caller falls back to the document score).
+ */
+export function bucketConfidence(raw: unknown): BillOcrConfidence | null {
+  if (typeof raw === 'string') {
+    const s = raw.trim().toLowerCase();
+    if (s === 'high' || s === 'medium' || s === 'low') return s;
+    if (s === '' || !Number.isFinite(Number(s))) return null;
+    return bucketConfidence(Number(s));
+  }
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+  // A 0–100 percentage is read as a percentage.
+  const score = raw > 1 && raw <= 100 ? raw / 100 : raw;
+  if (score < 0 || score > 1) return null;
+  if (score >= BILL_OCR_CONFIDENCE_THRESHOLDS.high) return 'high';
+  if (score >= BILL_OCR_CONFIDENCE_THRESHOLDS.medium) return 'medium';
+  return 'low';
+}
+
+const PLAIN_DECIMAL = /^-?\d+(\.\d+)?$/;
+
+/**
+ * A model's amount → a plain decimal string ("1234.56", "-12.5") or null.
+ * Strings may carry a currency sign, thousands separators, spaces or
+ * accounting parentheses for a negative; numbers are turned into their
+ * shortest decimal spelling (never exponent notation). The response never
+ * carries a JSON-number amount (bill-ocr-v2).
+ */
+export function normalizeBillMoney(raw: unknown): string | null {
+  if (raw == null) return null;
+  let s: string;
+  if (typeof raw === 'number') {
+    // Beyond 2^53 a JSON number no longer holds its own digits exactly, so
+    // its decimal spelling would be a guess (bill-ocr-v2).
+    if (!Number.isFinite(raw) || !Number.isSafeInteger(Math.trunc(raw))) return null;
+    s = String(raw);
+    if (/e/i.test(s)) return null;
+  } else if (typeof raw === 'string') {
+    s = raw.trim();
+  } else {
+    return null;
+  }
+  let negative = false;
+  if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1); }
+  s = s.replace(/\s/g, '');
+  const takeMinus = () => { if (s.startsWith('-')) { negative = !negative; s = s.slice(1); } };
+  takeMinus();
+  s = s.replace(/^(?:US\$|USD|\$)/i, '');
+  takeMinus();
+  // Commas only as US thousands separators ("1,234.56"); "12,50" or
+  // "1.234,56" are ambiguous and are not guessed at.
+  if (s.includes(',')) {
+    if (!/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) return null;
+    s = s.replace(/,/g, '');
+  }
+  if (s.startsWith('.')) s = `0${s}`;
+  if (s.endsWith('.')) s = s.slice(0, -1);
+  if (!PLAIN_DECIMAL.test(s)) return null;
+  // Strip leading zeros of the integer part ("007.50" → "7.50").
+  s = s.replace(/^0+(?=\d)/, '');
+  if (negative && !/^0(\.0+)?$/.test(s)) s = `-${s}`;
+  return s;
+}
+
+/**
+ * A model's date → "YYYY-MM-DD" when it is exactly that shape and a real
+ * calendar date ("2026-02-30", "07/01/2026", "2026-7-1" → null).
+ */
+export function normalizeBillDate(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (y < 1 || mo < 1 || mo > 12 || d < 1) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  dt.setUTCFullYear(y);
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return s;
+}
+
+/**
+ * Per-field confidence: the model's own per-field score when it gave one,
+ * else the document score; a field the reading left empty or blank (or an
+ * amount or date that did not parse) is 'low'.
+ */
+export function fieldConfidenceFrom(
+  modelFieldConfidence: unknown,
+  values: Record<BillOcrConfidenceField, unknown>,
+  documentConfidence: BillOcrConfidence,
+): Record<BillOcrConfidenceField, BillOcrConfidence> {
+  const given = modelFieldConfidence && typeof modelFieldConfidence === 'object' && !Array.isArray(modelFieldConfidence)
+    ? modelFieldConfidence as Record<string, unknown>
+    : {};
+  const out = {} as Record<BillOcrConfidenceField, BillOcrConfidence>;
+  for (const field of BILL_OCR_CONFIDENCE_FIELDS) {
+    const v = values[field];
+    if (v == null || (typeof v === 'string' && v.trim() === '')) { out[field] = 'low'; continue; }
+    out[field] = bucketConfidence(given[FIELD_MODEL_KEY[field]] ?? given[field]) ?? documentConfidence;
+  }
+  return out;
+}
+
 export interface BillOcrLineItem {
   description: string | null;
+  /** Plain decimal string or null; never a JSON number. */
   amount: string | null;
   quantity: string | null;
+  /** bill-ocr-v2. */
+  confidence: BillOcrConfidence;
 }
 
 export interface BillOcrVendorAddress {
@@ -116,7 +255,10 @@ export interface BillOcrResult {
   tax: string | null;
   lineItems: BillOcrLineItem[];
   notes: string | null;
+  /** Document-level 0–1 score, kept for older clients (a JSON number). */
   confidence: number;
+  /** bill-ocr-v2: per-field confidence as words; thresholds in the engine. */
+  fieldConfidence: Record<BillOcrConfidenceField, BillOcrConfidence>;
   contactId: string | null;
   defaultExpenseAccountId: string | null;
   qualityWarnings: string[];
@@ -139,9 +281,10 @@ export const billSystemPrompt = `You are a vendor invoice / bill OCR assistant. 
   "subtotal": "0.00 | null",
   "tax": "0.00 | null",
   "total": "0.00 | null",
-  "line_items": [ { "description": "string", "amount": "0.00", "quantity": "1" } ],
+  "line_items": [ { "description": "string", "amount": "0.00", "quantity": "1", "confidence": 0.0 } ],
   "notes": "string | null",
-  "confidence": 0.0
+  "confidence": 0.0,
+  "field_confidence": { "vendor": 0.0, "vendor_invoice_number": 0.0, "bill_date": 0.0, "due_date": 0.0, "payment_terms": 0.0, "subtotal": 0.0, "tax": 0.0, "total": 0.0 }
 }
 
 Rules:
@@ -151,6 +294,7 @@ Rules:
 - Amounts are decimal strings without currency symbols ("1234.56", not "$1,234.56").
 - If the invoice has no clear line item breakdown, return one summary line with the total.
 - payment_terms should match standard codes when possible: "due_on_receipt", "net_10", "net_15", "net_30", "net_45", "net_60", "net_90". If non-standard, return the human-readable string.
+- confidence, field_confidence and each line item's confidence are your certainty from 0.0 to 1.0 that the value was read correctly from the document.
 - Return JSON only — no markdown fences, no commentary.`;
 
 export type BillOcrUnavailableReason = 'ai_disabled' | 'ai_function_disabled' | 'ai_consent_blocked';
@@ -380,13 +524,38 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
         ? Number(parsed.confidence)
         : 0.5;
 
+    const documentConfidence: BillOcrConfidence = bucketConfidence(confidence) ?? 'low';
+
+    // bill-ocr-v2: amounts are plain decimal strings or null — a JSON
+    // number from the model is turned into a string here, an unreadable
+    // amount becomes null with 'low' confidence.
     const lineItems: BillOcrLineItem[] = Array.isArray(parsed.line_items)
-      ? parsed.line_items.map((li: any) => ({
-          description: li?.description ?? null,
-          amount: li?.amount != null ? String(li.amount) : null,
-          quantity: li?.quantity != null ? String(li.quantity) : null,
-        }))
+      ? parsed.line_items.map((li: any) => {
+          const amount = normalizeBillMoney(li?.amount);
+          return {
+            description: li?.description ?? null,
+            amount,
+            quantity: normalizeBillMoney(li?.quantity),
+            confidence: amount == null ? 'low' : (bucketConfidence(li?.confidence) ?? documentConfidence),
+          };
+        })
       : [];
+
+    const total = normalizeBillMoney(parsed.total);
+    const subtotal = normalizeBillMoney(parsed.subtotal);
+    const tax = normalizeBillMoney(parsed.tax);
+    const billDate = normalizeBillDate(parsed.bill_date);
+    const dueDate = normalizeBillDate(parsed.due_date);
+    const fieldConfidence = fieldConfidenceFrom(parsed.field_confidence, {
+      vendor: parsed.vendor ?? null,
+      billDate,
+      dueDate,
+      vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
+      total,
+      subtotal,
+      tax,
+      paymentTerms: parsed.payment_terms ?? null,
+    }, documentConfidence);
 
     const va = parsed.vendor_address;
     const vendorAddress: BillOcrVendorAddress | null = va && (va.line1 || va.city || va.zip)
@@ -398,15 +567,16 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
       vendor: parsed.vendor ?? null,
       vendorAddress,
       vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
-      billDate: parsed.bill_date ?? null,
-      dueDate: parsed.due_date ?? null,
+      billDate,
+      dueDate,
       paymentTerms: parsed.payment_terms ?? null,
-      total: parsed.total != null ? String(parsed.total) : null,
-      subtotal: parsed.subtotal != null ? String(parsed.subtotal) : null,
-      tax: parsed.tax != null ? String(parsed.tax) : null,
+      total,
+      subtotal,
+      tax,
       lineItems,
       notes: parsed.notes ?? null,
       confidence,
+      fieldConfidence,
       qualityWarnings,
     };
 

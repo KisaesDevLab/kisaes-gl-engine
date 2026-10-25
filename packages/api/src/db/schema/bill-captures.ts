@@ -14,7 +14,7 @@ export type BillCaptureStatus = typeof BILL_CAPTURE_STATUSES[number];
 export const BILL_CAPTURE_SOURCES = ['staff', 'portal'] as const;
 export type BillCaptureSource = typeof BILL_CAPTURE_SOURCES[number];
 
-export const EXTRACTION_SKIPPED_REASONS = ['ai_disabled', 'ai_function_disabled', 'ai_consent_blocked', 'unsupported_type'] as const;
+export const EXTRACTION_SKIPPED_REASONS = ['ai_disabled', 'ai_function_disabled', 'ai_consent_blocked', 'unsupported_type', 'manual_only'] as const;
 export type ExtractionSkippedReason = typeof EXTRACTION_SKIPPED_REASONS[number];
 
 export const billCaptures = pgTable('bill_captures', {
