@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { contacts, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import * as ledger from './ledger.service.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
@@ -88,17 +89,22 @@ export async function create(tenantId: string, input: CreateContactInput, userId
     email: input.email || null,
   };
 
-  const [contact] = await db.insert(contacts).values({
-    tenantId,
-    ...normalized,
-  }).returning();
+  // The insert, its audit row and an Idempotency-Key (U-18) commit together.
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const [contact] = await tx.insert(contacts).values({
+      tenantId,
+      ...normalized,
+    }).returning();
 
-  if (!contact) {
-    throw AppError.internal('Failed to create contact');
-  }
+    if (!contact) {
+      throw AppError.internal('Failed to create contact');
+    }
+    await recordIdempotentEntity(tx, 'contact', contact.id);
 
-  await auditLog(tenantId, 'create', 'contact', contact.id, null, contact, userId);
-  return contact;
+    await auditLog(tenantId, 'create', 'contact', contact.id, null, contact, userId, tx);
+    return contact;
+  });
 }
 
 export async function update(tenantId: string, id: string, input: UpdateContactInput, userId?: string) {

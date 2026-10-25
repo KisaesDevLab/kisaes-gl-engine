@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 
 // Defense-in-depth tenant checks for transaction-tag mutations. Without
@@ -68,15 +69,22 @@ export async function create(tenantId: string, input: CreateTagInput, userId?: s
   });
   if (existing) throw AppError.conflict('A tag with this name already exists');
 
-  const [tag] = await db.insert(tags).values({
-    tenantId,
-    name: input.name,
-    color: input.color || null,
-    groupId: input.groupId || null,
-    description: input.description || null,
-  }).returning();
-  if (tag) await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId);
-  return tag;
+  // The insert, its audit row and an Idempotency-Key (U-18) commit together.
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const [tag] = await tx.insert(tags).values({
+      tenantId,
+      name: input.name,
+      color: input.color || null,
+      groupId: input.groupId || null,
+      description: input.description || null,
+    }).returning();
+    if (tag) {
+      await recordIdempotentEntity(tx, 'tag', tag.id);
+      await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId, tx);
+    }
+    return tag;
+  });
 }
 
 export async function update(tenantId: string, id: string, input: UpdateTagInput, userId?: string) {

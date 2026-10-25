@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 
@@ -47,10 +48,15 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
   const existing = await db.query.items.findFirst({ where: and(eq(items.tenantId, tenantId), eq(items.name, input.name)) });
   if (existing) throw AppError.conflict('An item with this name already exists');
 
-  const [item] = await db.insert(items).values({ tenantId, ...input }).returning();
-  if (!item) throw AppError.internal('Failed to create item');
-  await auditLog(tenantId, 'create', 'item', item.id, null, item, userId);
-  return item;
+  // The insert, its audit row and an Idempotency-Key (U-18) commit together.
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const [item] = await tx.insert(items).values({ tenantId, ...input }).returning();
+    if (!item) throw AppError.internal('Failed to create item');
+    await recordIdempotentEntity(tx, 'item', item.id);
+    await auditLog(tenantId, 'create', 'item', item.id, null, item, userId, tx);
+    return item;
+  });
 }
 
 export async function update(tenantId: string, id: string, input: UpdateItemInput, userId?: string) {
