@@ -21966,6 +21966,10 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); needed when a moved transaction is in a closed period; never stored or echoed",
+                    "type": "string"
+                  },
                   "sourceId": {
                     "format": "uuid",
                     "type": "string"
@@ -21998,6 +22002,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Merge a duplicate contact into another (closing date enforced; merge-closing-date-v1)",
         "tags": [
           "contacts"
         ]
@@ -44809,6 +44814,10 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); needed when a re-tagged transaction is in a closed period; never stored or echoed",
+                    "type": "string"
+                  },
                   "sourceTagId": {
                     "format": "uuid",
                     "type": "string"
@@ -44841,6 +44850,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Merge a tag into another and delete it (closing date enforced; merge-closing-date-v1)",
         "tags": [
           "tags"
         ]

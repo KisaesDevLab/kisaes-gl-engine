@@ -72,4 +72,6 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'batch-idempotent-v1',
   /** Batch rows dated on or before the closing date need closingPassword; 423 / 403 list the row numbers (U-68). */
   'batch-closing-v1',
+  /** POST /contacts/merge and /tags/merge honour the closing date and closingPassword; audit row in the same transaction lists the transaction ids (U-47). */
+  'merge-closing-date-v1',
 ];

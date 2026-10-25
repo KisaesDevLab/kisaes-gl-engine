@@ -439,6 +439,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 | `je-reversing-v1` | Journal entry `reverseOn`: an automatic reversing entry, voided / deleted with the original; on edit kept (omitted), removed (`null`) or moved (a date) (below). |
 | `balance-exact-v1` | Every posting's debits must equal its credits exactly at 4 places; no tolerance (below). |
 | `recurring-guard-v1` | Recurring copies keep line names and billable marks; `PUT /recurring/:id` takes `expectedUpdatedAt` (409 `STALE_SCHEDULE`) (below). |
+| `merge-closing-date-v1` | `POST /contacts/merge` and `POST /tags/merge` honour the closing date and `closingPassword`; the audit row is written in the merge's transaction and lists the transaction ids (below). |
 
 ## Account register
 
@@ -519,6 +520,12 @@ Grouping trusts the links. A Payments Clearing line without `sourceTransactionId
 ## Daily sales
 
 `POST /daily-sales/entries/:id/post` and `/void` run under the closing date like every posting (`daily-sales-lock-v1`): a business date on or before it is 423 `TB_PERIOD_LOCKED`, `closingPassword` opens it (403 `CLOSING_PASSWORD_INVALID`, 429 `CLOSING_PASSWORD_RATE_LIMIT`, one `closing_date_override` audit row). Templates and entries are company-scoped (another company's are 404 and left out of lists; rows without a company stay visible). Entry amounts are decimal strings with at most 4 places; a JSON number is 400.
+
+## Merges and the closing date
+
+`POST /api/v1/contacts/merge` (`{"sourceId","targetId","closingPassword"?}`) and `POST /api/v1/tags/merge` (`{"sourceTagId","targetTagId","closingPassword"?}`) rewrite transactions of every date: the contact merge repoints `transactions.contact_id` and `journal_lines.contact_id` (and the bank-feed, rule and suggestion references), the tag merge moves header tags (`transaction_tags`), line tags (`journal_lines.tag_id`) and the default-tag references of items, contacts, bank rules and budgets, then deletes the source tag (`merge-closing-date-v1`). When any transaction the merge would change is dated on or before its company's closing date (a transaction without a company: the latest closing date of the tenant), the merge is a closed-period edit like any other: 423 `TB_PERIOD_LOCKED` (`details {lockDate, canOverride, closingPasswordRequired}`) without `closingPassword`, 403 `CLOSING_PASSWORD_INVALID` when wrong, 429 `CLOSING_PASSWORD_RATE_LIMIT`; nothing changes in any of these cases. A company without a closing-date password accepts the staff `overrideConfirmed: true` as on postings. The affected transaction rows are locked `FOR UPDATE` while the merge runs. Merging a contact or tag into itself is 400.
+
+Audit, in the merge's own database transaction: contact merge `action: "update"`, `entity_type: "contact"`, tag merge `action: "delete"`, `entity_type: "tag"`; `entity_id` = the source, before = the source row, after `{"merged_into","moved":{<table>: rowCount},"transactions":{"count","ids","truncated"},"closedPeriodOverride":null | {"method":"password"|"confirmed","count","ids","truncated","lockDates":[{"companyId","lockDate"}]}}`. `ids` lists at most 500 transaction ids (`truncated` true when there were more; `count` is the full number); `closedPeriodOverride.ids` are the ones in a closed period. Each permitted closed-period merge also writes one `closing_date_override` row per company (`entity_id` = the company, after as on postings with `transactionId` null and `context: "contact_merge"|"tag_merge"`, `mergeSourceId`, `mergeTargetId`, `transactionCount`). No password is stored.
 
 ## Journal entries: names, numbers, adjusting, reversing
 
