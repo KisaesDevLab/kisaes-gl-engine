@@ -68,9 +68,22 @@ checksRouter.get('/print-queue', async (req, res) => {
   res.json({ data });
 });
 
+// Closed periods on the print routes (U-81, ledger-guards-v1): the printed
+// memo, printing, re-queueing and reprinting change a check's record, so a
+// check dated on or before the closing date takes closingPassword (or a
+// staff overrideConfirmed) as PUT /checks/:id does: 423 TB_PERIOD_LOCKED,
+// 403 CLOSING_PASSWORD_INVALID, nothing changes.
+const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed');
+const closedPeriodNote = 'A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).';
+
 // Edit the memo that will print on a queued check — including the checks
 // created by paying bills, which POST /transactions/:id refuses to touch.
-checksRouter.patch('/:id/memo', validate(updateCheckMemoSchema), async (req, res) => {
+checksRouter.patch('/:id/memo', closingPasswordLimiter, lockContextMiddleware, validate(updateCheckMemoSchema), describe({
+  summary: 'Set the memo printed on a queued check',
+  description: closedPeriodNote,
+  body: updateCheckMemoSchema.extend({ closingPassword: closingPasswordDoc }),
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
   const result = await checkService.updatePrintedMemo(
     req.tenantId, req.params['id']!, req.body.printedMemo, req.userId, req.companyId,
   );
@@ -129,7 +142,11 @@ checksRouter.post('/envelopes', async (req, res) => {
   res.send(pdf);
 });
 
-checksRouter.post('/print', validate(printCheckSchema), async (req, res) => {
+checksRouter.post('/print', closingPasswordLimiter, lockContextMiddleware, validate(printCheckSchema), describe({
+  summary: 'Print queued checks: assign numbers and mark them printed',
+  description: closedPeriodNote,
+  body: printCheckSchema.extend({ closingPassword: closingPasswordDoc }),
+}), async (req, res) => {
   const signature = await resolveSignature(req);
   const result = await checkService.printChecks(
     req.tenantId, req.body.bankAccountId, req.body.checkIds,
@@ -139,12 +156,21 @@ checksRouter.post('/print', validate(printCheckSchema), async (req, res) => {
   res.json(result);
 });
 
-checksRouter.post('/reprint/:batchId', async (req, res) => {
+checksRouter.post('/reprint/:batchId', closingPasswordLimiter, lockContextMiddleware, describe({
+  summary: 'Return a printed batch to the print queue',
+  description: closedPeriodNote,
+  body: z.object({ closingPassword: closingPasswordDoc }),
+  params: z.object({ batchId: z.string() }),
+}), async (req, res) => {
   await checkService.reprintBatch(req.tenantId, req.params['batchId']!);
   res.json({ message: 'Batch reset to queue' });
 });
 
-checksRouter.post('/requeue', async (req, res) => {
+checksRouter.post('/requeue', closingPasswordLimiter, lockContextMiddleware, describe({
+  summary: 'Return checks to the print queue (number and print stamp cleared)',
+  description: closedPeriodNote,
+  body: z.object({ checkIds: z.array(z.string().uuid()), closingPassword: closingPasswordDoc }),
+}), async (req, res) => {
   await checkService.requeueChecks(req.tenantId, req.body.checkIds);
   res.json({ message: 'Checks returned to queue' });
 });

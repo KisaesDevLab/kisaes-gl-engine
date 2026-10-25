@@ -46,6 +46,9 @@ export interface JournalLine {
   tagId: string | null;
   // Per-line payee ("Received From"). Null when none.
   contactId: string | null;
+  // The document this line settles (U-52 deposit grouping, U-54 vendor
+  // refund); a deposit edit sends it back to keep the link (U-80).
+  sourceTransactionId?: string | null;
   createdAt: string;
   // Denormalised display helpers populated by list endpoints.
   accountName?: string | null;

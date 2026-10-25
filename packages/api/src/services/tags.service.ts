@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, ilike, count, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, ilike, count, inArray, asc, type SQL } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
@@ -10,6 +10,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { guardMergeTransactions } from './merge-lock.service.js';
 
 // Defense-in-depth tenant checks for transaction-tag mutations. Without
 // these, a caller who knows (or guesses) a txn/tag UUID from another
@@ -33,20 +34,55 @@ export async function assertTagsInTenant(tenantId: string, tagIds: string[]): Pr
   }
 }
 
+// ─── Tag numbers (tag-number-v1) ─────────────────────────────────
+
+const TAG_NUMBER_INDEX = 'idx_tags_tenant_tag_number';
+
+function tagNumberTaken(tagNumber: string): AppError {
+  return AppError.conflict(`Tag number ${tagNumber} already exists`, 'TAG_NUMBER_EXISTS');
+}
+
+// The partial unique index is the real guard; the pre-check only gives the
+// common case a clean message. A concurrent writer that slips between the
+// two hits 23505 on the index, mapped to the same 409 here.
+function isTagNumberViolation(err: unknown): boolean {
+  let e: unknown = err;
+  for (let depth = 0; depth < 5 && e && typeof e === 'object'; depth++) {
+    const rec = e as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (rec.code === '23505' && rec.constraint === TAG_NUMBER_INDEX) return true;
+    e = rec.cause;
+  }
+  return false;
+}
+
+async function assertTagNumberFree(tenantId: string, tagNumber: string, exceptId?: string): Promise<void> {
+  const existing = await db.query.tags.findFirst({
+    where: and(eq(tags.tenantId, tenantId), eq(tags.tagNumber, tagNumber)),
+  });
+  if (existing && existing.id !== exceptId) throw tagNumberTaken(tagNumber);
+}
+
 // ─── Tag CRUD ────────────────────────────────────────────────────
 
 export async function list(tenantId: string, filters?: TagFilters & { limit?: number; offset?: number }) {
   const conditions = [eq(tags.tenantId, tenantId)];
   if (filters?.groupId) conditions.push(eq(tags.groupId, filters.groupId));
   if (filters?.isActive !== undefined) conditions.push(eq(tags.isActive, filters.isActive));
-  if (filters?.search) conditions.push(ilike(tags.name, `%${escapeLike(filters.search)}%`));
+  if (filters?.search) {
+    const pattern = `%${escapeLike(filters.search)}%`;
+    conditions.push(or(ilike(tags.name, pattern), ilike(tags.tagNumber, pattern))!);
+  }
   const where = and(...conditions);
 
   const limit = Math.min(Math.max(filters?.limit ?? 200, 1), 500);
   const offset = Math.max(filters?.offset ?? 0, 0);
 
+  // sortOrder stays first: it is part of the update contract, so a caller
+  // that set a manual order keeps it. It is 0 on every tag nobody ordered,
+  // so the list reads by number (text order, as account numbers), then
+  // tags without a number, then name (tag-number-v1).
   const data = await db.select().from(tags).where(where)
-    .orderBy(tags.sortOrder, tags.name)
+    .orderBy(tags.sortOrder, sql`${tags.tagNumber} ASC NULLS LAST`, asc(tags.name))
     .limit(limit).offset(offset);
 
   const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })
@@ -68,23 +104,34 @@ export async function create(tenantId: string, input: CreateTagInput, userId?: s
     where: and(eq(tags.tenantId, tenantId), eq(tags.name, input.name)),
   });
   if (existing) throw AppError.conflict('A tag with this name already exists');
+  const tagNumber = input.tagNumber?.trim() || null;
+  if (tagNumber) await assertTagNumberFree(tenantId, tagNumber);
 
   // The insert, its audit row and an Idempotency-Key (U-18) commit together.
-  return await db.transaction(async (tx) => {
-    await claimIdempotency(tx);
-    const [tag] = await tx.insert(tags).values({
-      tenantId,
-      name: input.name,
-      color: input.color || null,
-      groupId: input.groupId || null,
-      description: input.description || null,
-    }).returning();
-    if (tag) {
-      await recordIdempotentEntity(tx, 'tag', tag.id);
-      await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId, tx);
-    }
-    return tag;
-  });
+  // A tag-number race (23505 on the partial unique index) aborts the
+  // transaction, so the claim rolls back with it and the 409 is mapped
+  // after the rollback; a refusal is never stored for replay.
+  try {
+    return await db.transaction(async (tx) => {
+      await claimIdempotency(tx);
+      const [tag] = await tx.insert(tags).values({
+        tenantId,
+        name: input.name,
+        tagNumber,
+        color: input.color || null,
+        groupId: input.groupId || null,
+        description: input.description || null,
+      }).returning();
+      if (tag) {
+        await recordIdempotentEntity(tx, 'tag', tag.id);
+        await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId, tx);
+      }
+      return tag;
+    });
+  } catch (err) {
+    if (tagNumber && isTagNumberViolation(err)) throw tagNumberTaken(tagNumber);
+    throw err;
+  }
 }
 
 export async function update(tenantId: string, id: string, input: UpdateTagInput, userId?: string) {
@@ -95,11 +142,25 @@ export async function update(tenantId: string, id: string, input: UpdateTagInput
     if (existing && existing.id !== id) throw AppError.conflict('A tag with this name already exists');
   }
 
+  // tagNumber: omitted keeps the stored value, '' or null clears it.
+  const changes: UpdateTagInput = { ...input };
+  if (input.tagNumber !== undefined) {
+    const tagNumber = input.tagNumber?.trim() || null;
+    changes.tagNumber = tagNumber;
+    if (tagNumber) await assertTagNumberFree(tenantId, tagNumber, id);
+  }
+
   const before = await db.query.tags.findFirst({ where: and(eq(tags.tenantId, tenantId), eq(tags.id, id)) });
-  const [updated] = await db.update(tags)
-    .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)))
-    .returning();
+  let updated: typeof tags.$inferSelect | undefined;
+  try {
+    [updated] = await db.update(tags)
+      .set({ ...changes, updatedAt: new Date() })
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)))
+      .returning();
+  } catch (err) {
+    if (changes.tagNumber && isTagNumberViolation(err)) throw tagNumberTaken(changes.tagNumber);
+    throw err;
+  }
   if (!updated) throw AppError.notFound('Tag not found');
   await auditLog(tenantId, 'update', 'tag', updated.id, before ?? null, updated, userId);
   return updated;
@@ -209,15 +270,40 @@ export async function remove(tenantId: string, id: string, userId?: string) {
   await auditLog(tenantId, 'delete', 'tag', id, tag, null, userId);
 }
 
-export async function merge(tenantId: string, sourceId: string, targetId: string) {
+export async function merge(tenantId: string, sourceId: string, targetId: string, userId?: string) {
   const source = await getById(tenantId, sourceId);
   const target = await getById(tenantId, targetId);
-  void source;
+  if (sourceId === targetId) throw AppError.badRequest('Cannot merge a tag with itself');
 
   // Merge + source delete are now in a single db.transaction so a
   // partial failure (e.g., FK constraint on the delete) rolls back
   // the re-tagging. Also every statement is scoped by tenant_id.
+  //
+  // U-47: the merge re-tags transactions of every date, so the ones dated
+  // on or before the closing date need the closing-date password
+  // (guardMergeTransactions: 423 / 403 and nothing changes without it).
+  // Split-level line tags (journal_lines.tag_id) and the ON DELETE RESTRICT
+  // defaults move to the target too; before, any of them made the source
+  // delete fail and the whole merge roll back. The audit row is written in
+  // the same transaction and lists the transaction ids.
   await db.transaction(async (tx) => {
+    const affected = await guardMergeTransactions(tx, tenantId, sql`
+      SELECT transaction_id FROM transaction_tags WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}
+      UNION
+      SELECT transaction_id FROM journal_lines WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}
+    `, { kind: 'tag_merge', sourceId, targetId, userId });
+
+    const moved: Record<string, number> = {};
+    const repoint = async (label: string, statement: SQL) => {
+      const r = await tx.execute(statement);
+      moved[label] = r.rowCount ?? 0;
+    };
+    await repoint('journalLines', sql`UPDATE journal_lines SET tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}`);
+    await repoint('items', sql`UPDATE items SET default_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND default_tag_id = ${sourceId}`);
+    await repoint('contacts', sql`UPDATE contacts SET default_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND default_tag_id = ${sourceId}`);
+    await repoint('bankRules', sql`UPDATE bank_rules SET assign_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND assign_tag_id = ${sourceId}`);
+    await repoint('budgets', sql`UPDATE budgets SET tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}`);
+
     // Re-tag: update transaction_tags from source to target (skip duplicates)
     await tx.execute(sql`
       UPDATE transaction_tags SET tag_id = ${targetId}
@@ -238,6 +324,13 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
 
     // Delete source
     await tx.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, sourceId)));
+
+    await auditLog(tenantId, 'delete', 'tag', sourceId, source, {
+      merged_into: targetId,
+      moved,
+      transactions: affected.transactions,
+      closedPeriodOverride: affected.closedPeriodOverride,
+    }, userId, tx);
   });
 
   return target;
@@ -443,7 +536,7 @@ export async function getTagsForTransactions(tenantId: string, transactionIds: s
   if (transactionIds.length === 0) return new Map<string, typeof tags.$inferSelect[]>();
 
   const result = await db.execute(sql`
-    SELECT tt.transaction_id, t.id, t.name, t.color, t.group_id, t.is_active, t.usage_count, t.sort_order, t.description, t.tenant_id, t.created_at, t.updated_at
+    SELECT tt.transaction_id, t.id, t.name, t.tag_number, t.color, t.group_id, t.is_active, t.usage_count, t.sort_order, t.description, t.tenant_id, t.created_at, t.updated_at
     FROM transaction_tags tt
     JOIN tags t ON t.id = tt.tag_id
     WHERE tt.tenant_id = ${tenantId}

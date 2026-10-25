@@ -19,6 +19,8 @@ export interface Tag {
   tenantId: string;
   groupId: string | null;
   name: string;
+  /** Optional number, unique per tenant when set (tag-number-v1). */
+  tagNumber: string | null;
   color: string | null;
   description: string | null;
   isActive: boolean;
@@ -30,6 +32,8 @@ export interface Tag {
 
 export interface CreateTagInput {
   name: string;
+  /** Empty string or null = no number. */
+  tagNumber?: string | null;
   color?: string | null;
   groupId?: string | null;
   description?: string | null;
@@ -37,6 +41,8 @@ export interface CreateTagInput {
 
 export interface UpdateTagInput {
   name?: string;
+  /** Empty string or null clears; omitted keeps the stored number. */
+  tagNumber?: string | null;
   color?: string | null;
   groupId?: string | null;
   description?: string | null;

@@ -91,9 +91,11 @@ async function syncTransactionTagsFromLines(
   companyId: string | null,
   transactionId: string,
   lines: Array<{ tagId?: string | null | undefined }>,
+  // Header tags kept beside the line-derived ones (a check's own tags, U-80).
+  keepTagIds: readonly string[] = [],
 ): Promise<void> {
   if (!env.TAGS_SPLIT_LEVEL_V2) return;
-  const tagIds = deriveHeaderTags(lines);
+  const tagIds = [...new Set([...deriveHeaderTags(lines), ...keepTagIds])];
 
   // Read existing junction rows before we clobber them — needed so we can
   // log exactly which tags get dropped. One SELECT is cheap; multi-tag
@@ -132,6 +134,29 @@ async function syncTransactionTagsFromLines(
       // Intentionally swallow — audit-log pressure shouldn't break ledger writes.
     }
   }
+}
+
+/**
+ * A check's own header tags (U-80): POST / PUT /checks write tagIds to
+ * transaction_tags beside the ones derived from its lines, so with
+ * TAGS_SPLIT_LEVEL_V2 on an edit that re-derives the header from the lines
+ * would drop them. Returns the header tags of a transaction with a print
+ * status that its current lines don't account for; the edit keeps those.
+ * Tags that come from the lines keep following the lines. Empty when the
+ * flag is off (transaction_tags is then left alone anyway) or the
+ * transaction is not a check.
+ */
+async function checkHeaderOnlyTags(
+  executor: DbOrTx,
+  tenantId: string,
+  existing: { id: string; printStatus: string | null },
+  currentLines: Array<{ tagId?: string | null | undefined; isVoidReversal?: boolean | null }>,
+): Promise<string[]> {
+  if (!env.TAGS_SPLIT_LEVEL_V2 || existing.printStatus === null) return [];
+  const rows = await executor.select({ tagId: transactionTags.tagId }).from(transactionTags)
+    .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, existing.id)));
+  const fromLines = new Set(deriveHeaderTags(currentLines.filter((l) => !l.isVoidReversal)));
+  return rows.map((r) => r.tagId).filter((id) => !fromLines.has(id));
 }
 
 /**
@@ -774,6 +799,9 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
         credit: line.debit,
         description: `Void: ${line.description || ''}`.trim(),
         tagId: line.tagId,
+        // The line's name stays on its reversal, as on delete (U-81), so
+        // reports by name over all lines net to zero for the void.
+        contactId: line.contactId,
         lineOrder: maxOrder + 1 + i,
         isVoidReversal: true,
       })));
@@ -1095,6 +1123,13 @@ export async function updateTransaction(
     // vendor credit's total) is refused with 409 TXN_DEPOSITED.
     await assertDepositedAmountKept(tx, tenantId, existing, input);
 
+    // A check's own header tags, read before its lines change (U-80).
+    const headerOnlyTags = await checkHeaderOnlyTags(tx, tenantId, existing,
+      env.TAGS_SPLIT_LEVEL_V2 && existing.printStatus !== null
+        ? await tx.select({ tagId: journalLines.tagId, isVoidReversal: journalLines.isVoidReversal }).from(journalLines)
+          .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)))
+        : []);
+
     // Lines already billed to a customer keep their billed state by
     // identity, or the edit is refused (409 LINE_BILLED) — U-50.
     const billableFor = planBillableColumns(input.lines, await loadBilledLines(tx, tenantId, txnId));
@@ -1226,12 +1261,13 @@ export async function updateTransaction(
         ...(input.isAdjusting !== undefined ? { isAdjusting: input.isAdjusting } : {}),
         updatedAt: new Date(),
       }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
-      // 4. Rebuild transaction_tags from the full (preserved + new) line set.
+      // 4. Rebuild transaction_tags from the full (preserved + new) line set;
+      //    a check keeps its own header tags (U-80).
       const fullValues = [
         ...bsPairs.map(({ input: inLine }) => ({ accountId: inLine.accountId, tagId: tagFor(inLine) })),
         ...newPLValues,
       ];
-      await syncTransactionTagsFromLines(tx, tenantId, existing.companyId ?? null, txnId, fullValues);
+      await syncTransactionTagsFromLines(tx, tenantId, existing.companyId ?? null, txnId, fullValues, headerOnlyTags);
       // Full before-image: header plus every line as it stood before the edit.
       await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: existingLines }, { reconciledPartialEdit: true }, userId, tx);
       const refreshed = await tx.select().from(journalLines)
@@ -1314,7 +1350,7 @@ export async function updateTransaction(
 
     const lines = await tx.insert(journalLines).values(lineValues).returning();
 
-    await syncTransactionTagsFromLines(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, lineValues);
+    await syncTransactionTagsFromLines(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, lineValues, headerOnlyTags);
 
     // Apply new balances
     if (existing.status === 'posted') {

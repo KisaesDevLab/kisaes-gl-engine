@@ -90,4 +90,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * fixed: more routes get a new name. /batch/save keeps batch-idempotent-v1.
    */
   'idempotency-v1',
+  /**
+   * PUT /transactions/:id refuses a deposit edit that drops its links (409 DEPOSIT_LINKS_DROPPED) and a printed
+   * check's face change as an expense (409 CHECK_PRINTED); checks keep header tags (U-80). Void reversal lines keep
+   * the line contact; the check print routes (memo, print, requeue, reprint) honour the closing date (U-81).
+   */
+  'ledger-guards-v1',
+  /** tags.tag_number: optional, unique per tenant when set (409 TAG_NUMBER_EXISTS); list sorts by it and search matches it (U-75). */
+  'tag-number-v1',
+  /** /dashboard/*: exact=1 money as decimal strings, asOf = today, one overdue-invoice rule, cash-position accountNumber, payables dueWithinDays (U-76). */
+  'dashboard-exact-v1',
+  /** POST /contacts/merge and /tags/merge honour the closing date and closingPassword; audit row in the same transaction lists the transaction ids (U-47). */
+  'merge-closing-date-v1',
 ];

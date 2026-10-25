@@ -222,7 +222,10 @@ transactionsRouter.put('/:id', keyedById, describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
     'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
-    'a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED.',
+    'a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED. ' +
+    'ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); ' +
+    'an expense edit of a printed check that changes its printed face (amount, payee, memo line, bank account, date) is 409 CHECK_PRINTED (details.checkNumber, printedAt, changedFields), edit it with PUT /checks/:id; ' +
+    'a check keeps its own header tags.',
   body: registerEntryBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
