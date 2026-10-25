@@ -9,7 +9,7 @@ import { transactions, accounts, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { escapeLike } from '../utils/sql-like.js';
-import { buildApLines, assertApLineRefs, recomputeVendorCreditBalance } from './bill.service.js';
+import { buildApLines, assertApLineRefs, keepUnchangedLineDetails, recomputeVendorCreditBalance } from './bill.service.js';
 import { relinkDraftAttachments } from './attachment.service.js';
 
 async function getApAccountId(executor: DbOrTx, tenantId: string): Promise<string> {
@@ -87,7 +87,7 @@ export async function createVendorCredit(tenantId: string, input: CreateVendorCr
     }, userId, companyId, tx);
 
     if (input.draftAttachmentId) {
-      await relinkDraftAttachments(tx, tenantId, input.draftAttachmentId, 'vendor_credit', credit.id, userId);
+      await relinkDraftAttachments(tx, tenantId, input.draftAttachmentId, 'vendor_credit', credit.id, userId, companyId);
     }
     return credit;
   };
@@ -126,9 +126,11 @@ export async function updateVendorCredit(tenantId: string, creditId: string, inp
     ledger.assertNotStale(existing, input.expectedUpdatedAt, 'This vendor credit');
     await ledger.assertApDocumentUnapplied(tx, tenantId, existing, { includeRefunds: true });
 
+    const apAccountId = await getApAccountId(tx, tenantId);
+    // Lines sent back unchanged keep item, quantity, cost and customer (review L1).
+    await keepUnchangedLineDetails(tx, tenantId, existing, input.lines, built.lines, apAccountId, input.memo);
     await assertApLineRefs(tx, tenantId, companyId, built.lines);
     await assertVendorInScope(tx, tenantId, input.contactId, companyId);
-    const apAccountId = await getApAccountId(tx, tenantId);
 
     await ledger.updateTransaction(tenantId, creditId, {
       txnType: 'vendor_credit',
@@ -156,7 +158,10 @@ export async function updateVendorCredit(tenantId: string, creditId: string, inp
  * CREDIT_APPLIED, read under the row lock), refunded by a deposit (409
  * TXN_DEPOSITED) or on an expectedUpdatedAt mismatch (409 STALE).
  */
-export async function voidVendorCredit(tenantId: string, creditId: string, reason: string, userId?: string, opts: { expectedUpdatedAt?: string } = {}) {
+export async function voidVendorCredit(
+  tenantId: string, creditId: string, reason: string, userId?: string,
+  opts: { expectedUpdatedAt?: string; companyId?: string } = {},
+) {
   return ledger.voidTransaction(tenantId, creditId, reason, userId, { ...opts, expectType: 'vendor_credit' });
 }
 

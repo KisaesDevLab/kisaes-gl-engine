@@ -705,6 +705,17 @@ export interface VoidTransactionOptions {
   expectedUpdatedAt?: string;
   /** Only this txn type may be voided (the bills / vendor-credits routes); else 400. */
   expectType?: string;
+  /**
+   * The request's company: a transaction of another company in the tenant
+   * is not found (404), checked after the row lock (review M3). Omitted
+   * (jobs, daily sales): tenant scope only.
+   */
+  companyId?: string;
+}
+
+/** A row of another company than the request's (a tenant-wide row, company null, is in every company). */
+export function inOtherCompany(row: { companyId: string | null }, companyId: string | null | undefined): boolean {
+  return !!companyId && !!row.companyId && row.companyId !== companyId;
 }
 
 export async function voidTransaction(tenantId: string, txnId: string, reason: string, userId?: string, opts: VoidTransactionOptions = {}) {
@@ -728,7 +739,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       .for('update')
       .limit(1);
 
-    if (!txn || txn.status === 'deleted') throw AppError.notFound('Transaction not found');
+    if (!txn || txn.status === 'deleted' || inOtherCompany(txn, opts.companyId)) throw AppError.notFound('Transaction not found');
     if (opts.expectType && txn.txnType !== opts.expectType) {
       throw AppError.badRequest(opts.expectType === 'bill' ? 'Not a bill' : opts.expectType === 'vendor_credit' ? 'Not a vendor credit' : 'Wrong transaction type');
     }
@@ -740,7 +751,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     // through the bill-payment void, in this database transaction.
     if (txn.txnType === 'bill_payment') {
       const { voidBillPaymentInTx } = await import('./bill-payment.service.js');
-      await voidBillPaymentInTx(tx, tenantId, txnId, reason, userId);
+      await voidBillPaymentInTx(tx, tenantId, txnId, reason, userId, { companyId: opts.companyId });
       return;
     }
     // A bill or vendor credit with anything applied can't be voided (U-84):
@@ -853,7 +864,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines },
       releasedLinks.length > 0 ? { reason, releasedDepositLinks: releasedLinks } : { reason }, userId, tx);
 
-    if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId);
+    if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId, { companyId: opts.companyId });
   }
 }
 
@@ -2205,6 +2216,10 @@ export async function bulkUpdateTransactions(
       // TB3: AJE lifecycle is firm-only and runs through the tb router —
       // bulk recategorize/retag must never rewrite an adjusting entry.
       if (txn.txnType === 'aje') { skipped.push({ id: txnId, reason: 'aje' }); continue; }
+      // A/P documents keep their sub-ledger in their own services (review
+      // M5): a bulk payee change would move a bill to another vendor under
+      // its payments, a category or source move would rewrite its lines.
+      if (AP_DOCUMENT_TYPES.includes(txn.txnType)) { skipped.push({ id: txnId, reason: 'ap_document' }); continue; }
       const lockDate = txn.companyId ? (lockByCompany.get(txn.companyId) ?? null) : maxLock;
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
 

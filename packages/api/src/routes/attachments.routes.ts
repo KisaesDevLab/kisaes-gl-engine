@@ -10,6 +10,7 @@ import { eq, and, sql, count } from 'drizzle-orm';
 import type { JwtPayload } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource, requirePermission } from '../middleware/permission.js';
+import { companyContext } from '../middleware/company.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
 import { db } from '../db/index.js';
@@ -310,13 +311,41 @@ attachmentsRouter.get('/unlinked', async (req, res) => {
   res.json({ data });
 });
 
-attachmentsRouter.post('/:id/link', async (req, res) => {
+/**
+ * The company an attachment belongs to: its own company_id, else the
+ * company of the transaction it is attached to; null for a tenant-wide one
+ * (a draft, a receipt, a contact file…).
+ */
+async function attachmentCompany(tenantId: string, att: { companyId: string | null; attachableType: string; attachableId: string }) {
+  if (att.companyId) return att.companyId;
+  if (!TXN_ATTACHABLE_TYPES.has(att.attachableType)) return null;
+  const [txn] = await db.select({ companyId: transactions.companyId }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, att.attachableId)))
+    .limit(1);
+  return txn?.companyId ?? null;
+}
+
+// companyContext here (review M2): the router is tenant-scoped, so without
+// it req.companyId was never set and the company checks below were dead. An
+// accountant excluded from a company can't move its files.
+attachmentsRouter.post('/:id/link', companyContext, async (req, res) => {
   const { attachableType, attachableId } = req.body;
   if (!attachableType || !attachableId) {
     res.status(400).json({ error: { message: 'attachableType and attachableId required' } });
     return;
   }
   const attachmentId = req.params['id']!;
+  // The attachment itself must be this company's (or tenant-wide): its own
+  // company, or the company of the transaction it is attached to now.
+  const [att] = /^[0-9a-f-]{36}$/i.test(attachmentId)
+    ? await db.select({ companyId: attachments.companyId, attachableType: attachments.attachableType, attachableId: attachments.attachableId })
+      .from(attachments)
+      .where(and(eq(attachments.tenantId, req.tenantId), eq(attachments.id, attachmentId)))
+      .limit(1)
+    : [];
+  if (!att) throw AppError.notFound('Attachment not found');
+  const ownCompany = await attachmentCompany(req.tenantId, att);
+  if (ownCompany && ownCompany !== req.companyId) throw AppError.notFound('Attachment not found');
   // A transaction target must exist in this tenant (and company) with that
   // type (review Notes: the target id was taken unchecked). Other attachable
   // types (draft, receipt, contact…) are unchanged.

@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import {
-  createBillSchema, billFiltersSchema, payableBillsQuerySchema, voidTransactionSchema, billTermsDatesQuerySchema,
+  createBillSchema, updateBillSchema, billFiltersSchema, payableBillsQuerySchema, voidTransactionSchema, billTermsDatesQuerySchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -108,27 +108,39 @@ billsRouter.get('/:id', describe({ summary: 'Get a bill (header, terms, received
   res.json({ bill });
 });
 
-billsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, validate(createBillSchema), describe({
+// Idempotency-Key on edit and void (idempotency-ap-v1): routes added after
+// idempotency-v1, so under their own capability name. Refusals (409 STALE,
+// BILL_HAS_PAYMENTS, …) are never stored.
+const keyedBillById = idempotent({
+  successStatus: 200,
+  replay: async (req) => ({ bill: await billService.getBill(req.tenantId, req.params['id']!) }),
+});
+
+billsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedBillById, validate(updateBillSchema), describe({
   summary: 'Edit a bill',
   description: `Response 200 {bill} as committed (its updatedAt is the next expectedUpdatedAt). ${closedPeriodNote} ` +
     'expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. ' +
     'With payments or credits applied the vendor, date and total stay (400), the terms stay, and billReceived can\'t become false (409 BILL_HAS_PAYMENTS). ' +
+    'paymentTerms may also be the bill\'s stored free-text terms from before the table, sent back unchanged (its stored due date is kept unless dueDate is sent). ' +
+    'A line sent back unchanged (same position, account, amount and description) that omits itemId, quantity, unitPrice, contactId and isBillable keeps its stored ones; null clears them. ' +
     `${lineRules} ${termsRules}`,
-  body: billBodyDoc,
+  body: billBodyDoc.extend({ paymentTerms: z.string().max(50).optional() }),
   params: idParams,
 }), async (req, res) => {
   const bill = await billService.updateBill(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ bill });
 });
 
-billsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, validate(voidTransactionSchema), describe({
+billsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, keyedBillById, validate(voidTransactionSchema), describe({
   summary: 'Void a bill',
   description: `Response 200 {bill}. ${closedPeriodNote} Refused while payments or credits are applied: 409 BILL_HAS_PAYMENTS. ` +
-    'expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE.',
+    'expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE. A bill of another company is 404.',
   body: voidBodyDoc,
   params: idParams,
 }), async (req, res) => {
-  await billService.voidBill(req.tenantId, req.params['id']!, req.body.reason, req.userId, { expectedUpdatedAt: req.body.expectedUpdatedAt });
+  await billService.voidBill(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
+    expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
+  });
   const bill = await billService.getBill(req.tenantId, req.params['id']!);
   res.json({ bill });
 });
@@ -178,6 +190,6 @@ billsRouter.post('/:id/attach-draft', describe({
   // (expense, deposit, etc.) follow the same convention of using
   // their `txnType` as the attachable type — see
   // transactions.routes.ts and TransactionDetail.tsx.
-  const ids = await attachmentService.relinkDraftAttachments(db, req.tenantId, draftId, 'bill', bill.id, req.userId);
+  const ids = await attachmentService.relinkDraftAttachments(db, req.tenantId, draftId, 'bill', bill.id, req.userId, req.companyId);
   res.json({ reassigned: ids.length });
 });

@@ -12,6 +12,7 @@ import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
 import { pickEnum } from '../utils/list-query.js';
 
@@ -29,6 +30,18 @@ const lineRules = 'Lines take itemId, quantity, unitPrice, tagId and contactId a
 const creditBodyDoc = createVendorCreditSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });
 const voidBodyDoc = voidTransactionSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });
 const idParams = z.object({ id: z.string().uuid() });
+
+// Idempotency-Key on create, edit and void (idempotency-ap-v1; after the
+// closed-period middleware, before validation). Refusals (409 STALE,
+// CREDIT_APPLIED, TXN_DEPOSITED, ...) are never stored.
+const keyedCreditCreate = idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ credit: await vendorCreditService.getVendorCredit(req.tenantId, entity!.id) }),
+});
+const keyedCreditById = idempotent({
+  successStatus: 200,
+  replay: async (req) => ({ credit: await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!) }),
+});
 
 vendorCreditsRouter.get('/', describe({
   summary: 'List vendor credits',
@@ -52,7 +65,7 @@ vendorCreditsRouter.get('/available/:vendorId', async (req, res) => {
   res.json({ credits });
 });
 
-vendorCreditsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, validate(createVendorCreditSchema), describe({
+vendorCreditsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, keyedCreditCreate, validate(createVendorCreditSchema), describe({
   summary: 'Enter a vendor credit',
   description: `Response 201 {credit}. ${closedPeriodNote} ${lineRules} draftAttachmentId: relinked (attachable type "vendor_credit") in the same database transaction.`,
   body: creditBodyDoc,
@@ -67,7 +80,7 @@ vendorCreditsRouter.get('/:id', describe({ summary: 'Get a vendor credit', param
 });
 
 // U-84 (ap-edit-v1): edit with the create body.
-vendorCreditsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, validate(createVendorCreditSchema), describe({
+vendorCreditsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedCreditById, validate(createVendorCreditSchema), describe({
   summary: 'Edit a vendor credit',
   description: `Response 200 {credit} as committed. ${closedPeriodNote} ${lineRules} ` +
     'Refused while a bill payment applies it or a deposit refunds it: 409 CREDIT_APPLIED (details.applications, details.refundDepositIds). ' +
@@ -79,14 +92,16 @@ vendorCreditsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, v
   res.json({ credit });
 });
 
-vendorCreditsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, validate(voidTransactionSchema), describe({
+vendorCreditsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, keyedCreditById, validate(voidTransactionSchema), describe({
   summary: 'Void a vendor credit',
   description: `Response 200 {credit}. ${closedPeriodNote} Refused while applied to a bill (409 CREDIT_APPLIED) or refunded by a deposit (409 TXN_DEPOSITED). ` +
     'expectedUpdatedAt: mismatch 409 STALE.',
   body: voidBodyDoc,
   params: idParams,
 }), async (req, res) => {
-  await vendorCreditService.voidVendorCredit(req.tenantId, req.params['id']!, req.body.reason, req.userId, { expectedUpdatedAt: req.body.expectedUpdatedAt });
+  await vendorCreditService.voidVendorCredit(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
+    expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
+  });
   const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!);
   res.json({ credit });
 });

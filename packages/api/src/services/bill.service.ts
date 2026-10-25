@@ -9,12 +9,12 @@ const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
 import { findPaymentTerm, type CreateBillInput, type BillFilters } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
-import { transactions, accounts, contacts, items } from '../db/schema/index.js';
+import { transactions, accounts, contacts, items, journalLines as journalLinesTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { addCalendarDays } from '../utils/calendar-date.js';
-import { lineAmountFromQuantity, parseQuantity, parseUnitPrice, fitsMoneyColumn, sameAmount } from '../utils/line-amount.js';
+import { lineAmountFromQuantity, parseQuantity, parseUnitPrice, fitsMoneyColumn, sameAmount, exactSum } from '../utils/line-amount.js';
 import { assertLineContacts } from './line-contacts.service.js';
 import { relinkDraftAttachments } from './attachment.service.js';
 
@@ -276,7 +276,8 @@ export function buildApLines(lines: readonly ApLineInput[], opts: { allowBillabl
       isBillable: l.isBillable === true,
     };
   });
-  const total = built.reduce((s, l) => s.plus(l.amount), new Decimal('0'));
+  // Summed at 40 digits (review L4), then bounded to the money column.
+  const total = exactSum(built.map((l) => l.amount));
   if (!fitsMoneyColumn(total)) throw AppError.badRequest('The total is too large', 'VALIDATION_ERROR');
   return { lines: built, total };
 }
@@ -297,6 +298,57 @@ export async function assertApLineRefs(executor: DbOrTx, tenantId: string, compa
   await assertAccountsInTenant(executor, tenantId, lines.map((l) => l.accountId));
   await assertItemsInScope(executor, tenantId, companyId, lines.map((l) => l.itemId));
   await assertLineContacts(tenantId, lines, executor, companyId);
+}
+
+const LINE_DETAIL_KEYS = ['itemId', 'quantity', 'unitPrice', 'contactId', 'isBillable'] as const;
+
+/**
+ * An edit's lines sent back unchanged keep their stored item, quantity,
+ * cost, customer and billable mark (review L1): a client that doesn't know
+ * those fields (an older app, a script) would otherwise wipe them by
+ * omission. A line counts as sent back unchanged when it omits all five
+ * fields (undefined; null clears) and its position, account, amount and
+ * description match the stored document line at that position. Updates
+ * `built` in place; reads on the caller's transaction after the row lock.
+ */
+export async function keepUnchangedLineDetails(
+  executor: DbOrTx,
+  tenantId: string,
+  existing: { id: string; txnType: string; memo: string | null },
+  rawLines: readonly ApLineInput[],
+  built: BuiltApLine[],
+  apAccountId: string,
+  memo: string | undefined,
+): Promise<void> {
+  const candidates = rawLines.map((l, i) => (LINE_DETAIL_KEYS.every((k) => l[k] === undefined) ? i : -1)).filter((i) => i >= 0);
+  if (candidates.length === 0) return;
+  let stored = await executor.select().from(journalLinesTable)
+    .where(and(
+      eq(journalLinesTable.tenantId, tenantId),
+      eq(journalLinesTable.transactionId, existing.id),
+      eq(journalLinesTable.isVoidReversal, false),
+    ))
+    .orderBy(journalLinesTable.lineOrder);
+  // The A/P line: last on a bill (credit), first on a vendor credit (debit).
+  const isBill = existing.txnType === 'bill';
+  if (isBill && stored.at(-1)?.accountId === apAccountId) stored = stored.slice(0, -1);
+  if (!isBill && stored[0]?.accountId === apAccountId) stored = stored.slice(1);
+  for (const i of candidates) {
+    const s = stored[i];
+    const raw = rawLines[i]!;
+    const b = built[i]!;
+    if (!s || s.accountId !== b.accountId) continue;
+    if (!new Decimal((isBill ? s.debit : s.credit) || '0').equals(b.amount)) continue;
+    const description = s.description ?? null;
+    const sameDescription = description === (raw.description || memo || null)
+      || (!raw.description && description === (existing.memo ?? null));
+    if (!sameDescription) continue;
+    b.itemId = s.itemId ?? null;
+    b.quantity = s.quantity ?? null;
+    b.unitPrice = s.unitPrice ?? null;
+    b.contactId = s.contactId ?? null;
+    b.isBillable = isBill && s.isBillable === true;
+  }
 }
 
 function lineExtras(l: BuiltApLine) {
@@ -430,7 +482,7 @@ export async function createBill(tenantId: string, input: CreateBillInput, userI
     }, userId, companyId, tx);
 
     if (input.draftAttachmentId) {
-      await relinkDraftAttachments(tx, tenantId, input.draftAttachmentId, 'bill', bill.id, userId);
+      await relinkDraftAttachments(tx, tenantId, input.draftAttachmentId, 'bill', bill.id, userId, companyId);
     }
     return bill;
   };
@@ -468,6 +520,15 @@ export async function updateBill(tenantId: string, billId: string, input: Create
     if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void bill');
     ledger.assertNotStale(existing, input.expectedUpdatedAt, 'This bill');
 
+    // Free-text terms from before the PAYMENT_TERMS table are accepted only
+    // sent back unchanged (review L1); any other unknown code is 400.
+    const legacyTerms = !!input.paymentTerms && !findPaymentTerm(input.paymentTerms);
+    if (legacyTerms && input.paymentTerms !== existing.paymentTerms) {
+      throw AppError.badRequest('paymentTerms must be one of the codes from GET /payment-terms', 'VALIDATION_ERROR');
+    }
+
+    const apAccountId = await getApAccountId(tx, tenantId);
+    await keepUnchangedLineDetails(tx, tenantId, existing, input.lines, lines, apAccountId, input.memo);
     await assertApLineRefs(tx, tenantId, companyId, lines);
 
     // A bill is "locked" for total/vendor/date edits as soon as any payment
@@ -476,8 +537,6 @@ export async function updateBill(tenantId: string, billId: string, input: Create
     // have written yet). The lines can still be reallocated, but the TOTAL,
     // the VENDOR and the BILL DATE stay, so the applications stay right.
     const isLocked = (await countBillApplications(tx, tenantId, billId)) > 0;
-
-    const apAccountId = await getApAccountId(tx, tenantId);
 
     let resolvedContactId: string;
     if (isLocked) {
@@ -522,7 +581,14 @@ export async function updateBill(tenantId: string, billId: string, input: Create
         dueDateOverridden: existing.dueDateOverridden,
         discountDateOverridden: existing.discountDateOverridden,
       }
-      : resolveBillTerms({ ...input, txnDate: resolvedTxnDate }, vendor);
+      : legacyTerms && !input.dueDate
+        // Legacy terms compute no date: the stored due date stays.
+        ? {
+          ...resolveBillTerms({ ...input, txnDate: resolvedTxnDate }, vendor),
+          dueDate: existing.dueDate,
+          dueDateOverridden: existing.dueDateOverridden,
+        }
+        : resolveBillTerms({ ...input, txnDate: resolvedTxnDate }, vendor);
 
     // Total lock, exact (review S1; was a 0.01 tolerance).
     const existingTotal = new Decimal(existing.total || '0');
@@ -592,7 +658,10 @@ export async function updateBill(tenantId: string, billId: string, input: Create
  * BILL_HAS_PAYMENTS, read under the row lock) or on an expectedUpdatedAt
  * mismatch (409 STALE).
  */
-export async function voidBill(tenantId: string, billId: string, reason: string, userId?: string, opts: { expectedUpdatedAt?: string } = {}) {
+export async function voidBill(
+  tenantId: string, billId: string, reason: string, userId?: string,
+  opts: { expectedUpdatedAt?: string; companyId?: string } = {},
+) {
   return ledger.voidTransaction(tenantId, billId, reason, userId, { ...opts, expectType: 'bill' });
 }
 

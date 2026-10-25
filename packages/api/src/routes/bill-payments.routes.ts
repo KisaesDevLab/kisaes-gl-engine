@@ -12,6 +12,7 @@ import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as billPaymentService from '../services/bill-payment.service.js';
 
 export const billPaymentsRouter = Router();
@@ -51,12 +52,19 @@ billPaymentsRouter.get('/:id', async (req, res) => {
   res.json({ payment });
 });
 
-billPaymentsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, validate(voidTransactionSchema), describe({
+// Idempotency-Key on void (idempotency-ap-v1). POST /bill-payments (Pay
+// Bills) is not keyed yet: it belongs to Pay Bills (P18).
+billPaymentsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, idempotent({
+  successStatus: 200,
+  replay: async () => ({ voided: true }),
+}), validate(voidTransactionSchema), describe({
   summary: 'Void a bill payment',
   description: `Response 200 {voided: true}. ${closedPeriodNote} expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE.`,
   body: voidTransactionSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() }),
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
-  await billPaymentService.voidBillPayment(req.tenantId, req.params['id']!, req.body.reason, req.userId, { expectedUpdatedAt: req.body.expectedUpdatedAt });
+  await billPaymentService.voidBillPayment(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
+    expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
+  });
   res.json({ voided: true });
 });

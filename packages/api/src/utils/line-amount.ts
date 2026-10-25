@@ -72,6 +72,15 @@ export function termsDiscountAmount(amount: string, percent: string): string {
   return new Decimal(amount).times(percent).dividedBy(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
 }
 
+/**
+ * Sum of line amounts at 40 significant digits (review L4): 500 lines of up
+ * to 19 digits each can need more than decimal.js's default 20, which would
+ * round the total before the money-column bound is checked.
+ */
+export function exactSum(values: ReadonlyArray<DecimalValue | string>): DecimalValue {
+  return values.reduce<DecimalValue>((s, v) => s.plus(v), new Decimal(0));
+}
+
 /** Two decimal strings equal as numbers ("1480" and "1480.00"). */
 export function sameAmount(a: string, b: string): boolean {
   return new Decimal(a).equals(new Decimal(b));

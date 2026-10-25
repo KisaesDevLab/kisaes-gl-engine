@@ -48,4 +48,21 @@ BEGIN
       ADD CONSTRAINT transactions_discount_percent_chk
       CHECK (discount_percent IS NULL OR (discount_percent > 0 AND discount_percent < 100));
   END IF;
+  -- Ranges as the API validates them (review L5), for every writer
+  -- (imports, restores, direct service calls).
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'transactions_discount_days_chk') THEN
+    ALTER TABLE transactions
+      ADD CONSTRAINT transactions_discount_days_chk
+      CHECK (discount_days IS NULL OR (discount_days >= 0 AND discount_days <= 365));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'contacts_default_discount_percent_chk') THEN
+    ALTER TABLE contacts
+      ADD CONSTRAINT contacts_default_discount_percent_chk
+      CHECK (default_discount_percent IS NULL OR (default_discount_percent > 0 AND default_discount_percent < 100));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'contacts_default_discount_days_chk') THEN
+    ALTER TABLE contacts
+      ADD CONSTRAINT contacts_default_discount_days_chk
+      CHECK (default_discount_days IS NULL OR (default_discount_days >= 0 AND default_discount_days <= 365));
+  END IF;
 END $$;

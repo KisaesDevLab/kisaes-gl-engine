@@ -33,7 +33,7 @@ export const createContactSchema = z.object({
   // 'custom' and the bill sends no terms of its own.
   defaultTermsDays: z.number().int().min(0).max(3650).nullish(),
   defaultDiscountPercent: z.string().regex(/^\d{1,2}(\.\d{1,4})?$/, 'A percent with at most 4 decimal places')
-    .refine((v) => Number(v) > 0, 'The discount percent must be greater than 0').nullish(),
+    .refine((v) => /[1-9]/.test(v), 'The discount percent must be greater than 0').nullish(),
   defaultDiscountDays: z.number().int().min(0).max(365).nullish(),
   openingBalance: z.string().default('0'),
   openingBalanceDate: z.string().nullish(),
@@ -75,7 +75,7 @@ export const updateContactSchema = z.object({
   // 'custom' and the bill sends no terms of its own.
   defaultTermsDays: z.number().int().min(0).max(3650).nullish(),
   defaultDiscountPercent: z.string().regex(/^\d{1,2}(\.\d{1,4})?$/, 'A percent with at most 4 decimal places')
-    .refine((v) => Number(v) > 0, 'The discount percent must be greater than 0').nullish(),
+    .refine((v) => /[1-9]/.test(v), 'The discount percent must be greater than 0').nullish(),
   defaultDiscountDays: z.number().int().min(0).max(365).nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),

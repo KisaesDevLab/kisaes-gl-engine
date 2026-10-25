@@ -19,9 +19,12 @@ END $$;
 ALTER TABLE bill_payment_applications DROP CONSTRAINT IF EXISTS bill_payment_applications_discount_amount_chk;
 ALTER TABLE bill_payment_applications DROP COLUMN IF EXISTS discount_amount;
 
+ALTER TABLE contacts DROP CONSTRAINT IF EXISTS contacts_default_discount_days_chk;
+ALTER TABLE contacts DROP CONSTRAINT IF EXISTS contacts_default_discount_percent_chk;
 ALTER TABLE contacts DROP COLUMN IF EXISTS default_discount_days;
 ALTER TABLE contacts DROP COLUMN IF EXISTS default_discount_percent;
 
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_discount_days_chk;
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_discount_percent_chk;
 ALTER TABLE transactions DROP COLUMN IF EXISTS bill_received;
 ALTER TABLE transactions DROP COLUMN IF EXISTS discount_date_overridden;

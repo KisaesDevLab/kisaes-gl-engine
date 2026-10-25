@@ -75,6 +75,13 @@ export const createBillSchema = z.object({
   lines: z.array(billLineSchema).min(1, 'At least one line is required').max(500, 'Too many lines'),
 });
 
+// PUT /bills/:id: the create body, except that paymentTerms may also be the
+// bill's stored free-text terms from before the PAYMENT_TERMS table, sent
+// back unchanged (the service refuses any other unknown value with 400).
+export const updateBillSchema = createBillSchema.extend({
+  paymentTerms: z.preprocess(blankToUndefined, z.string().min(1).max(50).optional()),
+});
+
 const vendorCreditLineSchema = z.object({
   accountId: z.string().uuid(),
   description: z.string().optional(),

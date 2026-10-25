@@ -17,7 +17,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lineAmountFromQuantity, termsDiscountAmount } from './line-amount.js';
+import { lineAmountFromQuantity, termsDiscountAmount, exactSum } from './line-amount.js';
 import { addCalendarDays, isCalendarDate } from './calendar-date.js';
 import { AppError } from './errors.js';
 import { computeBillDueDate, resolveBillTerms } from '../services/bill.service.js';
@@ -109,5 +109,16 @@ describe('resolveBillTerms', () => {
       .toMatchObject({ paymentTerms: 'Net 30 EOM (legacy)', dueDate: null, source: 'vendor' });
     expect(resolveBillTerms({ txnDate: '2026-03-01' }, null)).toMatchObject({ paymentTerms: null, dueDate: null, source: 'none' });
     expect(() => resolveBillTerms({ txnDate: '2026-03-01', paymentTerms: 'net_30', discountDate: '2026-03-05' }, null)).toThrow(/discount/);
+  });
+});
+
+describe('exactSum (review L4)', () => {
+  it('sums at 40 digits: intermediate totals past 20 digits stay exact', () => {
+    // 11 x 999,999,999,999,999.9999 is 21 significant digits; decimal.js's
+    // default 20 would round it, and the small exact result would be lost.
+    const values = [...Array(11).fill('999999999999999.9999'), ...Array(11).fill('-999999999999999.9998')];
+    expect(exactSum(values).toFixed(4)).toBe('0.0011');
+    expect(exactSum([]).toFixed(4)).toBe('0.0000');
+    expect(exactSum(['1330.00', '150.00']).toFixed(4)).toBe('1480.0000');
   });
 });

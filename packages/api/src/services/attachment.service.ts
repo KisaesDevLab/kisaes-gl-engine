@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import archiver from 'archiver';
-import { eq, and, count, inArray, desc } from 'drizzle-orm';
+import { eq, and, or, isNull, count, inArray, desc } from 'drizzle-orm';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { attachments } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
@@ -333,6 +333,10 @@ export async function reassignDraftAttachments(
  * together), with one audit row per attachment (`update` / `attachment`,
  * before `{attachableType: 'draft', attachableId: draftId}`, after the new
  * link). Returns the relinked attachment ids.
+ *
+ * `companyId` (the request's company, review M3): a draft attachment stamped
+ * with another company is left alone; tenant-wide ones (company null, every
+ * upload today) are relinked.
  */
 export async function relinkDraftAttachments(
   executor: DbOrTx,
@@ -341,6 +345,7 @@ export async function relinkDraftAttachments(
   newType: string,
   newId: string,
   userId?: string,
+  companyId?: string | null,
 ): Promise<string[]> {
   const rows = await executor.update(attachments)
     .set({ attachableType: newType, attachableId: newId })
@@ -348,6 +353,7 @@ export async function relinkDraftAttachments(
       eq(attachments.tenantId, tenantId),
       eq(attachments.attachableType, 'draft'),
       eq(attachments.attachableId, draftId),
+      ...(companyId ? [or(isNull(attachments.companyId), eq(attachments.companyId, companyId))] : []),
     ))
     .returning({ id: attachments.id });
   for (const row of rows) {

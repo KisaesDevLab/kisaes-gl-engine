@@ -120,4 +120,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'bill-terms-v1',
   /** billReceived on bills (default true); false is left out of /bills/payable and refused by Pay Bills (409 BILL_NOT_RECEIVED) (U-87). */
   'bill-received-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on exactly these A/P
+   * routes added after it (each `x-idempotency: true` in openapi.json):
+   *   PUT /bills/:id, POST /bills/:id/void, POST /vendor-credits,
+   *   PUT /vendor-credits/:id, POST /vendor-credits/:id/void,
+   *   POST /bill-payments/:id/void.
+   * Refusals (409 STALE, BILL_HAS_PAYMENTS, CREDIT_APPLIED, TXN_DEPOSITED,
+   * 423, 403, 400) are never stored. POST /bill-payments is not keyed (Pay
+   * Bills, P18). The set is fixed: more routes get a new name.
+   */
+  'idempotency-ap-v1',
 ];

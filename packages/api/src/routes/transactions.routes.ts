@@ -9,6 +9,7 @@ import {
   createDepositSchema, createCashSaleSchema, createCreditMemoSchema,
   createCustomerRefundSchema, voidTransactionSchema, deleteTransactionSchema, transactionFiltersSchema,
   bulkUpdateTransactionsSchema, transactionRangeReportSchema, can,
+  type PermissionAction, type ResourceKey,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
@@ -60,6 +61,28 @@ const keyedById = idempotent({
   successStatus: 200,
   replay: async (req) => ({ transaction: await ledger.getTransaction(req.tenantId, req.params['id']!) }),
 });
+
+// The permission that owns an A/P document (review H1). The generic edit,
+// void, delete and duplicate routes run under `transactions`, but a bill,
+// vendor credit or bill payment reached through them also needs its own
+// screen's permission, so `transactions` alone can't void a bill. Middleware
+// ahead of idempotent(), so a replay is checked too.
+const AP_DOCUMENT_RESOURCE: Readonly<Record<string, ResourceKey>> = {
+  bill: 'bills', vendor_credit: 'vendor_credits', bill_payment: 'pay_bills',
+};
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function apDocumentPermission(action: PermissionAction) {
+  return async (req: Request, _res: Response, next: NextFunction) => {
+    const id = req.params['id'] ?? '';
+    const type = UUID_RE.test(id) ? await ledger.getTransactionType(req.tenantId, id) : null;
+    const resource = type ? AP_DOCUMENT_RESOURCE[type] : undefined;
+    if (resource && !can(await resolvePermissionsForRequest(req), resource, action)) {
+      throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+    }
+    next();
+  };
+}
 
 transactionsRouter.get('/', describe({
   summary: 'List transactions',
@@ -218,7 +241,7 @@ transactionsRouter.post('/', keyedCreate, describe({
   res.status(201).json({ transaction: result, ...extra });
 });
 
-transactionsRouter.put('/:id', keyedById, describe({
+transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
     'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
@@ -345,13 +368,14 @@ async function voidAjeGuard(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
-transactionsRouter.post('/:id/void', voidAjeGuard, keyedById, validate(voidTransactionSchema), async (req, res) => {
+transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'), keyedById, validate(voidTransactionSchema), async (req, res) => {
   // A/P documents keep their sub-ledger right here too (ap-edit-v1, review
   // B1): a bill or vendor credit with anything applied is 409
   // BILL_HAS_PAYMENTS / CREDIT_APPLIED; a bill payment is voided with its
-  // applications (the bills and credits it settled reopen).
+  // applications (the bills and credits it settled reopen). A transaction
+  // of another company is 404 (review M3).
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
-    expectedUpdatedAt: req.body.expectedUpdatedAt,
+    expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
   });
   const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
   res.json({ transaction: txn });
@@ -372,7 +396,7 @@ const deleteTransactionBodyDoc = deleteTransactionSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-transactionsRouter.delete('/:id', keyedById, (req, _res, next) => {
+transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, (req, _res, next) => {
   // A DELETE often has no body at all.
   if (!req.body || typeof req.body !== 'object') req.body = {};
   next();
@@ -393,7 +417,7 @@ transactionsRouter.delete('/:id', keyedById, (req, _res, next) => {
   res.json({ transaction: txn });
 });
 
-transactionsRouter.post('/:id/duplicate', async (req, res) => {
+transactionsRouter.post('/:id/duplicate', apDocumentPermission('create'), async (req, res) => {
   const original = await ledger.getTransaction(req.tenantId, req.params['id']!);
   // AJE duplication runs through /tb (numbering + firm gate, rule TB3).
   if (original.txnType === 'aje') {

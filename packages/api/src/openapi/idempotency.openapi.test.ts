@@ -3,7 +3,8 @@
 // Free for small businesses; see LICENSE for terms.
 
 /**
- * E20 (U-18): the idempotency-v1 route set in the OpenAPI document. Exactly
+ * E20 (U-18): the idempotency-v1 route set (plus idempotency-ap-v1, the A/P
+ * routes keyed after it) in the OpenAPI document. Exactly
  * these operations carry the Idempotency-Key header parameter and
  * `x-idempotency: true` (clients upgrade their retry behaviour per route on
  * it), and the capability is advertised. Needs no database.
@@ -41,6 +42,18 @@ export const IDEMPOTENCY_V1_ROUTES = [
   'post /api/v1/tags',
 ].sort();
 
+/** The idempotency-ap-v1 set: A/P routes keyed after idempotency-v1 (U-83..U-87 fix pass). */
+export const IDEMPOTENCY_AP_V1_ROUTES = [
+  'put /api/v1/bills/{id}',
+  'post /api/v1/bills/{id}/void',
+  'post /api/v1/vendor-credits',
+  'put /api/v1/vendor-credits/{id}',
+  'post /api/v1/vendor-credits/{id}/void',
+  'post /api/v1/bill-payments/{id}/void',
+].sort();
+
+const ALL_KEYED_ROUTES = [...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES].sort();
+
 let paths: Paths;
 
 beforeAll(async () => {
@@ -63,8 +76,12 @@ describe('idempotency-v1 in openapi.json', () => {
         }
       }
     }
-    expect(marked.sort()).toEqual(IDEMPOTENCY_V1_ROUTES);
-    expect(withHeader.sort()).toEqual(IDEMPOTENCY_V1_ROUTES);
+    expect(marked.sort()).toEqual(ALL_KEYED_ROUTES);
+    expect(withHeader.sort()).toEqual(ALL_KEYED_ROUTES);
+  });
+
+  it('POST /bill-payments (Pay Bills) is not keyed yet', () => {
+    expect(paths['/api/v1/bill-payments']?.['post']?.['x-idempotency']).toBeUndefined();
   });
 
   it('/batch/save and tenant creation are not in the set', () => {
@@ -76,5 +93,6 @@ describe('idempotency-v1 in openapi.json', () => {
   it('the capability is advertised', () => {
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-v1');
     expect(DESKTOP_CAPABILITIES).toContain('batch-idempotent-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('idempotency-ap-v1');
   });
 });
