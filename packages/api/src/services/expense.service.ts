@@ -6,6 +6,7 @@ import type { CreateExpenseInput, JournalLineInput } from '@kis-books/shared';
 import { db, type Tx } from '../db/index.js';
 import * as ledger from './ledger.service.js';
 import { assertLineContacts } from './line-contacts.service.js';
+import { assertPrintedFaceKeptOnExpenseEdit } from './check.service.js';
 import { exactAmount } from '../utils/money.js';
 
 export function buildExpensePayload(input: CreateExpenseInput) {
@@ -65,6 +66,12 @@ export async function createExpense(
 export async function updateExpense(tenantId: string, txnId: string, input: CreateExpenseInput, userId?: string, companyId?: string) {
   const payload = buildExpensePayload(input);
   return db.transaction(async (tx) => {
+    // A printed check keeps its printed face here (U-80): 409 CHECK_PRINTED,
+    // edit it with PUT /checks/:id, which asks reprint or keep the number.
+    await assertPrintedFaceKeptOnExpenseEdit(tx, tenantId, txnId, {
+      total: payload.total, contactId: payload.contactId, memo: payload.memo,
+      payFromAccountId: input.payFromAccountId, txnDate: payload.txnDate,
+    }, companyId);
     await assertLineContacts(tenantId, payload.lines, tx, companyId);
     return ledger.updateTransaction(tenantId, txnId, payload, userId, companyId, tx);
   });

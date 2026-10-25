@@ -19000,6 +19000,7 @@
     },
     "/api/v1/checks/print": {
       "post": {
+        "description": "A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_print",
         "requestBody": {
           "content": {
@@ -19018,6 +19019,10 @@
                     },
                     "minItems": 1,
                     "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
                   },
                   "format": {
                     "enum": [
@@ -19064,6 +19069,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Print queued checks: assign numbers and mark them printed",
         "tags": [
           "checks"
         ]
@@ -19156,6 +19162,7 @@
     },
     "/api/v1/checks/reprint/{batchId}": {
       "post": {
+        "description": "A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_reprint_by_batchId",
         "parameters": [
           {
@@ -19167,6 +19174,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -19180,6 +19204,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Return a printed batch to the print queue",
         "tags": [
           "checks"
         ]
@@ -19187,7 +19212,35 @@
     },
     "/api/v1/checks/requeue": {
       "post": {
+        "description": "A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_requeue",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "checkIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "checkIds"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -19201,6 +19254,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Return checks to the print queue (number and print stamp cleared)",
         "tags": [
           "checks"
         ]
@@ -19533,6 +19587,7 @@
     },
     "/api/v1/checks/{id}/memo": {
       "patch": {
+        "description": "A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "patch_api_v1_checks_by_id_memo",
         "parameters": [
           {
@@ -19540,6 +19595,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -19550,6 +19606,10 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "printedMemo": {
                     "maxLength": 255,
                     "type": "string"
@@ -19577,6 +19637,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Set the memo printed on a queued check",
         "tags": [
           "checks"
         ]
@@ -67733,7 +67794,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED.",
+        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED. ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); an expense edit of a printed check that changes its printed face (amount, payee, memo line, bank account, date) is 409 CHECK_PRINTED (details.checkNumber, printedAt, changedFields), edit it with PUT /checks/:id; a check keeps its own header tags.",
         "operationId": "put_api_v1_transactions_by_id",
         "parameters": [
           {
