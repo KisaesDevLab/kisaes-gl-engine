@@ -9,6 +9,9 @@
 //   E5  same key, another body / params / route / company / If-Match -> 422
 //   E6  another user with the same key executes independently
 //   E7  refusals are not stored (400, 423, 403, 409); the retry runs again
+//   E7b 409 TAG_NUMBER_EXISTS (pre-check and the unique index inside the
+//       keyed transaction), CHECK_PRINTED and DEPOSIT_LINKS_DROPPED store
+//       nothing and are never replayed
 //   E8  423, then the password with the same key -> posts once; a replay
 //       after the password changed posts nothing and audits nothing
 //   E9  two parallel same-key posts (50 runs) -> one posting, 409
@@ -36,9 +39,10 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   accounts, auditLog, attachments, batchSaveRequests, companies, contacts, dailySalesEntries, dailySalesEntryValues,
-  dailySalesTemplateLines, dailySalesTemplates, idempotencyKeys, items, templateOccurrences, transactions,
+  dailySalesTemplateLines, dailySalesTemplates, idempotencyKeys, items, tags, templateOccurrences, transactions,
   userPermissions, userTenantAccess, users,
 } from '../db/schema/index.js';
+import * as ledger from '../services/ledger.service.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { checksRouter } from './checks.routes.js';
@@ -273,6 +277,105 @@ describe('E7 refusals are not stored', () => {
     expect(r.json.error.code).toBe('TXN_ALREADY_DELETED');
     expect(await keyRows(key)).toHaveLength(0);
     expect((await request('DELETE', `/transactions/${id}`, {}, { key })).status).toBe(409);
+  });
+});
+
+describe('E7b refusals from tag-number-v1 and ledger-guards-v1 are not stored', () => {
+  const tagNumbers = () => `T-${suffix()}`;
+
+  it('409 TAG_NUMBER_EXISTS from the pre-check', async () => {
+    const number = tagNumbers();
+    expect((await request('POST', '/tags', { name: `Crew ${suffix()}`, tagNumber: number })).status).toBe(201);
+    const key = newKey();
+    const body = { name: `Crew ${suffix()}`, tagNumber: number };
+    const r = await request('POST', '/tags', body, { key });
+    expect(r.status).toBe(409);
+    expect(r.json.error.code).toBe('TAG_NUMBER_EXISTS');
+    expect(await keyRows(key)).toHaveLength(0);
+  });
+
+  it('409 TAG_NUMBER_EXISTS from the unique index inside the keyed transaction rolls the claim back', async () => {
+    const number = tagNumbers();
+    const key = newKey();
+    const body = { name: `Crew ${suffix()}`, tagNumber: number };
+    let racer: string | undefined;
+    // A concurrent writer takes the number after the pre-check passed and
+    // the key was claimed: the insert hits 23505 on the partial index.
+    __idempotencyTestHooks.afterClaim = async () => {
+      const [t] = await db.insert(tags).values({ tenantId: c.tenantId, name: `Racer ${suffix()}`, tagNumber: number }).returning();
+      racer = t!.id;
+    };
+    const tags0 = (await db.select().from(tags).where(eq(tags.tenantId, c.tenantId))).length;
+    const r = await request('POST', '/tags', body, { key });
+    delete __idempotencyTestHooks.afterClaim;
+    expect(r.status, JSON.stringify(r.json)).toBe(409);
+    expect(r.json.error.code).toBe('TAG_NUMBER_EXISTS');
+    expect(await keyRows(key)).toHaveLength(0);
+    // Only the racer's tag was added; no audit row for the refused create.
+    expect((await db.select().from(tags).where(eq(tags.tenantId, c.tenantId))).length).toBe(tags0 + 1);
+
+    // Once the number is free again the same key and body run (not replayed).
+    await db.delete(tags).where(eq(tags.id, racer!));
+    const ok = await request('POST', '/tags', body, { key });
+    expect(ok.status, JSON.stringify(ok.json)).toBe(201);
+    expect(ok.headers['idempotent-replayed']).toBeUndefined();
+    expect(ok.json.tag.tagNumber).toBe(number);
+    const replay = await request('POST', '/tags', body, { key });
+    expect(replay.status).toBe(201);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(replay.json).toEqual(ok.json);
+  });
+
+  it('409 CHECK_PRINTED on PUT /transactions/:id', async () => {
+    const made = await request('POST', '/checks', {
+      bankAccountId: c.bank, contactId: c.vendor, payeeNameOnCheck: 'Cosmos Granite',
+      txnDate: '2026-04-14', amount: '150.00', printLater: true, lines: [{ accountId: c.expense, amount: '150.00' }],
+    });
+    expect(made.status, JSON.stringify(made.json)).toBe(201);
+    const id = made.json.check.id;
+    await db.update(transactions).set({
+      printStatus: 'printed', checkNumber: 7001, printedAt: new Date('2026-04-15T12:00:00.000Z'), printBatchId: crypto.randomUUID(),
+    }).where(eq(transactions.id, id));
+    const key = newKey();
+    const body = {
+      txnType: 'expense', txnDate: '2026-04-14', payFromAccountId: c.bank, contactId: c.vendor,
+      lines: [{ expenseAccountId: c.expense, amount: '151.00' }],
+    };
+    for (let i = 0; i < 2; i++) {
+      const r = await request('PUT', `/transactions/${id}`, body, { key });
+      expect(r.status).toBe(409);
+      expect(r.json.error.code).toBe('CHECK_PRINTED');
+      expect(r.headers['idempotent-replayed']).toBeUndefined();
+      expect(await keyRows(key)).toHaveLength(0);
+    }
+    expect((await db.select().from(transactions).where(eq(transactions.id, id)))[0]!.total).toBe('150.0000');
+  });
+
+  it('409 DEPOSIT_LINKS_DROPPED on PUT /transactions/:id', async () => {
+    const clearing = (await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'payments_clearing')),
+    }))!.id;
+    const payment = await ledger.postTransaction(c.tenantId, {
+      txnType: 'customer_payment', txnDate: '2026-04-10', contactId: c.customer, total: '125.0000',
+      lines: [
+        { accountId: clearing, debit: '125.0000', credit: '0' },
+        { accountId: c.ar, debit: '0', credit: '125.0000' },
+      ],
+    }, c.userId, c.companyId);
+    const deposit = (line: Record<string, unknown>) => ({
+      txnType: 'deposit', txnDate: '2026-04-12', depositToAccountId: c.bank, lines: [{ accountId: clearing, amount: '125.00', ...line }],
+    });
+    const made = await request('POST', '/transactions', deposit({ sourceTransactionId: payment.id }));
+    expect(made.status, JSON.stringify(made.json)).toBe(201);
+    const key = newKey();
+    const dropped = { ...deposit({}), memo: 'fixed memo' };
+    for (let i = 0; i < 2; i++) {
+      const r = await request('PUT', `/transactions/${made.json.transaction.id}`, dropped, { key });
+      expect(r.status).toBe(409);
+      expect(r.json.error.code).toBe('DEPOSIT_LINKS_DROPPED');
+      expect(r.headers['idempotent-replayed']).toBeUndefined();
+      expect(await keyRows(key)).toHaveLength(0);
+    }
   });
 });
 
