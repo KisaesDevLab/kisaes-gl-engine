@@ -41689,7 +41689,7 @@
     },
     "/api/v1/recurring/run-due": {
       "post": {
-        "description": "Response `{asOf, runId, more, posted:[{templateId,templateName,kind,clientForm,occurrenceDate,transactionId,total}], reminders:[{templateId,templateName,kind,clientForm,dueDates,dueCount,truncated,total}], remindersTruncated, skipped:[{templateId,templateName,kind,clientForm,occurrenceDate,reason,new}], skippedTotal, failed:[{templateId,reason}]}`. `posted` includes earlier posts with the same runId. A run posts or skips at most 31 dates per schedule; a schedule with more due is listed in `skipped` with reason CATCH_UP_CAPPED (its next due date; nothing recorded, the next run continues) and does not set `more`. A template posts only while its owner (last editor, else creator) holds write access to its kind, else the date is skipped with reason PERMISSION. `skipped` lists at most 200 open dates (oldest first) plus the capped schedules; `skippedTotal` counts them all. Reminders: at most 500 schedules (`remindersTruncated`) and 400 due dates each (`truncated`). asOf later than tomorrow: 400 RUN_DUE_FUTURE.",
+        "description": "Response `{asOf, runId, more, posted:[{templateId,templateName,kind,clientForm,occurrenceDate,transactionId,total}], reminders:[{templateId,templateName,kind,clientForm,dueDates,dueCount,truncated,total}], remindersTruncated, skipped:[{templateId,templateName,kind,clientForm,occurrenceDate,reason,new}], skippedTotal, failed:[{templateId,reason}]}`. `posted` includes earlier posts with the same runId. A run posts or skips at most 31 dates per schedule; a schedule with more due is listed in `skipped` with reason CATCH_UP_CAPPED (its next due date; nothing recorded, the next run continues) and does not set `more`. A template posts only while its owner (last editor, else creator) holds write access to its kind, else the date is skipped with reason PERMISSION. `skipped` lists at most 200 open dates (oldest first) plus the capped schedules; `skippedTotal` counts them all. Reminders: at most 500 schedules (`remindersTruncated`) and 400 due dates each (`truncated`). asOf later than tomorrow: 400 RUN_DUE_FUTURE. Optional template filter (run-due-filter-v1): `templateIds` (1-500 uuids) runs only these templates, `excludeTemplateIds` (0-500 uuids) runs all but these; both together mean only these minus the excluded; ids matching no due template are ignored; a malformed id is 400 VALIDATION_ERROR. Filtered-out templates are untouched and stay due; `more` counts only templates the filter lets through; `reminders` and `skipped` stay company-wide. The runId is only a label: replaying it with a different filter posts what the new filter allows (never a date twice), and `posted` lists every post with that runId.",
         "operationId": "post_api_v1_recurring_run_due",
         "requestBody": {
           "content": {
@@ -41701,6 +41701,14 @@
                     "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
+                  "excludeTemplateIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "type": "array"
+                  },
                   "limit": {
                     "default": 200,
                     "maximum": 500,
@@ -41710,6 +41718,15 @@
                   "runId": {
                     "format": "uuid",
                     "type": "string"
+                  },
+                  "templateIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
                   }
                 },
                 "type": "object"
