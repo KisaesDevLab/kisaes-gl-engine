@@ -2,13 +2,14 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, ilike, count, inArray } from 'drizzle-orm';
+import { eq, and, sql, ilike, count, inArray, type SQL } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { guardMergeTransactions } from './merge-lock.service.js';
 
 // Defense-in-depth tenant checks for transaction-tag mutations. Without
 // these, a caller who knows (or guesses) a txn/tag UUID from another
@@ -201,15 +202,40 @@ export async function remove(tenantId: string, id: string, userId?: string) {
   await auditLog(tenantId, 'delete', 'tag', id, tag, null, userId);
 }
 
-export async function merge(tenantId: string, sourceId: string, targetId: string) {
+export async function merge(tenantId: string, sourceId: string, targetId: string, userId?: string) {
   const source = await getById(tenantId, sourceId);
   const target = await getById(tenantId, targetId);
-  void source;
+  if (sourceId === targetId) throw AppError.badRequest('Cannot merge a tag with itself');
 
   // Merge + source delete are now in a single db.transaction so a
   // partial failure (e.g., FK constraint on the delete) rolls back
   // the re-tagging. Also every statement is scoped by tenant_id.
+  //
+  // U-47: the merge re-tags transactions of every date, so the ones dated
+  // on or before the closing date need the closing-date password
+  // (guardMergeTransactions: 423 / 403 and nothing changes without it).
+  // Split-level line tags (journal_lines.tag_id) and the ON DELETE RESTRICT
+  // defaults move to the target too; before, any of them made the source
+  // delete fail and the whole merge roll back. The audit row is written in
+  // the same transaction and lists the transaction ids.
   await db.transaction(async (tx) => {
+    const affected = await guardMergeTransactions(tx, tenantId, sql`
+      SELECT transaction_id FROM transaction_tags WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}
+      UNION
+      SELECT transaction_id FROM journal_lines WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}
+    `, { kind: 'tag_merge', sourceId, targetId, userId });
+
+    const moved: Record<string, number> = {};
+    const repoint = async (label: string, statement: SQL) => {
+      const r = await tx.execute(statement);
+      moved[label] = r.rowCount ?? 0;
+    };
+    await repoint('journalLines', sql`UPDATE journal_lines SET tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}`);
+    await repoint('items', sql`UPDATE items SET default_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND default_tag_id = ${sourceId}`);
+    await repoint('contacts', sql`UPDATE contacts SET default_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND default_tag_id = ${sourceId}`);
+    await repoint('bankRules', sql`UPDATE bank_rules SET assign_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND assign_tag_id = ${sourceId}`);
+    await repoint('budgets', sql`UPDATE budgets SET tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}`);
+
     // Re-tag: update transaction_tags from source to target (skip duplicates)
     await tx.execute(sql`
       UPDATE transaction_tags SET tag_id = ${targetId}
@@ -230,6 +256,13 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
 
     // Delete source
     await tx.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, sourceId)));
+
+    await auditLog(tenantId, 'delete', 'tag', sourceId, source, {
+      merged_into: targetId,
+      moved,
+      transactions: affected.transactions,
+      closedPeriodOverride: affected.closedPeriodOverride,
+    }, userId, tx);
   });
 
   return target;

@@ -3,10 +3,14 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import { createTagSchema, updateTagSchema, mergeTagsSchema, createTagGroupSchema, updateTagGroupSchema, transactionTagsSchema, bulkTagSchema, createSavedFilterSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware } from '../services/lock-context.js';
 import * as tagsService from '../services/tags.service.js';
 
 export const tagsRouter = Router();
@@ -81,8 +85,20 @@ tagsRouter.delete('/:id', async (req, res) => {
   res.json({ message: 'Tag deleted' });
 });
 
-tagsRouter.post('/merge', validate(mergeTagsSchema), async (req, res) => {
-  const result = await tagsService.merge(req.tenantId, req.body.sourceTagId, req.body.targetTagId);
+// A merge re-tags transactions of every date (header and line tags). When
+// one is dated on or before the closing date it is a closed-period edit
+// (U-47, merge-closing-date-v1): 423 TB_PERIOD_LOCKED without
+// `closingPassword`, 403 CLOSING_PASSWORD_INVALID when wrong (rate limited,
+// 429); nothing changes either way.
+const mergeTagsBodyDoc = mergeTagsSchema.extend({
+  closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); needed when a re-tagged transaction is in a closed period; never stored or echoed'),
+});
+
+tagsRouter.post('/merge', closingPasswordLimiter, lockContextMiddleware, validate(mergeTagsSchema), describe({
+  summary: 'Merge a tag into another and delete it (closing date enforced; merge-closing-date-v1)',
+  body: mergeTagsBodyDoc,
+}), async (req, res) => {
+  const result = await tagsService.merge(req.tenantId, req.body.sourceTagId, req.body.targetTagId, req.userId);
   res.json({ tag: result });
 });
 

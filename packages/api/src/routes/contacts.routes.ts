@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema, bulkUpdateContactTypeSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -12,6 +13,9 @@ import * as contactsService from '../services/contacts.service.js';
 import * as batchService from '../services/batch.service.js';
 import * as checkPdfService from '../services/check-pdf.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
+import { describe } from '../middleware/describe.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware } from '../services/lock-context.js';
 
 export const contactsRouter = Router();
 contactsRouter.use(authenticate);
@@ -45,7 +49,19 @@ contactsRouter.post('/import', validate(contactsImportSchema), async (req, res) 
   res.status(201).json({ imported: result.length, contacts: result });
 });
 
-contactsRouter.post('/merge', validate(mergeContactsSchema), async (req, res) => {
+// A merge repoints the duplicate's transactions of every date. When one is
+// dated on or before the closing date it is a closed-period edit (U-47,
+// merge-closing-date-v1): 423 TB_PERIOD_LOCKED without `closingPassword`,
+// 403 CLOSING_PASSWORD_INVALID when wrong (rate limited, 429); nothing
+// changes either way.
+const mergeContactsBodyDoc = mergeContactsSchema.extend({
+  closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); needed when a moved transaction is in a closed period; never stored or echoed'),
+});
+
+contactsRouter.post('/merge', closingPasswordLimiter, lockContextMiddleware, validate(mergeContactsSchema), describe({
+  summary: 'Merge a duplicate contact into another (closing date enforced; merge-closing-date-v1)',
+  body: mergeContactsBodyDoc,
+}), async (req, res) => {
   const result = await contactsService.merge(req.tenantId, req.body.sourceId, req.body.targetId, req.userId);
   res.json({ contact: result });
 });
