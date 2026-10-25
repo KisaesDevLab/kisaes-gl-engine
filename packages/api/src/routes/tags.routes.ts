@@ -17,9 +17,39 @@ export const tagsRouter = Router();
 tagsRouter.use(authenticate);
 tagsRouter.use(requireResource('tags'));
 
+// OpenAPI documentation for the tag routes (U-04 describe()).
+const tagResponse = z.object({
+  id: z.string().uuid(),
+  tenantId: z.string().uuid(),
+  companyId: z.string().uuid().nullable(),
+  groupId: z.string().uuid().nullable(),
+  name: z.string(),
+  tagNumber: z.string().nullable().describe('optional, unique per tenant when set (tag-number-v1)'),
+  color: z.string().nullable(),
+  description: z.string().nullable(),
+  isActive: z.boolean().nullable(),
+  usageCount: z.number().int().nullable(),
+  sortOrder: z.number().int().nullable(),
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+});
+const tagEnvelope = z.object({ tag: tagResponse });
+const tagNumberConflict = '409 TAG_NUMBER_EXISTS when another tag of the tenant has this tagNumber; 409 without code for a duplicate name.';
+
 // ─── Tags ────────────────────────────────────────────────────────
 
-tagsRouter.get('/', async (req, res) => {
+tagsRouter.get('/', describe({
+  summary: 'List tags',
+  description: 'Sorted by sortOrder, then tagNumber (text order, tags without a number last), then name. `search` matches the name or the tag number.',
+  query: z.object({
+    group_id: z.string().uuid().optional(),
+    is_active: z.enum(['true', 'false']).optional(),
+    search: z.string().optional().describe('case-insensitive substring of name or tagNumber'),
+    limit: z.string().optional().describe('1..500, default 200'),
+    offset: z.string().optional(),
+  }),
+  response: z.object({ tags: z.array(tagResponse), total: z.number().int(), limit: z.number().int(), offset: z.number().int() }),
+}), async (req, res) => {
   const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;
   const offset = req.query['offset'] ? Number(req.query['offset']) : undefined;
   const result = await tagsService.list(req.tenantId, {
@@ -34,7 +64,11 @@ tagsRouter.get('/', async (req, res) => {
   res.json({ tags: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
-tagsRouter.post('/', validate(createTagSchema), async (req, res) => {
+tagsRouter.post('/', describe({
+  summary: 'Create a tag',
+  description: tagNumberConflict,
+  response: tagEnvelope,
+}), validate(createTagSchema), async (req, res) => {
   const tag = await tagsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ tag });
 });
@@ -60,7 +94,7 @@ tagsRouter.delete('/saved-filters/:id', async (req, res) => {
   res.json({ message: 'Filter deleted' });
 });
 
-tagsRouter.get('/:id', async (req, res) => {
+tagsRouter.get('/:id', describe({ summary: 'Get a tag', response: tagEnvelope }), async (req, res) => {
   const tag = await tagsService.getById(req.tenantId, req.params['id']!);
   res.json({ tag });
 });
@@ -75,7 +109,11 @@ tagsRouter.get('/:id/usage', async (req, res) => {
   res.json({ tag, usage });
 });
 
-tagsRouter.put('/:id', validate(updateTagSchema), async (req, res) => {
+tagsRouter.put('/:id', describe({
+  summary: 'Update a tag',
+  description: `tagNumber omitted keeps the stored number; "" or null clears it. ${tagNumberConflict}`,
+  response: tagEnvelope,
+}), validate(updateTagSchema), async (req, res) => {
   const tag = await tagsService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ tag });
 });

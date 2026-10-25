@@ -3,9 +3,11 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { Router } from 'express';
+import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permission.js';
+import { describe } from '../middleware/describe.js';
 import * as dashboardService from '../services/dashboard.service.js';
 import * as budgetService from '../services/budget.service.js';
 import * as flags from '../services/feature-flags.service.js';
@@ -198,6 +200,77 @@ function readTrendMonths(req: { query: Record<string, unknown> }): number {
   return Math.min(Math.max(parsed, 1), 36);
 }
 
+// ─── dashboard-exact-v1: query options and OpenAPI documentation ────
+//
+// `exact=1` / `exact=true`: money as decimal strings with four places
+// (anything else keeps the historical JSON numbers, as register-exact-v1).
+// `asOf=YYYY-MM-DD`: the day the panels treat as today; default the
+// database's CURRENT_DATE. `dueWithinDays` (payables, 1..90, default 7).
+const isoDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD')
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, 'not a calendar date');
+const exactParam = z.enum(['1', 'true']).optional().describe('money as decimal strings (dashboard-exact-v1)');
+const asOfParam = isoDate.optional().describe("YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.");
+const dueWithinDaysParam = z.coerce.number().int().min(1).max(90).optional()
+  .describe('payables: dueThisWeekCount/Amount cover bills due today through today + N days; default 7');
+const monthsParam = z.string().optional().describe('trend months, clamped to 1..36, default 6');
+
+const dashboardQuery = z.object({ exact: z.string().optional(), asOf: asOfParam });
+const payablesQuery = dashboardQuery.extend({ dueWithinDays: dueWithinDaysParam });
+
+interface DashboardQuery { exact: boolean; asOf?: string; dueWithinDays?: number }
+
+function readDashboardQuery(req: { query: Record<string, unknown> }, payables = false): DashboardQuery {
+  const q = (payables ? payablesQuery : dashboardQuery).parse(req.query) as { exact?: string; asOf?: string; dueWithinDays?: number };
+  return { exact: q.exact === '1' || q.exact === 'true', asOf: q.asOf, dueWithinDays: q.dueWithinDays };
+}
+
+const docQuery = z.object({ exact: exactParam, asOf: asOfParam });
+const dashMoney = z.union([z.number(), z.string()])
+  .describe('JSON number by default; a decimal string with four decimals when exact=1');
+const plDoc = z.object({ revenue: dashMoney, expenses: dashMoney, netIncome: dashMoney });
+const snapshotDoc = z.object({ mtd: plDoc, ytd: plDoc });
+const trendDoc = z.array(z.object({
+  month: z.string().describe("label, e.g. 'Oct 26'"),
+  startDate: z.string().describe('YYYY-MM-DD first day of the month'),
+  endDate: z.string().describe('YYYY-MM-DD last day of the month'),
+  revenue: dashMoney,
+  expenses: dashMoney,
+}));
+const cashEntryDoc = z.object({ id: z.string().uuid(), name: z.string(), accountNumber: z.string().nullable(), balance: dashMoney });
+const cashDoc = z.object({ bankAccounts: z.array(cashEntryDoc), creditCards: z.array(cashEntryDoc), totalBank: dashMoney, totalCC: dashMoney });
+const overdueRule = 'An invoice is overdue when it is posted, not paid or void, its open amount (balance_due, else total) is above zero, and its due date (txn_date when it has none) is before today.';
+const receivablesDoc = z.object({
+  totalOutstanding: dashMoney,
+  overdueCount: z.number().int(),
+  overdueAmount: dashMoney,
+  invoiceCount: z.number().int(),
+});
+const payablesDoc = z.object({
+  totalOwed: dashMoney,
+  billCount: z.number().int(),
+  overdueCount: z.number().int(),
+  overdueAmount: dashMoney,
+  dueThisWeekCount: z.number().int().describe('bills due today through today + dueWithinDays'),
+  dueThisWeekAmount: dashMoney,
+  dueWithinDays: z.number().int(),
+  creditCount: z.number().int(),
+  creditAmount: dashMoney,
+  apBalance: dashMoney,
+});
+const actionItemsDoc = z.object({
+  pendingFeedCount: z.number().int(),
+  overdueInvoiceCount: z.number().int().describe('same rule as /receivables overdueCount'),
+  staleReconciliations: z.array(z.object({ accountName: z.string(), lastReconciled: z.unknown() })),
+  pendingDepositCount: z.number().int(),
+  pendingDepositAmount: dashMoney,
+  printQueueCount: z.number().int(),
+  printQueueAmount: dashMoney,
+});
+
 // whole response — the client still sees the successful panels and gets
 // explicit null for the failing ones. The shape matches the individual
 // endpoints one-to-one so the UI code only changed its fetching layer.
@@ -280,18 +353,27 @@ export async function computeWorkQueue(tenantId: string) {
   };
 }
 
-dashboardRouter.get('/summary', async (req, res) => {
+dashboardRouter.get('/summary', describe({
+  summary: 'Every dashboard panel in one request',
+  description: 'Panels as the single routes return them, plus `asOf` (the date used as today, shared by every panel) and `errors` (labels of failed panels, whose value is null). exact, asOf and dueWithinDays apply to the snapshot, trend, cashPosition, receivables, payables and actionItems panels (dashboard-exact-v1).',
+  query: docQuery.extend({ months: monthsParam, dueWithinDays: dueWithinDaysParam }),
+}), async (req, res) => {
   const months = readTrendMonths(req);
+  const q = readDashboardQuery(req, true);
+  // One "today" for every panel, so a request that straddles midnight
+  // cannot mix two dates.
+  const asOf = await dashboardService.resolveToday(q.asOf);
+  const opts = { exact: q.exact, asOf };
   const [
     snapshot, trend, cashPosition, receivables, payables,
     actionItems, budgetPerformance, bankingHealth, portalActivity, workQueue,
   ] = await Promise.allSettled([
-    dashboardService.getFinancialSnapshot(req.tenantId),
-    dashboardService.getRevExpTrend(req.tenantId, months),
-    dashboardService.getCashPosition(req.tenantId),
-    dashboardService.getReceivablesSummary(req.tenantId),
-    dashboardService.getPayablesSummary(req.tenantId),
-    dashboardService.getActionItems(req.tenantId),
+    dashboardService.getFinancialSnapshot(req.tenantId, opts),
+    dashboardService.getRevExpTrend(req.tenantId, months, opts),
+    dashboardService.getCashPosition(req.tenantId, opts),
+    dashboardService.getReceivablesSummary(req.tenantId, opts),
+    dashboardService.getPayablesSummary(req.tenantId, { ...opts, dueWithinDays: q.dueWithinDays }),
+    dashboardService.getActionItems(req.tenantId, undefined, opts),
     computeBudgetPerformance(req.tenantId),
     computeBankingHealth(req.tenantId),
     computePortalActivity(req.tenantId),
@@ -327,6 +409,7 @@ dashboardRouter.get('/summary', async (req, res) => {
   }
 
   res.json({
+    asOf,
     snapshot: unwrap(snapshot),
     trend: unwrap(trend) ? { data: unwrap(trend) } : null,
     cashPosition: unwrap(cashPosition),
@@ -341,33 +424,68 @@ dashboardRouter.get('/summary', async (req, res) => {
   });
 });
 
-dashboardRouter.get('/snapshot', async (req, res) => {
-  const data = await dashboardService.getFinancialSnapshot(req.tenantId);
+dashboardRouter.get('/snapshot', describe({
+  summary: 'Month-to-date and fiscal year-to-date revenue, expenses and net income',
+  query: docQuery,
+  response: snapshotDoc,
+}), async (req, res) => {
+  const q = readDashboardQuery(req);
+  const data = await dashboardService.getFinancialSnapshot(req.tenantId, q);
   res.json(data);
 });
 
-dashboardRouter.get('/trend', async (req, res) => {
-  const data = await dashboardService.getRevExpTrend(req.tenantId, readTrendMonths(req));
+dashboardRouter.get('/trend', describe({
+  summary: 'Revenue and expenses per calendar month, oldest first',
+  description: 'Months end at the month of asOf (default the database date).',
+  query: docQuery.extend({ months: monthsParam }),
+  response: z.object({ data: trendDoc }),
+}), async (req, res) => {
+  const q = readDashboardQuery(req);
+  const data = await dashboardService.getRevExpTrend(req.tenantId, readTrendMonths(req), q);
   res.json({ data });
 });
 
-dashboardRouter.get('/cash-position', async (req, res) => {
-  const data = await dashboardService.getCashPosition(req.tenantId);
+dashboardRouter.get('/cash-position', describe({
+  summary: 'Stored balances of active bank, cash and credit card accounts',
+  description: 'totalCC sums the absolute card balances. asOf is accepted and has no effect (stored balances).',
+  query: docQuery,
+  response: cashDoc,
+}), async (req, res) => {
+  const q = readDashboardQuery(req);
+  const data = await dashboardService.getCashPosition(req.tenantId, q);
   res.json(data);
 });
 
-dashboardRouter.get('/receivables', async (req, res) => {
-  const data = await dashboardService.getReceivablesSummary(req.tenantId);
+dashboardRouter.get('/receivables', describe({
+  summary: 'Open and overdue invoices',
+  description: overdueRule,
+  query: docQuery,
+  response: receivablesDoc,
+}), async (req, res) => {
+  const q = readDashboardQuery(req);
+  const data = await dashboardService.getReceivablesSummary(req.tenantId, q);
   res.json(data);
 });
 
-dashboardRouter.get('/payables', async (req, res) => {
-  const data = await dashboardService.getPayablesSummary(req.tenantId);
+dashboardRouter.get('/payables', describe({
+  summary: 'Open, overdue and soon-due bills, vendor credits and the A/P balance',
+  description: 'Overdue: due date before today. Due soon (dueThisWeekCount/Amount): due today through today + dueWithinDays. Bills without a due date count in neither.',
+  query: docQuery.extend({ dueWithinDays: dueWithinDaysParam }),
+  response: payablesDoc,
+}), async (req, res) => {
+  const q = readDashboardQuery(req, true);
+  const data = await dashboardService.getPayablesSummary(req.tenantId, q);
   res.json(data);
 });
 
-dashboardRouter.get('/action-items', async (req, res) => {
-  const data = await dashboardService.getActionItems(req.tenantId);
+dashboardRouter.get('/action-items', describe({
+  summary: 'Counts of things waiting on a person',
+  description: `overdueInvoiceCount uses the /receivables rule. ${overdueRule} A bank account is stale when it has no complete reconciliation with a statement date in the 30 days before today.`,
+  query: docQuery,
+  response: actionItemsDoc,
+}), async (req, res) => {
+  const q = readDashboardQuery(req);
+  const data = await dashboardService.getActionItems(req.tenantId, undefined, q);
   res.json(data);
 });
 
