@@ -671,14 +671,35 @@ export async function resolveOccurrence(actor: Actor, templateId: string, date: 
 const companyCond = (column: string, companyId: string | null) =>
   companyId ? sql`${sql.raw(column)} = ${companyId}` : sql`${sql.raw(column)} IS NULL`;
 
-async function dueAutoSchedules(actor: Actor, asOf: string) {
+/** Optional run-due template filter (U-82, run-due-filter-v1). */
+export interface RunDueFilter {
+  /** Only these templates. */
+  templateIds?: string[];
+  /** All but these templates. */
+  excludeTemplateIds?: string[];
+}
+
+function filterCond(filter: RunDueFilter | undefined) {
+  const conds = [];
+  if (filter?.templateIds) {
+    conds.push(filter.templateIds.length === 0
+      ? sql`false`
+      : sql`rs.template_id IN (${sql.join(filter.templateIds.map((i) => sql`${i}`), sql`, `)})`);
+  }
+  if (filter?.excludeTemplateIds && filter.excludeTemplateIds.length > 0) {
+    conds.push(sql`rs.template_id NOT IN (${sql.join(filter.excludeTemplateIds.map((i) => sql`${i}`), sql`, `)})`);
+  }
+  return conds.length === 0 ? sql`true` : sql.join(conds, sql` AND `);
+}
+
+async function dueAutoSchedules(actor: Actor, asOf: string, filter?: RunDueFilter) {
   const res = await db.execute(sql`
     SELECT rs.template_id
     FROM recurring_schedules rs
     JOIN template_transactions tt ON tt.id = rs.template_id AND tt.tenant_id = rs.tenant_id
     WHERE rs.tenant_id = ${actor.tenantId} AND ${companyCond('tt.company_id', actor.companyId)}
       AND tt.deleted_at IS NULL AND rs.is_active = true AND rs.archived_at IS NULL AND rs.mode = 'auto'
-      AND rs.next_occurrence <= ${asOf}::date
+      AND rs.next_occurrence <= ${asOf}::date AND ${filterCond(filter)}
     ORDER BY rs.next_occurrence, rs.id
   `);
   return (res.rows as Array<{ template_id: string }>).map((r) => r.template_id);
@@ -811,14 +832,24 @@ export interface RunDueResult {
  * company up to `limit` (each its own database transaction, so progress is
  * durable and a repeat call is harmless). `asOf` is the caller's local
  * date (default CURRENT_DATE; at most one day ahead: 400 RUN_DUE_FUTURE).
+ *
+ * `templateIds` / `excludeTemplateIds` (U-82, run-due-filter-v1) narrow which
+ * auto schedules this call works on; the others are left exactly as they
+ * are and stay due. `more` only counts schedules the filter lets through.
+ * The runId stays a label: a replay with a different filter posts only what
+ * the new filter allows (each template and date still posts at most once),
+ * and `posted` lists every post with that runId from any call.
  */
-export async function runDue(actor: Actor, opts: { asOf?: string; runId?: string; limit?: number } = {}): Promise<RunDueResult> {
+export async function runDue(
+  actor: Actor, opts: { asOf?: string; runId?: string; limit?: number } & RunDueFilter = {},
+): Promise<RunDueResult> {
   return (await runDueInternal(actor, opts)).result;
 }
 
 async function runDueInternal(
-  actor: Actor, opts: { asOf?: string; runId?: string; limit?: number }, owners: OwnerPermissionCache = new Map(),
+  actor: Actor, opts: { asOf?: string; runId?: string; limit?: number } & RunDueFilter, owners: OwnerPermissionCache = new Map(),
 ) {
+  const filter: RunDueFilter = { templateIds: opts.templateIds, excludeTemplateIds: opts.excludeTemplateIds };
   const { today, tomorrow } = await currentDate(db);
   const asOf = opts.asOf ?? today;
   if (asOf > tomorrow) {
@@ -834,7 +865,7 @@ async function runDueInternal(
   const capped = new Set<string>();
 
   await runWithoutOverride(async () => {
-    for (const templateId of await dueAutoSchedules(actor, asOf)) {
+    for (const templateId of await dueAutoSchedules(actor, asOf, filter)) {
       let steps = 0;
       while (handled < limit) {
         if (steps >= CATCH_UP_CAP) {
@@ -864,7 +895,7 @@ async function runDueInternal(
   });
 
   // A capped schedule waits for the next run, so it doesn't make `more`.
-  const more = handled >= limit && (await dueAutoSchedules(actor, asOf)).some((id) => !capped.has(id));
+  const more = handled >= limit && (await dueAutoSchedules(actor, asOf, filter)).some((id) => !capped.has(id));
   const reminders = await dueReminders(actor, asOf);
   const open = await openSkipped(actor, fresh);
   const cappedNow = await cappedEntries(actor, [...capped], asOf);
