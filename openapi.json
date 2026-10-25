@@ -16647,11 +16647,36 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "billReceived": {
+                    "type": "boolean"
+                  },
                   "contactId": {
                     "format": "uuid",
                     "type": "string"
                   },
+                  "discountDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "discountDays": {
+                    "maximum": 365,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "discountPercent": {
+                    "pattern": "^\\d{1,2}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  },
+                  "draftAttachmentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
                   "dueDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
                     "type": "string"
                   },
                   "internalNotes": {
@@ -16669,17 +16694,60 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "description": {
                           "type": "string"
                         },
+                        "isBillable": {
+                          "type": "boolean"
+                        },
                         "itemId": {
-                          "format": "uuid",
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "quantity": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
                             {
                               "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "unitPrice": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
                               "type": "string"
                             },
                             {
@@ -16820,14 +16888,27 @@
                     "type": "boolean"
                   },
                   "paymentTerms": {
+                    "enum": [
+                      "due_on_receipt",
+                      "net_10",
+                      "net_15",
+                      "net_30",
+                      "net_45",
+                      "net_60",
+                      "net_90",
+                      "1_10_net_30",
+                      "2_10_net_30",
+                      "custom"
+                    ],
                     "type": "string"
                   },
                   "termsDays": {
+                    "maximum": 3650,
                     "minimum": 0,
                     "type": "integer"
                   },
                   "txnDate": {
-                    "minLength": 1,
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
                   "vendorInvoiceNumber": {
@@ -16947,6 +17028,7 @@
         ]
       },
       "post": {
+        "description": "Response 201 {payments}. A payment dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1). Only posted bills and credits: otherwise 400 BILL_NOT_PAYABLE / CREDIT_NOT_AVAILABLE; a bill not marked received is 409 BILL_NOT_RECEIVED (bill-received-v1). Amounts are compared exactly (no tolerance).",
         "operationId": "post_api_v1_bill_payments",
         "requestBody": {
           "content": {
@@ -16979,6 +17061,10 @@
                     },
                     "minItems": 1,
                     "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
                   },
                   "credits": {
                     "items": {
@@ -17019,6 +17105,9 @@
                       "check_handwritten"
                     ],
                     "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
                   },
                   "printLater": {
                     "type": "boolean"
@@ -17061,6 +17150,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Pay bills",
         "tags": [
           "bill-payments"
         ]
@@ -17099,6 +17189,7 @@
     },
     "/api/v1/bill-payments/{id}/void": {
       "post": {
+        "description": "Response 200 {voided: true}. A payment dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1). expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE.",
         "operationId": "post_api_v1_bill_payments_by_id_void",
         "parameters": [
           {
@@ -17106,6 +17197,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -17116,6 +17208,17 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "reason": {
                     "minLength": 1,
                     "type": "string"
@@ -17143,6 +17246,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Void a bill payment",
         "tags": [
           "bill-payments"
         ]
@@ -17150,7 +17254,137 @@
     },
     "/api/v1/bills": {
       "get": {
+        "description": "Rows carry billReceived, discountDate, updatedAt and daysOverdue (from the database date).",
         "operationId": "get_api_v1_bills",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "billStatus",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [
+                  "unpaid",
+                  "partial",
+                  "paid",
+                  "overdue"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "number",
+                "vendor",
+                "vendorInvoiceNumber",
+                "date",
+                "dueDate",
+                "status",
+                "total",
+                "balance"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dueOnOrBefore",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overdueOnly",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tagId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -17164,11 +17398,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List bills",
         "tags": [
           "bills"
         ]
       },
       "post": {
+        "description": "Response 201 {bill}. A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1). Lines (bill-lines-v1): itemId?, quantity? (decimal string > 0, at most 4 places, below 100,000,000), unitPrice? (decimal string >= 0, at most 4 places), amount (decimal string, at most 4 places), accountId, description?, tagId?, contactId? (a customer of the company), isBillable? (needs contactId). quantity and unitPrice both: amount must equal round(quantity x unitPrice, 2, half away from zero), else 400 LINE_AMOUNT_MISMATCH (details.lineIndex, details.expected); unitPrice without quantity 400 LINE_QTY_RATE_INCOMPLETE (details.lineIndex); quantity with amount and no unitPrice is accepted. Terms (bill-terms-v1): paymentTerms is a code from GET /payment-terms; custom takes termsDays and optional discountPercent + discountDays (both or neither, days fewer than termsDays). The due date and discount date are computed by calendar arithmetic unless dueDate / discountDate is sent (the owner override, stored as dueDateOverridden / discountDateOverridden). billReceived (bill-received-v1): default true; false keeps the bill out of /bills/payable and Pay Bills. draftAttachmentId: the draft's attachments are relinked to the bill (attachable type \"bill\") in the same database transaction, one audit row each.",
         "operationId": "post_api_v1_bills",
         "requestBody": {
           "content": {
@@ -17176,11 +17412,40 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "billReceived": {
+                    "type": "boolean"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "contactId": {
                     "format": "uuid",
                     "type": "string"
                   },
+                  "discountDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "discountDays": {
+                    "maximum": 365,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "discountPercent": {
+                    "pattern": "^\\d{1,2}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  },
+                  "draftAttachmentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
                   "dueDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
                     "type": "string"
                   },
                   "internalNotes": {
@@ -17198,17 +17463,60 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "description": {
                           "type": "string"
                         },
+                        "isBillable": {
+                          "type": "boolean"
+                        },
                         "itemId": {
-                          "format": "uuid",
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "quantity": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
                             {
                               "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "unitPrice": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
                               "type": "string"
                             },
                             {
@@ -17230,15 +17538,31 @@
                   "memo": {
                     "type": "string"
                   },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "paymentTerms": {
+                    "enum": [
+                      "due_on_receipt",
+                      "net_10",
+                      "net_15",
+                      "net_30",
+                      "net_45",
+                      "net_60",
+                      "net_90",
+                      "1_10_net_30",
+                      "2_10_net_30",
+                      "custom"
+                    ],
                     "type": "string"
                   },
                   "termsDays": {
+                    "maximum": 3650,
                     "minimum": 0,
                     "type": "integer"
                   },
                   "txnDate": {
-                    "minLength": 1,
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
                   "vendorInvoiceNumber": {
@@ -17270,6 +17594,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Enter a bill",
         "tags": [
           "bills"
         ]
@@ -17309,6 +17634,25 @@
     "/api/v1/bills/payable": {
       "get": {
         "operationId": "get_api_v1_bills_payable",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dueOnOrBefore",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -17322,6 +17666,99 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Open bills for Pay Bills (posted, received, balance due > 0) and the vendors' available credits",
+        "tags": [
+          "bills"
+        ]
+      }
+    },
+    "/api/v1/bills/terms-dates": {
+      "get": {
+        "description": "The same calculation as POST /bills. contactId: the vendor whose default terms apply when paymentTerms is omitted. Response {dueDate, discountDate, paymentTerms, termsDays, discountPercent, discountDays, source: \"input\"|\"vendor\"|\"none\"}; dates YYYY-MM-DD or null, discountPercent a 4-place string or null.",
+        "operationId": "get_api_v1_bills_terms_dates",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "txnDate",
+            "required": true,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "paymentTerms",
+            "required": false,
+            "schema": {
+              "enum": [
+                "due_on_receipt",
+                "net_10",
+                "net_15",
+                "net_30",
+                "net_45",
+                "net_60",
+                "net_90",
+                "1_10_net_30",
+                "2_10_net_30",
+                "custom"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "termsDays",
+            "required": false,
+            "schema": {
+              "maximum": 3650,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "discountPercent",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,2}(\\.\\d{1,4})?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "discountDays",
+            "required": false,
+            "schema": {
+              "maximum": 365,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Due date and discount date for a bill date and terms (read-only)",
         "tags": [
           "bills"
         ]
@@ -17357,6 +17794,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -17374,11 +17812,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Get a bill (header, terms, received flag and lines)",
         "tags": [
           "bills"
         ]
       },
       "put": {
+        "description": "Response 200 {bill} as committed (its updatedAt is the next expectedUpdatedAt). A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1). expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. With payments or credits applied the vendor, date and total stay (400), the terms stay, and billReceived can't become false (409 BILL_HAS_PAYMENTS). Lines (bill-lines-v1): itemId?, quantity? (decimal string > 0, at most 4 places, below 100,000,000), unitPrice? (decimal string >= 0, at most 4 places), amount (decimal string, at most 4 places), accountId, description?, tagId?, contactId? (a customer of the company), isBillable? (needs contactId). quantity and unitPrice both: amount must equal round(quantity x unitPrice, 2, half away from zero), else 400 LINE_AMOUNT_MISMATCH (details.lineIndex, details.expected); unitPrice without quantity 400 LINE_QTY_RATE_INCOMPLETE (details.lineIndex); quantity with amount and no unitPrice is accepted. Terms (bill-terms-v1): paymentTerms is a code from GET /payment-terms; custom takes termsDays and optional discountPercent + discountDays (both or neither, days fewer than termsDays). The due date and discount date are computed by calendar arithmetic unless dueDate / discountDate is sent (the owner override, stored as dueDateOverridden / discountDateOverridden). billReceived (bill-received-v1): default true; false keeps the bill out of /bills/payable and Pay Bills.",
         "operationId": "put_api_v1_bills_by_id",
         "parameters": [
           {
@@ -17386,6 +17826,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -17396,11 +17837,40 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "billReceived": {
+                    "type": "boolean"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "contactId": {
                     "format": "uuid",
                     "type": "string"
                   },
+                  "discountDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "discountDays": {
+                    "maximum": 365,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "discountPercent": {
+                    "pattern": "^\\d{1,2}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  },
+                  "draftAttachmentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
                   "dueDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
                     "type": "string"
                   },
                   "internalNotes": {
@@ -17418,17 +17888,60 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "description": {
                           "type": "string"
                         },
+                        "isBillable": {
+                          "type": "boolean"
+                        },
                         "itemId": {
-                          "format": "uuid",
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "quantity": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
                             {
                               "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "unitPrice": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
                               "type": "string"
                             },
                             {
@@ -17450,15 +17963,31 @@
                   "memo": {
                     "type": "string"
                   },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "paymentTerms": {
+                    "enum": [
+                      "due_on_receipt",
+                      "net_10",
+                      "net_15",
+                      "net_30",
+                      "net_45",
+                      "net_60",
+                      "net_90",
+                      "1_10_net_30",
+                      "2_10_net_30",
+                      "custom"
+                    ],
                     "type": "string"
                   },
                   "termsDays": {
+                    "maximum": 3650,
                     "minimum": 0,
                     "type": "integer"
                   },
                   "txnDate": {
-                    "minLength": 1,
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
                   "vendorInvoiceNumber": {
@@ -17490,6 +18019,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Edit a bill",
         "tags": [
           "bills"
         ]
@@ -17497,6 +18027,7 @@
     },
     "/api/v1/bills/{id}/attach-draft": {
       "post": {
+        "description": "The bill must exist in this company (else 404). One audit row per relinked attachment. Response {reassigned: count}.",
         "operationId": "post_api_v1_bills_by_id_attach_draft",
         "parameters": [
           {
@@ -17504,10 +18035,30 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "draftId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "draftId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -17521,6 +18072,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Relink a draft's attachments to a bill",
         "tags": [
           "bills"
         ]
@@ -17528,6 +18080,7 @@
     },
     "/api/v1/bills/{id}/void": {
       "post": {
+        "description": "Response 200 {bill}. A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1). Refused while payments or credits are applied: 409 BILL_HAS_PAYMENTS. expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE.",
         "operationId": "post_api_v1_bills_by_id_void",
         "parameters": [
           {
@@ -17535,6 +18088,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -17545,6 +18099,17 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "reason": {
                     "minLength": 1,
                     "type": "string"
@@ -17572,6 +18137,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Void a bill",
         "tags": [
           "bills"
         ]
@@ -21585,6 +22151,29 @@
                     ],
                     "type": "string"
                   },
+                  "defaultDiscountDays": {
+                    "anyOf": [
+                      {
+                        "maximum": 365,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultDiscountPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,2}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultExpenseAccountId": {
                     "anyOf": [
                       {
@@ -21612,6 +22201,18 @@
                       {
                         "format": "uuid",
                         "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultTermsDays": {
+                    "anyOf": [
+                      {
+                        "maximum": 3650,
+                        "minimum": 0,
+                        "type": "integer"
                       },
                       {
                         "type": "null"
@@ -22224,6 +22825,29 @@
                     ],
                     "type": "string"
                   },
+                  "defaultDiscountDays": {
+                    "anyOf": [
+                      {
+                        "maximum": 365,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultDiscountPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,2}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultExpenseAccountId": {
                     "anyOf": [
                       {
@@ -22251,6 +22875,18 @@
                       {
                         "format": "uuid",
                         "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultTermsDays": {
+                    "anyOf": [
+                      {
+                        "maximum": 3650,
+                        "minimum": 0,
+                        "type": "integer"
                       },
                       {
                         "type": "null"
@@ -27355,6 +27991,10 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
                   "reason": {
                     "minLength": 1,
                     "type": "string"
@@ -28299,6 +28939,105 @@
         ],
         "tags": [
           "ledger-version"
+        ]
+      }
+    },
+    "/api/v1/payment-terms": {
+      "get": {
+        "description": "Response {terms: [{code, label, netDays, discountPercent, discountDays}]}. netDays is null for custom (the bill carries termsDays); discountPercent is a 4-place decimal string (\"2.0000\" = 2 %) or null.",
+        "operationId": "get_api_v1_payment_terms",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "terms": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "code": {
+                            "enum": [
+                              "due_on_receipt",
+                              "net_10",
+                              "net_15",
+                              "net_30",
+                              "net_45",
+                              "net_60",
+                              "net_90",
+                              "1_10_net_30",
+                              "2_10_net_30",
+                              "custom"
+                            ],
+                            "type": "string"
+                          },
+                          "discountDays": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "discountPercent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "netDays": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "label",
+                          "netDays",
+                          "discountPercent",
+                          "discountDays"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "terms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The payment-terms table",
+        "tags": [
+          "payment-terms"
         ]
       }
     },
@@ -67720,6 +68459,7 @@
     },
     "/api/v1/transactions/{id}": {
       "delete": {
+        "description": "ap-edit-v1: bills and vendor credits are deletable while nothing is applied (409 BILL_HAS_PAYMENTS / CREDIT_APPLIED; a refunded credit 409 TXN_DELETE_LINKED; a bill entered from a bill capture 409 TXN_DELETE_LINKED with links [\"bill_capture\"]). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt).",
         "operationId": "delete_api_v1_transactions_by_id",
         "parameters": [
           {
@@ -67740,6 +68480,10 @@
                 "properties": {
                   "closingPassword": {
                     "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
                     "type": "string"
                   },
                   "overrideConfirmed": {
@@ -68400,6 +69144,10 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
                   "reason": {
                     "minLength": 1,
                     "type": "string"
@@ -68793,6 +69541,7 @@
     },
     "/api/v1/vendor-credits": {
       "get": {
+        "description": "Rows carry vendorInvoiceNumber and updatedAt; search also matches vendorInvoiceNumber.",
         "operationId": "get_api_v1_vendor_credits",
         "responses": {
           "default": {
@@ -68807,11 +69556,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List vendor credits",
         "tags": [
           "vendor-credits"
         ]
       },
       "post": {
+        "description": "Response 201 {credit}. A credit dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1). Lines take itemId, quantity, unitPrice, tagId and contactId as bill lines do (bill-lines-v1); isBillable may only be false or absent. draftAttachmentId: relinked (attachable type \"vendor_credit\") in the same database transaction.",
         "operationId": "post_api_v1_vendor_credits",
         "requestBody": {
           "content": {
@@ -68819,8 +69570,20 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "contactId": {
                     "format": "uuid",
+                    "type": "string"
+                  },
+                  "draftAttachmentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
                     "type": "string"
                   },
                   "lines": {
@@ -68835,13 +69598,61 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "description": {
                           "type": "string"
+                        },
+                        "isBillable": {
+                          "const": false,
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "quantity": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
                             {
                               "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "unitPrice": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
                               "type": "string"
                             },
                             {
@@ -68863,8 +69674,11 @@
                   "memo": {
                     "type": "string"
                   },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "txnDate": {
-                    "minLength": 1,
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                     "type": "string"
                   },
                   "vendorInvoiceNumber": {
@@ -68896,6 +69710,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Enter a vendor credit",
         "tags": [
           "vendor-credits"
         ]
@@ -68941,6 +69756,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -68958,20 +69774,21 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Get a vendor credit",
         "tags": [
           "vendor-credits"
         ]
-      }
-    },
-    "/api/v1/vendor-credits/{id}/void": {
-      "post": {
-        "operationId": "post_api_v1_vendor_credits_by_id_void",
+      },
+      "put": {
+        "description": "Response 200 {credit} as committed. A credit dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1). Lines take itemId, quantity, unitPrice, tagId and contactId as bill lines do (bill-lines-v1); isBillable may only be false or absent. Refused while a bill payment applies it or a deposit refunds it: 409 CREDIT_APPLIED (details.applications, details.refundDepositIds). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt). The open balance is recomputed.",
+        "operationId": "put_api_v1_vendor_credits_by_id",
         "parameters": [
           {
             "in": "path",
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -68982,6 +69799,184 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "draftAttachmentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "amount": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "isBillable": {
+                          "const": false,
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "quantity": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "unitPrice": {
+                          "anyOf": [
+                            {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "accountId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "vendorInvoiceNumber": {
+                    "maxLength": 100,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "contactId",
+                  "txnDate",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a vendor credit",
+        "tags": [
+          "vendor-credits"
+        ]
+      }
+    },
+    "/api/v1/vendor-credits/{id}/void": {
+      "post": {
+        "description": "Response 200 {credit}. A credit dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1). Refused while applied to a bill (409 CREDIT_APPLIED) or refunded by a deposit (409 TXN_DEPOSITED). expectedUpdatedAt: mismatch 409 STALE.",
+        "operationId": "post_api_v1_vendor_credits_by_id_void",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "reason": {
                     "minLength": 1,
                     "type": "string"
@@ -69009,6 +70004,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Void a vendor credit",
         "tags": [
           "vendor-credits"
         ]
