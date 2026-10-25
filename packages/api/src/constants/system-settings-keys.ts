@@ -60,6 +60,13 @@ export const SystemSettingsKeys = {
    * Stored as a decimal string; `'0'` means unlimited; absent → '3'.
    */
   SELF_SERVICE_TENANT_LIMIT: 'self_service_tenant_limit',
+  /**
+   * Whether POST /attachments starts OCR / AI processing on an image upload
+   * by itself (U-89). Absent → on (the server's historical behavior); the
+   * literal `'false'` or `'0'` turns it off. Desktop mode ignores the row
+   * and never auto-runs OCR on upload.
+   */
+  ATTACHMENTS_AUTO_OCR: 'attachments.autoOcr',
 } as const;
 
 export type SystemSettingsKey = (typeof SystemSettingsKeys)[keyof typeof SystemSettingsKeys];

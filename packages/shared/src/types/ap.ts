@@ -194,7 +194,7 @@ export type { JournalLine };
 export type BillCaptureStatus = 'received' | 'processing' | 'ready' | 'failed' | 'entered' | 'discarded';
 export type BillCaptureSource = 'staff' | 'portal';
 export type BillLinesMode = 'detailed' | 'single';
-export type ExtractionSkippedReason = 'ai_disabled' | 'ai_function_disabled' | 'ai_consent_blocked' | 'unsupported_type';
+export type ExtractionSkippedReason = 'ai_disabled' | 'ai_function_disabled' | 'ai_consent_blocked' | 'unsupported_type' | 'manual_only';
 
 export interface NewVendorInput {
   displayName: string;

@@ -180,7 +180,9 @@ describe('portal bill captures', () => {
     expect(up.status).toBe(201);
     expect(up.json.captures).toHaveLength(2);
     expect(up.json.captures.every((c: any) => c.status === 'received' && c.duplicate === false)).toBe(true);
-    // Notification is fire-and-forget; give it a tick.
+    // Notification is fire-and-forget; wait for it (a fixed 50 ms tick was
+    // flaky on a loaded machine, and a late email leaked into the next test).
+    await vi.waitFor(() => expect(sendActionEmailMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
     await new Promise((r) => setTimeout(r, 50));
     expect(sendActionEmailMock).toHaveBeenCalledTimes(1);
     const call = sendActionEmailMock.mock.calls[0]![0] as { to: string; subject: string };
