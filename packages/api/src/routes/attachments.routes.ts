@@ -20,6 +20,14 @@ import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
 import { log } from '../utils/logger.js';
 import { workspaceFence } from '../desktop/workspace.js';
+import { AppError } from '../utils/errors.js';
+
+// Attachable types that name a transaction (its txn_type): POST /:id/link
+// checks such a target exists in the tenant (and company).
+const TXN_ATTACHABLE_TYPES = new Set([
+  'invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry',
+  'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje',
+]);
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -309,6 +317,20 @@ attachmentsRouter.post('/:id/link', async (req, res) => {
     return;
   }
   const attachmentId = req.params['id']!;
+  // A transaction target must exist in this tenant (and company) with that
+  // type (review Notes: the target id was taken unchecked). Other attachable
+  // types (draft, receipt, contact…) are unchanged.
+  if (typeof attachableType === 'string' && TXN_ATTACHABLE_TYPES.has(attachableType)) {
+    const [target] = typeof attachableId === 'string' && /^[0-9a-f-]{36}$/i.test(attachableId)
+      ? await db.select({ id: transactions.id, companyId: transactions.companyId, status: transactions.status })
+        .from(transactions)
+        .where(and(eq(transactions.tenantId, req.tenantId), eq(transactions.id, attachableId), eq(transactions.txnType, attachableType)))
+        .limit(1)
+      : [];
+    if (!target || target.status === 'deleted' || (req.companyId && target.companyId && target.companyId !== req.companyId)) {
+      throw AppError.notFound('The transaction to attach to was not found');
+    }
+  }
   await attachmentService.linkAttachment(req.tenantId, attachmentId, attachableType, attachableId);
   await auditLog(
     req.tenantId,
