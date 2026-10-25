@@ -219,6 +219,13 @@ describe('POST /attachments — server appliance', () => {
     expectNoAi();
   });
 
+  it('?autoOcr sent twice: the first value counts (0 first skips both)', async () => {
+    const res = await uploadPng('?autoOcr=0&autoOcr=1');
+    expect(res.status).toBe(201);
+    await settle();
+    expectNoAi();
+  });
+
   it("attachments.autoOcr = 'false' turns it off", async () => {
     await setSetting('false');
     const res = await uploadPng();

@@ -271,7 +271,10 @@ attachmentsRouter.post('/', describe({
   // U-89: OCR / AI on upload only where the server allows it (never in
   // desktop mode; the `attachments.autoOcr` setting elsewhere), and a caller
   // can opt out per upload with ?autoOcr=0.
-  const autoOcrQuery = typeof req.query['autoOcr'] === 'string' ? req.query['autoOcr'].trim().toLowerCase() : undefined;
+  // A repeated parameter (?autoOcr=0&autoOcr=1) arrives as an array: the
+  // first value counts, so an opt-out is never lost to the array shape.
+  const autoOcrRaw: unknown = Array.isArray(req.query['autoOcr']) ? req.query['autoOcr'][0] : req.query['autoOcr'];
+  const autoOcrQuery = typeof autoOcrRaw === 'string' ? autoOcrRaw.trim().toLowerCase() : undefined;
   const autoOcr = autoOcrQuery !== '0' && autoOcrQuery !== 'false'
     && await attachmentService.autoOcrOnUploadAllowed();
 
