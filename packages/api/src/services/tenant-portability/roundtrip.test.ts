@@ -139,7 +139,8 @@ async function seedTenant(): Promise<Seed> {
   await q(`INSERT INTO payment_applications (tenant_id, company_id, payment_id, invoice_id, amount) VALUES ($1, $2, $3, $4, '0.0001')`, [tenantId, c1!.id, payment, invoice]);
   await q(`INSERT INTO recurring_schedules (tenant_id, company_id, template_transaction_id, frequency, start_date, next_occurrence) VALUES ($1, $2, $3, 'monthly', '2026-01-01', '2027-01-01')`, [tenantId, c1!.id, invoice]);
 
-  const [tag] = await q<{ id: string }>(`INSERT INTO tags (tenant_id, company_id, name) VALUES ($1, $2, 'rt-tag') RETURNING id`, [tenantId, c1!.id]);
+  const [tag] = await q<{ id: string }>(`INSERT INTO tags (tenant_id, company_id, name, tag_number) VALUES ($1, $2, 'rt-tag', 'RT-07') RETURNING id`, [tenantId, c1!.id]);
+  await q(`INSERT INTO tags (tenant_id, company_id, name) VALUES ($1, $2, 'rt-tag-no-number')`, [tenantId, c1!.id]);
   await q(`INSERT INTO transaction_tags (tenant_id, company_id, transaction_id, tag_id) VALUES ($1, $2, $3, $4), ($1, $2, $5, $4)`, [tenantId, c1!.id, invoice, tag!.id, payment]);
   await q(`INSERT INTO tb_aje_sequences (tenant_id, company_id, fiscal_year, next_number) VALUES ($1, $2, 2026, 7)`, [tenantId, c1!.id]);
 
@@ -528,6 +529,9 @@ describe('import', () => {
     // Audit chronology (MT27): the new tenant's audit rows ordered by id carry the same sequence.
     const audit = await q<{ after_data: { i: number } }>(`SELECT after_data FROM audit_log WHERE tenant_id = $1 AND entity_type = 'account' ORDER BY id`, [imported.tenantId]);
     expect(audit.map((a) => a.after_data.i)).toEqual([0, 1, 2, 3, 4]);
+    // Tag numbers travel (tag-number-v1, migration 0228); a tag without one stays without.
+    const tagRows = await q<{ name: string; tag_number: string | null }>(`SELECT name, tag_number FROM tags WHERE tenant_id = $1 ORDER BY name`, [imported.tenantId]);
+    expect(tagRows).toEqual([{ name: 'rt-tag', tag_number: 'RT-07' }, { name: 'rt-tag-no-number', tag_number: null }]);
   }, 60_000);
 
   it('the vendor TIN is encrypted again under this install key and an unreadable one became NULL (M5)', async () => {

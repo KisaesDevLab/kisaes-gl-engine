@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, ilike, count, inArray } from 'drizzle-orm';
+import { eq, and, or, sql, ilike, count, inArray, asc } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
@@ -32,20 +32,55 @@ export async function assertTagsInTenant(tenantId: string, tagIds: string[]): Pr
   }
 }
 
+// ─── Tag numbers (tag-number-v1) ─────────────────────────────────
+
+const TAG_NUMBER_INDEX = 'idx_tags_tenant_tag_number';
+
+function tagNumberTaken(tagNumber: string): AppError {
+  return AppError.conflict(`Tag number ${tagNumber} already exists`, 'TAG_NUMBER_EXISTS');
+}
+
+// The partial unique index is the real guard; the pre-check only gives the
+// common case a clean message. A concurrent writer that slips between the
+// two hits 23505 on the index, mapped to the same 409 here.
+function isTagNumberViolation(err: unknown): boolean {
+  let e: unknown = err;
+  for (let depth = 0; depth < 5 && e && typeof e === 'object'; depth++) {
+    const rec = e as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (rec.code === '23505' && rec.constraint === TAG_NUMBER_INDEX) return true;
+    e = rec.cause;
+  }
+  return false;
+}
+
+async function assertTagNumberFree(tenantId: string, tagNumber: string, exceptId?: string): Promise<void> {
+  const existing = await db.query.tags.findFirst({
+    where: and(eq(tags.tenantId, tenantId), eq(tags.tagNumber, tagNumber)),
+  });
+  if (existing && existing.id !== exceptId) throw tagNumberTaken(tagNumber);
+}
+
 // ─── Tag CRUD ────────────────────────────────────────────────────
 
 export async function list(tenantId: string, filters?: TagFilters & { limit?: number; offset?: number }) {
   const conditions = [eq(tags.tenantId, tenantId)];
   if (filters?.groupId) conditions.push(eq(tags.groupId, filters.groupId));
   if (filters?.isActive !== undefined) conditions.push(eq(tags.isActive, filters.isActive));
-  if (filters?.search) conditions.push(ilike(tags.name, `%${escapeLike(filters.search)}%`));
+  if (filters?.search) {
+    const pattern = `%${escapeLike(filters.search)}%`;
+    conditions.push(or(ilike(tags.name, pattern), ilike(tags.tagNumber, pattern))!);
+  }
   const where = and(...conditions);
 
   const limit = Math.min(Math.max(filters?.limit ?? 200, 1), 500);
   const offset = Math.max(filters?.offset ?? 0, 0);
 
+  // sortOrder stays first: it is part of the update contract, so a caller
+  // that set a manual order keeps it. It is 0 on every tag nobody ordered,
+  // so the list reads by number (text order, as account numbers), then
+  // tags without a number, then name (tag-number-v1).
   const data = await db.select().from(tags).where(where)
-    .orderBy(tags.sortOrder, tags.name)
+    .orderBy(tags.sortOrder, sql`${tags.tagNumber} ASC NULLS LAST`, asc(tags.name))
     .limit(limit).offset(offset);
 
   const totalRows = await db.select({ total: sql<number>`COUNT(*)::int` })
@@ -67,14 +102,23 @@ export async function create(tenantId: string, input: CreateTagInput, userId?: s
     where: and(eq(tags.tenantId, tenantId), eq(tags.name, input.name)),
   });
   if (existing) throw AppError.conflict('A tag with this name already exists');
+  const tagNumber = input.tagNumber?.trim() || null;
+  if (tagNumber) await assertTagNumberFree(tenantId, tagNumber);
 
-  const [tag] = await db.insert(tags).values({
-    tenantId,
-    name: input.name,
-    color: input.color || null,
-    groupId: input.groupId || null,
-    description: input.description || null,
-  }).returning();
+  let tag: typeof tags.$inferSelect | undefined;
+  try {
+    [tag] = await db.insert(tags).values({
+      tenantId,
+      name: input.name,
+      tagNumber,
+      color: input.color || null,
+      groupId: input.groupId || null,
+      description: input.description || null,
+    }).returning();
+  } catch (err) {
+    if (tagNumber && isTagNumberViolation(err)) throw tagNumberTaken(tagNumber);
+    throw err;
+  }
   if (tag) await auditLog(tenantId, 'create', 'tag', tag.id, null, tag, userId);
   return tag;
 }
@@ -87,11 +131,25 @@ export async function update(tenantId: string, id: string, input: UpdateTagInput
     if (existing && existing.id !== id) throw AppError.conflict('A tag with this name already exists');
   }
 
+  // tagNumber: omitted keeps the stored value, '' or null clears it.
+  const changes: UpdateTagInput = { ...input };
+  if (input.tagNumber !== undefined) {
+    const tagNumber = input.tagNumber?.trim() || null;
+    changes.tagNumber = tagNumber;
+    if (tagNumber) await assertTagNumberFree(tenantId, tagNumber, id);
+  }
+
   const before = await db.query.tags.findFirst({ where: and(eq(tags.tenantId, tenantId), eq(tags.id, id)) });
-  const [updated] = await db.update(tags)
-    .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)))
-    .returning();
+  let updated: typeof tags.$inferSelect | undefined;
+  try {
+    [updated] = await db.update(tags)
+      .set({ ...changes, updatedAt: new Date() })
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)))
+      .returning();
+  } catch (err) {
+    if (changes.tagNumber && isTagNumberViolation(err)) throw tagNumberTaken(changes.tagNumber);
+    throw err;
+  }
   if (!updated) throw AppError.notFound('Tag not found');
   await auditLog(tenantId, 'update', 'tag', updated.id, before ?? null, updated, userId);
   return updated;
@@ -435,7 +493,7 @@ export async function getTagsForTransactions(tenantId: string, transactionIds: s
   if (transactionIds.length === 0) return new Map<string, typeof tags.$inferSelect[]>();
 
   const result = await db.execute(sql`
-    SELECT tt.transaction_id, t.id, t.name, t.color, t.group_id, t.is_active, t.usage_count, t.sort_order, t.description, t.tenant_id, t.created_at, t.updated_at
+    SELECT tt.transaction_id, t.id, t.name, t.tag_number, t.color, t.group_id, t.is_active, t.usage_count, t.sort_order, t.description, t.tenant_id, t.created_at, t.updated_at
     FROM transaction_tags tt
     JOIN tags t ON t.id = tt.tag_id
     WHERE tt.tenant_id = ${tenantId}

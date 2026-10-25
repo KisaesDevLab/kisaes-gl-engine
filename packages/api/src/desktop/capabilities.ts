@@ -78,4 +78,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * the line contact; the check print routes (memo, print, requeue, reprint) honour the closing date (U-81).
    */
   'ledger-guards-v1',
+  /** tags.tag_number: optional, unique per tenant when set (409 TAG_NUMBER_EXISTS); list sorts by it and search matches it (U-75). */
+  'tag-number-v1',
+  /** /dashboard/*: exact=1 money as decimal strings, asOf = today, one overdue-invoice rule, cash-position accountNumber, payables dueWithinDays (U-76). */
+  'dashboard-exact-v1',
 ];

@@ -23383,8 +23383,99 @@
     },
     "/api/v1/dashboard/action-items": {
       "get": {
+        "description": "overdueInvoiceCount uses the /receivables rule. An invoice is overdue when it is posted, not paid or void, its open amount (balance_due, else total) is above zero, and its due date (txn_date when it has none) is before today. A bank account is stale when it has no complete reconciliation with a statement date in the 30 days before today.",
         "operationId": "get_api_v1_dashboard_action_items",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (dashboard-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "overdueInvoiceCount": {
+                      "description": "same rule as /receivables overdueCount",
+                      "type": "integer"
+                    },
+                    "pendingDepositAmount": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "pendingDepositCount": {
+                      "type": "integer"
+                    },
+                    "pendingFeedCount": {
+                      "type": "integer"
+                    },
+                    "printQueueAmount": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "printQueueCount": {
+                      "type": "integer"
+                    },
+                    "staleReconciliations": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountName": {
+                            "type": "string"
+                          },
+                          "lastReconciled": {}
+                        },
+                        "required": [
+                          "accountName"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "pendingFeedCount",
+                    "overdueInvoiceCount",
+                    "staleReconciliations",
+                    "pendingDepositCount",
+                    "pendingDepositAmount",
+                    "printQueueCount",
+                    "printQueueAmount"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -23397,6 +23488,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Counts of things waiting on a person",
         "tags": [
           "dashboard"
         ]
@@ -23446,8 +23538,137 @@
     },
     "/api/v1/dashboard/cash-position": {
       "get": {
+        "description": "totalCC sums the absolute card balances. asOf is accepted and has no effect (stored balances).",
         "operationId": "get_api_v1_dashboard_cash_position",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (dashboard-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "bankAccounts": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "balance": {
+                            "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "accountNumber",
+                          "balance"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "creditCards": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "balance": {
+                            "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "accountNumber",
+                          "balance"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "totalBank": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "totalCC": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "bankAccounts",
+                    "creditCards",
+                    "totalBank",
+                    "totalCC"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -23460,6 +23681,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Stored balances of active bank, cash and credit card accounts",
         "tags": [
           "dashboard"
         ]
@@ -23467,8 +23689,121 @@
     },
     "/api/v1/dashboard/payables": {
       "get": {
+        "description": "Overdue: due date before today. Due soon (dueThisWeekCount/Amount): due today through today + dueWithinDays. Bills without a due date count in neither.",
         "operationId": "get_api_v1_dashboard_payables",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (dashboard-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dueWithinDays",
+            "required": false,
+            "schema": {
+              "description": "payables: dueThisWeekCount/Amount cover bills due today through today + N days; default 7",
+              "maximum": 90,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "apBalance": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "billCount": {
+                      "type": "integer"
+                    },
+                    "creditAmount": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "creditCount": {
+                      "type": "integer"
+                    },
+                    "dueThisWeekAmount": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "dueThisWeekCount": {
+                      "description": "bills due today through today + dueWithinDays",
+                      "type": "integer"
+                    },
+                    "dueWithinDays": {
+                      "type": "integer"
+                    },
+                    "overdueAmount": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "overdueCount": {
+                      "type": "integer"
+                    },
+                    "totalOwed": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "totalOwed",
+                    "billCount",
+                    "overdueCount",
+                    "overdueAmount",
+                    "dueThisWeekCount",
+                    "dueThisWeekAmount",
+                    "dueWithinDays",
+                    "creditCount",
+                    "creditAmount",
+                    "apBalance"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -23481,6 +23816,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Open, overdue and soon-due bills, vendor credits and the A/P balance",
         "tags": [
           "dashboard"
         ]
@@ -23488,8 +23824,73 @@
     },
     "/api/v1/dashboard/receivables": {
       "get": {
+        "description": "An invoice is overdue when it is posted, not paid or void, its open amount (balance_due, else total) is above zero, and its due date (txn_date when it has none) is before today.",
         "operationId": "get_api_v1_dashboard_receivables",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (dashboard-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "invoiceCount": {
+                      "type": "integer"
+                    },
+                    "overdueAmount": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    },
+                    "overdueCount": {
+                      "type": "integer"
+                    },
+                    "totalOutstanding": {
+                      "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                      "type": [
+                        "number",
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "totalOutstanding",
+                    "overdueCount",
+                    "overdueAmount",
+                    "invoiceCount"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -23502,6 +23903,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Open and overdue invoices",
         "tags": [
           "dashboard"
         ]
@@ -23510,7 +23912,113 @@
     "/api/v1/dashboard/snapshot": {
       "get": {
         "operationId": "get_api_v1_dashboard_snapshot",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (dashboard-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "mtd": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "expenses": {
+                          "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        "netIncome": {
+                          "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        "revenue": {
+                          "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "revenue",
+                        "expenses",
+                        "netIncome"
+                      ],
+                      "type": "object"
+                    },
+                    "ytd": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "expenses": {
+                          "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        "netIncome": {
+                          "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        },
+                        "revenue": {
+                          "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                          "type": [
+                            "number",
+                            "string"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "revenue",
+                        "expenses",
+                        "netIncome"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "mtd",
+                    "ytd"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -23523,6 +24031,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Month-to-date and fiscal year-to-date revenue, expenses and net income",
         "tags": [
           "dashboard"
         ]
@@ -23530,7 +24039,53 @@
     },
     "/api/v1/dashboard/summary": {
       "get": {
+        "description": "Panels as the single routes return them, plus `asOf` (the date used as today, shared by every panel) and `errors` (labels of failed panels, whose value is null). exact, asOf and dueWithinDays apply to the snapshot, trend, cashPosition, receivables, payables and actionItems panels (dashboard-exact-v1).",
         "operationId": "get_api_v1_dashboard_summary",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (dashboard-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "months",
+            "required": false,
+            "schema": {
+              "description": "trend months, clamped to 1..36, default 6",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dueWithinDays",
+            "required": false,
+            "schema": {
+              "description": "payables: dueThisWeekCount/Amount cover bills due today through today + N days; default 7",
+              "maximum": 90,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -23544,6 +24099,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Every dashboard panel in one request",
         "tags": [
           "dashboard"
         ]
@@ -23603,8 +24159,101 @@
     },
     "/api/v1/dashboard/trend": {
       "get": {
+        "description": "Months end at the month of asOf (default the database date).",
         "operationId": "get_api_v1_dashboard_trend",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "money as decimal strings (dashboard-exact-v1)",
+              "enum": [
+                "1",
+                "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD used as today; default the database's CURRENT_DATE. The desktop client sends the company's local date.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "months",
+            "required": false,
+            "schema": {
+              "description": "trend months, clamped to 1..36, default 6",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "endDate": {
+                            "description": "YYYY-MM-DD last day of the month",
+                            "type": "string"
+                          },
+                          "expenses": {
+                            "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          "month": {
+                            "description": "label, e.g. 'Oct 26'",
+                            "type": "string"
+                          },
+                          "revenue": {
+                            "description": "JSON number by default; a decimal string with four decimals when exact=1",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          },
+                          "startDate": {
+                            "description": "YYYY-MM-DD first day of the month",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "month",
+                          "startDate",
+                          "endDate",
+                          "revenue",
+                          "expenses"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -23617,6 +24266,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Revenue and expenses per calendar month, oldest first",
         "tags": [
           "dashboard"
         ]
@@ -44489,8 +45139,200 @@
     },
     "/api/v1/tags": {
       "get": {
+        "description": "Sorted by sortOrder, then tagNumber (text order, tags without a number last), then name. `search` matches the name or the tag number.",
         "operationId": "get_api_v1_tags",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "group_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "description": "case-insensitive substring of name or tagNumber",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "description": "1..500, default 200",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "tags": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "color": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "companyId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "createdAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "groupId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "isActive": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "sortOrder": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "tagNumber": {
+                            "description": "optional, unique per tenant when set (tag-number-v1)",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "tenantId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "usageCount": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "tenantId",
+                          "companyId",
+                          "groupId",
+                          "name",
+                          "tagNumber",
+                          "color",
+                          "description",
+                          "isActive",
+                          "usageCount",
+                          "sortOrder",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "tags",
+                    "total",
+                    "limit",
+                    "offset"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -44503,11 +45345,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List tags",
         "tags": [
           "tags"
         ]
       },
       "post": {
+        "description": "409 TAG_NUMBER_EXISTS when another tag of the tenant has this tagNumber; 409 without code for a duplicate name.",
         "operationId": "post_api_v1_tags",
         "requestBody": {
           "content": {
@@ -44547,6 +45391,17 @@
                     "maxLength": 100,
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "tagNumber": {
+                    "anyOf": [
+                      {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -44559,6 +45414,133 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "tag": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "color": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "companyId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "description": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "groupId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "isActive": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "sortOrder": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagNumber": {
+                          "description": "optional, unique per tenant when set (tag-number-v1)",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tenantId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usageCount": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "tenantId",
+                        "companyId",
+                        "groupId",
+                        "name",
+                        "tagNumber",
+                        "color",
+                        "description",
+                        "isActive",
+                        "usageCount",
+                        "sortOrder",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "tag"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -44571,6 +45553,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Create a tag",
         "tags": [
           "tags"
         ]
@@ -45240,6 +46223,133 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "tag": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "color": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "companyId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "description": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "groupId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "isActive": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "sortOrder": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagNumber": {
+                          "description": "optional, unique per tenant when set (tag-number-v1)",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tenantId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usageCount": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "tenantId",
+                        "companyId",
+                        "groupId",
+                        "name",
+                        "tagNumber",
+                        "color",
+                        "description",
+                        "isActive",
+                        "usageCount",
+                        "sortOrder",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "tag"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -45252,11 +46362,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Get a tag",
         "tags": [
           "tags"
         ]
       },
       "put": {
+        "description": "tagNumber omitted keeps the stored number; \"\" or null clears it. 409 TAG_NUMBER_EXISTS when another tag of the tenant has this tagNumber; 409 without code for a duplicate name.",
         "operationId": "put_api_v1_tags_by_id",
         "parameters": [
           {
@@ -45312,6 +46424,17 @@
                   },
                   "sortOrder": {
                     "type": "integer"
+                  },
+                  "tagNumber": {
+                    "anyOf": [
+                      {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "type": "object"
@@ -45321,6 +46444,133 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "tag": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "color": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "companyId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "description": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "groupId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "isActive": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "sortOrder": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagNumber": {
+                          "description": "optional, unique per tenant when set (tag-number-v1)",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tenantId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usageCount": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "tenantId",
+                        "companyId",
+                        "groupId",
+                        "name",
+                        "tagNumber",
+                        "color",
+                        "description",
+                        "isActive",
+                        "usageCount",
+                        "sortOrder",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "tag"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -45333,6 +46583,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Update a tag",
         "tags": [
           "tags"
         ]

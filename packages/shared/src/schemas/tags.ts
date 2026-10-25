@@ -4,8 +4,18 @@
 
 import { z } from 'zod';
 
+// Optional tag number (tag-number-v1), like an account number: trimmed, up
+// to 20 characters, unique per tenant when set (409 TAG_NUMBER_EXISTS). An
+// empty string or null clears it; leaving it out keeps the stored value.
+export const tagNumberSchema = z.string()
+  .trim()
+  .max(20, 'Tag number can be at most 20 characters')
+  .nullish()
+  .transform((v) => (v === '' ? null : v));
+
 export const createTagSchema = z.object({
   name: z.string().min(1, 'Tag name is required').max(100),
+  tagNumber: tagNumberSchema,
   color: z.string().max(7).nullish(),
   groupId: z.string().uuid().nullish(),
   description: z.string().nullish(),
@@ -13,6 +23,7 @@ export const createTagSchema = z.object({
 
 export const updateTagSchema = z.object({
   name: z.string().min(1).max(100).optional(),
+  tagNumber: tagNumberSchema,
   color: z.string().max(7).nullish(),
   groupId: z.string().uuid().nullish(),
   description: z.string().nullish(),
