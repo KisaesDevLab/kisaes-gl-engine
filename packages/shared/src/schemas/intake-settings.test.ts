@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  INTAKE_SETTINGS_DEFAULT_JSON, intakeFolderSchema, intakeFoldersSchema, intakePathKey, intakePathProblem,
+  INTAKE_SETTINGS_DEFAULT_JSON, intakeFolderSchema, intakeFoldersSchema, intakeNameKey, intakePathKey, intakePathProblem,
   putIntakeSettingsSchema,
 } from './intake-settings.js';
 
@@ -30,6 +30,15 @@ describe('intake folder paths', () => {
     'C:\\Scans\\..hidden\\x',
     'C:\\Scans\\a.b\\c',
     '/srv/scans@home',
+    '\\\\[fe80::1]\\scans',
+    '\\\\nas-01_b.example.com\\scans',
+    '/tmp/a:b',
+    'C:\\Scans\\CONSOLE',
+    'C:\\Scans\\COM10',
+    'C:\\Scans\\nul-files',
+    'C:\\Scans\\.hidden',
+    'C:\\Scans\\Bills\\',
+    'C:\\Scans\\Caf\u00e9 \u4e2d\u6587 \ud83d\udcc4',
     'C:\\' + 'a'.repeat(1021),
   ];
   for (const p of accepted) {
@@ -70,6 +79,53 @@ describe('intake folder paths', () => {
     ['C:\\Scans\u0085', 'C1 control'],
     ['\\\\', 'bare double backslash'],
     ['\\\\\\server', 'three backslashes'],
+    // Reserved device names, in any segment, any case, with an extension or trailing dots and spaces.
+    ['C:\\Scans\\CON', 'CON'],
+    ['C:\\Scans\\nul\\x', 'nul mid-path'],
+    ['C:\\Scans\\NUL.txt', 'NUL with an extension'],
+    ['C:\\Scans\\aux.tar.gz', 'AUX with two extensions'],
+    ['C:\\prn .', 'PRN with a trailing space and dot'],
+    ['C:\\Scans\\COM1', 'COM1'],
+    ['C:\\Scans\\com0', 'COM0'],
+    ['C:\\Scans\\LPT9.log', 'LPT9 with an extension'],
+    ['C:\\Scans\\COM\u00b9', 'COM superscript 1'],
+    ['C:\\Scans\\lpt\u00b3', 'LPT superscript 3'],
+    ['C:\\Scans\\CONIN$', 'CONIN$'],
+    ['C:\\Scans\\conout$.x', 'CONOUT$ with an extension'],
+    ['\\\\nas\\scans\\CON', 'CON on a share'],
+    ['/mnt/scans/aux', 'aux in a Unix path'],
+    // Invisible and direction-changing characters.
+    ['C:\\Scans\\\u202eslib', 'right-to-left override'],
+    ['C:\\Scans\\a\u2066b\u2069', 'bidi isolate'],
+    ['C:\\Scans\\a\u200bb', 'zero-width space'],
+    ['C:\\Scans\\a\u200db', 'zero-width joiner'],
+    ['C:\\Scans\\\ufeffBills', 'byte order mark'],
+    ['C:\\Scans\\a\u00adb', 'soft hyphen'],
+    ['C:\\Scans\\a\u2028b', 'line separator'],
+    ['C:\\Scans\\a\u2029b', 'paragraph separator'],
+    ['C:\\Scans\\a\ud800b', 'lone high surrogate'],
+    ['C:\\Scans\\a\udc00', 'lone low surrogate'],
+    // Alternate data streams.
+    ['C:\\Scans:stream', 'stream on a drive path'],
+    ['C:\\Scans\\Bills:$DATA', 'stream type on a drive path'],
+    ['C:/Scans/x:y', 'colon on a drive path with slashes'],
+    ['\\\\nas\\scans:stream', 'stream on a share'],
+    ['\\\\nas\\scans\\x:y', 'colon deeper on a share'],
+    // UNC hosts.
+    ['\\\\user:pw@nas\\scans', 'user and password in the host'],
+    ['\\\\user@nas\\scans', 'user in the host'],
+    ['\\\\nas:445\\scans', 'port in the host'],
+    ['\\\\[fe80::1\\scans', 'unclosed IPv6 bracket'],
+    ['\\\\[nas]\\scans', 'bracketed name'],
+    ['\\\\n\u00e4s\\scans', 'non-ASCII host'],
+    ['\\\\nas%20x\\scans', 'escaped host'],
+    // Segments ending in a dot or a space.
+    ['C:\\Scans\\Bills.', 'trailing dot'],
+    ['C:\\Scans\\Bills \\x', 'trailing space mid-path'],
+    ['C:\\Scans\\.', 'dot segment'],
+    ['C:\\Scans\\...', 'dots segment'],
+    ['/home/owner/Scans ', 'trailing space unix'],
+    ['\\\\nas\\scans.', 'share ending in a dot'],
   ];
   for (const [p, why] of refused) {
     it(`refuses ${why}`, () => {
@@ -83,6 +139,16 @@ describe('intake folder paths', () => {
     expect(intakePathKey('C:\\Scans\\Bills')).toBe(intakePathKey('c:/scans/bills/'));
     expect(intakePathKey('\\\\NAS\\Scans')).toBe(intakePathKey('\\\\nas\\scans\\'));
     expect(intakePathKey('/')).toBe('\\');
+  });
+
+  it('compares paths and names after Unicode NFC normalization', () => {
+    expect(intakePathKey('C:\\Scans\\Mu\u0308nchen')).toBe(intakePathKey('c:\\scans\\M\u00fcnchen'));
+    expect(intakeNameKey('Mu\u0308nchen')).toBe(intakeNameKey('M\u00dcNCHEN'));
+  });
+
+  it('the problem text never names the reserved segment or the stream', () => {
+    expect(intakePathProblem('C:\\Scans\\NUL.secretname')).not.toContain('secretname');
+    expect(intakePathProblem('C:\\Scans:secretstream')).not.toContain('secretstream');
   });
 });
 
@@ -102,6 +168,10 @@ describe('intake folder fields', () => {
     ['blank name', { name: '   ' }, 'name'],
     ['name over 100', { name: 'n'.repeat(101) }, 'name'],
     ['name with control character', { name: 'Bills\u0007' }, 'name'],
+    ['name with right-to-left override', { name: 'Bills\u202efdp.exe' }, 'name'],
+    ['name with zero-width space', { name: 'Bi\u200blls' }, 'name'],
+    ['name with line separator', { name: 'Bills\u2028x' }, 'name'],
+    ['name with a lone surrogate', { name: 'Bills\ud800' }, 'name'],
     ['unknown kind', { defaultKind: 'invoices' }, 'defaultKind'],
     ['autoRead not boolean', { autoRead: 'yes' }, 'autoRead'],
     ['autoRead missing', { autoRead: undefined }, 'autoRead'],
@@ -151,6 +221,18 @@ describe('intake folder list', () => {
       if (!r.success) expect(r.error.issues.map((i) => i.path)).toContainEqual(at);
     });
   }
+});
+
+describe('intake folder list, Unicode', () => {
+  it('refuses a name or path that differs only in Unicode composition', () => {
+    const a = folder({ name: 'M\u00fcnchen', path: 'C:\\Scans\\M\u00fcnchen' });
+    const byName = intakeFoldersSchema.safeParse([a, folder({ id: ID(2), name: 'Mu\u0308nchen', path: 'C:\\Other' })]);
+    expect(byName.success).toBe(false);
+    if (!byName.success) expect(byName.error.issues.map((i) => i.path)).toContainEqual([1, 'name']);
+    const byPath = intakeFoldersSchema.safeParse([a, folder({ id: ID(2), name: 'Other', path: 'C:\\Scans\\Mu\u0308nchen' })]);
+    expect(byPath.success).toBe(false);
+    if (!byPath.success) expect(byPath.error.issues.map((i) => i.path)).toContainEqual([1, 'path']);
+  });
 });
 
 describe('PUT body', () => {
