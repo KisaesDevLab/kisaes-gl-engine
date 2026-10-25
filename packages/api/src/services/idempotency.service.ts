@@ -31,7 +31,7 @@ import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { idempotencyKeys } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { log } from '../utils/logger.js';
-import { stripSecretKeys } from '../utils/secret-keys.js';
+import { isSecretKey } from '../utils/secret-keys.js';
 import { getIdemContext, type IdemCtx } from './idempotency-context.js';
 
 export const IDEMPOTENCY_TTL_HOURS = 24;
@@ -197,11 +197,35 @@ export async function claimAndRecord(tx: Tx, type: string, id: string): Promise<
 
 // ── Settlement (after the commit) ────────────────────────────────────
 
-/** The stored form of a success body: secret-looking keys removed, serialized once. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return Object.prototype.toString.call(v) === '[object Object]';
+}
+
+/**
+ * A response body without the value of any secret-looking key
+ * (SECRET_KEY_RE), at every depth. A key whose value is null or absent
+ * holds no secret and is kept, so a replay of a record without one (an
+ * invoice's `publicToken: null`) is the same body the client first got.
+ */
+export function redactResponse(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((v) => redactResponse(v));
+  if (!isPlainObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (isSecretKey(k)) {
+      if (v === null) out[k] = null;
+      continue;
+    }
+    out[k] = redactResponse(v);
+  }
+  return out;
+}
+
+/** The stored form of a success body: secret values removed, serialized once. */
 export function storedResponse(body: unknown): { text: string | null; truncated: boolean } {
   let text: string;
   try {
-    text = JSON.stringify(stripSecretKeys(body) ?? null);
+    text = JSON.stringify(redactResponse(body) ?? null);
   } catch {
     return { text: null, truncated: true };
   }

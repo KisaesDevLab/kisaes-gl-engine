@@ -23,7 +23,7 @@ import { idempotencyKeys } from '../db/schema/index.js';
 import { idempotent, routeTemplate } from './idempotent.js';
 import { errorHandler } from './error-handler.js';
 import {
-  claimIdempotency, recordIdempotentEntity, sweepExpired, findLive,
+  claimIdempotency, recordIdempotentEntity, sweepExpired, findLive, redactResponse,
   __idempotencyDiagnostics, __idempotencyTestHooks,
 } from '../services/idempotency.service.js';
 import { AppError } from '../utils/errors.js';
@@ -280,6 +280,10 @@ describe('E17 redaction and logs', () => {
     const [row] = await rowsOf(key);
     const stored = JSON.stringify(row!.responseBody);
     expect(stored).not.toContain('canary');
+    // A secret-looking key without a value holds no secret and is kept, so
+    // the replay of a record with `publicToken: null` is the same body.
+    expect(redactResponse({ publicToken: null, apiKey: 'k', lines: [{ refreshToken: 'r', memo: 'm' }] }))
+      .toEqual({ publicToken: null, lines: [{ memo: 'm' }] });
     const joined = lines.join('\n');
     expect(joined).toContain(key.slice(0, 8));
     expect(joined).not.toContain(key.slice(0, 9));
