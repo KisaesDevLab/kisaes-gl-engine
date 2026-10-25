@@ -19,6 +19,7 @@ import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as service from '../services/daily-sales.service.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
@@ -27,6 +28,17 @@ export const dailySalesRouter = Router();
 dailySalesRouter.use(authenticate);
 dailySalesRouter.use(companyContext);
 dailySalesRouter.use(requireResource('daily_sales'));
+
+// Idempotency-Key (idempotency-v1, U-18) on entry create, post and void: the
+// readers replay the entry as it is now when no stored response is left.
+const keyedEntryCreate = idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ entry: await service.getEntry(req.tenantId, entity!.id, req.companyId) }),
+});
+const keyedEntryById = idempotent({
+  successStatus: 200,
+  replay: async (req) => ({ entry: await service.getEntry(req.tenantId, req.params['id']!, req.companyId) }),
+});
 
 // ── Templates ──
 dailySalesRouter.get('/templates', async (req, res) => {
@@ -68,7 +80,7 @@ dailySalesRouter.get('/entries', async (req, res) => {
   res.json({ entries, total });
 });
 
-dailySalesRouter.post('/entries', validate(createDailySalesEntrySchema), async (req, res) => {
+dailySalesRouter.post('/entries', keyedEntryCreate, validate(createDailySalesEntrySchema), async (req, res) => {
   const entry = await service.createDraft(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ entry });
 });
@@ -93,14 +105,14 @@ const closingPasswordBodyDoc = z.object({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-dailySalesRouter.post('/entries/:id/post', closingPasswordLimiter, lockContextMiddleware, describe({
+dailySalesRouter.post('/entries/:id/post', keyedEntryById, closingPasswordLimiter, lockContextMiddleware, describe({
   summary: 'Post a daily-sales entry (closing date enforced; daily-sales-lock-v1)',
   body: closingPasswordBodyDoc,
 }), async (req, res) => {
   res.json({ entry: await service.postEntry(req.tenantId, req.params['id']!, req.userId, req.companyId) });
 });
 
-dailySalesRouter.post('/entries/:id/void', closingPasswordLimiter, lockContextMiddleware, describe({
+dailySalesRouter.post('/entries/:id/void', keyedEntryById, closingPasswordLimiter, lockContextMiddleware, describe({
   summary: 'Void a posted daily-sales entry (closing date enforced; daily-sales-lock-v1)',
   body: closingPasswordBodyDoc,
 }), async (req, res) => {

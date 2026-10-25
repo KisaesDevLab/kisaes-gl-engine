@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as invoiceService from '../services/invoice.service.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
@@ -25,7 +26,11 @@ invoicesRouter.get('/', async (req, res) => {
   res.json(result);
 });
 
-invoicesRouter.post('/', validate(createInvoiceSchema), async (req, res) => {
+// Idempotency-Key (idempotency-v1, U-18).
+invoicesRouter.post('/', idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ invoice: await ledger.getTransaction(req.tenantId, entity!.id) }),
+}), validate(createInvoiceSchema), async (req, res) => {
   const invoice = await invoiceService.createInvoice(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ invoice });
 });

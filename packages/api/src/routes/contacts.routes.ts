@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as contactsService from '../services/contacts.service.js';
 import * as batchService from '../services/batch.service.js';
 import * as checkPdfService from '../services/check-pdf.service.js';
@@ -23,7 +24,11 @@ contactsRouter.get('/', async (req, res) => {
   res.json(result);
 });
 
-contactsRouter.post('/', validate(createContactSchema), async (req, res) => {
+// Idempotency-Key (idempotency-v1, U-18).
+contactsRouter.post('/', idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ contact: await contactsService.getById(req.tenantId, entity!.id) }),
+}), validate(createContactSchema), async (req, res) => {
   const contact = await contactsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ contact });
 });

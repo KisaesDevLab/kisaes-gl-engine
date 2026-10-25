@@ -11,6 +11,8 @@ import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
+import { idempotent } from '../middleware/idempotent.js';
+import * as ledger from '../services/ledger.service.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
 import * as checkService from '../services/check.service.js';
@@ -30,7 +32,14 @@ checksRouter.use(requireResource('checks'));
 
 // lockContextMiddleware: a check dated in a closed period takes the same
 // closingPassword / overrideConfirmed as POST /transactions (U-15).
-checksRouter.post('/', closingPasswordLimiter, lockContextMiddleware, validate(writeCheckSchema), async (req, res) => {
+// Idempotency-Key (idempotency-v1, U-18): the readers replay the check as it
+// is now when no stored response is left.
+const readCheck = (req: { tenantId: string }, id: string) => ledger.getTransaction(req.tenantId, id);
+
+checksRouter.post('/', idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ check: await readCheck(req, entity!.id) }),
+}), closingPasswordLimiter, lockContextMiddleware, validate(writeCheckSchema), async (req, res) => {
   const check = await checkService.createCheck(req.tenantId, req.body, req.userId, req.companyId);
   // Checks post as txn_type 'expense', which is the attachable type the
   // transaction detail page reads — keep them in step.
@@ -172,7 +181,10 @@ const updateCheckBodyDoc = updateCheckSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-checksRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, validate(updateCheckSchema), describe({
+checksRouter.put('/:id', idempotent({
+  successStatus: 200,
+  replay: async (req) => ({ check: await readCheck(req, req.params['id']!) }),
+}), closingPasswordLimiter, lockContextMiddleware, validate(updateCheckSchema), describe({
   summary: 'Edit a check: lines, amount, payee, date, number and print status (check-edit-v1)',
   body: updateCheckBodyDoc,
   params: z.object({ id: z.string().uuid() }),

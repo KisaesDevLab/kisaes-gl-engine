@@ -7,6 +7,7 @@ import { createTagSchema, updateTagSchema, mergeTagsSchema, createTagGroupSchema
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as tagsService from '../services/tags.service.js';
 
 export const tagsRouter = Router();
@@ -30,7 +31,11 @@ tagsRouter.get('/', async (req, res) => {
   res.json({ tags: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
-tagsRouter.post('/', validate(createTagSchema), async (req, res) => {
+// Idempotency-Key (idempotency-v1, U-18).
+tagsRouter.post('/', idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ tag: await tagsService.getById(req.tenantId, entity!.id) }),
+}), validate(createTagSchema), async (req, res) => {
   const tag = await tagsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ tag });
 });

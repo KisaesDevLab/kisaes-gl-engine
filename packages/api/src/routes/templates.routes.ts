@@ -15,7 +15,8 @@
 // write access to it (services/templates/permissions.ts). 403
 // PERMISSION_DENIED otherwise.
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   createTxnTemplateSchema, createTxnTemplateFromTransactionSchema, updateTxnTemplateSchema,
@@ -27,6 +28,8 @@ import { requireResource, resolvePermissionsForRequest } from '../middleware/per
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
+import { idempotent } from '../middleware/idempotent.js';
+import { templateOccurrences } from '../db/schema/index.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
 import * as templates from '../services/templates/templates.service.js';
@@ -72,6 +75,29 @@ async function requireTemplateAccess(req: Parameters<typeof resolvePermissionsFo
 const actor = (req: { tenantId: string; companyId: string; userId?: string }) =>
   ({ tenantId: req.tenantId, companyId: req.companyId, userId: req.userId });
 
+// Idempotency-Key (idempotency-v1, U-18) on create, from-transaction, enter,
+// skip and resolve. The permission checks run as middleware BEFORE
+// idempotent(), so a replay still needs the permission today.
+const templateAccessMw = (action: PermissionAction) =>
+  async (req: Request, _res: Response, next: NextFunction) => {
+    await requireTemplateAccess(req, uuidParam(req.params['id']), action);
+    next();
+  };
+
+async function readOccurrence(tenantId: string, id: string) {
+  const [row] = await db.select({
+    id: templateOccurrences.id, templateId: templateOccurrences.templateId, occurrenceDate: templateOccurrences.occurrenceDate,
+    status: templateOccurrences.status, transactionId: templateOccurrences.transactionId,
+  }).from(templateOccurrences).where(and(eq(templateOccurrences.tenantId, tenantId), eq(templateOccurrences.id, id))).limit(1);
+  if (!row) throw AppError.notFound('Occurrence not found');
+  return row;
+}
+
+const keyedTemplateCreate = idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ template: await templates.getTemplate(req.tenantId, req.companyId, entity!.id) }),
+});
+
 // ── Groups (before /:id) ───────────────────────────────────────────
 
 templatesRouter.get('/groups', describe({ summary: 'List template groups (templates-v1)' }), async (req, res) => {
@@ -116,18 +142,22 @@ templatesRouter.get('/', describe({
 templatesRouter.post('/', describe({
   summary: 'Create a template; posts nothing (templates-v1)',
   description: 'The draft is the create body of the kind minus the date and numbers; amounts are decimal strings. Needs write access to the kind (check: checks; expense, transfer, journal_entry: transactions; deposit: banking; daily_sales: daily_sales), else 403 PERMISSION_DENIED; the creator owns the auto runs. An auto schedule whose nextDate is more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate, details.earliest). 400 TEMPLATE_FIELD_NOT_ALLOWED (details.field), TEMPLATE_DEPOSIT_GROUPING, TEMPLATE_AUTO_UNSUPPORTED, VALIDATION_ERROR; 409 TEMPLATE_NAME_TAKEN.',
-}), validate(createTxnTemplateSchema), async (req, res) => {
+}), validate(createTxnTemplateSchema), async (req, _res, next) => {
   await requireAccess(req, kindResource(req.body.kind), 'create');
+  next();
+}, keyedTemplateCreate, async (req, res) => {
   res.status(201).json({ template: await templates.createTemplate(req.tenantId, req.companyId, req.userId, req.body) });
 });
 
 templatesRouter.post('/from-transaction', describe({
   summary: 'Save a posted transaction as a template (templates-v1)',
   description: 'Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company or a transaction without a company.',
-}), validate(createTxnTemplateFromTransactionSchema), async (req, res) => {
+}), validate(createTxnTemplateFromTransactionSchema), async (req, _res, next) => {
   const src = await loadSource(db, req.tenantId, req.companyId, req.body.transactionId);
   if (!src) throw AppError.notFound('Transaction not found');
   await requireAccess(req, txnResource(src.txnType, src.printStatus), 'create');
+  next();
+}, keyedTemplateCreate, async (req, res) => {
   res.status(201).json({ template: await templates.createFromTransaction(req.tenantId, req.companyId, req.userId, req.body) });
 });
 
@@ -172,14 +202,24 @@ const enterBodyDoc = enterTxnTemplateSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-templatesRouter.post('/:id/enter', closingPasswordLimiter, lockContextMiddleware, describe({
+templatesRouter.post('/:id/enter', describe({
   summary: 'Post the template now (templates-v1)',
   description: 'occurrenceDate defaults to the schedule’s next date (today without a schedule); the next date (even early) or an open skipped date only, else 400 OCCURRENCE_NOT_DUE; a date already done: 409 OCCURRENCE_TAKEN; without write access to the kind: 403 PERMISSION_DENIED. Response 201 `{transaction, occurrence}`.',
   params: idParams,
   body: enterBodyDoc,
-}), validate(enterTxnTemplateSchema), async (req, res) => {
+}), templateAccessMw('create'), idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => {
+    const transaction = await ledger.getTransaction(req.tenantId, entity!.id);
+    const [occ] = await db.select({
+      id: templateOccurrences.id, templateId: templateOccurrences.templateId, occurrenceDate: templateOccurrences.occurrenceDate,
+    }).from(templateOccurrences).where(and(
+      eq(templateOccurrences.tenantId, req.tenantId), eq(templateOccurrences.transactionId, entity!.id),
+    )).limit(1);
+    return { transaction, occurrence: occ ? { ...occ, status: 'entered' } : null };
+  },
+}), closingPasswordLimiter, lockContextMiddleware, validate(enterTxnTemplateSchema), async (req, res) => {
   const id = uuidParam(req.params['id']);
-  await requireTemplateAccess(req, id, 'create');
   const r = await occurrences.enterTemplate(actor(req), id, req.body);
   const transaction = await ledger.getTransaction(req.tenantId, r.transactionId);
   res.status(201).json({ transaction, occurrence: r.occurrence });
@@ -188,6 +228,12 @@ templatesRouter.post('/:id/enter', closingPasswordLimiter, lockContextMiddleware
 templatesRouter.post('/:id/occurrences/:date/skip', describe({
   summary: 'Skip a date (dismissed); the schedule moves on when it is the next date (templates-v1)',
   params: occurrenceParams,
+}), idempotent({
+  successStatus: 200,
+  replay: async (req, entity) => {
+    const { transactionId: _t, ...occurrence } = await readOccurrence(req.tenantId, entity!.id);
+    return { occurrence };
+  },
 }), async (req, res) => {
   const occurrence = await occurrences.skipOccurrence(actor(req), uuidParam(req.params['id']), dateParam(req.params['date']));
   res.json({ occurrence });
@@ -197,9 +243,11 @@ templatesRouter.post('/:id/occurrences/:date/resolve', describe({
   summary: 'Link a transaction saved through the normal form to a date (entered) (templates-v1)',
   description: 'The transaction must be posted, of the template’s company and kind, dated the occurrence date and not linked yet, else 400 OCCURRENCE_RESOLVE_INVALID; 409 OCCURRENCE_TAKEN; without write access to the kind: 403 PERMISSION_DENIED. The transaction is marked as made from the template (audited) unless it is in a closed period, where it is linked but left unchanged.',
   params: occurrenceParams,
+}), templateAccessMw('update'), idempotent({
+  successStatus: 200,
+  replay: async (req, entity) => ({ occurrence: await readOccurrence(req.tenantId, entity!.id) }),
 }), validate(resolveOccurrenceSchema), async (req, res) => {
   const id = uuidParam(req.params['id']);
-  await requireTemplateAccess(req, id, 'update');
   const occurrence = await occurrences.resolveOccurrence(actor(req), id, dateParam(req.params['date']), req.body.transactionId);
   res.json({ occurrence });
 });

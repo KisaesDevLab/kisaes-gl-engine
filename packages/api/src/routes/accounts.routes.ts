@@ -14,6 +14,7 @@ import { firms, firmUsers, tenantFirmAssignments } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
+import { idempotent } from '../middleware/idempotent.js';
 import * as accountsService from '../services/accounts.service.js';
 import * as registerService from '../services/register.service.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
@@ -47,7 +48,10 @@ async function canCreateAccount(req: Request, _res: Response, next: NextFunction
 
 // Registered before the router-wide guard so a firm member without the
 // accounts permission still reaches the create handler.
-accountsRouter.post('/', canCreateAccount, validate(createAccountSchema), async (req, res) => {
+accountsRouter.post('/', canCreateAccount, idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ account: await accountsService.getById(req.tenantId, entity!.id) }),
+}), validate(createAccountSchema), async (req, res) => {
   const account = await accountsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ account });
 });
