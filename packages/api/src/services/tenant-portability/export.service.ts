@@ -43,7 +43,7 @@ import {
 import { USERS_PROJECTION_SQL } from './identity.js';
 import type { JobProgress } from './jobs.js';
 import {
-  ARCHIVE_AUDIT_ENTITY_TYPE, EXCLUDED_TENANT_ARCHIVE_TABLES, NATURAL_KEYS, getPortabilityPlan, identityProjectionSql, scopeSql,
+  ARCHIVE_AUDIT_ENTITY_TYPE, EXCLUDED_TENANT_ARCHIVE_TABLES, NATURAL_KEYS, OMITTABLE_COLUMNS, getPortabilityPlan, identityProjectionSql, scopeSql,
   type PortabilityPlan, type TablePlan,
 } from './plan.js';
 import { digestFor, fieldString, pkOfLine, rewriteField } from './remap.js';
@@ -53,6 +53,8 @@ import { acquireSharedTenantLock, applyArchiveSession, releaseSharedTenantLock, 
 export interface ExportOptions {
   includeAttachments?: boolean;
   includeAudit?: boolean;
+  /** Leave companies.intake_settings out (U-93): the archive carries the column default. */
+  omitIntakeSettings?: boolean;
   host?: Record<string, unknown>;
   passphrase: string;
   /** Pre-assigned archive id (the route returns it with the job id). */
@@ -106,9 +108,13 @@ function orderBySql(t: TablePlan): string {
 }
 
 /** The two-projection cursor query for a table. */
-export function tableCursorSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean): string {
+export function tableCursorSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ReadonlySet<string> = new Set()): string {
   const scope = t.name === 'audit_log' && !includeAudit ? 'false' : scopeSql(plan, t.name, 'a');
-  const archive = t.archive.map((c) => c.select).join(', ');
+  const archive = t.archive.map((c) => {
+    const k = `${t.name}.${c.name}`;
+    const o = omit.has(k) ? OMITTABLE_COLUMNS[k] : undefined;
+    return o ? `${o.replacement}::${c.type} AS "${c.name}"` : c.select;
+  }).join(', ');
   const canonical = t.canonical.map((c) => `a."${c}"`).join(', ');
   return `SELECT row_to_json(a)::text AS line, row_to_json(c)::text AS canon
           FROM (SELECT ${archive} FROM "${t.name}" a WHERE ${scope}) a
@@ -140,12 +146,13 @@ async function writeTable(
   t: TablePlan,
   tenantId: string,
   includeAudit: boolean,
+  omit: ReadonlySet<string>,
   files: FileRef[],
   globals: GlobalRefCollector,
   warnings: string[],
 ): Promise<ManifestTable> {
   const cursor = `c_${t.name}`;
-  await client.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${tableCursorSql(plan, t, includeAudit)}`, [tenantId]);
+  await client.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${tableCursorSql(plan, t, includeAudit, omit)}`, [tenantId]);
   const pass = new PassThrough();
   const written = writer.writePart(tablePartName(t.name), pass);
   const digest = digestFor(t.pk);
@@ -298,18 +305,19 @@ function fsyncFile(filePath: string): void {
 export async function runExport(tenantId: string, userId: string, options: ExportOptions, progress?: JobProgress): Promise<ExportResult> {
   const includeAttachments = options.includeAttachments ?? true;
   const includeAudit = options.includeAudit ?? true;
+  const omitIntakeSettings = options.omitIntakeSettings ?? false;
   const host = options.host ?? {};
   if (Buffer.byteLength(JSON.stringify(host), 'utf8') > HOST_MAX_BYTES) throw AppError.badRequest('host metadata is too large (16 KiB)', 'VALIDATION_ERROR');
   if (await isWorkspaceTenant(tenantId)) throw new ArchiveError('WORKSPACE_TENANT', 'The workspace is never archived.');
   assertPassphraseStrong(options.passphrase);
   const archiveId = options.archiveId ?? crypto.randomUUID();
-  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, host, passphrase: options.passphrase, archiveId }, progress));
+  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, omitIntakeSettings, host, passphrase: options.passphrase, archiveId }, progress));
 }
 
 async function exportLocked(
   tenantId: string,
   userId: string,
-  o: { includeAttachments: boolean; includeAudit: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string },
+  o: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string },
   progress?: JobProgress,
 ): Promise<ExportResult> {
   const plan = await getPortabilityPlan();
@@ -364,10 +372,11 @@ async function exportLocked(
       const globals: GlobalRefCollector = { byTable: new Map() };
       const tables: ManifestTable[] = [];
       let totalRows = 0;
+      const omit = new Set(Object.entries(OMITTABLE_COLUMNS).filter(([, r]) => o[r.option]).map(([k]) => k));
       for (let i = 0; i < plan.tables.length; i++) {
         const t = plan.tables[i]!;
         step(`table:${t.name}`, 2 + Math.round((i / plan.tables.length) * 60));
-        const mt = await writeTable(client, writer, plan, t, tenantId, o.includeAudit, files, globals, warnings);
+        const mt = await writeTable(client, writer, plan, t, tenantId, o.includeAudit, omit, files, globals, warnings);
         tables.push(mt);
         totalRows += mt.rows;
       }
@@ -435,7 +444,8 @@ async function exportLocked(
         schema: { version: schema.version, tag: schema.tag },
         createdAt: new Date().toISOString(),
         source: { tenantId, name: tenantRow.name, ledgerVersion },
-        options: { includeAttachments: o.includeAttachments, includeAudit: o.includeAudit },
+        options: { includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, omitIntakeSettings: o.omitIntakeSettings },
+        omitted: [...omit].sort(),
         host: o.host,
         tables,
         identity: { ...IDENTITY_ENTRIES, parts: identityParts },
@@ -471,7 +481,7 @@ async function exportLocked(
           `INSERT INTO audit_log (tenant_id, user_id, action, entity_type, entity_id, after_data)
            VALUES ($1, $2, 'create', $3, $4, $5::jsonb)`,
           [tenantId, userId, ARCHIVE_AUDIT_ENTITY_TYPE, archiveId, JSON.stringify({
-            archiveId, sha256, bytes: stat.size, includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, userId,
+            archiveId, sha256, bytes: stat.size, includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, omitIntakeSettings: o.omitIntakeSettings, userId,
           })],
         );
         await client.query('COMMIT');

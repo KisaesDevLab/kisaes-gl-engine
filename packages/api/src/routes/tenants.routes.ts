@@ -147,6 +147,8 @@ tenantsRouter.patch('/:id', requireSessionAuth, validate(renameTenantSchema), de
 export const exportArchiveSchema = z.object({
   includeAttachments: z.boolean().optional().default(true),
   includeAudit: z.boolean().optional().default(true),
+  /** Leave the company intake folders out (U-93, intake-settings-v1): the archive carries the column default (no folders). */
+  omitIntakeSettings: z.boolean().optional().default(false),
   /** Opaque application metadata, stored in the manifest, never interpreted (<= 16 KiB). */
   host: z.record(z.unknown()).optional(),
   passphrase: z.string().min(1).max(1024),
@@ -177,6 +179,7 @@ tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSc
       return await runExport(tenantId, userId, {
         includeAttachments: body.includeAttachments,
         includeAudit: body.includeAudit,
+        omitIntakeSettings: body.omitIntakeSettings,
         host: body.host,
         passphrase: body.passphrase,
         archiveId,

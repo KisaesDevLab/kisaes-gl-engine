@@ -13,6 +13,17 @@ import { authorizeLockDateChange, withoutClosingPasswordHash, type ClosingPasswo
 import { isDesktop } from '../desktop/profile.js';
 import { hasSessionSecret } from '../desktop/session-secrets.js';
 
+/**
+ * A company row as it leaves the service layer (responses, audit images):
+ * without the closing-date password hash (U-15) and without the intake
+ * folders (U-93), whose paths are read only through
+ * GET /company/intake-settings and never audited.
+ */
+export function publicCompanyRow<T extends { closingPasswordHash?: unknown; intakeSettings?: unknown }>(row: T): Omit<T, 'closingPasswordHash' | 'intakeSettings'> {
+  const { intakeSettings: _intake, ...rest } = withoutClosingPasswordHash(row);
+  return rest as Omit<T, 'closingPasswordHash' | 'intakeSettings'>;
+}
+
 // List all companies for a tenant, filtered by accountant exclusions if applicable
 export async function listCompanies(tenantId: string, userId?: string) {
   // Include `currency` in the summary so the frontend can render money in
@@ -45,7 +56,7 @@ export async function getCompany(tenantId: string, companyId?: string) {
 
   if (!company) throw AppError.notFound('Company not found');
   // The closing-date password hash never leaves the service layer (U-15).
-  return withoutClosingPasswordHash(company);
+  return publicCompanyRow(company);
 }
 
 // Fields the tenant's own users may edit via /companies/:id. Any
@@ -141,7 +152,7 @@ export async function updateCompany(
       .returning();
 
     if (!row) throw AppError.internal('Failed to update company');
-    const safe = withoutClosingPasswordHash(row);
+    const safe = publicCompanyRow(row);
     await auditLog(tenantId, 'update', 'company', safe.id, existing, safe, userId, tx);
     if (passwordSetNow) {
       await auditLog(tenantId, 'update', 'closing_password', companyId,
@@ -168,7 +179,7 @@ export async function updateLogo(tenantId: string, companyId: string, logoUrl: s
   if (!updated) throw AppError.internal('Failed to update logo');
   await auditLog(tenantId, 'update', 'company', updated.id, { logoUrl: existing.logoUrl }, { logoUrl }, userId);
   // The full row goes back to POST /company/logo: never with the hash (U-15).
-  return withoutClosingPasswordHash(updated);
+  return publicCompanyRow(updated);
 }
 
 export async function markSetupComplete(tenantId: string, companyId: string) {
@@ -279,7 +290,7 @@ export async function updateSmtpSettings(
 
   // No secret leaves the service layer: neither the closing-date password
   // hash (U-15) nor the stored SMTP password.
-  const { smtpPass: _smtpPass, ...safe } = withoutClosingPasswordHash(updated);
+  const { smtpPass: _smtpPass, ...safe } = publicCompanyRow(updated);
   return safe;
 }
 
@@ -290,7 +301,7 @@ export async function createCompanyForTenant(tenantId: string, businessName: str
     // Optional so existing callers keep the column default ('sole_prop').
     ...(entityType ? { entityType } : {}),
   }).returning();
-  return company ? withoutClosingPasswordHash(company) : company;
+  return company ? publicCompanyRow(company) : company;
 }
 
 // Create an additional company under the same tenant.
@@ -328,7 +339,7 @@ export async function createAdditionalCompany(tenantId: string, input: { busines
   // Equity roles for the new company's entity type (U-55).
   await seedEquityRolesBestEffort(tenantId);
 
-  return withoutClosingPasswordHash(company);
+  return publicCompanyRow(company);
 }
 
 // Delete an additional company from a tenant. Safe because companies within a

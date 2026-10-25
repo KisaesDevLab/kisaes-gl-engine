@@ -19,6 +19,8 @@ import {
   updatePermissionTemplateSchema,
   setUserPermissionsSchema,
   EQUITY_ROLE_REPORT_TAGS,
+  intakeFolderSchema,
+  putIntakeSettingsSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireTenantCapability } from '../middleware/firm-capabilities.js';
@@ -31,6 +33,7 @@ import { takeClosingPassword } from '../services/lock-context.js';
 import * as closingPasswordService from '../services/closing-password.service.js';
 import * as companyService from '../services/company.service.js';
 import * as equityRolesService from '../services/equity-roles.service.js';
+import * as intakeSettingsService from '../services/intake-settings.service.js';
 import * as invoiceTemplateService from '../services/invoice-template.service.js';
 import * as authService from '../services/auth.service.js';
 import * as permissionService from '../services/permission.service.js';
@@ -193,6 +196,32 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       chatSupportEnabled: company.chatSupportEnabled,
     },
   });
+});
+
+// ── Intake folders (U-93, capability intake-settings-v1) ──
+// The folders a desktop client watches for bills and receipts, per company.
+// Reading needs company_settings view (paths are owner data), writing
+// company_settings update. A PUT replaces the whole list and names the
+// updatedAt it last read (null before the first save); a different stored
+// value is 409 STALE (details.updatedAt), nothing changed. Not keyed by
+// Idempotency-Key: a retried full replace either matches or is STALE.
+const intakeSettingsResponse = z.object({
+  folders: z.array(intakeFolderSchema),
+  updatedAt: z.string().nullable(),
+});
+
+companyRouter.get('/intake-settings', requirePermission('company_settings', 'read'), describe({
+  summary: 'Intake folders of the company (intake-settings-v1)',
+  response: intakeSettingsResponse,
+}), async (req, res) => {
+  res.json(await intakeSettingsService.getIntakeSettings(req.tenantId, req.companyId));
+});
+
+companyRouter.put('/intake-settings', requireCompanySettingsWrite, validate(putIntakeSettingsSchema), describe({
+  summary: 'Replace the intake folders of the company (409 STALE when expectedUpdatedAt no longer matches)',
+  response: intakeSettingsResponse,
+}), async (req, res) => {
+  res.json(await intakeSettingsService.putIntakeSettings(req.tenantId, req.companyId, req.body, req.userId));
 });
 
 // ── Closing-date password (U-15, capability closing-password-v1) ──

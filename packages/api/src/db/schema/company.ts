@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { pgTable, uuid, varchar, text, integer, decimal, boolean, timestamp, jsonb, date, bigint } from 'drizzle-orm/pg-core';
+import type { IntakeSettings } from '@kis-books/shared';
 
 export const companies = pgTable('companies', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -83,6 +84,10 @@ export const companies = pgTable('companies', {
   stripePublishableKey: varchar('stripe_publishable_key', { length: 255 }),
   stripeWebhookSecretEncrypted: text('stripe_webhook_secret_encrypted'),
   onlinePaymentsEnabled: boolean('online_payments_enabled').default(false),
+  // Intake folders of the company (U-93, intake-settings-v1; migration 0232).
+  // Read and written only by intake-settings.service: paths never leave
+  // through the company row, its audit images or MCP.
+  intakeSettings: jsonb('intake_settings').$type<IntakeSettings>().notNull().default({ version: 1, folders: [], updatedAt: null }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });

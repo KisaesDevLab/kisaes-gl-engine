@@ -29,6 +29,7 @@ const SOURCE_NAME_MAX = 255;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA_RE = /^[0-9a-f]{64}$/;
 const TABLE_RE = /^[a-z_][a-z0-9_]*$/;
+const OMITTED_RE = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -83,6 +84,9 @@ export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): Archi
   if (source['name'].length > SOURCE_NAME_MAX || /[\u0000-\u001f\u007f]/.test(source['name'])) throw corrupt('manifest source.name');
   const options = raw['options'];
   if (!isObject(options) || typeof options['includeAttachments'] !== 'boolean' || typeof options['includeAudit'] !== 'boolean') throw corrupt('manifest options');
+  if (options['omitIntakeSettings'] !== undefined && typeof options['omitIntakeSettings'] !== 'boolean') throw corrupt('manifest options');
+  const omitted = raw['omitted'];
+  if (omitted !== undefined && (!Array.isArray(omitted) || !omitted.every((o) => typeof o === 'string' && OMITTED_RE.test(o)))) throw corrupt('manifest omitted');
   const host = raw['host'];
   if (!isObject(host) || Buffer.byteLength(JSON.stringify(host), 'utf8') > HOST_MAX_BYTES) throw corrupt('manifest host');
   if (!Array.isArray(raw['tables'])) throw corrupt('manifest tables');
