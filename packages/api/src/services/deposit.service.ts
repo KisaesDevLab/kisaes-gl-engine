@@ -39,12 +39,19 @@
 //
 // Cash back may not go to the deposit-to account or to a control account
 // (Payments Clearing, A/R, A/P, Sales Tax Payable): 400 VALIDATION_ERROR.
+//
+// An edit may not silently drop a link (U-80, ledger-guards-v1): when a
+// linked line comes back without its sourceTransactionId while an unlinked
+// line on the same account stays (the shape of an edit made by a form that
+// never knew about the links), the edit is 409 DEPOSIT_LINKS_DROPPED and
+// nothing changes. Removing the line itself still takes the item out of the
+// deposit, as before.
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import type { CreateDepositInput, JournalLineInput } from '@kis-books/shared';
 import { db, type Tx } from '../db/index.js';
-import { accounts, depositLines, transactions } from '../db/schema/index.js';
+import { accounts, depositLines, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { exactAmount } from '../utils/money.js';
 import { auditLog } from '../middleware/audit.js';
@@ -389,6 +396,40 @@ export async function createDeposit(tenantId: string, input: CreateDepositInput,
   return (await createDepositWithWarnings(tenantId, input, userId, companyId)).transaction;
 }
 
+/**
+ * Refuses an edit that drops a link while keeping its line (U-80): a linked
+ * line of the deposit (payments-clearing item or vendor refund) whose source
+ * the edit no longer sends, while the edit still has an unlinked line on that
+ * line's account. Without the guard the item would read as pending (or the
+ * vendor credit as open) again although the deposit still holds its money.
+ * 409 DEPOSIT_LINKS_DROPPED, details.sourceTransactionIds.
+ */
+async function assertLinksNotDropped(
+  tx: Tx, tenantId: string, depositId: string, input: CreateDepositInput, plan: DepositPlan,
+) {
+  const linked = await tx.select({ accountId: journalLines.accountId, sourceTransactionId: journalLines.sourceTransactionId })
+    .from(journalLines)
+    .where(and(
+      eq(journalLines.tenantId, tenantId),
+      eq(journalLines.transactionId, depositId),
+      eq(journalLines.isVoidReversal, false),
+      isNotNull(journalLines.sourceTransactionId),
+    ));
+  if (linked.length === 0) return;
+  const kept = new Set(plan.sources.map((s) => s.sourceTransactionId));
+  const unlinkedAccounts = new Set(input.lines.filter((l) => !l.sourceTransactionId).map((l) => l.accountId));
+  const dropped = [...new Set(linked
+    .filter((l) => !kept.has(l.sourceTransactionId!) && unlinkedAccounts.has(l.accountId))
+    .map((l) => l.sourceTransactionId!))];
+  if (dropped.length === 0) return;
+  throw AppError.conflict(
+    'This deposit includes payments or vendor refunds, and this change would leave them out while keeping their lines. ' +
+      'Edit it as a bank deposit: send each of those lines with its sourceTransactionId, or remove the line to take the item out of the deposit.',
+    'DEPOSIT_LINKS_DROPPED',
+    { sourceTransactionIds: dropped },
+  );
+}
+
 /** Edit, with the Payments Clearing warning (PUT /transactions/:id). */
 export async function updateDepositWithWarnings(
   tenantId: string, txnId: string, input: CreateDepositInput, userId?: string, companyId?: string,
@@ -413,6 +454,7 @@ export async function updateDepositWithWarnings(
     await validateCashBackAccount(tx, tenantId, input);
     // A void deposit is refused by updateTransaction; its links were
     // released when it was voided.
+    if (existing.status !== 'void') await assertLinksNotDropped(tx, tenantId, txnId, input, plan);
     const released = existing.status === 'void' ? [] : await releaseDepositLinks(tx, tenantId, txnId);
     await lockAndValidateSources(tx, tenantId, companyId, input, plan, txnId);
     const updated = await ledger.updateTransaction(tenantId, txnId, plan.payload, userId, companyId, tx);

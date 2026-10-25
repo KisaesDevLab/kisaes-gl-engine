@@ -439,6 +439,7 @@ With `CL_LOG_FILE` set, the scrubbed text is appended synchronously and rotated 
 | `je-reversing-v1` | Journal entry `reverseOn`: an automatic reversing entry, voided / deleted with the original; on edit kept (omitted), removed (`null`) or moved (a date) (below). |
 | `balance-exact-v1` | Every posting's debits must equal its credits exactly at 4 places; no tolerance (below). |
 | `recurring-guard-v1` | Recurring copies keep line names and billable marks; `PUT /recurring/:id` takes `expectedUpdatedAt` (409 `STALE_SCHEDULE`) (below). |
+| `ledger-guards-v1` | `PUT /transactions/:id`: a deposit edit that sends a linked line back without its `sourceTransactionId` while keeping an unlinked line on that account is 409 `DEPOSIT_LINKS_DROPPED` (`details.sourceTransactionIds`); an expense edit that changes a printed check's face is 409 `CHECK_PRINTED` (`details.checkNumber`, `printedAt`, `changedFields`; edit it with `PUT /checks/:id`); a check keeps its own header tags with `TAGS_SPLIT_LEVEL_V2` on. Void reversal lines keep the line contact. `PATCH /checks/:id/memo`, `POST /checks/print`, `/checks/requeue` and `/checks/reprint/:batchId` honour the closing date and `closingPassword` (423 / 403) (U-80, U-81). |
 | `merge-closing-date-v1` | `POST /contacts/merge` and `POST /tags/merge` honour the closing date and `closingPassword`; the audit row is written in the merge's transaction and lists the transaction ids (below). |
 
 ## Account register
