@@ -82,4 +82,6 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'tag-number-v1',
   /** /dashboard/*: exact=1 money as decimal strings, asOf = today, one overdue-invoice rule, cash-position accountNumber, payables dueWithinDays (U-76). */
   'dashboard-exact-v1',
+  /** POST /contacts/merge and /tags/merge honour the closing date and closingPassword; audit row in the same transaction lists the transaction ids (U-47). */
+  'merge-closing-date-v1',
 ];

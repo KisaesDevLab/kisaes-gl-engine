@@ -9,6 +9,7 @@ import { contacts, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
+import { guardMergeTransactions } from './merge-lock.service.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 
@@ -223,8 +224,18 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
   // deactivate the duplicate — one DB transaction, so a merge is never half
   // done. This used to only deactivate the source, which hid it while its
   // transactions (and its 1099 total) stayed split across two contacts.
+  //
+  // The transactions and journal lines it repoints may be dated in a closed
+  // period (U-47): guardMergeTransactions applies the closing date first and
+  // refuses (423 / 403, nothing changed) without the closing-date password.
+  // The audit row is written in the same transaction and lists the ids.
   const moved: Record<string, number> = {};
   await db.transaction(async (tx) => {
+    const affected = await guardMergeTransactions(tx, tenantId, sql`
+      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND contact_id = ${sourceId}
+      UNION
+      SELECT transaction_id FROM journal_lines WHERE tenant_id = ${tenantId} AND contact_id = ${sourceId}
+    `, { kind: 'contact_merge', sourceId, targetId, userId });
     const repoint = async (label: string, statement: SQL) => {
       const r = await tx.execute(statement);
       moved[label] = r.rowCount ?? 0;
@@ -243,8 +254,13 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
       .update(contacts)
       .set({ isActive: false, updatedAt: new Date() })
       .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, sourceId)));
+    await auditLog(tenantId, 'update', 'contact', sourceId, source, {
+      merged_into: targetId,
+      moved,
+      transactions: affected.transactions,
+      closedPeriodOverride: affected.closedPeriodOverride,
+    }, userId, tx);
   });
-  await auditLog(tenantId, 'update', 'contact', sourceId, source, { merged_into: targetId, moved }, userId);
   return target;
 }
 
