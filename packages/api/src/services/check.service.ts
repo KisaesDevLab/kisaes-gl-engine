@@ -315,6 +315,53 @@ async function printedFaceChanges(
 }
 
 /**
+ * The printed-check rule for PUT /transactions/:id as an expense (U-80,
+ * ledger-guards-v1). That route has no printedCheckChange answer, so an edit
+ * of a PRINTED check that changes its printed face is 409 CHECK_PRINTED
+ * (details as on PUT /checks/:id) and nothing changes; the caller edits it
+ * with PUT /checks/:id instead. The face is compared exactly as updateCheck
+ * compares it. The expense route never writes the check's own fields (name
+ * and address on the check, printed memo, number), so those keep their
+ * stored values; the memo line changes only when no printed memo is set and
+ * the internal memo changes. Checks that have not printed, and expenses
+ * without a print status, pass untouched.
+ */
+export async function assertPrintedFaceKeptOnExpenseEdit(
+  tx: Tx, tenantId: string, txnId: string,
+  edit: { total: string; contactId?: string | null; memo?: string | null; payFromAccountId: string; txnDate: string },
+  companyId?: string,
+) {
+  const [existing] = await tx.select().from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+    .for('update')
+    .limit(1);
+  // Anything the ledger edit refuses anyway (missing, another company's,
+  // void, deleted) is left to its 404 / 400.
+  if (!existing || existing.printStatus !== 'printed' || existing.status !== 'posted'
+    || (companyId && existing.companyId && existing.companyId !== companyId)) return;
+  const changedFields = await printedFaceChanges(tx, tenantId, existing, {
+    amount: edit.total,
+    contactId: edit.contactId ?? undefined,
+    memo: edit.memo ?? undefined,
+    // Not sent by the expense route: the stored values stay.
+    payeeNameOnCheck: existing.payeeNameOnCheck,
+    payeeAddress: existing.payeeAddress ?? undefined,
+    printedMemo: existing.printedMemo ?? undefined,
+    bankAccountId: edit.payFromAccountId,
+    txnDate: edit.txnDate,
+  } as unknown as UpdateCheckInput);
+  // An empty printed memo is a deliberate "print no memo" (updatePrintedMemo)
+  // and stays on paper whatever the internal memo becomes.
+  const fields = existing.printedMemo === '' ? changedFields.filter((f) => f !== 'printedMemo') : changedFields;
+  if (fields.length === 0) return;
+  throw AppError.conflict(
+    'This check has already been printed. Edit it as a check to say whether to reprint it or keep its check number before changing what is printed on it.',
+    'CHECK_PRINTED',
+    { checkNumber: existing.checkNumber, printedAt: existing.printedAt, changedFields: fields },
+  );
+}
+
+/**
  * Edit a check (U-48). The ledger side goes through
  * ledger.updateTransaction, so the edit gets exactly the rules of
  * PUT /transactions/:id — closing date and closing-date password (423 /
@@ -344,9 +391,9 @@ async function printedFaceChanges(
  *     number from the counter, as on create.
  *
  * Header tagIds, when sent, REPLACE the check's header tags (an empty array
- * clears them); absent leaves them as the ledger edit leaves them (unchanged,
- * or re-derived from the line tags when TAGS_SPLIT_LEVEL_V2 is on — as on
- * PUT /transactions/:id).
+ * clears them); absent leaves them as the ledger edit leaves them (unchanged;
+ * with TAGS_SPLIT_LEVEL_V2 on, the line-derived ones follow the new lines and
+ * the check's own header tags stay — U-80, as on PUT /transactions/:id).
  *
  * Only checks (txn_type 'expense' with a print status) are edited here:
  * anything else is 404; a check that pays bills is 400 CHECK_NOT_EDITABLE
@@ -623,6 +670,8 @@ export async function printChecks(
 
       if (!txn) throw AppError.notFound(`Check ${checkId} not found`);
       if (txn.printStatus !== 'queue') throw AppError.badRequest(`Check ${checkId} is not in the print queue`);
+      // Printing numbers the check: a closed-period change (U-81).
+      await assertCheckPeriodOpen(tx, tenantId, txn);
 
       // Record which signature image this check printed with. Over-cap
       // checks in a signed batch print unsigned (bare rule) — mirror of
@@ -686,9 +735,32 @@ export async function updatePrintedMemo(
   tenantId: string, checkId: string, printedMemo: string,
   userId?: string, companyId?: string,
 ) {
+  return db.transaction((tx) => updatePrintedMemoInTx(tx, tenantId, checkId, printedMemo, userId, companyId));
+}
+
+/**
+ * Closed-period rule for the print routes (U-81): printing, re-queueing and
+ * the printed memo change a check's record (number, print status, memo line),
+ * so a check dated on or before the closing date takes the closing-date
+ * password (or a staff override) exactly like PUT /checks/:id — 423
+ * TB_PERIOD_LOCKED / 403 CLOSING_PASSWORD_INVALID otherwise, nothing changes.
+ * A permitted override writes its closing_date_override audit row.
+ */
+async function assertCheckPeriodOpen(
+  tx: Tx, tenantId: string, txn: { id: string; txnDate: string; companyId: string | null },
+) {
+  await ledger.checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+    txnId: txn.id, oldDate: txn.txnDate, newDate: txn.txnDate,
+  });
+}
+
+async function updatePrintedMemoInTx(
+  tx: Tx, tenantId: string, checkId: string, printedMemo: string,
+  userId?: string, companyId?: string,
+) {
   const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)];
   if (companyId) conds.push(eq(transactions.companyId, companyId));
-  const [txn] = await db.select().from(transactions).where(and(...conds)).limit(1);
+  const [txn] = await tx.select().from(transactions).where(and(...conds)).limit(1);
 
   if (!txn || txn.printStatus === null) throw AppError.notFound('Check not found');
   if (txn.status === 'void') throw AppError.badRequest('Cannot edit the memo on a voided check');
@@ -698,6 +770,7 @@ export async function updatePrintedMemo(
   if (txn.printStatus !== 'queue') {
     throw AppError.badRequest("A hand-written check's memo can't be changed here — the check already exists on paper.");
   }
+  await assertCheckPeriodOpen(tx, tenantId, txn);
 
   // Empty string, not NULL: NULL means "nobody set one" and falls back to
   // the internal memo at print time, so clearing the field has to be
@@ -707,7 +780,7 @@ export async function updatePrintedMemo(
   // The status condition is repeated in the WHERE, not just checked above:
   // printChecks holds the row FOR UPDATE, so an edit submitted while a batch
   // is printing would otherwise land on a check that has since printed.
-  const updated = await db.update(transactions)
+  const updated = await tx.update(transactions)
     .set({ printedMemo: next, updatedAt: new Date() })
     .where(and(
       eq(transactions.tenantId, tenantId),
@@ -721,28 +794,51 @@ export async function updatePrintedMemo(
   }
 
   await auditLog(tenantId, 'update', 'check', checkId,
-    { printedMemo: txn.printedMemo }, { printedMemo: next }, userId);
+    { printedMemo: txn.printedMemo }, { printedMemo: next }, userId, tx);
 
   return { id: checkId, printedMemo: next };
 }
 
+/**
+ * Back to the print queue, number and print stamp cleared. A check dated in
+ * a closed period needs the closing-date password (U-81); the whole request
+ * is one database transaction, so a refusal changes none of the checks.
+ */
 export async function requeueChecks(tenantId: string, checkIds: string[]) {
-  for (const id of checkIds) {
-    await db.update(transactions).set({
-      printStatus: 'queue',
-      checkNumber: null,
-      printedAt: null,
-      printBatchId: null,
-      printSignatureId: null,
-      updatedAt: new Date(),
-    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id)));
-  }
+  if (!Array.isArray(checkIds) || checkIds.length === 0) return;
+  await db.transaction(async (tx) => {
+    const rows = await tx.select({ id: transactions.id, txnDate: transactions.txnDate, companyId: transactions.companyId })
+      .from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, checkIds)))
+      .orderBy(transactions.id)
+      .for('update');
+    for (const row of rows) await assertCheckPeriodOpen(tx, tenantId, row);
+    for (const id of checkIds) {
+      await tx.update(transactions).set({
+        printStatus: 'queue',
+        checkNumber: null,
+        printedAt: null,
+        printBatchId: null,
+        printSignatureId: null,
+        updatedAt: new Date(),
+      }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id)));
+    }
+  });
 }
 
+/** A printed batch back to the queue; closed-period checks as requeueChecks (U-81). */
 export async function reprintBatch(tenantId: string, batchId: string) {
-  await db.update(transactions).set({
-    printStatus: 'queue',
-    printedAt: null,
-    updatedAt: new Date(),
-  }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.printBatchId, batchId)));
+  await db.transaction(async (tx) => {
+    const rows = await tx.select({ id: transactions.id, txnDate: transactions.txnDate, companyId: transactions.companyId })
+      .from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.printBatchId, batchId)))
+      .orderBy(transactions.id)
+      .for('update');
+    for (const row of rows) await assertCheckPeriodOpen(tx, tenantId, row);
+    await tx.update(transactions).set({
+      printStatus: 'queue',
+      printedAt: null,
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.printBatchId, batchId)));
+  });
 }
