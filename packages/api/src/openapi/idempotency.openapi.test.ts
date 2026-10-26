@@ -58,7 +58,14 @@ export const IDEMPOTENCY_DOCS_V1_ROUTES = [
   'post /api/v1/document-drafts/{id}/convert',
 ].sort();
 
-const ALL_KEYED_ROUTES = [...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES].sort();
+/** Keyed by document-drafts-attach-v1, with idempotency-docs-v1's contract (U-95). */
+export const IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES = [
+  'post /api/v1/document-drafts/{id}/attach',
+].sort();
+
+const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
+].sort();
 
 let paths: Paths;
 
@@ -101,5 +108,6 @@ describe('idempotency-v1 in openapi.json', () => {
     expect(DESKTOP_CAPABILITIES).toContain('batch-idempotent-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-ap-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-docs-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('document-drafts-attach-v1');
   });
 });
