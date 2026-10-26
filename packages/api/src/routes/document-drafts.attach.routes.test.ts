@@ -16,7 +16,13 @@
 //      credits, daily sales, AJEs, tax entries) and on POST
 //      /attachments/:id/link (409 ATTACHMENT_IN_USE); a convert afterwards
 //      relinks the file and posts once; claim vs relink and claim vs link in
-//      both orders;
+//      both orders, racing the real claim (POST /document-drafts) after its
+//      company stamp (review L-4);
+//   a2. security review fixes: an AJE target files under journal_entry
+//      (M-1) and is refused for client users and with TRIAL_BALANCE_V1 off
+//      (L-1); the permission probe treats another company's target as
+//      missing (L-2); two drafts of one key attach and convert at once
+//      without a deadlock (L-3);
 //   c. GET /transactions?amount= exact numeric filter.
 
 import 'express-async-errors';
@@ -30,8 +36,9 @@ import type { Server } from 'http';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
-  tenants, users, userTenantAccess, userPermissions, companies, accounts, contacts, attachments, documentDrafts,
+  tenants, users, userTenantAccess, userPermissions, companies, accounts, contacts, attachments, documentDrafts, tenantFeatureFlags,
 } from '../db/schema/index.js';
+import * as ajeService from '../services/tb/aje.service.js';
 import { documentDraftsRouter } from './document-drafts.routes.js';
 import { attachmentsRouter } from './attachments.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
@@ -44,7 +51,9 @@ import * as billService from '../services/bill.service.js';
 import * as expenseService from '../services/expense.service.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
 import * as ledger from '../services/ledger.service.js';
+import * as draftService from '../services/document-draft.service.js';
 import { __documentDraftTestHooks } from '../services/document-draft.service.js';
+import { canAttachToType } from '../middleware/document-draft-permission.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { buildPortabilityPlan, scopeSql, type PortabilityPlan } from '../services/tenant-portability/plan.js';
 
@@ -161,9 +170,9 @@ async function draftRow(id: string) {
   return d!;
 }
 
-async function bookkeeper(overrides: Record<string, string>) {
+async function bookkeeper(overrides: Record<string, string>, userType: 'staff' | 'client' = 'staff') {
   const [u] = await db.insert(users).values({
-    tenantId: c.tenantId, email: `bk-${suffix()}@example.com`, passwordHash: 'x', displayName: 'Bookkeeper', role: 'bookkeeper',
+    tenantId: c.tenantId, email: `bk-${suffix()}@example.com`, passwordHash: 'x', displayName: 'Bookkeeper', role: 'bookkeeper', userType,
   }).returning();
   await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: c.tenantId, role: 'bookkeeper' });
   await db.insert(userPermissions).values({ tenantId: c.tenantId, userId: u!.id, overrides: overrides as never });
@@ -204,6 +213,7 @@ beforeAll(async () => {
 afterEach(() => {
   delete __documentDraftTestHooks.beforeTargetLock;
   delete __documentDraftTestHooks.afterAttachRelink;
+  delete __documentDraftTestHooks.afterCompanyStamp;
   delete attachmentService.__attachmentTestHooks.afterKeyLock;
   delete attachmentService.__attachmentTestHooks.afterLinkLock;
 });
@@ -457,6 +467,106 @@ describe('attach (POST /document-drafts/:id/attach)', () => {
   });
 });
 
+// ── a2. Security review fixes (M-1, L-1, L-2, L-3) ───────────────────
+
+describe('attach: security review fixes', () => {
+  async function setTrialBalance(enabled: boolean) {
+    await db.delete(tenantFeatureFlags).where(and(eq(tenantFeatureFlags.tenantId, c.tenantId), eq(tenantFeatureFlags.flagKey, 'TRIAL_BALANCE_V1')));
+    await db.insert(tenantFeatureFlags).values({ tenantId: c.tenantId, flagKey: 'TRIAL_BALANCE_V1', enabled });
+  }
+
+  async function postedAje(amount: string) {
+    const aje = await ajeService.createAje(c.tenantId, c.companyA, {
+      txnDate: '2026-03-31', memo: 'u95 aje', basis: 'both',
+      lines: [
+        { accountId: c.expense, debit: amount, credit: '0', isTaxable: false, taxRate: '0', taxAmount: '0' },
+        { accountId: c.bank, debit: '0', credit: amount, isTaxable: false, taxRate: '0', taxAmount: '0' },
+      ],
+    } as Parameters<typeof ajeService.createAje>[2], c.ownerId);
+    return (aje as { id: string }).id;
+  }
+
+  it('an AJE target (M-1, L-1): files under journal_entry, convertedType aje; a file already on it succeeds; client users and the flag off are 422', async () => {
+    const aje = await postedAje('61.00');
+    try {
+      // TRIAL_BALANCE_V1 off (the default of a new tenant): not attachable, nothing written.
+      await setTrialBalance(false);
+      const off = await readyDraft('aje-off', 'card_charge');
+      const rOff = await attachCall(off.draft, aje);
+      expect(rOff.status, JSON.stringify(rOff.json)).toBe(422);
+      expect(rOff.json.error).toMatchObject({ code: 'TARGET_NOT_ATTACHABLE', details: { txnType: 'aje' } });
+      expect(await fileOf(off.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: off.draftKey });
+      // The service refuses too (the route's probe aside).
+      const fakeReq = { tenantId: c.tenantId, userType: 'staff' } as Parameters<typeof canAttachToType>[0];
+      await expect(draftService.attach(c.tenantId, c.companyA, c.ownerId, off.draft.id, { transactionId: aje, expectedUpdatedAt: off.draft.updatedAt },
+        async () => true, async () => true, (t) => canAttachToType(fakeReq, t))).rejects.toMatchObject({ code: 'TARGET_NOT_ATTACHABLE' });
+
+      await setTrialBalance(true);
+      // A client user, even with both permissions: 422.
+      const client = await bookkeeper({ transactions: 'full', trial_balance: 'full' }, 'client');
+      const rClient = await attachCall(off.draft, aje, { token: client.token });
+      expect(rClient.status, JSON.stringify(rClient.json)).toBe(422);
+      expect(rClient.json.error.code).toBe('TARGET_NOT_ATTACHABLE');
+
+      // Staff with the flag on: the file reads back under journal_entry.
+      const r = await attachCall(off.draft, aje);
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      expect(r.json.draft).toMatchObject({ status: 'converted', convertedTransactionId: aje, convertedType: 'aje', kind: 'card_charge' });
+      expect(await fileOf(off.attachmentId)).toMatchObject({ attachableType: 'journal_entry', attachableId: aje });
+      const listed = await call('GET', `/api/v1/attachments?attachable_type=journal_entry&attachable_id=${aje}`);
+      expect(listed.status, JSON.stringify(listed.json)).toBe(200);
+      expect(JSON.stringify(listed.json)).toContain(off.attachmentId);
+      expect(await count(`SELECT count(*)::int AS n FROM audit_log WHERE tenant_id = $1 AND entity_type = 'attachment' AND entity_id = $2 AND (after_data #>> '{}') LIKE '%journal_entry%'`, c.tenantId, off.attachmentId)).toBe(1);
+
+      // A file already on the AJE (as journal_entry) counts as success.
+      const on = await readyDraft('aje-on', 'card_charge');
+      await db.execute(sql`UPDATE attachments SET attachable_type = 'journal_entry', attachable_id = ${aje} WHERE id = ${on.attachmentId}`);
+      const rOn = await attachCall(on.draft, aje);
+      expect(rOn.status, JSON.stringify(rOn.json)).toBe(200);
+      expect(rOn.json.draft).toMatchObject({ convertedTransactionId: aje, convertedType: 'aje' });
+      expect(await fileOf(on.attachmentId)).toMatchObject({ attachableType: 'journal_entry', attachableId: aje });
+    } finally {
+      await setTrialBalance(false);
+    }
+  });
+
+  it('the permission probe (L-2): another company\'s target is 404 for a caller without its permission, never 403', async () => {
+    const transactionsOnly = await bookkeeper({ transactions: 'full' });
+    const d = await readyDraft('probe', 'card_charge');
+    const otherBill = await postedBill('62.00', c.companyB);
+    const r = await attachCall(d.draft, otherBill, { token: transactionsOnly.token });
+    expect(r.status, JSON.stringify(r.json)).toBe(404);
+    // The same caller on this company's bill: 403 (the permission still applies).
+    const ownBill = await postedBill('63.00');
+    expect((await attachCall(d.draft, ownBill, { token: transactionsOnly.token })).status).toBe(403);
+    expect((await draftRow(d.draft.id)).status).toBe('ready');
+  });
+
+  it('two drafts of one key at once (L-3): attach + attach and attach + convert both succeed', async () => {
+    for (const mode of ['attach', 'convert'] as const) {
+      const draftKey = crypto.randomUUID();
+      const a1 = (await upload(docBytes(`dl-${mode}-1`), draftKey)).attachmentId;
+      const a2 = (await upload(docBytes(`dl-${mode}-2`), draftKey)).attachmentId;
+      const r1 = await call('POST', '/api/v1/document-drafts', { attachmentId: a1, kindHint: 'card_charge' });
+      const r2 = await call('POST', '/api/v1/document-drafts', { attachmentId: a2, kindHint: 'card_charge' });
+      expect([r1.status, r2.status]).toEqual([201, 201]);
+      const t1 = await postedExpense('64.00');
+      const t2 = await postedExpense('65.00');
+      const second = mode === 'attach'
+        ? attachCall(r2.json.draft, t2)
+        : call('POST', `/api/v1/document-drafts/${r2.json.draft.id}/convert`, {
+          kind: 'card_charge', expectedUpdatedAt: r2.json.draft.updatedAt,
+          body: { txnDate: '2026-05-02', payFromAccountId: c.card, lines: [{ expenseAccountId: c.expense, amount: '66.00' }] },
+        });
+      const [x1, x2] = await Promise.all([attachCall(r1.json.draft, t1), second]);
+      expect(x1.status, JSON.stringify(x1.json)).toBe(200);
+      expect(x2.status, JSON.stringify(x2.json)).toBe(mode === 'attach' ? 200 : 201);
+      expect(await fileOf(a1)).toMatchObject({ attachableType: 'expense', attachableId: t1 });
+      expect((await fileOf(a2)).attachableType).toBe('expense');
+    }
+  });
+});
+
 // ── b. The live-draft file guard ─────────────────────────────────────
 
 describe('live-draft file guard (review M2)', () => {
@@ -582,24 +692,22 @@ describe('live-draft file guard (review M2)', () => {
   });
 
   it('claim vs relink: a claim holding the row makes the relink wait and then leave the file', async () => {
-    const up = await upload(docBytes('race-2'));
-    const sha = crypto.createHash('sha256').update(docBytes('unused')).digest('hex');
+    // The real claim (review L-4): the relink starts once the claim has
+    // locked the row, inserted the draft and stamped the file's company.
+    const up = await upload(docBytes('race-2'), crypto.randomUUID(), null);
     let relinkP: Promise<number> | null = null;
     let settled = false;
     const target = crypto.randomUUID();
-    await db.transaction(async (tx) => {
-      // What a claim does: lock the row, insert the draft.
-      await tx.execute(sql`SELECT 1 FROM attachments WHERE id = ${up.attachmentId} FOR UPDATE`);
-      await tx.insert(documentDrafts).values({
-        tenantId: c.tenantId, companyId: c.companyA, attachmentId: up.attachmentId, contentSha256: sha, kind: 'bill', createdBy: c.ownerId,
-      } as never);
+    __documentDraftTestHooks.afterCompanyStamp = async () => {
       relinkP = attachmentService.reassignDraftAttachments(c.tenantId, up.draftKey, 'journal_entry', target, undefined, c.companyA)
         .then((n) => { settled = true; return n; });
       await pause(300);
       expect(settled).toBe(false);
-    });
+    };
+    const claim = await call('POST', '/api/v1/document-drafts', { attachmentId: up.attachmentId });
+    expect(claim.status, JSON.stringify(claim.json)).toBe(201);
     expect(await relinkP!).toBe(0);
-    expect(await fileOf(up.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: up.draftKey });
+    expect(await fileOf(up.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: up.draftKey, companyId: c.companyA });
   });
 
   it('claim vs link: a link holding the row makes the claim wait and then 422; a claim first makes the link 409', async () => {
@@ -615,20 +723,23 @@ describe('live-draft file guard (review M2)', () => {
     expect((await claimP!).status).toBe(422);
     delete attachmentService.__attachmentTestHooks.afterLinkLock;
 
-    const up2 = await upload(docBytes('race-4'));
-    const sha = crypto.createHash('sha256').update(docBytes('unused-2')).digest('hex');
+    // Claim first, the real POST (review L-4): the link starts after the
+    // claim's company stamp, waits for the claim, then refuses.
+    const up2 = await upload(docBytes('race-4'), crypto.randomUUID(), null);
     let linkP: Promise<Res> | null = null;
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT 1 FROM attachments WHERE id = ${up2.attachmentId} FOR UPDATE`);
-      await tx.insert(documentDrafts).values({
-        tenantId: c.tenantId, companyId: c.companyA, attachmentId: up2.attachmentId, contentSha256: sha, kind: 'bill', createdBy: c.ownerId,
-      } as never);
-      linkP = call('POST', `/api/v1/attachments/${up2.attachmentId}/link`, { attachableType: 'expense', attachableId: target });
+    let linkSettled = false;
+    __documentDraftTestHooks.afterCompanyStamp = async () => {
+      linkP = call('POST', `/api/v1/attachments/${up2.attachmentId}/link`, { attachableType: 'expense', attachableId: target })
+        .then((x) => { linkSettled = true; return x; });
       await pause(300);
-    });
+      expect(linkSettled).toBe(false);
+    };
+    const claim2 = await call('POST', '/api/v1/document-drafts', { attachmentId: up2.attachmentId });
+    expect(claim2.status, JSON.stringify(claim2.json)).toBe(201);
     const l = await linkP!;
     expect(l.status).toBe(409);
-    expect(l.json.error.code).toBe('ATTACHMENT_IN_USE');
+    expect(l.json.error).toMatchObject({ code: 'ATTACHMENT_IN_USE', details: { draftId: claim2.json.draft.id } });
+    expect(await fileOf(up2.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: up2.draftKey, companyId: c.companyA });
   });
 });
 
