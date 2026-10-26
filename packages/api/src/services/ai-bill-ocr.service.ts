@@ -176,6 +176,12 @@ export function normalizeBillMoney(raw: unknown): string | null {
   if (s.startsWith('.')) s = `0${s}`;
   if (s.endsWith('.')) s = s.slice(0, -1);
   if (!PLAIN_DECIMAL.test(s)) return null;
+  // A JSON number with a fraction and more than 15 significant digits may no
+  // longer hold the digits that were printed (a double keeps 15 for sure), so
+  // its spelling would be a guess (U-92d review L6). Safe integers are exact
+  // and strings keep their own digits.
+  if (typeof raw === 'number' && !Number.isSafeInteger(raw)
+    && s.replace('.', '').replace(/^0+/, '').replace(/0+$/, '').length > 15) return null;
   // Strip leading zeros of the integer part ("007.50" → "7.50").
   s = s.replace(/^0+(?=\d)/, '');
   if (negative && !/^0(\.0+)?$/.test(s)) s = `-${s}`;
