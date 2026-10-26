@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import archiver from 'archiver';
-import { eq, and, or, isNull, count, inArray, notInArray, desc, sql, type SQL } from 'drizzle-orm';
+import { eq, and, or, isNull, count, inArray, desc, sql, type SQL } from 'drizzle-orm';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { attachments, systemSettings } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
@@ -445,7 +445,86 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[], co
 export const __attachmentTestHooks: {
   /** Inside remove()'s transaction, after the row lock and the live-draft check, before the row is deleted. */
   afterInUseCheck?: (info: { attachmentId: string }) => void | Promise<void>;
+  /** Inside a draft-key relink (U-95 guard), after the key's rows are locked, before the live drafts are read. */
+  afterKeyLock?: (info: { draftKey: string; attachmentIds: string[] }) => void | Promise<void>;
+  /** Inside linkAttachment()'s transaction, after the row lock, before the live-draft check. */
+  afterLinkLock?: (info: { attachmentId: string }) => void | Promise<void>;
 } = {};
+
+const testHook = <K extends keyof typeof __attachmentTestHooks>(k: K) =>
+  (process.env['NODE_ENV'] === 'test' ? __attachmentTestHooks[k] : undefined);
+
+/** Document draft statuses that still read their file (U-92: new, ready, failed). */
+const LIVE_DRAFT_STATUSES_SQL = sql`('new', 'ready', 'failed')`;
+
+/**
+ * U-95 guard (review M2): the ids among `attachmentIds` (files on draft key
+ * `draftKey`) that a live document draft of the tenant reads, other than
+ * `exceptDraftId` (the draft that is itself converting or attaching). Run it
+ * after the rows are locked FOR UPDATE: a claim locks the same row first, so
+ * a claim either committed before (and this statement, a fresh READ
+ * COMMITTED snapshot, sees it) or waits and then finds the file moved.
+ */
+export async function liveDraftFileIds(
+  exec: DbOrTx, tenantId: string, draftKey: string, exceptDraftId?: string | null,
+  attachmentIds?: readonly string[],
+): Promise<string[]> {
+  if (attachmentIds && attachmentIds.length === 0) return [];
+  const r = await exec.execute(sql`SELECT DISTINCT d.attachment_id FROM document_drafts d
+    WHERE d.tenant_id = ${tenantId} AND d.attachment_id IS NOT NULL
+      AND d.status IN ${LIVE_DRAFT_STATUSES_SQL}
+      ${exceptDraftId ? sql`AND d.id <> ${exceptDraftId}` : sql``}
+      AND d.attachment_id IN (SELECT a.id FROM attachments a
+        WHERE a.tenant_id = ${tenantId} AND a.attachable_type = 'draft' AND a.attachable_id = ${draftKey})
+      ${attachmentIds ? sql`AND d.attachment_id IN (${sql.join(attachmentIds.map((id) => sql`${id}`), sql`, `)})` : sql``}`);
+  return (r.rows as Array<{ attachment_id: string }>).map((x) => x.attachment_id);
+}
+
+/** Options of the draft-key relinks (U-95 guard). */
+export interface DraftRelinkGuard {
+  /** The document draft doing the relink (convert, attach): its own file moves. Plain callers pass none. */
+  exceptDraftId?: string | null;
+}
+
+/**
+ * Moves the files on draft key `draftKey` to (`newType`, `newId`) on `tx`,
+ * except the ones a live document draft other than `guard.exceptDraftId`
+ * reads (U-95, review M2): those stay on the key, so the draft can still be
+ * converted with its file. The key's rows are locked FOR UPDATE, the live
+ * drafts read in the next statement, then exactly the locked rows minus
+ * those are updated. Returns the moved ids.
+ */
+async function moveDraftKeyFiles(
+  tx: Tx, tenantId: string, draftKey: string, newType: string, newId: string,
+  companyId: string | null | undefined, guard: DraftRelinkGuard,
+): Promise<string[]> {
+  const locked = await tx.select({ id: attachments.id }).from(attachments)
+    .where(and(
+      eq(attachments.tenantId, tenantId),
+      eq(attachments.attachableType, 'draft'),
+      eq(attachments.attachableId, draftKey),
+      ...(companyId ? [or(isNull(attachments.companyId), eq(attachments.companyId, companyId))] : []),
+    ))
+    .orderBy(attachments.id)
+    .for('update');
+  const lockedIds = locked.map((r) => r.id);
+  if (lockedIds.length === 0) return [];
+  const hook = testHook('afterKeyLock');
+  if (hook) await hook({ draftKey, attachmentIds: lockedIds });
+  const inUse = new Set(await liveDraftFileIds(tx, tenantId, draftKey, guard.exceptDraftId, lockedIds));
+  const moving = lockedIds.filter((id) => !inUse.has(id));
+  if (moving.length === 0) return [];
+  const rows = await tx.update(attachments)
+    .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
+    .where(and(eq(attachments.tenantId, tenantId), inArray(attachments.id, moving)))
+    .returning({ id: attachments.id });
+  return rows.map((r) => r.id);
+}
+
+/** Runs `fn` on `executor` when it is a transaction, else in a new one (row locks need a transaction). */
+function inTx<T>(executor: DbOrTx, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return executor === db ? db.transaction(fn) : fn(executor as Tx);
+}
 
 /**
  * Deletes an attachment: the row, then storage. One transaction locks the
@@ -509,21 +588,17 @@ export async function updateOcrResults(tenantId: string, id: string, results: {
 
 /**
  * Moves a draft's attachments onto a new document. `companyId` (U-90): a
- * draft file stamped with another company is left alone.
+ * draft file stamped with another company is left alone. A file a live
+ * document draft reads (other than `guard.exceptDraftId`) stays on the
+ * draft key (U-95, review M2). Given `db`, it runs in its own transaction
+ * (the guard locks the key's rows).
  */
 export async function reassignDraftAttachments(
   tenantId: string, draftId: string, newType: string, newId: string, executor: DbOrTx = db,
-  companyId?: string | null,
+  companyId?: string | null, guard: DraftRelinkGuard = {},
 ): Promise<number> {
-  const result = await executor.update(attachments)
-    .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
-    .where(and(
-      eq(attachments.tenantId, tenantId),
-      eq(attachments.attachableType, 'draft'),
-      eq(attachments.attachableId, draftId),
-      ...(companyId ? [or(isNull(attachments.companyId), eq(attachments.companyId, companyId))] : []),
-    ));
-  return (result as any).rowCount ?? 0;
+  const moved = await inTx(executor, (tx) => moveDraftKeyFiles(tx, tenantId, draftId, newType, newId, companyId, guard));
+  return moved.length;
 }
 
 /**
@@ -537,8 +612,10 @@ export async function reassignDraftAttachments(
  * with another company is left alone; tenant-wide ones (company null, every
  * upload today) are relinked.
  *
- * `excludeIds` (U-92 review L-8): attachments left on the draft key, e.g.
- * files another live document draft reads.
+ * Files a live document draft reads stay on the draft key (U-92 review
+ * L-8, U-95 review M2), except the files of `guard.exceptDraftId`: convert
+ * and attach pass their own draft, plain callers pass none. Given `db`, it
+ * runs in its own transaction (the guard locks the key's rows).
  */
 export async function relinkDraftAttachments(
   executor: DbOrTx,
@@ -548,25 +625,18 @@ export async function relinkDraftAttachments(
   newId: string,
   userId?: string,
   companyId?: string | null,
-  excludeIds: readonly string[] = [],
+  guard: DraftRelinkGuard = {},
 ): Promise<string[]> {
-  const rows = await executor.update(attachments)
-    .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
-    .where(and(
-      eq(attachments.tenantId, tenantId),
-      eq(attachments.attachableType, 'draft'),
-      eq(attachments.attachableId, draftId),
-      ...(companyId ? [or(isNull(attachments.companyId), eq(attachments.companyId, companyId))] : []),
-      ...(excludeIds.length > 0 ? [notInArray(attachments.id, [...excludeIds])] : []),
-    ))
-    .returning({ id: attachments.id });
-  for (const row of rows) {
-    await auditLog(tenantId, 'update', 'attachment', row.id,
-      { attachableType: 'draft', attachableId: draftId },
-      { attachableType: newType, attachableId: newId },
-      userId, executor as Tx);
-  }
-  return rows.map((r) => r.id);
+  return inTx(executor, async (tx) => {
+    const ids = await moveDraftKeyFiles(tx, tenantId, draftId, newType, newId, companyId, guard);
+    for (const id of ids) {
+      await auditLog(tenantId, 'update', 'attachment', id,
+        { attachableType: 'draft', attachableId: draftId },
+        { attachableType: newType, attachableId: newId },
+        userId, tx);
+    }
+    return ids;
+  });
 }
 
 export async function listUnlinked(tenantId: string, companyId?: string | null) {
@@ -579,13 +649,38 @@ export async function listUnlinked(tenantId: string, companyId?: string | null) 
     .limit(50);
 }
 
+/**
+ * Files an attachment on (`newType`, `newId`). One transaction locks the row
+ * (FOR UPDATE, within companyScope, else 404), refuses a file a live
+ * document draft of the company reads with 409 ATTACHMENT_IN_USE
+ * (details.draftId; U-95, review M2: attach the draft with POST
+ * /document-drafts/:id/attach or discard it first), then updates it. A claim
+ * locks the same row, so the two run one after the other.
+ */
 export async function linkAttachment(
   tenantId: string, attachmentId: string, newType: string, newId: string, companyId?: string | null,
 ) {
-  const attachment = await getById(tenantId, attachmentId, companyId);
-  // The row already passed companyScope; fillCompany keeps a company it has.
-  await db.update(attachments)
-    .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
-    .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
-  return attachment;
+  if (!UUID_RE.test(attachmentId)) throw AppError.notFound('Attachment not found');
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(attachments)
+      .where(withScope(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)), companyId))
+      .for('update');
+    if (!row) throw AppError.notFound('Attachment not found');
+    const hook = testHook('afterLinkLock');
+    if (hook) await hook({ attachmentId: row.id });
+    const draftCompany = companyId ?? row.companyId;
+    const inUse = await tx.execute(sql`SELECT id FROM document_drafts
+      WHERE tenant_id = ${tenantId} AND attachment_id = ${row.id} AND status IN ${LIVE_DRAFT_STATUSES_SQL}
+      ${draftCompany ? sql`AND company_id = ${draftCompany}` : sql``}
+      LIMIT 1`);
+    const draftId = (inUse.rows[0] as { id: string } | undefined)?.id;
+    if (draftId) {
+      throw AppError.conflict('This file is being read as a document. Attach the document from the review list, or discard it first.', 'ATTACHMENT_IN_USE', { draftId });
+    }
+    // The row already passed companyScope; fillCompany keeps a company it has.
+    await tx.update(attachments)
+      .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
+      .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, row.id)));
+    return row;
+  });
 }

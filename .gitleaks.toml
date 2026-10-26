@@ -39,4 +39,9 @@ regexes = [
   # document-reading.routes.test.ts that must never reach ai_jobs or the
   # audit log, misread as a secret in the branch's earlier commits.
   '''ZZQ-PRIVATE-MEMO-7731''',
+  # U-95 (attach a document draft): the capability name after
+  # "Idempotency-Key:" in route descriptions and openapi.json, and a
+  # closing-password test placeholder; neither is a secret.
+  '''document-drafts-attach-v1''',
+  '''closing-pass-u95''',
 ]

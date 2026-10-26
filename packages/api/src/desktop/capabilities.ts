@@ -174,4 +174,13 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * A self-hosted provider needs neither, only the company's AI opt-in (U-92d).
    */
   'document-assist-v1',
+  /**
+   * POST /api/v1/document-drafts/:id/attach {transactionId, expectedUpdatedAt}: file a live draft's document on a posted
+   * transaction in one database transaction (draft -> transaction -> file locks; the draft marked converted onto it,
+   * audited `attached: true`), keyed with idempotency-docs-v1's contract. Live-draft file guard: the plain draft-key
+   * relinks (draftAttachmentId on bills, checks, transactions, vendor credits, daily sales, AJEs, tax entries and
+   * POST /bills/:id/attach-draft) leave a file a live draft reads on its key, and POST /attachments/:id/link of such a
+   * file is 409 ATTACHMENT_IN_USE. GET /transactions?amount= filters by exact total (numeric). No migration (U-95).
+   */
+  'document-drafts-attach-v1',
 ];

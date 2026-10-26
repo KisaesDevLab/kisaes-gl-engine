@@ -33,7 +33,7 @@ import {
   DOCUMENT_DRAFT_LIVE_STATUSES, DOCUMENT_DRAFT_LIMITS, convertBodySchemaFor,
   type CreateDocumentDraftInput, type UpdateDocumentDraftInput, type DocumentDraftListQuery,
   type ConvertDocumentDraftInput, type DocumentConvertKind, type DocumentDraftKind,
-  type PutVendorLayoutTemplateInput,
+  type PutVendorLayoutTemplateInput, type AttachDocumentDraftInput, type ResourceKey,
 } from '@kis-books/shared';
 import { db, type Tx } from '../db/index.js';
 import { documentDrafts, vendorLayoutTemplates, type DocumentDraftRow, type VendorLayoutTemplateRow } from '../db/schema/index.js';
@@ -50,6 +50,10 @@ import { claimAndRecord } from './idempotency.service.js';
 export const __documentDraftTestHooks: {
   /** Inside the convert transaction, after the posting and the relink, before the draft is marked converted. */
   afterPost?: (info: { draftId: string; transactionId: string }) => void | Promise<void>;
+  /** Inside the attach transaction, after the draft lock and the key claim, before the target is locked. */
+  beforeTargetLock?: (info: { draftId: string; transactionId: string }) => void | Promise<void>;
+  /** Inside the attach transaction, after the relink, before the draft is marked converted. */
+  afterAttachRelink?: (info: { draftId: string; transactionId: string }) => void | Promise<void>;
 } = {};
 
 const isTest = () => process.env['NODE_ENV'] === 'test';
@@ -577,12 +581,8 @@ export async function convert(
         WHERE tenant_id = ${tenantId} AND id = ${before.attachmentId} FOR UPDATE`);
       const a = att.rows[0] as { attachable_type: string; attachable_id: string } | undefined;
       if (a && a.attachable_type === 'draft') {
-        const claimed = await tx.execute(sql`SELECT attachment_id FROM document_drafts
-          WHERE tenant_id = ${tenantId} AND id <> ${before.id} AND attachment_id IS NOT NULL
-            AND status IN ('new', 'ready', 'failed')
-            AND attachment_id IN (SELECT id FROM attachments WHERE tenant_id = ${tenantId} AND attachable_type = 'draft' AND attachable_id = ${a.attachable_id})`);
-        const excludeIds = (claimed.rows as Array<{ attachment_id: string }>).map((r) => r.attachment_id);
-        await attachmentService.relinkDraftAttachments(tx, tenantId, a.attachable_id, attachableTypeOf(input.kind), txnId, userId, companyId, excludeIds);
+        // The guard (U-95) keeps files other live drafts read on the key; this draft's own file moves.
+        await attachmentService.relinkDraftAttachments(tx, tenantId, a.attachable_id, attachableTypeOf(input.kind), txnId, userId, companyId, { exceptDraftId: before.id });
       }
     }
 
@@ -633,6 +633,124 @@ export async function convertResponse(tenantId: string, companyId: string, id: s
     })
     : [];
   return { draft, transaction, draftMatches: draftMatchesOut };
+}
+
+// ── Attach to an existing transaction (U-95) ────────────────────────
+
+/**
+ * The permission resource of a transaction a document is attached to: the
+ * A/P documents and the other screens with their own resource, else
+ * `transactions` (expenses, checks, deposits, transfers, journal entries,
+ * cash sales, credit memos, customer refunds).
+ */
+const TARGET_RESOURCE: Readonly<Record<string, ResourceKey>> = {
+  bill: 'bills', vendor_credit: 'vendor_credits', bill_payment: 'pay_bills',
+  invoice: 'invoices', customer_payment: 'receive_payment', daily_sales: 'daily_sales', aje: 'trial_balance',
+};
+
+export function resourceOfTarget(txnType: string): ResourceKey {
+  return TARGET_RESOURCE[txnType] ?? 'transactions';
+}
+
+/**
+ * Files a draft's document on a transaction that is already posted (U-95,
+ * Q-282), instead of posting a new one: one database transaction, locks in
+ * the order draft -> transaction -> attachment.
+ *   1. the draft is locked; the caller needs its current kind's permission
+ *      (403); converted or discarded 409 DOCUMENT_DRAFT_CLOSED; stale 409
+ *      STALE;
+ *   2. the Idempotency-Key is claimed and the draft recorded;
+ *   3. the target is locked: the tenant's, this company's or tenant-wide
+ *      (else 404, also when deleted); the caller needs its resource's
+ *      permission (`canTarget`, 403); a type files can't be attached to is
+ *      422 TARGET_NOT_ATTACHABLE; not posted (void, draft) 409
+ *      TRANSACTION_NOT_POSTED (details.status);
+ *   4. the draft's file is locked: gone 422 DOCUMENT_FILE_MISSING; another
+ *      company's 404; already on the target: nothing to move; filed
+ *      anywhere else 422 ATTACHMENT_NOT_DRAFT;
+ *   5. every file on the draft key moves to the target (attachable type =
+ *      the target's txn_type), except files another live draft reads, with
+ *      an audit row each;
+ *   6. the draft is marked converted (convertedTransactionId = the target,
+ *      convertedType = its txn_type; the kind is kept) with an audit row
+ *      `{attached: true}`.
+ * Nothing posts, so no closing-date password (a link never needed one); the
+ * audit rows are in the transaction. Any refusal or failure rolls back all of
+ * it.
+ */
+export async function attach(
+  tenantId: string, companyId: string, userId: string, id: string, input: AttachDocumentDraftInput,
+  canKind: (kind: DocumentDraftKind) => Promise<boolean>,
+  canTarget: (resource: ResourceKey) => Promise<boolean>,
+): Promise<{ draft: DocumentDraftDto; transactionId: string }> {
+  return db.transaction(async (tx) => {
+    const before = await lockDraft(tx, tenantId, companyId, id);
+    if (!(await canKind(before.kind))) throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+    if (!isLive(before.status)) throw closed(before);
+    assertNotStale(before, input.expectedUpdatedAt);
+    await claimAndRecord(tx, 'document_draft', before.id);
+
+    const preHook = isTest() ? __documentDraftTestHooks.beforeTargetLock : undefined;
+    if (preHook) await preHook({ draftId: before.id, transactionId: input.transactionId });
+
+    const t = await tx.execute(sql`SELECT id, txn_type, status, company_id FROM transactions
+      WHERE tenant_id = ${tenantId} AND id = ${input.transactionId} FOR UPDATE`);
+    const target = t.rows[0] as { id: string; txn_type: string; status: string; company_id: string | null } | undefined;
+    if (!target || target.status === 'deleted' || (target.company_id !== null && target.company_id !== companyId)) {
+      throw AppError.notFound('The transaction to attach to was not found');
+    }
+    if (!(await canTarget(resourceOfTarget(target.txn_type)))) {
+      throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+    }
+    if (!attachmentService.TXN_ATTACHABLE_TYPES.has(target.txn_type)) {
+      throw AppError.unprocessableEntity('A document can\'t be attached to this kind of transaction.', 'TARGET_NOT_ATTACHABLE', { txnType: target.txn_type });
+    }
+    if (target.status !== 'posted') {
+      throw AppError.conflict('This transaction is not posted (it may be void). Choose another one.', 'TRANSACTION_NOT_POSTED', { status: target.status });
+    }
+
+    if (!before.attachmentId) {
+      throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
+    }
+    const a = await tx.execute(sql`SELECT attachable_type, attachable_id, company_id FROM attachments
+      WHERE tenant_id = ${tenantId} AND id = ${before.attachmentId} FOR UPDATE`);
+    const file = a.rows[0] as { attachable_type: string; attachable_id: string; company_id: string | null } | undefined;
+    if (!file) throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
+    if (file.company_id !== null && file.company_id !== companyId) throw AppError.notFound('Attachment not found');
+    const onTarget = file.attachable_type === target.txn_type && file.attachable_id === target.id;
+    if (!onTarget) {
+      if (file.attachable_type !== 'draft') {
+        throw AppError.unprocessableEntity('This document\'s file is already filed on another record.', 'ATTACHMENT_NOT_DRAFT');
+      }
+      const moved = await attachmentService.relinkDraftAttachments(tx, tenantId, file.attachable_id, target.txn_type, target.id, userId, companyId, { exceptDraftId: before.id });
+      if (!moved.includes(before.attachmentId)) {
+        throw AppError.conflict('This file is being read as another document.', 'ATTACHMENT_IN_USE');
+      }
+    }
+
+    const hook = isTest() ? __documentDraftTestHooks.afterAttachRelink : undefined;
+    if (hook) await hook({ draftId: before.id, transactionId: target.id });
+
+    const [after] = await tx.update(documentDrafts).set({
+      status: 'converted',
+      convertedTransactionId: target.id,
+      convertedType: target.txn_type,
+      convertedAt: sql`clock_timestamp()`,
+      convertedBy: userId,
+      updatedAt: NEXT_UPDATED_AT(sql`${documentDrafts.updatedAt}`),
+    }).where(eq(documentDrafts.id, before.id)).returning();
+    await auditLog(tenantId, 'update', 'document_draft', before.id, auditImage(before), {
+      ...auditImage(after!), attached: true,
+    }, userId, tx);
+    return { draft: toDto(after!), transactionId: target.id };
+  });
+}
+
+/** The attach response: the draft and the transaction it is filed on, as now. */
+export async function attachResponse(tenantId: string, companyId: string, id: string) {
+  const draft = await get(tenantId, companyId, id);
+  const transaction = draft.convertedTransactionId ? await ledger.getTransaction(tenantId, draft.convertedTransactionId) : null;
+  return { draft, transaction };
 }
 
 // ── Vendor layout templates ──────────────────────────────────────────

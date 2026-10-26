@@ -251,6 +251,10 @@ export const transactionFiltersSchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   search: z.string().optional(),
+  // Exact total (U-95, document-drafts-attach-v1): a decimal string with at
+  // most 4 places, compared as SQL numeric (10.1 = 10.10, 10.01 differs).
+  // Transactions without a total (journal entries, transfers) never match.
+  amount: z.string().regex(/^-?\d{1,15}(\.\d{1,4})?$/, 'A decimal string with at most 4 places').optional(),
   // Column sort for the transactions list. Whitelisted keys map to real
   // columns server-side; default is date desc.
   sortBy: z.enum(transactionSortKeys).optional(),
