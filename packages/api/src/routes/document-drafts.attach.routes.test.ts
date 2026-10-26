@@ -502,14 +502,20 @@ describe('live-draft file guard (review M2)', () => {
     await expectGuarded(d, bill);
   });
 
-  it('POST /checks with draftAttachmentId', async () => {
+  it('POST /checks with draftAttachmentId, keyed: the guarded relink runs after the posting\'s claim; the replay is the check', async () => {
     const d = await claimedKey('check');
-    const r = await call('POST', '/api/v1/checks', {
+    const body = {
       bankAccountId: c.bank, contactId: c.vendor, payeeNameOnCheck: 'Cosmos', txnDate: '2026-04-03', amount: '53.00',
       lines: [{ accountId: c.expense, amount: '53.00' }], draftAttachmentId: d.draftKey,
-    });
+    };
+    const kk = key();
+    const r = await call('POST', '/api/v1/checks', body, { key: kk });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
     await expectGuarded(d, r.json.check.id);
+    const replay = await call('POST', '/api/v1/checks', body, { key: kk });
+    expect(replay.status).toBe(201);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(replay.json.check.id).toBe(r.json.check.id);
   });
 
   it('POST /transactions (expense) with draftAttachmentId', async () => {

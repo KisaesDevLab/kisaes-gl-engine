@@ -675,7 +675,7 @@ export async function linkAttachment(
       LIMIT 1`);
     const draftId = (inUse.rows[0] as { id: string } | undefined)?.id;
     if (draftId) {
-      throw AppError.conflict('This file is being read as a document. Attach the document from the review list, or discard it first.', 'ATTACHMENT_IN_USE', { draftId });
+      throw AppError.conflict('This file is being read as a document. Enter or attach the document, or discard it first.', 'ATTACHMENT_IN_USE', { draftId });
     }
     // The row already passed companyScope; fillCompany keeps a company it has.
     await tx.update(attachments)
