@@ -67443,6 +67443,11 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "resetIntakeSettings": {
+                    "default": false,
+                    "description": "Restore every company with no intake folders (intake-settings-v1); applied after content verification. ClientLedger sets it for transfer files.",
+                    "type": "boolean"
+                  },
                   "scratch": {
                     "type": "boolean"
                   }

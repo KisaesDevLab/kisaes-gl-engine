@@ -166,9 +166,32 @@ describe('companies.intake_settings in tenant archives (U-93)', () => {
     }
     // The source tenant keeps its folders.
     expect((await settingsByName(tenantId))['RTI One']).toEqual(settingsOne);
+    // The import audit row says no reset was asked for.
+    const audit = await q<{ a: Record<string, unknown> }>(`SELECT after_data AS a FROM audit_log WHERE tenant_id = $1 AND entity_type = 'tenant_import'`, [createdTenants[createdTenants.length - 1]!]);
+    expect(audit[0]!.a['resetIntakeSettings']).toBe(false);
     // No audit row of the source tenant names a path.
     const hits = await q<{ n: number }>(`SELECT count(*)::int AS n FROM audit_log WHERE tenant_id = $1
       AND (coalesce(before_data::text, '') LIKE $2 OR coalesce(after_data::text, '') LIKE $2)`, [tenantId, `%${MARKER}%`]);
     expect(hits[0]!.n).toBe(0);
+  }, 600_000);
+
+  it('the import route takes resetIntakeSettings (default false)', async () => {
+    const { importArchiveSchema } = await import('../../routes/tenant-archives.routes.js');
+    expect(importArchiveSchema.parse({ passphrase: PASS }).resetIntakeSettings).toBe(false);
+    expect(importArchiveSchema.parse({ passphrase: PASS, resetIntakeSettings: true }).resetIntakeSettings).toBe(true);
+    expect(importArchiveSchema.safeParse({ passphrase: PASS, resetIntakeSettings: 'yes' }).success).toBe(false);
+  });
+
+  it('resetIntakeSettings on import: an archive with folders verifies and imports with no folders', async () => {
+    const imported = await runImport({ filePath: withFolders.path!, passphrase: PASS, callerUserId: callerId, resetIntakeSettings: true });
+    createdTenants.push(imported.tenantId);
+    expect(imported.verification).toMatchObject({ contentEqual: true, trialBalanceEqual: true });
+    const got = await settingsByName(imported.tenantId);
+    for (const name of ['RTI One', 'RTI Two', 'RTI Three']) expect(got[name], name).toEqual(JSON.parse(INTAKE_SETTINGS_DEFAULT_JSON));
+    const audit = await q<{ a: Record<string, unknown> }>(`SELECT after_data AS a FROM audit_log WHERE tenant_id = $1 AND entity_type = 'tenant_import'`, [imported.tenantId]);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.a['resetIntakeSettings']).toBe(true);
+    // The source tenant keeps its folders.
+    expect((await settingsByName(tenantId))['RTI One']).toEqual(settingsOne);
   }, 600_000);
 });

@@ -138,6 +138,9 @@ export const importArchiveSchema = z.object({
   passphrase: z.string().min(12).max(1024),
   name: z.string().trim().min(1).max(255).optional(),
   scratch: z.boolean().optional(),
+  /** Restore every company with no intake folders (U-93, intake-settings-v1); ClientLedger sets it for transfer files. */
+  resetIntakeSettings: z.boolean().optional().default(false)
+    .describe('Restore every company with no intake folders (intake-settings-v1); applied after content verification. ClientLedger sets it for transfer files.'),
   /** Desktop (CL_LAN != 1) only: absolute path of a local .zip / .clbackup, opened read-only. */
   path: z.string().min(1).max(4096).optional(),
 });
@@ -184,6 +187,7 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   // multipart fields arrive as strings; coerce the two booleans before validation.
   const body = req.body as Record<string, unknown>;
   if (typeof body['scratch'] === 'string') body['scratch'] = body['scratch'] === 'true';
+  if (typeof body['resetIntakeSettings'] === 'string') body['resetIntakeSettings'] = body['resetIntakeSettings'] === 'true';
   next();
 }, validate(importArchiveSchema), describe({
   summary: 'Import an archive as a new company (202; multipart `file`, or {path} on desktop without LAN)',
@@ -224,7 +228,7 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   registerPassphrase(body.passphrase);
   const job = startJob('import', null, userId, async (progress) => {
     try {
-      const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId }, progress);
+      const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId, resetIntakeSettings: body.resetIntakeSettings }, progress);
       clearPassphraseFailures(userId);
       return result;
     } catch (err) {

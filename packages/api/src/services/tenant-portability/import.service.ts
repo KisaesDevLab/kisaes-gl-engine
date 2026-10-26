@@ -48,6 +48,12 @@ export interface ImportOptions {
   name?: string;
   scratch?: boolean;
   callerUserId: string;
+  /**
+   * Restore every company with no intake folders (U-93): ClientLedger sets
+   * it when importing a transfer file from another computer. Applied after
+   * the content verification, so the archive verifies as written.
+   */
+  resetIntakeSettings?: boolean;
 }
 
 export interface ImportResult {
@@ -286,6 +292,13 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       });
       warnings.push(...verification.warnings);
 
+      // Intake folders reset on request (U-93), after verification (which
+      // compares the rows as archived) and before the fingerprint.
+      const resetIntakeSettings = options.resetIntakeSettings === true;
+      if (resetIntakeSettings) {
+        await client.query('UPDATE companies SET intake_settings = DEFAULT WHERE tenant_id = $1', [newTenantId]);
+      }
+
       // After verification: audit row, fingerprint, provenance.
       step('commit', 95);
       await client.query(
@@ -293,6 +306,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
          VALUES ($1, $2, 'create', 'tenant_import', $3, $4::jsonb)`,
         [newTenantId, options.callerUserId, manifest.archiveId, JSON.stringify({
           archiveId: manifest.archiveId, archiveSha256, sourceTenantId: manifest.source.tenantId, sourceName: manifest.source.name, userId: options.callerUserId,
+          resetIntakeSettings,
         })],
       );
       const fingerprint = await computeTenantFingerprint(client, plan, newTenantId);
