@@ -125,8 +125,12 @@ export const NO_OMISSIONS: ExportOmissions = { columns: new Set(), tables: new S
 
 /** The row scope of table `t` in an export over alias `a`. */
 export function exportScopeSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ExportOmissions = NO_OMISSIONS): string {
-  if (t.name === 'audit_log' && !includeAudit) return 'false';
-  if (omit.tables.has(t.name)) return 'false';
+  // No rows, but the cursor query still binds the tenant id as $1, so the
+  // predicate must reference it (a bare `false` fails with "bind message
+  // supplies 1 parameters").
+  const none = '($1::uuid IS NULL AND false)';
+  if (t.name === 'audit_log' && !includeAudit) return none;
+  if (omit.tables.has(t.name)) return none;
   const scope = scopeSql(plan, t.name, 'a');
   const filter = omit.rowFilters.has(t.name) ? OMITTABLE_ROW_FILTERS[t.name] : undefined;
   return filter ? `(${scope}) AND ${filter.keep('a')}` : scope;
