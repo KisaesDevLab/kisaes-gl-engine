@@ -21,7 +21,9 @@
  */
 
 import { and, eq } from 'drizzle-orm';
-import { intakeFolderSchema, type IntakeFolder, type IntakeSettings, type PutIntakeSettingsInput } from '@kis-books/shared';
+import {
+  INTAKE_FOLDERS_MAX, intakeFolderSchema, intakeNameKey, intakePathKey, type IntakeFolder, type IntakeSettings, type PutIntakeSettingsInput,
+} from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { companies } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
@@ -38,15 +40,29 @@ export interface IntakeSettingsView {
  * The stored value as the API shows it. The column may hold anything a
  * restored archive carried, so each folder is checked again and one that no
  * longer passes the folder rules is left out (never sent to a client that
- * would start watching it).
+ * would start watching it), and the list rules hold too: a folder whose id,
+ * name (intakeNameKey) or path (intakePathKey) repeats an earlier one is
+ * left out, and at most INTAKE_FOLDERS_MAX are shown (the first ones).
  */
 export function viewOf(stored: unknown): IntakeSettingsView {
   const s = (stored && typeof stored === 'object' ? stored : {}) as Partial<IntakeSettings>;
   const folders: IntakeFolder[] = [];
   if (Array.isArray(s.folders)) {
+    const ids = new Set<string>();
+    const names = new Set<string>();
+    const paths = new Set<string>();
     for (const f of s.folders) {
+      if (folders.length >= INTAKE_FOLDERS_MAX) break;
       const parsed = intakeFolderSchema.safeParse(f);
-      if (parsed.success) folders.push(parsed.data);
+      if (!parsed.success) continue;
+      const id = parsed.data.id.toLowerCase();
+      const name = intakeNameKey(parsed.data.name);
+      const path = intakePathKey(parsed.data.path);
+      if (ids.has(id) || names.has(name) || paths.has(path)) continue;
+      ids.add(id);
+      names.add(name);
+      paths.add(path);
+      folders.push(parsed.data);
     }
   }
   const updatedAt = typeof s.updatedAt === 'string' && !Number.isNaN(Date.parse(s.updatedAt)) ? s.updatedAt : null;

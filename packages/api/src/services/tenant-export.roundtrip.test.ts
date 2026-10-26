@@ -49,7 +49,12 @@ describe('tenant export → import round-trip (v2 package)', () => {
     const [t] = await db.insert(tenants).values({ name: 'RT Source', slug: `rt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` }).returning();
     const tenantId = t!.id;
     createdTenants.push(tenantId);
-    await db.insert(companies).values({ tenantId, businessName: 'RT Source Co' });
+    // Intake folders (U-93) never travel in a .vmx export: paths from one computer.
+    const intakeMarker = `u93vmx${crypto.randomUUID().slice(0, 8)}`;
+    await db.insert(companies).values({ tenantId, businessName: 'RT Source Co', intakeSettings: {
+      version: 1, updatedAt: '2026-10-25T12:00:00.000Z',
+      folders: [{ id: crypto.randomUUID(), name: 'Bills', path: `C:\\Scans\\${intakeMarker}`, defaultKind: 'bills', autoRead: false, keepOriginals: false }],
+    } });
     const [acct] = await db.insert(accounts).values({ tenantId, name: 'Cash', accountType: 'asset', accountNumber: '1000', detailType: 'checking' }).returning();
     const [rev] = await db.insert(accounts).values({ tenantId, name: 'Sales', accountType: 'revenue', accountNumber: '4000', detailType: 'service' }).returning();
     const [txn] = await db.insert(transactions).values({ tenantId, txnType: 'journal_entry', txnDate: '2026-05-01', memo: 'seed' }).returning();
@@ -92,6 +97,12 @@ describe('tenant export → import round-trip (v2 package)', () => {
     // v2 is a real zip (PK magic).
     expect(buf[0]).toBe(0x50);
     expect(buf[1]).toBe(0x4b);
+    // No intake folder path anywhere in the package's data, and no intake_settings key.
+    const { readTenantPackage } = await import('./vmx-package.js');
+    const pkg = await readTenantPackage(buf, passphrase);
+    const dataText = JSON.stringify(pkg.data);
+    expect(dataText).not.toContain(intakeMarker);
+    expect(dataText).not.toMatch(/intake_?settings/i);
 
     // ── Single-phase import as a new tenant ──
     const result = await svc.importNewTenantFromFile(buf, passphrase, 'RT Imported', []);
@@ -104,6 +115,9 @@ describe('tenant export → import round-trip (v2 package)', () => {
     // The imported tenant really has the transaction.
     const txnCount = await db.execute(sql`SELECT count(*)::int AS c FROM transactions WHERE tenant_id = ${result.tenant_id}`);
     expect((txnCount.rows[0] as { c: number }).c).toBe(1);
+    // The imported company has the column default: no folders.
+    const intake = await db.execute(sql`SELECT intake_settings AS s FROM companies WHERE tenant_id = ${result.tenant_id}`);
+    expect((intake.rows[0] as { s: unknown }).s).toEqual({ version: 1, folders: [], updatedAt: null });
 
     // Audit history landed: the transaction row's entity_id was re-keyed to
     // the imported transaction, and jsonb payloads (incl. arrays) survived.

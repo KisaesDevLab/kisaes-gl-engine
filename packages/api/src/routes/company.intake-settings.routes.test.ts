@@ -81,7 +81,7 @@ async function cleanTenant(tid: string) {
   await db.delete(tenants).where(eq(tenants.id, tid));
 }
 
-async function staffUser(tenantId: string, role: 'readonly' | 'bookkeeper') {
+async function staffUser(tenantId: string, role: 'readonly' | 'bookkeeper' | 'accountant') {
   const [u] = await db.insert(users).values({
     tenantId, email: `${role}-${suffix()}@example.com`, passwordHash: 'x', displayName: role, role,
   }).returning();
@@ -227,6 +227,18 @@ describe('U-93: validation (400 VALIDATION_ERROR with the field path)', () => {
       return { folders: [a, folder(2, { path: (a.path as string).toUpperCase().replace(/\\/g, '/') })], expectedUpdatedAt: null };
     }, 'folders.1.path'],
     ['21 folders', () => ({ folders: Array.from({ length: 21 }, (_, i) => folder(i)), expectedUpdatedAt: null }), 'folders'],
+    ['reserved device name', () => ({ folders: [folder(1, { path: `C:\\${MARKER}\\NUL.txt` })], expectedUpdatedAt: null }), 'folders.0.path'],
+    ['right-to-left override', () => ({ folders: [folder(1, { path: `C:\\${MARKER}\\\u202eslib` })], expectedUpdatedAt: null }), 'folders.0.path'],
+    ['alternate data stream', () => ({ folders: [folder(1, { path: `C:\\${MARKER}:stream` })], expectedUpdatedAt: null }), 'folders.0.path'],
+    ['credentials in the UNC host', () => ({ folders: [folder(1, { path: `\\\\user:pw@nas\\${MARKER}` })], expectedUpdatedAt: null }), 'folders.0.path'],
+    ['segment ending in a dot', () => ({ folders: [folder(1, { path: `C:\\${MARKER}.` })], expectedUpdatedAt: null }), 'folders.0.path'],
+    // A lone surrogate reaches the engine as a JSON \ud800 escape; jsonb would refuse it (a 500), validation answers 400.
+    ['lone surrogate in a path', () => ({ folders: [folder(1, { path: `C:\\${MARKER}\ud800` })], expectedUpdatedAt: null }), 'folders.0.path'],
+    ['lone surrogate in a name', () => ({ folders: [folder(1, { name: 'Bills\udc00' })], expectedUpdatedAt: null }), 'folders.0.name'],
+    ['invisible character in a name', () => ({ folders: [folder(1, { name: 'Bi\u200blls' })], expectedUpdatedAt: null }), 'folders.0.name'],
+    ['duplicate name by Unicode composition', () => ({
+      folders: [folder(1, { name: 'M\u00fcnchen' }), folder(2, { name: 'Mu\u0308nchen' })], expectedUpdatedAt: null,
+    }), 'folders.1.name'],
   ];
   for (const [why, body, field] of cases) {
     it(`refuses ${why}`, async () => {
@@ -254,6 +266,24 @@ describe('U-93: validation (400 VALIDATION_ERROR with the field path)', () => {
     } }).where(eq(companies.id, c.companyA));
     const g = await send('GET', URL, c.ownerToken, undefined, A());
     expect(g.json).toEqual({ folders: [good], updatedAt: '2026-10-25T12:00:00.000Z' });
+  });
+
+  it('GET shows at most 20 folders and drops repeated ids, names and paths (a crafted archive)', async () => {
+    const first = folder(1);
+    const dupId = folder(2, { id: first.id.toUpperCase() });
+    const dupName = folder(3, { name: 'FOLDER 1' });
+    const dupNameNfc = folder(4, { name: 'München' });
+    const dupNameNfd = folder(5, { name: 'München' });
+    const dupPath = folder(6, { path: (first.path as string).toUpperCase().replace(/\\/g, '/') + '/' });
+    const rest = Array.from({ length: 25 }, (_, i) => folder(100 + i));
+    await db.update(companies).set({ intakeSettings: {
+      version: 1, updatedAt: '2026-10-25T12:00:00.000Z',
+      folders: [first, dupId, dupName, dupNameNfc, dupNameNfd, dupPath, ...rest] as never,
+    } }).where(eq(companies.id, c.companyA));
+    const g = await send('GET', URL, c.ownerToken, undefined, A());
+    expect(g.status, g.raw).toBe(200);
+    expect(g.json.folders).toHaveLength(20);
+    expect(g.json.folders).toEqual([first, dupNameNfc, ...rest.slice(0, 18)]);
   });
 });
 
@@ -295,6 +325,33 @@ describe('U-93: permissions and company scope', () => {
     // No header: the excluded bookkeeper resolves to B, never A.
     const bkNone = await send('GET', URL, c.bkToken);
     expect(bkNone.json.folders.map((f: { name: string }) => f.name)).toEqual(['B bills']);
+  });
+
+  it('an accountant excluded from company A can neither read nor write A\'s folders, and can B\'s', async () => {
+    const acc = await staffUser(c.tenantId, 'accountant');
+    await db.insert(accountantCompanyExclusions).values({ userId: acc.id, companyId: c.companyA } as never);
+    const a = await send('PUT', URL, c.ownerToken, { folders: [folder(1, { name: 'A bills' })], expectedUpdatedAt: null }, A());
+    expect(a.status).toBe(200);
+    const before = await stored(c.companyA);
+
+    const r = await send('GET', URL, acc.token, undefined, A());
+    expect(r.status, r.raw).toBe(403);
+    expect(r.raw).not.toContain(MARKER);
+    const w = await send('PUT', URL, acc.token, { folders: [folder(9, { name: 'Taken over' })], expectedUpdatedAt: a.json.updatedAt }, A());
+    expect(w.status, w.raw).toBe(403);
+    expect(w.raw).not.toContain(MARKER);
+    expect(await stored(c.companyA)).toEqual(before);
+
+    // Not a role denial: the same accountant reads and writes company B.
+    const gB = await send('GET', URL, acc.token, undefined, B());
+    expect(gB.status, gB.raw).toBe(200);
+    const pB = await send('PUT', URL, acc.token, { folders: [folder(10, { name: 'B receipts' })], expectedUpdatedAt: gB.json.updatedAt }, B());
+    expect(pB.status, pB.raw).toBe(200);
+    // Without a header the accountant never lands on A.
+    const none = await send('GET', URL, acc.token);
+    expect(none.status).toBe(200);
+    expect(none.json.folders.map((f: { name: string }) => f.name)).toEqual(['B receipts']);
+    expect(await stored(c.companyA)).toEqual(before);
   });
 });
 
