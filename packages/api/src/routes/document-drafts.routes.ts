@@ -13,6 +13,7 @@ import {
   createDocumentDraftSchema, updateDocumentDraftSchema, documentDraftListQuerySchema, convertDocumentDraftSchema,
   putVendorLayoutTemplateSchema, vendorLayoutTemplateListQuerySchema, deleteVendorLayoutTemplateSchema,
   convertBillBodySchema, convertExpenseBodySchema, convertCheckBodySchema, DOCUMENT_DRAFT_LIST_MAX_OFFSET,
+  attachDocumentDraftSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
@@ -23,6 +24,7 @@ import { closingPasswordLimiter } from '../middleware/closing-password-limiter.j
 import { lockContextMiddleware } from '../services/lock-context.js';
 import {
   requireAnyDocumentResource, requireCreateKindPermission, requireConvertKindPermission, canChangeKind,
+  requireAttachPermission, canChangeResource, canAttachToType,
 } from '../middleware/document-draft-permission.js';
 import * as draftService from '../services/document-draft.service.js';
 
@@ -138,6 +140,37 @@ documentDraftsRouter.post('/:id/convert', requireConvertKindPermission, keyedCon
     const { transactionId: _t } = await draftService.convert(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body, (k) => canChangeKind(req, k));
     res.status(201).json(await draftService.convertResponse(req.tenantId, req.companyId, req.params['id']!));
   });
+
+// Keyed by document-drafts-attach-v1 with idempotency-docs-v1's contract.
+const keyedAttach = idempotent({
+  successStatus: 200,
+  replay: async (req) => draftService.attachResponse(req.tenantId, req.companyId, req.params['id']!),
+});
+
+documentDraftsRouter.post('/:id/attach', requireAttachPermission, keyedAttach, validate(attachDocumentDraftSchema), describe({
+  summary: 'Attach a document draft to a transaction that is already posted',
+  description: 'Response 200 `{draft, transaction}`. Files the draft\'s document on an existing transaction instead of posting a new one ' +
+    '(document-drafts-attach-v1); nothing posts and no closing-date password is needed. One database transaction, locks in the order ' +
+    'draft, transaction, file: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 ' +
+    'STALE, details.updatedAt); the transaction must be this company\'s or tenant-wide and not deleted (else 404); a type files can\'t be ' +
+    'attached to is 422 TARGET_NOT_ATTACHABLE, and so is an adjusting journal entry (aje) for a client user or with TRIAL_BALANCE_V1 off; ' +
+    'not posted (void, draft) is 409 TRANSACTION_NOT_POSTED (details.status); the draft\'s file ' +
+    'deleted is 422 DOCUMENT_FILE_MISSING, filed on another record 422 ATTACHMENT_NOT_DRAFT, already on this transaction succeeds. Every file ' +
+    'on the draft key, except one another live draft reads, moves to the transaction (attachable type = its txnType; journal_entry for an aje, ' +
+    'where MyBooks stores AJE files) with an audit row each; ' +
+    'the draft is marked converted (convertedTransactionId = the transaction, convertedType = its txnType, aje for an AJE; kind unchanged) with an audit row ' +
+    '`attached: true`. Any refusal leaves nothing written. Permission: the draft\'s current kind\'s (bill and unknown: bills, check: checks, ' +
+    'card_charge and cash_expense: transactions) and the transaction\'s (bill: bills, vendor_credit: vendor_credits, bill_payment: ' +
+    'pay_bills, invoice: invoices, customer_payment: receive_payment, daily_sales: daily_sales, aje: trial_balance, others: transactions), ' +
+    'full access, checked before a replay and again on the locked rows (403 PERMISSION_DENIED). Idempotency-Key: document-drafts-attach-v1, ' +
+    'with idempotency-docs-v1\'s contract; refusals are never stored.',
+  body: attachDocumentDraftSchema,
+  params: idParams,
+}), async (req, res) => {
+  await draftService.attach(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body,
+    (k) => canChangeKind(req, k), (r) => canChangeResource(req, r), (t) => canAttachToType(req, t));
+  res.status(200).json(await draftService.attachResponse(req.tenantId, req.companyId, req.params['id']!));
+});
 
 // ── Vendor layout templates ──────────────────────────────────────────
 

@@ -170,6 +170,15 @@ export const convertDocumentDraftSchema = z.object({
 }).strict();
 export type ConvertDocumentDraftInput = z.infer<typeof convertDocumentDraftSchema>;
 
+// POST /document-drafts/:id/attach (U-95, document-drafts-attach-v1): file the
+// draft's document on a transaction that is already posted, instead of
+// posting a new one. Nothing posts.
+export const attachDocumentDraftSchema = z.object({
+  transactionId: z.string().uuid(),
+  expectedUpdatedAt: updatedAtToken,
+}).strict();
+export type AttachDocumentDraftInput = z.infer<typeof attachDocumentDraftSchema>;
+
 // Vendor layout templates.
 export const vendorLayoutTemplateListQuerySchema = z.object({
   contactId: z.string().uuid().optional(),

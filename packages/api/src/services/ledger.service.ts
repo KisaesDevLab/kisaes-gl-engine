@@ -1801,6 +1801,8 @@ export async function listTransactions(tenantId: string, filters: {
   /** Adjusting-entry lens (U-60): include (default) / exclude / only. */
   adjusting?: 'include' | 'exclude' | 'only';
   search?: string;
+  /** Exact total as a decimal string (U-95), compared as SQL numeric; never parsed here. */
+  amount?: string;
   sortBy?: 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status' | 'dueDate' | 'balanceDue' | 'invoiceStatus';
   sortDir?: 'asc' | 'desc';
   limit?: number; offset?: number;
@@ -1836,6 +1838,9 @@ export async function listTransactions(tenantId: string, filters: {
   else if (filters.adjusting === 'only') conditions.push(eq(transactions.isAdjusting, true));
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
+  // Exact total (U-95): numeric equality in SQL, so 10.1 = 10.10 and 10.01
+  // does not match; a NULL total (journal entry, transfer) never matches.
+  if (filters.amount !== undefined) conditions.push(sql`${transactions.total} = ${filters.amount}::numeric`);
   if (filters.accountId) {
     conditions.push(sql`${transactions.id} IN (SELECT transaction_id FROM journal_lines WHERE account_id = ${filters.accountId} AND tenant_id = ${tenantId})`);
   }
