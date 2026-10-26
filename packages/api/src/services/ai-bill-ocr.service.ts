@@ -271,6 +271,85 @@ export interface BillOcrResult {
   rawText?: string;
 }
 
+/** The reading fields of a BillOcrResult (everything the model output decides). */
+export type BillOcrFields = Pick<BillOcrResult,
+  'vendor' | 'vendorAddress' | 'vendorInvoiceNumber' | 'billDate' | 'dueDate' | 'paymentTerms' |
+  'total' | 'subtotal' | 'tax' | 'lineItems' | 'notes' | 'confidence' | 'fieldConfidence'>;
+
+/**
+ * Validate a bill model reply (M5; throws `ai_parse_failed`) and turn it
+ * into the bill-ocr-v2 fields: amounts as decimal strings or null, dates
+ * as real YYYY-MM-DD or null, confidence as words. Nothing is computed or
+ * filled in: a value the model did not give stays null. Shared by
+ * extractBillFromAttachment and the document-reading assist (U-92d).
+ */
+export function normalizeBillOcrOutput(raw: unknown): { parsed: any; fields: BillOcrFields } {
+  const parsed: any = validateModelOutput(billOcrOutputSchema, raw, 'bill extraction');
+
+  const confidence = typeof parsed.confidence === 'number'
+    ? parsed.confidence
+    : typeof parsed.confidence === 'string' && parsed.confidence.trim() !== '' && Number.isFinite(Number(parsed.confidence))
+      ? Number(parsed.confidence)
+      : 0.5;
+
+  const documentConfidence: BillOcrConfidence = bucketConfidence(confidence) ?? 'low';
+
+  // bill-ocr-v2: amounts are plain decimal strings or null — a JSON
+  // number from the model is turned into a string here, an unreadable
+  // amount becomes null with 'low' confidence.
+  const lineItems: BillOcrLineItem[] = Array.isArray(parsed.line_items)
+    ? parsed.line_items.map((li: any) => {
+        const amount = normalizeBillMoney(li?.amount);
+        return {
+          description: li?.description ?? null,
+          amount,
+          quantity: normalizeBillMoney(li?.quantity),
+          confidence: amount == null ? 'low' : (bucketConfidence(li?.confidence) ?? documentConfidence),
+        };
+      })
+    : [];
+
+  const total = normalizeBillMoney(parsed.total);
+  const subtotal = normalizeBillMoney(parsed.subtotal);
+  const tax = normalizeBillMoney(parsed.tax);
+  const billDate = normalizeBillDate(parsed.bill_date);
+  const dueDate = normalizeBillDate(parsed.due_date);
+  const fieldConfidence = fieldConfidenceFrom(parsed.field_confidence, {
+    vendor: parsed.vendor ?? null,
+    billDate,
+    dueDate,
+    vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
+    total,
+    subtotal,
+    tax,
+    paymentTerms: parsed.payment_terms ?? null,
+  }, documentConfidence);
+
+  const va = parsed.vendor_address;
+  const vendorAddress: BillOcrVendorAddress | null = va && (va.line1 || va.city || va.zip)
+    ? { line1: va.line1 ?? null, line2: va.line2 ?? null, city: va.city ?? null, state: va.state ?? null, zip: va.zip ?? null }
+    : null;
+
+  return {
+    parsed,
+    fields: {
+      vendor: parsed.vendor ?? null,
+      vendorAddress,
+      vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
+      billDate,
+      dueDate,
+      paymentTerms: parsed.payment_terms ?? null,
+      total,
+      subtotal,
+      tax,
+      lineItems,
+      notes: parsed.notes ?? null,
+      confidence,
+      fieldConfidence,
+    },
+  };
+}
+
 export const billSystemPrompt = `You are a vendor invoice / bill OCR assistant. Extract the structured data and return JSON ONLY in this exact schema:
 {
   "vendor": "string | null",
@@ -521,67 +600,13 @@ export async function extractBillFromAttachment(tenantId: string, attachmentId: 
 
     // M5: validate the model output before any DB write; a malformed reply
     // throws `ai_parse_failed` (caught below → attachment marked failed).
-    parsed = validateModelOutput(billOcrOutputSchema, parsed, 'bill extraction');
-
-    const confidence = typeof parsed.confidence === 'number'
-      ? parsed.confidence
-      : typeof parsed.confidence === 'string' && parsed.confidence.trim() !== '' && Number.isFinite(Number(parsed.confidence))
-        ? Number(parsed.confidence)
-        : 0.5;
-
-    const documentConfidence: BillOcrConfidence = bucketConfidence(confidence) ?? 'low';
-
-    // bill-ocr-v2: amounts are plain decimal strings or null — a JSON
-    // number from the model is turned into a string here, an unreadable
-    // amount becomes null with 'low' confidence.
-    const lineItems: BillOcrLineItem[] = Array.isArray(parsed.line_items)
-      ? parsed.line_items.map((li: any) => {
-          const amount = normalizeBillMoney(li?.amount);
-          return {
-            description: li?.description ?? null,
-            amount,
-            quantity: normalizeBillMoney(li?.quantity),
-            confidence: amount == null ? 'low' : (bucketConfidence(li?.confidence) ?? documentConfidence),
-          };
-        })
-      : [];
-
-    const total = normalizeBillMoney(parsed.total);
-    const subtotal = normalizeBillMoney(parsed.subtotal);
-    const tax = normalizeBillMoney(parsed.tax);
-    const billDate = normalizeBillDate(parsed.bill_date);
-    const dueDate = normalizeBillDate(parsed.due_date);
-    const fieldConfidence = fieldConfidenceFrom(parsed.field_confidence, {
-      vendor: parsed.vendor ?? null,
-      billDate,
-      dueDate,
-      vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
-      total,
-      subtotal,
-      tax,
-      paymentTerms: parsed.payment_terms ?? null,
-    }, documentConfidence);
-
-    const va = parsed.vendor_address;
-    const vendorAddress: BillOcrVendorAddress | null = va && (va.line1 || va.city || va.zip)
-      ? { line1: va.line1 ?? null, line2: va.line2 ?? null, city: va.city ?? null, state: va.state ?? null, zip: va.zip ?? null }
-      : null;
+    const normalized = normalizeBillOcrOutput(parsed);
+    parsed = normalized.parsed;
+    const confidence = normalized.fields.confidence;
 
     const ocrResult: Omit<BillOcrResult, 'contactId' | 'defaultExpenseAccountId'> = {
       jobId: job.id,
-      vendor: parsed.vendor ?? null,
-      vendorAddress,
-      vendorInvoiceNumber: parsed.vendor_invoice_number ?? null,
-      billDate,
-      dueDate,
-      paymentTerms: parsed.payment_terms ?? null,
-      total,
-      subtotal,
-      tax,
-      lineItems,
-      notes: parsed.notes ?? null,
-      confidence,
-      fieldConfidence,
+      ...normalized.fields,
       qualityWarnings,
     };
 
