@@ -56,7 +56,7 @@ export function consentReasonMessage(reason: string | undefined): string {
 // still engages.
 const ALWAYS_SELF_HOSTED = new Set(['ollama']);
 
-function isLocalUrl(raw: string | null | undefined): boolean {
+export function isLocalUrl(raw: string | null | undefined): boolean {
   if (!raw) return false;
   try {
     const u = new URL(raw);
@@ -95,6 +95,17 @@ function isLocalUrl(raw: string | null | undefined): boolean {
   }
 }
 
+/**
+ * Ollama "cloud" models (`gpt-oss:120b-cloud`, `qwen3-coder:480b-cloud`, a
+ * bare `cloud` tag) run on ollama.com after `ollama signin`: the local Ollama
+ * only forwards the request, so the data leaves this machine. A caller that
+ * knows the model counts such a model as a cloud provider.
+ */
+const OLLAMA_CLOUD_MODEL = /(^|[:-])cloud$/i;
+export function isOllamaCloudModel(model: string | null | undefined): boolean {
+  return typeof model === 'string' && OLLAMA_CLOUD_MODEL.test(model.trim());
+}
+
 export function isSelfHostedProvider(providerName: string, config?: { openaiCompatBaseUrl?: string | null }): boolean {
   if (ALWAYS_SELF_HOSTED.has(providerName)) return true;
   if (providerName === 'openai_compat') return isLocalUrl(config?.openaiCompatBaseUrl);
@@ -123,9 +134,15 @@ export function piiModeFor(
  * `ai_config.cloud_vision_enabled = true` AND `pii_protection_level =
  * 'permissive'` — the admin opt-in path per addendum §Tier 1.
  */
-export async function assertCloudVisionAllowed(providerName: string): Promise<void> {
+export async function assertCloudVisionAllowed(
+  providerName: string,
+  // `selfHosted: false` from a caller that knows more than the provider name
+  // (an Ollama cloud model, an Ollama on a remote URL) applies the gate.
+  opts?: { selfHosted?: boolean },
+): Promise<void> {
   const raw = await aiConfigService.getRawConfig();
-  if (isSelfHostedProvider(providerName, { openaiCompatBaseUrl: raw.openaiCompatBaseUrl })) return;
+  const selfHosted = opts?.selfHosted ?? isSelfHostedProvider(providerName, { openaiCompatBaseUrl: raw.openaiCompatBaseUrl });
+  if (selfHosted) return;
   const cloudVisionEnabled = !!raw.cloudVisionEnabled;
   const level = raw.piiProtectionLevel || 'strict';
   if (cloudVisionEnabled && level === 'permissive') return;

@@ -31,7 +31,11 @@ export type AiTaskKey =
   | 'document_classification'
   | 'enrich_vendor'
   | 'judgment_review'
-  | 'report_summary';
+  | 'report_summary'
+  // U-92d: document reading with an online service. Off for every company;
+  // never turned on by accepting the disclosure or by receipt_ocr.
+  | 'document_text_cloud'
+  | 'document_images_cloud';
 
 const ALL_TASK_KEYS: AiTaskKey[] = [
   'categorization',
@@ -41,6 +45,8 @@ const ALL_TASK_KEYS: AiTaskKey[] = [
   'enrich_vendor',
   'judgment_review',
   'report_summary',
+  'document_text_cloud',
+  'document_images_cloud',
 ];
 
 // ─── Core-on-accept vs sensitive-opt-in split (H6/H7) ──────────────
@@ -73,7 +79,17 @@ export const SENSITIVE_TASKS_OPT_IN: AiTaskKey[] = [
   'enrich_vendor',
   'judgment_review',
   'report_summary',
+  // U-92d: the page text (document_text_cloud) and page images
+  // (document_images_cloud) of a document read by a cloud provider through
+  // POST /document-reading/assist. Their own consent: receipt_ocr never
+  // implies them, and accepting the disclosure leaves them off.
+  'document_text_cloud',
+  'document_images_cloud',
 ];
+
+// U-92d: the document reading switches. Reset when the company re-accepts a
+// newer disclosure (acceptCompanyDisclosure) and on revoke.
+export const DOCUMENT_CLOUD_TASKS: AiTaskKey[] = ['document_text_cloud', 'document_images_cloud'];
 
 // Keep this text in the service so disclosure generation can be audited
 // and version-bumped centrally. If the wording changes, increment
@@ -452,6 +468,13 @@ export async function acceptCompanyDisclosure(tenantId: string, companyId: strin
   const beforeTasks = (before.aiEnabledTasks as Record<AiTaskKey, boolean>) || { ...DEFAULT_TASK_TOGGLES };
   const nextTasks: Record<AiTaskKey, boolean> = { ...DEFAULT_TASK_TOGGLES, ...beforeTasks };
   for (const t of CORE_TASKS_ON_ACCEPT) nextTasks[t] = true;
+  // U-92d: the document switches were agreed to under the previous
+  // configuration (provider, PII level, cloud vision). When this acceptance
+  // follows a disclosure bump that loosened data handling, they go back off
+  // and the owner decides again under the new configuration.
+  if (before.aiDisclosureVersion != null && before.aiDisclosureVersion < version) {
+    for (const t of DOCUMENT_CLOUD_TASKS) nextTasks[t] = false;
+  }
 
   await db.update(companies).set({
     aiEnabled: true,
@@ -535,13 +558,29 @@ export async function setCompanyTaskToggles(
     updatedAt: new Date(),
   }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
 
+  // U-92d: record what the owner agreed under — the provider that reads
+  // documents, the PII level, cloud vision and the disclosure version — next
+  // to the switches (the task keys stay top-level, as before).
+  const cfg = await db.query.aiConfig.findFirst();
+  const agreedUnder = {
+    provider: cfg?.ocrProvider || cfg?.categorizationProvider || null,
+    providers: {
+      categorization: cfg?.categorizationProvider ?? null,
+      ocr: cfg?.ocrProvider || cfg?.categorizationProvider || null,
+    },
+    piiProtectionLevel: cfg?.piiProtectionLevel ?? null,
+    cloudVisionEnabled: !!cfg?.cloudVisionEnabled,
+    disclosureVersion: company.aiDisclosureVersion ?? null,
+    systemDisclosureVersion: cfg?.disclosureVersion ?? null,
+  };
+
   await auditLog(
     tenantId,
     'update',
     'company_ai_tasks',
     companyId,
     before,
-    next,
+    { ...next, configuration: agreedUnder },
     userId,
   );
 
@@ -616,6 +655,25 @@ export async function checkTenantTaskConsent(
 }
 
 /**
+ * Company opt-in without a task: AI on and its disclosure accepted at the
+ * system level, and THIS company opted in with a current disclosure. For a
+ * surface whose task switch does not apply (the document reading assist on
+ * a self-hosted provider, U-92d) but that still processes the company's
+ * data with AI.
+ */
+export async function checkCompanyAiOptIn(tenantId: string, companyId: string): Promise<ConsentCheckResult> {
+  const cfg = await db.query.aiConfig.findFirst();
+  if (!cfg?.isEnabled) return { allowed: false, reason: 'system_disabled' };
+  if (!cfg.adminDisclosureAcceptedAt) return { allowed: false, reason: 'system_disclosure_not_accepted' };
+  const [row] = await db.select({ aiEnabled: companies.aiEnabled, version: companies.aiDisclosureVersion })
+    .from(companies)
+    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+  if (!row?.aiEnabled) return { allowed: false, reason: 'company_not_opted_in' };
+  if ((row.version ?? 0) < (cfg.disclosureVersion ?? 1)) return { allowed: false, reason: 'consent_stale' };
+  return { allowed: true, companyId };
+}
+
+/**
  * Consent summary for a tenant — returns per-company status so the
  * settings UI can render the full picture. Intentionally does not
  * include provider details (that's on the admin endpoints).
@@ -666,6 +724,8 @@ export const DEFAULT_TASK_TOGGLES: Record<AiTaskKey, boolean> = {
   enrich_vendor: false,
   judgment_review: false,
   report_summary: false,
+  document_text_cloud: false,
+  document_images_cloud: false,
 };
 
 // Exposed for ai-config.service so it can compose in a transaction.

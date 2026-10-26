@@ -65,7 +65,8 @@ export const companies = pgTable('companies', {
   // company is paused until re-acceptance.
   aiEnabled: boolean('ai_enabled').notNull().default(false),
   aiEnabledTasks: jsonb('ai_enabled_tasks').notNull().default(
-    '{"categorization":false,"receipt_ocr":false,"statement_parsing":false,"document_classification":false}'
+    // U-92d (0234): the two document reading switches, off.
+    '{"categorization":false,"receipt_ocr":false,"statement_parsing":false,"document_classification":false,"document_text_cloud":false,"document_images_cloud":false}'
   ),
   aiDisclosureAcceptedAt: timestamp('ai_disclosure_accepted_at', { withTimezone: true }),
   aiDisclosureAcceptedBy: uuid('ai_disclosure_accepted_by'),

@@ -28,6 +28,7 @@ import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { requirePermission } from '../middleware/permission.js';
+import { requireDesktopDocumentTextConsent } from '../middleware/desktop-document-consent.js';
 import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiCategorization from '../services/ai-categorization.service.js';
 import * as aiReceiptOcr from '../services/ai-receipt-ocr.service.js';
@@ -342,7 +343,7 @@ aiRouter.post('/categorize/accept', authenticate, validate(aiCategorizeAcceptSch
 
 // ─── Processing — Receipt OCR ──────────────────────────────────
 
-aiRouter.post('/ocr/receipt', authenticate, aiProcessingLimiter, validate(aiOcrSchema), companyContext, attachmentInCompany, async (req, res) => {
+aiRouter.post('/ocr/receipt', authenticate, aiProcessingLimiter, validate(aiOcrSchema), companyContext, requireDesktopDocumentTextConsent, attachmentInCompany, async (req, res) => {
   const result = await aiReceiptOcr.processReceipt(req.tenantId, req.body.attachmentId);
   res.json(result);
 });

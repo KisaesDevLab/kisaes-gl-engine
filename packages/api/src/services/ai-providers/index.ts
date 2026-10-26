@@ -172,6 +172,28 @@ export function resolveCredential(providerName: string, config: AiConfigRow): Re
   }
 }
 
+/**
+ * Where a self-hosted provider would send a call, and with which model, as
+ * buildProvider resolves them: `ollama` (session endpoint/model on the
+ * desktop, `ai_config.ollama_base_url` on the server, else
+ * http://localhost:11434 and llama3.2) and `openai_compat` (its base URL and
+ * model). Null for any other provider. Lets a caller check that the endpoint
+ * is local and the model is not an Ollama cloud model (U-92d).
+ */
+export function resolveSelfHostedTarget(
+  providerName: string,
+  config: AiConfigRow,
+  model?: string,
+): { baseUrl: string; model: string } | null {
+  if (providerName !== 'ollama' && providerName !== 'openai_compat') return null;
+  const cred = resolveCredential(providerName, config);
+  if (providerName === 'openai_compat' && !cred?.baseUrl) return null;
+  return {
+    baseUrl: cred?.baseUrl || 'http://localhost:11434',
+    model: model || cred?.model || 'llama3.2',
+  };
+}
+
 export function getProvider(
   providerName: string,
   config: AiConfigRow,

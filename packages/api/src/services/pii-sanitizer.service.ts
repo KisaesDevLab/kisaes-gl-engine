@@ -267,7 +267,9 @@ export function pickMode(
     | 'judgment_review',
   isSelfHosted?: boolean,
 ): SanitizerMode {
-  const alwaysLocal = providerName === 'ollama';
+  // An explicit `false` wins over the provider name: an Ollama cloud model
+  // or an Ollama on a remote URL sends the text off this server (U-92d).
+  const alwaysLocal = providerName === 'ollama' && isSelfHosted !== false;
   const resolvedSelfHosted = alwaysLocal || isSelfHosted === true;
   if (resolvedSelfHosted) return 'none';
   switch (task) {

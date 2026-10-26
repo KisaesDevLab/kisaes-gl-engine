@@ -240,6 +240,11 @@ describe('pii-sanitizer', () => {
   describe('pickMode', () => {
     it('self-hosted providers bypass sanitization', () => {
       expect(pickMode('ollama', 'ocr_statement')).toBe('none');
+      expect(pickMode('ollama', 'ocr_invoice', true)).toBe('none');
+    });
+    it('an explicit false (Ollama cloud model or remote URL) sanitizes Ollama like a cloud provider', () => {
+      expect(pickMode('ollama', 'ocr_invoice', false)).toBe('standard');
+      expect(pickMode('ollama', 'ocr_statement', false)).toBe('strict');
     });
     it('cloud statement = strict', () => {
       expect(pickMode('anthropic', 'ocr_statement')).toBe('strict');

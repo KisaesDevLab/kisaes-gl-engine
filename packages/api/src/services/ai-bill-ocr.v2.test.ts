@@ -129,6 +129,15 @@ describe('normalizeBillMoney', () => {
     expect(normalizeBillMoney(Number.MAX_SAFE_INTEGER)).toBe('9007199254740991');
     expect(normalizeBillMoney(123456789.25)).toBe('123456789.25');
   });
+
+  it('a JSON number with a fraction and more than 15 significant digits is null (U-92d L6)', () => {
+    expect(normalizeBillMoney(1234567890.1234567)).toBeNull();
+    expect(normalizeBillMoney(0.12345678901234567)).toBeNull();
+    expect(normalizeBillMoney(1234567890123.45)).toBe('1234567890123.45');
+    expect(normalizeBillMoney(0.000000000012345)).toBeNull(); // 1.2345e-11: exponent spelling
+    // Strings keep their own digits.
+    expect(normalizeBillMoney('1234567890.1234567')).toBe('1234567890.1234567');
+  });
 });
 
 describe('normalizeBillDate', () => {

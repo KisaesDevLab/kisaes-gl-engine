@@ -21,6 +21,7 @@ import { invoicesRouter } from './routes/invoices.routes.js';
 import { billsRouter } from './routes/bills.routes.js';
 import { billCapturesRouter } from './routes/bill-captures.routes.js';
 import { documentDraftsRouter, vendorLayoutTemplatesRouter } from './routes/document-drafts.routes.js';
+import { documentReadingRouter } from './routes/document-reading.routes.js';
 import { vendorCreditsRouter } from './routes/vendor-credits.routes.js';
 import { billPaymentsRouter } from './routes/bill-payments.routes.js';
 import { paymentTermsRouter } from './routes/payment-terms.routes.js';
@@ -543,6 +544,8 @@ app.use('/api/v1/bill-captures', billCapturesRouter);
 // Document drafts and vendor layouts (U-92, document-drafts-v1).
 app.use('/api/v1/document-drafts', documentDraftsRouter);
 app.use('/api/v1/vendor-layout-templates', vendorLayoutTemplatesRouter);
+// Document reading assist (U-92d, document-assist-v1).
+app.use('/api/v1/document-reading', documentReadingRouter);
 app.use('/api/v1/vendor-credits', vendorCreditsRouter);
 app.use('/api/v1/bill-payments', billPaymentsRouter);
 app.use('/api/v1/payment-terms', paymentTermsRouter);

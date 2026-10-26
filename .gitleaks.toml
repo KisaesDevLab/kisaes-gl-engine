@@ -35,4 +35,8 @@ regexes = [
   # the branch's earlier commits.
   '''Closing-pass-2026''',
   '''idempotency-docs-v1''',
+  # U-92d (document-reading assist): a deliberate privacy canary in
+  # document-reading.routes.test.ts that must never reach ai_jobs or the
+  # audit log, misread as a secret in the branch's earlier commits.
+  '''ZZQ-PRIVATE-MEMO-7731''',
 ]
