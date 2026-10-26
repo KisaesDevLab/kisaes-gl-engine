@@ -87,6 +87,10 @@ export const SENSITIVE_TASKS_OPT_IN: AiTaskKey[] = [
   'document_images_cloud',
 ];
 
+// U-92d: the document reading switches. Reset when the company re-accepts a
+// newer disclosure (acceptCompanyDisclosure) and on revoke.
+export const DOCUMENT_CLOUD_TASKS: AiTaskKey[] = ['document_text_cloud', 'document_images_cloud'];
+
 // Keep this text in the service so disclosure generation can be audited
 // and version-bumped centrally. If the wording changes, increment
 // SYSTEM_DISCLOSURE_TEXT_VERSION below — consent is re-required when
@@ -464,6 +468,13 @@ export async function acceptCompanyDisclosure(tenantId: string, companyId: strin
   const beforeTasks = (before.aiEnabledTasks as Record<AiTaskKey, boolean>) || { ...DEFAULT_TASK_TOGGLES };
   const nextTasks: Record<AiTaskKey, boolean> = { ...DEFAULT_TASK_TOGGLES, ...beforeTasks };
   for (const t of CORE_TASKS_ON_ACCEPT) nextTasks[t] = true;
+  // U-92d: the document switches were agreed to under the previous
+  // configuration (provider, PII level, cloud vision). When this acceptance
+  // follows a disclosure bump that loosened data handling, they go back off
+  // and the owner decides again under the new configuration.
+  if (before.aiDisclosureVersion != null && before.aiDisclosureVersion < version) {
+    for (const t of DOCUMENT_CLOUD_TASKS) nextTasks[t] = false;
+  }
 
   await db.update(companies).set({
     aiEnabled: true,
@@ -547,13 +558,29 @@ export async function setCompanyTaskToggles(
     updatedAt: new Date(),
   }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
 
+  // U-92d: record what the owner agreed under — the provider that reads
+  // documents, the PII level, cloud vision and the disclosure version — next
+  // to the switches (the task keys stay top-level, as before).
+  const cfg = await db.query.aiConfig.findFirst();
+  const agreedUnder = {
+    provider: cfg?.ocrProvider || cfg?.categorizationProvider || null,
+    providers: {
+      categorization: cfg?.categorizationProvider ?? null,
+      ocr: cfg?.ocrProvider || cfg?.categorizationProvider || null,
+    },
+    piiProtectionLevel: cfg?.piiProtectionLevel ?? null,
+    cloudVisionEnabled: !!cfg?.cloudVisionEnabled,
+    disclosureVersion: company.aiDisclosureVersion ?? null,
+    systemDisclosureVersion: cfg?.disclosureVersion ?? null,
+  };
+
   await auditLog(
     tenantId,
     'update',
     'company_ai_tasks',
     companyId,
     before,
-    next,
+    { ...next, configuration: agreedUnder },
     userId,
   );
 
