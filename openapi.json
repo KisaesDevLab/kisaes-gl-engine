@@ -21283,6 +21283,252 @@
         ]
       }
     },
+    "/api/v1/company/intake-settings": {
+      "get": {
+        "operationId": "get_api_v1_company_intake_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "folders": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "autoRead": {
+                            "type": "boolean"
+                          },
+                          "defaultKind": {
+                            "enum": [
+                              "bills",
+                              "receipts",
+                              "auto"
+                            ],
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "keepOriginals": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "name": {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "path",
+                          "defaultKind",
+                          "autoRead"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "updatedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "folders",
+                    "updatedAt"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Intake folders of the company (intake-settings-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "put": {
+        "operationId": "put_api_v1_company_intake_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expectedUpdatedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "folders": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "autoRead": {
+                          "type": "boolean"
+                        },
+                        "defaultKind": {
+                          "enum": [
+                            "bills",
+                            "receipts",
+                            "auto"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "keepOriginals": {
+                          "default": false,
+                          "type": "boolean"
+                        },
+                        "name": {
+                          "maxLength": 100,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "path",
+                        "defaultKind",
+                        "autoRead"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "folders",
+                  "expectedUpdatedAt"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "folders": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "autoRead": {
+                            "type": "boolean"
+                          },
+                          "defaultKind": {
+                            "enum": [
+                              "bills",
+                              "receipts",
+                              "auto"
+                            ],
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "keepOriginals": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "name": {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "path",
+                          "defaultKind",
+                          "autoRead"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "updatedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "folders",
+                    "updatedAt"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Replace the intake folders of the company (409 STALE when expectedUpdatedAt no longer matches)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
     "/api/v1/company/invite-user": {
       "post": {
         "operationId": "post_api_v1_company_invite_user",
@@ -67197,6 +67443,11 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "resetIntakeSettings": {
+                    "default": false,
+                    "description": "Restore every company with no intake folders (intake-settings-v1); applied after content verification. ClientLedger sets it for transfer files.",
+                    "type": "boolean"
+                  },
                   "scratch": {
                     "type": "boolean"
                   }
@@ -68170,6 +68421,10 @@
                   },
                   "includeAudit": {
                     "default": true,
+                    "type": "boolean"
+                  },
+                  "omitIntakeSettings": {
+                    "default": false,
                     "type": "boolean"
                   },
                   "passphrase": {

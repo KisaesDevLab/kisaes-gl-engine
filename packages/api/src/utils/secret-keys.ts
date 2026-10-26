@@ -12,7 +12,9 @@
  * The pattern is the tenant-portability secret-column rule
  * (plan.ts SECRET_COLUMN_RE) applied to camelCase and snake_case keys,
  * minus LLM token counts (`inputTokens`, `output_tokens`), plus the
- * secret jsonb config column (`remote_backup_config` / `remoteBackupConfig`).
+ * secret jsonb config column (`remote_backup_config` / `remoteBackupConfig`), and
+ * the intake folder list (`intake_settings` / `intakeSettings`, U-93), whose
+ * paths are kept out of audit images.
  * It must stay valid in both JavaScript and PostgreSQL ARE syntax (and
  * contain no single quote: it is embedded in a SQL string literal).
  */
@@ -25,7 +27,7 @@ const EXEMPT_KEYS =
   '(file_?hash|source_?file_?hash|numbers_?hash|content_?hash|(access_?)?token_?expires_?at|monthly_?token_?limit|tfa_?totp_?verified|tfa_?totp_?last_?step|credential_?id)';
 
 export const SECRET_KEY_PATTERN =
-  `^(?!${EXEMPT_KEYS}$).*(secret|token(?!s$)|password|pass$|passwd|passphrase|api_?key|encrypted|hash|otp|refresh|credential|remote_?backup_?config)`;
+  `^(?!${EXEMPT_KEYS}$).*(secret|token(?!s$)|password|pass$|passwd|passphrase|api_?key|encrypted|hash|otp|refresh|credential|remote_?backup_?config|intake_?settings)`;
 
 export const SECRET_KEY_RE = new RegExp(SECRET_KEY_PATTERN, 'i');
 

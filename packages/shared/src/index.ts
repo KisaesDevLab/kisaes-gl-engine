@@ -52,6 +52,7 @@ export * from './schemas/match-actions.js';
 export * from './schemas/conditional-rules.js';
 export * from './schemas/review-checks.js';
 export * from './schemas/company.js';
+export * from './schemas/intake-settings.js';
 export * from './schemas/accounts.js';
 export * from './schemas/contacts.js';
 export * from './schemas/transactions.js';

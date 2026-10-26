@@ -1625,6 +1625,13 @@
       "when": 1784800014380,
       "tag": "0231_attachments_company_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "7",
+      "when": 1784900014380,
+      "tag": "0232_companies_intake_settings",
+      "breakpoints": true
     }
   ]
 }

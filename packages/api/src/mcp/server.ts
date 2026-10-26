@@ -513,7 +513,8 @@ registerTool('get_company_info', 'Get company details', { company_id: 'string?' 
   const company = await db.query.companies.findFirst({ where: eq(companies.id, companyId) });
   if (!company) throw new Error('NOT_FOUND: Company not found');
   // Never hand the closing-date password hash (U-15) to an MCP client.
-  const { closingPasswordHash: _closingPasswordHash, ...info } = company;
+  // Nor the intake folder paths (U-93): owner data from one computer.
+  const { closingPasswordHash: _closingPasswordHash, intakeSettings: _intakeSettings, ...info } = company;
   return info;
 });
 

@@ -31,6 +31,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { DESKTOP_UNMOUNTED } from '../../desktop/features.js';
 import { SECRET_KEY_PATTERN } from '../../utils/secret-keys.js';
+import { INTAKE_SETTINGS_DEFAULT_JSON } from '@kis-books/shared';
 
 export type DbLike = Pick<typeof db, 'execute'>;
 
@@ -660,12 +661,30 @@ export const JSON_CONFIG_COLUMNS: Record<string, JsonConfigClass> = {
   // needs them after a restore; the passphrase covers the archive (security review).
   'companies.check_settings': 'contains-ids',
   'companies.remote_backup_config': 'secret',
+  // Intake folders (U-93): folder ids are client UUIDs, not entity ids, so
+  // nothing to remap. Paths travel in the archive unless the export sets
+  // omitIntakeSettings (OMITTABLE_COLUMNS).
+  'companies.intake_settings': 'plain',
   'fs_report_versions.settings_json': 'plain',
   'import_sessions.options': 'plain',
   'report_pack_items.options_json': 'contains-ids',
   'tenants.report_settings': 'contains-ids',
   'tenants.practice_settings': 'plain',
   'tenants.share_settings': 'plain',
+};
+
+/**
+ * Columns an export may leave out on request (U-93): the archive row carries
+ * `replacement` (the column default, a SQL literal cast to the column type)
+ * instead of the value, so the import stores the default. The content
+ * digest is computed over the archive projection, so it covers the value as
+ * written, and the manifest lists the column under `omitted`.
+ */
+export const OMITTABLE_COLUMNS: Record<string, { option: 'omitIntakeSettings'; replacement: string }> = {
+  'companies.intake_settings': {
+    option: 'omitIntakeSettings',
+    replacement: `'${INTAKE_SETTINGS_DEFAULT_JSON}'`,
+  },
 };
 
 /**
@@ -1362,6 +1381,7 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
   staleKeys('SOFT_REFS', SOFT_REFS, (t) => classifiedSet.has(t));
   staleKeys('SECRET_COLUMNS', SECRET_COLUMNS, (t, c) => classifiedSet.has(t) && SECRET_COLUMN_RE.test(c));
   staleKeys('JSON_CONFIG_COLUMNS', JSON_CONFIG_COLUMNS, (t, c) => classifiedSet.has(t) && JSON_CONFIG_RE.test(c) && /json/.test(col(t, c)!.type));
+  staleKeys('OMITTABLE_COLUMNS', OMITTABLE_COLUMNS, (t) => archivedSet.has(t));
   staleKeys('STRIPPED_JSON_COLUMNS', STRIPPED_JSON_COLUMNS, (t, c) => archivedSet.has(t) && /json/.test(col(t, c)!.type));
   staleKeys('FILE_COLUMNS', FILE_COLUMNS, (t) => classifiedSet.has(t));
   staleKeys('UNIQUE_INDEX_RULES', UNIQUE_INDEX_RULES, (t) => classifiedSet.has(t));

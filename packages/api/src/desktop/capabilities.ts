@@ -145,4 +145,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * those with no company that are not filed on another company's transaction; others are 404 or left out.
    */
   'attachments-company-v1',
+  /**
+   * GET/PUT /api/v1/company/intake-settings: the company's intake folders (companies.intake_settings, migration 0232),
+   * a full replace guarded by expectedUpdatedAt (409 STALE, details.updatedAt); paths never in audit rows or the company
+   * row; omitIntakeSettings on the tenant archive export (manifest `omitted`) (U-93).
+   */
+  'intake-settings-v1',
 ];

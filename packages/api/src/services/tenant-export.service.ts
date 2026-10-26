@@ -223,7 +223,9 @@ export async function exportTenant(
   const companyRows = await queryTable('companies', tenantId);
   // The closing-date password hash (U-15) stays with the books it guards:
   // importAsNewTenant never restores it, so it is not exported either.
-  const { closing_password_hash: _closingPasswordHash, ...company } = companyRows[0] || {};
+  // Nor are the intake folders (U-93): paths from one computer, which the
+  // importer never restores either (it lists the company columns it copies).
+  const { closing_password_hash: _closingPasswordHash, intake_settings: _intakeSettings, ...company } = companyRows[0] || {};
   const companyName = (company['business_name'] as string) || 'Unknown Company';
 
   // 2. Query all data tables
