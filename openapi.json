@@ -25627,7 +25627,7 @@
     },
     "/api/v1/document-drafts": {
       "get": {
-        "description": "Response `{drafts, total}`, newest first. `status` is one or a comma-joined set of new, ready, failed, converted, discarded.",
+        "description": "Response `{drafts, total}`, newest first. `status` is one or a comma-joined set of new, ready, failed, converted, discarded. `limit` 1-200 (default 50), `offset` 0-10000. `view=summary` leaves each draft's reading (`fields`, `lines`, `checks`) out; GET /:id returns it. Readable with view access to any of bills, checks or transactions, whatever the drafts' kinds.",
         "operationId": "get_api_v1_document_drafts",
         "parameters": [
           {
@@ -25670,8 +25670,22 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
               "minimum": 0,
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "summary"
+              ],
+              "type": "string"
             }
           }
         ],
@@ -25953,7 +25967,7 @@
     },
     "/api/v1/document-drafts/{id}/convert": {
       "post": {
-        "description": "Response 201 `{draft, transaction}`. `body` is the kind's own create body (bill: POST /bills; card_charge and cash_expense: POST /transactions expense with payFromAccountId; check: POST /checks), without draftAttachmentId. One database transaction: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE), the record posts through the kind's service (a date on or before the closing date needs the top-level closingPassword: 423 TB_PERIOD_LOCKED / 403 CLOSING_PASSWORD_INVALID), then posted bills, expenses and checks of the same vendor with the same reference, or the same total within 60 days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); the draft's file moves to the new record (attachable type bill, or expense for the other kinds) with an audit row; the draft is marked converted. Any refusal leaves nothing written. Missing or other kind: 400 INVALID_KIND. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Keyed: idempotency-docs-v1 (the permission is checked before a replay).",
+        "description": "Response 201 `{draft, transaction, draftMatches}`. `body` is the kind's own create body (bill: POST /bills; card_charge and cash_expense: POST /transactions expense with payFromAccountId; check: POST /checks), without draftAttachmentId. One database transaction: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE; the draft's current kind needs its permission too, 403), the vendor must be tenant-wide or the company's (404), the record posts through the kind's service (a date on or before the closing date needs the top-level closingPassword: 423 TB_PERIOD_LOCKED / 403 CLOSING_PASSWORD_INVALID), then posted bills, expenses and checks of the same vendor with the same reference, or the same total within 60 days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); other live drafts that match are listed in details.draftMatches (and in the 201 response's draftMatches) but never block. The draft's file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for the other kinds) with an audit row each; the draft is marked converted. Any refusal leaves nothing written. Missing or other kind: 400 INVALID_KIND. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Keyed: idempotency-docs-v1 (the permission is checked before a replay).",
         "operationId": "post_api_v1_document_drafts_by_id_convert",
         "parameters": [
           {
@@ -68443,7 +68457,7 @@
                   },
                   "resetDocumentDrafts": {
                     "default": false,
-                    "description": "Restore with no document drafts and no vendor layouts (document-drafts-v1); applied after content verification. ClientLedger sets it for transfer files.",
+                    "description": "Restore with no unconverted document drafts and no vendor layouts (document-drafts-v1); converted drafts stay with their transactions; applied after content verification. ClientLedger sets it for transfer files.",
                     "type": "boolean"
                   },
                   "resetIntakeSettings": {
@@ -69428,7 +69442,7 @@
                   },
                   "omitDocumentDrafts": {
                     "default": false,
-                    "description": "Leave unconverted document drafts, vendor layouts and live drafts' files out (document-drafts-v1); ClientLedger sets it for transfer files.",
+                    "description": "Leave unconverted document drafts (and their audit rows), vendor layouts and live drafts' files out (document-drafts-v1); converted drafts and files other records use travel. ClientLedger sets it for transfer files.",
                     "type": "boolean"
                   },
                   "omitIntakeSettings": {
