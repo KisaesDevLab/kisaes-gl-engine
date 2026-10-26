@@ -52,7 +52,13 @@ export const IDEMPOTENCY_AP_V1_ROUTES = [
   'post /api/v1/bill-payments/{id}/void',
 ].sort();
 
-const ALL_KEYED_ROUTES = [...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES].sort();
+/** The idempotency-docs-v1 set: document draft create and convert (U-92a). */
+export const IDEMPOTENCY_DOCS_V1_ROUTES = [
+  'post /api/v1/document-drafts',
+  'post /api/v1/document-drafts/{id}/convert',
+].sort();
+
+const ALL_KEYED_ROUTES = [...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES].sort();
 
 let paths: Paths;
 
@@ -94,5 +100,6 @@ describe('idempotency-v1 in openapi.json', () => {
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-v1');
     expect(DESKTOP_CAPABILITIES).toContain('batch-idempotent-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-ap-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('idempotency-docs-v1');
   });
 });
