@@ -43,7 +43,8 @@ import {
 import { USERS_PROJECTION_SQL } from './identity.js';
 import type { JobProgress } from './jobs.js';
 import {
-  ARCHIVE_AUDIT_ENTITY_TYPE, EXCLUDED_TENANT_ARCHIVE_TABLES, NATURAL_KEYS, OMITTABLE_COLUMNS, getPortabilityPlan, identityProjectionSql, scopeSql,
+  ARCHIVE_AUDIT_ENTITY_TYPE, EXCLUDED_TENANT_ARCHIVE_TABLES, NATURAL_KEYS, OMITTABLE_COLUMNS, OMITTABLE_ROW_FILTERS, OMITTABLE_TABLES,
+  getPortabilityPlan, identityProjectionSql, scopeSql,
   type PortabilityPlan, type TablePlan,
 } from './plan.js';
 import { digestFor, fieldString, pkOfLine, rewriteField } from './remap.js';
@@ -55,6 +56,12 @@ export interface ExportOptions {
   includeAudit?: boolean;
   /** Leave companies.intake_settings out (U-93): the archive carries the column default. */
   omitIntakeSettings?: boolean;
+  /**
+   * Leave unconverted document drafts out (U-92, M6): document_drafts and
+   * vendor_layout_templates travel with no rows, and the attachments of live
+   * drafts (and their files) are left out. For transfer files.
+   */
+  omitDocumentDrafts?: boolean;
   host?: Record<string, unknown>;
   passphrase: string;
   /** Pre-assigned archive id (the route returns it with the job id). */
@@ -107,9 +114,28 @@ function orderBySql(t: TablePlan): string {
   return t.archive.map((c) => `a."${c.name}"::text`).join(', ');
 }
 
+/** What an export leaves out on request: `table.column` values, whole tables, and row filters by table (U-93, U-92). */
+export interface ExportOmissions {
+  columns: ReadonlySet<string>;
+  tables: ReadonlySet<string>;
+  rowFilters: ReadonlySet<string>;
+}
+
+export const NO_OMISSIONS: ExportOmissions = { columns: new Set(), tables: new Set(), rowFilters: new Set() };
+
+/** The row scope of table `t` in an export over alias `a`. */
+export function exportScopeSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ExportOmissions = NO_OMISSIONS): string {
+  if (t.name === 'audit_log' && !includeAudit) return 'false';
+  if (omit.tables.has(t.name)) return 'false';
+  const scope = scopeSql(plan, t.name, 'a');
+  const filter = omit.rowFilters.has(t.name) ? OMITTABLE_ROW_FILTERS[t.name] : undefined;
+  return filter ? `(${scope}) AND ${filter.keep('a')}` : scope;
+}
+
 /** The two-projection cursor query for a table. */
-export function tableCursorSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ReadonlySet<string> = new Set()): string {
-  const scope = t.name === 'audit_log' && !includeAudit ? 'false' : scopeSql(plan, t.name, 'a');
+export function tableCursorSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omissions: ExportOmissions = NO_OMISSIONS): string {
+  const scope = exportScopeSql(plan, t, includeAudit, omissions);
+  const omit = omissions.columns;
   const archive = t.archive.map((c) => {
     const k = `${t.name}.${c.name}`;
     const o = omit.has(k) ? OMITTABLE_COLUMNS[k] : undefined;
@@ -146,7 +172,7 @@ async function writeTable(
   t: TablePlan,
   tenantId: string,
   includeAudit: boolean,
-  omit: ReadonlySet<string>,
+  omit: ExportOmissions,
   files: FileRef[],
   globals: GlobalRefCollector,
   warnings: string[],
@@ -306,18 +332,19 @@ export async function runExport(tenantId: string, userId: string, options: Expor
   const includeAttachments = options.includeAttachments ?? true;
   const includeAudit = options.includeAudit ?? true;
   const omitIntakeSettings = options.omitIntakeSettings ?? false;
+  const omitDocumentDrafts = options.omitDocumentDrafts ?? false;
   const host = options.host ?? {};
   if (Buffer.byteLength(JSON.stringify(host), 'utf8') > HOST_MAX_BYTES) throw AppError.badRequest('host metadata is too large (16 KiB)', 'VALIDATION_ERROR');
   if (await isWorkspaceTenant(tenantId)) throw new ArchiveError('WORKSPACE_TENANT', 'The workspace is never archived.');
   assertPassphraseStrong(options.passphrase);
   const archiveId = options.archiveId ?? crypto.randomUUID();
-  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, omitIntakeSettings, host, passphrase: options.passphrase, archiveId }, progress));
+  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, omitIntakeSettings, omitDocumentDrafts, host, passphrase: options.passphrase, archiveId }, progress));
 }
 
 async function exportLocked(
   tenantId: string,
   userId: string,
-  o: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string },
+  o: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings: boolean; omitDocumentDrafts: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string },
   progress?: JobProgress,
 ): Promise<ExportResult> {
   const plan = await getPortabilityPlan();
@@ -372,7 +399,18 @@ async function exportLocked(
       const globals: GlobalRefCollector = { byTable: new Map() };
       const tables: ManifestTable[] = [];
       let totalRows = 0;
-      const omit = new Set(Object.entries(OMITTABLE_COLUMNS).filter(([, r]) => o[r.option]).map(([k]) => k));
+      const omit: ExportOmissions = {
+        columns: new Set(Object.entries(OMITTABLE_COLUMNS).filter(([, r]) => o[r.option]).map(([k]) => k)),
+        tables: new Set(Object.entries(OMITTABLE_TABLES).filter(([, r]) => o[r.option]).map(([k]) => k)),
+        rowFilters: new Set(Object.entries(OMITTABLE_ROW_FILTERS).filter(([, r]) => o[r.option]).map(([k]) => k)),
+      };
+      // Rows the filters leave out, counted in the same snapshot (manifest omittedRows).
+      const omittedRows: Record<string, number> = {};
+      for (const name of omit.rowFilters) {
+        const t = plan.byName.get(name)!;
+        const r = await client.query(`SELECT count(*)::int AS n FROM "${name}" a WHERE (${scopeSql(plan, name, 'a')}) AND NOT (${OMITTABLE_ROW_FILTERS[name]!.keep('a')})`, [tenantId]);
+        omittedRows[t.name] = (r.rows[0] as { n: number }).n;
+      }
       for (let i = 0; i < plan.tables.length; i++) {
         const t = plan.tables[i]!;
         step(`table:${t.name}`, 2 + Math.round((i / plan.tables.length) * 60));
@@ -444,8 +482,12 @@ async function exportLocked(
         schema: { version: schema.version, tag: schema.tag },
         createdAt: new Date().toISOString(),
         source: { tenantId, name: tenantRow.name, ledgerVersion },
-        options: { includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, omitIntakeSettings: o.omitIntakeSettings },
-        omitted: [...omit].sort(),
+        options: {
+          includeAttachments: o.includeAttachments, includeAudit: o.includeAudit,
+          omitIntakeSettings: o.omitIntakeSettings, omitDocumentDrafts: o.omitDocumentDrafts,
+        },
+        omitted: [...omit.columns, ...omit.tables, ...[...omit.rowFilters].map((n) => OMITTABLE_ROW_FILTERS[n]!.label)].sort(),
+        ...(omit.rowFilters.size > 0 ? { omittedRows } : {}),
         host: o.host,
         tables,
         identity: { ...IDENTITY_ENTRIES, parts: identityParts },
@@ -481,7 +523,7 @@ async function exportLocked(
           `INSERT INTO audit_log (tenant_id, user_id, action, entity_type, entity_id, after_data)
            VALUES ($1, $2, 'create', $3, $4, $5::jsonb)`,
           [tenantId, userId, ARCHIVE_AUDIT_ENTITY_TYPE, archiveId, JSON.stringify({
-            archiveId, sha256, bytes: stat.size, includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, omitIntakeSettings: o.omitIntakeSettings, userId,
+            archiveId, sha256, bytes: stat.size, includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, omitIntakeSettings: o.omitIntakeSettings, omitDocumentDrafts: o.omitDocumentDrafts, userId,
           })],
         );
         await client.query('COMMIT');

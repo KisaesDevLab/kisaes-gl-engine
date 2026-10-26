@@ -141,6 +141,9 @@ export const importArchiveSchema = z.object({
   /** Restore every company with no intake folders (U-93, intake-settings-v1); ClientLedger sets it for transfer files. */
   resetIntakeSettings: z.boolean().optional().default(false)
     .describe('Restore every company with no intake folders (intake-settings-v1); applied after content verification. ClientLedger sets it for transfer files.'),
+  /** Restore with no document drafts or vendor layouts (U-92, document-drafts-v1); ClientLedger sets it for transfer files. */
+  resetDocumentDrafts: z.boolean().optional().default(false)
+    .describe('Restore with no document drafts and no vendor layouts (document-drafts-v1); applied after content verification. ClientLedger sets it for transfer files.'),
   /** Desktop (CL_LAN != 1) only: absolute path of a local .zip / .clbackup, opened read-only. */
   path: z.string().min(1).max(4096).optional(),
 });
@@ -188,6 +191,7 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   const body = req.body as Record<string, unknown>;
   if (typeof body['scratch'] === 'string') body['scratch'] = body['scratch'] === 'true';
   if (typeof body['resetIntakeSettings'] === 'string') body['resetIntakeSettings'] = body['resetIntakeSettings'] === 'true';
+  if (typeof body['resetDocumentDrafts'] === 'string') body['resetDocumentDrafts'] = body['resetDocumentDrafts'] === 'true';
   next();
 }, validate(importArchiveSchema), describe({
   summary: 'Import an archive as a new company (202; multipart `file`, or {path} on desktop without LAN)',
@@ -228,7 +232,7 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   registerPassphrase(body.passphrase);
   const job = startJob('import', null, userId, async (progress) => {
     try {
-      const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId, resetIntakeSettings: body.resetIntakeSettings }, progress);
+      const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId, resetIntakeSettings: body.resetIntakeSettings, resetDocumentDrafts: body.resetDocumentDrafts }, progress);
       clearPassphraseFailures(userId);
       return result;
     } catch (err) {

@@ -54,6 +54,13 @@ export interface ImportOptions {
    * the content verification, so the archive verifies as written.
    */
   resetIntakeSettings?: boolean;
+  /**
+   * Restore with no document drafts and no vendor layouts (U-92):
+   * ClientLedger sets it for transfer files. Applied after the content
+   * verification. The files of drafts the archive carried stay as ordinary
+   * draft attachments (an export with omitDocumentDrafts carries none).
+   */
+  resetDocumentDrafts?: boolean;
 }
 
 export interface ImportResult {
@@ -298,6 +305,12 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       if (resetIntakeSettings) {
         await client.query('UPDATE companies SET intake_settings = DEFAULT WHERE tenant_id = $1', [newTenantId]);
       }
+      // Document drafts and vendor layouts removed on request (U-92), likewise.
+      const resetDocumentDrafts = options.resetDocumentDrafts === true;
+      if (resetDocumentDrafts) {
+        await client.query('DELETE FROM document_drafts WHERE tenant_id = $1', [newTenantId]);
+        await client.query('DELETE FROM vendor_layout_templates WHERE tenant_id = $1', [newTenantId]);
+      }
 
       // After verification: audit row, fingerprint, provenance.
       step('commit', 95);
@@ -306,7 +319,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
          VALUES ($1, $2, 'create', 'tenant_import', $3, $4::jsonb)`,
         [newTenantId, options.callerUserId, manifest.archiveId, JSON.stringify({
           archiveId: manifest.archiveId, archiveSha256, sourceTenantId: manifest.source.tenantId, sourceName: manifest.source.name, userId: options.callerUserId,
-          resetIntakeSettings,
+          resetIntakeSettings, resetDocumentDrafts,
         })],
       );
       const fingerprint = await computeTenantFingerprint(client, plan, newTenantId);

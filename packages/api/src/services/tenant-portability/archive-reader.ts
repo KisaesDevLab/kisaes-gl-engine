@@ -29,7 +29,8 @@ const SOURCE_NAME_MAX = 255;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA_RE = /^[0-9a-f]{64}$/;
 const TABLE_RE = /^[a-z_][a-z0-9_]*$/;
-const OMITTED_RE = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
+// `table.column` (U-93), `table` and `table:filter` (U-92).
+const OMITTED_RE = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*|:[a-z0-9_-]{1,64})?$/;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -85,8 +86,14 @@ export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): Archi
   const options = raw['options'];
   if (!isObject(options) || typeof options['includeAttachments'] !== 'boolean' || typeof options['includeAudit'] !== 'boolean') throw corrupt('manifest options');
   if (options['omitIntakeSettings'] !== undefined && typeof options['omitIntakeSettings'] !== 'boolean') throw corrupt('manifest options');
+  if (options['omitDocumentDrafts'] !== undefined && typeof options['omitDocumentDrafts'] !== 'boolean') throw corrupt('manifest options');
   const omitted = raw['omitted'];
-  if (omitted !== undefined && (!Array.isArray(omitted) || !omitted.every((o) => typeof o === 'string' && OMITTED_RE.test(o)))) throw corrupt('manifest omitted');
+  if (omitted !== undefined && (!Array.isArray(omitted) || omitted.length > 64 || !omitted.every((o) => typeof o === 'string' && OMITTED_RE.test(o)))) throw corrupt('manifest omitted');
+  const omittedRows = raw['omittedRows'];
+  if (omittedRows !== undefined && (!isObject(omittedRows) || Object.keys(omittedRows).length > 64
+    || !Object.entries(omittedRows).every(([k, n]) => TABLE_RE.test(k) && typeof n === 'number' && Number.isSafeInteger(n) && n >= 0))) {
+    throw corrupt('manifest omittedRows');
+  }
   const host = raw['host'];
   if (!isObject(host) || Buffer.byteLength(JSON.stringify(host), 'utf8') > HOST_MAX_BYTES) throw corrupt('manifest host');
   if (!Array.isArray(raw['tables'])) throw corrupt('manifest tables');
