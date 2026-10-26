@@ -703,7 +703,7 @@ export async function attach(
   tenantId: string, companyId: string, userId: string, id: string, input: AttachDocumentDraftInput,
   canKind: (kind: DocumentDraftKind) => Promise<boolean>,
   canTarget: (resource: ResourceKey) => Promise<boolean>,
-  canAttachType: (txnType: string) => Promise<boolean> = async () => true,
+  canAttachType: (txnType: string) => Promise<boolean>,
 ): Promise<{ draft: DocumentDraftDto; transactionId: string }> {
   return db.transaction(async (tx) => {
     const before = await lockDraft(tx, tenantId, companyId, id);
