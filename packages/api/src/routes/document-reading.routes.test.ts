@@ -85,7 +85,7 @@ let companyA = '';
 let companyB = '';
 
 // A marker that must never leave the request: not in ai_jobs, not in audit_log.
-const SECRET_TEXT = 'ZZQ-PRIVATE-MEMO-7731 Acme Plumbing invoice 4411 total 1,234.50';
+const SECRET_TEXT = 'ZZQ-PRIVATE-MEMO-7731 Acme Plumbing invoice 4411 total 1,234.50'; // gitleaks:allow (test canary)
 /** A PNG signature and IHDR (width × height), padded to `total` bytes. */
 function png(width: number, height: number, total = 64): Buffer {
   const head = Buffer.alloc(33);

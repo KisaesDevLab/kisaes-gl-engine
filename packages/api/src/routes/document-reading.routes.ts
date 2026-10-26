@@ -37,7 +37,7 @@ const assistLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req as any).userId || req.ip || 'anonymous',
+  keyGenerator: (req) => req.userId || req.ip || 'anonymous',
   message: { error: { message: 'Too many AI requests, please slow down', code: 'AI_RATE_LIMIT' } },
 });
 

@@ -366,11 +366,11 @@ export async function assist(
       lineItems,
       qualityWarnings,
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     // The message is ours or the provider's error class, never content.
     // Once our signal fired, any rejection is our timeout, whatever the SDK
     // calls its abort error.
-    const timedOut = err?.name === 'TimeoutError' || signal.aborted;
+    const timedOut = (err instanceof Error && err.name === 'TimeoutError') || signal.aborted;
     const code = err instanceof AppError ? (err.code ?? 'error') : (timedOut ? 'timeout' : 'provider_error');
     if (result) {
       await orchestrator.failJob(job.id, code, {

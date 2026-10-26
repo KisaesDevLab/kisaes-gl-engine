@@ -70,6 +70,9 @@ export const billOcrOutputSchema = z
   })
   .passthrough();
 
+/** The validated bill model reply (unknown keys are kept). */
+export type BillOcrOutput = z.infer<typeof billOcrOutputSchema>;
+
 /**
  * Bill OCR — extracts vendor invoice data from an uploaded image or PDF
  * attachment so the bill entry form can pre-fill itself.
@@ -289,8 +292,8 @@ export type BillOcrFields = Pick<BillOcrResult,
  * filled in: a value the model did not give stays null. Shared by
  * extractBillFromAttachment and the document-reading assist (U-92d).
  */
-export function normalizeBillOcrOutput(raw: unknown): { parsed: any; fields: BillOcrFields } {
-  const parsed: any = validateModelOutput(billOcrOutputSchema, raw, 'bill extraction');
+export function normalizeBillOcrOutput(raw: unknown): { parsed: BillOcrOutput; fields: BillOcrFields } {
+  const parsed = validateModelOutput(billOcrOutputSchema, raw, 'bill extraction');
 
   const confidence = typeof parsed.confidence === 'number'
     ? parsed.confidence
@@ -304,13 +307,13 @@ export function normalizeBillOcrOutput(raw: unknown): { parsed: any; fields: Bil
   // number from the model is turned into a string here, an unreadable
   // amount becomes null with 'low' confidence.
   const lineItems: BillOcrLineItem[] = Array.isArray(parsed.line_items)
-    ? parsed.line_items.map((li: any) => {
+    ? parsed.line_items.map((li) => {
         const amount = normalizeBillMoney(li?.amount);
         return {
           description: li?.description ?? null,
           amount,
           quantity: normalizeBillMoney(li?.quantity),
-          confidence: amount == null ? 'low' : (bucketConfidence(li?.confidence) ?? documentConfidence),
+          confidence: amount == null ? 'low' : (bucketConfidence(li?.['confidence']) ?? documentConfidence),
         };
       })
     : [];
