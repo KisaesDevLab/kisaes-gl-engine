@@ -24,7 +24,7 @@ import { closingPasswordLimiter } from '../middleware/closing-password-limiter.j
 import { lockContextMiddleware } from '../services/lock-context.js';
 import {
   requireAnyDocumentResource, requireCreateKindPermission, requireConvertKindPermission, canChangeKind,
-  requireAttachPermission, canChangeResource,
+  requireAttachPermission, canChangeResource, canAttachToType,
 } from '../middleware/document-draft-permission.js';
 import * as draftService from '../services/document-draft.service.js';
 
@@ -153,10 +153,12 @@ documentDraftsRouter.post('/:id/attach', requireAttachPermission, keyedAttach, v
     '(document-drafts-attach-v1); nothing posts and no closing-date password is needed. One database transaction, locks in the order ' +
     'draft, transaction, file: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 ' +
     'STALE, details.updatedAt); the transaction must be this company\'s or tenant-wide and not deleted (else 404); a type files can\'t be ' +
-    'attached to is 422 TARGET_NOT_ATTACHABLE; not posted (void, draft) is 409 TRANSACTION_NOT_POSTED (details.status); the draft\'s file ' +
+    'attached to is 422 TARGET_NOT_ATTACHABLE, and so is an adjusting journal entry (aje) for a client user or with TRIAL_BALANCE_V1 off; ' +
+    'not posted (void, draft) is 409 TRANSACTION_NOT_POSTED (details.status); the draft\'s file ' +
     'deleted is 422 DOCUMENT_FILE_MISSING, filed on another record 422 ATTACHMENT_NOT_DRAFT, already on this transaction succeeds. Every file ' +
-    'on the draft key, except one another live draft reads, moves to the transaction (attachable type = its txnType) with an audit row each; ' +
-    'the draft is marked converted (convertedTransactionId = the transaction, convertedType = its txnType, kind unchanged) with an audit row ' +
+    'on the draft key, except one another live draft reads, moves to the transaction (attachable type = its txnType; journal_entry for an aje, ' +
+    'where MyBooks stores AJE files) with an audit row each; ' +
+    'the draft is marked converted (convertedTransactionId = the transaction, convertedType = its txnType, aje for an AJE; kind unchanged) with an audit row ' +
     '`attached: true`. Any refusal leaves nothing written. Permission: the draft\'s current kind\'s (bill and unknown: bills, check: checks, ' +
     'card_charge and cash_expense: transactions) and the transaction\'s (bill: bills, vendor_credit: vendor_credits, bill_payment: ' +
     'pay_bills, invoice: invoices, customer_payment: receive_payment, daily_sales: daily_sales, aje: trial_balance, others: transactions), ' +
@@ -166,7 +168,7 @@ documentDraftsRouter.post('/:id/attach', requireAttachPermission, keyedAttach, v
   params: idParams,
 }), async (req, res) => {
   await draftService.attach(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body,
-    (k) => canChangeKind(req, k), (r) => canChangeResource(req, r));
+    (k) => canChangeKind(req, k), (r) => canChangeResource(req, r), (t) => canAttachToType(req, t));
   res.status(200).json(await draftService.attachResponse(req.tenantId, req.companyId, req.params['id']!));
 });
 

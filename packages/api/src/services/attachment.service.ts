@@ -521,9 +521,54 @@ async function moveDraftKeyFiles(
   return rows.map((r) => r.id);
 }
 
+/** A locked attachment row of a document draft's file (lockDraftFile). */
+export interface LockedDraftFile {
+  attachableType: string;
+  attachableId: string;
+  companyId: string | null;
+}
+
+/**
+ * Locks a document draft's file on `tx` for a convert or an attach (U-95,
+ * review L-3). When the file is on a draft key, every row of that key is
+ * locked first, in id order (the order moveDraftKeyFiles locks them), and
+ * the file is read from that locked set; so two drafts of one key that
+ * convert or attach at once lock the same rows in the same order and never
+ * deadlock. A file that is not (or no longer) on a draft key is locked
+ * alone. Undefined when the file is gone.
+ */
+export async function lockDraftFile(tx: Tx, tenantId: string, attachmentId: string): Promise<LockedDraftFile | undefined> {
+  const peek = await tx.select({ attachableType: attachments.attachableType, attachableId: attachments.attachableId })
+    .from(attachments)
+    .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)));
+  const seen = peek[0];
+  if (seen && seen.attachableType === 'draft') {
+    const keyRows = await tx.select({
+      id: attachments.id, attachableType: attachments.attachableType, attachableId: attachments.attachableId, companyId: attachments.companyId,
+    }).from(attachments)
+      .where(and(eq(attachments.tenantId, tenantId), eq(attachments.attachableType, 'draft'), eq(attachments.attachableId, seen.attachableId)))
+      .orderBy(attachments.id)
+      .for('update');
+    const own = keyRows.find((r) => r.id === attachmentId);
+    if (own) return { attachableType: own.attachableType, attachableId: own.attachableId, companyId: own.companyId };
+    // Moved off the key between the read and the lock: lock it where it is now.
+  }
+  const [row] = await tx.select({
+    attachableType: attachments.attachableType, attachableId: attachments.attachableId, companyId: attachments.companyId,
+  }).from(attachments)
+    .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, attachmentId)))
+    .for('update');
+  return row;
+}
+
+/** Whether `executor` is the pool (else it is a transaction). */
+function isPool(executor: DbOrTx): executor is typeof db {
+  return executor === db;
+}
+
 /** Runs `fn` on `executor` when it is a transaction, else in a new one (row locks need a transaction). */
 function inTx<T>(executor: DbOrTx, fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return executor === db ? db.transaction(fn) : fn(executor as Tx);
+  return isPool(executor) ? db.transaction(fn) : fn(executor);
 }
 
 /**
