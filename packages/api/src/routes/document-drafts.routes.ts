@@ -51,7 +51,7 @@ documentDraftsRouter.post('/', requireCreateKindPermission, keyedCreate, validat
   description: 'Response 201 `{draft}`. `attachmentId` names a draft attachment (attachable type `draft`) visible to the company (else 404; ' +
     'another type 422 ATTACHMENT_NOT_DRAFT). The engine hashes the stored file: a file this company already has as a draft that is not ' +
     'discarded is 409 DOCUMENT_ALREADY_CLAIMED (`details.draftId`); two concurrent claims of one file give one draft. The attachment ' +
-    `is left a draft attachment and takes the company. ${permissionNote} Keyed: idempotency-docs-v1.`,
+    `is left a draft attachment and takes the company. ${permissionNote} Idempotency list: idempotency-docs-v1.`,
 }), async (req, res) => {
   const draft = await draftService.create(req.tenantId, req.companyId, req.userId, req.body);
   res.status(201).json({ draft });
@@ -131,7 +131,7 @@ documentDraftsRouter.post('/:id/convert', requireConvertKindPermission, keyedCon
       'file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for ' +
       'the other kinds) with an audit row each; the draft is marked converted. ' +
       'Any refusal leaves nothing written. Missing or other kind: 400 INVALID_KIND. ' +
-      `${permissionNote} Keyed: idempotency-docs-v1 (the permission is checked before a replay).`,
+      `${permissionNote} Idempotency list: idempotency-docs-v1 (the permission is checked before a replay).`,
     body: convertBodyDoc,
     params: idParams,
   }), async (req, res) => {

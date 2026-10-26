@@ -43,6 +43,8 @@ import { __documentDraftTestHooks } from '../services/document-draft.service.js'
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { buildPortabilityPlan, scopeSql, type PortabilityPlan } from '../services/tenant-portability/plan.js';
 
+const CLOSING_PHRASE = 'closing-pass-2026'; // gitleaks:allow (test placeholder)
+
 let server: Server | null = null;
 let port = 0;
 const suffix = () => Date.now() + '-' + Math.random().toString(36).slice(2, 6);
@@ -468,7 +470,7 @@ describe('convert', () => {
   });
 
   it('closed period: 423 without the password, a password inside body is ignored, the top-level one posts', async () => {
-    const hash = await bcrypt.hash('Closing-pass-2026', 4);
+    const hash = await bcrypt.hash(CLOSING_PHRASE, 4);
     await db.update(companies).set({ lockDate: '2026-01-31', closingPasswordHash: hash } as never).where(eq(companies.id, c.companyA));
     try {
       const d = await newDraft('closed');
@@ -477,11 +479,11 @@ describe('convert', () => {
       const body = billBody(v, '20.00', { txnDate: '2026-01-15' });
       const r1 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'bill', body, expectedUpdatedAt: rd.updatedAt });
       expect(r1.status).toBe(423);
-      const r2 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'bill', body: { ...body, closingPassword: 'Closing-pass-2026' }, expectedUpdatedAt: rd.updatedAt });
+      const r2 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'bill', body: { ...body, closingPassword: CLOSING_PHRASE }, expectedUpdatedAt: rd.updatedAt });
       expect(r2.status).toBe(423);
       const [row] = await db.select().from(documentDrafts).where(eq(documentDrafts.id, d.draft.id));
       expect(row!.status).toBe('ready');
-      const r3 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'bill', body, expectedUpdatedAt: rd.updatedAt, closingPassword: 'Closing-pass-2026' });
+      const r3 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'bill', body, expectedUpdatedAt: rd.updatedAt, closingPassword: CLOSING_PHRASE });
       expect(r3.status, JSON.stringify(r3.json)).toBe(201);
     } finally {
       await db.update(companies).set({ lockDate: null, closingPasswordHash: null } as never).where(eq(companies.id, c.companyA));
