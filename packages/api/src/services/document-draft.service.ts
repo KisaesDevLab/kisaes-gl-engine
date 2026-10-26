@@ -28,7 +28,7 @@
  */
 
 import crypto from 'crypto';
-import { and, eq, inArray, desc, sql, count, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, desc, sql, count, getTableColumns, type SQL } from 'drizzle-orm';
 import {
   DOCUMENT_DRAFT_LIVE_STATUSES, DOCUMENT_DRAFT_LIMITS, convertBodySchemaFor,
   type CreateDocumentDraftInput, type UpdateDocumentDraftInput, type DocumentDraftListQuery,
@@ -204,14 +204,34 @@ export async function get(tenantId: string, companyId: string, id: string): Prom
   return toDto(row);
 }
 
-export async function list(tenantId: string, companyId: string, q: DocumentDraftListQuery): Promise<{ drafts: DocumentDraftDto[]; total: number }> {
+/** A draft without its reading (`fields`, `lines`, `checks`): GET /document-drafts?view=summary. */
+export type DocumentDraftSummaryDto = Omit<DocumentDraftDto, 'fields' | 'lines' | 'checks'>;
+
+export async function list(
+  tenantId: string, companyId: string, q: DocumentDraftListQuery,
+): Promise<{ drafts: Array<DocumentDraftDto | DocumentDraftSummaryDto>; total: number }> {
   const conds: SQL[] = [eq(documentDrafts.tenantId, tenantId), eq(documentDrafts.companyId, companyId)];
   if (q.status && q.status.length) conds.push(inArray(documentDrafts.status, q.status));
   if (q.kind) conds.push(eq(documentDrafts.kind, q.kind));
   const where = and(...conds);
+  const order = [desc(documentDrafts.createdAt), desc(documentDrafts.id)] as const;
+  const totalP = db.select({ n: count() }).from(documentDrafts).where(where);
+  if (q.view === 'summary') {
+    // The reading columns are never read, so the database does not ship them.
+    const { fields: _f, lines: _l, checks: _c, ...summaryCols } = getTableColumns(documentDrafts);
+    const [rows, total] = await Promise.all([
+      db.select(summaryCols).from(documentDrafts).where(where).orderBy(...order).limit(q.limit).offset(q.offset),
+      totalP,
+    ]);
+    const drafts = rows.map((r) => {
+      const { fields: _a, lines: _b, checks: _d, ...rest } = toDto({ ...r, fields: {}, lines: [], checks: [] } as DocumentDraftRow);
+      return rest;
+    });
+    return { drafts, total: Number(total[0]?.n ?? 0) };
+  }
   const [rows, total] = await Promise.all([
-    db.select().from(documentDrafts).where(where).orderBy(desc(documentDrafts.createdAt), desc(documentDrafts.id)).limit(q.limit).offset(q.offset),
-    db.select({ n: count() }).from(documentDrafts).where(where),
+    db.select().from(documentDrafts).where(where).orderBy(...order).limit(q.limit).offset(q.offset),
+    totalP,
   ]);
   return { drafts: rows.map(toDto), total: Number(total[0]?.n ?? 0) };
 }
@@ -236,13 +256,16 @@ export async function create(
   const sha = crypto.createHash('sha256').update(bytes).digest('hex');
 
   return db.transaction(async (tx) => {
-    // The file must still be a draft attachment once locked (a concurrent
-    // posting may have relinked it meanwhile).
-    const locked = await tx.execute(sql`SELECT attachable_type FROM attachments
+    // The file must still be a draft attachment of this company (or of no
+    // company yet) once locked: a concurrent posting may have relinked it,
+    // a delete removed it, or another company's claim stamped it meanwhile.
+    const locked = await tx.execute(sql`SELECT attachable_type, company_id FROM attachments
       WHERE tenant_id = ${tenantId} AND id = ${att.id} FOR UPDATE`);
-    const lockedType = (locked.rows[0] as { attachable_type: string } | undefined)?.attachable_type;
-    if (lockedType === undefined) throw AppError.notFound('Attachment not found');
-    if (lockedType !== 'draft') {
+    const lockedRow = locked.rows[0] as { attachable_type: string; company_id: string | null } | undefined;
+    if (!lockedRow || (lockedRow.company_id !== null && lockedRow.company_id !== companyId)) {
+      throw AppError.notFound('Attachment not found');
+    }
+    if (lockedRow.attachable_type !== 'draft') {
       throw AppError.unprocessableEntity('Only a file that is not filed on a record yet can be read as a document.', 'ATTACHMENT_NOT_DRAFT');
     }
 
@@ -263,9 +286,11 @@ export async function create(
     }
     await claimAndRecord(tx, 'document_draft', id);
     // The file now belongs to this company (U-90): fill the company on a
-    // tenant-wide row, never replacing one it has.
-    await tx.execute(sql`UPDATE attachments SET company_id = coalesce(company_id, ${companyId}::uuid)
-      WHERE tenant_id = ${tenantId} AND id = ${att.id}`);
+    // tenant-wide row, never replacing one it has. Guarded: exactly the
+    // locked row, still this company's or no company's.
+    const stamped = await tx.execute(sql`UPDATE attachments SET company_id = ${companyId}::uuid
+      WHERE tenant_id = ${tenantId} AND id = ${att.id} AND (company_id IS NULL OR company_id = ${companyId}::uuid)`);
+    if ((stamped.rowCount ?? 0) !== 1) throw AppError.notFound('Attachment not found');
     const [row] = await tx.select().from(documentDrafts).where(eq(documentDrafts.id, id));
     await auditLog(tenantId, 'create', 'document_draft', id, null, auditImage(row!), userId, tx);
     return toDto(row!);
@@ -403,13 +428,13 @@ async function transactionMatches(exec: Tx | typeof db, tenantId: string, compan
 }
 
 /** Other live drafts of the vendor in the company, by the same two rules. */
-async function draftMatches(tenantId: string, companyId: string, p: DuplicateProbe): Promise<DuplicateMatch[]> {
+async function draftMatches(exec: Tx | typeof db, tenantId: string, companyId: string, p: DuplicateProbe): Promise<DuplicateMatch[]> {
   if (!p.contactId) return [];
   const ref = normalizedRefSql(sql`${p.reference}::text`);
   const amountRule = p.total && p.date
     ? sql`(d.doc_total = (${p.total})::numeric AND d.doc_date BETWEEN (${p.date})::date - ${DUPLICATE_WINDOW_DAYS}::int AND (${p.date})::date + ${DUPLICATE_WINDOW_DAYS}::int)`
     : sql`false`;
-  const r = await db.execute(sql`SELECT d.id, d.kind, d.doc_date::text AS date, d.doc_total::text AS total, d.doc_reference AS reference,
+  const r = await exec.execute(sql`SELECT d.id, d.kind, d.doc_date::text AS date, d.doc_total::text AS total, d.doc_reference AS reference,
       (${ref} <> '' AND ${normalizedRefSql(sql`d.doc_reference`)} = ${ref}) AS ref_match
     FROM document_drafts d
     WHERE d.tenant_id = ${tenantId} AND d.company_id = ${companyId}
@@ -445,7 +470,7 @@ export async function duplicates(tenantId: string, companyId: string, id: string
   };
   const [txns, drafts] = await Promise.all([
     transactionMatches(db, tenantId, companyId, probe),
-    draftMatches(tenantId, companyId, probe),
+    draftMatches(db, tenantId, companyId, probe),
   ]);
   return { matches: [...txns, ...drafts] };
 }
@@ -466,10 +491,12 @@ export function parseConvertBody(kind: DocumentConvertKind, body: Record<string,
 /**
  * Converts a draft into a bill, card charge, cash expense or check, in one
  * database transaction (U-92 convert, M5):
- *   1. the draft is locked FOR UPDATE: converted or discarded 409
+ *   1. the draft is locked FOR UPDATE; the caller needs the permission of
+ *      its current kind (`canKind`, 403); converted or discarded 409
  *      DOCUMENT_DRAFT_CLOSED (details.transactionId), stale 409 STALE;
  *   2. the Idempotency-Key is claimed and the draft recorded as its entity;
- *   3. the vendor is serialized with a transaction-scoped advisory lock on
+ *   3. the vendor must be tenant-wide or the company's (404), then is
+ *      serialized with a transaction-scoped advisory lock on
  *      company + vendor, so two computers converting copies of one
  *      invoice run one after the other;
  *   4. the body posts through the kind's service on this transaction
@@ -477,25 +504,34 @@ export function parseConvertBody(kind: DocumentConvertKind, body: Record<string,
  *   5. the duplicate check runs on the posted row (its vendor, total,
  *      reference and date as the engine stored them): any posted bill,
  *      expense or check of the vendor that matches and is not in
- *      acknowledgeDuplicateOf is 409 POSSIBLE_DUPLICATE {matches} and the
- *      posting rolls back;
- *   6. the draft's file is relinked to the new record (one audit row each);
+ *      acknowledgeDuplicateOf is 409 POSSIBLE_DUPLICATE {matches,
+ *      draftMatches} and the posting rolls back; other live drafts that
+ *      match (draftMatches) are listed but never block;
+ *   6. the draft's file is relinked to the new record (one audit row each),
+ *      except files on its key that another live draft reads;
  *   7. the draft is marked converted, with an audit row.
  * Any failure rolls back all of it: no transaction, journal line, audit row
  * or idempotency record, and the file stays on its draft key.
  */
 export async function convert(
   tenantId: string, companyId: string, userId: string, id: string, input: ConvertDocumentDraftInput,
+  canKind: (kind: DocumentDraftKind) => Promise<boolean>,
 ): Promise<{ draft: DocumentDraftDto; transactionId: string }> {
   const body = parseConvertBody(input.kind, input.body);
   return db.transaction(async (tx) => {
     const before = await lockDraft(tx, tenantId, companyId, id);
+    // The route checked the requested kind; the draft's current kind is
+    // checked here, on the locked row (the update() rule).
+    if (!(await canKind(before.kind))) throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
     if (!isLive(before.status)) throw closed(before);
     assertNotStale(before, input.expectedUpdatedAt);
     await claimAndRecord(tx, 'document_draft', before.id);
 
     const contactId = (body as { contactId?: string | null }).contactId ?? null;
     if (contactId) {
+      // The vendor must be tenant-wide or this company's (404), before it
+      // names a lock or a posting.
+      await assertContactInScope(tx, tenantId, companyId, contactId);
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${companyId}:${contactId}`}, 0))`);
     }
 
@@ -520,32 +556,33 @@ export async function convert(
     }
 
     if (contactId) {
-      // The posted row as the engine stored it: total, date and reference.
-      const posted = await tx.execute(sql`SELECT t.total::text AS total, t.txn_date::text AS date, ${TXN_REFERENCE_SQL} AS reference
-        FROM transactions t WHERE t.tenant_id = ${tenantId} AND t.id = ${txnId}`);
-      const p = posted.rows[0] as { total: string | null; date: string | null; reference: string | null };
-      const matches = await transactionMatches(tx, tenantId, companyId, {
-        contactId,
-        // A check carries no vendor reference; the document's own one stands in.
-        reference: p.reference ?? before.docReference,
-        total: p.total === null ? null : sql`${p.total}::text`,
-        date: p.date === null ? null : sql`${p.date}::text`,
-        excludeTransactionId: txnId,
-      });
+      const probe = await postedProbe(tx, tenantId, txnId, before.docReference);
+      const matches = await transactionMatches(tx, tenantId, companyId, { ...probe, contactId, excludeTransactionId: txnId });
       const acknowledged = new Set(input.acknowledgeDuplicateOf.map((x) => x.toLowerCase()));
       const open = matches.filter((m) => !acknowledged.has(m.id.toLowerCase()));
       if (open.length > 0) {
-        throw AppError.conflict('This may already be entered. Check the matching documents, then confirm to enter it anyway.', 'POSSIBLE_DUPLICATE', { matches: open });
+        // Other live drafts of the same document are listed too, but never
+        // block (each is converted or discarded on its own).
+        const drafts = await draftMatches(tx, tenantId, companyId, { ...probe, contactId, excludeDraftId: before.id });
+        throw AppError.conflict('This may already be entered. Check the matching documents, then confirm to enter it anyway.', 'POSSIBLE_DUPLICATE', {
+          matches: open, draftMatches: drafts,
+        });
       }
     }
 
-    // Relink the draft's file (and any other file on the same draft key).
+    // Relink the draft's file (and any other file on the same draft key,
+    // except files another live draft reads: they stay on the key).
     if (before.attachmentId) {
       const att = await tx.execute(sql`SELECT attachable_type, attachable_id FROM attachments
         WHERE tenant_id = ${tenantId} AND id = ${before.attachmentId} FOR UPDATE`);
       const a = att.rows[0] as { attachable_type: string; attachable_id: string } | undefined;
       if (a && a.attachable_type === 'draft') {
-        await attachmentService.relinkDraftAttachments(tx, tenantId, a.attachable_id, attachableTypeOf(input.kind), txnId, userId, companyId);
+        const claimed = await tx.execute(sql`SELECT attachment_id FROM document_drafts
+          WHERE tenant_id = ${tenantId} AND id <> ${before.id} AND attachment_id IS NOT NULL
+            AND status IN ('new', 'ready', 'failed')
+            AND attachment_id IN (SELECT id FROM attachments WHERE tenant_id = ${tenantId} AND attachable_type = 'draft' AND attachable_id = ${a.attachable_id})`);
+        const excludeIds = (claimed.rows as Array<{ attachment_id: string }>).map((r) => r.attachment_id);
+        await attachmentService.relinkDraftAttachments(tx, tenantId, a.attachable_id, attachableTypeOf(input.kind), txnId, userId, companyId, excludeIds);
       }
     }
 
@@ -568,11 +605,34 @@ export async function convert(
   });
 }
 
-/** The convert response: the draft and the posted record as now. */
+/** The duplicate probe of a posted row as the engine stored it: total, date and reference. */
+async function postedProbe(exec: Tx | typeof db, tenantId: string, txnId: string, fallbackReference: string | null) {
+  const posted = await exec.execute(sql`SELECT t.contact_id, t.total::text AS total, t.txn_date::text AS date, ${TXN_REFERENCE_SQL} AS reference
+    FROM transactions t WHERE t.tenant_id = ${tenantId} AND t.id = ${txnId}`);
+  const p = posted.rows[0] as { contact_id: string | null; total: string | null; date: string | null; reference: string | null } | undefined;
+  return {
+    contactId: p?.contact_id ?? null,
+    // A check carries no vendor reference; the document's own one stands in.
+    reference: p?.reference ?? fallbackReference,
+    total: p?.total == null ? null : sql`${p.total}::text`,
+    date: p?.date == null ? null : sql`${p.date}::text`,
+  };
+}
+
+/**
+ * The convert response: the draft, the posted record as now, and the other
+ * live drafts that may be the same document (`draftMatches`, never blocking;
+ * by the posted record's vendor, reference, total and date).
+ */
 export async function convertResponse(tenantId: string, companyId: string, id: string) {
   const draft = await get(tenantId, companyId, id);
   const transaction = draft.convertedTransactionId ? await ledger.getTransaction(tenantId, draft.convertedTransactionId) : null;
-  return { draft, transaction };
+  const draftMatchesOut = draft.convertedTransactionId
+    ? await draftMatches(db, tenantId, companyId, {
+      ...(await postedProbe(db, tenantId, draft.convertedTransactionId, draft.docReference)), excludeDraftId: draft.id,
+    })
+    : [];
+  return { draft, transaction, draftMatches: draftMatchesOut };
 }
 
 // ── Vendor layout templates ──────────────────────────────────────────

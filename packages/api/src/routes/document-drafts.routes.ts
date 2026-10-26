@@ -12,7 +12,7 @@ import { z } from 'zod';
 import {
   createDocumentDraftSchema, updateDocumentDraftSchema, documentDraftListQuerySchema, convertDocumentDraftSchema,
   putVendorLayoutTemplateSchema, vendorLayoutTemplateListQuerySchema, deleteVendorLayoutTemplateSchema,
-  convertBillBodySchema, convertExpenseBodySchema, convertCheckBodySchema,
+  convertBillBodySchema, convertExpenseBodySchema, convertCheckBodySchema, DOCUMENT_DRAFT_LIST_MAX_OFFSET,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { companyContext } from '../middleware/company.js';
@@ -59,7 +59,9 @@ documentDraftsRouter.post('/', requireCreateKindPermission, keyedCreate, validat
 
 documentDraftsRouter.get('/', describe({
   summary: 'List document drafts',
-  description: 'Response `{drafts, total}`, newest first. `status` is one or a comma-joined set of new, ready, failed, converted, discarded.',
+  description: 'Response `{drafts, total}`, newest first. `status` is one or a comma-joined set of new, ready, failed, converted, discarded. ' +
+    `\`limit\` 1-200 (default 50), \`offset\` 0-${DOCUMENT_DRAFT_LIST_MAX_OFFSET}. ` + '`view=summary` leaves each draft\'s reading (`fields`, `lines`, `checks`) out; ' +
+    'GET /:id returns it. Readable with view access to any of bills, checks or transactions, whatever the drafts\' kinds.',
   query: documentDraftListQuerySchema,
 }), async (req, res) => {
   const q = documentDraftListQuerySchema.parse(req.query);
@@ -118,19 +120,22 @@ const convertBodyDoc = z.discriminatedUnion('kind', [
 documentDraftsRouter.post('/:id/convert', requireConvertKindPermission, keyedConvert, closingPasswordLimiter, lockContextMiddleware,
   validate(convertDocumentDraftSchema), describe({
     summary: 'Convert a document draft into a bill, card charge, cash expense or check',
-    description: 'Response 201 `{draft, transaction}`. `body` is the kind\'s own create body (bill: POST /bills; card_charge and cash_expense: ' +
+    description: 'Response 201 `{draft, transaction, draftMatches}`. `body` is the kind\'s own create body (bill: POST /bills; card_charge and cash_expense: ' +
       'POST /transactions expense with payFromAccountId; check: POST /checks), without draftAttachmentId. One database transaction: the draft ' +
-      'is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE), the record posts through ' +
+      'is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE; the draft\'s current kind ' +
+      'needs its permission too, 403), the vendor must be tenant-wide or the company\'s (404), the record posts through ' +
       'the kind\'s service (a date on or before the closing date needs the top-level closingPassword: 423 TB_PERIOD_LOCKED / 403 ' +
       'CLOSING_PASSWORD_INVALID), then posted bills, expenses and checks of the same vendor with the same reference, or the same total within ' +
-      `${draftService.DUPLICATE_WINDOW_DAYS} days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); the draft's ` +
-      'file moves to the new record (attachable type bill, or expense for the other kinds) with an audit row; the draft is marked converted. ' +
+      `${draftService.DUPLICATE_WINDOW_DAYS} days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); ` +
+      'other live drafts that match are listed in details.draftMatches (and in the 201 response\'s draftMatches) but never block. The draft\'s ' +
+      'file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for ' +
+      'the other kinds) with an audit row each; the draft is marked converted. ' +
       'Any refusal leaves nothing written. Missing or other kind: 400 INVALID_KIND. ' +
       `${permissionNote} Keyed: idempotency-docs-v1 (the permission is checked before a replay).`,
     body: convertBodyDoc,
     params: idParams,
   }), async (req, res) => {
-    const { transactionId: _t } = await draftService.convert(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body);
+    const { transactionId: _t } = await draftService.convert(req.tenantId, req.companyId, req.userId, req.params['id']!, req.body, (k) => canChangeKind(req, k));
     res.status(201).json(await draftService.convertResponse(req.tenantId, req.companyId, req.params['id']!));
   });
 

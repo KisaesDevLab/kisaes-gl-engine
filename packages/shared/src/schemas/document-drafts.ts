@@ -45,6 +45,9 @@ export const DOCUMENT_DRAFT_LIMITS = {
   maxInteger: 1_000_000_000,
 } as const;
 
+/** The largest `offset` GET /document-drafts takes (deep pages: narrow by status or kind). */
+export const DOCUMENT_DRAFT_LIST_MAX_OFFSET = 10_000;
+
 // A JSON value as the client stores it: objects, arrays, strings up to
 // maxString characters, booleans, null, and integers within +-maxInteger.
 // A fractional number is refused so no amount is ever stored as a float.
@@ -132,7 +135,9 @@ export const documentDraftListQuerySchema = z.object({
   }),
   kind: z.enum(DOCUMENT_DRAFT_KINDS).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
+  offset: z.coerce.number().int().min(0).max(DOCUMENT_DRAFT_LIST_MAX_OFFSET).default(0),
+  /** `summary` leaves out `fields`, `lines` and `checks` (the readings); `full` (default) carries them. */
+  view: z.enum(['full', 'summary']).default('full'),
 });
 export type DocumentDraftListQuery = z.infer<typeof documentDraftListQuerySchema>;
 

@@ -17,7 +17,7 @@ export async function repointDocumentContact(tx: Tx, tenantId: string, sourceId:
   // Collisions: keep the newer row, give it both sample counts, drop the other.
   const pairs = await tx.execute(sql`SELECT s.id AS sid, t.id AS tid, (s.updated_at > t.updated_at) AS source_newer
     FROM vendor_layout_templates s
-    JOIN vendor_layout_templates t ON t.company_id = s.company_id AND t.fingerprint = s.fingerprint AND t.contact_id = ${targetId}
+    JOIN vendor_layout_templates t ON t.tenant_id = s.tenant_id AND t.company_id = s.company_id AND t.fingerprint = s.fingerprint AND t.contact_id = ${targetId}
     WHERE s.tenant_id = ${tenantId} AND s.contact_id = ${sourceId}
     FOR UPDATE OF s, t`);
   const rows = pairs.rows as Array<{ sid: string; tid: string; source_newer: boolean }>;
@@ -26,10 +26,11 @@ export async function repointDocumentContact(tx: Tx, tenantId: string, sourceId:
     const drop = p.source_newer ? p.tid : p.sid;
     await tx.execute(sql`UPDATE vendor_layout_templates k
       SET samples = k.samples + d.samples
-      FROM vendor_layout_templates d WHERE k.id = ${keep} AND d.id = ${drop}`);
+      FROM vendor_layout_templates d
+      WHERE k.tenant_id = ${tenantId} AND k.id = ${keep} AND d.tenant_id = ${tenantId} AND d.id = ${drop}`);
     // Frees the (company, vendor, fingerprint) slot; a kept source row is
     // moved to the target with the others below.
-    await tx.execute(sql`DELETE FROM vendor_layout_templates WHERE id = ${drop}`);
+    await tx.execute(sql`DELETE FROM vendor_layout_templates WHERE tenant_id = ${tenantId} AND id = ${drop}`);
   }
   const templates = await tx.execute(sql`UPDATE vendor_layout_templates SET contact_id = ${targetId}
     WHERE tenant_id = ${tenantId} AND contact_id = ${sourceId}`);

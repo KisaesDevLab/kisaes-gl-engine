@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import archiver from 'archiver';
-import { eq, and, or, isNull, count, inArray, desc, sql, type SQL } from 'drizzle-orm';
+import { eq, and, or, isNull, count, inArray, notInArray, desc, sql, type SQL } from 'drizzle-orm';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { attachments, systemSettings } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
@@ -441,24 +441,48 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[], co
   return { archive, done };
 }
 
+/** Test hooks: only honoured when NODE_ENV is 'test'. */
+export const __attachmentTestHooks: {
+  /** Inside remove()'s transaction, after the row lock and the live-draft check, before the row is deleted. */
+  afterInUseCheck?: (info: { attachmentId: string }) => void | Promise<void>;
+} = {};
+
 /**
- * Deletes an attachment: storage first, then the row. A file a live document
- * draft reads (U-92: status new, ready or failed) is 409 ATTACHMENT_IN_USE
- * with details.draftId, checked before storage is touched, so nothing is
- * deleted; discard the draft first. A converted or discarded draft's file is
- * deleted as usual and the draft's link is nulled (ON DELETE SET NULL); the
- * draft keeps its content hash, so the file stays claimed.
+ * Deletes an attachment: the row, then storage. One transaction locks the
+ * row (FOR UPDATE), checks for a live document draft and deletes the row; a
+ * claim (POST /document-drafts) locks the same row, so the two run one after
+ * the other. A file a live draft of the company reads (U-92: status new,
+ * ready or failed) is 409 ATTACHMENT_IN_USE with details.draftId and nothing
+ * is deleted; discard the draft first. A converted or discarded draft's file
+ * is deleted as usual and the draft's link is nulled (ON DELETE SET NULL);
+ * the draft keeps its content hash, so the file stays claimed. A row another
+ * table still requires (bill_captures, ON DELETE RESTRICT) fails the delete
+ * and leaves the file in storage. Storage is deleted only after the commit,
+ * best effort: a failure leaves an orphaned file, never a row without one.
  */
 export async function remove(tenantId: string, id: string, companyId?: string | null) {
-  const attachment = await getById(tenantId, id, companyId);
-  const inUse = await db.execute(sql`SELECT id FROM document_drafts
-    WHERE tenant_id = ${tenantId} AND attachment_id = ${attachment.id} AND status IN ('new', 'ready', 'failed') LIMIT 1`);
-  const draftId = (inUse.rows[0] as { id: string } | undefined)?.id;
-  if (draftId) {
-    throw AppError.conflict('This file is being read as a document. Discard the document first.', 'ATTACHMENT_IN_USE', { draftId });
-  }
+  await getById(tenantId, id, companyId);
+  const attachment = await db.transaction(async (tx) => {
+    const [row] = await tx.select().from(attachments)
+      .where(withScope(and(eq(attachments.tenantId, tenantId), eq(attachments.id, id)), companyId))
+      .for('update');
+    if (!row) throw AppError.notFound('Attachment not found');
+    const draftCompany = companyId ?? row.companyId;
+    const inUse = await tx.execute(sql`SELECT id FROM document_drafts
+      WHERE tenant_id = ${tenantId} AND attachment_id = ${row.id} AND status IN ('new', 'ready', 'failed')
+      ${draftCompany ? sql`AND company_id = ${draftCompany}` : sql``}
+      LIMIT 1`);
+    const draftId = (inUse.rows[0] as { id: string } | undefined)?.id;
+    if (draftId) {
+      throw AppError.conflict('This file is being read as a document. Discard the document first.', 'ATTACHMENT_IN_USE', { draftId });
+    }
+    const hook = process.env['NODE_ENV'] === 'test' ? __attachmentTestHooks.afterInUseCheck : undefined;
+    if (hook) await hook({ attachmentId: row.id });
+    await tx.delete(attachments).where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, row.id)));
+    return row;
+  });
 
-  // Use storage provider for deletion
+  // Storage after the commit, best effort (use the storage provider first).
   try {
     const { getProviderForTenant } = await import('./storage/storage-provider.factory.js');
     const provider = await getProviderForTenant(tenantId);
@@ -470,11 +494,10 @@ export async function remove(tenantId: string, id: string, companyId?: string | 
       const fullPath = resolveUploadPath(tenantId, attachment.filePath);
       if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
     } catch {
-      // Path didn't resolve under UPLOAD_DIR — leave DB row to be deleted
-      // below so a poisoned filePath can't block attachment cleanup.
+      // Path didn't resolve under UPLOAD_DIR — the row is already gone, so
+      // a poisoned filePath can't block attachment cleanup.
     }
   }
-  await db.delete(attachments).where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, id)));
 }
 
 export async function updateOcrResults(tenantId: string, id: string, results: {
@@ -513,6 +536,9 @@ export async function reassignDraftAttachments(
  * `companyId` (the request's company, review M3): a draft attachment stamped
  * with another company is left alone; tenant-wide ones (company null, every
  * upload today) are relinked.
+ *
+ * `excludeIds` (U-92 review L-8): attachments left on the draft key, e.g.
+ * files another live document draft reads.
  */
 export async function relinkDraftAttachments(
   executor: DbOrTx,
@@ -522,6 +548,7 @@ export async function relinkDraftAttachments(
   newId: string,
   userId?: string,
   companyId?: string | null,
+  excludeIds: readonly string[] = [],
 ): Promise<string[]> {
   const rows = await executor.update(attachments)
     .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
@@ -530,6 +557,7 @@ export async function relinkDraftAttachments(
       eq(attachments.attachableType, 'draft'),
       eq(attachments.attachableId, draftId),
       ...(companyId ? [or(isNull(attachments.companyId), eq(attachments.companyId, companyId))] : []),
+      ...(excludeIds.length > 0 ? [notInArray(attachments.id, [...excludeIds])] : []),
     ))
     .returning({ id: attachments.id });
   for (const row of rows) {

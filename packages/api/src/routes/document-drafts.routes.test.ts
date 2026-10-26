@@ -175,6 +175,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   delete __documentDraftTestHooks.afterPost;
+  delete attachmentService.__attachmentTestHooks.afterInUseCheck;
 });
 
 afterAll(async () => {
@@ -685,4 +686,186 @@ describe('card last 4 (PUT /accounts/:id)', () => {
     expect(bulk.status, JSON.stringify(bulk.json)).toBe(200);
     expect(bulk.json.accounts[0].cardLast4).toBeNull();
   });
+});
+
+describe('security review fixes (U-92 review)', () => {
+  const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
+
+  it('M-1: a claim during a delete waits for it and then finds no file; no live draft is left without its file', async () => {
+    const bytes = docBytes('m1');
+    const up = await upload(bytes);
+    let claim: Promise<Res> | undefined;
+    let settled = false;
+    let blockedWhileLocked = false;
+    attachmentService.__attachmentTestHooks.afterInUseCheck = async () => {
+      // The delete holds the row lock here, past its live-draft check.
+      claim = call('POST', '/api/v1/document-drafts', { attachmentId: up.attachmentId });
+      claim.then(() => { settled = true; }, () => { settled = true; });
+      await new Promise((r) => setTimeout(r, 500));
+      blockedWhileLocked = !settled;
+    };
+    await attachmentService.remove(c.tenantId, up.attachmentId, c.companyA);
+    expect(blockedWhileLocked).toBe(true);
+    const r = await claim!;
+    expect(r.status, JSON.stringify(r.json)).toBe(404);
+    expect(await count(`SELECT count(*)::int AS n FROM attachments WHERE id = $1`, up.attachmentId)).toBe(0);
+    expect(await count(`SELECT count(*)::int AS n FROM document_drafts WHERE tenant_id = $1 AND content_sha256 = $2`, c.tenantId, sha(bytes))).toBe(0);
+  });
+
+  it('M-1: a claim that won the lock first makes the delete 409; the file and the row stay', async () => {
+    const bytes = docBytes('m1b');
+    const up = await upload(bytes);
+    const d = await call('POST', '/api/v1/document-drafts', { attachmentId: up.attachmentId });
+    expect(d.status).toBe(201);
+    await expect(attachmentService.remove(c.tenantId, up.attachmentId, c.companyA)).rejects.toMatchObject({ statusCode: 409, code: 'ATTACHMENT_IN_USE' });
+    const [att] = await db.select().from(attachments).where(eq(attachments.id, up.attachmentId));
+    expect(await attachmentService.readAttachmentBytes(c.tenantId, att!)).toEqual(bytes);
+  });
+
+  it('M-1: a file a bill capture still needs is not deleted: the row and the stored file stay', async () => {
+    const bytes = docBytes('m1c');
+    const up = await upload(bytes);
+    const [cap] = (await db.execute(sql`INSERT INTO bill_captures (tenant_id, company_id, attachment_id, source, uploaded_by_user_id, content_sha256, file_name)
+      VALUES (${c.tenantId}, ${c.companyA}, ${up.attachmentId}, 'staff', ${c.ownerId}, ${sha(bytes)}, 'invoice.pdf') RETURNING id`)).rows as Array<{ id: string }>;
+    try {
+      await expect(attachmentService.remove(c.tenantId, up.attachmentId, c.companyA)).rejects.toThrow();
+      const [att] = await db.select().from(attachments).where(eq(attachments.id, up.attachmentId));
+      expect(att).toBeDefined();
+      expect(await attachmentService.readAttachmentBytes(c.tenantId, att!)).toEqual(bytes);
+    } finally {
+      await db.execute(sql`DELETE FROM bill_captures WHERE id = ${cap!.id}`);
+    }
+  });
+
+  it('M-2: two companies claiming one tenant-wide file at once: one draft, the other 404; the file takes the winner\'s company', async () => {
+    for (let i = 0; i < 3; i++) {
+      const bytes = docBytes(`m2-${i}`);
+      const up = await upload(bytes, null);
+      const rs = await Promise.all([
+        call('POST', '/api/v1/document-drafts', { attachmentId: up.attachmentId }, { company: c.companyA }),
+        call('POST', '/api/v1/document-drafts', { attachmentId: up.attachmentId }, { company: c.companyB }),
+      ]);
+      expect(rs.map((r) => r.status).sort(), JSON.stringify(rs.map((r) => r.json))).toEqual([201, 404]);
+      const winner = rs.find((r) => r.status === 201)!.json.draft as { id: string; companyId: string };
+      const [att] = await db.select().from(attachments).where(eq(attachments.id, up.attachmentId));
+      expect(att!.companyId).toBe(winner.companyId);
+      expect(await count(`SELECT count(*)::int AS n FROM document_drafts WHERE tenant_id = $1 AND content_sha256 = $2`, c.tenantId, sha(bytes))).toBe(1);
+      // The loser's delete does not see the file; the winner's is 409 with its own draft.
+      const loser = winner.companyId === c.companyA ? c.companyB : c.companyA;
+      expect((await call('DELETE', `/api/v1/attachments/${up.attachmentId}`, undefined, { company: loser })).status).toBe(404);
+      const del = await call('DELETE', `/api/v1/attachments/${up.attachmentId}`, undefined, { company: winner.companyId });
+      expect(del.status).toBe(409);
+      expect(del.json.error.details.draftId).toBe(winner.id);
+    }
+  });
+
+  it('M-2: a delete\'s in-use check looks at the company\'s drafts only and never names another company\'s', async () => {
+    // A row the claim can no longer write: company B's draft on company A's file.
+    const up = await upload(docBytes('m2-scope'));
+    const [foreign] = await db.insert(documentDrafts).values({
+      tenantId: c.tenantId, companyId: c.companyB, attachmentId: up.attachmentId, contentSha256: crypto.randomBytes(32).toString('hex'), kind: 'unknown',
+    } as never).returning();
+    const r = await call('DELETE', `/api/v1/attachments/${up.attachmentId}`);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(JSON.stringify(r.json)).not.toContain(foreign!.id);
+    await db.delete(documentDrafts).where(eq(documentDrafts.id, foreign!.id));
+  });
+
+  it('L-1: converting with another company\'s vendor is 404 and nothing posts', async () => {
+    const bVendor = await vendor('Marina only', c.companyB);
+    const d = await newDraft('l1', 'bill');
+    const rd = await ready(d.draft);
+    const r = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'bill', body: billBody(bVendor, '5.00'), expectedUpdatedAt: rd.updatedAt });
+    expect(r.status, JSON.stringify(r.json)).toBe(404);
+    expect(await count(`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = $1 AND contact_id = $2`, c.tenantId, bVendor)).toBe(0);
+    const [row] = await db.select().from(documentDrafts).where(eq(documentDrafts.id, d.draft.id));
+    expect(row!.status).toBe('ready');
+  });
+
+  it('L-2: converting also needs the permission of the draft\'s current kind', async () => {
+    const billsOnly = await bookkeeper({ bills: 'full' });
+    const d = await newDraft('l2', 'check');
+    const rd = await ready(d.draft);
+    const v = await vendor('Kind');
+    const r = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, {
+      kind: 'bill', body: billBody(v, '9.00'), expectedUpdatedAt: rd.updatedAt,
+    }, { token: billsOnly.token, key: key() });
+    expect(r.status, JSON.stringify(r.json)).toBe(403);
+    expect(await count(`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = $1 AND contact_id = $2`, c.tenantId, v)).toBe(0);
+    const [row] = await db.select().from(documentDrafts).where(eq(documentDrafts.id, d.draft.id));
+    expect(row!.status).toBe('ready');
+    // The owner (both permissions) converts it.
+    const ok = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'bill', body: billBody(v, '9.00'), expectedUpdatedAt: rd.updatedAt });
+    expect(ok.status, JSON.stringify(ok.json)).toBe(201);
+  });
+
+  it('L-4: offset is capped; view=summary leaves the reading out', async () => {
+    expect((await call('GET', '/api/v1/document-drafts?offset=10001')).status).toBe(400);
+    expect((await call('GET', '/api/v1/document-drafts?offset=10000')).status).toBe(200);
+    expect((await call('GET', '/api/v1/document-drafts?view=bogus')).status).toBe(400);
+    const d = await newDraft('l4');
+    await ready(d.draft, { fields: { vendorName: 'Cosmos', total: '12.50' }, lines: [{ description: 'Slab', amount: '12.50' }] });
+    const summary = await call('GET', '/api/v1/document-drafts?view=summary&limit=200');
+    expect(summary.status).toBe(200);
+    const s = (summary.json.drafts as Array<Record<string, unknown>>).find((x) => x['id'] === d.draft.id)!;
+    expect(s).toBeDefined();
+    expect(s).not.toHaveProperty('fields');
+    expect(s).not.toHaveProperty('lines');
+    expect(s).not.toHaveProperty('checks');
+    expect(s['status']).toBe('ready');
+    expect(s['contentSha256']).toBe(d.draft.contentSha256);
+    const full = await call('GET', '/api/v1/document-drafts?limit=200');
+    const f = (full.json.drafts as Array<Record<string, unknown>>).find((x) => x['id'] === d.draft.id)!;
+    expect(f['fields']).toEqual({ vendorName: 'Cosmos', total: '12.50' });
+    expect(summary.json.total).toBe(full.json.total);
+  });
+
+  it('L-8: convert leaves a file on its draft key that another live draft reads', async () => {
+    const draftKey = crypto.randomUUID();
+    const put = async (label: string) => (await attachmentService.upload(c.tenantId, {
+      originalname: `${label}.pdf`, buffer: docBytes(label), mimetype: 'application/pdf', size: 64,
+    }, 'draft', draftKey, { companyId: c.companyA }))!.id;
+    const [a1, a2, a3] = [await put('l8-1'), await put('l8-2'), await put('l8-3')];
+    const d1 = await call('POST', '/api/v1/document-drafts', { attachmentId: a1 });
+    const d2 = await call('POST', '/api/v1/document-drafts', { attachmentId: a2 });
+    expect([d1.status, d2.status]).toEqual([201, 201]);
+    const rd = await ready(d1.json.draft);
+    const conv = await call('POST', `/api/v1/document-drafts/${d1.json.draft.id}/convert`, { kind: 'bill', body: billBody(c.vendor, '31.00'), expectedUpdatedAt: rd.updatedAt });
+    expect(conv.status, JSON.stringify(conv.json)).toBe(201);
+    const rows = await db.select().from(attachments).where(eq(attachments.attachableId, draftKey));
+    // a2 (claimed by the live d2) stays on the key; a1 and the unclaimed a3 moved.
+    expect(rows.map((r) => r.id)).toEqual([a2]);
+    const moved = await db.select().from(attachments).where(eq(attachments.attachableId, conv.json.draft.convertedTransactionId));
+    expect(moved.map((r) => r.id).sort()).toEqual([a1, a3].sort());
+    const [live] = await db.select().from(documentDrafts).where(eq(documentDrafts.id, d2.json.draft.id));
+    expect(live!.status).toBe('new');
+    expect(live!.attachmentId).toBe(a2);
+  });
+
+  it('L-10: other live drafts of the same document are listed with the convert, never blocking', async () => {
+    const v = await vendor('Same doc');
+    const ref = `L10-${suffix()}`;
+    const reading = { suggestedContactId: v, docReference: ref, docTotal: '77.00', docDate: '2026-05-10' };
+    const d1 = await newDraft('l10-1', 'bill');
+    const d2 = await newDraft('l10-2', 'bill');
+    const d3 = await newDraft('l10-3', 'bill');
+    const rd1 = await ready(d1.draft, reading);
+    const rd2 = await ready(d2.draft, reading);
+    await ready(d3.draft, reading);
+    const first = await call('POST', `/api/v1/document-drafts/${d1.draft.id}/convert`, {
+      kind: 'bill', body: billBody(v, '77.00', { vendorInvoiceNumber: ref }), expectedUpdatedAt: rd1.updatedAt,
+    });
+    expect(first.status, JSON.stringify(first.json)).toBe(201);
+    expect((first.json.draftMatches as Array<{ id: string; source: string }>).map((m) => m.id).sort()).toEqual([d2.draft.id, d3.draft.id].sort());
+    expect(first.json.draftMatches.every((m: { source: string }) => m.source === 'draft')).toBe(true);
+    // The second copy is blocked by the posted bill only; the third draft is listed alongside.
+    const second = await call('POST', `/api/v1/document-drafts/${d2.draft.id}/convert`, {
+      kind: 'bill', body: billBody(v, '77.00', { vendorInvoiceNumber: ref }), expectedUpdatedAt: rd2.updatedAt,
+    });
+    expect(second.status).toBe(409);
+    expect(second.json.error.code).toBe('POSSIBLE_DUPLICATE');
+    expect(second.json.error.details.matches.map((m: { id: string }) => m.id)).toEqual([first.json.draft.convertedTransactionId]);
+    expect(second.json.error.details.draftMatches.map((m: { id: string }) => m.id)).toEqual([d3.draft.id]);
+  });
+
 });

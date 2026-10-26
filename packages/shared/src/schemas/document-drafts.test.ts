@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   updateDocumentDraftSchema, convertDocumentDraftSchema, putVendorLayoutTemplateSchema, createDocumentDraftSchema,
-  convertBodySchemaFor, normalizeDocumentReference, documentDraftListQuerySchema, DOCUMENT_DRAFT_LIMITS, DOCUMENT_REFERENCE_CASES,
+  convertBodySchemaFor, normalizeDocumentReference, documentDraftListQuerySchema, DOCUMENT_DRAFT_LIMITS, DOCUMENT_REFERENCE_CASES, DOCUMENT_DRAFT_LIST_MAX_OFFSET,
 } from './document-drafts.js';
 
 const token = '2026-10-26T12:00:00.123Z';
@@ -72,6 +72,14 @@ describe('convert and create schemas', () => {
   it('list status takes a comma-joined set', () => {
     expect(documentDraftListQuerySchema.parse({ status: 'new,ready' }).status).toEqual(['new', 'ready']);
     expect(documentDraftListQuerySchema.safeParse({ status: 'new,posted' }).success).toBe(false);
+  });
+
+  it('list query: offset capped at DOCUMENT_DRAFT_LIST_MAX_OFFSET; view full (default) or summary', () => {
+    expect(documentDraftListQuerySchema.parse({}).view).toBe('full');
+    expect(documentDraftListQuerySchema.parse({ view: 'summary' }).view).toBe('summary');
+    expect(documentDraftListQuerySchema.safeParse({ view: 'compact' }).success).toBe(false);
+    expect(documentDraftListQuerySchema.parse({ offset: String(DOCUMENT_DRAFT_LIST_MAX_OFFSET) }).offset).toBe(DOCUMENT_DRAFT_LIST_MAX_OFFSET);
+    expect(documentDraftListQuerySchema.safeParse({ offset: String(DOCUMENT_DRAFT_LIST_MAX_OFFSET + 1) }).success).toBe(false);
   });
 
   it('templates: fingerprint charset and length, bounded regions, a required token (null to create)', () => {
