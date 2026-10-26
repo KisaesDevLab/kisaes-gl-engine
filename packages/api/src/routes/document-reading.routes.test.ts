@@ -223,11 +223,17 @@ describe('switches, consent and the reading', () => {
     expect(r.json.suggestion.reader).toBe('self_hosted');
   });
 
-  it('revoking consent turns both switches off', async () => {
+  it('revoking consent turns both switches off, and stops a self-hosted assist too', async () => {
     await aiConsent.revokeCompanyConsent(state.tenantId, companyB, state.userId);
     const t = await tasksOf(companyB);
     expect(t['document_text_cloud']).toBe(false);
     expect(t['document_images_cloud']).toBe(false);
+    state.provider = 'ollama';
+    state.companyId = companyB;
+    const r = await post({ text: SECRET_TEXT });
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatchObject({ code: 'CONSENT_REQUIRED', details: { reason: 'company_not_opted_in' } });
+    expect(state.calls).toHaveLength(0);
     await aiConsent.acceptCompanyDisclosure(state.tenantId, companyB, state.userId);
     expect((await tasksOf(companyB))['document_text_cloud']).toBe(false);
   });

@@ -87,7 +87,8 @@ documentReadingRouter.post('/assist', assistLimiter, validate(documentAssistRequ
     'no images 400 NOTHING_TO_READ. AI off 400 ai_disabled; OCR function off or no provider 400 ai_function_disabled. ' +
     'Cloud provider: the company\'s document_text_cloud switch, and document_images_cloud as well when images are sent, else 403 ' +
     'CONSENT_REQUIRED (details.task; receipt_ocr does not count); images also need the system cloud-vision gate (403 CLOUD_VISION_DISABLED). ' +
-    'A self-hosted provider (Ollama) needs neither switch and never falls back to a cloud one. Reply not JSON 400 ai_parse_failed; ' +
+    'A self-hosted provider (Ollama) needs neither switch, only the company\'s AI opt-in with a current disclosure (else 403 CONSENT_REQUIRED, ' +
+    'details.reason), and never falls back to a cloud one. Reply not JSON 400 ai_parse_failed; ' +
     'provider error or timeout 400 ai_ocr_failed; offline 503 OFFLINE_UNAVAILABLE (desktop). ' +
     'Needs full access to any of bills, checks or transactions. 60 calls a minute per user (429 AI_RATE_LIMIT). document-assist-v1.',
   body: documentAssistRequestSchema,

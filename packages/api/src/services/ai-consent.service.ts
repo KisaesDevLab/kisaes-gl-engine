@@ -628,6 +628,25 @@ export async function checkTenantTaskConsent(
 }
 
 /**
+ * Company opt-in without a task: AI on and its disclosure accepted at the
+ * system level, and THIS company opted in with a current disclosure. For a
+ * surface whose task switch does not apply (the document reading assist on
+ * a self-hosted provider, U-92d) but that still processes the company's
+ * data with AI.
+ */
+export async function checkCompanyAiOptIn(tenantId: string, companyId: string): Promise<ConsentCheckResult> {
+  const cfg = await db.query.aiConfig.findFirst();
+  if (!cfg?.isEnabled) return { allowed: false, reason: 'system_disabled' };
+  if (!cfg.adminDisclosureAcceptedAt) return { allowed: false, reason: 'system_disclosure_not_accepted' };
+  const [row] = await db.select({ aiEnabled: companies.aiEnabled, version: companies.aiDisclosureVersion })
+    .from(companies)
+    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+  if (!row?.aiEnabled) return { allowed: false, reason: 'company_not_opted_in' };
+  if ((row.version ?? 0) < (cfg.disclosureVersion ?? 1)) return { allowed: false, reason: 'consent_stale' };
+  return { allowed: true, companyId };
+}
+
+/**
  * Consent summary for a tenant — returns per-company status so the
  * settings UI can render the full picture. Intentionally does not
  * include provider details (that's on the admin endpoints).

@@ -14,6 +14,7 @@ const st = vi.hoisted(() => ({
   raw: { openaiCompatBaseUrl: null } as Record<string, unknown>,
   allowed: new Set<string>(['document_text_cloud', 'document_images_cloud']),
   consentReason: 'task_disabled' as string,
+  optedIn: true,
   visionAllowed: true,
   routed: false,
   reply: { parsed: { vendor: 'V', total: '10.00', confidence: 0.9 } } as Record<string, unknown>,
@@ -35,6 +36,7 @@ vi.mock('./pii-sanitizer.service.js', () => ({ sanitize: (t: string) => ({ text:
 vi.mock('./ai-consent.service.js', () => ({
   checkTenantTaskConsent: async (_t: string, task: string) =>
     (st.allowed.has(task) ? { allowed: true } : { allowed: false, reason: st.consentReason }),
+  checkCompanyAiOptIn: async () => (st.optedIn ? { allowed: true } : { allowed: false, reason: 'company_not_opted_in' }),
 }));
 vi.mock('./ai-orchestrator.service.js', async () => {
   const { AppError } = await import('../utils/errors.js');
@@ -87,6 +89,7 @@ beforeEach(() => {
   st.raw = { openaiCompatBaseUrl: null };
   st.allowed = new Set(['document_text_cloud', 'document_images_cloud']);
   st.consentReason = 'task_disabled';
+  st.optedIn = true;
   st.visionAllowed = true;
   st.routed = false;
   st.reply = { parsed: { vendor: 'V', total: '10.00', confidence: 0.9 } };
@@ -146,6 +149,15 @@ describe('gates', () => {
     const s = await assist('t', 'c', { text: TEXT, pageImages: [PNG], kindHint: 'check' });
     expect(s.reader).toBe('self_hosted');
     expect(st.calls).toEqual(['image']);
+  });
+
+  it('Ollama still needs the company AI opt-in: 403 CONSENT_REQUIRED with the reason, nothing called', async () => {
+    st.config = { ...st.config, ocrProvider: 'ollama' };
+    st.optedIn = false;
+    expect(await code(assist('t', 'c', { text: TEXT, kindHint: 'bill' })))
+      .toMatchObject({ status: 403, code: 'CONSENT_REQUIRED', details: { reason: 'company_not_opted_in' } });
+    expect(st.calls).toEqual([]);
+    expect(st.jobs).toEqual([]);
   });
 
   it('Ollama switched to the Vibe AI Router counts as cloud', async () => {

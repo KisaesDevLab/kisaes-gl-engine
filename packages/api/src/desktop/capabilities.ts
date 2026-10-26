@@ -171,7 +171,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * line unitPrice) from the page text and up to 3 PNG page images (2 MiB together) a client read itself; nothing stored
    * or posted. Company AI task switches document_text_cloud and document_images_cloud (off for every company, never
    * implied by receipt_ocr or by accepting the disclosure; migration 0234) gate a cloud provider: 403 CONSENT_REQUIRED.
-   * A self-hosted provider needs neither (U-92d).
+   * A self-hosted provider needs neither, only the company's AI opt-in (U-92d).
    */
   'document-assist-v1',
 ];

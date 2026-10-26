@@ -20,9 +20,10 @@
 //     (permissive PII level + cloud vision on), the existing image control.
 //   - A self-hosted provider (Ollama, or openai_compat on a local URL), not
 //     switched to the Vibe AI Router, keeps the data on this machine or
-//     network and needs neither switch; it runs
-//     only when it is the configured OCR provider. There is no fallback to a
-//     cloud provider.
+//     network and needs neither switch, only the company's AI opt-in with a
+//     current disclosure (403 CONSENT_REQUIRED, details.reason); it runs only
+//     when it is the configured OCR provider. There is no fallback to a cloud
+//     provider.
 //
 // Privacy: the text and images are never logged, stored in ai_jobs or written
 // to an audit row. The ai_jobs row keeps sizes and counts only.
@@ -36,7 +37,7 @@ import { MYBOOKS_TASK_CLASSES, routeFor } from './ai-providers/vibe-router.provi
 import * as aiConfigService from './ai-config.service.js';
 import * as aiPrompt from './ai-prompt.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
-import { checkTenantTaskConsent, type AiTaskKey } from './ai-consent.service.js';
+import { checkCompanyAiOptIn, checkTenantTaskConsent, type AiTaskKey } from './ai-consent.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import {
   billSystemPrompt, normalizeBillMoney, normalizeBillOcrOutput,
@@ -165,7 +166,14 @@ export async function assist(
   const selfHosted = orchestrator.isSelfHostedProvider(ocrProvider, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl })
     && !routeFor(MYBOOKS_TASK_CLASSES.BILL_EXTRACT, rawConfig as Parameters<typeof routeFor>[1]);
 
-  if (!selfHosted) {
+  if (selfHosted) {
+    // No switch, but the company must have AI on with a current disclosure,
+    // as for every other AI surface.
+    const optIn = await checkCompanyAiOptIn(tenantId, companyId);
+    if (!optIn.allowed) {
+      throw new AppError(403, orchestrator.consentReasonMessage(optIn.reason), 'CONSENT_REQUIRED', { reason: optIn.reason ?? null });
+    }
+  } else {
     // Text goes with every cloud call; images need their own switch too.
     const tasks: AiTaskKey[] = images.length > 0 ? ['document_text_cloud', 'document_images_cloud'] : ['document_text_cloud'];
     for (const task of tasks) {
