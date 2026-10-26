@@ -123,17 +123,53 @@ export interface ExportOmissions {
 
 export const NO_OMISSIONS: ExportOmissions = { columns: new Set(), tables: new Set(), rowFilters: new Set() };
 
-/** The row scope of table `t` in an export over alias `a`. */
-export function exportScopeSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ExportOmissions = NO_OMISSIONS): string {
+/**
+ * The predicate of an active row filter of table `t` over `alias`
+ * (OMITTABLE_ROW_FILTERS), or undefined when none applies: the filter's
+ * `keep`, or (keepReferenced) a reference from an exported row of another
+ * archived table, by a single-column foreign key or a `tenant-ref` soft
+ * reference.
+ */
+export function rowFilterKeepSql(
+  plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ExportOmissions, alias: string, depth = 0,
+): string | undefined {
+  const filter = omit.rowFilters.has(t.name) ? OMITTABLE_ROW_FILTERS[t.name] : undefined;
+  if (!filter) return undefined;
+  const keeps = [filter.keep(alias)];
+  if (filter.keepReferenced && depth < 4) {
+    const refs: Array<{ table: string; column: string; refColumn: string }> = [];
+    for (const fk of plan.live.fks) {
+      if (fk.refTable !== t.name || fk.table === t.name || fk.columns.length !== 1 || !plan.byName.has(fk.table)) continue;
+      refs.push({ table: fk.table, column: fk.columns[0]!, refColumn: fk.refColumns[0]! });
+    }
+    for (const other of plan.tables) {
+      if (other.name === t.name) continue;
+      for (const s of other.softRefs) {
+        if (s.cls === `tenant-ref:${t.name}` && !s.isArray) refs.push({ table: other.name, column: s.column, refColumn: 'id' });
+      }
+    }
+    for (const [i, r] of refs.entries()) {
+      const ra = `kr${depth}_${i}`;
+      const scope = exportScopeSql(plan, plan.byName.get(r.table)!, includeAudit, omit, ra, depth + 1);
+      keeps.push(`EXISTS (SELECT 1 FROM "${r.table}" ${ra} WHERE ${ra}."${r.column}" = ${alias}."${r.refColumn}" AND ${scope})`);
+    }
+  }
+  return keeps.length === 1 ? keeps[0] : `(${keeps.join(' OR ')})`;
+}
+
+/** The row scope of table `t` in an export over `alias` (default `a`). */
+export function exportScopeSql(
+  plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ExportOmissions = NO_OMISSIONS, alias = 'a', depth = 0,
+): string {
   // No rows, but the cursor query still binds the tenant id as $1, so the
   // predicate must reference it (a bare `false` fails with "bind message
   // supplies 1 parameters").
   const none = '($1::uuid IS NULL AND false)';
   if (t.name === 'audit_log' && !includeAudit) return none;
   if (omit.tables.has(t.name)) return none;
-  const scope = scopeSql(plan, t.name, 'a');
-  const filter = omit.rowFilters.has(t.name) ? OMITTABLE_ROW_FILTERS[t.name] : undefined;
-  return filter ? `(${scope}) AND ${filter.keep('a')}` : scope;
+  const scope = scopeSql(plan, t.name, alias, depth * 10);
+  const keep = rowFilterKeepSql(plan, t, includeAudit, omit, alias, depth);
+  return keep ? `(${scope}) AND ${keep}` : scope;
 }
 
 /** The two-projection cursor query for a table. */
@@ -275,20 +311,32 @@ async function collectGlobalRows(client: ArchiveClient, plan: PortabilityPlan, g
 }
 
 /** Export checks that refuse or warn: firm-owned references, server-feature rows, dangling tenant references. */
-async function exportChecks(client: ArchiveClient, plan: PortabilityPlan, tenantId: string, warnings: string[]): Promise<void> {
-  // Rule 4a: NOT NULL FK columns into a mixed-ownership table must point at rows in scope.
+async function exportChecks(
+  client: ArchiveClient, plan: PortabilityPlan, tenantId: string, warnings: string[],
+  includeAudit = true, omit: ExportOmissions = NO_OMISSIONS,
+): Promise<void> {
+  // The rows of a table the export carries, with any active row filter
+  // (U-92 review L-7: a reference into a filtered-out row is dangling too).
+  const rowsOf = (table: string, alias: string): string => {
+    const t = plan.byName.get(table);
+    const keep = t ? rowFilterKeepSql(plan, t, includeAudit, omit, alias) : undefined;
+    const scope = scopeSql(plan, table, alias);
+    return keep ? `(${scope}) AND ${keep}` : scope;
+  };
+  // Rule 4a: NOT NULL FK columns into a mixed-ownership table, or into a
+  // row-filtered one, must point at rows in scope.
   for (const t of plan.tables) {
     for (const fk of plan.live.fks.filter((f) => f.table === t.name)) {
       const target = plan.byName.get(fk.refTable);
       if (!target || fk.columns.length !== 1) continue;
       const targetLive = plan.live.tables.get(fk.refTable)!;
       const mixed = targetLive.columns.some((c) => c.name === 'tenant_id' && c.nullable);
-      if (!mixed) continue;
+      if (!mixed && !omit.rowFilters.has(fk.refTable)) continue;
       const col = fk.columns[0]!;
       const nullable = t.columns.find((c) => c.name === col)?.nullable ?? true;
       const r = await client.query(
-        `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${scopeSql(plan, t.name, 'a')} AND a."${col}" IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM "${fk.refTable}" x WHERE x."${fk.refColumns[0]}" = a."${col}" AND ${scopeSql(plan, fk.refTable, 'x')})`,
+        `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${rowsOf(t.name, 'a')} AND a."${col}" IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM "${fk.refTable}" x WHERE x."${fk.refColumns[0]}" = a."${col}" AND ${rowsOf(fk.refTable, 'x')})`,
         [tenantId],
       );
       const n = (r.rows[0] as { n: number }).n;
@@ -312,8 +360,8 @@ async function exportChecks(client: ArchiveClient, plan: PortabilityPlan, tenant
       if (!s.cls.startsWith('tenant-ref:') || s.isArray) continue;
       const target = s.cls.slice('tenant-ref:'.length);
       const r = await client.query(
-        `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${scopeSql(plan, t.name, 'a')} AND a."${s.column}" IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM "${target}" x WHERE x.id = a."${s.column}" AND ${scopeSql(plan, target, 'x')})`,
+        `SELECT count(*)::int AS n FROM "${t.name}" a WHERE ${rowsOf(t.name, 'a')} AND a."${s.column}" IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM "${target}" x WHERE x.id = a."${s.column}" AND ${rowsOf(target, 'x')})`,
         [tenantId],
       );
       const n = (r.rows[0] as { n: number }).n;
@@ -412,7 +460,10 @@ async function exportLocked(
       const omittedRows: Record<string, number> = {};
       for (const name of omit.rowFilters) {
         const t = plan.byName.get(name)!;
-        const r = await client.query(`SELECT count(*)::int AS n FROM "${name}" a WHERE (${scopeSql(plan, name, 'a')}) AND NOT (${OMITTABLE_ROW_FILTERS[name]!.keep('a')})`, [tenantId]);
+        // A table the export leaves out whole anyway (the audit log without includeAudit) has no filter count.
+        if (exportScopeSql(plan, t, o.includeAudit, NO_OMISSIONS) !== scopeSql(plan, name, 'a')) continue;
+        const keep = rowFilterKeepSql(plan, t, o.includeAudit, omit, 'a')!;
+        const r = await client.query(`SELECT count(*)::int AS n FROM "${name}" a WHERE (${scopeSql(plan, name, 'a')}) AND NOT (${keep})`, [tenantId]);
         omittedRows[t.name] = (r.rows[0] as { n: number }).n;
       }
       for (let i = 0; i < plan.tables.length; i++) {
@@ -430,7 +481,7 @@ async function exportLocked(
       const unbalancedTransactions = await countUnbalancedTransactions(client, tenantId);
       const fingerprint = await computeTenantFingerprint(client, plan, tenantId, trialBalance);
       const ledgerVersion = await ledgerVersionSum(client, tenantId);
-      await exportChecks(client, plan, tenantId, warnings);
+      await exportChecks(client, plan, tenantId, warnings, o.includeAudit, omit);
       const globalRows = await collectGlobalRows(client, plan, globals);
       const schema = await readSchemaInfo();
 

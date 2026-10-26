@@ -99,6 +99,10 @@ export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): Archi
   if (!Array.isArray(raw['tables'])) throw corrupt('manifest tables');
   const tables = (raw['tables'] as unknown[]).map(validateTable);
   if (new Set(tables.map((t) => t.name)).size !== tables.length) throw corrupt('duplicate table');
+  // A table listed as omitted whole (U-92) is archived with no rows.
+  for (const o of (omitted as string[] | undefined) ?? []) {
+    if (TABLE_RE.test(o) && tables.some((t) => t.name === o && t.rows !== 0)) throw corrupt('omitted table has rows');
+  }
   if (!Array.isArray(raw['files'])) throw corrupt('manifest files');
   const files = (raw['files'] as unknown[]).map(validateFile);
   const identity = raw['identity'];

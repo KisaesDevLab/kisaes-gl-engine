@@ -150,11 +150,12 @@ export const exportArchiveSchema = z.object({
   /** Leave the company intake folders out (U-93, intake-settings-v1): the archive carries the column default (no folders). */
   omitIntakeSettings: z.boolean().optional().default(false),
   /**
-   * Leave unconverted document drafts out (U-92, document-drafts-v1): document_drafts and vendor_layout_templates
-   * travel with no rows, live drafts' attachments and files are left out (manifest `omitted`, `omittedRows`).
+   * Leave unconverted document drafts out (U-92, document-drafts-v1): converted drafts travel, other drafts and
+   * their audit rows do not; vendor_layout_templates travels with no rows; live drafts' attachments and files are
+   * left out unless another exported row references them (manifest `omitted`, `omittedRows`).
    */
   omitDocumentDrafts: z.boolean().optional().default(false)
-    .describe('Leave unconverted document drafts, vendor layouts and live drafts\' files out (document-drafts-v1); ClientLedger sets it for transfer files.'),
+    .describe('Leave unconverted document drafts (and their audit rows), vendor layouts and live drafts\' files out (document-drafts-v1); converted drafts and files other records use travel. ClientLedger sets it for transfer files.'),
   /** Opaque application metadata, stored in the manifest, never interpreted (<= 16 KiB). */
   host: z.record(z.unknown()).optional(),
   passphrase: z.string().min(1).max(1024),

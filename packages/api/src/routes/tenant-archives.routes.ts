@@ -141,9 +141,9 @@ export const importArchiveSchema = z.object({
   /** Restore every company with no intake folders (U-93, intake-settings-v1); ClientLedger sets it for transfer files. */
   resetIntakeSettings: z.boolean().optional().default(false)
     .describe('Restore every company with no intake folders (intake-settings-v1); applied after content verification. ClientLedger sets it for transfer files.'),
-  /** Restore with no document drafts or vendor layouts (U-92, document-drafts-v1); ClientLedger sets it for transfer files. */
+  /** Restore with no unconverted document drafts or vendor layouts (U-92, document-drafts-v1); ClientLedger sets it for transfer files. */
   resetDocumentDrafts: z.boolean().optional().default(false)
-    .describe('Restore with no document drafts and no vendor layouts (document-drafts-v1); applied after content verification. ClientLedger sets it for transfer files.'),
+    .describe('Restore with no unconverted document drafts and no vendor layouts (document-drafts-v1); converted drafts stay with their transactions; applied after content verification. ClientLedger sets it for transfer files.'),
   /** Desktop (CL_LAN != 1) only: absolute path of a local .zip / .clbackup, opened read-only. */
   path: z.string().min(1).max(4096).optional(),
 });

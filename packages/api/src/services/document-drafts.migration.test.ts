@@ -114,10 +114,13 @@ describe('migration 0233 document drafts', () => {
     expect(plan.bucketOf.get('vendor_layout_templates')).toBe('tenant');
     expect(plan.byName.get('accounts')!.canonical).toContain('card_last4');
     expect(OMITTABLE_TABLES).toEqual({
-      document_drafts: { option: 'omitDocumentDrafts' },
       vendor_layout_templates: { option: 'omitDocumentDrafts' },
     });
-    expect(OMITTABLE_ROW_FILTERS['attachments']).toMatchObject({ option: 'omitDocumentDrafts', label: 'attachments:live-document-drafts' });
+    // Converted drafts travel (D4: unconverted drafts are left out), with their audit rows.
+    expect(Object.keys(OMITTABLE_ROW_FILTERS).sort()).toEqual(['attachments', 'audit_log', 'document_drafts']);
+    expect(OMITTABLE_ROW_FILTERS['attachments']).toMatchObject({ option: 'omitDocumentDrafts', label: 'attachments:live-document-drafts', keepReferenced: true });
+    expect(OMITTABLE_ROW_FILTERS['document_drafts']).toMatchObject({ option: 'omitDocumentDrafts', label: 'document_drafts:unconverted' });
+    expect(OMITTABLE_ROW_FILTERS['audit_log']).toMatchObject({ option: 'omitDocumentDrafts', label: 'audit_log:document-drafts' });
   });
 
   it('the SQL reference normalization equals the shared one', async () => {
