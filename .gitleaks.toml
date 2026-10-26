@@ -30,4 +30,9 @@ paths = [
 regexes = [
   '''closing-pass-123''',
   '''wrong-password''',
+  # U-92 (document drafts): a closing-password test placeholder and the
+  # idempotency list name in route descriptions, misread as API keys in
+  # the branch's earlier commits.
+  '''Closing-pass-2026''',
+  '''idempotency-docs-v1''',
 ]
