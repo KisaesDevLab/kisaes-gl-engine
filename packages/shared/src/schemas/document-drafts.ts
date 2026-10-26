@@ -188,12 +188,43 @@ export const deleteVendorLayoutTemplateSchema = z.object({
 });
 
 /**
- * Normalizes a document reference for the duplicate check: ASCII letters and
- * digits only, upper case, leading zeros dropped ('INV-00042' -> 'INV00042',
- * '0042' -> '42'). The engine applies the same rule in SQL
- * (document-draft.service.ts NORMALIZED_REF_SQL).
+ * Normalizes a document reference for the duplicate check, as ClientLedger's
+ * cl-docread `dupes::normalize_reference` does: leading zeros of every digit
+ * run dropped (an all-zero run keeps one 0), lower case, ASCII letters and
+ * digits only ('INV-00123' -> 'inv123', 'RB-2026-0042' -> 'rb202642',
+ * '0000' -> '0'). The engine applies the same rule in SQL
+ * (document-draft.service.ts normalizedRefSql).
  */
 export function normalizeDocumentReference(ref: string | null | undefined): string {
   if (!ref) return '';
-  return ref.replace(/[^A-Za-z0-9]/g, '').toUpperCase().replace(/^0+/, '');
+  let out = '';
+  let run = '';
+  const flush = () => {
+    if (run) {
+      const t = run.replace(/^0+/, '');
+      out += t === '' ? '0' : t;
+      run = '';
+    }
+  };
+  for (const ch of ref) {
+    if (ch >= '0' && ch <= '9') { run += ch; continue; }
+    flush();
+    if (/^[A-Za-z]$/.test(ch)) out += ch.toLowerCase();
+  }
+  flush();
+  return out;
 }
+
+/** The reference cases shared with ClientLedger (fixtures/docs/rule-cases.json `reference`). */
+export const DOCUMENT_REFERENCE_CASES: ReadonlyArray<{ in: string; out: string }> = [
+  { in: 'INV-00123', out: 'inv123' },
+  { in: ' inv 123 ', out: 'inv123' },
+  { in: 'Inv.20417', out: 'inv20417' },
+  { in: '#4521', out: '4521' },
+  { in: '004521', out: '4521' },
+  { in: 'A-1/0', out: 'a10' },
+  { in: '0000', out: '0' },
+  { in: 'RB-2026-0042', out: 'rb202642' },
+  { in: '---', out: '' },
+  { in: '', out: '' },
+];

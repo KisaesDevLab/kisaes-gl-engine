@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   updateDocumentDraftSchema, convertDocumentDraftSchema, putVendorLayoutTemplateSchema, createDocumentDraftSchema,
-  convertBodySchemaFor, normalizeDocumentReference, documentDraftListQuerySchema, DOCUMENT_DRAFT_LIMITS,
+  convertBodySchemaFor, normalizeDocumentReference, documentDraftListQuerySchema, DOCUMENT_DRAFT_LIMITS, DOCUMENT_REFERENCE_CASES,
 } from './document-drafts.js';
 
 const token = '2026-10-26T12:00:00.123Z';
@@ -84,16 +84,18 @@ describe('convert and create schemas', () => {
 });
 
 describe('normalizeDocumentReference', () => {
+  it.each(DOCUMENT_REFERENCE_CASES.map((c) => [c.in, c.out]))('shared case %j -> %j', (input, out) => {
+    expect(normalizeDocumentReference(input)).toBe(out);
+  });
+
   it.each([
-    ['INV-0042', 'INV0042'],
-    ['inv 0042', 'INV0042'],
-    ['0042', '42'],
-    ['  #00-12/A ', '12A'],
-    ['', ''],
+    ['INV-0042', 'inv42'],
+    ['inv 0042', 'inv42'],
+    ['  #00-12/A ', '012a'],
+    ['A-1/05', 'a15'],
     [null, ''],
-    ['---', ''],
-    ['Façade-7', 'FAADE7'],
-  ])('%s -> %s', (input, out) => {
+    ['Façade-7', 'faade7'],
+  ])('%j -> %j', (input, out) => {
     expect(normalizeDocumentReference(input)).toBe(out);
   });
 });

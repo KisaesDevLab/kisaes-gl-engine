@@ -18,7 +18,7 @@ import { db } from '../db/index.js';
 import { companies, documentDrafts, vendorLayoutTemplates, contacts } from '../db/schema/index.js';
 import { OMITTABLE_ROW_FILTERS, OMITTABLE_TABLES, buildPortabilityPlan } from './tenant-portability/plan.js';
 import { makeCompany, cleanTenant } from './templates/templates.test-helpers.js';
-import { normalizeDocumentReference } from '@kis-books/shared';
+import { normalizeDocumentReference, DOCUMENT_REFERENCE_CASES } from '@kis-books/shared';
 import { normalizedRefSql } from './document-draft.service.js';
 
 const MIGRATIONS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'db', 'migrations');
@@ -121,7 +121,7 @@ describe('migration 0233 document drafts', () => {
   });
 
   it('the SQL reference normalization equals the shared one', async () => {
-    for (const ref of ['INV-0042', 'inv 0042', '0042', '  #00-12/A ', '', '---', 'Façade-7', 'ab_c.D-0']) {
+    for (const ref of [...DOCUMENT_REFERENCE_CASES.map((x) => x.in), 'A-1/05', 'x0y00z000', 'INV-0042', 'inv 0042', '0042', '  #00-12/A ', '', '---', 'Façade-7', 'ab_c.D-0']) {
       const r = await db.execute(sql`SELECT ${normalizedRefSql(sql`${ref}::text`)} AS n`);
       expect((r.rows[0] as { n: string }).n, ref).toBe(normalizeDocumentReference(ref));
     }

@@ -60,12 +60,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const DUPLICATE_WINDOW_DAYS = 60;
 
 /**
- * SQL for a normalized document reference: ASCII letters and digits only,
- * upper case, leading zeros dropped. Same rule as the shared
- * normalizeDocumentReference().
+ * SQL for a normalized document reference: leading zeros of every digit run
+ * dropped (an all-zero run keeps one 0), then lower case, ASCII letters and
+ * digits only (`INV-00123` -> `inv123`, `RB-2026-0042` -> `rb202642`). Same
+ * rule as the shared normalizeDocumentReference() and ClientLedger's
+ * cl-docread dupes::normalize_reference (shared case table). ASCII only so
+ * the result never depends on the database locale.
  */
 export function normalizedRefSql(expr: SQL): SQL {
-  return sql`ltrim(upper(regexp_replace(coalesce(${expr}, ''), '[^A-Za-z0-9]', '', 'g')), '0')`;
+  return sql`regexp_replace(lower(regexp_replace(coalesce(${expr}, ''), '(^|[^0-9])0+([0-9])', '\\1\\2', 'g')), '[^0-9a-z]', '', 'g')`;
 }
 
 /** The reference a posted transaction carries: a bill's vendor invoice number, an expense's own reference (not a check number). */

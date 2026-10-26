@@ -252,6 +252,8 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
           ...(u.name !== undefined ? { name: u.name } : {}),
           ...(u.accountType !== undefined ? { accountType: u.accountType } : {}),
           ...(u.detailType !== undefined ? { detailType: u.detailType || null } : {}),
+          // Card last 4 (U-92) belongs to credit card accounts only.
+          ...(u.detailType !== undefined && u.detailType !== 'credit_card' && before.cardLast4 ? { cardLast4: null } : {}),
           ...(u.accountNumber !== undefined ? { accountNumber: u.accountNumber || null } : {}),
           updatedAt: new Date(),
         })

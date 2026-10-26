@@ -679,5 +679,10 @@ describe('card last 4 (PUT /accounts/:id)', () => {
     expect(moved.json.account.cardLast4).toBeNull();
     const cleared = await call('PUT', `/api/v1/accounts/${c.card}`, { cardLast4: null });
     expect(cleared.json.account.cardLast4).toBeNull();
+    // The chart of accounts bulk edit clears it the same way.
+    const [third] = await db.insert(accounts).values({ tenantId: c.tenantId, name: `Disc ${suffix()}`, accountType: 'liability', detailType: 'credit_card', cardLast4: '7007' }).returning();
+    const bulk = await call('PUT', '/api/v1/accounts/bulk', { updates: [{ id: third!.id, detailType: 'other_current_liability' }] });
+    expect(bulk.status, JSON.stringify(bulk.json)).toBe(200);
+    expect(bulk.json.accounts[0].cardLast4).toBeNull();
   });
 });

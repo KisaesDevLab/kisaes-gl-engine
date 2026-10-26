@@ -74,7 +74,7 @@ documentDraftsRouter.get('/:id/duplicates', describe({
   summary: 'Possible duplicates of a document draft',
   description: 'Response `{matches: [{source: "transaction"|"draft", id, reason: "reference"|"amount_date", txnType, kind, date, total, reference}]}`: ' +
     'posted bills, expenses and checks (not void or deleted) and other live drafts of the draft\'s vendor (`suggestedContactId`) with the same ' +
-    `normalized reference (letters and digits, upper case, leading zeros dropped) or the same total within ${draftService.DUPLICATE_WINDOW_DAYS} days of its date. ` +
+    `normalized reference (leading zeros of every digit run dropped, lower case, ASCII letters and digits only: INV-00123 = inv123) or the same total within ${draftService.DUPLICATE_WINDOW_DAYS} days of its date. ` +
     'Empty without a vendor. Totals compare as numeric.',
   params: idParams,
 }), async (req, res) => {
