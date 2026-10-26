@@ -13,7 +13,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import {
-  documentAssistRequestSchema, DOCUMENT_ASSIST_MAX_IMAGES, DOCUMENT_ASSIST_MAX_IMAGE_BYTES, DOCUMENT_ASSIST_MAX_TEXT_CHARS,
+  documentAssistRequestSchema, DOCUMENT_ASSIST_MAX_IMAGES, DOCUMENT_ASSIST_MAX_IMAGE_BYTES, DOCUMENT_ASSIST_MAX_IMAGE_SIDE,
+  DOCUMENT_ASSIST_MAX_TEXT_CHARS,
 } from '@kis-books/shared';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { authenticate } from '../middleware/auth.js';
@@ -83,13 +84,15 @@ documentReadingRouter.post('/assist', assistLimiter, validate(documentAssistRequ
     'or posted and no file is parsed; every amount is what the model read, as a decimal string, or null, and must be checked by the client. ' +
     'No vendor match (the client matches). ' +
     `Limits: text ≤ ${DOCUMENT_ASSIST_MAX_TEXT_CHARS} characters (400 TEXT_TOO_LONG), ≤ ${DOCUMENT_ASSIST_MAX_IMAGES} PNG page images ` +
-    `(400 TOO_MANY_IMAGES, IMAGE_NOT_PNG) of ≤ ${DOCUMENT_ASSIST_MAX_IMAGE_BYTES} bytes together (400 IMAGES_TOO_LARGE); empty text and ` +
+    `(400 TOO_MANY_IMAGES; no PNG signature and IHDR 400 IMAGE_NOT_PNG), each ≤ ${DOCUMENT_ASSIST_MAX_IMAGE_SIDE} px on a side ` +
+    `(400 IMAGE_TOO_LARGE), ≤ ${DOCUMENT_ASSIST_MAX_IMAGE_BYTES} bytes together (400 IMAGES_TOO_LARGE); empty text and ` +
     'no images 400 NOTHING_TO_READ. AI off 400 ai_disabled; OCR function off or no provider 400 ai_function_disabled. ' +
     'Cloud provider: the company\'s document_text_cloud switch, and document_images_cloud as well when images are sent, else 403 ' +
     'CONSENT_REQUIRED (details.task; receipt_ocr does not count); images also need the system cloud-vision gate (403 CLOUD_VISION_DISABLED). ' +
-    'A self-hosted provider (Ollama) needs neither switch, only the company\'s AI opt-in with a current disclosure (else 403 CONSENT_REQUIRED, ' +
-    'details.reason), and never falls back to a cloud one. Reply not JSON 400 ai_parse_failed; ' +
-    'provider error or timeout 400 ai_ocr_failed; offline 503 OFFLINE_UNAVAILABLE (desktop). ' +
+    'A self-hosted provider (Ollama, or openai_compat on a local URL) on a local endpoint and not running an Ollama cloud model ' +
+    '(name ending -cloud or :cloud; those count as cloud) needs neither switch, only the company\'s AI opt-in with a current disclosure ' +
+    '(else 403 CONSENT_REQUIRED, details.reason), and never falls back to a cloud one. Reply not JSON 400 ai_parse_failed; ' +
+    'provider error or timeout (the OCR function timeout, else 60 s) 400 ai_ocr_failed; offline 503 OFFLINE_UNAVAILABLE (desktop). ' +
     'Needs full access to any of bills, checks or transactions. 60 calls a minute per user (429 AI_RATE_LIMIT). document-assist-v1.',
   body: documentAssistRequestSchema,
   response: assistResponse,

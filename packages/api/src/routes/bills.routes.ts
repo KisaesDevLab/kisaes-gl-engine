@@ -14,6 +14,7 @@ import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { idempotent } from '../middleware/idempotent.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { requireDesktopDocumentTextConsent } from '../middleware/desktop-document-consent.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
 import * as billService from '../services/bill.service.js';
 import * as billOcrService from '../services/ai-bill-ocr.service.js';
@@ -203,9 +204,11 @@ const extractionResponse = z.object({
 
 billsRouter.post('/extract-from-attachment/:attachmentId', describe({
   summary: 'Read a bill from an attachment with AI (an explicit owner request)',
+  description: 'Needs the company\'s receipt_ocr consent. Desktop mode with a cloud OCR provider: also the company\'s ' +
+    'document_text_cloud switch, else 403 CONSENT_REQUIRED (details.task) before the attachment lookup (U-92d).',
   params: z.object({ attachmentId: z.string() }),
   response: extractionResponse,
-}), async (req, res) => {
+}), requireDesktopDocumentTextConsent, async (req, res) => {
   // An attachment of another company is 404 (one with no company passes),
   // as in relinkDraftAttachments.
   const result = await billOcrService.extractBillFromAttachment(req.tenantId, req.params['attachmentId']!, req.companyId);

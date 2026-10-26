@@ -16,12 +16,16 @@ const state = vi.hoisted(() => ({
   userId: '',
   companyId: '',
   provider: 'anthropic' as string,
+  ocrModel: null as string | null,
+  ollamaBaseUrl: null as string | null,
+  desktop: false,
   calls: [] as Array<{ kind: 'text' | 'image'; userPrompt: string; images: number }>,
   reply: {} as Record<string, unknown>,
 }));
 
 vi.mock('../middleware/auth.js', () => ({
   authenticate: (req: any, _res: any, next: any) => { req.tenantId = state.tenantId; req.userId = state.userId; next(); },
+  requireSuperAdmin: (_req: any, _res: any, next: any) => next(),
 }));
 vi.mock('../middleware/company.js', () => ({
   companyContext: (req: any, _res: any, next: any) => { req.companyId = state.companyId; next(); },
@@ -29,19 +33,30 @@ vi.mock('../middleware/company.js', () => ({
 vi.mock('../middleware/document-draft-permission.js', () => ({
   requireAnyDocumentResource: () => (_req: any, _res: any, next: any) => next(),
 }));
+vi.mock('../middleware/permission.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../middleware/permission.js')>();
+  return { ...actual, requireResource: () => (_req: any, _res: any, next: any) => next() };
+});
+vi.mock('../desktop/profile.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../desktop/profile.js')>();
+  return { ...actual, isDesktop: () => state.desktop };
+});
 vi.mock('../services/ai-config.service.js', () => ({
-  getConfig: async () => ({ isEnabled: true, ocrProvider: state.provider, categorizationProvider: state.provider, ocrModel: null }),
-  getRawConfig: async () => ({ openaiCompatBaseUrl: null, cloudVisionEnabled: true, piiProtectionLevel: 'permissive' }),
+  getConfig: async () => ({ isEnabled: true, ocrProvider: state.provider, categorizationProvider: state.provider, ocrModel: state.ocrModel }),
+  getRawConfig: async () => ({ openaiCompatBaseUrl: null, ollamaBaseUrl: state.ollamaBaseUrl, cloudVisionEnabled: true, piiProtectionLevel: 'permissive' }),
   resolveTaskParams: () => ({ maxTokens: 2048, temperature: 0.1 }),
   resolveTaskExec: () => ({ fallbackChain: [], enabled: true, timeoutMs: 0 }),
 }));
 vi.mock('../services/ai-prompt.service.js', () => ({ getCustomSystemPrompt: async () => null }));
-vi.mock('../services/ai-providers/index.js', () => {
+vi.mock('../services/ai-providers/index.js', async () => {
+  // The real endpoint and model resolution; the provider itself is a stub.
+  const actual = await vi.importActual<typeof import('../services/ai-providers/index.js')>('../services/ai-providers/index.js');
   const result = () => ({
     provider: state.provider, model: 'stub', text: JSON.stringify(state.reply), parsed: state.reply,
     inputTokens: 3, outputTokens: 2, durationMs: 1,
   });
   return {
+    resolveSelfHostedTarget: actual.resolveSelfHostedTarget,
     getProvider: () => ({
       estimateCost: () => 0,
       complete: async (p: any) => { state.calls.push({ kind: 'text', userPrompt: p.userPrompt, images: 0 }); return result(); },
@@ -60,6 +75,8 @@ import { aiConfig, aiJobs, aiUsageLog, auditLog, companies } from '../db/schema/
 import * as authService from '../services/auth.service.js';
 import * as aiConsent from '../services/ai-consent.service.js';
 import { documentReadingRouter } from './document-reading.routes.js';
+import { aiRouter } from './ai.routes.js';
+import { billsRouter } from './bills.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
 let server: Server | null = null;
@@ -69,13 +86,24 @@ let companyB = '';
 
 // A marker that must never leave the request: not in ai_jobs, not in audit_log.
 const SECRET_TEXT = 'ZZQ-PRIVATE-MEMO-7731 Acme Plumbing invoice 4411 total 1,234.50';
-const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 1)]).toString('base64');
+/** A PNG signature and IHDR (width × height), padded to `total` bytes. */
+function png(width: number, height: number, total = 64): Buffer {
+  const head = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head, 0);
+  head.writeUInt32BE(13, 8);
+  head.write('IHDR', 12, 'latin1');
+  head.writeUInt32BE(width, 16);
+  head.writeUInt32BE(height, 20);
+  head[24] = 8; head[25] = 2;
+  return Buffer.concat([head, Buffer.alloc(Math.max(0, total - head.length), 1)]);
+}
+const PNG = png(1200, 1600).toString('base64');
 
-function post(body: unknown): Promise<{ status: number; json: any }> {
+function post(body: unknown, path = '/api/v1/document-reading/assist'): Promise<{ status: number; json: any }> {
   const data = Buffer.from(JSON.stringify(body));
   return new Promise((resolve, reject) => {
     const req = http.request({
-      method: 'POST', hostname: '127.0.0.1', port, path: '/api/v1/document-reading/assist',
+      method: 'POST', hostname: '127.0.0.1', port, path,
       headers: { 'Content-Type': 'application/json', 'Content-Length': data.length },
     }, (res) => {
       const chunks: Buffer[] = [];
@@ -120,6 +148,8 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
   app.use('/api/v1/document-reading', documentReadingRouter);
+  app.use('/api/v1/ai', aiRouter);
+  app.use('/api/v1/bills', billsRouter);
   app.use(errorHandler);
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', () => { port = (server!.address() as AddressInfo).port; resolve(); });
@@ -138,6 +168,9 @@ afterAll(async () => {
 
 beforeEach(() => {
   state.provider = 'anthropic';
+  state.ocrModel = null;
+  state.ollamaBaseUrl = null;
+  state.desktop = false;
   state.companyId = companyA;
   state.calls = [];
   state.reply = {
@@ -178,6 +211,11 @@ describe('switches, consent and the reading', () => {
     const last = audits[audits.length - 1]!;
     expect((last.afterData as Record<string, boolean>)['document_text_cloud']).toBe(true);
     expect((last.beforeData as Record<string, boolean>)['document_text_cloud']).toBe(false);
+    // M3: what the owner agreed under.
+    expect((last.afterData as Record<string, unknown>)['configuration']).toEqual({
+      provider: null, providers: { categorization: null, ocr: null },
+      piiProtectionLevel: 'strict', cloudVisionEnabled: false, disclosureVersion: 1, systemDisclosureVersion: 1,
+    });
 
     const r = await post({ text: SECRET_TEXT, kindHint: 'bill' });
     expect(r.status).toBe(200);
@@ -255,12 +293,130 @@ describe('switches, consent and the reading', () => {
   });
 });
 
+describe('Ollama cloud models and remote endpoints count as cloud (review M2, L1)', () => {
+  it('an Ollama *-cloud model needs the switches (company B has them off)', async () => {
+    state.provider = 'ollama';
+    state.companyId = companyB;
+    state.ocrModel = 'gpt-oss:120b-cloud';
+    const r = await post({ text: SECRET_TEXT });
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatchObject({ code: 'CONSENT_REQUIRED', details: { task: 'document_text_cloud' } });
+    expect(state.calls).toHaveLength(0);
+  });
+
+  it('a local Ollama model runs for company B; a cloud model with the switch on is redacted and reads as cloud', async () => {
+    state.provider = 'ollama';
+    state.companyId = companyB;
+    state.ocrModel = 'llama3.2-vision:11b';
+    let r = await post({ text: SECRET_TEXT });
+    expect(r.status).toBe(200);
+    expect(r.json.suggestion.reader).toBe('self_hosted');
+
+    state.companyId = companyA; // document_text_cloud on
+    state.ocrModel = 'qwen3-coder:480b-cloud';
+    state.calls = [];
+    r = await post({ text: `${SECRET_TEXT} card 4111 1111 1111 1111` });
+    expect(r.status).toBe(200);
+    expect(r.json.suggestion.reader).toBe('cloud');
+    expect(state.calls[0]!.userPrompt).not.toContain('4111 1111 1111 1111');
+  });
+
+  it('a server Ollama on a public URL needs the switches; one on a private address does not', async () => {
+    state.provider = 'ollama';
+    state.companyId = companyB;
+    state.ollamaBaseUrl = 'https://ollama.example.com';
+    let r = await post({ text: SECRET_TEXT });
+    expect(r.status).toBe(403);
+    expect(r.json.error.details).toMatchObject({ task: 'document_text_cloud' });
+    state.ollamaBaseUrl = 'http://10.0.0.5:11434';
+    r = await post({ text: SECRET_TEXT });
+    expect(r.status).toBe(200);
+    expect(r.json.suggestion.reader).toBe('self_hosted');
+  });
+});
+
+describe('re-accepting a newer disclosure resets the document switches (review M3)', () => {
+  afterAll(async () => {
+    await db.update(aiConfig).set({ disclosureVersion: 1, ocrProvider: null, piiProtectionLevel: 'strict', cloudVisionEnabled: false });
+  });
+
+  it('the same version keeps a switch that is on', async () => {
+    await aiConsent.setCompanyTaskToggles(state.tenantId, companyA, { document_text_cloud: true, report_summary: true }, state.userId);
+    await aiConsent.acceptCompanyDisclosure(state.tenantId, companyA, state.userId);
+    const t = await tasksOf(companyA);
+    expect(t['document_text_cloud']).toBe(true);
+    expect(t['report_summary']).toBe(true);
+  });
+
+  it('after a disclosure bump, re-accepting turns both document switches off; other choices stay', async () => {
+    await aiConsent.setCompanyTaskToggles(state.tenantId, companyA, { document_text_cloud: true, document_images_cloud: true }, state.userId);
+    await db.update(aiConfig).set({ disclosureVersion: 2, ocrProvider: 'anthropic', piiProtectionLevel: 'permissive', cloudVisionEnabled: true });
+    // Stale until re-accepted.
+    let r = await post({ text: SECRET_TEXT });
+    expect(r.status).toBe(403);
+    expect(r.json.error.details).toMatchObject({ reason: 'consent_stale' });
+
+    await aiConsent.acceptCompanyDisclosure(state.tenantId, companyA, state.userId);
+    const t = await tasksOf(companyA);
+    expect(t['document_text_cloud']).toBe(false);
+    expect(t['document_images_cloud']).toBe(false);
+    expect(t['receipt_ocr']).toBe(true);
+    expect(t['report_summary']).toBe(true);
+    r = await post({ text: SECRET_TEXT });
+    expect(r.status).toBe(403);
+    expect(r.json.error.details).toMatchObject({ task: 'document_text_cloud' });
+
+    // Turning it back on records the configuration it was agreed under.
+    await aiConsent.setCompanyTaskToggles(state.tenantId, companyA, { document_text_cloud: true }, state.userId);
+    const audits = await db.select().from(auditLog).where(and(
+      eq(auditLog.tenantId, state.tenantId), eq(auditLog.entityType, 'company_ai_tasks'), eq(auditLog.entityId, companyA),
+    ));
+    const underV2 = audits.filter((a) => (a.afterData as { configuration?: { systemDisclosureVersion?: number } })?.configuration?.systemDisclosureVersion === 2);
+    expect(underV2).toHaveLength(1);
+    expect((underV2[0]!.afterData as Record<string, unknown>)['configuration']).toEqual({
+      provider: 'anthropic', providers: { categorization: null, ocr: 'anthropic' },
+      piiProtectionLevel: 'permissive', cloudVisionEnabled: true, disclosureVersion: 2, systemDisclosureVersion: 2,
+    });
+  });
+});
+
+describe('desktop: the older document AI routes need document_text_cloud too (review L2)', () => {
+  const missing = '00000000-0000-4000-8000-000000000000';
+
+  it('desktop + cloud provider + switch off: 403 before the attachment lookup', async () => {
+    state.desktop = true;
+    state.companyId = companyB;
+    let r = await post({ attachmentId: missing }, '/api/v1/ai/ocr/receipt');
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatchObject({ code: 'CONSENT_REQUIRED', details: { task: 'document_text_cloud' } });
+    r = await post({}, `/api/v1/bills/extract-from-attachment/${missing}`);
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatchObject({ code: 'CONSENT_REQUIRED', details: { task: 'document_text_cloud' } });
+  });
+
+  it('server mode, a local Ollama on the desktop, or the switch on: the route runs as before (404 here)', async () => {
+    state.companyId = companyB;
+    let r = await post({ attachmentId: missing }, '/api/v1/ai/ocr/receipt');
+    expect(r.status).toBe(404);
+    state.desktop = true;
+    state.provider = 'ollama';
+    r = await post({ attachmentId: missing }, '/api/v1/ai/ocr/receipt');
+    expect(r.status).toBe(404);
+    state.provider = 'anthropic';
+    state.companyId = companyA; // document_text_cloud on
+    r = await post({}, `/api/v1/bills/extract-from-attachment/${missing}`);
+    expect(r.status).toBe(404);
+  });
+});
+
 describe('limits (checked before any gate)', () => {
   it.each([
     [{ text: 'x'.repeat(60_001) }, 'TEXT_TOO_LONG'],
     [{ text: 'x', pageImages: [PNG, PNG, PNG, PNG] }, 'TOO_MANY_IMAGES'],
     [{ text: 'x', pageImages: [Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 5, 6]).toString('base64')] }, 'IMAGE_NOT_PNG'],
     [{ text: 'x', pageImages: ['not base64!'] }, 'IMAGE_NOT_PNG'],
+    [{ text: 'x', pageImages: [Buffer.concat([png(10, 10).subarray(0, 8), Buffer.alloc(56)]).toString('base64')] }, 'IMAGE_NOT_PNG'],
+    [{ text: 'x', pageImages: [png(5000, 1000).toString('base64')] }, 'IMAGE_TOO_LARGE'],
     [{ text: '   ' }, 'NOTHING_TO_READ'],
   ])('%#: 400 %s', async (body, code) => {
     state.provider = 'ollama';
@@ -272,7 +428,7 @@ describe('limits (checked before any gate)', () => {
 
   it('images over 2 MiB together are 400 IMAGES_TOO_LARGE; exactly 2 MiB passes the limit', async () => {
     state.provider = 'ollama';
-    const big = (n: number) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(n - 8)]).toString('base64');
+    const big = (n: number) => png(2000, 2000, n).toString('base64');
     let r = await post({ text: 'x', pageImages: [big(1024 * 1024), big(1024 * 1024 + 1)] });
     expect(r.status).toBe(400);
     expect(r.json.error.code).toBe('IMAGES_TOO_LARGE');
