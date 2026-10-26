@@ -256,6 +256,10 @@ export const aiTaskTogglesSchema = z.object({
   enrich_vendor: z.boolean().optional(),
   judgment_review: z.boolean().optional(),
   report_summary: z.boolean().optional(),
+  // U-92d (document-assist-v1): reading a document's text / page images with
+  // a cloud provider. Off by default; never implied by receipt_ocr.
+  document_text_cloud: z.boolean().optional(),
+  document_images_cloud: z.boolean().optional(),
 });
 
 // Admin prompt template mutations.

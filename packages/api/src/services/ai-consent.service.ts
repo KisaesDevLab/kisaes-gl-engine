@@ -31,7 +31,11 @@ export type AiTaskKey =
   | 'document_classification'
   | 'enrich_vendor'
   | 'judgment_review'
-  | 'report_summary';
+  | 'report_summary'
+  // U-92d: document reading with an online service. Off for every company;
+  // never turned on by accepting the disclosure or by receipt_ocr.
+  | 'document_text_cloud'
+  | 'document_images_cloud';
 
 const ALL_TASK_KEYS: AiTaskKey[] = [
   'categorization',
@@ -41,6 +45,8 @@ const ALL_TASK_KEYS: AiTaskKey[] = [
   'enrich_vendor',
   'judgment_review',
   'report_summary',
+  'document_text_cloud',
+  'document_images_cloud',
 ];
 
 // ─── Core-on-accept vs sensitive-opt-in split (H6/H7) ──────────────
@@ -73,6 +79,12 @@ export const SENSITIVE_TASKS_OPT_IN: AiTaskKey[] = [
   'enrich_vendor',
   'judgment_review',
   'report_summary',
+  // U-92d: the page text (document_text_cloud) and page images
+  // (document_images_cloud) of a document read by a cloud provider through
+  // POST /document-reading/assist. Their own consent: receipt_ocr never
+  // implies them, and accepting the disclosure leaves them off.
+  'document_text_cloud',
+  'document_images_cloud',
 ];
 
 // Keep this text in the service so disclosure generation can be audited
@@ -666,6 +678,8 @@ export const DEFAULT_TASK_TOGGLES: Record<AiTaskKey, boolean> = {
   enrich_vendor: false,
   judgment_review: false,
   report_summary: false,
+  document_text_cloud: false,
+  document_images_cloud: false,
 };
 
 // Exposed for ai-config.service so it can compose in a transaction.

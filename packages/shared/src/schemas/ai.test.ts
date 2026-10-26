@@ -18,7 +18,7 @@ describe('aiTaskTogglesSchema', () => {
     const all = {
       categorization: true, receipt_ocr: false, statement_parsing: true,
       document_classification: false, enrich_vendor: true, judgment_review: false,
-      report_summary: true,
+      report_summary: true, document_text_cloud: true, document_images_cloud: false,
     };
     expect(aiTaskTogglesSchema.parse(all)).toEqual(all);
   });

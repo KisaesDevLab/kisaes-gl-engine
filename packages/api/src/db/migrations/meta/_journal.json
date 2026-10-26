@@ -1639,6 +1639,13 @@
       "when": 1785000014380,
       "tag": "0233_document_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 234,
+      "version": "7",
+      "when": 1785100014380,
+      "tag": "0234_document_reading_consent",
+      "breakpoints": true
     }
   ]
 }
