@@ -403,6 +403,9 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'daily_sales_templates.default_tag_id': 'tenant-ref:tags',
   'deposit_lines.deposit_id': 'tenant-ref:transactions',
   'deposit_lines.source_transaction_id': 'tenant-ref:transactions',
+  // Document drafts and vendor layouts (U-92, migration 0233).
+  'document_drafts.converted_by': 'identity',
+  'document_drafts.created_by': 'identity',
   'document_requests.reviewed_by': 'identity',
   'document_requests.bank_connection_id': 'tenant-ref:bank_connections',
   'duplicate_dismissals.transaction_id_a': 'tenant-ref:transactions',
@@ -601,6 +604,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'vendor_credit_applications.payment_id': 'tenant-ref:transactions',
   'vendor_credit_applications.credit_id': 'tenant-ref:transactions',
   'vendor_credit_applications.bill_id': 'tenant-ref:transactions',
+  'vendor_layout_templates.created_by': 'identity',
   'w9_requests.w9_document_id': 'tenant-ref:attachments',
   'w9_requests.created_by': 'identity',
 };
@@ -687,6 +691,60 @@ export const OMITTABLE_COLUMNS: Record<string, { option: 'omitIntakeSettings'; r
   },
 };
 
+/** Export options that leave whole tables or some rows out (U-92). */
+export type OmitOption = 'omitDocumentDrafts';
+
+/**
+ * Tables an export may leave out on request (U-92, M6): the archive carries
+ * the table with no rows (its part is written, so the import and the
+ * content digest see an empty table), and the manifest lists the table
+ * under `omitted`. The learned vendor layouts stay on the computer that
+ * made them: a transfer file to the accountant does not carry them. An
+ * import refuses an archive that has rows in a table its manifest lists as
+ * omitted.
+ */
+export const OMITTABLE_TABLES: Record<string, { option: OmitOption }> = {
+  vendor_layout_templates: { option: 'omitDocumentDrafts' },
+};
+
+/**
+ * Rows an export may leave out on request (U-92, M6): `keep` is a SQL
+ * predicate over the table's alias that the exported rows must satisfy.
+ * Rows filtered out carry no file either (files are collected from the
+ * exported rows). The manifest lists `label` under `omitted` and the
+ * number of rows left out under `omittedRows`.
+ *
+ * `keepReferenced`: a row that an exported row of another archived table
+ * references (a foreign key, or a `tenant-ref` soft reference) is kept even
+ * when `keep` is false, so the archive never carries a reference to a row
+ * it left out (U-92 review L-7: a live draft's file that a bill capture or
+ * a trial-balance row attachment also uses).
+ */
+export const OMITTABLE_ROW_FILTERS: Record<string, { option: OmitOption; label: string; keep: (alias: string) => string; keepReferenced?: boolean }> = {
+  // Unconverted (new, ready, failed, discarded) drafts; a converted draft
+  // travels with its transaction (D4).
+  document_drafts: {
+    option: 'omitDocumentDrafts',
+    label: 'document_drafts:unconverted',
+    keep: (a) => `${a}.status = 'converted'`,
+  },
+  // The files of live (new, ready, failed) drafts; a converted draft's file
+  // travels with its transaction.
+  attachments: {
+    option: 'omitDocumentDrafts',
+    label: 'attachments:live-document-drafts',
+    keep: (a) => `NOT EXISTS (SELECT 1 FROM document_drafts dd WHERE dd.tenant_id = ${a}.tenant_id AND dd.attachment_id = ${a}.id AND dd.status IN ('new', 'ready', 'failed'))`,
+    keepReferenced: true,
+  },
+  // The audit rows of the drafts and layouts left out: every layout row,
+  // and a draft's rows unless the draft travels (converted).
+  audit_log: {
+    option: 'omitDocumentDrafts',
+    label: 'audit_log:document-drafts',
+    keep: (a) => `NOT (${a}.entity_type = 'vendor_layout_template' OR (${a}.entity_type = 'document_draft' AND NOT EXISTS (
+      SELECT 1 FROM document_drafts dd WHERE dd.tenant_id = ${a}.tenant_id AND dd.id = ${a}.entity_id AND dd.status = 'converted')))`,
+  },
+};
 /**
  * Rule 5c (H3). Row-shaped json payloads: the audit log's before/after
  * images carry whole rows, credentials included (companies.smtp_pass, a
@@ -1382,6 +1440,9 @@ export async function buildPortabilityPlan(dbi: DbLike = db): Promise<Portabilit
   staleKeys('SECRET_COLUMNS', SECRET_COLUMNS, (t, c) => classifiedSet.has(t) && SECRET_COLUMN_RE.test(c));
   staleKeys('JSON_CONFIG_COLUMNS', JSON_CONFIG_COLUMNS, (t, c) => classifiedSet.has(t) && JSON_CONFIG_RE.test(c) && /json/.test(col(t, c)!.type));
   staleKeys('OMITTABLE_COLUMNS', OMITTABLE_COLUMNS, (t) => archivedSet.has(t));
+  for (const t of [...Object.keys(OMITTABLE_TABLES), ...Object.keys(OMITTABLE_ROW_FILTERS)]) {
+    if (!archivedSet.has(t)) throw new PortabilityPlanError('STALE_ENTRY', `OMITTABLE_TABLES / OMITTABLE_ROW_FILTERS: ${t}`);
+  }
   staleKeys('STRIPPED_JSON_COLUMNS', STRIPPED_JSON_COLUMNS, (t, c) => archivedSet.has(t) && /json/.test(col(t, c)!.type));
   staleKeys('FILE_COLUMNS', FILE_COLUMNS, (t) => classifiedSet.has(t));
   staleKeys('UNIQUE_INDEX_RULES', UNIQUE_INDEX_RULES, (t) => classifiedSet.has(t));

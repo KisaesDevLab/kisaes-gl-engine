@@ -37,7 +37,7 @@ import { computeTenantFingerprint } from './fingerprint.js';
 import { IDENTITY_ENTRIES, filePartName, tablePartName, type ArchiveManifest, type ManifestTable } from './format.js';
 import { applyIdentity, parseIdentityLine, type ArchivedAccess, type ArchivedUser } from './identity.js';
 import type { JobProgress } from './jobs.js';
-import { NATURAL_KEYS, getPortabilityPlan, type PortabilityPlan, type TablePlan } from './plan.js';
+import { NATURAL_KEYS, OMITTABLE_ROW_FILTERS, getPortabilityPlan, scopeSql, type PortabilityPlan, type TablePlan } from './plan.js';
 import { IdMap, fieldString, pkOfLine, rewriteField } from './remap.js';
 import { applyArchiveSession, withArchiveConnection, xactLockTenantExclusive, type ArchiveClient } from './session.js';
 import { verifyImport, type ReencryptedValue, type VerificationSummary, type WrittenFile } from './verify.js';
@@ -54,6 +54,14 @@ export interface ImportOptions {
    * the content verification, so the archive verifies as written.
    */
   resetIntakeSettings?: boolean;
+  /**
+   * Restore with no unconverted document drafts and no vendor layouts
+   * (U-92): ClientLedger sets it for transfer files. Converted drafts stay
+   * with their transactions. Applied after the content verification. The
+   * files of the drafts removed stay as ordinary draft attachments (an
+   * export with omitDocumentDrafts carries none of live drafts).
+   */
+  resetDocumentDrafts?: boolean;
 }
 
 export interface ImportResult {
@@ -150,6 +158,33 @@ async function mapGlobalRows(client: ArchiveClient, plan: PortabilityPlan, manif
     }
   }
   return unresolved;
+}
+
+/**
+ * U-92 (review L-6): an archive whose manifest lists a table as omitted
+ * whole, or a row filter, must not carry the rows it says it left out. The
+ * rows are counted as inserted (the manifest's own row counts are the
+ * exporter's word), so a doctored archive is refused, not restored.
+ */
+export async function assertOmissionsHold(client: ArchiveClient, plan: PortabilityPlan, manifest: ArchiveManifest, newTenantId: string): Promise<void> {
+  const labels = new Map(Object.entries(OMITTABLE_ROW_FILTERS).map(([table, f]) => [f.label, { table, keep: f.keep }]));
+  for (const o of manifest.omitted ?? []) {
+    let where: string | undefined;
+    let table = o;
+    if (!o.includes('.') && !o.includes(':')) {
+      if (!plan.byName.has(o)) continue;
+      where = scopeSql(plan, o, 'a');
+    } else {
+      const f = labels.get(o);
+      if (!f || !plan.byName.has(f.table)) continue;
+      table = f.table;
+      where = `(${scopeSql(plan, f.table, 'a')}) AND NOT (${f.keep('a')})`;
+    }
+    const r = await client.query(`SELECT count(*)::int AS n FROM "${table}" a WHERE ${where}`, [newTenantId]);
+    if ((r.rows[0] as { n: number }).n > 0) {
+      throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (it carries rows of ${table} it lists as left out).`, { omitted: o });
+    }
+  }
 }
 
 export async function runImport(options: ImportOptions, progress?: JobProgress): Promise<ImportResult> {
@@ -270,6 +305,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       for (const d of deferred) {
         await client.query(`UPDATE "${d.table}" SET "${d.column}" = $2 WHERE id = $1`, [d.id, d.value]);
       }
+      await assertOmissionsHold(client, plan, manifest, newTenantId);
 
       // Files, under the pending marker.
       step('files', 72);
@@ -298,6 +334,13 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       if (resetIntakeSettings) {
         await client.query('UPDATE companies SET intake_settings = DEFAULT WHERE tenant_id = $1', [newTenantId]);
       }
+      // Unconverted document drafts and the vendor layouts removed on request
+      // (U-92), likewise; converted drafts stay with their transactions (D4).
+      const resetDocumentDrafts = options.resetDocumentDrafts === true;
+      if (resetDocumentDrafts) {
+        await client.query("DELETE FROM document_drafts WHERE tenant_id = $1 AND status <> 'converted'", [newTenantId]);
+        await client.query('DELETE FROM vendor_layout_templates WHERE tenant_id = $1', [newTenantId]);
+      }
 
       // After verification: audit row, fingerprint, provenance.
       step('commit', 95);
@@ -306,7 +349,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
          VALUES ($1, $2, 'create', 'tenant_import', $3, $4::jsonb)`,
         [newTenantId, options.callerUserId, manifest.archiveId, JSON.stringify({
           archiveId: manifest.archiveId, archiveSha256, sourceTenantId: manifest.source.tenantId, sourceName: manifest.source.name, userId: options.callerUserId,
-          resetIntakeSettings,
+          resetIntakeSettings, resetDocumentDrafts,
         })],
       );
       const fingerprint = await computeTenantFingerprint(client, plan, newTenantId);

@@ -151,4 +151,19 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * row; omitIntakeSettings on the tenant archive export (manifest `omitted`) (U-93).
    */
   'intake-settings-v1',
+  /**
+   * /api/v1/document-drafts (claim an uploaded draft file by its SHA-256, list, get, duplicates, PUT a reading with
+   * expectedUpdatedAt, discard, convert into a bill / card charge / cash expense / check in one database transaction) and
+   * /api/v1/vendor-layout-templates (GET, PUT upsert, DELETE); accounts.card_last4 on PUT /accounts/:id; DELETE
+   * /attachments/:id is 409 ATTACHMENT_IN_USE while a live draft reads the file; omitDocumentDrafts on the tenant archive
+   * export and resetDocumentDrafts on import (migration 0233; U-92, U-92b).
+   */
+  'document-drafts-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on exactly POST /document-drafts and
+   * POST /document-drafts/:id/convert (each `x-idempotency: true` in openapi.json). Refusals (409
+   * DOCUMENT_ALREADY_CLAIMED, DOCUMENT_DRAFT_CLOSED, STALE, POSSIBLE_DUPLICATE, 423, 403, 400) are never stored. The
+   * set is fixed: more routes get a new name (U-92a).
+   */
+  'idempotency-docs-v1',
 ];

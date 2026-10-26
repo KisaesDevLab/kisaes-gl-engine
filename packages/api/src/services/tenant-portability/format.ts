@@ -129,10 +129,17 @@ export interface ArchiveManifest {
   schema: { version: number; tag: string | null };
   createdAt: string;
   source: { tenantId: string; name: string; ledgerVersion: string };
-  /** omitIntakeSettings: absent in archives written before U-93. */
-  options: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings?: boolean };
-  /** `table.column` values left out on request (U-93; OMITTABLE_COLUMNS): the rows carry the column default. Absent before U-93. */
+  /** omitIntakeSettings: absent in archives written before U-93; omitDocumentDrafts: before U-92. */
+  options: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings?: boolean; omitDocumentDrafts?: boolean };
+  /**
+   * Left out on request: `table.column` values (U-93; OMITTABLE_COLUMNS: the
+   * rows carry the column default), whole `table`s (U-92; OMITTABLE_TABLES:
+   * archived with no rows) and `table:filter` row filters (U-92;
+   * OMITTABLE_ROW_FILTERS). Absent before U-93.
+   */
   omitted?: string[];
+  /** Rows left out by a row filter, by table (U-92; OMITTABLE_ROW_FILTERS). Absent before U-92 and without a filter. */
+  omittedRows?: Record<string, number>;
   host: Record<string, unknown>;
   tables: ManifestTable[];
   identity: {

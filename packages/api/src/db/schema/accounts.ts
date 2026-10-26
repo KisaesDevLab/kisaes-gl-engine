@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { pgTable, uuid, varchar, text, decimal, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, char, text, decimal, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const accounts = pgTable('accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -18,6 +18,9 @@ export const accounts = pgTable('accounts', {
   systemTag: varchar('system_tag', { length: 50 }),
   parentId: uuid('parent_id'),
   balance: decimal('balance', { precision: 19, scale: 4 }).default('0'),
+  // Last four digits of a credit card account (U-92, migration 0233): four
+  // digits or null, only on detail type credit_card (accounts.service).
+  cardLast4: char('card_last4', { length: 4 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

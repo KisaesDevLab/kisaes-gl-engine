@@ -128,6 +128,14 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
     throw AppError.badRequest('Cannot change the type of a system account');
   }
 
+  // Card last 4 (U-92): only on a credit card account. An edit that moves
+  // the account off detail type credit_card clears it.
+  const nextDetailType = input.detailType !== undefined ? input.detailType : existing.detailType;
+  if (input.cardLast4 && nextDetailType !== 'credit_card') {
+    throw AppError.badRequest('Only a credit card account can have card digits', 'VALIDATION_ERROR', { path: 'cardLast4' });
+  }
+  if (nextDetailType !== 'credit_card' && existing.cardLast4) sanitized['cardLast4'] = null;
+
   // Check unique account number if changing
   if (input.accountNumber && input.accountNumber !== existing.accountNumber) {
     const duplicate = await db.query.accounts.findFirst({
@@ -244,6 +252,8 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
           ...(u.name !== undefined ? { name: u.name } : {}),
           ...(u.accountType !== undefined ? { accountType: u.accountType } : {}),
           ...(u.detailType !== undefined ? { detailType: u.detailType || null } : {}),
+          // Card last 4 (U-92) belongs to credit card accounts only.
+          ...(u.detailType !== undefined && u.detailType !== 'credit_card' && before.cardLast4 ? { cardLast4: null } : {}),
           ...(u.accountNumber !== undefined ? { accountNumber: u.accountNumber || null } : {}),
           updatedAt: new Date(),
         })

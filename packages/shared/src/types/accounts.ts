@@ -25,6 +25,8 @@ export interface Account {
   systemTag: string | null;
   parentId: string | null;
   balance: string;
+  /** Last four digits of a credit card account (U-92, document-drafts-v1). */
+  cardLast4?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -46,6 +48,8 @@ export interface UpdateAccountInput {
   description?: string | null;
   parentId?: string | null;
   isActive?: boolean;
+  /** Last four digits of a credit card account (U-92); null clears it. */
+  cardLast4?: string | null;
 }
 
 export type AccountSortKey = 'number' | 'name' | 'type' | 'detailType' | 'balance' | 'status';

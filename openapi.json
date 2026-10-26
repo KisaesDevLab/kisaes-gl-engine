@@ -2984,6 +2984,17 @@
                     ],
                     "type": "string"
                   },
+                  "cardLast4": {
+                    "anyOf": [
+                      {
+                        "pattern": "^[0-9]{4}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "description": {
                     "type": [
                       "string",
@@ -25611,6 +25622,1007 @@
         "summary": "Revenue and expenses per calendar month, oldest first",
         "tags": [
           "dashboard"
+        ]
+      }
+    },
+    "/api/v1/document-drafts": {
+      "get": {
+        "description": "Response `{drafts, total}`, newest first. `status` is one or a comma-joined set of new, ready, failed, converted, discarded. `limit` 1-200 (default 50), `offset` 0-10000. `view=summary` leaves each draft's reading (`fields`, `lines`, `checks`) out; GET /:id returns it. Readable with view access to any of bills, checks or transactions, whatever the drafts' kinds.",
+        "operationId": "get_api_v1_document_drafts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "enum": [
+                "bill",
+                "card_charge",
+                "check",
+                "cash_expense",
+                "unknown"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "summary"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List document drafts",
+        "tags": [
+          "document-drafts"
+        ]
+      },
+      "post": {
+        "description": "Response 201 `{draft}`. `attachmentId` names a draft attachment (attachable type `draft`) visible to the company (else 404; another type 422 ATTACHMENT_NOT_DRAFT). The engine hashes the stored file: a file this company already has as a draft that is not discarded is 409 DOCUMENT_ALREADY_CLAIMED (`details.draftId`); two concurrent claims of one file give one draft. The attachment is left a draft attachment and takes the company. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Idempotency list: idempotency-docs-v1.",
+        "operationId": "post_api_v1_document_drafts",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "attachmentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "kindHint": {
+                    "default": "unknown",
+                    "enum": [
+                      "bill",
+                      "card_charge",
+                      "check",
+                      "cash_expense",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "attachmentId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Claim an uploaded file as a document draft",
+        "tags": [
+          "document-drafts"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/document-drafts/{id}": {
+      "get": {
+        "description": "Response `{draft}`.",
+        "operationId": "get_api_v1_document_drafts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a document draft",
+        "tags": [
+          "document-drafts"
+        ]
+      },
+      "put": {
+        "description": "Response 200 `{draft}`. `status` ready (a reading) or failed (`failureReason`). Omitted fields keep their value. `expectedUpdatedAt` is required: the draft's updatedAt as last read; a mismatch is 409 STALE (`details.updatedAt`). A converted or discarded draft is 409 DOCUMENT_DRAFT_CLOSED. `fields`, `lines`, `checks`: JSON with decimal-string amounts and integer numbers only (bounded). Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Changing the kind also needs the new kind's permission.",
+        "operationId": "put_api_v1_document_drafts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "checks": {
+                    "items": {},
+                    "maxItems": 200,
+                    "type": "array"
+                  },
+                  "docDate": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "docReference": {
+                    "anyOf": [
+                      {
+                        "maxLength": 100,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "docTotal": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "failureReason": {
+                    "anyOf": [
+                      {
+                        "pattern": "^[a-z0-9_]{1,40}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "fields": {
+                    "additionalProperties": {},
+                    "type": "object"
+                  },
+                  "kind": {
+                    "enum": [
+                      "bill",
+                      "card_charge",
+                      "check",
+                      "cash_expense",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {},
+                    "maxItems": 500,
+                    "type": "array"
+                  },
+                  "reader": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "text_pdf",
+                          "ocr",
+                          "template",
+                          "ollama",
+                          "cloud",
+                          "manual"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "ready",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "suggestedContactId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "expectedUpdatedAt",
+                  "status"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Store a reading on a document draft",
+        "tags": [
+          "document-drafts"
+        ]
+      }
+    },
+    "/api/v1/document-drafts/{id}/convert": {
+      "post": {
+        "description": "Response 201 `{draft, transaction, draftMatches}`. `body` is the kind's own create body (bill: POST /bills; card_charge and cash_expense: POST /transactions expense with payFromAccountId; check: POST /checks), without draftAttachmentId. One database transaction: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE; the draft's current kind needs its permission too, 403), the vendor must be tenant-wide or the company's (404), the record posts through the kind's service (a date on or before the closing date needs the top-level closingPassword: 423 TB_PERIOD_LOCKED / 403 CLOSING_PASSWORD_INVALID), then posted bills, expenses and checks of the same vendor with the same reference, or the same total within 60 days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); other live drafts that match are listed in details.draftMatches (and in the 201 response's draftMatches) but never block. The draft's file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for the other kinds) with an audit row each; the draft is marked converted. Any refusal leaves nothing written. Missing or other kind: 400 INVALID_KIND. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Idempotency list: idempotency-docs-v1 (the permission is checked before a replay).",
+        "operationId": "post_api_v1_document_drafts_by_id_convert",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "body": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "billReceived": {
+                                "type": "boolean"
+                              },
+                              "contactId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "discountDate": {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                                "type": "string"
+                              },
+                              "discountDays": {
+                                "maximum": 365,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "discountPercent": {
+                                "pattern": "^\\d{1,2}(\\.\\d{1,4})?$",
+                                "type": "string"
+                              },
+                              "dueDate": {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                                "type": "string"
+                              },
+                              "internalNotes": {
+                                "type": "string"
+                              },
+                              "lines": {
+                                "items": {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "accountId": {
+                                      "format": "uuid",
+                                      "type": "string"
+                                    },
+                                    "amount": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "contactId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "isBillable": {
+                                      "type": "boolean"
+                                    },
+                                    "itemId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "quantity": {
+                                      "anyOf": [
+                                        {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "tagId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "unitPrice": {
+                                      "anyOf": [
+                                        {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "accountId",
+                                    "amount"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 500,
+                                "minItems": 1,
+                                "type": "array"
+                              },
+                              "memo": {
+                                "type": "string"
+                              },
+                              "paymentTerms": {
+                                "enum": [
+                                  "due_on_receipt",
+                                  "net_10",
+                                  "net_15",
+                                  "net_30",
+                                  "net_45",
+                                  "net_60",
+                                  "net_90",
+                                  "1_10_net_30",
+                                  "2_10_net_30",
+                                  "custom"
+                                ],
+                                "type": "string"
+                              },
+                              "termsDays": {
+                                "maximum": 3650,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "txnDate": {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                                "type": "string"
+                              },
+                              "vendorInvoiceNumber": {
+                                "maxLength": 100,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "contactId",
+                              "txnDate",
+                              "lines"
+                            ],
+                            "type": "object"
+                          },
+                          "kind": {
+                            "const": "bill",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "body"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "body": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "amount": {
+                                "type": "string"
+                              },
+                              "contactId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "expenseAccountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "lines": {
+                                "items": {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "amount": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "contactId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "expenseAccountId": {
+                                      "format": "uuid",
+                                      "type": "string"
+                                    },
+                                    "isBillable": {
+                                      "type": "boolean"
+                                    },
+                                    "tagId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "expenseAccountId",
+                                    "amount"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 500,
+                                "type": "array"
+                              },
+                              "memo": {
+                                "type": "string"
+                              },
+                              "payFromAccountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "tags": {
+                                "items": {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "txnDate": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "txnNumber": {
+                                "maxLength": 50,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "txnDate",
+                              "payFromAccountId"
+                            ],
+                            "type": "object"
+                          },
+                          "kind": {
+                            "const": "card_charge",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "body"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "body": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "amount": {
+                                "type": "string"
+                              },
+                              "contactId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "expenseAccountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "lines": {
+                                "items": {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "amount": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "contactId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "expenseAccountId": {
+                                      "format": "uuid",
+                                      "type": "string"
+                                    },
+                                    "isBillable": {
+                                      "type": "boolean"
+                                    },
+                                    "tagId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "expenseAccountId",
+                                    "amount"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 500,
+                                "type": "array"
+                              },
+                              "memo": {
+                                "type": "string"
+                              },
+                              "payFromAccountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "tags": {
+                                "items": {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "txnDate": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "txnNumber": {
+                                "maxLength": 50,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "txnDate",
+                              "payFromAccountId"
+                            ],
+                            "type": "object"
+                          },
+                          "kind": {
+                            "const": "cash_expense",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "body"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "body": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "amount": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "bankAccountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "checkNumber": {
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "contactId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "lines": {
+                                "items": {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "accountId": {
+                                      "format": "uuid",
+                                      "type": "string"
+                                    },
+                                    "amount": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "contactId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "isBillable": {
+                                      "type": "boolean"
+                                    },
+                                    "tagId": {
+                                      "anyOf": [
+                                        {
+                                          "format": "uuid",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "accountId",
+                                    "amount"
+                                  ],
+                                  "type": "object"
+                                },
+                                "minItems": 1,
+                                "type": "array"
+                              },
+                              "memo": {
+                                "type": "string"
+                              },
+                              "payeeAddress": {
+                                "maxLength": 500,
+                                "type": "string"
+                              },
+                              "payeeNameOnCheck": {
+                                "maxLength": 255,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "printLater": {
+                                "default": false,
+                                "type": "boolean"
+                              },
+                              "printedMemo": {
+                                "maxLength": 255,
+                                "type": "string"
+                              },
+                              "tagIds": {
+                                "items": {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "txnDate": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "bankAccountId",
+                              "payeeNameOnCheck",
+                              "txnDate",
+                              "amount",
+                              "lines"
+                            ],
+                            "type": "object"
+                          },
+                          "kind": {
+                            "const": "check",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "body"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "acknowledgeDuplicateOf": {
+                        "items": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "maxItems": 50,
+                        "type": "array"
+                      },
+                      "closingPassword": {
+                        "description": "closing-date password (closing-password-v1), top level only; never stored or echoed",
+                        "type": "string"
+                      },
+                      "expectedUpdatedAt": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "overrideConfirmed": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "expectedUpdatedAt"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Convert a document draft into a bill, card charge, cash expense or check",
+        "tags": [
+          "document-drafts"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/document-drafts/{id}/discard": {
+      "post": {
+        "description": "Response 200 `{draft}`. Frees the file's claim; the file itself is left (delete it with DELETE /attachments/:id afterwards). Already discarded: 200, nothing changes. Converted: 409 DOCUMENT_DRAFT_CLOSED. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read).",
+        "operationId": "post_api_v1_document_drafts_by_id_discard",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Discard a document draft",
+        "tags": [
+          "document-drafts"
+        ]
+      }
+    },
+    "/api/v1/document-drafts/{id}/duplicates": {
+      "get": {
+        "description": "Response `{matches: [{source: \"transaction\"|\"draft\", id, reason: \"reference\"|\"amount_date\", txnType, kind, date, total, reference}]}`: posted bills, expenses and checks (not void or deleted) and other live drafts of the draft's vendor (`suggestedContactId`) with the same normalized reference (leading zeros of every digit run dropped, lower case, ASCII letters and digits only: INV-00123 = inv123) or the same total within 60 days of its date. Empty without a vendor. Totals compare as numeric.",
+        "operationId": "get_api_v1_document_drafts_by_id_duplicates",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Possible duplicates of a document draft",
+        "tags": [
+          "document-drafts"
         ]
       }
     },
@@ -67443,6 +68455,11 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "resetDocumentDrafts": {
+                    "default": false,
+                    "description": "Restore with no unconverted document drafts and no vendor layouts (document-drafts-v1); converted drafts stay with their transactions; applied after content verification. ClientLedger sets it for transfer files.",
+                    "type": "boolean"
+                  },
                   "resetIntakeSettings": {
                     "default": false,
                     "description": "Restore every company with no intake folders (intake-settings-v1); applied after content verification. ClientLedger sets it for transfer files.",
@@ -68421,6 +69438,11 @@
                   },
                   "includeAudit": {
                     "default": true,
+                    "type": "boolean"
+                  },
+                  "omitDocumentDrafts": {
+                    "default": false,
+                    "description": "Leave unconverted document drafts (and their audit rows), vendor layouts and live drafts' files out (document-drafts-v1); converted drafts and files other records use travel. ClientLedger sets it for transfer files.",
                     "type": "boolean"
                   },
                   "omitIntakeSettings": {
@@ -70914,6 +71936,173 @@
           "vendor-credits"
         ],
         "x-idempotency": true
+      }
+    },
+    "/api/v1/vendor-layout-templates": {
+      "get": {
+        "description": "Response `{templates}` of the company (at most 500), newest first; `contactId` filters by vendor.",
+        "operationId": "get_api_v1_vendor_layout_templates",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List vendor layout templates",
+        "tags": [
+          "vendor-layout-templates"
+        ]
+      },
+      "put": {
+        "description": "Response 201 `{template}` when created, 200 when replaced. Keyed by (company, contactId, fingerprint). `expectedUpdatedAt` null creates only (409 STALE when it exists); otherwise it must equal the stored updatedAt (409 STALE). The vendor must be tenant-wide or the company's (404). At most 500 per company (409 TEMPLATE_LIMIT). Audited.",
+        "operationId": "put_api_v1_vendor_layout_templates",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "fieldRegions": {
+                    "additionalProperties": {},
+                    "type": "object"
+                  },
+                  "fingerprint": {
+                    "pattern": "^[A-Za-z0-9:_.-]{8,128}$",
+                    "type": "string"
+                  },
+                  "lastUsedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lineTable": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": {},
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "samples": {
+                    "maximum": 1000000,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "contactId",
+                  "fingerprint",
+                  "fieldRegions",
+                  "expectedUpdatedAt"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create or replace a vendor layout template",
+        "tags": [
+          "vendor-layout-templates"
+        ]
+      }
+    },
+    "/api/v1/vendor-layout-templates/{id}": {
+      "delete": {
+        "description": "Response 204. Optional query `expectedUpdatedAt` (409 STALE on a mismatch). Audited.",
+        "operationId": "delete_api_v1_vendor_layout_templates_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expectedUpdatedAt",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a vendor layout template",
+        "tags": [
+          "vendor-layout-templates"
+        ]
       }
     },
     "/api/v2/accounts": {
