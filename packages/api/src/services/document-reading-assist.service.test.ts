@@ -81,9 +81,10 @@ vi.mock('./ai-providers/index.js', () => {
     st.calls.push(kind);
     st.params.push(p);
     if (st.hang) {
-      // A provider that honours the signal: it rejects only when aborted.
+      // A provider that honours the signal: it rejects only when aborted, with
+      // an SDK's own abort error class (as the Anthropic SDK does).
       await new Promise((_resolve, reject) => {
-        p.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        p.signal?.addEventListener('abort', () => reject(Object.assign(new Error('Request was aborted.'), { name: 'APIUserAbortError' })));
       });
     }
     if (st.throwFromProvider) throw st.throwFromProvider;
