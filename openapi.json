@@ -11378,6 +11378,12 @@
                   "document_classification": {
                     "type": "boolean"
                   },
+                  "document_images_cloud": {
+                    "type": "boolean"
+                  },
+                  "document_text_cloud": {
+                    "type": "boolean"
+                  },
                   "enrich_vendor": {
                     "type": "boolean"
                   },
@@ -26623,6 +26629,375 @@
         "summary": "Possible duplicates of a document draft",
         "tags": [
           "document-drafts"
+        ]
+      }
+    },
+    "/api/v1/document-reading/assist": {
+      "post": {
+        "description": "Response 200 `{suggestion}`: the bill-ocr-v2 reading of the text (and page images) the client sends. Nothing is stored or posted and no file is parsed; every amount is what the model read, as a decimal string, or null, and must be checked by the client. No vendor match (the client matches). Limits: text ≤ 60000 characters (400 TEXT_TOO_LONG), ≤ 3 PNG page images (400 TOO_MANY_IMAGES, IMAGE_NOT_PNG) of ≤ 2097152 bytes together (400 IMAGES_TOO_LARGE); empty text and no images 400 NOTHING_TO_READ. AI off 400 ai_disabled; OCR function off or no provider 400 ai_function_disabled. Cloud provider: the company's document_text_cloud switch, and document_images_cloud as well when images are sent, else 403 CONSENT_REQUIRED (details.task; receipt_ocr does not count); images also need the system cloud-vision gate (403 CLOUD_VISION_DISABLED). A self-hosted provider (Ollama) needs neither switch and never falls back to a cloud one. Reply not JSON 400 ai_parse_failed; provider error or timeout 400 ai_ocr_failed; offline 503 OFFLINE_UNAVAILABLE (desktop). Needs full access to any of bills, checks or transactions. 60 calls a minute per user (429 AI_RATE_LIMIT). document-assist-v1.",
+        "operationId": "post_api_v1_document_reading_assist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "kindHint": {
+                    "default": "unknown",
+                    "description": "what the client thinks the document is; only steers the prompt",
+                    "enum": [
+                      "bill",
+                      "card_charge",
+                      "check",
+                      "cash_expense",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  },
+                  "pageImages": {
+                    "description": "page images as base64 PNG (no data: prefix), at most 3 (else 400 TOO_MANY_IMAGES) and 2097152 decoded bytes together (else 400 IMAGES_TOO_LARGE); anything that is not a PNG is 400 IMAGE_NOT_PNG",
+                    "items": {
+                      "maxLength": 4194304,
+                      "type": "string"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "text": {
+                    "description": "the document's page text as the client read it, at most 60000 characters (else 400 TEXT_TOO_LONG); may be empty when pageImages are sent",
+                    "maxLength": 240000,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "suggestion": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "billDate": {
+                          "description": "YYYY-MM-DD, or null when not a real date",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "confidence": {
+                          "description": "document-level 0–1 score from the model",
+                          "type": "number"
+                        },
+                        "dueDate": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "fieldConfidence": {
+                          "additionalProperties": true,
+                          "description": "bill-ocr-v2 thresholds: high ≥ 0.85, medium ≥ 0.6, else low; an empty field is low",
+                          "properties": {
+                            "billDate": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "dueDate": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "paymentTerms": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "subtotal": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "tax": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "total": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "vendor": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            },
+                            "vendorInvoiceNumber": {
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "vendor",
+                            "billDate",
+                            "dueDate",
+                            "vendorInvoiceNumber",
+                            "total",
+                            "subtotal",
+                            "tax",
+                            "paymentTerms"
+                          ],
+                          "type": "object"
+                        },
+                        "jobId": {
+                          "type": "string"
+                        },
+                        "lineItems": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "amount": {
+                                "description": "decimal string as read, e.g. \"1234.56\"; null when not read. Never computed.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "confidence": {
+                                "description": "low when the amount did not read",
+                                "enum": [
+                                  "high",
+                                  "medium",
+                                  "low"
+                                ],
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "quantity": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "unitPrice": {
+                                "description": "decimal string as read, e.g. \"1234.56\"; null when not read. Never computed.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "description",
+                              "amount",
+                              "quantity",
+                              "unitPrice",
+                              "confidence"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "notes": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "paymentTerms": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "qualityWarnings": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "reader": {
+                          "enum": [
+                            "self_hosted",
+                            "cloud"
+                          ],
+                          "type": "string"
+                        },
+                        "subtotal": {
+                          "description": "decimal string as read, e.g. \"1234.56\"; null when not read. Never computed.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tax": {
+                          "description": "decimal string as read, e.g. \"1234.56\"; null when not read. Never computed.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "total": {
+                          "description": "decimal string as read, e.g. \"1234.56\"; null when not read. Never computed.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usedImages": {
+                          "type": "boolean"
+                        },
+                        "vendor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "vendorAddress": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "city": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "line1": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "line2": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "state": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "zip": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "line1",
+                                "line2",
+                                "city",
+                                "state",
+                                "zip"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "vendorInvoiceNumber": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "jobId",
+                        "reader",
+                        "usedImages",
+                        "vendor",
+                        "vendorAddress",
+                        "vendorInvoiceNumber",
+                        "billDate",
+                        "dueDate",
+                        "paymentTerms",
+                        "total",
+                        "subtotal",
+                        "tax",
+                        "lineItems",
+                        "notes",
+                        "confidence",
+                        "fieldConfidence",
+                        "qualityWarnings"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "suggestion"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Suggest a document's fields with the company's AI provider (suggestions only)",
+        "tags": [
+          "document-reading"
         ]
       }
     },
