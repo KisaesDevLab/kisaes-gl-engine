@@ -441,8 +441,22 @@ export async function bulkDownload(tenantId: string, attachmentIds: string[], co
   return { archive, done };
 }
 
+/**
+ * Deletes an attachment: storage first, then the row. A file a live document
+ * draft reads (U-92: status new, ready or failed) is 409 ATTACHMENT_IN_USE
+ * with details.draftId, checked before storage is touched, so nothing is
+ * deleted; discard the draft first. A converted or discarded draft's file is
+ * deleted as usual and the draft's link is nulled (ON DELETE SET NULL); the
+ * draft keeps its content hash, so the file stays claimed.
+ */
 export async function remove(tenantId: string, id: string, companyId?: string | null) {
   const attachment = await getById(tenantId, id, companyId);
+  const inUse = await db.execute(sql`SELECT id FROM document_drafts
+    WHERE tenant_id = ${tenantId} AND attachment_id = ${attachment.id} AND status IN ('new', 'ready', 'failed') LIMIT 1`);
+  const draftId = (inUse.rows[0] as { id: string } | undefined)?.id;
+  if (draftId) {
+    throw AppError.conflict('This file is being read as a document. Discard the document first.', 'ATTACHMENT_IN_USE', { draftId });
+  }
 
   // Use storage provider for deletion
   try {

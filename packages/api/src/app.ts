@@ -20,6 +20,7 @@ import { journalEntriesRouter } from './routes/journal-entries.routes.js';
 import { invoicesRouter } from './routes/invoices.routes.js';
 import { billsRouter } from './routes/bills.routes.js';
 import { billCapturesRouter } from './routes/bill-captures.routes.js';
+import { documentDraftsRouter, vendorLayoutTemplatesRouter } from './routes/document-drafts.routes.js';
 import { vendorCreditsRouter } from './routes/vendor-credits.routes.js';
 import { billPaymentsRouter } from './routes/bill-payments.routes.js';
 import { paymentTermsRouter } from './routes/payment-terms.routes.js';
@@ -539,6 +540,9 @@ app.use('/api/v1/journal-entries', journalEntriesRouter);
 app.use('/api/v1/invoices', invoicesRouter);
 app.use('/api/v1/bills', billsRouter);
 app.use('/api/v1/bill-captures', billCapturesRouter);
+// Document drafts and vendor layouts (U-92, document-drafts-v1).
+app.use('/api/v1/document-drafts', documentDraftsRouter);
+app.use('/api/v1/vendor-layout-templates', vendorLayoutTemplatesRouter);
 app.use('/api/v1/vendor-credits', vendorCreditsRouter);
 app.use('/api/v1/bill-payments', billPaymentsRouter);
 app.use('/api/v1/payment-terms', paymentTermsRouter);

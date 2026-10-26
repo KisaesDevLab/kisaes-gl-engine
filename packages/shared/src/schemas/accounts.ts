@@ -27,6 +27,9 @@ export const updateAccountSchema = z.object({
   description: z.string().nullish(),
   parentId: z.string().uuid().nullish(),
   isActive: z.boolean().optional(),
+  // Last four digits of a credit card account (U-92, document-drafts-v1):
+  // only on detail type credit_card (400 otherwise); null clears it.
+  cardLast4: z.string().regex(/^[0-9]{4}$/, 'Four digits').nullable().optional(),
 });
 
 // Bulk CSV import (Accounts → Import). Rows are validated here so a bad

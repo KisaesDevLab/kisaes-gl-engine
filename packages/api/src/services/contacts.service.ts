@@ -11,6 +11,7 @@ import { auditLog } from '../middleware/audit.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import * as ledger from './ledger.service.js';
 import { guardMergeTransactions } from './merge-lock.service.js';
+import { repointDocumentContact } from './document-draft-contacts.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 
@@ -256,6 +257,11 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
     await repoint('billCaptures', sql`UPDATE bill_captures SET suggested_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND suggested_contact_id = ${sourceId}`);
     await repoint('clientSuggested', sql`UPDATE client_category_suggestions SET suggested_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND suggested_contact_id = ${sourceId}`);
     await repoint('clientResolved', sql`UPDATE client_category_suggestions SET resolved_contact_id = ${targetId} WHERE tenant_id = ${tenantId} AND resolved_contact_id = ${sourceId}`);
+    // Document drafts and vendor layouts (U-92); a layout the kept vendor
+    // already has for the same fingerprint is merged into one row.
+    const docs = await repointDocumentContact(tx, tenantId, sourceId, targetId);
+    moved['documentDrafts'] = docs.drafts;
+    moved['vendorLayouts'] = docs.templates + docs.templatesMerged;
     await tx
       .update(contacts)
       .set({ isActive: false, updatedAt: new Date() })

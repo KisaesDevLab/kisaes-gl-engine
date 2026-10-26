@@ -38,6 +38,7 @@ export * from './accruals.js';
 export * from './portal-identities.js';
 export * from './portal-contacts.js';
 export * from './bill-captures.js';
+export * from './document-drafts.js';
 export * from './client-category-suggestions.js';
 export * from './portal-auth.js';
 export * from './portal-questions.js';
