@@ -10,6 +10,7 @@ import {
   type ClientRulesOverviewResponse,
   type ClientRulesOverviewRow,
   type ClientRulesOverviewRule,
+  type ClientRulesOverviewSortKey,
   type ClientRulesPostResult,
   type ClientRulesPostTenantResult,
 } from '@kis-books/shared';
@@ -20,6 +21,7 @@ import {
   bankFeedItems,
   tenantFirmAccountMappings,
   tenantFirmAssignments,
+  tenants,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -55,40 +57,73 @@ const POST_LIMIT = 500;
 // Clients evaluated concurrently while building a page.
 const CONCURRENCY = 4;
 
+// Key in tenants.practice_settings that keeps a client off the overview
+// and refuses bulk rule posting into it.
+const EXCLUDED_KEY = 'excludeFromRulesOverview';
+const excludedExpr = sql`COALESCE((t.practice_settings->>${EXCLUDED_KEY})::boolean, false)`;
+
 interface AccessibleTenant {
   tenantId: string;
   tenantName: string;
+  excluded: boolean;
 }
 
+/** Every client the user can reach that matches the search — unpaged, so
+ *  the caller can order by a computed column before slicing. */
 async function listAccessibleTenants(
   userId: string,
-  query: ClientRulesOverviewQuery,
-): Promise<{ rows: AccessibleTenant[]; total: number }> {
+  query: Pick<ClientRulesOverviewQuery, 'search' | 'includeExcluded'>,
+): Promise<{ rows: AccessibleTenant[]; excludedTotal: number }> {
   const search = query.search ? `%${query.search.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   const searchCond = search ? sql`AND t.name ILIKE ${search}` : sql``;
-  const [rowsResult, countResult] = await Promise.all([
-    db.execute(sql`
-      SELECT t.id AS tenant_id, t.name AS tenant_name
-      FROM user_tenant_access uta
-      JOIN tenants t ON t.id = uta.tenant_id
-      WHERE uta.user_id = ${userId} AND uta.is_active = true ${searchCond}
-      ORDER BY t.name, t.id
-      LIMIT ${query.limit} OFFSET ${query.offset}
-    `),
-    db.execute(sql`
-      SELECT COUNT(*)::int AS total
-      FROM user_tenant_access uta
-      JOIN tenants t ON t.id = uta.tenant_id
-      WHERE uta.user_id = ${userId} AND uta.is_active = true ${searchCond}
-    `),
-  ]);
+  const result = await db.execute(sql`
+    SELECT t.id AS tenant_id, t.name AS tenant_name, ${excludedExpr} AS excluded
+    FROM user_tenant_access uta
+    JOIN tenants t ON t.id = uta.tenant_id
+    WHERE uta.user_id = ${userId} AND uta.is_active = true ${searchCond}
+    ORDER BY t.name, t.id
+  `);
+  const all = (result.rows as Array<{ tenant_id: string; tenant_name: string; excluded: boolean }>).map((r) => ({
+    tenantId: r.tenant_id,
+    tenantName: r.tenant_name,
+    excluded: r.excluded === true,
+  }));
+  const excludedTotal = all.filter((t) => t.excluded).length;
   return {
-    rows: (rowsResult.rows as Array<{ tenant_id: string; tenant_name: string }>).map((r) => ({
-      tenantId: r.tenant_id,
-      tenantName: r.tenant_name,
-    })),
-    total: Number((countResult.rows[0] as { total: number } | undefined)?.total ?? 0),
+    rows: query.includeExcluded ? all : all.filter((t) => !t.excluded),
+    excludedTotal,
   };
+}
+
+async function isExcluded(tenantId: string): Promise<boolean> {
+  const row = await db.query.tenants.findFirst({
+    where: eq(tenants.id, tenantId),
+    columns: { practiceSettings: true },
+  });
+  const settings = (row?.practiceSettings ?? {}) as Record<string, unknown>;
+  return settings[EXCLUDED_KEY] === true;
+}
+
+/** Exclude a client from (or return it to) bulk rule posting. Stored on
+ *  the tenant so every staff user sees the same answer; other
+ *  practice_settings keys are preserved. */
+export async function setExcluded(userId: string, tenantId: string, excluded: boolean): Promise<{ excluded: boolean }> {
+  await assertBankingAccess(userId, tenantId, 'update');
+  const row = await db.query.tenants.findFirst({
+    where: eq(tenants.id, tenantId),
+    columns: { practiceSettings: true },
+  });
+  if (!row) throw AppError.notFound('Tenant not found');
+  const existing = (row.practiceSettings ?? {}) as Record<string, unknown>;
+  const before = existing[EXCLUDED_KEY] === true;
+  if (before !== excluded) {
+    await db.update(tenants)
+      .set({ practiceSettings: { ...existing, [EXCLUDED_KEY]: excluded }, updatedAt: new Date() })
+      .where(eq(tenants.id, tenantId));
+    await auditLog(tenantId, 'update', 'practice_settings', null,
+      { [EXCLUDED_KEY]: before }, { [EXCLUDED_KEY]: excluded }, userId);
+  }
+  return { excluded };
 }
 
 async function hasActiveAccess(userId: string, tenantId: string): Promise<boolean> {
@@ -306,39 +341,78 @@ const EMPTY_RULE_COUNTS: RuleCounts = {
   needsMapping: 0, needsReview: 0, rules: [], unmappedAccounts: [],
 };
 
+// Sort keys that need every client's pending items evaluated before the
+// page can be cut. The others come from the tenant list and portal counts.
+const RULE_SORT_KEYS: ReadonlySet<ClientRulesOverviewSortKey> = new Set(['rulesMatched', 'matched', 'ready', 'needsMapping']);
+
+type PortalRow = AccessibleTenant & PortalCounts & { firmId: string | null };
+
+function compareBy<T extends { tenantName: string; tenantId: string }>(
+  key: keyof T,
+  dir: 'asc' | 'desc',
+): (a: T, b: T) => number {
+  const sign = dir === 'asc' ? 1 : -1;
+  return (a, b) => {
+    const av = a[key];
+    const bv = b[key];
+    let cmp = 0;
+    if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+    else cmp = String(av).localeCompare(String(bv), undefined, { sensitivity: 'base' });
+    if (cmp !== 0) return cmp * sign;
+    // Stable paging: ties fall back to name, then id, always ascending.
+    return a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }) || a.tenantId.localeCompare(b.tenantId);
+  };
+}
+
 export async function getOverview(userId: string, query: ClientRulesOverviewQuery): Promise<ClientRulesOverviewResponse> {
-  const { rows: tenants, total } = await listAccessibleTenants(userId, query);
-  const tenantIds = tenants.map((t) => t.tenantId);
+  const { rows: accessible, excludedTotal } = await listAccessibleTenants(userId, query);
+  const total = accessible.length;
+  const allIds = accessible.map((t) => t.tenantId);
   const [portal, firms] = await Promise.all([
-    portalCounts(tenantIds),
-    tenantIds.length === 0
+    portalCounts(allIds),
+    allIds.length === 0
       ? Promise.resolve(new Map<string, string>())
       : db.select({ tenantId: tenantFirmAssignments.tenantId, firmId: tenantFirmAssignments.firmId })
         .from(tenantFirmAssignments)
-        .where(and(inArray(tenantFirmAssignments.tenantId, tenantIds), eq(tenantFirmAssignments.isActive, true)))
+        .where(and(inArray(tenantFirmAssignments.tenantId, allIds), eq(tenantFirmAssignments.isActive, true)))
         .then((rs) => new Map(rs.map((r) => [r.tenantId, r.firmId]))),
   ]);
+  const withPortal: PortalRow[] = accessible.map((t) => ({
+    ...t,
+    firmId: firms.get(t.tenantId) ?? null,
+    ...(portal.get(t.tenantId) ?? { unreadDocuments: 0, openDocumentRequests: 0, overdueDocumentRequests: 0, openQuestions: 0 }),
+  }));
 
-  const data = await mapWithConcurrency(tenants, CONCURRENCY, async (t): Promise<ClientRulesOverviewRow> => {
-    const portalRow = portal.get(t.tenantId) ?? {
-      unreadDocuments: 0, openDocumentRequests: 0, overdueDocumentRequests: 0, openQuestions: 0,
-    };
-    const base = { tenantId: t.tenantId, tenantName: t.tenantName, firmId: firms.get(t.tenantId) ?? null, ...portalRow };
+  const evaluate = (rows: PortalRow[]) => mapWithConcurrency(rows, CONCURRENCY, async (t): Promise<ClientRulesOverviewRow> => {
+    const { tenantId, tenantName, excluded, firmId, unreadDocuments, openDocumentRequests, overdueDocumentRequests, openQuestions } = t;
+    const base = { tenantId, tenantName, excluded, firmId, unreadDocuments, openDocumentRequests, overdueDocumentRequests, openQuestions };
     try {
-      const perms = await permissionService.getEffectivePermissionsForUser(t.tenantId, userId);
+      const perms = await permissionService.getEffectivePermissionsForUser(tenantId, userId);
       if (!can(perms, 'banking', 'read')) {
         return { ...base, ...EMPTY_RULE_COUNTS, error: 'No banking access for this client' };
       }
-      return { ...base, ...(await ruleCountsForTenant(t.tenantId, userId)), error: null };
+      return { ...base, ...(await ruleCountsForTenant(tenantId, userId)), error: null };
     } catch (err) {
       // One client's bad data must not blank the whole page.
-      console.warn(`[client-rules-overview] counts failed for tenant ${t.tenantId}:`,
+      console.warn(`[client-rules-overview] counts failed for tenant ${tenantId}:`,
         err instanceof Error ? err.message : String(err));
       return { ...base, ...EMPTY_RULE_COUNTS, error: 'Could not compute rule matches for this client' };
     }
   });
 
-  return { data, total, limit: query.limit, offset: query.offset };
+  const page = <T>(rows: T[]) => rows.slice(query.offset, query.offset + query.limit);
+  let data: ClientRulesOverviewRow[];
+  if (RULE_SORT_KEYS.has(query.sortBy)) {
+    // Ordering by a rule counter means every client is evaluated first.
+    const all = await evaluate(withPortal);
+    data = page(all.sort(compareBy<ClientRulesOverviewRow>(query.sortBy, query.sortDir)));
+  } else {
+    // Every other key is a tenant or portal column, present before evaluation.
+    const key = query.sortBy as Exclude<ClientRulesOverviewSortKey, 'rulesMatched' | 'matched' | 'ready' | 'needsMapping'>;
+    data = await evaluate(page(withPortal.sort(compareBy<PortalRow>(key, query.sortDir))));
+  }
+
+  return { data, total, excludedTotal, limit: query.limit, offset: query.offset };
 }
 
 // ─── Post ────────────────────────────────────────────────────
@@ -352,6 +426,11 @@ async function postForTenant(
     tenantId, posted: 0, skipped: 0, failed: 0, failures: [], more: false, error: null,
   };
   await assertBankingAccess(userId, tenantId, 'update');
+  // Hiding the row is not enough: a stale page (or a hand-made request)
+  // can still name the client.
+  if (await isExcluded(tenantId)) {
+    throw AppError.forbidden('This client is excluded from bulk rule posting', 'CLIENT_RULES_EXCLUDED');
+  }
 
   const ruleFilter = ruleIds ? new Set(ruleIds) : null;
   const ruleSet = await rulesApply.loadRuleSet(tenantId, userId);

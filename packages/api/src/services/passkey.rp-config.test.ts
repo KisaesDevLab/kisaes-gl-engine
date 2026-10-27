@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { resetProcessEnv } from '../test-env.js';
 
 // vibe-distribution-plan D3: WebAuthn rpId / rpOrigin resolution.
 // The env module memoizes once on import, so each scenario gets a
@@ -13,7 +14,8 @@ const ORIGINAL_ENV = { ...process.env };
 
 beforeEach(() => {
   vi.resetModules();
-  process.env = { ...ORIGINAL_ENV };
+  // In place, never `process.env = {...}` (see test-env.ts).
+  resetProcessEnv(ORIGINAL_ENV);
   process.env['DATABASE_URL'] = 'postgres://x:y@localhost:5432/test';
   process.env['REDIS_URL'] = 'redis://localhost:6379';
   process.env['JWT_SECRET'] = 'a'.repeat(32);
@@ -22,7 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env = { ...ORIGINAL_ENV };
+  resetProcessEnv(ORIGINAL_ENV);
 });
 
 describe('passkey rpId / rpOrigin resolution', () => {

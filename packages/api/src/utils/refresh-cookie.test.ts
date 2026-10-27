@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 // Force env reload per test by importing the module under different
 // process.env states. vi.resetModules + a fresh import does the job.
 import { vi } from 'vitest';
+import { resetProcessEnv } from '../test-env.js';
 
 interface FakeRes {
   headers: Record<string, string | string[]>;
@@ -37,8 +38,10 @@ const ORIGINAL_ENV = { ...process.env };
 
 beforeEach(() => {
   vi.resetModules();
-  // Reset env between tests; the env module memoizes once.
-  process.env = { ...ORIGINAL_ENV };
+  // Reset env between tests; the env module memoizes once. In place: a
+  // replaced process.env object stops Node from seeing TZ changes made by
+  // later test files in the same worker (see test-env.ts).
+  resetProcessEnv(ORIGINAL_ENV);
   // Make zod env validation pass with the bare minimum.
   process.env['DATABASE_URL'] = 'postgres://x:y@localhost:5432/test';
   process.env['REDIS_URL'] = 'redis://localhost:6379';
@@ -48,7 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env = { ...ORIGINAL_ENV };
+  resetProcessEnv(ORIGINAL_ENV);
 });
 
 describe('setRefreshCookie / clearRefreshCookie', () => {

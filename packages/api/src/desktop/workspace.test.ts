@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { resetProcessEnv } from '../test-env.js';
 
 const API_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MIGRATIONS = path.join(API_SRC, 'db', 'migrations');
@@ -69,7 +70,7 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
-  process.env = { ...savedEnv };
+  resetProcessEnv(savedEnv);
   vi.resetModules();
   await onDb('postgres', async (c) => {
     for (const name of [...Object.values(DB), TEMPLATE]) {
@@ -90,7 +91,8 @@ interface Engine {
 async function startDesktop(dbName: string): Promise<Engine> {
   vi.resetModules();
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'cl-ws-test-'));
-  process.env = { ...savedEnv };
+  // In place, never `process.env = {...}` (see test-env.ts).
+  resetProcessEnv(savedEnv);
   process.env['DATABASE_URL'] = urlFor(dbName);
   process.env['DATA_DIR'] = dataDir;
   process.env['CONFIG_DIR'] = path.join(dataDir, 'config');
@@ -700,7 +702,7 @@ describe('desktop workspace: the first company cannot be created', () => {
 describe('workspace helpers on the server (CL_MODE unset)', () => {
   it('no workspace, no fence, no guard, no refusal', async () => {
     vi.resetModules();
-    process.env = { ...savedEnv };
+    resetProcessEnv(savedEnv);
     const profile = await import('./profile.js');
     profile.loadDesktopProfile({});
     const w = await import('./workspace.js');

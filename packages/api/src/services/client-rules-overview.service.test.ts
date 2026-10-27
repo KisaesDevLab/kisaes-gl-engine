@@ -150,7 +150,7 @@ afterEach(async () => {
   await cleanup();
 });
 
-const QUERY = { limit: 50, offset: 0 };
+const QUERY = { limit: 50, offset: 0, sortBy: 'tenantName', sortDir: 'asc', includeExcluded: false } as const;
 const rowFor = (res: Awaited<ReturnType<typeof service.getOverview>>, tenantId: string) =>
   res.data.find((r) => r.tenantId === tenantId);
 
@@ -227,6 +227,81 @@ describe('getOverview', () => {
     const res = await service.getOverview(userId, { ...QUERY, search: 'zephyr dental' });
     expect(res.data.map((r) => r.tenantId)).toEqual([tenantB]);
     expect(res.total).toBe(1);
+  });
+
+  it('sorts by a rule counter across every client, then pages', async () => {
+    // B has 2 matched items, A none: "matched desc" puts B first even
+    // though A sorts first by name.
+    const desc = await service.getOverview(userId, { ...QUERY, sortBy: 'matched', sortDir: 'desc' });
+    expect(desc.data.map((r) => r.tenantId)).toEqual([tenantB, tenantA]);
+    const asc = await service.getOverview(userId, { ...QUERY, sortBy: 'matched', sortDir: 'asc' });
+    expect(asc.data.map((r) => r.tenantId)).toEqual([tenantA, tenantB]);
+
+    // Paging happens after the sort, and total covers the whole list.
+    const firstPage = await service.getOverview(userId, { ...QUERY, sortBy: 'matched', sortDir: 'desc', limit: 1 });
+    expect(firstPage.data.map((r) => r.tenantId)).toEqual([tenantB]);
+    expect(firstPage.total).toBe(2);
+    const secondPage = await service.getOverview(userId, { ...QUERY, sortBy: 'matched', sortDir: 'desc', limit: 1, offset: 1 });
+    expect(secondPage.data.map((r) => r.tenantId)).toEqual([tenantA]);
+  });
+
+  it('sorts by name and by a portal counter', async () => {
+    const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantA) });
+    await db.insert(portalQuestions).values({
+      tenantId: tenantA, companyId: company!.id, body: 'q', status: 'open', createdBy: userId,
+    });
+    const byName = await service.getOverview(userId, { ...QUERY, sortDir: 'desc' });
+    expect(byName.data.map((r) => r.tenantId)).toEqual([tenantB, tenantA]);
+    const byQuestions = await service.getOverview(userId, { ...QUERY, sortBy: 'openQuestions', sortDir: 'desc' });
+    expect(byQuestions.data.map((r) => r.tenantId)).toEqual([tenantA, tenantB]);
+  });
+});
+
+describe('exclusion', () => {
+  it('hides an excluded client unless asked for, and counts it', async () => {
+    await service.setExcluded(userId, tenantB, true);
+    const res = await service.getOverview(userId, QUERY);
+    expect(res.data.map((r) => r.tenantId)).toEqual([tenantA]);
+    expect(res.total).toBe(1);
+    expect(res.excludedTotal).toBe(1);
+
+    const shown = await service.getOverview(userId, { ...QUERY, includeExcluded: true });
+    expect(shown.total).toBe(2);
+    expect(rowFor(shown, tenantB)!.excluded).toBe(true);
+    expect(rowFor(shown, tenantA)!.excluded).toBe(false);
+
+    await service.setExcluded(userId, tenantB, false);
+    const back = await service.getOverview(userId, QUERY);
+    expect(back.total).toBe(2);
+    expect(back.excludedTotal).toBe(0);
+  });
+
+  it('refuses to post into an excluded client', async () => {
+    await service.upsertMapping(userId, tenantB, { sourceAccountId, accountId: bAccountId });
+    await service.setExcluded(userId, tenantB, true);
+    const res = await service.post(userId, [tenantB]);
+    expect(res.posted).toBe(0);
+    expect(res.results[0]!.error).toMatch(/excluded from bulk rule posting/i);
+    const items = await db.select().from(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantB));
+    expect(items.every((i) => i.status === 'pending')).toBe(true);
+  });
+
+  it('keeps the other practice settings and writes an audit entry', async () => {
+    await db.update(tenants).set({ practiceSettings: { classificationThresholds: { bucket4Floor: 0.5 } } })
+      .where(eq(tenants.id, tenantB));
+    await service.setExcluded(userId, tenantB, true);
+    const row = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantB), columns: { practiceSettings: true } });
+    expect(row!.practiceSettings).toEqual({
+      classificationThresholds: { bucket4Floor: 0.5 },
+      excludeFromRulesOverview: true,
+    });
+    const audits = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, tenantB), eq(auditLog.entityType, 'practice_settings')));
+    expect(audits).toHaveLength(1);
+  });
+
+  it('rejects a client the caller cannot reach', async () => {
+    await expect(service.setExcluded(userId, outsiderTenant, true)).rejects.toThrow(/do not have access/i);
   });
 });
 

@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import {
   clientAccountMappingSchema,
+  clientRulesExclusionSchema,
   clientRulesOverviewQuerySchema,
   clientRulesPostSchema,
 } from '@kis-books/shared';
@@ -52,4 +53,13 @@ clientRulesOverviewRouter.put('/tenants/:tenantId/mappings', validate(clientAcco
   const { tenantId } = tenantParamSchema.parse(req.params);
   const mapping = await overviewService.upsertMapping(req.userId, tenantId, req.body);
   res.json(mapping);
+});
+
+// Exclude a client from the overview and from bulk posting (or bring it
+// back). The flag lives on the tenant, so every staff user sees the same
+// answer and the post endpoint can refuse the client regardless of UI.
+clientRulesOverviewRouter.put('/tenants/:tenantId/exclusion', validate(clientRulesExclusionSchema), async (req, res) => {
+  const { tenantId } = tenantParamSchema.parse(req.params);
+  const result = await overviewService.setExcluded(req.userId, tenantId, req.body.excluded);
+  res.json(result);
 });
