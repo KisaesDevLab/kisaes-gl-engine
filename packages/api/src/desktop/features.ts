@@ -121,7 +121,7 @@ export const DESKTOP_KEPT: readonly string[] = [
   '/api/v1/admin/tax-param-ai-checks', '/api/v1/admin/feature-flags',
   // Practice tools that work on the local books.
   '/api/v1/practice', '/api/v1/practice/uncategorized', '/api/v1/practice/classification',
-  '/api/v1/practice/settings', '/api/v1/practice/conditional-rules', '/api/v1/practice/checks',
+  '/api/v1/practice/settings', '/api/v1/practice/conditional-rules', '/api/v1/practice/client-rules-overview', '/api/v1/practice/checks',
   '/api/v1/practice/accruals', '/api/v1/practice/1099', '/api/v1/practice/reports', '/api/v1/practice/receipts',
   // Public API v2 (API-key callers; still behind the launch token on desktop).
   '/api/v2',

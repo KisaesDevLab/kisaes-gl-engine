@@ -259,6 +259,7 @@ export const EXCLUDED_TENANT_ARCHIVE_TABLES: Record<string, ExcludedTable> = {
   // server-feature: firm-keyed (firm_id NOT NULL) ─────────────────────
   tenant_firm_assignments: { category: 'server-feature', scope: 'tenant', firmKeyed: true, reason: 'firm assignment of a tenant' },
   tenant_firm_tag_bindings: { category: 'server-feature', scope: 'tenant', firmKeyed: true, reason: 'firm tag template bindings' },
+  tenant_firm_account_mappings: { category: 'server-feature', scope: 'tenant', firmKeyed: true, reason: 'firm global-rule account mappings' },
   pm_client_links: { category: 'server-feature', scope: 'tenant', firmKeyed: true, reason: 'practice-management client links' },
   tax_est_payments: { category: 'server-feature', scope: 'tenant', firmKeyed: true, reason: 'firm tax-estimator payments' },
   tax_est_sch_ai_snapshots: { category: 'server-feature', scope: 'tenant', firmKeyed: true, reason: 'firm tax-estimator AI snapshots' },

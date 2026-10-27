@@ -1660,6 +1660,13 @@
       "when": 1785300014380,
       "tag": "0236_release_voided_bill_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 237,
+      "version": "7",
+      "when": 1785400014380,
+      "tag": "0237_tenant_firm_account_mappings",
+      "breakpoints": true
     }
   ]
 }
