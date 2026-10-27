@@ -60,6 +60,8 @@ async function setup() {
     systemTag: 'accounts_payable', isSystem: true,
   });
   expenseId = (await accountsService.create(tenantId, { name: 'Office Supplies', accountType: 'expense', accountNumber: '6000' })).id;
+  // Hand-written checks take their number from the company's check settings.
+  await db.insert(companies).values({ tenantId, businessName: 'Void Release Co', checkSettings: { nextCheckNumber: 1001 } });
   const [vendor] = await db.insert(contacts).values({ tenantId, contactType: 'vendor', displayName: 'ABC Supply' }).returning();
   vendorId = vendor!.id;
 }
