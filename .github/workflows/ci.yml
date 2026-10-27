@@ -55,7 +55,15 @@ jobs:
         run: npm run openapi:check
 
   test:
+    # The api suite is ~560 DB-backed files run serially (singleFork, shared
+    # DB), ~26 min on one runner. Split it across shards; each shard has its
+    # own postgres + redis service so the single-DB assumption still holds.
+    name: test (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       # Mirror the dev/test DB setup. test-setup.ts points vitest at
       # postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test —
@@ -107,12 +115,15 @@ jobs:
           DATABASE_URL: postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test
           REDIS_URL: redis://127.0.0.1:6390
           JWT_SECRET: test-secret-key-for-testing-only
-        run: npm test
+        run: npx vitest run --shard=${{ matrix.shard }}/4
         working-directory: packages/api
+      # shared + web are small (~2.5 min total); run them once, on shard 1.
       - name: Run shared unit tests
+        if: matrix.shard == 1
         run: npm test
         working-directory: packages/shared
       - name: Run web unit tests
+        if: matrix.shard == 1
         run: npm test
         working-directory: packages/web
 
@@ -174,7 +185,7 @@ jobs:
         run: echo "version=$(npx playwright --version | sed 's/Version //')" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
