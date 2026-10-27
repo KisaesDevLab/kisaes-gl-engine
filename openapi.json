@@ -21322,7 +21322,8 @@
                             "enum": [
                               "bills",
                               "receipts",
-                              "auto"
+                              "auto",
+                              "statements"
                             ],
                             "type": "string"
                           },
@@ -21418,7 +21419,8 @@
                           "enum": [
                             "bills",
                             "receipts",
-                            "auto"
+                            "auto",
+                            "statements"
                           ],
                           "type": "string"
                         },
@@ -21480,7 +21482,8 @@
                             "enum": [
                               "bills",
                               "receipts",
-                              "auto"
+                              "auto",
+                              "statements"
                             ],
                             "type": "string"
                           },

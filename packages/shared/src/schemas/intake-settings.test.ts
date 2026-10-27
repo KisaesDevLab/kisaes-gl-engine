@@ -158,6 +158,13 @@ describe('intake folder fields', () => {
     expect(intakeFolderSchema.parse(rest)).toEqual(folder());
   });
 
+  it('accepts every kind, statements included (U-94)', () => {
+    for (const k of ['bills', 'receipts', 'auto', 'statements']) {
+      expect(intakeFolderSchema.parse(folder({ defaultKind: k })).defaultKind).toBe(k);
+    }
+    expect(intakeFolderSchema.safeParse(folder({ defaultKind: 'statement' })).success).toBe(false);
+  });
+
   it('trims names', () => {
     expect(intakeFolderSchema.parse(folder({ name: '  Bills  ' })).name).toBe('Bills');
   });

@@ -186,8 +186,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   /**
    * Document drafts take kind `statement` (kindHint on create, kind on PUT, the list's `kind` filter): a vendor
    * statement (accounts payable) a client filed for the owner, a label only. Permission: bills. Convert and attach of a statement
-   * draft are 400 INVALID_KIND, whatever kind the body names; change its kind first. Migration 0235 widens
-   * document_drafts_kind_ck (U-94).
+   * draft are 400 INVALID_KIND, whatever kind the body names; change its kind first. Intake folders
+   * (intake-settings-v1) take defaultKind `statements`. Migration 0235 widens document_drafts_kind_ck (U-94).
    */
   'document-drafts-statement-v1',
 ];
