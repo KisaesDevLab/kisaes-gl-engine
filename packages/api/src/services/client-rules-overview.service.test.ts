@@ -118,7 +118,10 @@ beforeEach(async () => {
   firmId = firm!.id;
   for (const t of [tenantA, tenantB, outsiderTenant]) {
     await db.delete(tenantFirmAssignments).where(eq(tenantFirmAssignments.tenantId, t));
-    await db.insert(tenantFeatureFlags).values({ tenantId: t, flagKey: 'RULES_TIERED_V1', enabled: true }).onConflictDoNothing();
+    // Upsert, not insert-or-skip: provisioning may already have seeded the
+    // flag row as disabled.
+    await db.insert(tenantFeatureFlags).values({ tenantId: t, flagKey: 'RULES_TIERED_V1', enabled: true })
+      .onConflictDoUpdate({ target: [tenantFeatureFlags.tenantId, tenantFeatureFlags.flagKey], set: { enabled: true } });
   }
   await db.insert(tenantFirmAssignments).values({ tenantId: tenantA, firmId });
   await db.insert(tenantFirmAssignments).values({ tenantId: tenantB, firmId });
@@ -169,9 +172,18 @@ describe('getOverview', () => {
     expect(b.needsMapping).toBe(2);
     expect(b.rules).toHaveLength(1);
     expect(b.rules[0]).toMatchObject({ ruleName: 'Adobe → Software', scope: 'global_firm', matched: 2, needsMapping: 2 });
+    expect(b.tieredRules).toBe(true);
     expect(b.unmappedAccounts).toEqual([
-      expect.objectContaining({ sourceAccountId, items: 2 }),
+      expect.objectContaining({ sourceAccountId, sourceAccountType: 'expense', items: 2 }),
     ]);
+  });
+
+  it('flags a client whose firm/global rules are switched off', async () => {
+    await db.update(tenantFeatureFlags).set({ enabled: false })
+      .where(and(eq(tenantFeatureFlags.tenantId, tenantB), eq(tenantFeatureFlags.flagKey, 'RULES_TIERED_V1')));
+    const b = rowFor(await service.getOverview(userId, QUERY), tenantB)!;
+    expect(b.tieredRules).toBe(false);
+    expect(b.matched).toBe(0);
   });
 
   it('is read-only: no fire is recorded, nothing is staged, no vendor is created', async () => {
@@ -188,6 +200,15 @@ describe('getOverview', () => {
     const a = rowFor(await service.getOverview(userId, QUERY), tenantA)!;
     expect(a.ready).toBe(1);
     expect(a.needsMapping).toBe(0);
+  });
+
+  it('does not post to the source account once it is deactivated', async () => {
+    await db.update(accounts).set({ isActive: false }).where(eq(accounts.id, sourceAccountId));
+    const connA = await connectionFor(tenantA);
+    await pendingItem(tenantA, connA, 'ADOBE STOCK');
+    const a = rowFor(await service.getOverview(userId, QUERY), tenantA)!;
+    expect(a.ready).toBe(0);
+    expect(a.needsMapping).toBe(1);
   });
 
   it('counts portal questions still waiting on the client', async () => {
@@ -231,6 +252,14 @@ describe('account mappings', () => {
     const aAccount = (await expenseAccounts(tenantA))[1]!.id;
     await expect(service.upsertMapping(userId, tenantB, { sourceAccountId, accountId: aAccount }))
       .rejects.toThrow(/not found in this client/i);
+  });
+
+  it('rejects a target account of a different type', async () => {
+    const bank = await db.query.accounts.findFirst({
+      where: and(eq(accounts.tenantId, tenantB), eq(accounts.detailType, 'bank')),
+    });
+    await expect(service.upsertMapping(userId, tenantB, { sourceAccountId, accountId: bank!.id }))
+      .rejects.toThrow(/account of type "expense"/i);
   });
 
   it('rejects a source account from a client the firm does not manage', async () => {

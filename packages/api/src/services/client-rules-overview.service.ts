@@ -230,7 +230,7 @@ async function portalCounts(tenantIds: string[]): Promise<Map<string, PortalCoun
 }
 
 type RuleCounts = Pick<ClientRulesOverviewRow,
-  'pendingItems' | 'truncated' | 'rulesMatched' | 'matched' | 'ready' | 'needsMapping' | 'needsReview' | 'rules' | 'unmappedAccounts'>;
+  'tieredRules' | 'pendingItems' | 'truncated' | 'rulesMatched' | 'matched' | 'ready' | 'needsMapping' | 'needsReview' | 'rules' | 'unmappedAccounts'>;
 
 async function ruleCountsForTenant(tenantId: string, userId: string): Promise<RuleCounts> {
   const ruleSet = await rulesApply.loadRuleSet(tenantId, userId);
@@ -272,7 +272,7 @@ async function ruleCountsForTenant(tenantId: string, userId: string): Promise<Ru
   if (unmapped.size > 0) {
     // Source accounts live in other clients; only their name/number is
     // read, to label what needs mapping.
-    const src = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
+    const src = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, accountType: accounts.accountType })
       .from(accounts)
       .where(inArray(accounts.id, [...unmapped.keys()]));
     unmappedAccounts = src
@@ -280,6 +280,7 @@ async function ruleCountsForTenant(tenantId: string, userId: string): Promise<Ru
         sourceAccountId: a.id,
         sourceAccountName: a.name,
         sourceAccountNumber: a.accountNumber ?? null,
+        sourceAccountType: a.accountType,
         items: unmapped.get(a.id) ?? 0,
       }))
       .sort((a, b) => b.items - a.items || a.sourceAccountName.localeCompare(b.sourceAccountName));
@@ -287,6 +288,7 @@ async function ruleCountsForTenant(tenantId: string, userId: string): Promise<Ru
 
   const sum = (k: 'matched' | 'ready' | 'needsMapping' | 'needsReview') => rules.reduce((n, r) => n + r[k], 0);
   return {
+    tieredRules: ruleSet.tiered,
     pendingItems: truncated ? SCAN_LIMIT : pending,
     truncated,
     rulesMatched: rules.length,
@@ -300,7 +302,7 @@ async function ruleCountsForTenant(tenantId: string, userId: string): Promise<Ru
 }
 
 const EMPTY_RULE_COUNTS: RuleCounts = {
-  pendingItems: 0, truncated: false, rulesMatched: 0, matched: 0, ready: 0,
+  tieredRules: false, pendingItems: 0, truncated: false, rulesMatched: 0, matched: 0, ready: 0,
   needsMapping: 0, needsReview: 0, rules: [], unmappedAccounts: [],
 };
 
@@ -487,16 +489,24 @@ export async function upsertMapping(
   // could never be referenced by one of the firm's rules.
   const source = await db.query.accounts.findFirst({
     where: eq(accounts.id, input.sourceAccountId),
-    columns: { id: true, tenantId: true },
+    columns: { id: true, tenantId: true, accountType: true },
   });
   if (!source || source.tenantId === tenantId || (await activeFirmFor(source.tenantId)) !== firmId) {
     throw AppError.badRequest('Source account is not a firm global-rule account', 'INVALID_SOURCE_ACCOUNT');
   }
   const target = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, input.accountId), eq(accounts.isActive, true)),
-    columns: { id: true },
+    columns: { id: true, accountType: true },
   });
   if (!target) throw AppError.badRequest('Account not found in this client', 'ACCOUNT_NOT_IN_TENANT');
+  // An expense rule must keep posting to an expense account — one wrong
+  // pick would otherwise send every match to a bank or equity account.
+  if (target.accountType !== source.accountType) {
+    throw AppError.badRequest(
+      `Choose an account of type "${source.accountType}" — the same type the global rule posts to`,
+      'ACCOUNT_TYPE_MISMATCH',
+    );
+  }
 
   const before = await db.query.tenantFirmAccountMappings.findFirst({
     where: and(

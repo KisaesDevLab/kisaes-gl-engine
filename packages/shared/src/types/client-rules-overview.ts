@@ -29,6 +29,8 @@ export interface ClientRulesOverviewUnmappedAccount {
   sourceAccountId: string;
   sourceAccountName: string;
   sourceAccountNumber: string | null;
+  /** A mapping must target an account of the same type. */
+  sourceAccountType: string;
   /** Pending items in this client waiting on this mapping. */
   items: number;
 }
@@ -39,6 +41,9 @@ export interface ClientRulesOverviewRow {
   /** Firm managing this client — mappings are stored under it. Null for
    *  a client no firm manages (global rules never reach it). */
   firmId: string | null;
+  /** False when RULES_TIERED_V1 is off for this client: only its own
+   *  personal rules are evaluated, never firm or global rules. */
+  tieredRules: boolean;
   pendingItems: number;
   /** True when the pending backlog exceeded the scan ceiling; counts
    *  cover the first `pendingItems` scanned. */

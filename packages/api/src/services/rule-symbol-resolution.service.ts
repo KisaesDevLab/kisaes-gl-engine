@@ -62,7 +62,7 @@ export interface ResolveOptions {
 // with multiple set_account / split_by_* legs against the same
 // source account triggers one query instead of N.
 export interface ResolveCaches {
-  sourceAccountById: Map<string, { tenantId: string; systemTag: string | null } | null>;
+  sourceAccountById: Map<string, { tenantId: string; systemTag: string | null; isActive: boolean } | null>;
   mappedAccountIdBySource: Map<string, string | null>;
   vendorNameBySourceContactId: Map<string, string | null>;
   targetAccountIdBySystemTag: Map<string, string | null>;
@@ -210,13 +210,15 @@ async function resolveAccountIdAcrossTenants(
   if (source === undefined) {
     const row = await db.query.accounts.findFirst({
       where: eq(accounts.id, sourceAccountId),
-      columns: { tenantId: true, systemTag: true },
+      columns: { tenantId: true, systemTag: true, isActive: true },
     });
-    source = row ? { tenantId: row.tenantId, systemTag: row.systemTag ?? null } : null;
+    source = row ? { tenantId: row.tenantId, systemTag: row.systemTag ?? null, isActive: row.isActive !== false } : null;
     caches.sourceAccountById.set(sourceAccountId, source);
   }
   if (!source) return null;
-  if (source.tenantId === targetTenantId) return sourceAccountId;
+  // On the client the rule was written on, the account is used as-is —
+  // unless it has since been deactivated.
+  if (source.tenantId === targetTenantId) return source.isActive ? sourceAccountId : null;
 
   const mapped = await lookupMappedAccount(targetTenantId, sourceAccountId, caches);
   if (mapped) return mapped;
@@ -303,6 +305,8 @@ async function lookupVendorIdAcrossTenants(
     caches.vendorNameBySourceContactId.set(sourceContactId, name);
   }
   if (!name) return null;
+  const cached = caches.targetContactIdByName.get(name);
+  if (cached !== undefined) return cached;
   const row = await db.query.contacts.findFirst({
     where: and(
       eq(contacts.tenantId, targetTenantId),
@@ -310,7 +314,9 @@ async function lookupVendorIdAcrossTenants(
     ),
     columns: { id: true },
   });
-  return row?.id ?? null;
+  const id = row?.id ?? null;
+  caches.targetContactIdByName.set(name, id);
+  return id;
 }
 
 // Looks up `sourceContactId` (a contacts.id from any tenant) to
