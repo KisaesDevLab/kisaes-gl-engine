@@ -297,6 +297,11 @@ app.post('/api/v1/csp-report',
 );
 
 app.use(express.json({ limit: '10mb' }));
+// Bound the array elements a body may carry before any schema sees it
+// (middleware/json-array-cap.ts): zod 3 keeps one issue per failing
+// element of an unbounded array, so the size limit alone is not enough.
+import { jsonArrayCap } from './middleware/json-array-cap.js';
+app.use(jsonArrayCap());
 // Access log with bearer-ish query parameters redacted: magic-link
 // verify (?token=), download tokens (?_dl=), portal/W-9/bank-connect
 // tokens all travel in the URL and must not land in stdout/log shipping.

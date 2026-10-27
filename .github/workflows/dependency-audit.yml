@@ -3,8 +3,11 @@
 # Free for small businesses; see LICENSE for terms.
 #
 # Production-dependency vulnerability audit.
-#   - HIGH and CRITICAL findings fail the build (the tree is clean at high
-#     since puppeteer 25 / react-router 7 — 2026-08-18).
+#   - HIGH and CRITICAL findings fail the build, through scripts/audit-gate.mjs.
+#     An advisory with no fix yet may be excepted in scripts/audit-exceptions.json
+#     with its reason, mitigation and an expiry date; the gate prints every
+#     active exception and fails again once the date passes. One exception
+#     is open: zod GHSA-mrhx-c7xc-m3w5 until 2027-01-25 (zod 4 migration).
 #   - MODERATE+ findings are reported in the job summary but do not block.
 name: Dependency audit
 on:
@@ -34,5 +37,5 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           npm audit --omit=dev --audit-level=moderate 2>&1 | tail -n 60 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-      - name: Gate (high+ blocks)
-        run: npm audit --omit=dev --audit-level=high
+      - name: Gate (high+ blocks; documented, time-boxed exceptions allowed)
+        run: node scripts/audit-gate.mjs

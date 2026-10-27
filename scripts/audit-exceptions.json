@@ -1,0 +1,11 @@
+[
+  {
+    "advisory": "GHSA-mrhx-c7xc-m3w5",
+    "package": "zod",
+    "severity": "high",
+    "reason": "Memory exhaustion when a large array is validated against an array schema without a length limit. No patched 3.x release exists; the fix is zod 4.6.6+. The zod 4 migration touches 91 files using .uuid(), 66 test files whose synthetic UUIDs zod 4 rejects, and the OpenAPI exporter (zod-to-json-schema has no zod 4 support), so it is scheduled as its own change.",
+    "mitigation": "packages/api/src/middleware/json-array-cap.ts refuses any JSON body carrying more than 250,000 array elements (413 BODY_TOO_MANY_ELEMENTS) before any schema runs, bounding zod's issue accumulation; express.json() already caps bodies at 10 MB. Largest array any schema accepts is 10,000 elements.",
+    "approvedBy": "owner, 2026-10-27",
+    "expires": "2027-01-25"
+  }
+]
