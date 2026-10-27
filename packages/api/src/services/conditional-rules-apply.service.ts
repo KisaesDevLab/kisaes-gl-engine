@@ -484,3 +484,106 @@ export async function evaluateForInput(
   }
   return out;
 }
+
+// ─── Read-only dry run over feed items (client rules overview) ─
+
+export interface RuleSet {
+  rules: ConditionalRule[];
+  tiered: boolean;
+}
+
+/** The rule list the pipeline would evaluate for this tenant right now —
+ *  loaded once so a dry run over many feed items doesn't re-query it. */
+export async function loadRuleSet(tenantId: string, currentUserId: string | null): Promise<RuleSet> {
+  const tiered = await featureFlagsService
+    .isEnabled(tenantId, 'RULES_TIERED_V1')
+    .catch(() => false);
+  if (!tiered) {
+    return { rules: await crudService.listActiveOrderedByPriority(tenantId), tiered };
+  }
+  const assignment = await tenantFirmAssignmentService.getActiveForTenant(tenantId);
+  const rules = await crudService.listEvaluableRulesForTenant(tenantId, {
+    currentUserId,
+    firmId: assignment?.firmId ?? null,
+  });
+  return { rules, tiered };
+}
+
+export type DryRunOutcome = 'ready' | 'needs_review' | 'needs_mapping' | 'no_category';
+
+export interface DryRunResult {
+  /** First (highest-priority) rule that matched — the attribution the
+   *  pipeline records. */
+  rule: ConditionalRule;
+  outcome: DryRunOutcome;
+  /** Global-rule source accounts that did not resolve in this tenant. */
+  unresolvedSourceAccountIds: string[];
+}
+
+/**
+ * What the conditional-rules stage WOULD stage for one feed item, without
+ * staging anything, recording a fire, or creating vendors. Same rule list,
+ * tier order, symbol resolution and aggregation as applyForFeedItem.
+ * Returns null when no rule matches.
+ *
+ * outcome:
+ *   ready          — a category (set_account or a split) resolved and no
+ *                    rule flags the item for review; posting would post it.
+ *   needs_review   — a matching rule carries mark_for_review.
+ *   needs_mapping  — no category resolved because a global rule's account
+ *                    has no mapping in this tenant.
+ *   no_category    — rules matched but set no category (memo/vendor only).
+ */
+export async function dryRunForFeedItem(
+  tenantId: string,
+  ruleSet: RuleSet,
+  feedItem: {
+    description: string | null;
+    originalDescription: string | null;
+    amount: string;
+    feedDate: string;
+    bankConnectionAccountId: string;
+    payeeNameOnCheck?: string | null;
+  },
+  caches: symbolResolution.ResolveCaches,
+): Promise<DryRunResult | null> {
+  const { rules, tiered } = ruleSet;
+  if (rules.length === 0) return null;
+  const matches = engine.evaluateRules(rules, engine.contextFromFeedItem(feedItem));
+  if (matches.length === 0) return null;
+
+  const ruleById = new Map(rules.map((r) => [r.id, r]));
+  const unresolved = new Set<string>();
+  let aggregated: Action[];
+  if (tiered) {
+    const resolvedMatches: RuleEvaluationResult[] = [];
+    for (const match of matches) {
+      const rule = ruleById.get(match.ruleId);
+      if (!rule) continue;
+      const resolved = await symbolResolution.resolveActionsForTenant(tenantId, match.appliedActions, {
+        scope: rule.scope,
+        dryRun: true,
+        caches,
+        onUnresolvedAccount: (id) => unresolved.add(id),
+      });
+      resolvedMatches.push({ ...match, appliedActions: resolved });
+    }
+    aggregated = aggregateActionsTiered(resolvedMatches, ruleById);
+  } else {
+    aggregated = aggregateActions(matches.flatMap((m) => m.appliedActions));
+  }
+
+  const hasCategory = aggregated.some((a) =>
+    a.type === 'set_account' || a.type === 'split_by_percentage' || a.type === 'split_by_fixed');
+  let outcome: DryRunOutcome;
+  if (aggregated.some((a) => a.type === 'mark_for_review')) outcome = 'needs_review';
+  else if (hasCategory) outcome = 'ready';
+  else if (unresolved.size > 0) outcome = 'needs_mapping';
+  else outcome = 'no_category';
+
+  return {
+    rule: ruleById.get(matches[0]!.ruleId)!,
+    outcome,
+    unresolvedSourceAccountIds: outcome === 'needs_mapping' ? [...unresolved] : [],
+  };
+}

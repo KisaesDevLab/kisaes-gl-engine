@@ -1646,6 +1646,13 @@
       "when": 1785100014380,
       "tag": "0234_document_reading_consent",
       "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1785200014380,
+      "tag": "0235_tenant_firm_account_mappings",
+      "breakpoints": true
     }
   ]
 }

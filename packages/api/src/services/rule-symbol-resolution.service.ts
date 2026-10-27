@@ -5,7 +5,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { Action, RuleScope } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { accounts, contacts, tenantFirmAssignments } from '../db/schema/index.js';
+import { accounts, contacts, tenantFirmAccountMappings, tenantFirmAssignments } from '../db/schema/index.js';
 import * as firmTagTemplatesService from './firm-tag-templates.service.js';
 
 // 3-tier rules plan, Phase 4 — symbol resolution.
@@ -21,10 +21,13 @@ import * as firmTagTemplatesService from './firm-tag-templates.service.js';
 // re-resolves them to the target tenant's equivalents at
 // evaluation time:
 //
-//   - set_account: source account id → its system_tag → target
-//     tenant's account with the same system_tag. Drop the action
-//     if no system_tag is set on the source OR no account in the
-//     target tenant carries the same tag.
+//   - set_account: source account id → (a) itself when the target
+//     tenant IS the source tenant; else (b) the target tenant's
+//     explicit mapping for that source account
+//     (tenant_firm_account_mappings, set from the client rules
+//     overview); else (c) its system_tag → the target tenant's
+//     account with the same system_tag. Drop the action when none
+//     resolve.
 //   - set_vendor:  source contact id → its display_name →
 //     findOrCreateContact in target tenant by exact name. Always
 //     succeeds (creates if missing).
@@ -43,14 +46,24 @@ import * as firmTagTemplatesService from './firm-tag-templates.service.js';
 
 export interface ResolveOptions {
   scope: RuleScope;
+  /** Read-only resolution (client rules overview counts): vendors are
+   *  looked up but never created, and an unresolved vendor leaves the
+   *  action as-is instead of dropping it. */
+  dryRun?: boolean;
+  /** Called with each source account id that could not be resolved for
+   *  the target tenant — the overview reports these as "needs mapping". */
+  onUnresolvedAccount?: (sourceAccountId: string) => void;
+  /** Reuse lookups across calls for the SAME target tenant. */
+  caches?: ResolveCaches;
 }
 
 // Cache the source-account → system_tag and source-contact →
 // display_name lookups across actions in the same call. A rule
 // with multiple set_account / split_by_* legs against the same
 // source account triggers one query instead of N.
-interface ResolveCaches {
-  systemTagBySourceAccountId: Map<string, string | null>;
+export interface ResolveCaches {
+  sourceAccountById: Map<string, { tenantId: string; systemTag: string | null } | null>;
+  mappedAccountIdBySource: Map<string, string | null>;
   vendorNameBySourceContactId: Map<string, string | null>;
   targetAccountIdBySystemTag: Map<string, string | null>;
   targetContactIdByName: Map<string, string | null>;
@@ -63,9 +76,10 @@ interface ResolveCaches {
   managingFirmId: string | null | undefined;
 }
 
-function newCaches(): ResolveCaches {
+export function newCaches(): ResolveCaches {
   return {
-    systemTagBySourceAccountId: new Map(),
+    sourceAccountById: new Map(),
+    mappedAccountIdBySource: new Map(),
     vendorNameBySourceContactId: new Map(),
     targetAccountIdBySystemTag: new Map(),
     targetContactIdByName: new Map(),
@@ -82,10 +96,10 @@ export async function resolveActionsForTenant(
   // Tenant-scoped rules already store targets in the right tenant.
   if (opts.scope !== 'global_firm') return actions;
 
-  const caches = newCaches();
+  const caches = opts.caches ?? newCaches();
   const out: Action[] = [];
   for (const action of actions) {
-    const resolved = await resolveOneAction(tenantId, action, caches);
+    const resolved = await resolveOneAction(tenantId, action, caches, opts);
     if (resolved) out.push(resolved);
   }
   return out;
@@ -95,14 +109,24 @@ async function resolveOneAction(
   tenantId: string,
   action: Action,
   caches: ResolveCaches,
+  opts: ResolveOptions,
 ): Promise<Action | null> {
+  const resolveAccount = async (sourceAccountId: string) => {
+    const id = await resolveAccountIdAcrossTenants(tenantId, sourceAccountId, caches);
+    if (!id) opts.onUnresolvedAccount?.(sourceAccountId);
+    return id;
+  };
   switch (action.type) {
     case 'set_account': {
-      const id = await resolveAccountIdAcrossTenants(tenantId, action.accountId, caches);
+      const id = await resolveAccount(action.accountId);
       if (!id) return null;
       return { ...action, accountId: id };
     }
     case 'set_vendor': {
+      if (opts.dryRun) {
+        const found = await lookupVendorIdAcrossTenants(tenantId, action.vendorId, caches);
+        return found ? { ...action, vendorId: found } : action;
+      }
       const id = await resolveVendorIdAcrossTenants(tenantId, action.vendorId, caches);
       if (!id) return null;
       return { ...action, vendorId: id };
@@ -145,7 +169,7 @@ async function resolveOneAction(
     case 'split_by_percentage': {
       const legs: typeof action.splits = [];
       for (const leg of action.splits) {
-        const id = await resolveAccountIdAcrossTenants(tenantId, leg.accountId, caches);
+        const id = await resolveAccount(leg.accountId);
         if (!id) {
           // Drop the entire split if any leg fails — partial
           // splits would post an unbalanced transaction.
@@ -158,7 +182,7 @@ async function resolveOneAction(
     case 'split_by_fixed': {
       const legs: typeof action.splits = [];
       for (const leg of action.splits) {
-        const id = await resolveAccountIdAcrossTenants(tenantId, leg.accountId, caches);
+        const id = await resolveAccount(leg.accountId);
         if (!id) return null;
         legs.push({ ...leg, accountId: id });
       }
@@ -169,24 +193,35 @@ async function resolveOneAction(
   }
 }
 
-// Looks up `sourceAccountId` (an accounts.id from any tenant) to
-// find its system_tag, then looks up the same system_tag in the
-// target tenant. Returns the target tenant's account id or null
-// if either step fails.
+// Resolves `sourceAccountId` (an accounts.id from any tenant) to the
+// target tenant's equivalent, in order:
+//   1. the source account itself, when it already belongs to the target
+//      tenant (the client the global rule was written on);
+//   2. the target tenant's explicit mapping for that source account under
+//      its managing firm (tenant_firm_account_mappings);
+//   3. the target tenant's active account with the same system_tag.
+// Returns null when none apply.
 async function resolveAccountIdAcrossTenants(
   targetTenantId: string,
   sourceAccountId: string,
   caches: ResolveCaches,
 ): Promise<string | null> {
-  let systemTag = caches.systemTagBySourceAccountId.get(sourceAccountId);
-  if (systemTag === undefined) {
+  let source = caches.sourceAccountById.get(sourceAccountId);
+  if (source === undefined) {
     const row = await db.query.accounts.findFirst({
       where: eq(accounts.id, sourceAccountId),
-      columns: { systemTag: true },
+      columns: { tenantId: true, systemTag: true },
     });
-    systemTag = row?.systemTag ?? null;
-    caches.systemTagBySourceAccountId.set(sourceAccountId, systemTag);
+    source = row ? { tenantId: row.tenantId, systemTag: row.systemTag ?? null } : null;
+    caches.sourceAccountById.set(sourceAccountId, source);
   }
+  if (!source) return null;
+  if (source.tenantId === targetTenantId) return sourceAccountId;
+
+  const mapped = await lookupMappedAccount(targetTenantId, sourceAccountId, caches);
+  if (mapped) return mapped;
+
+  const systemTag = source.systemTag;
   if (!systemTag) return null;
 
   const cached = caches.targetAccountIdBySystemTag.get(systemTag);
@@ -203,6 +238,79 @@ async function resolveAccountIdAcrossTenants(
   const id = row?.id ?? null;
   caches.targetAccountIdBySystemTag.set(systemTag, id);
   return id;
+}
+
+async function managingFirmFor(targetTenantId: string, caches: ResolveCaches): Promise<string | null> {
+  if (caches.managingFirmId === undefined) {
+    const assignment = await db.query.tenantFirmAssignments.findFirst({
+      where: and(
+        eq(tenantFirmAssignments.tenantId, targetTenantId),
+        eq(tenantFirmAssignments.isActive, true),
+      ),
+      columns: { firmId: true },
+    });
+    caches.managingFirmId = assignment?.firmId ?? null;
+  }
+  return caches.managingFirmId;
+}
+
+// Explicit per-client mapping for a global rule's source account. Only an
+// ACTIVE account in the target tenant counts — a mapping left pointing at a
+// since-deactivated account reads as unmapped, so the overview asks for a
+// new one rather than posting to a closed account.
+async function lookupMappedAccount(
+  targetTenantId: string,
+  sourceAccountId: string,
+  caches: ResolveCaches,
+): Promise<string | null> {
+  const cached = caches.mappedAccountIdBySource.get(sourceAccountId);
+  if (cached !== undefined) return cached;
+  const firmId = await managingFirmFor(targetTenantId, caches);
+  let id: string | null = null;
+  if (firmId) {
+    const [row] = await db
+      .select({ accountId: tenantFirmAccountMappings.accountId })
+      .from(tenantFirmAccountMappings)
+      .innerJoin(accounts, eq(accounts.id, tenantFirmAccountMappings.accountId))
+      .where(and(
+        eq(tenantFirmAccountMappings.firmId, firmId),
+        eq(tenantFirmAccountMappings.tenantId, targetTenantId),
+        eq(tenantFirmAccountMappings.sourceAccountId, sourceAccountId),
+        eq(accounts.tenantId, targetTenantId),
+        eq(accounts.isActive, true),
+      ))
+      .limit(1);
+    id = row?.accountId ?? null;
+  }
+  caches.mappedAccountIdBySource.set(sourceAccountId, id);
+  return id;
+}
+
+// Read-only twin of resolveVendorIdAcrossTenants for dry runs: finds the
+// target tenant's contact by the source contact's name, never creates one.
+async function lookupVendorIdAcrossTenants(
+  targetTenantId: string,
+  sourceContactId: string,
+  caches: ResolveCaches,
+): Promise<string | null> {
+  let name = caches.vendorNameBySourceContactId.get(sourceContactId);
+  if (name === undefined) {
+    const row = await db.query.contacts.findFirst({
+      where: eq(contacts.id, sourceContactId),
+      columns: { displayName: true },
+    });
+    name = row?.displayName ?? null;
+    caches.vendorNameBySourceContactId.set(sourceContactId, name);
+  }
+  if (!name) return null;
+  const row = await db.query.contacts.findFirst({
+    where: and(
+      eq(contacts.tenantId, targetTenantId),
+      sql`LOWER(${contacts.displayName}) = LOWER(${name.trim()})`,
+    ),
+    columns: { id: true },
+  });
+  return row?.id ?? null;
 }
 
 // Looks up `sourceContactId` (a contacts.id from any tenant) to
@@ -240,21 +348,12 @@ async function resolveTagTemplateForTenant(
   templateKey: string,
   caches: ResolveCaches,
 ): Promise<string | null> {
-  if (caches.managingFirmId === undefined) {
-    const assignment = await db.query.tenantFirmAssignments.findFirst({
-      where: and(
-        eq(tenantFirmAssignments.tenantId, targetTenantId),
-        eq(tenantFirmAssignments.isActive, true),
-      ),
-      columns: { firmId: true },
-    });
-    caches.managingFirmId = assignment?.firmId ?? null;
-  }
-  if (!caches.managingFirmId) return null;
+  const firmId = await managingFirmFor(targetTenantId, caches);
+  if (!firmId) return null;
   const cached = caches.tagIdByTemplateKey.get(templateKey);
   if (cached !== undefined) return cached;
   const tagId = await firmTagTemplatesService.resolveTagFromTemplate(
-    caches.managingFirmId,
+    firmId,
     templateKey,
     targetTenantId,
   );

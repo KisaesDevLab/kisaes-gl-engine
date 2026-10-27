@@ -54,6 +54,7 @@ export * from './recurring-doc-requests.js';
 export * from './firms.js';
 export * from './firm-invites.js';
 export * from './firm-tag-templates.js';
+export * from './firm-account-mappings.js';
 export * from './imports.js';
 export * from './extraction.js';
 export * from './daily-sales.js';
