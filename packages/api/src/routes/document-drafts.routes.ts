@@ -35,7 +35,8 @@ documentDraftsRouter.use(requireAnyDocumentResource());
 
 const idParams = z.object({ id: z.string().uuid() });
 const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1), top level only; never stored or echoed');
-const permissionNote = 'Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read).';
+const permissionNote = 'Permission by kind: bill, unknown and statement need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). ' +
+  'statement (document-drafts-statement-v1) is a vendor statement, a label only: it never converts or attaches.';
 
 // Idempotency-Key (idempotency-docs-v1) on create and convert. The readers
 // replay the draft as it is now when no stored response is left.
@@ -132,7 +133,7 @@ documentDraftsRouter.post('/:id/convert', requireConvertKindPermission, keyedCon
       'other live drafts that match are listed in details.draftMatches (and in the 201 response\'s draftMatches) but never block. The draft\'s ' +
       'file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for ' +
       'the other kinds) with an audit row each; the draft is marked converted. ' +
-      'Any refusal leaves nothing written. Missing or other kind: 400 INVALID_KIND. ' +
+      'Any refusal leaves nothing written. Missing or other kind, or a draft whose kind is statement: 400 INVALID_KIND. ' +
       `${permissionNote} Idempotency list: idempotency-docs-v1 (the permission is checked before a replay).`,
     body: convertBodyDoc,
     params: idParams,
@@ -159,8 +160,8 @@ documentDraftsRouter.post('/:id/attach', requireAttachPermission, keyedAttach, v
     'on the draft key, except one another live draft reads, moves to the transaction (attachable type = its txnType; journal_entry for an aje, ' +
     'where MyBooks stores AJE files) with an audit row each; ' +
     'the draft is marked converted (convertedTransactionId = the transaction, convertedType = its txnType, aje for an AJE; kind unchanged) with an audit row ' +
-    '`attached: true`. Any refusal leaves nothing written. Permission: the draft\'s current kind\'s (bill and unknown: bills, check: checks, ' +
-    'card_charge and cash_expense: transactions) and the transaction\'s (bill: bills, vendor_credit: vendor_credits, bill_payment: ' +
+    '`attached: true`. A draft whose kind is statement is 400 INVALID_KIND. Any refusal leaves nothing written. Permission: the draft\'s ' +
+    'current kind\'s (bill, unknown and statement: bills, check: checks, card_charge and cash_expense: transactions) and the transaction\'s (bill: bills, vendor_credit: vendor_credits, bill_payment: ' +
     'pay_bills, invoice: invoices, customer_payment: receive_payment, daily_sales: daily_sales, aje: trial_balance, others: transactions), ' +
     'full access, checked before a replay and again on the locked rows (403 PERMISSION_DENIED). Idempotency-Key: document-drafts-attach-v1, ' +
     'with idempotency-docs-v1\'s contract; refusals are never stored.',

@@ -6,7 +6,7 @@
 // settled so they can be paid again:
 //   - voiding from the check register / transaction detail
 //     (ledger.voidTransaction) goes through the bill-payment void;
-//   - migration 0235 repairs payments voided before that routing existed,
+//   - migration 0236 repairs payments voided before that routing existed,
 //     whose application rows were left behind and kept the bills "paid".
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -91,10 +91,10 @@ async function expectReleased(billId: string, creditId: string) {
   expect(parseFloat(credit.balanceDue ?? '0')).toBe(100);
 }
 
-// Runs migration 0235 the way the migrator does: one statement per breakpoint.
+// Runs migration 0236 the way the migrator does: one statement per breakpoint.
 async function runRepairMigration() {
   const here = dirname(fileURLToPath(import.meta.url));
-  const file = resolve(here, '../db/migrations/0235_release_voided_bill_payments.sql');
+  const file = resolve(here, '../db/migrations/0236_release_voided_bill_payments.sql');
   for (const stmt of readFileSync(file, 'utf8').split('--> statement-breakpoint')) {
     if (stmt.replace(/--.*$/gm, '').trim()) await db.execute(sql.raw(stmt));
   }
@@ -129,7 +129,7 @@ describe('voiding a bill-payment check', () => {
   });
 });
 
-describe('migration 0235 — payments voided before the fix', () => {
+describe('migration 0236 — payments voided before the fix', () => {
   // The pre-fix register void: payment marked void, journal reversed, but
   // its application rows left in place.
   async function voidTheOldWay(paymentId: string) {

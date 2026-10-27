@@ -21322,7 +21322,8 @@
                             "enum": [
                               "bills",
                               "receipts",
-                              "auto"
+                              "auto",
+                              "statements"
                             ],
                             "type": "string"
                           },
@@ -21418,7 +21419,8 @@
                           "enum": [
                             "bills",
                             "receipts",
-                            "auto"
+                            "auto",
+                            "statements"
                           ],
                           "type": "string"
                         },
@@ -21480,7 +21482,8 @@
                             "enum": [
                               "bills",
                               "receipts",
-                              "auto"
+                              "auto",
+                              "statements"
                             ],
                             "type": "string"
                           },
@@ -25655,7 +25658,8 @@
                 "card_charge",
                 "check",
                 "cash_expense",
-                "unknown"
+                "unknown",
+                "statement"
               ],
               "type": "string"
             }
@@ -25715,7 +25719,7 @@
         ]
       },
       "post": {
-        "description": "Response 201 `{draft}`. `attachmentId` names a draft attachment (attachable type `draft`) visible to the company (else 404; another type 422 ATTACHMENT_NOT_DRAFT). The engine hashes the stored file: a file this company already has as a draft that is not discarded is 409 DOCUMENT_ALREADY_CLAIMED (`details.draftId`); two concurrent claims of one file give one draft. The attachment is left a draft attachment and takes the company. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Idempotency list: idempotency-docs-v1.",
+        "description": "Response 201 `{draft}`. `attachmentId` names a draft attachment (attachable type `draft`) visible to the company (else 404; another type 422 ATTACHMENT_NOT_DRAFT). The engine hashes the stored file: a file this company already has as a draft that is not discarded is 409 DOCUMENT_ALREADY_CLAIMED (`details.draftId`); two concurrent claims of one file give one draft. The attachment is left a draft attachment and takes the company. Permission by kind: bill, unknown and statement need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). statement (document-drafts-statement-v1) is a vendor statement, a label only: it never converts or attaches. Idempotency list: idempotency-docs-v1.",
         "operationId": "post_api_v1_document_drafts",
         "parameters": [
           {
@@ -25746,7 +25750,8 @@
                       "card_charge",
                       "check",
                       "cash_expense",
-                      "unknown"
+                      "unknown",
+                      "statement"
                     ],
                     "type": "string"
                   }
@@ -25814,7 +25819,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 `{draft}`. `status` ready (a reading) or failed (`failureReason`). Omitted fields keep their value. `expectedUpdatedAt` is required: the draft's updatedAt as last read; a mismatch is 409 STALE (`details.updatedAt`). A converted or discarded draft is 409 DOCUMENT_DRAFT_CLOSED. `fields`, `lines`, `checks`: JSON with decimal-string amounts and integer numbers only (bounded). Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Changing the kind also needs the new kind's permission.",
+        "description": "Response 200 `{draft}`. `status` ready (a reading) or failed (`failureReason`). Omitted fields keep their value. `expectedUpdatedAt` is required: the draft's updatedAt as last read; a mismatch is 409 STALE (`details.updatedAt`). A converted or discarded draft is 409 DOCUMENT_DRAFT_CLOSED. `fields`, `lines`, `checks`: JSON with decimal-string amounts and integer numbers only (bounded). Permission by kind: bill, unknown and statement need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). statement (document-drafts-statement-v1) is a vendor statement, a label only: it never converts or attaches. Changing the kind also needs the new kind's permission.",
         "operationId": "put_api_v1_document_drafts_by_id",
         "parameters": [
           {
@@ -25897,7 +25902,8 @@
                       "card_charge",
                       "check",
                       "cash_expense",
-                      "unknown"
+                      "unknown",
+                      "statement"
                     ],
                     "type": "string"
                   },
@@ -25974,7 +25980,7 @@
     },
     "/api/v1/document-drafts/{id}/attach": {
       "post": {
-        "description": "Response 200 `{draft, transaction}`. Files the draft's document on an existing transaction instead of posting a new one (document-drafts-attach-v1); nothing posts and no closing-date password is needed. One database transaction, locks in the order draft, transaction, file: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE, details.updatedAt); the transaction must be this company's or tenant-wide and not deleted (else 404); a type files can't be attached to is 422 TARGET_NOT_ATTACHABLE, and so is an adjusting journal entry (aje) for a client user or with TRIAL_BALANCE_V1 off; not posted (void, draft) is 409 TRANSACTION_NOT_POSTED (details.status); the draft's file deleted is 422 DOCUMENT_FILE_MISSING, filed on another record 422 ATTACHMENT_NOT_DRAFT, already on this transaction succeeds. Every file on the draft key, except one another live draft reads, moves to the transaction (attachable type = its txnType; journal_entry for an aje, where MyBooks stores AJE files) with an audit row each; the draft is marked converted (convertedTransactionId = the transaction, convertedType = its txnType, aje for an AJE; kind unchanged) with an audit row `attached: true`. Any refusal leaves nothing written. Permission: the draft's current kind's (bill and unknown: bills, check: checks, card_charge and cash_expense: transactions) and the transaction's (bill: bills, vendor_credit: vendor_credits, bill_payment: pay_bills, invoice: invoices, customer_payment: receive_payment, daily_sales: daily_sales, aje: trial_balance, others: transactions), full access, checked before a replay and again on the locked rows (403 PERMISSION_DENIED). Idempotency-Key: document-drafts-attach-v1, with idempotency-docs-v1's contract; refusals are never stored.",
+        "description": "Response 200 `{draft, transaction}`. Files the draft's document on an existing transaction instead of posting a new one (document-drafts-attach-v1); nothing posts and no closing-date password is needed. One database transaction, locks in the order draft, transaction, file: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE, details.updatedAt); the transaction must be this company's or tenant-wide and not deleted (else 404); a type files can't be attached to is 422 TARGET_NOT_ATTACHABLE, and so is an adjusting journal entry (aje) for a client user or with TRIAL_BALANCE_V1 off; not posted (void, draft) is 409 TRANSACTION_NOT_POSTED (details.status); the draft's file deleted is 422 DOCUMENT_FILE_MISSING, filed on another record 422 ATTACHMENT_NOT_DRAFT, already on this transaction succeeds. Every file on the draft key, except one another live draft reads, moves to the transaction (attachable type = its txnType; journal_entry for an aje, where MyBooks stores AJE files) with an audit row each; the draft is marked converted (convertedTransactionId = the transaction, convertedType = its txnType, aje for an AJE; kind unchanged) with an audit row `attached: true`. A draft whose kind is statement is 400 INVALID_KIND. Any refusal leaves nothing written. Permission: the draft's current kind's (bill, unknown and statement: bills, check: checks, card_charge and cash_expense: transactions) and the transaction's (bill: bills, vendor_credit: vendor_credits, bill_payment: pay_bills, invoice: invoices, customer_payment: receive_payment, daily_sales: daily_sales, aje: trial_balance, others: transactions), full access, checked before a replay and again on the locked rows (403 PERMISSION_DENIED). Idempotency-Key: document-drafts-attach-v1, with idempotency-docs-v1's contract; refusals are never stored.",
         "operationId": "post_api_v1_document_drafts_by_id_attach",
         "parameters": [
           {
@@ -26044,7 +26050,7 @@
     },
     "/api/v1/document-drafts/{id}/convert": {
       "post": {
-        "description": "Response 201 `{draft, transaction, draftMatches}`. `body` is the kind's own create body (bill: POST /bills; card_charge and cash_expense: POST /transactions expense with payFromAccountId; check: POST /checks), without draftAttachmentId. One database transaction: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE; the draft's current kind needs its permission too, 403), the vendor must be tenant-wide or the company's (404), the record posts through the kind's service (a date on or before the closing date needs the top-level closingPassword: 423 TB_PERIOD_LOCKED / 403 CLOSING_PASSWORD_INVALID), then posted bills, expenses and checks of the same vendor with the same reference, or the same total within 60 days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); other live drafts that match are listed in details.draftMatches (and in the 201 response's draftMatches) but never block. The draft's file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for the other kinds) with an audit row each; the draft is marked converted. Any refusal leaves nothing written. Missing or other kind: 400 INVALID_KIND. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). Idempotency list: idempotency-docs-v1 (the permission is checked before a replay).",
+        "description": "Response 201 `{draft, transaction, draftMatches}`. `body` is the kind's own create body (bill: POST /bills; card_charge and cash_expense: POST /transactions expense with payFromAccountId; check: POST /checks), without draftAttachmentId. One database transaction: the draft is locked (converted or discarded 409 DOCUMENT_DRAFT_CLOSED with details.transactionId; stale 409 STALE; the draft's current kind needs its permission too, 403), the vendor must be tenant-wide or the company's (404), the record posts through the kind's service (a date on or before the closing date needs the top-level closingPassword: 423 TB_PERIOD_LOCKED / 403 CLOSING_PASSWORD_INVALID), then posted bills, expenses and checks of the same vendor with the same reference, or the same total within 60 days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); other live drafts that match are listed in details.draftMatches (and in the 201 response's draftMatches) but never block. The draft's file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for the other kinds) with an audit row each; the draft is marked converted. Any refusal leaves nothing written. Missing or other kind, or a draft whose kind is statement: 400 INVALID_KIND. Permission by kind: bill, unknown and statement need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). statement (document-drafts-statement-v1) is a vendor statement, a label only: it never converts or attaches. Idempotency list: idempotency-docs-v1 (the permission is checked before a replay).",
         "operationId": "post_api_v1_document_drafts_by_id_convert",
         "parameters": [
           {
@@ -26637,7 +26643,7 @@
     },
     "/api/v1/document-drafts/{id}/discard": {
       "post": {
-        "description": "Response 200 `{draft}`. Frees the file's claim; the file itself is left (delete it with DELETE /attachments/:id afterwards). Already discarded: 200, nothing changes. Converted: 409 DOCUMENT_DRAFT_CLOSED. Permission by kind: bill and unknown need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read).",
+        "description": "Response 200 `{draft}`. Frees the file's claim; the file itself is left (delete it with DELETE /attachments/:id afterwards). Already discarded: 200, nothing changes. Converted: 409 DOCUMENT_DRAFT_CLOSED. Permission by kind: bill, unknown and statement need bills, check needs checks, card_charge and cash_expense need transactions (full access to change, view of any of the three to read). statement (document-drafts-statement-v1) is a vendor statement, a label only: it never converts or attaches.",
         "operationId": "post_api_v1_document_drafts_by_id_discard",
         "parameters": [
           {
@@ -26721,7 +26727,8 @@
                       "card_charge",
                       "check",
                       "cash_expense",
-                      "unknown"
+                      "unknown",
+                      "statement"
                     ],
                     "type": "string"
                   },

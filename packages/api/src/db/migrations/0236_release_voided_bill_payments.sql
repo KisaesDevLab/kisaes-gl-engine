@@ -21,7 +21,7 @@
 -- is not touched: the void already wrote its reversing journal lines.
 --
 -- Idempotent: a second run finds no stale rows and changes nothing.
--- Rollback: 0235_release_voided_bill_payments.rollback.sql (a no-op).
+-- Rollback: 0236_release_voided_bill_payments.rollback.sql (a no-op).
 
 -- 1. Bills holding a payment or credit application of a void payment.
 WITH affected AS (

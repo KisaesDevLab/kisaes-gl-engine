@@ -8,7 +8,7 @@ import { tenants } from './auth.js';
 import { accounts } from './accounts.js';
 
 // Client rules overview — per-client account mappings for global_firm
-// rules (migration 0236). A global rule's account targets are ids from the
+// rules (migration 0237). A global rule's account targets are ids from the
 // client it was written on (`source_account_id`); this row says which of
 // `tenant_id`'s own accounts stands in for that source account. Read by
 // rule-symbol-resolution.service before its system_tag fallback.

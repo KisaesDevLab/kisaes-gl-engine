@@ -16,7 +16,7 @@
 -- account never orphans a mapping, and existing global rules need no rewrite.
 --
 -- Additive only: one new table. Rollback:
--- 0236_tenant_firm_account_mappings.rollback.sql.
+-- 0237_tenant_firm_account_mappings.rollback.sql.
 
 CREATE TABLE IF NOT EXISTS tenant_firm_account_mappings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

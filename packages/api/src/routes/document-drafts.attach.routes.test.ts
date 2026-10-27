@@ -469,6 +469,18 @@ describe('attach (POST /document-drafts/:id/attach)', () => {
 
 // ── a2. Security review fixes (M-1, L-1, L-2, L-3) ───────────────────
 
+describe('attach: statement drafts (U-94)', () => {
+  it('a statement draft is 400 INVALID_KIND; nothing moves and the draft stays live', async () => {
+    const target = await postedExpense('31.00');
+    const d = await readyDraft('attach-statement', 'statement');
+    const r = await attachCall(d.draft, target, { key: key() });
+    expect(r.status, JSON.stringify(r.json)).toBe(400);
+    expect(r.json.error.code).toBe('INVALID_KIND');
+    expect((await fileOf(d.attachmentId)).attachableType).toBe('draft');
+    expect((await draftRow(d.draft.id)).status).toBe('ready');
+  });
+});
+
 describe('attach: security review fixes', () => {
   async function setTrialBalance(enabled: boolean) {
     await db.delete(tenantFeatureFlags).where(and(eq(tenantFeatureFlags.tenantId, c.tenantId), eq(tenantFeatureFlags.flagKey, 'TRIAL_BALANCE_V1')));
