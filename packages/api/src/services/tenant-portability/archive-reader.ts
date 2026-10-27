@@ -11,6 +11,7 @@
 
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
+import { StringDecoder } from 'node:string_decoder';
 import { EntryDecryptor, openEnvelopeAsync, validateEnvelope, type ArchiveEnvelope } from './archive-crypto.js';
 import { openArchiveZip, readBounded, type ZipEntry } from './archive-container.js';
 import { ArchiveError } from './errors.js';
@@ -224,11 +225,17 @@ export class ArchiveReader {
     return ArchiveReader.decryptEntry(this.key, this.envelope.archiveId, partName, this.entryFor(partName), maxBytes);
   }
 
-  /** Lines of an NDJSON part, without their newline. */
+  /**
+   * Lines of an NDJSON part, without their newline. The part arrives in
+   * decrypted chunks whose boundaries fall anywhere, also inside a
+   * multi-byte character: a StringDecoder carries the partial bytes over
+   * to the next chunk (U-97; a per-chunk toString turned them into U+FFFD).
+   */
   async *lines(partName: string): AsyncGenerator<string> {
+    const decoder = new StringDecoder('utf8');
     let rest = '';
     for await (const chunk of this.partStream(partName) as AsyncIterable<Buffer>) {
-      rest += chunk.toString('utf8');
+      rest += decoder.write(chunk);
       let nl = rest.indexOf('\n');
       while (nl >= 0) {
         yield rest.slice(0, nl);
@@ -236,6 +243,7 @@ export class ArchiveReader {
         nl = rest.indexOf('\n');
       }
     }
+    rest += decoder.end();
     if (rest.length > 0) yield rest;
   }
 

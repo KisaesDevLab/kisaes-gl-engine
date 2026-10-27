@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import archiver from 'archiver';
 import { db } from '../../db/index.js';
 import { ArchiveZipWriter, sha256File } from './archive-container.js';
-import { createEnvelope, encryptEntryBuffer, NoncePrefixRegistry } from './archive-crypto.js';
+import { CHUNK_BYTES, createEnvelope, encryptEntryBuffer, NoncePrefixRegistry } from './archive-crypto.js';
 import { ArchiveReader, ARCHIVE_MAX_ENTRIES } from './archive-reader.js';
 import {
   ARCHIVE_FORMAT, ARCHIVE_FORMAT_VERSION, ENVELOPE_ENTRY, IDENTITY_ENTRIES, MANIFEST_ENTRY, filePartName, tablePartName, zipEntryName,
@@ -170,6 +170,24 @@ describe('container', () => {
     expect(raw.includes(PASS)).toBe(false);
     expect(raw.includes(ENVELOPE_ENTRY)).toBe(true);
     expect(/^[0-9a-f]{64}$/.test(await sha256File(a.filePath))).toBe(true);
+  });
+
+  it('reads lines whose multi-byte characters straddle a chunk boundary (U-97)', async () => {
+    // Parts are decrypted in CHUNK_BYTES pieces. A character split across two
+    // pieces must not turn into U+FFFD: memos with "·", "€" or an emoji
+    // came back changed and the restore failed verification (or, in a
+    // column the content digest skips, would have been stored changed).
+    const lines = [0, 1, 2, 3].map((k) => JSON.stringify({ id: String(k), memo: `${'x'.repeat(k)}${'·€😀'.repeat(12_000)}` }));
+    const body = Buffer.from(lines.map((l) => `${l}\n`).join(''), 'utf8');
+    expect(body.length).toBeGreaterThan(4 * CHUNK_BYTES);
+    const a = await buildArchive('multibyte.zip', { tables: { contacts: { lines, columns: [['id', 'uuid'], ['memo', 'text']] } } });
+    const r = await ArchiveReader.open(a.filePath, PASS);
+    // The bytes were always right; only the decoding was not.
+    expect((await r.readPart(tablePartName('contacts'), body.length)).equals(body)).toBe(true);
+    const read: string[] = [];
+    for await (const l of r.lines(tablePartName('contacts'))) read.push(l);
+    expect(read.some((l) => l.includes('�'))).toBe(false);
+    expect(read).toEqual(lines);
   });
 
   it('refuses a wrong passphrase before anything else is read, and a non-archive file', async () => {
