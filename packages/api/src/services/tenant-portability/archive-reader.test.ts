@@ -13,6 +13,7 @@ import path from 'node:path';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import archiver from 'archiver';
+import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { ArchiveZipWriter, sha256File } from './archive-container.js';
 import { CHUNK_BYTES, createEnvelope, encryptEntryBuffer, NoncePrefixRegistry } from './archive-crypto.js';
@@ -23,7 +24,7 @@ import {
 } from './format.js';
 import { ArchiveError } from './errors.js';
 import { buildPortabilityPlan, TYPE_CHANGES, type PortabilityPlan } from './plan.js';
-import { BACKFILL, COMPAT_BASELINE_SCHEMA_VERSION, DROPPED_COLUMNS, DROPPED_TABLES, RELAXED_COLUMNS, checkSchemaCompatibility } from './compat.js';
+import { BACKFILL, COMPAT_BASELINE_SCHEMA_VERSION, DROPPED_COLUMNS, DROPPED_TABLES, RELAXED_COLUMNS, WIDENED_CHECKS, checkSchemaCompatibility } from './compat.js';
 
 const PASS = 'reader test passphrase 2026';
 let dir = '';
@@ -359,6 +360,25 @@ describe('schema compatibility (MT7, B8)', () => {
     }
   });
 
+  it('0235 statement kind (U-94): an older document_drafts archive restores unchanged; a newer one is refused', async () => {
+    expect(WIDENED_CHECKS['document_drafts.document_drafts_kind_ck']).toEqual({ widenedIn: 236 });
+    const fwd = readFileSync(path.join(MIGRATIONS, '0235_document_drafts_statement_kind.sql'), 'utf8');
+    expect(fwd).toContain('ADD CONSTRAINT document_drafts_kind_ck');
+    // The live constraint is the widened one.
+    const ck = await db.execute(sql`SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
+      WHERE conname = 'document_drafts_kind_ck' AND conrelid = 'document_drafts'::regclass`);
+    expect(String((ck.rows[0] as { d: string }).d)).toContain('statement');
+    // Archive made before 0235 (schema 235) onto 236: same columns, nothing to map.
+    const t = tableFor('document_drafts');
+    const r = checkSchemaCompatibility([t], plan, 235, 236);
+    expect(r.tables[0]!.insertColumns).toEqual(plan.byName.get('document_drafts')!.insert);
+    expect(r.tables[0]!.backfill).toEqual([]);
+    expect(r.tables[0]!.widened).toEqual([]);
+    expect(r.warnings).toEqual([]);
+    // An archive that may hold statement drafts (schema 236) onto an engine before 0235: refused, nothing read.
+    expect(() => checkSchemaCompatibility([t], plan, 236, 235)).toThrow(expect.objectContaining({ code: 'ARCHIVE_TOO_NEW' }));
+  });
+
   it('every non-additive migration after the E5 baseline has a compat entry (migration-policy note)', () => {
     const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, 'meta', '_journal.json'), 'utf8')) as { entries: Array<{ idx: number; tag: string }> };
     const covered = new Set<number>([
@@ -366,6 +386,7 @@ describe('schema compatibility (MT7, B8)', () => {
       ...Object.values(DROPPED_COLUMNS).map((d) => d.droppedIn),
       ...Object.values(BACKFILL).map((d) => d.addedIn),
       ...Object.values(RELAXED_COLUMNS).map((d) => d.relaxedIn),
+      ...Object.values(WIDENED_CHECKS).map((d) => d.widenedIn),
     ]);
     const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql') && !f.endsWith('.rollback.sql'));
     const offenders: string[] = [];

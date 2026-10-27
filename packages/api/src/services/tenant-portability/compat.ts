@@ -11,7 +11,7 @@
  * Migration policy note: a non-additive migration (marker
  * `-- migration-policy: non-additive-exception` or an `allow-non-additive_`
  * file name) newer than the E5 baseline must add its DROPPED_TABLES /
- * DROPPED_COLUMNS / TYPE_CHANGES / BACKFILL / RELAXED_COLUMNS entry; compat.test.ts checks
+ * DROPPED_COLUMNS / TYPE_CHANGES / BACKFILL / RELAXED_COLUMNS / WIDENED_CHECKS entry; archive-reader.test.ts checks
  * this against the migrations journal.
  */
 
@@ -46,6 +46,19 @@ export const BACKFILL: Record<string, { addedIn: number; expression: string }> =
  */
 export const RELAXED_COLUMNS: Record<string, { relaxedIn: number }> = {
   'recurring_schedules.template_transaction_id': { relaxedIn: 226 },
+};
+
+/**
+ * `table.constraint` CHECK widened by migration `widenedIn` (schema version
+ * after it): a strict superset of the old values, replaced by drop and
+ * re-add. Every row of an older archive satisfies it, so nothing is done on
+ * import; the entry records the non-additive step for the policy. The other
+ * way round is refused before any row is read: an archive newer than the
+ * live schema (it may hold the new values) is ARCHIVE_TOO_NEW.
+ * 0235 (U-94): document_drafts.kind takes 'statement' (vendor statement).
+ */
+export const WIDENED_CHECKS: Record<string, { widenedIn: number }> = {
+  'document_drafts.document_drafts_kind_ck': { widenedIn: 236 },
 };
 
 export interface TableCompat {
