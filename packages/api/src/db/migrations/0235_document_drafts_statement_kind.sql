@@ -3,8 +3,9 @@
 -- migration-policy: non-additive-exception
 --
 -- Document drafts: kind 'statement' (U-94; capability
--- document-drafts-statement-v1). A bank or card statement a client filed
--- for the owner to review; a label only, it never converts or attaches.
+-- document-drafts-statement-v1). A vendor statement (accounts payable: the
+-- vendor's list of bills, credits and payments) a client filed for the
+-- owner to review; a label only, it never converts or attaches.
 --
 -- The widening is strictly additive: no value is removed and no existing
 -- row is invalidated. The marker is needed because the migration policy

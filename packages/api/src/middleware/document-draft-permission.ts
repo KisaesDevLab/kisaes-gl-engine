@@ -6,9 +6,9 @@
 // A draft becomes a bill, a check or an expense, so it is guarded by the
 // permission of what it becomes:
 //   bill (and unknown)            -> bills
+//   statement (vendor statement, label only, U-94) -> bills
 //   check                         -> checks
 //   card_charge, cash_expense     -> transactions
-//   statement (label only, U-94)  -> transactions
 // Reading drafts and vendor layouts needs view access to any of the three.
 // The keyed routes (create, convert) check the kind named in the body here,
 // ahead of idempotent(), so a replay is checked too (the pattern of

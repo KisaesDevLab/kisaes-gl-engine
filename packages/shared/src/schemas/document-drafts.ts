@@ -15,8 +15,9 @@ import { createExpenseSchema } from './transactions.js';
 import { writeCheckSchema } from './checks.js';
 
 /**
- * `statement` (U-94, document-drafts-statement-v1) is a label only: a bank or
- * card statement a client filed for the owner to review. It never converts
+ * `statement` (U-94, document-drafts-statement-v1) is a label only: a vendor
+ * statement (accounts payable: the vendor's list of bills, credits and
+ * payments) a client filed for the owner to review. It never converts
  * or attaches (400 INVALID_KIND); change its kind first.
  */
 export const DOCUMENT_DRAFT_KINDS = ['bill', 'card_charge', 'check', 'cash_expense', 'unknown', 'statement'] as const;

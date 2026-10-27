@@ -88,15 +88,15 @@ const NOW_MS = sql`date_trunc('milliseconds', clock_timestamp())`;
 
 /**
  * The permission resource of a kind; `unknown` is a bill until the reader
- * says otherwise. A `statement` (U-94) belongs with the bank and card
- * registers: transactions.
+ * says otherwise. A `statement` (U-94) is a vendor statement, accounts
+ * payable: bills.
  */
 export function resourceOfKind(kind: DocumentDraftKind): 'bills' | 'checks' | 'transactions' {
   switch (kind) {
     case 'check': return 'checks';
     case 'card_charge':
-    case 'cash_expense':
-    case 'statement': return 'transactions';
+    case 'cash_expense': return 'transactions';
+    case 'statement':
     default: return 'bills';
   }
 }
@@ -203,7 +203,7 @@ function assertNotStale(row: { updatedAt: Date }, expected: string): void {
  */
 function assertNotStatement(row: { kind: string }): void {
   if (row.kind === 'statement') {
-    throw AppError.badRequest('A statement can\'t be posted or attached. Change its kind first.', 'INVALID_KIND');
+    throw AppError.badRequest('A vendor statement can\'t be posted or attached. Change its kind first.', 'INVALID_KIND');
   }
 }
 

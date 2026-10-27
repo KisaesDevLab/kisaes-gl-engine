@@ -538,13 +538,13 @@ describe('statement kind (U-94, document-drafts-statement-v1)', () => {
     expect(r3.status, JSON.stringify(r3.json)).toBe(201);
   });
 
-  it('a statement needs transactions permission, not bills', async () => {
-    const billsOnly = await bookkeeper({ bills: 'full' });
-    const up1 = await upload(docBytes('stmt-perm-1'));
-    expect((await call('POST', '/api/v1/document-drafts', { attachmentId: up1.attachmentId, kindHint: 'statement' }, { token: billsOnly.token })).status).toBe(403);
+  it('a vendor statement needs bills permission, not transactions', async () => {
     const txnsOnly = await bookkeeper({ transactions: 'full' });
+    const up1 = await upload(docBytes('stmt-perm-1'));
+    expect((await call('POST', '/api/v1/document-drafts', { attachmentId: up1.attachmentId, kindHint: 'statement' }, { token: txnsOnly.token })).status).toBe(403);
+    const billsOnly = await bookkeeper({ bills: 'full' });
     const up2 = await upload(docBytes('stmt-perm-2'));
-    expect((await call('POST', '/api/v1/document-drafts', { attachmentId: up2.attachmentId, kindHint: 'statement' }, { token: txnsOnly.token })).status).toBe(201);
+    expect((await call('POST', '/api/v1/document-drafts', { attachmentId: up2.attachmentId, kindHint: 'statement' }, { token: billsOnly.token })).status).toBe(201);
   });
 });
 
