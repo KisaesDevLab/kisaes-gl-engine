@@ -86,12 +86,17 @@ const TXN_REFERENCE_SQL = sql`CASE WHEN t.txn_type = 'bill' THEN t.vendor_invoic
 const NEXT_UPDATED_AT = (col: SQL) => sql`date_trunc('milliseconds', greatest(clock_timestamp(), ${col} + interval '1 millisecond'))`;
 const NOW_MS = sql`date_trunc('milliseconds', clock_timestamp())`;
 
-/** The permission resource of a kind; `unknown` is a bill until the reader says otherwise. */
+/**
+ * The permission resource of a kind; `unknown` is a bill until the reader
+ * says otherwise. A `statement` (U-94) is a vendor statement, accounts
+ * payable: bills.
+ */
 export function resourceOfKind(kind: DocumentDraftKind): 'bills' | 'checks' | 'transactions' {
   switch (kind) {
     case 'check': return 'checks';
     case 'card_charge':
     case 'cash_expense': return 'transactions';
+    case 'statement':
     default: return 'bills';
   }
 }
@@ -188,6 +193,17 @@ function assertNotStale(row: { updatedAt: Date }, expected: string): void {
       'STALE',
       { updatedAt: row.updatedAt.toISOString() },
     );
+  }
+}
+
+/**
+ * A `statement` draft is a label only (U-94): it neither converts nor
+ * attaches, whatever kind the request names. 400 INVALID_KIND, the convert
+ * route's kind error; change the draft's kind first.
+ */
+function assertNotStatement(row: { kind: string }): void {
+  if (row.kind === 'statement') {
+    throw AppError.badRequest('A vendor statement can\'t be posted or attached. Change its kind first.', 'INVALID_KIND');
   }
 }
 
@@ -533,6 +549,7 @@ export async function convert(
     if (!(await canKind(before.kind))) throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
     if (!isLive(before.status)) throw closed(before);
     assertNotStale(before, input.expectedUpdatedAt);
+    assertNotStatement(before);
     await claimAndRecord(tx, 'document_draft', before.id);
 
     const contactId = (body as { contactId?: string | null }).contactId ?? null;
@@ -710,6 +727,7 @@ export async function attach(
     if (!(await canKind(before.kind))) throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
     if (!isLive(before.status)) throw closed(before);
     assertNotStale(before, input.expectedUpdatedAt);
+    assertNotStatement(before);
     await claimAndRecord(tx, 'document_draft', before.id);
 
     const preHook = isTest() ? __documentDraftTestHooks.beforeTargetLock : undefined;

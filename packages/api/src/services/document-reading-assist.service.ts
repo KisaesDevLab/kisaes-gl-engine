@@ -152,6 +152,7 @@ const KIND_WORDS: Record<DocumentDraftKind, string> = {
   check: 'a check or a check stub',
   cash_expense: 'a cash purchase receipt',
   unknown: 'a vendor bill, invoice or receipt',
+  statement: 'a vendor statement (a vendor\'s list of bills, credits and payments)',
 };
 
 /**
