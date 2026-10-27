@@ -36976,6 +36976,56 @@
         ]
       }
     },
+    "/api/v1/practice/client-rules-overview/tenants/{tenantId}/exclusion": {
+      "put": {
+        "operationId": "put_api_v1_practice_client_rules_overview_tenants_by_tenantId_exclusion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenantId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "excluded": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "excluded"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "tags": [
+          "practice"
+        ]
+      }
+    },
     "/api/v1/practice/client-rules-overview/tenants/{tenantId}/mapping-options": {
       "get": {
         "operationId": "get_api_v1_practice_client_rules_overview_tenants_by_tenantId_mapping_options",

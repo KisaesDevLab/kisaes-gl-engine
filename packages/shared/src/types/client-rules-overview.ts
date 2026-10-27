@@ -62,13 +62,22 @@ export interface ClientRulesOverviewRow {
   overdueDocumentRequests: number;
   /** Portal questions sent to the client and not yet answered. */
   openQuestions: number;
+  /** True when the client is excluded from bulk rule posting
+   *  (tenants.practice_settings.excludeFromRulesOverview). Such a
+   *  client is hidden unless the query asks for excluded clients, and
+   *  the post endpoint refuses it. */
+  excluded: boolean;
   /** Set when this client's counts could not be computed. */
   error: string | null;
 }
 
 export interface ClientRulesOverviewResponse {
   data: ClientRulesOverviewRow[];
+  /** Clients in the listing (after search and the exclusion filter). */
   total: number;
+  /** Accessible clients (matching the search) that are excluded from
+   *  bulk posting — hidden when `includeExcluded` is false. */
+  excludedTotal: number;
   limit: number;
   offset: number;
 }
