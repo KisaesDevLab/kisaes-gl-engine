@@ -5,6 +5,20 @@
 import { afterAll } from 'vitest';
 import os from 'os';
 import path from 'path';
+import { resetProcessEnv } from './test-env.js';
+
+// Every test file shares one worker (singleFork). If an earlier file replaced
+// process.env with a plain object, Node no longer sees TZ assignments, and a
+// later file that sets its zone at the top (line-amount.test.ts) silently
+// runs in the runner's zone. Keep the native env object and copy any
+// replacement back into it. Test files should call resetProcessEnv instead.
+const envGlobal = globalThis as { __kisNativeProcessEnv?: NodeJS.ProcessEnv };
+envGlobal.__kisNativeProcessEnv ??= process.env;
+if (process.env !== envGlobal.__kisNativeProcessEnv) {
+  const replaced = { ...process.env };
+  process.env = envGlobal.__kisNativeProcessEnv;
+  resetProcessEnv(replaced);
+}
 
 // Use a separate test database to avoid wiping dev data
 process.env['DATABASE_URL'] = process.env['DATABASE_URL'] || 'postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test';
