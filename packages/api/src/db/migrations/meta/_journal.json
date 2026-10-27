@@ -1646,6 +1646,13 @@
       "when": 1785100014380,
       "tag": "0234_document_reading_consent",
       "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1785150014380,
+      "tag": "0235_release_voided_bill_payments",
+      "breakpoints": true
     }
   ]
 }
