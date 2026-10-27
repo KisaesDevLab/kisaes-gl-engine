@@ -44,4 +44,7 @@ regexes = [
   # closing-password test placeholder; neither is a secret.
   '''document-drafts-attach-v1''',
   '''closing-pass-u95''',
+  # U-94 (statement drafts): the capability name in route descriptions and
+  # openapi.json; not a secret.
+  '''document-drafts-statement-v1''',
 ]

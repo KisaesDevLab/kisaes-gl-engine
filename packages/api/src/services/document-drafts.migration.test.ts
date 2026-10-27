@@ -45,7 +45,10 @@ const tenantIds: string[] = [];
 const sha = () => crypto.randomBytes(32).toString('hex');
 
 afterAll(async () => {
-  if (!(await tableExists('document_drafts'))) await run('0233_document_drafts.sql');
+  if (!(await tableExists('document_drafts'))) {
+    await run('0233_document_drafts.sql');
+    await run('0235_document_drafts_statement_kind.sql');
+  }
   for (const id of tenantIds) {
     await db.delete(documentDrafts).where(eq(documentDrafts.tenantId, id));
     await db.delete(vendorLayoutTemplates).where(eq(vendorLayoutTemplates.tenantId, id));
@@ -70,6 +73,8 @@ describe('migration 0233 document drafts', () => {
     expect(await columnExists('accounts', 'card_last4')).toBe(false);
     await run('0233_document_drafts.sql');
     await run('0233_document_drafts.sql');
+    // Later migrations on the table (0235 statement kind, U-94) bring it back to head for the rest of the suite.
+    await run('0235_document_drafts_statement_kind.sql');
     expect(await tableExists('document_drafts')).toBe(true);
     expect(await columnExists('accounts', 'card_last4')).toBe(true);
     const idx = await db.execute(sql`SELECT indexname FROM pg_indexes WHERE tablename IN ('document_drafts', 'vendor_layout_templates') ORDER BY indexname`);

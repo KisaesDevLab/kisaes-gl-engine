@@ -8,6 +8,7 @@
 //   bill (and unknown)            -> bills
 //   check                         -> checks
 //   card_charge, cash_expense     -> transactions
+//   statement (label only, U-94)  -> transactions
 // Reading drafts and vendor layouts needs view access to any of the three.
 // The keyed routes (create, convert) check the kind named in the body here,
 // ahead of idempotent(), so a replay is checked too (the pattern of

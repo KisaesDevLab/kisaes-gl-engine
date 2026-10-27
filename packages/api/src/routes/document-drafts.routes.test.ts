@@ -491,6 +491,63 @@ describe('convert', () => {
   });
 });
 
+describe('statement kind (U-94, document-drafts-statement-v1)', () => {
+  it('advertises document-drafts-statement-v1', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('document-drafts-statement-v1');
+  });
+
+  it('a statement draft is claimed, stored, listed and filtered by kind', async () => {
+    const d = await newDraft('stmt', 'statement');
+    const r = await call('GET', `/api/v1/document-drafts/${d.draft.id}`);
+    expect(r.json.draft.kind).toBe('statement');
+    const rd = await ready(d.draft);
+    const list = await call('GET', '/api/v1/document-drafts?kind=statement&limit=200');
+    expect(list.status).toBe(200);
+    expect(list.json.drafts.map((x: { id: string }) => x.id)).toContain(rd.id);
+    expect(list.json.drafts.every((x: { kind: string }) => x.kind === 'statement')).toBe(true);
+    // PUT can set the label on another draft, and the database constraint takes it.
+    const other = await newDraft('stmt-put');
+    const p = await call('PUT', `/api/v1/document-drafts/${other.draft.id}`, { expectedUpdatedAt: other.draft.updatedAt, status: 'ready', kind: 'statement' });
+    expect(p.status, JSON.stringify(p.json)).toBe(200);
+    const [row] = await db.select().from(documentDrafts).where(eq(documentDrafts.id, other.draft.id));
+    expect(row!.kind).toBe('statement');
+  });
+
+  it('convert of a statement draft is 400 INVALID_KIND whatever kind the body names; nothing is written; after a kind change it converts', async () => {
+    const d = await newDraft('stmt-conv', 'statement');
+    const rd = await ready(d.draft);
+    const txns = await count(`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = $1`, c.tenantId);
+    const keys = await count(`SELECT count(*)::int AS n FROM idempotency_keys WHERE tenant_id = $1`, c.tenantId);
+    const r1 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, { kind: 'statement', body: {}, expectedUpdatedAt: rd.updatedAt });
+    expect(r1.status).toBe(400);
+    expect(r1.json.error.code).toBe('INVALID_KIND');
+    const r2 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`,
+      { kind: 'bill', body: billBody(c.vendor, '12.00'), expectedUpdatedAt: rd.updatedAt }, { key: key() });
+    expect(r2.status, JSON.stringify(r2.json)).toBe(400);
+    expect(r2.json.error.code).toBe('INVALID_KIND');
+    expect(await count(`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = $1`, c.tenantId)).toBe(txns);
+    expect(await count(`SELECT count(*)::int AS n FROM idempotency_keys WHERE tenant_id = $1`, c.tenantId)).toBe(keys);
+    const [row] = await db.select().from(documentDrafts).where(eq(documentDrafts.id, d.draft.id));
+    expect(row!.status).toBe('ready');
+    expect(row!.kind).toBe('statement');
+
+    const asBill = await call('PUT', `/api/v1/document-drafts/${d.draft.id}`, { expectedUpdatedAt: rd.updatedAt, status: 'ready', kind: 'bill' });
+    expect(asBill.status).toBe(200);
+    const r3 = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`,
+      { kind: 'bill', body: billBody(c.vendor, '12.00'), expectedUpdatedAt: asBill.json.draft.updatedAt });
+    expect(r3.status, JSON.stringify(r3.json)).toBe(201);
+  });
+
+  it('a statement needs transactions permission, not bills', async () => {
+    const billsOnly = await bookkeeper({ bills: 'full' });
+    const up1 = await upload(docBytes('stmt-perm-1'));
+    expect((await call('POST', '/api/v1/document-drafts', { attachmentId: up1.attachmentId, kindHint: 'statement' }, { token: billsOnly.token })).status).toBe(403);
+    const txnsOnly = await bookkeeper({ transactions: 'full' });
+    const up2 = await upload(docBytes('stmt-perm-2'));
+    expect((await call('POST', '/api/v1/document-drafts', { attachmentId: up2.attachmentId, kindHint: 'statement' }, { token: txnsOnly.token })).status).toBe(201);
+  });
+});
+
 describe('permissions (by kind, before the replay)', () => {
   it('reading needs any of bills, checks, transactions; creating and converting need the kind\'s', async () => {
     const none = await bookkeeper({ invoices: 'full' });
