@@ -160,8 +160,14 @@ describe('U-93: GET and PUT', () => {
     expect(p2.status, p2.raw).toBe(200);
     expect(p2.json.folders).toEqual([f2]);
     expect(Date.parse(p2.json.updatedAt)).toBeGreaterThan(Date.parse(p.json.updatedAt));
+    // A folder of vendor statements (U-94) is stored and read back.
+    const fs = folder(3, { defaultKind: 'statements' });
+    const ps = await send('PUT', URL, c.ownerToken, { folders: [f2, fs], expectedUpdatedAt: p2.json.updatedAt }, A());
+    expect(ps.status, ps.raw).toBe(200);
+    expect(ps.json.folders).toEqual([f2, fs]);
+    expect((await send('GET', URL, c.ownerToken, undefined, A())).json.folders).toEqual([f2, fs]);
     // Emptying the list is a replace too.
-    const p3 = await send('PUT', URL, c.ownerToken, { folders: [], expectedUpdatedAt: p2.json.updatedAt }, A());
+    const p3 = await send('PUT', URL, c.ownerToken, { folders: [], expectedUpdatedAt: ps.json.updatedAt }, A());
     expect(p3.status).toBe(200);
     expect(p3.json.folders).toEqual([]);
   });

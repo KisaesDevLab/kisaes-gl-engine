@@ -15,7 +15,8 @@ import { z } from 'zod';
 export const INTAKE_FOLDERS_MAX = 20;
 export const INTAKE_FOLDER_NAME_MAX = 100;
 export const INTAKE_FOLDER_PATH_MAX = 1024;
-export const INTAKE_KINDS = ['bills', 'receipts', 'auto'] as const;
+/** `statements` (U-94, document-drafts-statement-v1): a folder of vendor statements. */
+export const INTAKE_KINDS = ['bills', 'receipts', 'auto', 'statements'] as const;
 
 /** The column default: no folders, never saved. */
 export const INTAKE_SETTINGS_DEFAULT_JSON = '{"version":1,"folders":[],"updatedAt":null}';

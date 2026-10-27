@@ -1650,8 +1650,15 @@
     {
       "idx": 235,
       "version": "7",
-      "when": 1785150014380,
-      "tag": "0235_release_voided_bill_payments",
+      "when": 1785200014380,
+      "tag": "0235_document_drafts_statement_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 236,
+      "version": "7",
+      "when": 1785300014380,
+      "tag": "0236_release_voided_bill_payments",
       "breakpoints": true
     }
   ]
