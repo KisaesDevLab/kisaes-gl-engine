@@ -626,7 +626,10 @@ export async function paymentsPostedWith(tenantId: string, firstPaymentId: strin
     .where(and(
       eq(transactions.tenantId, tenantId),
       eq(transactions.txnType, 'bill_payment'),
-      first.createdAt ? eq(transactions.createdAt, first.createdAt) : eq(transactions.id, first.id),
+      // Compared in the database: a JS Date drops created_at's microseconds.
+      first.createdAt
+        ? sql`${transactions.createdAt} = (SELECT f.created_at FROM transactions f WHERE f.tenant_id = ${tenantId} AND f.id = ${first.id})`
+        : eq(transactions.id, first.id),
       first.companyId ? eq(transactions.companyId, first.companyId) : sql`${transactions.companyId} IS NULL`,
     ))
     .orderBy(sql`${transactions.checkNumber} ASC NULLS LAST`, transactions.id);
