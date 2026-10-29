@@ -112,6 +112,7 @@ export const DESKTOP_KEPT: readonly string[] = [
   '/api/v1/reports', '/api/v1/banking', '/api/v1/dashboard', '/api/v1/ledger-version', '/api/v1/attachments',
   '/api/v1/recurring', '/api/v1/templates', '/api/v1/batch', '/api/v1/daily-sales', '/api/v1/je-templates', '/api/v1/items',
   '/api/v1/payments', '/api/v1/checks', '/api/v1/check-signatures', '/api/v1/duplicates', '/api/v1/budgets',
+  '/api/v1/document-numbers', '/api/v1/forms',
   '/api/v1/export', '/api/v1/downloads', '/api/v1/audit-log', '/api/v1/payroll-import', '/api/v1/imports',
   '/api/v1/extractions', '/api/v1/knowledge', '/api/v1/feature-flags', '/api/v1/tb', '/api/v1/tax-estimator',
   // AI with the owner's own key or a local model (online only when configured).
