@@ -109,6 +109,21 @@ export const stepUpSchema = z.object({
   totpCode: z.string().regex(/^\d{6}$/).optional(),
 }).refine((v) => v.password || v.totpCode, { message: 'Password or authenticator code required' });
 
+// Check stock formats a per-bank-account layout may name (U-109): the
+// engine's own layouts plus 'standard' (a check with no stub, for clients
+// that render checks themselves; the engine PDF does not draw it).
+export const CHECK_ACCOUNT_FORMAT_VALUES = [...CHECK_LAYOUT_VALUES, 'standard'] as const;
+
+// Check style for one bank account's check stock (U-109,
+// check-reprint-audit-v1). Alignment is not per bank account: it belongs to
+// the printer (kept by the client) or the company alignmentOffsetX/Y below.
+// printCompanyBlock: print the logo and company name/address on this
+// account's checks (default false).
+export const checkLayoutSchema = z.object({
+  format: z.enum(CHECK_ACCOUNT_FORMAT_VALUES),
+  printCompanyBlock: z.boolean().default(false),
+}).strict();
+
 export const checkSettingsSchema = z.object({
   format: z.enum(CHECK_LAYOUT_VALUES).optional(),
   bankName: z.string().optional(),
@@ -134,4 +149,8 @@ export const checkSettingsSchema = z.object({
   nextCheckNumber: z.number().int().min(1).optional(),
   nextCheckNumbers: z.record(z.string(), z.number().int().min(1)).optional(),
   defaultBankAccountId: z.string().uuid().nullish(),
+  // Per bank account layout (U-109), keyed by the bank GL account id. Sent:
+  // replaces the whole map ({} clears it). An account without an entry
+  // falls back to the company format.
+  layouts: z.record(z.string().uuid(), checkLayoutSchema).optional(),
 });

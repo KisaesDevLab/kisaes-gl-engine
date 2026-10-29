@@ -667,7 +667,30 @@ export async function getBillPayment(tenantId: string, paymentId: string, compan
   const creditApps = await db.select().from(vendorCreditApplications)
     .where(and(eq(vendorCreditApplications.tenantId, tenantId), eq(vendorCreditApplications.paymentId, paymentId)));
 
-  return { ...txn, billApplications: billApps, creditApplications: creditApps };
+  // U-108 (voucher stubs): each application carries the document it applies
+  // — `bill` on a bill application, `credit` (the vendor credit) on a credit
+  // application — with its number, vendor invoice number, date and total
+  // (a decimal string). Null when the document is gone.
+  const docIds = [...new Set([...billApps.map((a) => a.billId), ...creditApps.map((a) => a.creditId)])];
+  const docs = docIds.length === 0 ? [] : await db.select({
+    id: transactions.id,
+    txnNumber: transactions.txnNumber,
+    vendorInvoiceNumber: transactions.vendorInvoiceNumber,
+    txnDate: transactions.txnDate,
+    total: transactions.total,
+  }).from(transactions).where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, docIds)));
+  const docById = new Map(docs.map((d) => [d.id, {
+    txnNumber: d.txnNumber ?? null,
+    vendorInvoiceNumber: d.vendorInvoiceNumber ?? null,
+    txnDate: d.txnDate,
+    total: d.total ?? null,
+  }]));
+
+  return {
+    ...txn,
+    billApplications: billApps.map((a) => ({ ...a, bill: docById.get(a.billId) ?? null })),
+    creditApplications: creditApps.map((a) => ({ ...a, credit: docById.get(a.creditId) ?? null })),
+  };
 }
 
 export async function listBillPayments(tenantId: string, filters: {

@@ -209,4 +209,20 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * pays cash in response order, the bank account's counter moved past the last; 409 CHECK_NUMBER_IN_USE (U-103).
    */
   'bill-payment-check-number-v1',
+  /**
+   * Check printing (U-106..U-109). POST /checks/requeue and /checks/reprint/:batchId clear each check's number, record
+   * it as spoiled on the check's bank account (GET /checks/spoiled?bank_account_id=; also PUT /checks/:id sending a
+   * numbered check back to the queue) and write one audit row per check with the before state; they return
+   * {message, checks: [{id, spoiledCheckNumber, bankAccountId}]} and never void the payment. A spoiled number is
+   * listed only; it may be used again. Company scope on requeue (404), reprint (404), print (404; 400
+   * CHECK_NOT_ON_BANK_ACCOUNT for a check drawn on another account) and the print counter; a taken number in the print
+   * range is 409 CHECK_NUMBER_IN_USE. GET /checks/print-queue rows add txnType, bankAccountId and payeeAddress
+   * (string[] mailing rows). GET /bill-payments/:id applications add `bill` / `credit` {txnNumber,
+   * vendorInvoiceNumber, txnDate, total}. checkSettings.layouts[bankAccountId] = {format (voucher | check_middle |
+   * z_fold | standard), printCompanyBlock (default false)}; GET /checks/settings?bank_account_id= adds `layout`
+   * {format, printCompanyBlock, source 'bank_account' | 'company'}. Migration 0239.
+   */
+  'check-reprint-audit-v1',
+  /** GET /api/v1/company/logo: the company's uploaded logo bytes with its image Content-Type; 404 when none (U-110). */
+  'company-logo-v1',
 ];

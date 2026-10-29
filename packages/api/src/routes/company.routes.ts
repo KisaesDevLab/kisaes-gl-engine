@@ -7,6 +7,7 @@ import { z } from 'zod';
 import multer from 'multer';
 import path from 'path';
 import crypto from 'crypto';
+import { promises as fsp } from 'fs';
 import {
   updateCompanySchema,
   updateCompanySettingsSchema,
@@ -141,6 +142,40 @@ companyRouter.post('/logo', requireCompanySettingsWrite, upload.single('logo'), 
   const logoUrl = `/uploads/logos/${req.file.filename}`;
   const company = await companyService.updateLogo(req.tenantId, req.companyId, logoUrl, req.userId);
   res.json({ company });
+});
+
+// The stored logo's bytes (U-110, company-logo-v1), for clients that print
+// forms themselves and do not serve /uploads. Only a logo uploaded through
+// POST /company/logo is served: logoUrl must be /uploads/logos/<uuid>.<png|jpg|webp>
+// (the invoice template can store any string there); anything else, or a
+// missing file, is 404.
+const LOGO_URL_RE = /^\/uploads\/logos\/([0-9a-f-]{36})\.(png|jpg|webp)$/i;
+const LOGO_EXT_TO_MIME: Record<string, string> = Object.fromEntries(
+  Object.entries(LOGO_MIME_TO_EXT).map(([mime, ext]) => [ext.slice(1), mime]),
+);
+
+companyRouter.get('/logo', describe({
+  summary: "The company's uploaded logo image (company-logo-v1)",
+  description: 'Streams the bytes with Content-Type image/png, image/jpeg or image/webp; 404 when the company has no uploaded logo.',
+}), async (req, res) => {
+  const company = await companyService.getCompany(req.tenantId, req.companyId);
+  const m = LOGO_URL_RE.exec(company.logoUrl ?? '');
+  if (!m) throw AppError.notFound('This company has no logo');
+  const ext = m[2]!.toLowerCase();
+  const dir = path.resolve(env.UPLOAD_DIR, 'logos');
+  const file = path.join(dir, `${m[1]!.toLowerCase()}.${ext}`);
+  if (path.dirname(file) !== dir) throw AppError.notFound('This company has no logo');
+  let bytes: Buffer;
+  try {
+    bytes = await fsp.readFile(file);
+  } catch {
+    throw AppError.notFound('This company has no logo');
+  }
+  res.setHeader('Content-Type', LOGO_EXT_TO_MIME[ext] ?? 'application/octet-stream');
+  res.setHeader('Content-Length', String(bytes.length));
+  res.setHeader('Cache-Control', 'private, no-cache');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.send(bytes);
 });
 
 // Equity roles (U-55, equity-roles-v1): the company's entity type and, per

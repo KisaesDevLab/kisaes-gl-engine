@@ -25,6 +25,7 @@ import { companies, contacts, transactions, billPaymentApplications, vendorCredi
 import { AppError } from '../utils/errors.js';
 import { layoutMicrLine, drawMicrLine } from './check-micr.js';
 import { signatureApplies } from './check-signature.service.js';
+import { addressLinesFromParts, addressLinesFromText } from './check-address.js';
 
 // ── Data gathering (unchanged semantics from the HTML renderer) ───
 
@@ -108,11 +109,7 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
   // primary source; a freeform txn.payeeAddress is a fallback only.
   const payeeAddressLines: string[] = [];
   const pushAddr = (line1: string | null, line2: string | null, city: string | null, state: string | null, zip: string | null) => {
-    if (line1) payeeAddressLines.push(line1);
-    if (line2) payeeAddressLines.push(line2);
-    const cityState = [city, state].filter(Boolean).join(', ');
-    const cityStateZip = [cityState, zip].filter(Boolean).join(' ');
-    if (cityStateZip) payeeAddressLines.push(cityStateZip);
+    payeeAddressLines.push(...addressLinesFromParts(line1, line2, city, state, zip));
   };
   let billPaymentBills: BillPaymentStubLine[] | undefined;
   let billPaymentCredits: VendorCreditStubLine[] | undefined;
@@ -181,7 +178,7 @@ async function gatherCheckData(tenantId: string, checkId: string): Promise<Check
   // Fallback for non-bill-payment checks (or vendors without a structured
   // billing address): the freeform txn.payeeAddress, split on newlines.
   if (payeeAddressLines.length === 0 && txn.payeeAddress) {
-    for (const l of String(txn.payeeAddress).split('\n').map((s) => s.trim()).filter(Boolean)) payeeAddressLines.push(l);
+    payeeAddressLines.push(...addressLinesFromText(txn.payeeAddress));
   }
 
   return {
