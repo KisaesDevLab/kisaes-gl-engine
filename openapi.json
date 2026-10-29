@@ -17239,7 +17239,7 @@
     },
     "/api/v1/bill-payments/{id}": {
       "get": {
-        "description": "Response {payment} with billApplications (amount = cash, discountAmount) and creditApplications. A payment of another company is 404 (U-104).",
+        "description": "Response {payment} with billApplications (amount = cash, discountAmount) and creditApplications. Each bill application carries `bill` and each credit application `credit` (the vendor credit): {txnNumber, vendorInvoiceNumber, txnDate, total (decimal string)} or null (U-108, check-reprint-audit-v1). A payment of another company is 404 (U-104).",
         "operationId": "get_api_v1_bill_payments_by_id",
         "parameters": [
           {
@@ -20018,7 +20018,7 @@
     },
     "/api/v1/checks/print": {
       "post": {
-        "description": "A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
+        "description": "Every check must be a queued check of this company (404) drawn on bankAccountId (400 CHECK_NOT_ON_BANK_ACCOUNT); a number in the range held by another check on the account is 409 CHECK_NUMBER_IN_USE (details.checkNumber) (check-reprint-audit-v1). A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_print",
         "requestBody": {
           "content": {
@@ -20096,7 +20096,124 @@
     "/api/v1/checks/print-queue": {
       "get": {
         "operationId": "get_api_v1_checks_print_queue",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "bank_account_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "amount": {
+                            "description": "decimal string",
+                            "type": "string"
+                          },
+                          "bankAccountId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "the bank account the check is drawn on"
+                          },
+                          "contactName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "memo": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "payeeAddress": {
+                            "description": "mailing rows (street / street 2 / \"City, ST ZIP\"): a bill payment uses the vendor billing address, else the check's typed address; a written check uses its typed address, else the payee contact billing address; [] when none",
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "payeeNameOnCheck": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "printedMemo": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "source": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnDate": {
+                            "type": "string"
+                          },
+                          "txnType": {
+                            "description": "'expense' (a written check) or 'bill_payment'",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "txnDate",
+                          "amount",
+                          "memo",
+                          "payeeNameOnCheck",
+                          "printedMemo",
+                          "contactName",
+                          "createdAt",
+                          "source",
+                          "txnType",
+                          "bankAccountId",
+                          "payeeAddress"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -20109,6 +20226,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Checks waiting to print (check-reprint-audit-v1 adds txnType, bankAccountId, payeeAddress)",
         "tags": [
           "checks"
         ]
@@ -20180,7 +20298,7 @@
     },
     "/api/v1/checks/reprint/{batchId}": {
       "post": {
-        "description": "A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
+        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). 404 when the batch has no check in this company (or was already sent back). A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_reprint_by_batchId",
         "parameters": [
           {
@@ -20188,6 +20306,7 @@
             "name": "batchId",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -20210,6 +20329,66 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "checks": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "bankAccountId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "spoiledCheckNumber": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "the number the check carried, now spoiled; null when it had none"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "spoiledCheckNumber",
+                          "bankAccountId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "checks"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -20222,7 +20401,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Return a printed batch to the print queue",
+        "summary": "Return a printed batch to the print queue (numbers spoiled, payments kept)",
         "tags": [
           "checks"
         ]
@@ -20230,7 +20409,7 @@
     },
     "/api/v1/checks/requeue": {
       "post": {
-        "description": "A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
+        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). Every id must be a check of this company (404, nothing changes); a void check is 400 CHECK_VOID. A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_requeue",
         "requestBody": {
           "content": {
@@ -20260,6 +20439,66 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "checks": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "bankAccountId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "spoiledCheckNumber": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "the number the check carried, now spoiled; null when it had none"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "spoiledCheckNumber",
+                          "bankAccountId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "checks"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -20272,7 +20511,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Return checks to the print queue (number and print stamp cleared)",
+        "summary": "Return checks to the print queue (number and print stamp cleared, number spoiled)",
         "tags": [
           "checks"
         ]
@@ -20281,7 +20520,68 @@
     "/api/v1/checks/settings": {
       "get": {
         "operationId": "get_api_v1_checks_settings",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "bank_account_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "format": {
+                          "enum": [
+                            "voucher",
+                            "check_middle",
+                            "z_fold",
+                            "standard"
+                          ],
+                          "type": "string"
+                        },
+                        "printCompanyBlock": {
+                          "type": "boolean"
+                        },
+                        "source": {
+                          "enum": [
+                            "bank_account",
+                            "company"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "format",
+                        "printCompanyBlock",
+                        "source"
+                      ],
+                      "type": "object"
+                    },
+                    "settings": {
+                      "additionalProperties": {},
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "settings"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -20294,11 +20594,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Check settings; with bank_account_id also the resolved layout for that account (U-109)",
         "tags": [
           "checks"
         ]
       },
       "put": {
+        "description": "layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)}}; keys must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR.",
         "operationId": "put_api_v1_checks_settings",
         "requestBody": {
           "content": {
@@ -20342,6 +20644,34 @@
                   },
                   "fractionalRouting": {
                     "type": "string"
+                  },
+                  "layouts": {
+                    "additionalProperties": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "format": {
+                          "enum": [
+                            "voucher",
+                            "check_middle",
+                            "z_fold",
+                            "standard"
+                          ],
+                          "type": "string"
+                        },
+                        "printCompanyBlock": {
+                          "default": false,
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "format"
+                      ],
+                      "type": "object"
+                    },
+                    "propertyNames": {
+                      "format": "uuid"
+                    },
+                    "type": "object"
                   },
                   "nextCheckNumber": {
                     "minimum": 1,
@@ -20417,6 +20747,123 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Update check settings (shallow merge; a sent `layouts` map replaces the stored one)",
+        "tags": [
+          "checks"
+        ]
+      }
+    },
+    "/api/v1/checks/spoiled": {
+      "get": {
+        "operationId": "get_api_v1_checks_spoiled",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "bank_account_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "bankAccountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "checkId": {
+                            "description": "the check that carried the number (it is back in the queue or reprinted under a new number)",
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "checkNumber": {
+                            "type": "integer"
+                          },
+                          "reason": {
+                            "enum": [
+                              "requeue",
+                              "reprint",
+                              "edit_reprint"
+                            ],
+                            "type": "string"
+                          },
+                          "spoiledAt": {
+                            "description": "ISO timestamp",
+                            "type": "string"
+                          },
+                          "spoiledBy": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "spoiledByName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnDate": {
+                            "description": "the check's date",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "checkNumber",
+                          "checkId",
+                          "bankAccountId",
+                          "reason",
+                          "spoiledAt",
+                          "spoiledBy",
+                          "spoiledByName",
+                          "txnDate"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Check numbers spoiled by reprints (check-reprint-audit-v1)",
         "tags": [
           "checks"
         ]
@@ -21766,6 +22213,27 @@
       }
     },
     "/api/v1/company/logo": {
+      "get": {
+        "description": "Streams the bytes with Content-Type image/png, image/jpeg or image/webp; 404 when the company has no uploaded logo.",
+        "operationId": "get_api_v1_company_logo",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The company's uploaded logo image (company-logo-v1)",
+        "tags": [
+          "company"
+        ]
+      },
       "post": {
         "operationId": "post_api_v1_company_logo",
         "responses": {
