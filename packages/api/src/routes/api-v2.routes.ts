@@ -357,7 +357,7 @@ apiV2Router.get('/bills', async (req, res) => {
 
 apiV2Router.get('/bills/payable', async (req, res) => {
   const query = payableBillsQuerySchema.parse(req.query);
-  const result = await billService.getPayableBills(req.tenantId, query);
+  const result = await billService.getPayableBills(req.tenantId, { ...query, companyId: req.companyId, companyIncludesNull: true });
   res.json(result);
 });
 
@@ -392,12 +392,13 @@ apiV2Router.get('/bill-payments', async (req, res) => {
     endDate: req.query['endDate'] as string | undefined,
     limit: req.query['limit'] ? Number(req.query['limit']) : undefined,
     offset: req.query['offset'] ? Number(req.query['offset']) : undefined,
+    companyId: req.companyId,
   });
   res.json({ data });
 });
 
 apiV2Router.get('/bill-payments/:id', async (req, res) => {
-  const payment = await billPaymentService.getBillPayment(req.tenantId, req.params['id']!);
+  const payment = await billPaymentService.getBillPayment(req.tenantId, req.params['id']!, req.companyId);
   res.json({ payment });
 });
 

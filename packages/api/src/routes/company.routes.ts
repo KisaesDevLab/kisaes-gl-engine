@@ -194,6 +194,7 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       defaultLineEntryMode: company.defaultLineEntryMode,
       lockDate: company.lockDate,
       chatSupportEnabled: company.chatSupportEnabled,
+      billDiscountAccountId: company.billDiscountAccountId ?? null,
     },
   });
 });

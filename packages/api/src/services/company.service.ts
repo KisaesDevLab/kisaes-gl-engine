@@ -12,6 +12,7 @@ import { auditLog } from '../middleware/audit.js';
 import { authorizeLockDateChange, withoutClosingPasswordHash, type ClosingPasswordActor } from './closing-password.service.js';
 import { isDesktop } from '../desktop/profile.js';
 import { hasSessionSecret } from '../desktop/session-secrets.js';
+import { assertBillDiscountAccount } from './bill-discount-account.js';
 
 /**
  * A company row as it leaves the service layer (responses, audit images):
@@ -95,6 +96,8 @@ const COMPANY_UPDATABLE_FIELDS = [
   'defaultLineEntryMode',
   'lockDate',
   'chatSupportEnabled',
+  // Pay Bills discount account (U-101); validated in updateCompany.
+  'billDiscountAccountId',
 ] as const;
 
 export async function updateCompany(
@@ -143,6 +146,11 @@ export async function updateCompany(
     if (lockChanges) {
       updates['lockDateSetBy'] = userId ?? null;
       updates['lockDateSetAt'] = new Date();
+    }
+    // Pay Bills discount account (U-101): an account of this company, not A/P.
+    const discountAccountId = updates['billDiscountAccountId'];
+    if (typeof discountAccountId === 'string') {
+      await assertBillDiscountAccount(tx, tenantId, companyId, discountAccountId);
     }
 
     const [row] = await tx
@@ -204,6 +212,7 @@ export async function getSettings(tenantId: string, companyId?: string) {
     defaultLineEntryMode: company.defaultLineEntryMode || 'category',
     lockDate: company.lockDate || null,
     chatSupportEnabled: company.chatSupportEnabled ?? false,
+    billDiscountAccountId: company.billDiscountAccountId ?? null,
   };
 }
 

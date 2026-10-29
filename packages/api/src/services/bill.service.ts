@@ -14,7 +14,7 @@ import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { addCalendarDays } from '../utils/calendar-date.js';
-import { lineAmountFromQuantity, parseQuantity, parseUnitPrice, fitsMoneyColumn, sameAmount, exactSum } from '../utils/line-amount.js';
+import { lineAmountFromQuantity, parseQuantity, parseUnitPrice, fitsMoneyColumn, sameAmount, exactSum, termsDiscountAmount } from '../utils/line-amount.js';
 import { assertLineContacts } from './line-contacts.service.js';
 import { relinkDraftAttachments } from './attachment.service.js';
 
@@ -802,7 +802,7 @@ export async function getVendorApSummary(tenantId: string, contactId: string, co
  */
 export async function getPayableBills(
   tenantId: string,
-  opts: { contactId?: string; dueOnOrBefore?: string; companyId?: string; companyIncludesNull?: boolean },
+  opts: { contactId?: string; dueOnOrBefore?: string; paymentDate?: string; companyId?: string; companyIncludesNull?: boolean },
 ) {
   const billConds = [
     eq(transactions.tenantId, tenantId),
@@ -817,15 +817,23 @@ export async function getPayableBills(
   // Company scope (portal callers). companyIncludesNull admits legacy
   // NULL-company bills — pass it only for single-company tenants, where
   // a NULL company is unambiguous.
-  if (opts.companyId) {
-    billConds.push(
-      opts.companyIncludesNull
+  // The staff routes (U-104) pass the request's company with
+  // companyIncludesNull, the rows payBills accepts (inOtherCompany).
+  // The same scope applies to the vendor credits below.
+  const companyCond = opts.companyId
+    ? (opts.companyIncludesNull
         ? sql`(${transactions.companyId} = ${opts.companyId} OR ${transactions.companyId} IS NULL)`
-        : eq(transactions.companyId, opts.companyId),
-    );
-  }
+        : eq(transactions.companyId, opts.companyId))
+    : null;
+  if (companyCond) billConds.push(companyCond);
+  // Early-payment discount available on the payment date (U-101,
+  // bill-discounts-v1): the bill's discount percent of its balance due,
+  // rounded to cents half away from zero, when the payment date is on or
+  // before the discount date; else 0.00. Without paymentDate the database's
+  // current date is used (as daysOverdue does).
+  const payDate = opts.paymentDate ? sql`${opts.paymentDate}::date` : sql`CURRENT_DATE`;
 
-  const bills = await db.select({
+  const billRows = await db.select({
     id: transactions.id,
     txnNumber: transactions.txnNumber,
     contactId: transactions.contactId,
@@ -842,11 +850,18 @@ export async function getPayableBills(
     billStatus: transactions.billStatus,
     paymentTerms: transactions.paymentTerms,
     memo: transactions.memo,
+    updatedAt: transactions.updatedAt,
     daysOverdue: sql<number>`CASE WHEN ${transactions.dueDate} < CURRENT_DATE THEN (CURRENT_DATE - ${transactions.dueDate}) ELSE 0 END::int`,
+    discountEligible: sql<boolean>`(${transactions.discountPercent} IS NOT NULL AND ${transactions.discountDate} IS NOT NULL AND ${payDate} <= ${transactions.discountDate})`,
   }).from(transactions)
     .leftJoin(contacts, eq(transactions.contactId, contacts.id))
     .where(and(...billConds))
     .orderBy(sql`${transactions.dueDate} ASC NULLS LAST`);
+
+  const bills = billRows.map(({ discountEligible, ...b }) => ({
+    ...b,
+    discountAvailable: discountEligible ? termsDiscountAmount(b.balanceDue || '0', b.discountPercent || '0') : '0.00',
+  }));
 
   // Pull vendor credits with available balance for the same vendors
   const vendorIds = [...new Set(bills.map((b) => b.contactId).filter((v): v is string => !!v))];
@@ -878,6 +893,7 @@ export async function getPayableBills(
         eq(transactions.status, 'posted'),
         sql`COALESCE(${transactions.balanceDue}, 0) > 0`,
         inArray(transactions.contactId, vendorIds),
+        ...(companyCond ? [companyCond] : []),
       ))
       .orderBy(sql`${transactions.txnDate} ASC`);
   }

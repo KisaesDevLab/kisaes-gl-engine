@@ -378,6 +378,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'closes.company_id': 'tenant-ref:companies',
   'closes.prepared_by': 'identity',
   'closes.reviewed_by': 'identity',
+  'companies.bill_discount_account_id': 'tenant-ref:accounts',
   'companies.lock_date_set_by': 'identity',
   'company_tax_profiles.company_id': 'tenant-ref:companies',
   'conditional_rule_audit.bank_feed_item_id': 'tenant-ref:bank_feed_items',

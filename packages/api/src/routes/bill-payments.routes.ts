@@ -26,6 +26,8 @@ const closingPasswordDoc = z.string().optional().describe('closing-date password
 const closedPeriodNote = 'A payment dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): ' +
   '423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1).';
 
+// Payments of the request's company (U-104); rows without a company are
+// included, as payBills accepts them.
 billPaymentsRouter.get('/', async (req, res) => {
   const data = await billPaymentService.listBillPayments(req.tenantId, {
     contactId: req.query['contactId'] as string | undefined,
@@ -33,27 +35,53 @@ billPaymentsRouter.get('/', async (req, res) => {
     endDate: req.query['endDate'] as string | undefined,
     limit: req.query['limit'] ? Number(req.query['limit']) : undefined,
     offset: req.query['offset'] ? Number(req.query['offset']) : undefined,
+    companyId: req.companyId,
   });
   res.json({ data });
 });
 
-billPaymentsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, validate(payBillsSchema), describe({
+const payRules = 'bills[].amount is the bill\'s coverage including the credits applied to it (cash = amount - credits). ' +
+  'bills[].discountAmount (bill-discounts-v1): early-payment discount, a decimal string >= 0 with at most 2 places, on top of amount; ' +
+  'amount + discountAmount must not exceed the balance due; amount may be 0 only with a discount. Discounts post to discountAccountId, ' +
+  'default the company setting billDiscountAccountId (GET/PUT /company/settings): none -> 400 DISCOUNT_ACCOUNT_REQUIRED; ' +
+  'an account of another company, inactive, A/P or the bank account -> 400 DISCOUNT_ACCOUNT_INVALID. Each vendor payment posts ' +
+  'DR A/P (amounts + discounts), CR bank (cash), CR A/P (credits), CR discount account (discounts). ' +
+  'checkNumber (bill-payment-check-number-v1): method check with printLater false only (else 400 VALIDATION_ERROR); each vendor payment ' +
+  'that pays cash takes the next number in the order of the response (a payment of credits and discounts only takes none), ' +
+  'printStatus hand_written; a number another live transaction on the bank account holds -> 409 CHECK_NUMBER_IN_USE (details.checkNumber); ' +
+  'the bank account\'s check counter moves past the last number (never back).';
+
+// Idempotency-Key (idempotency-pay-bills-v1, U-102): after the
+// closed-period middleware, before validation (bills.routes.ts order).
+// Replayed from the stored response; the reader rebuilds it from the
+// payments the request posted.
+billPaymentsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({
+    payments: await billPaymentService.paymentsPostedWith(req.tenantId, entity!.id, req.companyId),
+  }),
+}), validate(payBillsSchema), describe({
   summary: 'Pay bills',
-  description: `Response 201 {payments}. ${closedPeriodNote} Only posted bills and credits: otherwise 400 BILL_NOT_PAYABLE / CREDIT_NOT_AVAILABLE; ` +
-    'a bill not marked received is 409 BILL_NOT_RECEIVED (bill-received-v1). Amounts are compared exactly (no tolerance).',
+  description: `Response 201 {payments}: one payment per vendor, each with billsPaid, creditsApplied, netPayment (the cash) and discountTotal. ${closedPeriodNote} ` +
+    'Only posted bills and credits: otherwise 400 BILL_NOT_PAYABLE / CREDIT_NOT_AVAILABLE; ' +
+    'a bill not marked received is 409 BILL_NOT_RECEIVED (bill-received-v1). Amounts are compared exactly (no tolerance). ' + payRules,
   body: payBillsSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() }),
 }), async (req, res) => {
   const result = await billPaymentService.payBills(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json(result);
 });
 
-billPaymentsRouter.get('/:id', async (req, res) => {
-  const payment = await billPaymentService.getBillPayment(req.tenantId, req.params['id']!);
+billPaymentsRouter.get('/:id', describe({
+  summary: 'Get a bill payment',
+  description: 'Response {payment} with billApplications (amount = cash, discountAmount) and creditApplications. ' +
+    'A payment of another company is 404 (U-104).',
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
+  const payment = await billPaymentService.getBillPayment(req.tenantId, req.params['id']!, req.companyId);
   res.json({ payment });
 });
 
-// Idempotency-Key on void (idempotency-ap-v1). POST /bill-payments (Pay
-// Bills) is not keyed yet: it belongs to Pay Bills (P18).
+// Idempotency-Key on void (idempotency-ap-v1).
 billPaymentsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, idempotent({
   successStatus: 200,
   replay: async () => ({ voided: true }),

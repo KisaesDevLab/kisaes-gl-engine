@@ -33,6 +33,10 @@ export const companies = pgTable('companies', {
   dateFormat: varchar('date_format', { length: 20 }).default('MM/DD/YYYY'),
   categoryFilterMode: varchar('category_filter_mode', { length: 10 }).default('by_type'),
   defaultLineEntryMode: varchar('default_line_entry_mode', { length: 20 }).default('category'),
+  // Default account for early-payment discounts taken in Pay Bills (U-101,
+  // bill-discounts-v1; migration 0238). NULL = none: a discount then needs
+  // discountAccountId on the request.
+  billDiscountAccountId: uuid('bill_discount_account_id'),
   checkSettings: jsonb('check_settings').default('{"format":"voucher","bankName":"","bankAddress":"","routingNumber":"","accountNumber":"","fractionalRouting":"","printOnBlankStock":false,"printCompanyInfo":true,"printSignatureLine":true,"alignmentOffsetX":0,"alignmentOffsetY":0,"nextCheckNumber":1001,"defaultBankAccountId":null}'),
   smtpHost: varchar('smtp_host', { length: 255 }),
   smtpPort: integer('smtp_port').default(587),

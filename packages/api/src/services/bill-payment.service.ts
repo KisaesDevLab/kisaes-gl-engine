@@ -21,8 +21,10 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
-import { checkLockDate, auditLockOverride, assertAccountsInScope, assertNotStale, inOtherCompany, round4 } from './ledger.service.js';
+import { checkLockDate, auditLockOverride, assertAccountsInScope, assertNotStale, assertBalanced, inOtherCompany, round4 } from './ledger.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
+import { lockCheckCounter, assertCheckNumberRangeFree, advanceCheckCounterPast } from './check.service.js';
+import { assertBillDiscountAccount, companyBillDiscountAccountId } from './bill-discount-account.js';
 
 // Comparisons are exact (review S1): every amount is rounded to the
 // ledger's 4 places first (round4), so a payment may not exceed a balance
@@ -121,11 +123,14 @@ interface VendorPaymentGroup {
     billId: string;
     amount: Decimal;
     cashAmount: Decimal;
+    /** Early-payment discount taken on the bill (U-101), on top of amount. */
+    discountAmount: Decimal;
     bill: typeof transactions.$inferSelect;
   }>;
   vendorCredits: Array<{ creditId: string; billId: string; amount: Decimal }>;
   totalBills: Decimal;
   totalCredits: Decimal;
+  totalDiscount: Decimal;
   netPayment: Decimal;
 }
 
@@ -146,6 +151,19 @@ interface VendorPaymentGroup {
  * line on AP. We use the simpler form below: a single AP debit for the net
  * cash amount (bills - credits), since the credit's original journal entry
  * has already moved AP for the credit portion.
+ *
+ * Early-payment discounts (U-101, bill-discounts-v1): bills[].discountAmount
+ * settles that much more of the bill without cash. The AP debit grows by
+ * the discounts and a credit line on the discount account (discountAccountId,
+ * default the company's billDiscountAccountId) balances it; the bill's
+ * application row carries discount_amount, and is written even when the
+ * cash on the bill is 0 (credits + discount).
+ *
+ * Idempotency-Key (U-102, idempotency-pay-bills-v1): claimed on the posting
+ * transaction; the first payment is the recorded entity.
+ *
+ * checkNumber (U-103, bill-payment-check-number-v1): consecutive numbers,
+ * one per vendor payment that pays cash, in the order of the response.
  */
 export async function payBills(
   tenantId: string,
@@ -165,6 +183,13 @@ export async function payBills(
 ) {
   if (input.bills.length === 0) throw AppError.badRequest('Must select at least one bill to pay');
 
+  // U-103: a starting check number is for checks written now (not queued
+  // for printing, not already through the bank).
+  const firstCheckNumber = input.checkNumber !== undefined ? Number(input.checkNumber) : null;
+  if (firstCheckNumber !== null && (input.method !== 'check' || input.printLater !== false || origin?.alreadyCleared)) {
+    throw AppError.badRequest('checkNumber is only for method check with printLater false', 'VALIDATION_ERROR');
+  }
+
   const apAccountId = await getApAccountId(tenantId);
 
   // Load and validate all referenced bills + credits up front (outside the
@@ -174,6 +199,8 @@ export async function payBills(
   const creditIds = (input.credits || []).map((c) => c.creditId);
 
   return await db.transaction(async (tx) => {
+    // Idempotency-Key (U-102): claimed on this transaction; a no-op without one.
+    await claimIdempotency(tx);
     // Same guards postTransaction applies — this path posts to the GL
     // directly (header + lines + balances) and used to skip both,
     // letting a bill payment land in a locked prior year or credit a
@@ -248,11 +275,17 @@ export async function payBills(
         throw AppError.badRequest(`Bill ${billLine.billId} has no vendor`);
       }
       const amount = round4(billLine.amount);  // ledger scale first (U-65)
-      if (amount.lessThanOrEqualTo(0)) throw AppError.badRequest('Payment amount must be positive');
+      const discount = round4(billLine.discountAmount ?? '0');
+      if (discount.isNegative()) throw AppError.badRequest('Discount amount must not be negative', 'VALIDATION_ERROR');
+      // Amount 0 is allowed only with a discount (credits + discount, no cash).
+      if (amount.isNegative() || (amount.isZero() && discount.isZero())) {
+        throw AppError.badRequest('Payment amount must be positive');
+      }
       const balanceDue = new Decimal(bill.balanceDue || '0');
-      if (amount.minus(balanceDue).greaterThan(EPSILON)) {
-        throw AppError.badRequest(
-          `Payment amount ${amount.toFixed(2)} exceeds balance due ${balanceDue.toFixed(2)} on bill ${bill.txnNumber || bill.id}`,
+      if (amount.plus(discount).minus(balanceDue).greaterThan(EPSILON)) {
+        throw AppError.badRequest(discount.isZero()
+          ? `Payment amount ${amount.toFixed(2)} exceeds balance due ${balanceDue.toFixed(2)} on bill ${bill.txnNumber || bill.id}`
+          : `Payment amount ${amount.toFixed(2)} plus discount ${discount.toFixed(2)} exceeds balance due ${balanceDue.toFixed(2)} on bill ${bill.txnNumber || bill.id}`,
         );
       }
 
@@ -262,10 +295,12 @@ export async function payBills(
         vendorCredits: [],
         totalBills: new Decimal('0'),
         totalCredits: new Decimal('0'),
+        totalDiscount: new Decimal('0'),
         netPayment: new Decimal('0'),
       };
-      grp.vendorBills.push({ billId: bill.id, amount, cashAmount: amount, bill });
+      grp.vendorBills.push({ billId: bill.id, amount, cashAmount: amount, discountAmount: discount, bill });
       grp.totalBills = grp.totalBills.plus(amount);
+      grp.totalDiscount = grp.totalDiscount.plus(discount);
       groups.set(bill.contactId, grp);
     }
 
@@ -325,6 +360,35 @@ export async function payBills(
       }
     }
 
+    // Discount account (U-101): the request's, else the company default.
+    const anyDiscount = [...groups.values()].some((g) => g.totalDiscount.greaterThan(0));
+    let discountAccountId: string | null = null;
+    if (anyDiscount) {
+      discountAccountId = input.discountAccountId ?? await companyBillDiscountAccountId(tx, tenantId, companyId);
+      if (!discountAccountId) {
+        throw AppError.badRequest(
+          'Choose the account for early-payment discounts, or set a default discount account in company settings.',
+          'DISCOUNT_ACCOUNT_REQUIRED',
+        );
+      }
+      await assertBillDiscountAccount(tx, tenantId, companyId, discountAccountId, input.bankAccountId);
+    }
+
+    // Check numbers (U-103): one per vendor payment that pays cash, in
+    // vendor order. The counter row is locked first so a concurrent save of
+    // the same numbers waits, then sees these and is refused.
+    const checkNumberFor = new Map<string, number>();
+    let lastCheckNumber: number | null = null;
+    if (firstCheckNumber !== null) {
+      const cashGroups = [...groups.values()].filter((g) => g.netPayment.greaterThan(0));
+      if (cashGroups.length > 0) {
+        lastCheckNumber = firstCheckNumber + cashGroups.length - 1;
+        await lockCheckCounter(tx, tenantId, companyId);
+        await assertCheckNumberRangeFree(tx, tenantId, input.bankAccountId, firstCheckNumber, lastCheckNumber);
+        cashGroups.forEach((g, i) => checkNumberFor.set(g.vendorId, firstCheckNumber + i));
+      }
+    }
+
     // Create one bill_payment transaction per vendor
     const createdPayments: Array<{
       payment: typeof transactions.$inferSelect;
@@ -356,9 +420,10 @@ export async function payBills(
       // Equivalent simpler form (when no credits): DR AP total, CR Bank total.
       const lines: Array<{ accountId: string; debit: string; credit: string; description?: string }> = [];
 
+      // The discounts settle A/P too (U-101): DR A/P amounts + discounts.
       lines.push({
         accountId: apAccountId,
-        debit: grp.totalBills.toFixed(4),
+        debit: grp.totalBills.plus(grp.totalDiscount).toFixed(4),
         credit: '0',
         description: 'Bill payment',
       });
@@ -381,12 +446,17 @@ export async function payBills(
         });
       }
 
-      // Sanity: debits == credits (Decimal — no IEEE754 slop)
-      const debits = lines.reduce((s, l) => s.plus(l.debit), new Decimal('0'));
-      const credits = lines.reduce((s, l) => s.plus(l.credit), new Decimal('0'));
-      if (debits.minus(credits).abs().greaterThan(EPSILON)) {
-        throw AppError.internal('Bill payment journal does not balance');
+      if (grp.totalDiscount.greaterThan(0)) {
+        lines.push({
+          accountId: discountAccountId!,
+          debit: '0',
+          credit: grp.totalDiscount.toFixed(4),
+          description: 'Early-payment discount',
+        });
       }
+
+      // Debits == credits exactly at the stored scale (U-65).
+      assertBalanced(lines);
 
       // Determine check number / print status
       let checkNumber: number | null = null;
@@ -402,6 +472,10 @@ export async function payBills(
       if (paysByCheck) {
         if (input.method === 'check_handwritten') {
           checkNumber = await allocateCheckNumber(tenantId);
+          printStatus = 'hand_written';
+        } else if (checkNumberFor.has(grp.vendorId)) {
+          // Numbered now (U-103), like a hand-written check from Write Checks.
+          checkNumber = checkNumberFor.get(grp.vendorId)!;
           printStatus = 'hand_written';
         } else if (input.printLater !== false) {
           // Default: queue for printing
@@ -438,6 +512,7 @@ export async function payBills(
         sourceId: origin?.sourceId ?? null,
       }).returning();
       if (!payment) throw AppError.internal('Failed to create bill payment');
+      await recordIdempotentEntity(tx, 'transaction', payment.id);
 
       // Insert journal lines
       const lineValues = lines.map((l, i) => ({
@@ -468,16 +543,18 @@ export async function payBills(
       // bill's payment (not the user-entered total coverage), so that
       // bill.amount_paid represents only the cash that flowed against the
       // bill — credits are tracked separately in vendor_credit_applications.
-      // Skip bills whose cash portion is zero (credits cover the entire bill);
-      // the schema's CHECK (amount > 0) constraint would reject them and
-      // recomputeBillStatus reads from both tables anyway.
-      const cashApps = grp.vendorBills.filter((b) => b.cashAmount.greaterThan(0));
-      if (cashApps.length > 0) {
-        await tx.insert(billPaymentApplications).values(cashApps.map((b) => ({
+      // Skip bills with neither cash nor discount (credits cover the entire
+      // bill): CHECK (amount >= 0 AND amount + discount_amount > 0) would
+      // reject them and recomputeBillStatus reads from both tables anyway.
+      // A bill with a discount keeps its row even at cash 0 (U-101).
+      const billApps = grp.vendorBills.filter((b) => b.cashAmount.greaterThan(0) || b.discountAmount.greaterThan(0));
+      if (billApps.length > 0) {
+        await tx.insert(billPaymentApplications).values(billApps.map((b) => ({
           tenantId,
           paymentId: payment.id,
           billId: b.billId,
           amount: b.cashAmount.toFixed(4),
+          discountAmount: b.discountAmount.toFixed(4),
         })));
       }
 
@@ -508,6 +585,7 @@ export async function payBills(
         bills: grp.vendorBills.length,
         credits: grp.vendorCredits.length,
         net: grp.netPayment.toFixed(4),
+        ...(grp.totalDiscount.greaterThan(0) ? { discount: grp.totalDiscount.toFixed(4), discountAccountId } : {}),
         ...(origin ? { source: origin.source, sourceId: origin.sourceId } : {}),
       }, userId, tx);
       if (lockOverride) {
@@ -517,25 +595,72 @@ export async function payBills(
       createdPayments.push({ payment, group: grp });
     }
 
+    // The bank account's counter moves past the last number (never back).
+    if (lastCheckNumber !== null) {
+      await advanceCheckCounterPast(tx, tenantId, input.bankAccountId, lastCheckNumber, companyId);
+    }
+
     return {
       payments: createdPayments.map(({ payment, group }) => ({
         ...payment,
         billsPaid: group.vendorBills.length,
         creditsApplied: group.vendorCredits.length,
         netPayment: group.netPayment.toFixed(4),
+        discountTotal: group.totalDiscount.toFixed(4),
       })),
     };
   });
 }
 
-export async function getBillPayment(tenantId: string, paymentId: string) {
+/**
+ * The payments one payBills request posted, in the response shape, for an
+ * Idempotency-Key replay without a stored body (U-102): every bill payment
+ * of the tenant and company created in the same database transaction as
+ * `firstPaymentId` (one created_at), ordered by check number, then id.
+ */
+export async function paymentsPostedWith(tenantId: string, firstPaymentId: string, companyId?: string) {
+  const [first] = await db.select().from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, firstPaymentId), eq(transactions.txnType, 'bill_payment')));
+  if (!first || inOtherCompany(first, companyId)) throw AppError.notFound('Bill payment not found');
+  const rows = await db.select().from(transactions)
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.txnType, 'bill_payment'),
+      // Compared in the database: a JS Date drops created_at's microseconds.
+      first.createdAt
+        ? sql`${transactions.createdAt} = (SELECT f.created_at FROM transactions f WHERE f.tenant_id = ${tenantId} AND f.id = ${first.id})`
+        : eq(transactions.id, first.id),
+      first.companyId ? eq(transactions.companyId, first.companyId) : sql`${transactions.companyId} IS NULL`,
+    ))
+    .orderBy(sql`${transactions.checkNumber} ASC NULLS LAST`, transactions.id);
+  const ids = rows.map((r) => r.id);
+  const billApps = await db.select().from(billPaymentApplications)
+    .where(and(eq(billPaymentApplications.tenantId, tenantId), inArray(billPaymentApplications.paymentId, ids)));
+  const creditApps = await db.select().from(vendorCreditApplications)
+    .where(and(eq(vendorCreditApplications.tenantId, tenantId), inArray(vendorCreditApplications.paymentId, ids)));
+  return rows.map((p) => {
+    const mine = billApps.filter((a) => a.paymentId === p.id);
+    const myCredits = creditApps.filter((a) => a.paymentId === p.id);
+    const bills = new Set([...mine.map((a) => a.billId), ...myCredits.map((a) => a.billId)]);
+    return {
+      ...p,
+      billsPaid: bills.size,
+      creditsApplied: myCredits.length,
+      netPayment: new Decimal(p.total || '0').toFixed(4),
+      discountTotal: mine.reduce((s, a) => s.plus(a.discountAmount), new Decimal('0')).toFixed(4),
+    };
+  });
+}
+
+/** A bill payment with its applications; another company's is not found (U-104). */
+export async function getBillPayment(tenantId: string, paymentId: string, companyId?: string) {
   const [txn] = await db.select().from(transactions)
     .where(and(
       eq(transactions.tenantId, tenantId),
       eq(transactions.id, paymentId),
       eq(transactions.txnType, 'bill_payment'),
     ));
-  if (!txn) throw AppError.notFound('Bill payment not found');
+  if (!txn || inOtherCompany(txn, companyId)) throw AppError.notFound('Bill payment not found');
 
   const billApps = await db.select().from(billPaymentApplications)
     .where(and(eq(billPaymentApplications.tenantId, tenantId), eq(billPaymentApplications.paymentId, paymentId)));
@@ -551,11 +676,16 @@ export async function listBillPayments(tenantId: string, filters: {
   endDate?: string;
   limit?: number;
   offset?: number;
+  /** The request's company (U-104); rows without a company are included, as payBills accepts them. */
+  companyId?: string;
 }) {
   const conditions = [
     eq(transactions.tenantId, tenantId),
     eq(transactions.txnType, 'bill_payment'),
   ];
+  if (filters.companyId) {
+    conditions.push(sql`(${transactions.companyId} = ${filters.companyId} OR ${transactions.companyId} IS NULL)`);
+  }
   if (filters.contactId) conditions.push(eq(transactions.contactId, filters.contactId));
   if (filters.startDate) conditions.push(sql`${transactions.txnDate} >= ${filters.startDate}`);
   if (filters.endDate) conditions.push(sql`${transactions.txnDate} <= ${filters.endDate}`);
@@ -691,8 +821,9 @@ export async function voidBillPaymentInTx(
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
 
-    // Recompute touched bills
-    const touchedBillIds = [...new Set(billApps.map((b) => b.billId))];
+    // Recompute touched bills: those it paid (cash or discount) and those
+    // only its credits settled, which have no bill application row.
+    const touchedBillIds = [...new Set([...billApps.map((b) => b.billId), ...creditApps.map((c) => c.billId)])];
     for (const id of touchedBillIds) {
       await billService.recomputeBillStatus(tx, tenantId, id);
     }

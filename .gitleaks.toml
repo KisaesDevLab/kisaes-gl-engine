@@ -47,4 +47,9 @@ regexes = [
   # U-94 (statement drafts): the capability name in route descriptions and
   # openapi.json; not a secret.
   '''document-drafts-statement-v1''',
+  # U-101..U-103 (Pay Bills): capability names in route descriptions and
+  # openapi.json; not secrets.
+  '''bill-discounts-v1''',
+  '''idempotency-pay-bills-v1''',
+  '''bill-payment-check-number-v1''',
 ]
