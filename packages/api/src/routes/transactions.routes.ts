@@ -196,11 +196,19 @@ transactionsRouter.post('/', keyedCreate, describe({
       break;
     }
     case 'cash_sale':
-      result = await cashSaleService.createCashSale(req.tenantId, createCashSaleSchema.parse(body), req.userId, req.companyId);
+    {
+      const created = await cashSaleService.createCashSaleWithWarnings(req.tenantId, createCashSaleSchema.parse(body), req.userId, req.companyId);
+      result = created.transaction;
+      extra = { warnings: created.warnings };
       break;
+    }
     case 'credit_memo':
-      result = await creditMemoService.createCreditMemo(req.tenantId, createCreditMemoSchema.parse(body), req.userId, req.companyId);
+    {
+      const created = await creditMemoService.createCreditMemoWithWarnings(req.tenantId, createCreditMemoSchema.parse(body), req.userId, req.companyId);
+      result = created.transaction;
+      extra = { warnings: created.warnings };
       break;
+    }
     case 'customer_refund':
       result = await customerRefundService.createCustomerRefund(req.tenantId, createCustomerRefundSchema.parse(body), req.userId, req.companyId);
       break;
@@ -257,8 +265,11 @@ transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, descri
       return;
     }
     case 'cash_sale':
-      result = await cashSaleService.updateCashSale(req.tenantId, txnId, createCashSaleSchema.parse(body), req.userId, req.companyId);
-      break;
+    {
+      const updated = await cashSaleService.updateCashSaleWithWarnings(req.tenantId, txnId, createCashSaleSchema.parse(body), req.userId, req.companyId);
+      res.json({ transaction: updated.transaction, warnings: updated.warnings });
+      return;
+    }
     default:
       res.status(400).json({ error: { message: `Editing ${txnType} transactions is not supported` } });
       return;

@@ -307,12 +307,12 @@ apiV2Router.get('/invoices/:id', async (req, res) => {
 });
 
 apiV2Router.post('/invoices', async (req, res) => {
-  const invoice = await invoiceService.createInvoice(req.tenantId, createInvoiceSchema.parse(req.body), req.userId);
+  const invoice = await invoiceService.createInvoice(req.tenantId, createInvoiceSchema.parse(req.body), req.userId, req.companyId);
   res.status(201).json({ invoice });
 });
 
 apiV2Router.put('/invoices/:id', async (req, res) => {
-  const invoice = await invoiceService.updateInvoice(req.tenantId, req.params['id']!, createInvoiceSchema.parse(req.body), req.userId);
+  const invoice = await invoiceService.updateInvoice(req.tenantId, req.params['id']!, createInvoiceSchema.parse(req.body), req.userId, req.companyId);
   res.json({ invoice });
 });
 

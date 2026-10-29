@@ -31,8 +31,9 @@ invoicesRouter.post('/', idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ invoice: await ledger.getTransaction(req.tenantId, entity!.id) }),
 }), validate(createInvoiceSchema), async (req, res) => {
-  const invoice = await invoiceService.createInvoice(req.tenantId, req.body, req.userId, req.companyId);
-  res.status(201).json({ invoice });
+  // warnings (U-111): duplicate-number warnings of a warnOnly request; [] otherwise.
+  const { invoice, warnings } = await invoiceService.createInvoiceWithWarnings(req.tenantId, req.body, req.userId, req.companyId);
+  res.status(201).json({ invoice, warnings });
 });
 
 invoicesRouter.get('/:id', async (req, res) => {
@@ -41,8 +42,8 @@ invoicesRouter.get('/:id', async (req, res) => {
 });
 
 invoicesRouter.put('/:id', validate(createInvoiceSchema), async (req, res) => {
-  const invoice = await invoiceService.updateInvoice(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
-  res.json({ invoice });
+  const { invoice, warnings } = await invoiceService.updateInvoiceWithWarnings(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
+  res.json({ invoice, warnings });
 });
 
 invoicesRouter.post('/:id/mark-sent', async (req, res) => {

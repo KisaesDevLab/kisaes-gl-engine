@@ -10,8 +10,20 @@ import { db } from '../db/index.js';
 import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
+import * as documentNumbers from './document-number.service.js';
 
 export async function createCreditMemo(tenantId: string, input: CreateCreditMemoInput, userId?: string, companyId?: string) {
+  return (await createCreditMemoWithWarnings(tenantId, input, userId, companyId)).transaction;
+}
+
+/**
+ * Create a credit memo. U-111: the typed txnNumber (duplicates 409
+ * DOCUMENT_NUMBER_IN_USE, or warnings with warnOnly) or the next from the
+ * company's credit_memo counter. U-113: printLater for the forms queue.
+ */
+export async function createCreditMemoWithWarnings(
+  tenantId: string, input: CreateCreditMemoInput, userId?: string, companyId?: string,
+) {
   const arAccount = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')),
   });
@@ -34,8 +46,13 @@ export async function createCreditMemo(tenantId: string, input: CreateCreditMemo
     };
   });
 
-  return ledger.postTransaction(tenantId, {
+  const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'credit_memo', input.txnNumber, {
+    companyId, warnOnly: input.warnOnly === true,
+  });
+  const transaction = await ledger.postTransaction(tenantId, {
     txnType: 'credit_memo',
+    txnNumber,
+    printLater: input.printLater === true,
     txnDate: input.txnDate,
     contactId: input.contactId,
     memo: input.memo,
@@ -46,4 +63,5 @@ export async function createCreditMemo(tenantId: string, input: CreateCreditMemo
       { accountId: arAccount.id, debit: '0', credit: subtotal.toFixed(4) },
     ],
   }, userId, companyId);
+  return { transaction, warnings };
 }

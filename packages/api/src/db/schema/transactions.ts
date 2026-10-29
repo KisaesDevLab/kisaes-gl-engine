@@ -45,6 +45,8 @@ export const transactions = pgTable('transactions', {
   discountDateOverridden: boolean('discount_date_overridden').notNull().default(false),
   // Bill received (U-87, migration 0230): false = in A/P, not payable yet.
   billReceived: boolean('bill_received').notNull().default(true),
+  // Invoice, cash sale or credit memo waiting to be printed (U-113, migration 0240).
+  printLater: boolean('print_later').notNull().default(false),
   sentAt: timestamp('sent_at', { withTimezone: true }),
   viewedAt: timestamp('viewed_at', { withTimezone: true }),
   paidAt: timestamp('paid_at', { withTimezone: true }),

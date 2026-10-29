@@ -226,3 +226,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   /** GET /api/v1/company/logo: the company's uploaded logo bytes with its image Content-Type; 404 when none (U-110). */
   'company-logo-v1',
 ];
+   * Document numbering per company (U-111): GET /document-numbers ({numbers: [{type, prefix, nextNumber, next}]}),
+   * GET /document-numbers/next?type= (peek), POST /document-numbers/claim {type} ({type, number, txnNumber}),
+   * PUT /document-numbers/:type {prefix?, nextNumber?} for invoice, cash_sale, credit_memo, statement. Invoices, cash
+   * sales and credit memos take the next number when created without txnNumber; a typed duplicate of the same type in
+   * the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or with warnOnly: true it posts
+   * and the response carries warnings: [{code, txnNumber, transactionId, message}]. The invoice counter moves only the
+   * request's company. GET/PUT /company/invoice-template is company-scoped, takes footerOverrides per form type and
+   * returns resolvedFooters. Migration 0240.
+   */
+  'document-numbers-v1',
+  /**
+   * printLater on invoices, cash sales and credit memos (create default false, edit absent keeps);
+   * GET /forms/print-queue?type= ({data: [{id, type, txnNumber, txnDate, contactName, total}]}) and
+   * POST /forms/mark-printed {ids} ({marked, alreadyPrinted}; one audit row per form; 404 for an id not a form of the
+   * company). Migration 0240 (U-113).
+   */
+  'forms-print-queue-v1',
+];

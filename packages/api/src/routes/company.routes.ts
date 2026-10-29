@@ -326,32 +326,56 @@ const invoiceTemplateUpdateSchema = z.object({
   showTerms: z.boolean().optional(),
   footerText: z.string().max(1000).nullable().optional(),
   logoUrl: z.string().max(500).nullable().optional(),
+  // Per-type footer text (U-111, document-numbers-v1); a sent map replaces
+  // the stored one. Blank, null or absent -> footerText.
+  footerOverrides: z.object({
+    invoice: z.string().max(1000).nullable().optional(),
+    cash_sale: z.string().max(1000).nullable().optional(),
+    credit_memo: z.string().max(1000).nullable().optional(),
+    statement: z.string().max(1000).nullable().optional(),
+  }).strict().optional(),
 });
 
-async function getOrCreateDefaultTemplate(tenantId: string) {
-  let template = await invoiceTemplateService.getDefault(tenantId);
+// Company scope (U-111): reads return the company's own default template,
+// else the legacy tenant-wide one; the first write gives the company its own
+// copy, so editing one company's footer no longer changes another's.
+async function getOrCreateDefaultTemplate(tenantId: string, companyId: string) {
+  let template = await invoiceTemplateService.getDefault(tenantId, companyId);
   if (!template) {
     await invoiceTemplateService.seedDefault(tenantId);
-    template = await invoiceTemplateService.getDefault(tenantId);
+    template = await invoiceTemplateService.getDefault(tenantId, companyId);
   }
-  // Templates exist but none is flagged default (legacy data): adopt the first.
+  // Templates exist but none is flagged default (legacy data): adopt the
+  // first one of this company or of no company.
   if (!template) {
     const all = await invoiceTemplateService.list(tenantId);
-    template = all[0] ?? null;
+    template = all.find((t) => t.companyId === companyId) ?? all.find((t) => t.companyId === null) ?? null;
   }
   return template;
 }
 
-companyRouter.get('/invoice-template', async (req, res) => {
-  const template = await getOrCreateDefaultTemplate(req.tenantId);
-  res.json({ template });
+const invoiceTemplateResponseDoc = z.object({
+  template: z.record(z.string(), z.unknown()).nullable(),
+  resolvedFooters: z.object({
+    invoice: z.string(), cash_sale: z.string(), credit_memo: z.string(), statement: z.string(),
+  }).describe('the footer each form type prints (override, else footerText, else the default)'),
 });
 
-companyRouter.put('/invoice-template', requireCompanySettingsWrite, validate(invoiceTemplateUpdateSchema), async (req, res) => {
-  const existing = await getOrCreateDefaultTemplate(req.tenantId);
-  if (!existing) throw AppError.badRequest('No invoice template available to update');
+companyRouter.get('/invoice-template', describe({
+  summary: "The company's invoice template, with the footer each form type prints (document-numbers-v1)",
+  response: invoiceTemplateResponseDoc,
+}), async (req, res) => {
+  const template = await getOrCreateDefaultTemplate(req.tenantId, req.companyId);
+  res.json({ template, resolvedFooters: invoiceTemplateService.resolvedFooters(template) });
+});
+
+companyRouter.put('/invoice-template', requireCompanySettingsWrite, validate(invoiceTemplateUpdateSchema), describe({
+  summary: "Update the company's invoice template (footerText, footerOverrides per form type) (document-numbers-v1)",
+  response: invoiceTemplateResponseDoc,
+}), async (req, res) => {
+  const existing = await invoiceTemplateService.getOrCreateCompanyDefault(req.tenantId, req.companyId, req.userId);
   const template = await invoiceTemplateService.update(req.tenantId, existing.id, req.body, req.userId);
-  res.json({ template });
+  res.json({ template, resolvedFooters: invoiceTemplateService.resolvedFooters(template) });
 });
 
 companyRouter.get('/smtp', async (req, res) => {

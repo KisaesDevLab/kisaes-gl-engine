@@ -13,6 +13,8 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import { addCalendarDays, isCalendarDate } from '../utils/calendar-date.js';
+import * as documentNumbers from './document-number.service.js';
+import * as formsPrint from './forms-print.service.js';
 
 // Calendar arithmetic (U-86, review S3): the old `new Date(d).setDate(+n)`
 // worked in local time, so in a US time zone a term window crossing the
@@ -33,51 +35,12 @@ export function computeDueDate(txnDate: string, terms: string | undefined): stri
   }
 }
 
-async function getNextInvoiceNumber(tenantId: string): Promise<string> {
-  // Atomically reserve the next number with a single UPDATE…RETURNING.
-  // Postgres serializes concurrent UPDATEs on the same row, so two
-  // simultaneous invoice creations always get distinct numbers — unlike
-  // the previous read-then-update pattern, which could hand the same
-  // number to two different invoices.
-  const [updated] = await db.update(companies)
-    .set({
-      invoiceNextNumber: sql`${companies.invoiceNextNumber} + 1`,
-      updatedAt: new Date(),
-    })
-    .where(eq(companies.tenantId, tenantId))
-    .returning({
-      // Returning the post-increment value; the number we just "claimed"
-      // is one less than that.
-      newNext: companies.invoiceNextNumber,
-      prefix: companies.invoicePrefix,
-    });
-
-  if (!updated || updated.newNext === null) {
-    throw AppError.internal('Company row not found or invoice number not initialized for this tenant');
-  }
-  const claimed = updated.newNext - 1;
-  return `${updated.prefix || 'INV-'}${claimed}`;
-}
-
-// Guard a manually-supplied invoice number against collisions with other
-// invoices in the tenant. Only applied to caller-supplied overrides — the
-// auto counter path is already collision-safe on its own. There is no DB
-// unique index on txn_number (numbers are informational by design), so this
-// application check is what surfaces a friendly error on manual entry.
-async function assertInvoiceNumberAvailable(tenantId: string, txnNumber: string, excludeId?: string): Promise<void> {
-  const clash = await db.select({ id: transactions.id })
-    .from(transactions)
-    .where(and(
-      eq(transactions.tenantId, tenantId),
-      eq(transactions.txnType, 'invoice'),
-      eq(transactions.txnNumber, txnNumber),
-      ...(excludeId ? [ne(transactions.id, excludeId)] : []),
-    ))
-    .limit(1);
-  if (clash.length > 0) {
-    throw AppError.badRequest(`Invoice number "${txnNumber}" is already in use`);
-  }
-}
+// Invoice numbers (U-111): the company's counter (document-number.service
+// claims it with one UPDATE ... RETURNING on the request's company row; it
+// used to advance every company of the tenant). A typed number leaves the
+// counter alone and is checked for duplicates among the company's invoices:
+// 409 DOCUMENT_NUMBER_IN_USE, or a warning with warnOnly. There is no DB
+// unique index on txn_number (numbers are informational by design).
 
 async function getSystemAccount(tenantId: string, systemTag: string): Promise<string> {
   const account = await db.query.accounts.findFirst({
@@ -136,6 +99,13 @@ function buildTaxLines(inputLines: CreateInvoiceInput['lines'], defaultTaxRate: 
 }
 
 export async function createInvoice(tenantId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
+  return (await createInvoiceWithWarnings(tenantId, input, userId, companyId)).invoice;
+}
+
+/** createInvoice plus the duplicate-number warnings of a warnOnly request (U-111). */
+export async function createInvoiceWithWarnings(
+  tenantId: string, input: CreateInvoiceInput, userId?: string, companyId?: string,
+) {
   const arAccountId = await getSystemAccount(tenantId, 'accounts_receivable');
   const defaultTaxRate = await getDefaultTaxRate(tenantId);
   const { revenueLines, subtotal, totalTax, total } = buildTaxLines(input.lines, defaultTaxRate);
@@ -143,14 +113,9 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
   // Manual override (if supplied) skips the auto counter entirely so the
   // sequence isn't advanced by a one-off custom number; otherwise reserve
   // the next sequential number atomically.
-  const override = input.txnNumber?.trim();
-  let txnNumber: string;
-  if (override) {
-    await assertInvoiceNumberAvailable(tenantId, override);
-    txnNumber = override;
-  } else {
-    txnNumber = await getNextInvoiceNumber(tenantId);
-  }
+  const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'invoice', input.txnNumber, {
+    companyId, warnOnly: input.warnOnly === true,
+  });
   const dueDate = input.dueDate || computeDueDate(input.txnDate, input.paymentTerms);
 
   const journalLines: any[] = [
@@ -164,9 +129,10 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
     journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
   }
 
-  return ledger.postTransaction(tenantId, {
+  const invoice = await ledger.postTransaction(tenantId, {
     txnType: 'invoice',
     txnNumber,
+    printLater: input.printLater === true,
     txnDate: input.txnDate,
     dueDate,
     contactId: input.contactId,
@@ -182,9 +148,17 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
     invoiceStatus: 'draft',
     lines: journalLines,
   }, userId, companyId);
+  return { invoice, warnings };
 }
 
 export async function updateInvoice(tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
+  return (await updateInvoiceWithWarnings(tenantId, invoiceId, input, userId, companyId)).invoice;
+}
+
+/** updateInvoice plus the duplicate-number warnings of a warnOnly request (U-111). */
+export async function updateInvoiceWithWarnings(
+  tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string, companyId?: string,
+) {
   const existing = await ledger.getTransaction(tenantId, invoiceId);
   if (existing.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
   if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void invoice');
@@ -193,8 +167,11 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
   // Allow editing the invoice number on an unpaid invoice. Only re-check
   // uniqueness when it actually changed, excluding this invoice itself.
   const newNumber = input.txnNumber?.trim();
+  let warnings: documentNumbers.DocumentNumberWarning[] = [];
   if (newNumber && newNumber !== existing.txnNumber) {
-    await assertInvoiceNumberAvailable(tenantId, newNumber, invoiceId);
+    warnings = await documentNumbers.checkDuplicate(tenantId, 'invoice', newNumber, {
+      companyId: companyId ?? existing.companyId ?? undefined, excludeId: invoiceId, warnOnly: input.warnOnly === true,
+    });
   }
 
   const arAccountId = await getSystemAccount(tenantId, 'accounts_receivable');
@@ -214,7 +191,7 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
     journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
   }
 
-  return ledger.updateTransaction(tenantId, invoiceId, {
+  const invoice = await ledger.updateTransaction(tenantId, invoiceId, {
     txnType: 'invoice',
     ...(newNumber ? { txnNumber: newNumber } : {}),
     txnDate: input.txnDate,
@@ -229,6 +206,8 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
     balanceDue: balanceDue.toFixed(4),
     lines: journalLines,
   }, userId, companyId);
+  if (input.printLater !== undefined) await formsPrint.setPrintLater(tenantId, invoiceId, input.printLater);
+  return { invoice: { ...invoice, ...(input.printLater !== undefined ? { printLater: input.printLater } : {}) }, warnings };
 }
 
 export async function markAsSent(tenantId: string, invoiceId: string, userId?: string) {
