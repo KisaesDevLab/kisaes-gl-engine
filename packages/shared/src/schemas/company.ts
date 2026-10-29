@@ -52,6 +52,9 @@ export const updateCompanySettingsSchema = z.object({
   // Per-company AI chat assistant opt-in (tier 2 of two-tier consent —
   // see AI_CHAT_SUPPORT_PLAN.md §8.1).
   chatSupportEnabled: z.boolean().optional(),
+  // Default account for early-payment discounts taken in Pay Bills
+  // (U-101, bill-discounts-v1). An account of this company; null clears it.
+  billDiscountAccountId: z.string().uuid().nullable().optional(),
 });
 
 // Additional company under the same tenant. Used by `/company/create`.

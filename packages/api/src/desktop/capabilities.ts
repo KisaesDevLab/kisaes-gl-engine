@@ -135,8 +135,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    *   PUT /vendor-credits/:id, POST /vendor-credits/:id/void,
    *   POST /bill-payments/:id/void.
    * Refusals (409 STALE, BILL_HAS_PAYMENTS, CREDIT_APPLIED, TXN_DEPOSITED,
-   * 423, 403, 400) are never stored. POST /bill-payments is not keyed (Pay
-   * Bills, P18). The set is fixed: more routes get a new name.
+   * 423, 403, 400) are never stored. POST /bill-payments (Pay Bills) is keyed by its own
+   * idempotency-pay-bills-v1 (U-102). The set is fixed: more routes get a new name.
    */
   'idempotency-ap-v1',
   /**
@@ -190,4 +190,23 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * (intake-settings-v1) take defaultKind `statements`. Migration 0235 widens document_drafts_kind_ck (U-94).
    */
   'document-drafts-statement-v1',
+  /**
+   * Early-payment discounts on POST /bill-payments: bills[].discountAmount (on top of amount, which stays the coverage
+   * including credits; amount + discount <= balance due; amount 0 allowed with a discount) and discountAccountId, default
+   * the company setting billDiscountAccountId (GET/PUT /company/settings); 400 DISCOUNT_ACCOUNT_REQUIRED /
+   * DISCOUNT_ACCOUNT_INVALID. Posts DR A/P / CR bank / CR discount account; application rows carry discount_amount;
+   * void reverses. GET /bills/payable?paymentDate= adds discountAvailable (engine-rounded) and updatedAt to each bill.
+   * Migration 0238 (U-101).
+   */
+  'bill-discounts-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on POST /bill-payments (Pay Bills; `x-idempotency: true` in
+   * openapi.json). A replay returns the same {payments}. The set is fixed: more routes get a new name (U-102).
+   */
+  'idempotency-pay-bills-v1',
+  /**
+   * checkNumber on POST /bill-payments (method check, printLater false): consecutive numbers, one per vendor payment that
+   * pays cash in response order, the bank account's counter moved past the last; 409 CHECK_NUMBER_IN_USE (U-103).
+   */
+  'bill-payment-check-number-v1',
 ];

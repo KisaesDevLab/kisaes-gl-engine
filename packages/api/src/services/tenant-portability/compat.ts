@@ -56,9 +56,12 @@ export const RELAXED_COLUMNS: Record<string, { relaxedIn: number }> = {
  * way round is refused before any row is read: an archive newer than the
  * live schema (it may hold the new values) is ARCHIVE_TOO_NEW.
  * 0235 (U-94): document_drafts.kind takes 'statement' (vendor statement).
+ * 0238 (U-101): a bill payment application may carry no cash when its
+ * early-payment discount is positive (amount >= 0 AND amount + discount > 0).
  */
 export const WIDENED_CHECKS: Record<string, { widenedIn: number }> = {
   'document_drafts.document_drafts_kind_ck': { widenedIn: 236 },
+  'bill_payment_applications.chk_bpa_amount_positive': { widenedIn: 239 },
 };
 
 export interface TableCompat {

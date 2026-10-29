@@ -59,10 +59,16 @@ billsRouter.get('/', describe({
 
 billsRouter.get('/payable', describe({
   summary: 'Open bills for Pay Bills (posted, received, balance due > 0) and the vendors\' available credits',
+  description: 'Response {bills, credits}, both of the request\'s company (rows without a company included). ' +
+    'Each bill row carries updatedAt and discountAvailable (bill-discounts-v1): round(balanceDue x discountPercent / 100, 2, half away from zero) ' +
+    'as a 2-place string when paymentDate (YYYY-MM-DD, default the database\'s current date) is on or before the bill\'s discountDate, else "0.00".',
   query: payableBillsQuerySchema,
 }), async (req, res) => {
-  const query = payableBillsQuerySchema.parse(req.query);
-  const result = await billService.getPayableBills(req.tenantId, query);
+  const parsed = payableBillsQuerySchema.safeParse(req.query);
+  if (!parsed.success) throw AppError.badRequest(parsed.error.issues[0]?.message ?? 'Invalid query', 'VALIDATION_ERROR');
+  const result = await billService.getPayableBills(req.tenantId, {
+    ...parsed.data, companyId: req.companyId, companyIncludesNull: true,
+  });
   res.json(result);
 });
 

@@ -65,6 +65,37 @@ async function assertCheckNumberFree(
   }
 }
 
+/**
+ * Pay Bills check numbers (U-103, bill-payment-check-number-v1): refuse the
+ * range first..last when any number in it is held by a non-void,
+ * non-deleted transaction on this bank account: 409 CHECK_NUMBER_IN_USE,
+ * details.checkNumber the lowest one taken. Call after lockCheckCounter.
+ */
+export async function assertCheckNumberRangeFree(
+  executor: DbOrTx, tenantId: string, bankAccountId: string, first: number, last: number,
+) {
+  const clash = await executor.execute(sql`
+    SELECT t.check_number FROM transactions t
+    JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bankAccountId}
+    WHERE t.tenant_id = ${tenantId}
+      AND t.check_number BETWEEN ${first} AND ${last}
+      AND t.status NOT IN ('void', 'deleted')
+    ORDER BY t.check_number
+    LIMIT 1
+  `);
+  if (clash.rows.length > 0) {
+    const n = Number((clash.rows[0] as { check_number: number }).check_number);
+    throw AppError.conflict(`Check #${n} already exists on this bank account.`, 'CHECK_NUMBER_IN_USE', { checkNumber: String(n) });
+  }
+}
+
+/** Move the bank account's check counter past `checkNumber` (never back). Exported for Pay Bills (U-103). */
+export async function advanceCheckCounterPast(
+  executor: DbOrTx, tenantId: string, bankAccountId: string, checkNumber: number, companyId: string | undefined,
+) {
+  await advanceCounterPast(executor, tenantId, bankAccountId, checkNumber, companyId);
+}
+
 // The companies row(s) holding the counter: the active company when the
 // caller knows it (every route does), else every company of the tenant
 // (legacy callers without a company context, e.g. the MCP tool).

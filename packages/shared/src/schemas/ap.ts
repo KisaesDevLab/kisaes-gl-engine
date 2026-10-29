@@ -114,7 +114,13 @@ export const billTermsDatesQuerySchema = z.object({
 
 const billPaymentBillSchema = z.object({
   billId: z.string().uuid(),
+  // The bill's coverage by this payment INCLUDING the credits applied to it
+  // (cash = amount - credits). May be 0 only when discountAmount is > 0.
   amount: z.string().min(1),
+  // Early-payment discount taken on the bill (U-101, bill-discounts-v1):
+  // a decimal string >= 0 with at most 2 places, on top of amount
+  // (amount + discountAmount <= balance due). Default 0.
+  discountAmount: z.string().regex(/^\d{1,13}(\.\d{1,2})?$/, 'A non-negative amount with at most 2 decimal places').optional(),
 });
 
 const billPaymentCreditSchema = z.object({
@@ -140,6 +146,20 @@ export const payBillsSchema = z.object({
   printedMemo: z.string().max(255).optional(),
   bills: z.array(billPaymentBillSchema).min(1, 'Select at least one bill to pay'),
   credits: z.array(billPaymentCreditSchema).optional(),
+  // Account the discounts post to (U-101, bill-discounts-v1). Default: the
+  // company setting billDiscountAccountId.
+  discountAccountId: z.string().uuid().optional(),
+  // First check number (U-103, bill-payment-check-number-v1): method 'check'
+  // with printLater false only. One number per vendor payment that pays
+  // cash, consecutive in the order the response lists the payments.
+  checkNumber: z.string().regex(/^[1-9]\d{0,8}$/, 'A check number from 1 to 999999999').optional(),
+});
+
+export const payableBillsQuerySchema = z.object({
+  contactId: z.string().uuid().optional(),
+  dueOnOrBefore: z.string().optional(),
+  // The payment date discountAvailable is figured for (U-101); default today.
+  paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'A date YYYY-MM-DD').optional(),
 });
 
 export const billSortKeys = ['number', 'vendor', 'vendorInvoiceNumber', 'date', 'dueDate', 'status', 'total', 'balance'] as const;
@@ -159,11 +179,6 @@ export const billFiltersSchema = z.object({
   search: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
-});
-
-export const payableBillsQuerySchema = z.object({
-  contactId: z.string().uuid().optional(),
-  dueOnOrBefore: z.string().optional(),
 });
 
 // PORTAL_BILL_PAY_V1 — portal contact marks bills for payment. Bill ids

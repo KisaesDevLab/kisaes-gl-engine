@@ -63,8 +63,14 @@ export const IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES = [
   'post /api/v1/document-drafts/{id}/attach',
 ].sort();
 
+/** The idempotency-pay-bills-v1 set: Pay Bills (U-102). */
+export const IDEMPOTENCY_PAY_BILLS_V1_ROUTES = [
+  'post /api/v1/bill-payments',
+].sort();
+
 const ALL_KEYED_ROUTES = [
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
+  ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES,
 ].sort();
 
 let paths: Paths;
@@ -93,8 +99,8 @@ describe('idempotency-v1 in openapi.json', () => {
     expect(withHeader.sort()).toEqual(ALL_KEYED_ROUTES);
   });
 
-  it('POST /bill-payments (Pay Bills) is not keyed yet', () => {
-    expect(paths['/api/v1/bill-payments']?.['post']?.['x-idempotency']).toBeUndefined();
+  it('POST /bill-payments (Pay Bills) is keyed (idempotency-pay-bills-v1)', () => {
+    expect(paths['/api/v1/bill-payments']?.['post']?.['x-idempotency']).toBe(true);
   });
 
   it('/batch/save and tenant creation are not in the set', () => {
@@ -109,5 +115,6 @@ describe('idempotency-v1 in openapi.json', () => {
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-ap-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-docs-v1');
     expect(DESKTOP_CAPABILITIES).toContain('document-drafts-attach-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('idempotency-pay-bills-v1');
   });
 });

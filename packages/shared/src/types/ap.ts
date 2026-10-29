@@ -68,7 +68,10 @@ export interface CreateVendorCreditInput {
 
 export interface BillPaymentBillSelection {
   billId: string;
+  /** Coverage including the credits applied to the bill (cash = amount - credits). */
   amount: string;
+  /** bill-discounts-v1: early-payment discount on top of amount (2 places, default 0). */
+  discountAmount?: string;
 }
 
 export interface BillPaymentCreditApplication {
@@ -89,6 +92,10 @@ export interface PayBillsInput {
   printedMemo?: string;
   bills: BillPaymentBillSelection[];
   credits?: BillPaymentCreditApplication[];
+  /** bill-discounts-v1: account the discounts post to; default the company's billDiscountAccountId. */
+  discountAccountId?: string;
+  /** bill-payment-check-number-v1: first check number (method check, printLater false). */
+  checkNumber?: string;
 }
 
 export interface BillSummary {
@@ -107,6 +114,9 @@ export interface BillSummary {
   paymentTerms: string | null;
   daysOverdue: number;
   memo: string | null;
+  /** bill-discounts-v1 (GET /bills/payable): discount available on the payment date, 2 places. */
+  discountAvailable?: string;
+  updatedAt?: string | Date | null;
 }
 
 export interface PayableBillsResponse {
