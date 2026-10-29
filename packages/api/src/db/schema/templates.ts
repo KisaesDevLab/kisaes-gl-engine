@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { pgTable, uuid, varchar, text, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, boolean, timestamp, jsonb } from 'drizzle-orm/pg-core';
 
 export const emailTemplates = pgTable('email_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -27,6 +27,8 @@ export const invoiceTemplates = pgTable('invoice_templates', {
   showPoNumber: boolean('show_po_number').default(false),
   showTerms: boolean('show_terms').default(true),
   footerText: text('footer_text'),
+  // Per-type footer text (U-111, migration 0240); blank or absent -> footerText.
+  footerOverrides: jsonb('footer_overrides').$type<Record<string, string | null>>().notNull().default({}),
   isDefault: boolean('is_default').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),

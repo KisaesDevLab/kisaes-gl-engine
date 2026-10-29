@@ -68,7 +68,8 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
 
   // Branding comes from the tenant's default invoice template (Settings →
   // Invoice Template). Falls back to the built-in defaults when none is set.
-  const template = await invoiceTemplateService.getDefault(tenantId);
+  // U-111: the invoice's company template (legacy tenant-wide fallback).
+  const template = await invoiceTemplateService.getDefault(tenantId, txn.companyId ?? undefined);
 
   let customer = { displayName: 'Customer', billingLine1: null as string | null, billingCity: null as string | null, billingState: null as string | null, billingZip: null as string | null, email: null as string | null };
   if (txn.contactId) {
@@ -132,7 +133,7 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
     },
     lines: revenueLines,
     accentColor: template?.accentColor || '#2563EB',
-    footerText: template?.footerText || 'Thank you for your business!',
+    footerText: invoiceTemplateService.resolveFooter(template, txn.txnType === 'cash_sale' ? 'cash_sale' : 'invoice'),
     showTerms: template?.showTerms ?? true,
     documentType: txn.txnType === 'cash_sale' ? 'Sales Receipt' : 'Invoice',
   };

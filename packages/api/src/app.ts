@@ -18,6 +18,8 @@ import { contactsRouter } from './routes/contacts.routes.js';
 import { transactionsRouter } from './routes/transactions.routes.js';
 import { journalEntriesRouter } from './routes/journal-entries.routes.js';
 import { invoicesRouter } from './routes/invoices.routes.js';
+import { documentNumbersRouter } from './routes/document-numbers.routes.js';
+import { formsRouter } from './routes/forms.routes.js';
 import { billsRouter } from './routes/bills.routes.js';
 import { billCapturesRouter } from './routes/bill-captures.routes.js';
 import { documentDraftsRouter, vendorLayoutTemplatesRouter } from './routes/document-drafts.routes.js';
@@ -545,6 +547,8 @@ app.use('/api/v1/contacts', contactsRouter);
 app.use('/api/v1/transactions', transactionsRouter);
 app.use('/api/v1/journal-entries', journalEntriesRouter);
 app.use('/api/v1/invoices', invoicesRouter);
+app.use('/api/v1/document-numbers', documentNumbersRouter);
+app.use('/api/v1/forms', formsRouter);
 app.use('/api/v1/bills', billsRouter);
 app.use('/api/v1/bill-captures', billCapturesRouter);
 // Document drafts and vendor layouts (U-92, document-drafts-v1).

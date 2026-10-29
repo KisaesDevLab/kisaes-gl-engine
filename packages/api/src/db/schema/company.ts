@@ -37,6 +37,9 @@ export const companies = pgTable('companies', {
   // bill-discounts-v1; migration 0238). NULL = none: a discount then needs
   // discountAccountId on the request.
   billDiscountAccountId: uuid('bill_discount_account_id'),
+  // Prefix and next number per document type other than invoices (U-111,
+  // migration 0240): {cash_sale|credit_memo|statement: {prefix, next}}.
+  documentNumbers: jsonb('document_numbers').$type<Record<string, { prefix?: string; next?: number }>>().notNull().default({}),
   checkSettings: jsonb('check_settings').default('{"format":"voucher","bankName":"","bankAddress":"","routingNumber":"","accountNumber":"","fractionalRouting":"","printOnBlankStock":false,"printCompanyInfo":true,"printSignatureLine":true,"alignmentOffsetX":0,"alignmentOffsetY":0,"nextCheckNumber":1001,"defaultBankAccountId":null}'),
   smtpHost: varchar('smtp_host', { length: 255 }),
   smtpPort: integer('smtp_port').default(587),

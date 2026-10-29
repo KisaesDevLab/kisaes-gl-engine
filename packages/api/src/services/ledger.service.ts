@@ -482,6 +482,8 @@ interface PostTransactionInput {
   amountPaid?: string;
   balanceDue?: string;
   invoiceStatus?: string;
+  // Invoice / cash sale / credit memo waiting to be printed (U-113; create only).
+  printLater?: boolean;
   // Accounts payable fields
   billStatus?: string;
   termsDays?: number;
@@ -617,6 +619,7 @@ export async function postTransaction(
       amountPaid: input.amountPaid || '0',
       balanceDue: input.balanceDue || null,
       invoiceStatus: input.invoiceStatus || null,
+      printLater: input.printLater === true,
       billStatus: input.billStatus || null,
       termsDays: input.termsDays ?? null,
       creditsApplied: input.creditsApplied || '0',

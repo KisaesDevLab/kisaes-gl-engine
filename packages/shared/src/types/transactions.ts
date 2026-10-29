@@ -318,6 +318,12 @@ export interface CreateCashSaleInput {
     tagId?: string | null;
   }>;
   memo?: string;
+  /** Document number (U-111): typed, or the company's next when omitted. */
+  txnNumber?: string;
+  /** A duplicate number posts with a warning instead of 409 (U-111). */
+  warnOnly?: boolean;
+  /** Waiting to be printed (U-113). */
+  printLater?: boolean;
 }
 
 export interface CreateInvoiceInput {
@@ -338,6 +344,10 @@ export interface CreateInvoiceInput {
   internalNotes?: string;
   /** Optional manual invoice-number override; auto-assigned when omitted. */
   txnNumber?: string;
+  /** A duplicate number posts with a warning instead of 409 (U-111). */
+  warnOnly?: boolean;
+  /** Waiting to be printed (U-113). */
+  printLater?: boolean;
 }
 
 export interface RecordPaymentInput {
@@ -394,6 +404,12 @@ export interface CreateCreditMemoInput {
   }>;
   memo?: string;
   appliedToInvoiceId?: string;
+  /** Document number (U-111): typed, or the company's next when omitted. */
+  txnNumber?: string;
+  /** A duplicate number posts with a warning instead of 409 (U-111). */
+  warnOnly?: boolean;
+  /** Waiting to be printed (U-113). */
+  printLater?: boolean;
 }
 
 export interface CreateCustomerRefundInput {

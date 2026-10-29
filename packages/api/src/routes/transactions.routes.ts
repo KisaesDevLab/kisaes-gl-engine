@@ -167,7 +167,9 @@ transactionsRouter.post('/', keyedCreate, describe({
   summary: 'Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
     'A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): every A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), any number of such lines is allowed; ' +
-    'with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it.',
+    'with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it. ' +
+    'A cash sale or credit memo (document-numbers-v1) adds `warnings` (duplicate-number warnings of a warnOnly request, else []); ' +
+    'an idempotent replay (same Idempotency-Key) returns only `{transaction}`, without `warnings`: treat it as absent-safe.',
   body: registerEntryBodyDoc,
 }), async (req, res) => {
   const { txnType, ...body } = req.body;
@@ -196,11 +198,19 @@ transactionsRouter.post('/', keyedCreate, describe({
       break;
     }
     case 'cash_sale':
-      result = await cashSaleService.createCashSale(req.tenantId, createCashSaleSchema.parse(body), req.userId, req.companyId);
+    {
+      const created = await cashSaleService.createCashSaleWithWarnings(req.tenantId, createCashSaleSchema.parse(body), req.userId, req.companyId);
+      result = created.transaction;
+      extra = { warnings: created.warnings };
       break;
+    }
     case 'credit_memo':
-      result = await creditMemoService.createCreditMemo(req.tenantId, createCreditMemoSchema.parse(body), req.userId, req.companyId);
+    {
+      const created = await creditMemoService.createCreditMemoWithWarnings(req.tenantId, createCreditMemoSchema.parse(body), req.userId, req.companyId);
+      result = created.transaction;
+      extra = { warnings: created.warnings };
       break;
+    }
     case 'customer_refund':
       result = await customerRefundService.createCustomerRefund(req.tenantId, createCustomerRefundSchema.parse(body), req.userId, req.companyId);
       break;
@@ -257,8 +267,11 @@ transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, descri
       return;
     }
     case 'cash_sale':
-      result = await cashSaleService.updateCashSale(req.tenantId, txnId, createCashSaleSchema.parse(body), req.userId, req.companyId);
-      break;
+    {
+      const updated = await cashSaleService.updateCashSaleWithWarnings(req.tenantId, txnId, createCashSaleSchema.parse(body), req.userId, req.companyId);
+      res.json({ transaction: updated.transaction, warnings: updated.warnings });
+      return;
+    }
     default:
       res.status(400).json({ error: { message: `Editing ${txnType} transactions is not supported` } });
       return;

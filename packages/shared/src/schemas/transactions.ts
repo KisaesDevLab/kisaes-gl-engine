@@ -160,6 +160,14 @@ export const createCashSaleSchema = z.object({
   depositToAccountId: z.string().uuid(),
   lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
   memo: z.string().optional(),
+  // Document number (U-111): typed, or omitted for the next from the company's
+  // counter (GET /document-numbers/next). A duplicate of the same type in the
+  // company is 409 DOCUMENT_NUMBER_IN_USE, or a warning with warnOnly: true.
+  txnNumber: z.string().trim().max(50).optional(),
+  warnOnly: z.boolean().optional(),
+  // Waiting to be printed (U-113, GET /forms/print-queue). Create: default false;
+  // edit: absent keeps it.
+  printLater: z.boolean().optional(),
 });
 
 export const createInvoiceSchema = z.object({
@@ -173,8 +181,12 @@ export const createInvoiceSchema = z.object({
   // Optional caller-supplied invoice number. When omitted, the server
   // auto-assigns the next number from the company counter. When provided
   // (manual override), the counter is left untouched and the number is
-  // checked for collisions with other invoices in the tenant.
+  // checked for collisions with other invoices in the company (409
+  // DOCUMENT_NUMBER_IN_USE, or a warning with warnOnly: true; U-111).
   txnNumber: z.string().trim().max(50).optional(),
+  warnOnly: z.boolean().optional(),
+  // Waiting to be printed (U-113). Create: default false; edit: absent keeps it.
+  printLater: z.boolean().optional(),
 });
 
 export const recordPaymentSchema = z.object({
@@ -198,6 +210,14 @@ export const createCreditMemoSchema = z.object({
   })).min(1).max(MAX_LINES),
   memo: z.string().optional(),
   appliedToInvoiceId: z.string().uuid().optional(),
+  // Document number (U-111): typed, or omitted for the next from the company's
+  // counter (GET /document-numbers/next). A duplicate of the same type in the
+  // company is 409 DOCUMENT_NUMBER_IN_USE, or a warning with warnOnly: true.
+  txnNumber: z.string().trim().max(50).optional(),
+  warnOnly: z.boolean().optional(),
+  // Waiting to be printed (U-113, GET /forms/print-queue). Create: default false;
+  // edit: absent keeps it.
+  printLater: z.boolean().optional(),
 });
 
 export const createCustomerRefundSchema = z.object({
