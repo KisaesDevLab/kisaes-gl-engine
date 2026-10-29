@@ -22102,6 +22102,59 @@
       "get": {
         "operationId": "get_api_v1_company_invoice_template",
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "resolvedFooters": {
+                      "additionalProperties": true,
+                      "description": "the footer each form type prints (override, else footerText, else the default)",
+                      "properties": {
+                        "cash_sale": {
+                          "type": "string"
+                        },
+                        "credit_memo": {
+                          "type": "string"
+                        },
+                        "invoice": {
+                          "type": "string"
+                        },
+                        "statement": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoice",
+                        "cash_sale",
+                        "credit_memo",
+                        "statement"
+                      ],
+                      "type": "object"
+                    },
+                    "template": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": {},
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "template",
+                    "resolvedFooters"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -22114,6 +22167,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "The company's invoice template, with the footer each form type prints (document-numbers-v1)",
         "tags": [
           "company"
         ]
@@ -22129,6 +22183,56 @@
                   "accentColor": {
                     "pattern": "^#[0-9a-fA-F]{6}$",
                     "type": "string"
+                  },
+                  "footerOverrides": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cash_sale": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "credit_memo": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "invoice": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "statement": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "type": "object"
                   },
                   "footerText": {
                     "anyOf": [
@@ -22174,6 +22278,59 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "resolvedFooters": {
+                      "additionalProperties": true,
+                      "description": "the footer each form type prints (override, else footerText, else the default)",
+                      "properties": {
+                        "cash_sale": {
+                          "type": "string"
+                        },
+                        "credit_memo": {
+                          "type": "string"
+                        },
+                        "invoice": {
+                          "type": "string"
+                        },
+                        "statement": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoice",
+                        "cash_sale",
+                        "credit_memo",
+                        "statement"
+                      ],
+                      "type": "object"
+                    },
+                    "template": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": {},
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "template",
+                    "resolvedFooters"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -22186,6 +22343,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Update the company's invoice template (footerText, footerOverrides per form type) (document-numbers-v1)",
         "tags": [
           "company"
         ]
@@ -27226,6 +27384,334 @@
         ]
       }
     },
+    "/api/v1/document-numbers": {
+      "get": {
+        "operationId": "get_api_v1_document_numbers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "numbers": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "next": {
+                            "description": "prefix + nextNumber: what the next document gets",
+                            "type": "string"
+                          },
+                          "nextNumber": {
+                            "type": "integer"
+                          },
+                          "prefix": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "enum": [
+                              "invoice",
+                              "cash_sale",
+                              "credit_memo",
+                              "statement"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "prefix",
+                          "nextNumber",
+                          "next"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "numbers"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Prefix and next number of every document type for the company (document-numbers-v1)",
+        "tags": [
+          "document-numbers"
+        ]
+      }
+    },
+    "/api/v1/document-numbers/claim": {
+      "post": {
+        "operationId": "post_api_v1_document_numbers_claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "invoice",
+                      "cash_sale",
+                      "credit_memo",
+                      "statement"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "txnNumber": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "invoice",
+                        "cash_sale",
+                        "credit_memo",
+                        "statement"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "number",
+                    "txnNumber"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Take the next number of a type (statements, which have no create route) (document-numbers-v1)",
+        "tags": [
+          "document-numbers"
+        ]
+      }
+    },
+    "/api/v1/document-numbers/next": {
+      "get": {
+        "operationId": "get_api_v1_document_numbers_next",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "invoice",
+                "cash_sale",
+                "credit_memo",
+                "statement"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "next": {
+                      "description": "prefix + nextNumber: what the next document gets",
+                      "type": "string"
+                    },
+                    "nextNumber": {
+                      "type": "integer"
+                    },
+                    "prefix": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "invoice",
+                        "cash_sale",
+                        "credit_memo",
+                        "statement"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "prefix",
+                    "nextNumber",
+                    "next"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The number the next document of a type would get; nothing is taken (document-numbers-v1)",
+        "tags": [
+          "document-numbers"
+        ]
+      }
+    },
+    "/api/v1/document-numbers/{type}": {
+      "put": {
+        "description": "Invoices write the company invoicePrefix / invoiceNextNumber; the other types companies.document_numbers.",
+        "operationId": "put_api_v1_document_numbers_by_type",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "invoice",
+                "cash_sale",
+                "credit_memo",
+                "statement"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "nextNumber": {
+                    "maximum": 999999999,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "prefix": {
+                    "maxLength": 20,
+                    "pattern": "^[^\\s]*$",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "next": {
+                      "description": "prefix + nextNumber: what the next document gets",
+                      "type": "string"
+                    },
+                    "nextNumber": {
+                      "type": "integer"
+                    },
+                    "prefix": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "invoice",
+                        "cash_sale",
+                        "credit_memo",
+                        "statement"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "prefix",
+                    "nextNumber",
+                    "next"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Set the prefix and/or next number of a document type for the company (document-numbers-v1)",
+        "tags": [
+          "document-numbers"
+        ]
+      }
+    },
     "/api/v1/document-reading/assist": {
       "post": {
         "description": "Response 200 `{suggestion}`: the bill-ocr-v2 reading of the text (and page images) the client sends. Nothing is stored or posted and no file is parsed; every amount is what the model read, as a decimal string, or null, and must be checked by the client. No vendor match (the client matches). Limits: text ≤ 60000 characters (400 TEXT_TOO_LONG), ≤ 3 PNG page images (400 TOO_MANY_IMAGES; no PNG signature and IHDR 400 IMAGE_NOT_PNG), each ≤ 4096 px on a side (400 IMAGE_TOO_LARGE), ≤ 2097152 bytes together (400 IMAGES_TOO_LARGE); empty text and no images 400 NOTHING_TO_READ. AI off 400 ai_disabled; OCR function off or no provider 400 ai_function_disabled. Cloud provider: the company's document_text_cloud switch, and document_images_cloud as well when images are sent, else 403 CONSENT_REQUIRED (details.task; receipt_ocr does not count); images also need the system cloud-vision gate (403 CLOUD_VISION_DISABLED). A self-hosted provider (Ollama, or openai_compat on a local URL) on a local endpoint and not running an Ollama cloud model (name ending -cloud or :cloud; those count as cloud) needs neither switch, only the company's AI opt-in with a current disclosure (else 403 CONSENT_REQUIRED, details.reason), and never falls back to a cloud one. Reply not JSON 400 ai_parse_failed; provider error or timeout (the OCR function timeout, else 60 s) 400 ai_ocr_failed; offline 503 OFFLINE_UNAVAILABLE (desktop). Needs full access to any of bills, checks or transactions. 60 calls a minute per user (429 AI_RATE_LIMIT). document-assist-v1.",
@@ -27894,6 +28380,9 @@
                   "paymentTerms": {
                     "type": "string"
                   },
+                  "printLater": {
+                    "type": "boolean"
+                  },
                   "txnDate": {
                     "minLength": 1,
                     "type": "string"
@@ -27901,6 +28390,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -29878,6 +30370,181 @@
         ]
       }
     },
+    "/api/v1/forms/mark-printed": {
+      "post": {
+        "description": "Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes.",
+        "operationId": "post_api_v1_forms_mark_printed",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "ids": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "ids"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "alreadyPrinted": {
+                      "type": "integer"
+                    },
+                    "marked": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "marked",
+                    "alreadyPrinted"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Clear the print-later mark of forms after printing; one audit row each (forms-print-queue-v1)",
+        "tags": [
+          "forms"
+        ]
+      }
+    },
+    "/api/v1/forms/print-queue": {
+      "get": {
+        "operationId": "get_api_v1_forms_print_queue",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "enum": [
+                "invoice",
+                "cash_sale",
+                "credit_memo"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "contactName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "total": {
+                            "description": "decimal string",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnDate": {
+                            "type": "string"
+                          },
+                          "txnNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": {
+                            "enum": [
+                              "invoice",
+                              "cash_sale",
+                              "credit_memo"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "txnNumber",
+                          "txnDate",
+                          "contactName",
+                          "total"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Invoices, cash sales and credit memos waiting to be printed (forms-print-queue-v1)",
+        "tags": [
+          "forms"
+        ]
+      }
+    },
     "/api/v1/fs-fonts/{file}": {
       "get": {
         "operationId": "get_api_v1_fs_fonts_by_file",
@@ -30184,6 +30851,9 @@
                   "paymentTerms": {
                     "type": "string"
                   },
+                  "printLater": {
+                    "type": "boolean"
+                  },
                   "txnDate": {
                     "minLength": 1,
                     "type": "string"
@@ -30191,6 +30861,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -30337,6 +31010,9 @@
                   "paymentTerms": {
                     "type": "string"
                   },
+                  "printLater": {
+                    "type": "boolean"
+                  },
                   "txnDate": {
                     "minLength": 1,
                     "type": "string"
@@ -30344,6 +31020,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
