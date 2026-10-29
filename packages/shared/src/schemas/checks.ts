@@ -150,7 +150,8 @@ export const checkSettingsSchema = z.object({
   nextCheckNumbers: z.record(z.string(), z.number().int().min(1)).optional(),
   defaultBankAccountId: z.string().uuid().nullish(),
   // Per bank account layout (U-109), keyed by the bank GL account id. Sent:
-  // replaces the whole map ({} clears it). An account without an entry
-  // falls back to the company format.
-  layouts: z.record(z.string().uuid(), checkLayoutSchema).optional(),
+  // merged per bank account (U-117), so accounts not sent keep their
+  // entries; an account sent as null loses its entry. An account without
+  // an entry falls back to the company format.
+  layouts: z.record(z.string().uuid(), checkLayoutSchema.nullable()).optional(),
 });

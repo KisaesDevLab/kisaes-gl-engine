@@ -99,7 +99,7 @@ billsRouter.get('/terms-dates', describe({
 // middleware (transactions.routes.ts order), before validation.
 billsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempotent({
   successStatus: 201,
-  replay: async (req, entity) => ({ bill: await billService.getBill(req.tenantId, entity!.id) }),
+  replay: async (req, entity) => ({ bill: await billService.getBill(req.tenantId, entity!.id, req.companyId) }),
 }), validate(createBillSchema), describe({
   summary: 'Enter a bill',
   description: `Response 201 {bill}. ${closedPeriodNote} ${lineRules} ${termsRules} ` +
@@ -107,11 +107,11 @@ billsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempotent(
   body: billBodyDoc,
 }), async (req, res) => {
   const bill = await billService.createBill(req.tenantId, req.body, req.userId, req.companyId);
-  res.status(201).json({ bill: await billService.getBill(req.tenantId, bill.id) });
+  res.status(201).json({ bill: await billService.getBill(req.tenantId, bill.id, req.companyId) });
 });
 
 billsRouter.get('/:id', describe({ summary: 'Get a bill (header, terms, received flag and lines)', params: idParams }), async (req, res) => {
-  const bill = await billService.getBill(req.tenantId, req.params['id']!);
+  const bill = await billService.getBill(req.tenantId, req.params['id']!, req.companyId);
   res.json({ bill });
 });
 
@@ -120,7 +120,7 @@ billsRouter.get('/:id', describe({ summary: 'Get a bill (header, terms, received
 // BILL_HAS_PAYMENTS, …) are never stored.
 const keyedBillById = idempotent({
   successStatus: 200,
-  replay: async (req) => ({ bill: await billService.getBill(req.tenantId, req.params['id']!) }),
+  replay: async (req) => ({ bill: await billService.getBill(req.tenantId, req.params['id']!, req.companyId) }),
 });
 
 billsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedBillById, validate(updateBillSchema), describe({
@@ -148,7 +148,7 @@ billsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, key
   await billService.voidBill(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
     expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
   });
-  const bill = await billService.getBill(req.tenantId, req.params['id']!);
+  const bill = await billService.getBill(req.tenantId, req.params['id']!, req.companyId);
   res.json({ bill });
 });
 
@@ -234,7 +234,7 @@ billsRouter.post('/:id/attach-draft', describe({
   }
   // The target must be a bill of this tenant and company (review Notes:
   // the id was taken unchecked).
-  const bill = await billService.getBill(req.tenantId, req.params['id']!).catch(() => null);
+  const bill = await billService.getBill(req.tenantId, req.params['id']!, req.companyId).catch(() => null);
   if (!bill || bill.status === 'deleted' || (req.companyId && bill.companyId && bill.companyId !== req.companyId)) {
     throw AppError.notFound('Bill not found');
   }

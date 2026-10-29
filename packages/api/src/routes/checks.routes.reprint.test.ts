@@ -285,13 +285,13 @@ describe('requeue records the spoiled number (U-106)', () => {
     expect(await db.select().from(spoiledCheckNumbers).where(eq(spoiledCheckNumbers.tenantId, c.tenantId))).toEqual([]);
   });
 
-  it('a void check is refused (400 CHECK_VOID) and nothing changes', async () => {
+  it('a void check is skipped (U-117) and nothing changes on it', async () => {
     const id = await writeCheck();
     expect((await print([id], 1001)).status).toBe(200);
     await db.update(transactions).set({ status: 'void' }).where(eq(transactions.id, id));
     const r = await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [id] });
-    expect(r.status).toBe(400);
-    expect(r.json.error.code).toBe('CHECK_VOID');
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ checks: [], skipped: [{ id, reason: 'void' }] });
     expect((await row(id)).checkNumber).toBe(1001);
   });
 });
@@ -535,6 +535,10 @@ describe('check layouts per bank account (U-109)', () => {
     expect(own.json.layout).toEqual({ format: 'z_fold', printCompanyBlock: true, source: 'bank_account' });
     const std = await request('GET', `/api/v1/checks/settings?bank_account_id=${c.bank2}`, c.token);
     expect(std.json.layout).toEqual({ format: 'standard', printCompanyBlock: false, source: 'bank_account' });
+    // Merged per bank account (U-117): bank keeps z_fold until sent; null removes bank2's entry.
+    expect((await request('PUT', '/api/v1/checks/settings', c.token, { layouts: { [c.bank2]: null } })).status).toBe(200);
+    expect((await request('GET', `/api/v1/checks/settings?bank_account_id=${c.bank}`, c.token)).json.layout)
+      .toEqual({ format: 'z_fold', printCompanyBlock: true, source: 'bank_account' });
     expect((await request('PUT', '/api/v1/checks/settings', c.token, { layouts: { [c.bank]: { format: 'voucher' } } })).status).toBe(200);
     const fallback = await request('GET', `/api/v1/checks/settings?bank_account_id=${c.bank2}`, c.token);
     expect(fallback.json.layout).toEqual({ format: 'check_middle', printCompanyBlock: false, source: 'company' });

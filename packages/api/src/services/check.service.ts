@@ -18,6 +18,7 @@ import { assertLineContacts, assertBillableLinesHaveContact } from './line-conta
 import { exactAmount } from '../utils/money.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
+import { claimAndRecord } from './idempotency.service.js';
 import crypto from 'crypto';
 
 // Check numbers are tracked PER BANK ACCOUNT in
@@ -44,8 +45,9 @@ function setNextNumSql(bankAccountId: string, value: ReturnType<typeof sql>) {
   )`;
 }
 
-// Refuse a check number that a non-void, non-deleted transaction on this
-// bank account already holds (409). `excludeTxnId` skips the check being
+// Refuse a check number that a non-deleted transaction on this bank account
+// already holds (409). A void check keeps its number (owner decision Q-PR2a,
+// 2026-10-29): the paper exists, so the number is never handed out again. `excludeTxnId` skips the check being
 // edited, so re-saving a check with its own number is not a clash. A number
 // spoiled by a reprint (U-106) may be used again (owner decision 2026-10-29).
 async function assertCheckNumberFree(
@@ -57,9 +59,9 @@ async function assertCheckNumberFree(
     WHERE t.tenant_id = ${tenantId}
       -- No txn_type filter: hand-written checks post as 'expense' and
       -- printed bill payments carry check numbers too — a number is
-      -- taken if ANY non-void transaction on this bank account holds it.
+      -- taken if ANY non-deleted transaction (void included) on this bank account holds it.
       AND t.check_number = ${checkNumber}
-      AND t.status NOT IN ('void', 'deleted')
+      AND t.status <> 'deleted'
       ${excludeTxnId ? sql`AND t.id <> ${excludeTxnId}` : sql``}
     LIMIT 1
   `);
@@ -70,8 +72,8 @@ async function assertCheckNumberFree(
 
 /**
  * Pay Bills check numbers (U-103, bill-payment-check-number-v1): refuse the
- * range first..last when any number in it is held by a non-void,
- * non-deleted transaction on this bank account: 409 CHECK_NUMBER_IN_USE,
+ * range first..last when any number in it is held by a non-deleted
+ * transaction on this bank account, void ones included (Q-PR2a): 409 CHECK_NUMBER_IN_USE,
  * details.checkNumber the lowest one taken. Call after lockCheckCounter.
  */
 export async function assertCheckNumberRangeFree(
@@ -82,7 +84,7 @@ export async function assertCheckNumberRangeFree(
     JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bankAccountId}
     WHERE t.tenant_id = ${tenantId}
       AND t.check_number BETWEEN ${first} AND ${last}
-      AND t.status NOT IN ('void', 'deleted')
+      AND t.status <> 'deleted'
     ORDER BY t.check_number
     LIMIT 1
   `);
@@ -175,6 +177,13 @@ async function allocateCheckNumber(
     throw AppError.internal('Failed to allocate check number for tenant');
   }
   return Number(assigned);
+}
+
+/** The next number from the bank account's counter, on xecutor (Pay Bills hand-written checks, Q-PR2b). Call after lockCheckCounter. */
+export async function allocateNextCheckNumber(
+  executor: DbOrTx, tenantId: string, bankAccountId: string, companyId: string | undefined,
+): Promise<number> {
+  return allocateCheckNumber(executor, tenantId, bankAccountId, companyId);
 }
 
 type CheckBody = Pick<WriteCheckInput, 'amount' | 'lines' | 'bankAccountId'>;
@@ -295,6 +304,7 @@ export async function createCheck(
     await tx.update(transactions).set({
       checkNumber,
       printStatus,
+      isCheck: true,
       payeeNameOnCheck: input.payeeNameOnCheck,
       payeeAddress: input.payeeAddress || null,
       printedMemo: input.printedMemo || null,
@@ -439,10 +449,15 @@ export async function updateCheck(
   const journalLines = buildCheckLines(input);
 
   return await db.transaction(async (tx) => {
+    // Lock order (U-117 S4): the check counter's companies row BEFORE the
+    // check row, as printChecks does. Every numbering branch below locks the
+    // counter; taking it after the check row deadlocked against a print run
+    // holding the counter and waiting for this check.
+    await lockCheckCounter(tx, tenantId, companyId);
     const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)];
     if (companyId) conds.push(eq(transactions.companyId, companyId));
     const [existing] = await tx.select().from(transactions).where(and(...conds)).for('update').limit(1);
-    if (!existing || existing.printStatus === null || existing.status === 'deleted') {
+    if (!existing || !isCheckRow(existing) || existing.status === 'deleted') {
       throw AppError.notFound('Check not found');
     }
     if (existing.txnType !== 'expense') {
@@ -606,7 +621,10 @@ export async function listChecks(tenantId: string, filters?: {
     // bill_payment checks print through the same queue — without it here
     // they'd vanish from the Checks list the moment they printed.
     sql`t.txn_type IN ('expense', 'bill_payment')`,
-    sql`t.print_status IS NOT NULL`,
+    // Created as checks only, voided or not (U-117, Q-PR2e): a void check
+    // whose queue status the void cleared (U-115) stays listed; a plain
+    // Expense paid "by check" is not a check.
+    sql`(t.is_check OR t.print_status IS NOT NULL)`,
     // Soft-deleted checks (txn-delete-v1) leave the list.
     sql`t.status <> 'deleted'`,
   ];
@@ -642,7 +660,9 @@ export async function listChecks(tenantId: string, filters?: {
 }
 
 export async function getPrintQueue(tenantId: string, bankAccountId?: string, companyId?: string) {
-  const pqConds = [sql`t.tenant_id = ${tenantId}`, sql`t.print_status = 'queue'`, sql`t.status <> 'deleted'`];
+  // Only posted checks print (U-115): a void (or deleted) check never shows
+  // up here, even one voided before voids cleared the queue status.
+  const pqConds = [sql`t.tenant_id = ${tenantId}`, sql`t.print_status = 'queue'`, sql`t.status = 'posted'`];
   if (companyId) pqConds.push(sql`t.company_id = ${companyId}`);
   if (bankAccountId) {
     pqConds.push(sql`t.id IN (SELECT transaction_id FROM journal_lines WHERE account_id = ${bankAccountId} AND credit > 0)`);
@@ -706,6 +726,16 @@ async function checkBankAccountId(executor: DbOrTx, tenantId: string, txnId: str
     FROM transactions t WHERE t.tenant_id = ${tenantId} AND t.id = ${txnId}
   `);
   return (res.rows[0] as { bank_account_id: string | null } | undefined)?.bank_account_id ?? null;
+}
+
+/**
+ * A check: created as one (is_check: Write Checks, or a Pay Bills payment
+ * by check that pays cash), voided or not (U-117, Q-PR2e). A void check
+ * whose queue status the void cleared (U-115) is still a check; a plain
+ * Expense paid "by check" never is.
+ */
+function isCheckRow(r: { printStatus: string | null; isCheck: boolean }) {
+  return r.isCheck || r.printStatus !== null;
 }
 
 /** Record a spoiled number (U-106). Listing only: the number may be used again (owner decision 2026-10-29). */
@@ -773,6 +803,11 @@ export async function printChecks(
   // number is left in an indeterminate state. Locking each check row
   // serializes concurrent print runs that overlap on a check id.
   return await db.transaction(async (tx) => {
+    // Idempotency-Key (U-116, idempotency-check-print-v1): claimed first, on
+    // this transaction, so a replay takes no counter lock; the batch is the
+    // recorded entity. A no-op without a key.
+    await claimAndRecord(tx, 'check_print', batchId);
+
     // Lock the counter's companies row first, before the range query below:
     // two print runs of different checks from the same starting number then
     // serialize, and the second one's range query sees the first one's
@@ -780,7 +815,7 @@ export async function printChecks(
     await lockCheckCounter(tx, tenantId, companyId);
 
     // Server-side duplicate backstop: refuse to assign any check number in
-    // [startingNumber .. startingNumber+n-1] that a non-void transaction on
+    // [startingNumber .. startingNumber+n-1] that a non-deleted transaction (a void check keeps its number, Q-PR2a) on
     // THIS bank account already holds. There is no DB unique constraint on
     // check_number (uniqueness is per bank account, resolved via the journal
     // line), so this guard is what prevents a re-print — e.g. a stale manual
@@ -791,7 +826,7 @@ export async function printChecks(
       FROM transactions t
       JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bankAccountId}
       WHERE t.tenant_id = ${tenantId}
-        AND t.status NOT IN ('void', 'deleted')
+        AND t.status <> 'deleted'
         AND t.check_number BETWEEN ${startingNumber} AND ${endNumber}
       ORDER BY t.check_number
       LIMIT 1
@@ -817,8 +852,12 @@ export async function printChecks(
         .limit(1);
 
       // Company scope (U-106): another company's check is not found.
-      if (!txn || (companyId && txn.companyId && txn.companyId !== companyId)) {
+      if (!txn || txn.status === 'deleted' || (companyId && txn.companyId && txn.companyId !== companyId)) {
         throw AppError.notFound(`Check ${checkId} not found`);
+      }
+      // A void (or otherwise not posted) check never takes a number (U-115).
+      if (txn.status !== 'posted') {
+        throw AppError.badRequest(`Check ${checkId} isn't a posted check any more, so it can't be printed.`, 'CHECK_VOID', { checkId });
       }
       if (txn.printStatus !== 'queue') throw AppError.badRequest(`Check ${checkId} is not in the print queue`);
       // The numbers belong to bankAccountId's checkbook: a check drawn on
@@ -871,6 +910,8 @@ export async function printChecks(
       signatureId: signature?.id ?? null,
       signedCount,
       unsignedCount: checkIds.length - signedCount,
+      // Each check and the number it took (U-117 N2).
+      checks: checkIds.map((id, i) => ({ id, checkNumber: startingNumber + i })),
     }, userId, tx);
 
     return {
@@ -879,6 +920,24 @@ export async function printChecks(
       checkNumberRange: `${startingNumber}–${startingNumber + checkIds.length - 1}`,
     };
   });
+}
+
+/**
+ * The POST /checks/print response of a batch, rebuilt from its checks: the
+ * replay reader of a keyed print (U-116) when no stored response is left.
+ * 404 when no check of the request's company carries the batch any more
+ * (sent back to the queue by a reprint).
+ */
+export async function printBatchResult(tenantId: string, batchId: string, companyId?: string) {
+  const conds = [sql`tenant_id = ${tenantId}`, sql`print_batch_id = ${batchId}`];
+  if (companyId) conds.push(sql`(company_id = ${companyId} OR company_id IS NULL)`);
+  const res = await db.execute(sql`
+    SELECT count(*)::int AS n, min(check_number)::int AS lo, max(check_number)::int AS hi
+    FROM transactions WHERE ${sql.join(conds, sql` AND `)}
+  `);
+  const r = res.rows[0] as { n: number; lo: number | null; hi: number | null } | undefined;
+  if (!r || r.n === 0 || r.lo === null || r.hi === null) throw AppError.notFound('Print batch not found');
+  return { batchId, checksPrinted: r.n, checkNumberRange: `${r.lo}–${r.hi}` };
 }
 
 /**
@@ -922,7 +981,7 @@ async function updatePrintedMemoInTx(
   if (companyId) conds.push(eq(transactions.companyId, companyId));
   const [txn] = await tx.select().from(transactions).where(and(...conds)).limit(1);
 
-  if (!txn || txn.printStatus === null) throw AppError.notFound('Check not found');
+  if (!txn || !isCheckRow(txn)) throw AppError.notFound('Check not found');
   if (txn.status === 'void') throw AppError.badRequest('Cannot edit the memo on a voided check');
   if (txn.printStatus === 'printed') {
     throw AppError.badRequest('This check has already printed. Reprint the batch to return it to the queue before editing its memo.');
@@ -1027,7 +1086,8 @@ async function sendBackToQueue(
 const requeueColumns = {
   id: transactions.id, txnDate: transactions.txnDate, companyId: transactions.companyId,
   checkNumber: transactions.checkNumber, printStatus: transactions.printStatus,
-  printBatchId: transactions.printBatchId, status: transactions.status,
+  printBatchId: transactions.printBatchId, status: transactions.status, txnType: transactions.txnType,
+  paymentMethod: transactions.paymentMethod, isCheck: transactions.isCheck,
 };
 
 /** Another company's row (rows without a company belong to every company, as in Pay Bills). */
@@ -1035,19 +1095,37 @@ function inOtherCompany(row: { companyId: string | null }, companyId: string | u
   return !!companyId && row.companyId !== null && row.companyId !== companyId;
 }
 
+/** A check a requeue or reprint left as it is (U-117 S2): void or deleted checks never go back to the queue. */
+export interface SkippedCheck {
+  id: string;
+  reason: 'void' | 'deleted';
+}
+
+/** What a requeue or reprint did: the checks sent back and the ones skipped. */
+export interface RequeueResult {
+  checks: RequeuedCheck[];
+  skipped: SkippedCheck[];
+}
+
+function skipReason(row: { status: string | null }): SkippedCheck['reason'] | null {
+  if (row.status === 'void') return 'void';
+  if (row.status === 'deleted') return 'deleted';
+  return null;
+}
+
 /**
  * Back to the print queue, number and print stamp cleared, the old number
  * spoiled and audited (U-106, check-reprint-audit-v1). A check dated in a
  * closed period needs the closing-date password (U-81). Every id must be a
- * check of the request's company (404 otherwise) that is not void (400
- * CHECK_VOID) and printed or still queued (a hand-written check is 400
- * CHECK_NOT_PRINTED); the whole request is one database transaction, so a refusal
- * changes none of the checks.
+ * check of the request's company (404 otherwise); a void or deleted check is
+ * skipped and listed in `skipped` while the others go back (U-117 S2); a
+ * hand-written check is 400 CHECK_NOT_PRINTED. The whole request is one
+ * database transaction, so a refusal changes none of the checks.
  */
 export async function requeueChecks(
   tenantId: string, checkIds: string[], userId?: string, companyId?: string,
-): Promise<RequeuedCheck[]> {
-  if (!Array.isArray(checkIds) || checkIds.length === 0) return [];
+): Promise<RequeueResult> {
+  if (!Array.isArray(checkIds) || checkIds.length === 0) return { checks: [], skipped: [] };
   const ids = [...new Set(checkIds)];
   return await db.transaction(async (tx) => {
     const rows = await tx.select(requeueColumns)
@@ -1055,10 +1133,16 @@ export async function requeueChecks(
       .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids)))
       .orderBy(transactions.id)
       .for('update');
-    const usable = rows.filter((r) => r.printStatus !== null && r.status !== 'deleted' && !inOtherCompany(r, companyId));
-    if (usable.length !== ids.length) throw AppError.notFound('Check not found');
-    if (usable.some((r) => r.status === 'void')) {
-      throw AppError.badRequest('A voided check cannot go back to the print queue.', 'CHECK_VOID');
+    const found = rows.filter((r) => !inOtherCompany(r, companyId) && isCheckRow(r));
+    if (found.length !== ids.length) throw AppError.notFound('Check not found');
+    const byId = new Map(found.map((r) => [r.id, r]));
+    const skipped: SkippedCheck[] = [];
+    const usable: RequeueRow[] = [];
+    for (const id of ids) {
+      const r = byId.get(id)!;
+      const reason = skipReason(r);
+      if (reason) skipped.push({ id, reason });
+      else usable.push(r);
     }
     // Only a printed check goes back (a queued one is a no-op): a
     // hand-written check exists on paper with its number, never printed here.
@@ -1070,8 +1154,8 @@ export async function requeueChecks(
         { checkId: notPrinted.id },
       );
     }
-    const byId = new Map(usable.map((r) => [r.id, r]));
-    return sendBackToQueue(tx, tenantId, ids.map((id) => byId.get(id)!), 'requeue', userId);
+    const checks = await sendBackToQueue(tx, tenantId, usable, 'requeue', userId);
+    return { checks, skipped };
   });
 }
 
@@ -1079,11 +1163,12 @@ export async function requeueChecks(
  * A printed batch back to the queue (U-106): as requeueChecks for every
  * check of the batch in the request's company; 404 when there is none (an
  * unknown batch, another company's, or one already sent back). The payments
- * stay posted.
+ * stay posted. Void and deleted checks of the batch stay as they are and are
+ * listed in `skipped`.
  */
 export async function reprintBatch(
   tenantId: string, batchId: string, userId?: string, companyId?: string,
-): Promise<RequeuedCheck[]> {
+): Promise<RequeueResult> {
   return await db.transaction(async (tx) => {
     const rows = await tx.select(requeueColumns)
       .from(transactions)
@@ -1094,7 +1179,14 @@ export async function reprintBatch(
       throw AppError.notFound('Print batch not found');
     }
     // A voided or deleted check of the batch stays as it is.
-    const live = rows.filter((r) => r.status !== 'deleted' && r.status !== 'void');
-    return sendBackToQueue(tx, tenantId, live, 'reprint', userId, batchId);
+    const skipped: SkippedCheck[] = [];
+    const live: RequeueRow[] = [];
+    for (const r of rows) {
+      const reason = skipReason(r);
+      if (reason) skipped.push({ id: r.id, reason });
+      else live.push(r);
+    }
+    const checks = await sendBackToQueue(tx, tenantId, live, 'reprint', userId, batchId);
+    return { checks, skipped };
   });
 }

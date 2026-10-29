@@ -36,11 +36,11 @@ const idParams = z.object({ id: z.string().uuid() });
 // CREDIT_APPLIED, TXN_DEPOSITED, ...) are never stored.
 const keyedCreditCreate = idempotent({
   successStatus: 201,
-  replay: async (req, entity) => ({ credit: await vendorCreditService.getVendorCredit(req.tenantId, entity!.id) }),
+  replay: async (req, entity) => ({ credit: await vendorCreditService.getVendorCredit(req.tenantId, entity!.id, req.companyId) }),
 });
 const keyedCreditById = idempotent({
   successStatus: 200,
-  replay: async (req) => ({ credit: await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!) }),
+  replay: async (req) => ({ credit: await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!, req.companyId) }),
 });
 
 vendorCreditsRouter.get('/', describe({
@@ -61,7 +61,7 @@ vendorCreditsRouter.get('/', describe({
 });
 
 vendorCreditsRouter.get('/available/:vendorId', async (req, res) => {
-  const credits = await vendorCreditService.getAvailableCredits(req.tenantId, req.params['vendorId']!);
+  const credits = await vendorCreditService.getAvailableCredits(req.tenantId, req.params['vendorId']!, req.companyId);
   res.json({ credits });
 });
 
@@ -71,11 +71,11 @@ vendorCreditsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, key
   body: creditBodyDoc,
 }), async (req, res) => {
   const credit = await vendorCreditService.createVendorCredit(req.tenantId, req.body, req.userId, req.companyId);
-  res.status(201).json({ credit: await vendorCreditService.getVendorCredit(req.tenantId, credit.id) });
+  res.status(201).json({ credit: await vendorCreditService.getVendorCredit(req.tenantId, credit.id, req.companyId) });
 });
 
 vendorCreditsRouter.get('/:id', describe({ summary: 'Get a vendor credit', params: idParams }), async (req, res) => {
-  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!);
+  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!, req.companyId);
   res.json({ credit });
 });
 
@@ -102,6 +102,6 @@ vendorCreditsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddlew
   await vendorCreditService.voidVendorCredit(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
     expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
   });
-  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!);
+  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!, req.companyId);
   res.json({ credit });
 });

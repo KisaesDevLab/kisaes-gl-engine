@@ -48,8 +48,8 @@ const payRules = 'bills[].amount is the bill\'s coverage including the credits a
   'DR A/P (amounts + discounts), CR bank (cash), CR A/P (credits), CR discount account (discounts). ' +
   'checkNumber (bill-payment-check-number-v1): method check with printLater false only (else 400 VALIDATION_ERROR); each vendor payment ' +
   'that pays cash takes the next number in the order of the response (a payment of credits and discounts only takes none), ' +
-  'printStatus hand_written; a number another live transaction on the bank account holds -> 409 CHECK_NUMBER_IN_USE (details.checkNumber); ' +
-  'the bank account\'s check counter moves past the last number (never back).';
+  'printStatus hand_written; a number another non-deleted transaction on the bank account holds (a void check keeps its number) -> 409 CHECK_NUMBER_IN_USE (details.checkNumber); ' +
+  'the bank account\'s check counter moves past the last number (never back). method check_handwritten takes the next number from the company\'s counter for the bank account inside the payment\'s transaction (Q-PR2b).';
 
 // Idempotency-Key (idempotency-pay-bills-v1, U-102): after the
 // closed-period middleware, before validation (bills.routes.ts order).

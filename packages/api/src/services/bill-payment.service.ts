@@ -23,7 +23,7 @@ import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
 import { checkLockDate, auditLockOverride, assertAccountsInScope, assertNotStale, assertBalanced, inOtherCompany, round4 } from './ledger.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
-import { lockCheckCounter, assertCheckNumberRangeFree, advanceCheckCounterPast } from './check.service.js';
+import { lockCheckCounter, assertCheckNumberRangeFree, advanceCheckCounterPast, allocateNextCheckNumber } from './check.service.js';
 import { assertBillDiscountAccount, companyBillDiscountAccountId } from './bill-discount-account.js';
 
 // Comparisons are exact (review S1): every amount is rounded to the
@@ -38,24 +38,6 @@ async function getApAccountId(tenantId: string): Promise<string> {
   });
   if (!account) throw AppError.internal("System account 'accounts_payable' not found");
   return account.id;
-}
-
-async function allocateCheckNumber(tenantId: string): Promise<number> {
-  const result = await db.execute(sql`
-    UPDATE companies
-    SET check_settings = jsonb_set(
-      COALESCE(check_settings, '{}'::jsonb),
-      '{nextCheckNumber}',
-      to_jsonb(COALESCE((check_settings->>'nextCheckNumber')::int, 1001) + 1)
-    )
-    WHERE tenant_id = ${tenantId}
-    RETURNING (check_settings->>'nextCheckNumber')::int - 1 AS assigned_number
-  `);
-  const assigned = (result.rows[0] as { assigned_number: number | null } | undefined)?.assigned_number;
-  if (assigned === null || assigned === undefined) {
-    throw AppError.internal('Failed to allocate check number');
-  }
-  return Number(assigned);
 }
 
 /** Width of the printed_memo column. */
@@ -471,14 +453,23 @@ export async function payBills(
       }
       if (paysByCheck) {
         if (input.method === 'check_handwritten') {
-          checkNumber = await allocateCheckNumber(tenantId);
-          printStatus = 'hand_written';
+          // The company's counter for this bank account, claimed on the posting
+          // transaction under the counter lock (Q-PR2b): a refused payment takes
+          // no number and companies of one tenant count independently. A
+          // payment of credits and discounts only writes no check, so it takes
+          // no number either (U-117 S1).
+          if (grp.netPayment.greaterThan(0)) {
+            await lockCheckCounter(tx, tenantId, companyId);
+            checkNumber = await allocateNextCheckNumber(tx, tenantId, input.bankAccountId, companyId);
+            printStatus = 'hand_written';
+          }
         } else if (checkNumberFor.has(grp.vendorId)) {
           // Numbered now (U-103), like a hand-written check from Write Checks.
           checkNumber = checkNumberFor.get(grp.vendorId)!;
           printStatus = 'hand_written';
-        } else if (input.printLater !== false) {
-          // Default: queue for printing
+        } else if (input.printLater !== false && grp.netPayment.greaterThan(0)) {
+          // Default: queue for printing. A payment of credits and discounts
+          // only pays no cash, so there is no check to print (U-117 S1).
           printStatus = 'queue';
         }
       }
@@ -503,6 +494,8 @@ export async function payBills(
         status: 'posted',
         checkNumber,
         printStatus,
+        // A check was written or queued for this payment (U-117, Q-PR2e).
+        isCheck: printStatus !== null,
         printedMemo,
         paymentMethod: cleared
           ? (cleared.checkNumber != null ? 'check' : null)
@@ -842,6 +835,8 @@ export async function voidBillPaymentInTx(
       voidReason: reason,
       voidedAt: new Date(),
       updatedAt: new Date(),
+      // A void check waiting to print leaves the print queue (U-115).
+      ...(payment.printStatus === 'queue' ? { printStatus: null } : {}),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
 
     // Recompute touched bills: those it paid (cash or discount) and those
@@ -856,6 +851,10 @@ export async function voidBillPaymentInTx(
       await billService.recomputeVendorCreditBalance(tx, tenantId, id);
     }
 
-    await auditLog(tenantId, 'void', 'transaction', paymentId, payment, { reason }, userId, tx);
+    // The application rows are deleted above: the before-image carries them,
+    // so the audit trail still shows what the payment settled (U-117 S5).
+    await auditLog(tenantId, 'void', 'transaction', paymentId, {
+      ...payment, billApplications: billApps, creditApplications: creditApps,
+    }, { reason }, userId, tx);
   }
 }
