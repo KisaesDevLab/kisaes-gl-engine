@@ -15,6 +15,7 @@ import * as ledger from './ledger.service.js';
 import { addCalendarDays, isCalendarDate } from '../utils/calendar-date.js';
 import * as documentNumbers from './document-number.service.js';
 import * as formsPrint from './forms-print.service.js';
+import { claimIdempotency } from './idempotency.service.js';
 
 // Calendar arithmetic (U-86, review S3): the old `new Date(d).setDate(+n)`
 // worked in local time, so in a US time zone a term window crossing the
@@ -110,12 +111,6 @@ export async function createInvoiceWithWarnings(
   const defaultTaxRate = await getDefaultTaxRate(tenantId);
   const { revenueLines, subtotal, totalTax, total } = buildTaxLines(input.lines, defaultTaxRate);
 
-  // Manual override (if supplied) skips the auto counter entirely so the
-  // sequence isn't advanced by a one-off custom number; otherwise reserve
-  // the next sequential number atomically.
-  const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'invoice', input.txnNumber, {
-    companyId, warnOnly: input.warnOnly === true,
-  });
   const dueDate = input.dueDate || computeDueDate(input.txnDate, input.paymentTerms);
 
   const journalLines: any[] = [
@@ -129,26 +124,37 @@ export async function createInvoiceWithWarnings(
     journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
   }
 
-  const invoice = await ledger.postTransaction(tenantId, {
-    txnType: 'invoice',
-    txnNumber,
-    printLater: input.printLater === true,
-    txnDate: input.txnDate,
-    dueDate,
-    contactId: input.contactId,
-    memo: input.memo,
-    internalNotes: input.internalNotes,
-    paymentTerms: input.paymentTerms,
-    subtotal: subtotal.toFixed(4),
-    taxAmount: totalTax.toFixed(4),
-    total: total.toFixed(4),
-    balanceDue: total.toFixed(4),
-    amountPaid: '0',
-    status: 'posted',
-    invoiceStatus: 'draft',
-    lines: journalLines,
-  }, userId, companyId);
-  return { invoice, warnings };
+  // One transaction: the number is claimed (or a typed one checked) and the
+  // invoice posted together, so a refused post does not use up a number.
+  // The idempotency key is claimed first, so a replay takes no counter lock.
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    // A typed number skips the counter, so a one-off custom number doesn't
+    // advance the sequence; otherwise the next free number is claimed.
+    const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'invoice', input.txnNumber, {
+      companyId, warnOnly: input.warnOnly === true, executor: tx,
+    });
+    const invoice = await ledger.postTransaction(tenantId, {
+      txnType: 'invoice',
+      txnNumber,
+      printLater: input.printLater === true,
+      txnDate: input.txnDate,
+      dueDate,
+      contactId: input.contactId,
+      memo: input.memo,
+      internalNotes: input.internalNotes,
+      paymentTerms: input.paymentTerms,
+      subtotal: subtotal.toFixed(4),
+      taxAmount: totalTax.toFixed(4),
+      total: total.toFixed(4),
+      balanceDue: total.toFixed(4),
+      amountPaid: '0',
+      status: 'posted',
+      invoiceStatus: 'draft',
+      lines: journalLines,
+    }, userId, companyId, tx);
+    return { invoice, warnings };
+  });
 }
 
 export async function updateInvoice(tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
@@ -167,12 +173,6 @@ export async function updateInvoiceWithWarnings(
   // Allow editing the invoice number on an unpaid invoice. Only re-check
   // uniqueness when it actually changed, excluding this invoice itself.
   const newNumber = input.txnNumber?.trim();
-  let warnings: documentNumbers.DocumentNumberWarning[] = [];
-  if (newNumber && newNumber !== existing.txnNumber) {
-    warnings = await documentNumbers.checkDuplicate(tenantId, 'invoice', newNumber, {
-      companyId: companyId ?? existing.companyId ?? undefined, excludeId: invoiceId, warnOnly: input.warnOnly === true,
-    });
-  }
 
   const arAccountId = await getSystemAccount(tenantId, 'accounts_receivable');
   const defaultTaxRate = await getDefaultTaxRate(tenantId);
@@ -191,23 +191,36 @@ export async function updateInvoiceWithWarnings(
     journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
   }
 
-  const invoice = await ledger.updateTransaction(tenantId, invoiceId, {
-    txnType: 'invoice',
-    ...(newNumber ? { txnNumber: newNumber } : {}),
-    txnDate: input.txnDate,
-    dueDate: input.dueDate,
-    contactId: input.contactId,
-    memo: input.memo,
-    internalNotes: input.internalNotes,
-    paymentTerms: input.paymentTerms,
-    subtotal: subtotal.toFixed(4),
-    taxAmount: totalTax.toFixed(4),
-    total: total.toFixed(4),
-    balanceDue: balanceDue.toFixed(4),
-    lines: journalLines,
-  }, userId, companyId);
-  if (input.printLater !== undefined) await formsPrint.setPrintLater(tenantId, invoiceId, input.printLater);
-  return { invoice: { ...invoice, ...(input.printLater !== undefined ? { printLater: input.printLater } : {}) }, warnings };
+  // The ledger edit and the print-later mark commit together (U-113).
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    let warnings: documentNumbers.DocumentNumberWarning[] = [];
+    if (newNumber && newNumber !== existing.txnNumber) {
+      warnings = await documentNumbers.checkDuplicate(tenantId, 'invoice', newNumber, {
+        companyId: companyId ?? existing.companyId ?? undefined, excludeId: invoiceId, warnOnly: input.warnOnly === true,
+        executor: tx,
+      });
+    }
+    const invoice = await ledger.updateTransaction(tenantId, invoiceId, {
+      txnType: 'invoice',
+      ...(newNumber ? { txnNumber: newNumber } : {}),
+      txnDate: input.txnDate,
+      dueDate: input.dueDate,
+      contactId: input.contactId,
+      memo: input.memo,
+      internalNotes: input.internalNotes,
+      paymentTerms: input.paymentTerms,
+      subtotal: subtotal.toFixed(4),
+      taxAmount: totalTax.toFixed(4),
+      total: total.toFixed(4),
+      balanceDue: balanceDue.toFixed(4),
+      lines: journalLines,
+    }, userId, companyId, tx);
+    if (input.printLater !== undefined) {
+      await formsPrint.setPrintLater(tx, tenantId, invoiceId, input.printLater, companyId ?? existing.companyId ?? undefined);
+    }
+    return { invoice: { ...invoice, ...(input.printLater !== undefined ? { printLater: input.printLater } : {}) }, warnings };
+  });
 }
 
 export async function markAsSent(tenantId: string, invoiceId: string, userId?: string) {

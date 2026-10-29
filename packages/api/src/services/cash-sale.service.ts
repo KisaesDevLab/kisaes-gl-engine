@@ -12,6 +12,7 @@ import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import * as documentNumbers from './document-number.service.js';
 import * as formsPrint from './forms-print.service.js';
+import { claimIdempotency } from './idempotency.service.js';
 
 async function getSystemAccount(tenantId: string, systemTag: string): Promise<string> {
   const account = await db.query.accounts.findFirst({
@@ -98,13 +99,17 @@ export async function createCashSaleWithWarnings(
   tenantId: string, input: CreateCashSaleInput, userId?: string, companyId?: string,
 ) {
   const payload = await buildCashSalePayload(tenantId, input);
-  const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'cash_sale', input.txnNumber, {
-    companyId, warnOnly: input.warnOnly === true,
+  // Number and posting in one transaction: a refused post takes no number.
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'cash_sale', input.txnNumber, {
+      companyId, warnOnly: input.warnOnly === true, executor: tx,
+    });
+    const transaction = await ledger.postTransaction(tenantId, {
+      ...payload, txnNumber, printLater: input.printLater === true,
+    }, userId, companyId, tx);
+    return { transaction, warnings };
   });
-  const transaction = await ledger.postTransaction(tenantId, {
-    ...payload, txnNumber, printLater: input.printLater === true,
-  }, userId, companyId);
-  return { transaction, warnings };
 }
 
 export async function updateCashSale(tenantId: string, txnId: string, input: CreateCashSaleInput, userId?: string, companyId?: string) {
@@ -117,15 +122,19 @@ export async function updateCashSaleWithWarnings(
 ) {
   const payload = await buildCashSalePayload(tenantId, input);
   const newNumber = input.txnNumber?.trim();
-  let warnings: documentNumbers.DocumentNumberWarning[] = [];
-  if (newNumber) {
-    warnings = await documentNumbers.checkDuplicate(tenantId, 'cash_sale', newNumber, {
-      companyId, excludeId: txnId, warnOnly: input.warnOnly === true,
-    });
-  }
-  const transaction = await ledger.updateTransaction(tenantId, txnId, {
-    ...payload, ...(newNumber ? { txnNumber: newNumber } : {}),
-  }, userId, companyId);
-  if (input.printLater !== undefined) await formsPrint.setPrintLater(tenantId, txnId, input.printLater);
-  return { transaction: { ...transaction, ...(input.printLater !== undefined ? { printLater: input.printLater } : {}) }, warnings };
+  // The ledger edit and the print-later mark commit together (U-113).
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    let warnings: documentNumbers.DocumentNumberWarning[] = [];
+    if (newNumber) {
+      warnings = await documentNumbers.checkDuplicate(tenantId, 'cash_sale', newNumber, {
+        companyId, excludeId: txnId, warnOnly: input.warnOnly === true, executor: tx,
+      });
+    }
+    const transaction = await ledger.updateTransaction(tenantId, txnId, {
+      ...payload, ...(newNumber ? { txnNumber: newNumber } : {}),
+    }, userId, companyId, tx);
+    if (input.printLater !== undefined) await formsPrint.setPrintLater(tx, tenantId, txnId, input.printLater, companyId);
+    return { transaction: { ...transaction, ...(input.printLater !== undefined ? { printLater: input.printLater } : {}) }, warnings };
+  });
 }

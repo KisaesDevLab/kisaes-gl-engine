@@ -9,6 +9,7 @@ import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { idempotent } from '../middleware/idempotent.js';
+import { describe } from '../middleware/describe.js';
 import * as invoiceService from '../services/invoice.service.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
@@ -30,7 +31,14 @@ invoicesRouter.get('/', async (req, res) => {
 invoicesRouter.post('/', idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ invoice: await ledger.getTransaction(req.tenantId, entity!.id) }),
-}), validate(createInvoiceSchema), async (req, res) => {
+}), validate(createInvoiceSchema), describe({
+  summary: 'Create an invoice',
+  description: 'Response 201 `{invoice, warnings}`. No txnNumber: the next free number from the company\'s invoice counter '
+    + '(numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by '
+    + 'an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in '
+    + '`warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only '
+    + '`{invoice}`, without `warnings`: treat it as absent-safe.',
+}), async (req, res) => {
   // warnings (U-111): duplicate-number warnings of a warnOnly request; [] otherwise.
   const { invoice, warnings } = await invoiceService.createInvoiceWithWarnings(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ invoice, warnings });

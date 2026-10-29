@@ -10,7 +10,7 @@
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -22,10 +22,23 @@ export function isPrintableFormType(t: unknown): t is PrintableFormType {
   return typeof t === 'string' && (PRINTABLE_FORM_TYPES as readonly string[]).includes(t);
 }
 
-/** Set or clear the print-later mark of a form (edit path; the create path posts it with the transaction). */
-export async function setPrintLater(tenantId: string, txnId: string, value: boolean) {
-  await db.update(transactions).set({ printLater: value })
-    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+/**
+ * Set or clear the print-later mark of a form (edit path; the create path
+ * posts it with the transaction). Runs in the edit's transaction; scoped to
+ * the company (rows without a company included), 404 when no form matches.
+ */
+export async function setPrintLater(
+  executor: DbOrTx, tenantId: string, txnId: string, value: boolean, companyId: string | undefined,
+) {
+  const updated = await executor.update(transactions).set({ printLater: value })
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.id, txnId),
+      inArray(transactions.txnType, [...PRINTABLE_FORM_TYPES]),
+      ...(companyId ? [sql`(${transactions.companyId} = ${companyId} OR ${transactions.companyId} IS NULL)`] : []),
+    ))
+    .returning({ id: transactions.id });
+  if (updated.length === 0) throw AppError.notFound('Form not found');
 }
 
 /**

@@ -17,7 +17,9 @@ import express from 'express';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import * as documentNumbers from '../services/document-number.service.js';
+import * as formsPrint from '../services/forms-print.service.js';
 import { db } from '../db/index.js';
 import {
   tenants, users, userTenantAccess, sessions, companies, accounts, auditLog, transactions, journalLines,
@@ -244,6 +246,79 @@ describe('document numbering (U-111)', () => {
   });
 });
 
+describe('auto numbers vs typed numbers, failed posts and concurrent PUT (review S2, S3)', () => {
+  const next = async (type: string) => (await request('GET', `/api/v1/document-numbers/next?type=${type}`, c.token)).json.next;
+
+  it('an auto number skips numbers typed by hand, also after PUT moves the counter back', async () => {
+    expect((await invoice({ txnNumber: 'INV-1001' })).status).toBe(201);
+    expect((await invoice({ txnNumber: 'INV-1002' })).status).toBe(201);
+    expect((await invoice({ txnNumber: 'INV-1005' })).status).toBe(201);
+    const auto = await invoice();
+    expect(auto.status, JSON.stringify(auto.json)).toBe(201);
+    expect(auto.json.invoice.txnNumber).toBe('INV-1003');
+    expect(await next('invoice')).toBe('INV-1004');
+    expect((await invoice()).json.invoice.txnNumber).toBe('INV-1004');
+    expect((await invoice()).json.invoice.txnNumber).toBe('INV-1006');
+
+    // PUT moves the counter back below numbers already used: skipped again.
+    expect((await request('PUT', '/api/v1/document-numbers/invoice', c.token, { nextNumber: 1001 })).status).toBe(200);
+    expect((await invoice()).json.invoice.txnNumber).toBe('INV-1007');
+
+    // Same for the jsonb counters (cash sales, prefix '').
+    expect((await cashSale({ txnNumber: '1001' })).status).toBe(201);
+    const sale = await cashSale();
+    expect(sale.status, JSON.stringify(sale.json)).toBe(201);
+    expect(sale.json.transaction.txnNumber).toBe('1002');
+    // A deleted document's number is free again.
+    const typedMemo = await creditMemo({ txnNumber: '1001' });
+    await db.update(transactions).set({ status: 'deleted' }).where(eq(transactions.id, typedMemo.json.transaction.id));
+    expect((await creditMemo()).json.transaction.txnNumber).toBe('1001');
+    // POST /claim skips too.
+    const claimed = await request('POST', '/api/v1/document-numbers/claim', c.token, { type: 'cash_sale' });
+    expect(claimed.json).toEqual({ type: 'cash_sale', number: 1003, txnNumber: '1003' });
+  });
+
+  it('a refused post takes no number (claimed in the posting transaction)', async () => {
+    await db.update(companies).set({ lockDate: '2026-12-31' }).where(eq(companies.id, c.companyId));
+    for (const [create, type] of [[invoice, 'invoice'], [cashSale, 'cash_sale'], [creditMemo, 'credit_memo']] as const) {
+      const before = await next(type);
+      const r = await create();
+      expect(r.status, JSON.stringify(r.json)).toBe(423);
+      expect(await next(type)).toBe(before);
+    }
+    await db.update(companies).set({ lockDate: null }).where(eq(companies.id, c.companyId));
+    expect((await invoice()).json.invoice.txnNumber).toBe('INV-1001');
+  });
+
+  it('concurrent creates get distinct numbers', async () => {
+    const made = await Promise.all([invoice(), invoice(), invoice(), invoice(), invoice()]);
+    for (const r of made) expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect(made.map((r) => r.json.invoice.txnNumber).sort()).toEqual(['INV-1001', 'INV-1002', 'INV-1003', 'INV-1004', 'INV-1005']);
+  });
+
+  it('a PUT racing a claim never rolls the next number back', async () => {
+    let put!: Promise<Res>;
+    await db.transaction(async (holder) => {
+      await holder.execute(sql`SELECT 1 FROM companies WHERE id = ${c.companyId} FOR UPDATE`);
+      // PUT of the prefix only, while the claim below holds the company row.
+      put = request('PUT', '/api/v1/document-numbers/cash_sale', c.token, { prefix: 'SR-' });
+      for (let i = 0; i < 250; i++) {
+        const waiting = await holder.execute(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
+        `);
+        if ((waiting.rows[0] as { n: number }).n >= 1) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      const got = await documentNumbers.claim(c.tenantId, 'cash_sale', c.companyId, holder);
+      expect(got.number).toBe(1001);
+    });
+    const r = await put;
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json).toEqual({ type: 'cash_sale', prefix: 'SR-', nextNumber: 1002, next: 'SR-1002' });
+    expect(await next('cash_sale')).toBe('SR-1002');
+  });
+});
+
 describe('company-scoped footers (U-111)', () => {
   it('footerText per company with per-type overrides; resolvedFooters falls back on blank', async () => {
     const got = await request('GET', '/api/v1/company/invoice-template', c.token);
@@ -321,5 +396,38 @@ describe('forms print queue (U-113)', () => {
     expect((await request('GET', '/api/v1/forms/print-queue?type=invoice', c.token)).json.data.map((r: any) => r.id)).toEqual([plain.json.invoice.id]);
     await db.update(transactions).set({ status: 'void' }).where(eq(transactions.id, plain.json.invoice.id));
     expect((await request('GET', '/api/v1/forms/print-queue?type=invoice', c.token)).json.data).toEqual([]);
+  });
+
+  it('printLater on an edit is company-scoped and commits with the edit (review S6)', async () => {
+    const inv = await invoice();
+    const sale = await cashSale();
+    const [other] = await db.insert(companies).values({ tenantId: c.tenantId, businessName: 'Second Co' }).returning();
+    const asOther = { 'X-Company-Id': other!.id };
+    const printLater = async (id: string) => (await db.select().from(transactions).where(eq(transactions.id, id)))[0]!.printLater;
+
+    // Through the routes, from another company: refused, the mark unchanged.
+    const invBody = { txnDate: '2026-11-04', contactId: c.customer, lines: lines(), printLater: true };
+    expect((await request('PUT', `/api/v1/invoices/${inv.json.invoice.id}`, c.token, invBody, asOther)).status).toBe(404);
+    const saleBody = {
+      txnType: 'cash_sale', txnDate: '2026-11-04', contactId: c.customer, depositToAccountId: c.bank, lines: lines('40.00'), printLater: true,
+    };
+    expect((await request('PUT', `/api/v1/transactions/${sale.json.transaction.id}`, c.token, saleBody, asOther)).status).toBe(404);
+    expect(await printLater(inv.json.invoice.id)).toBe(false);
+    expect(await printLater(sale.json.transaction.id)).toBe(false);
+
+    // The service itself refuses another company's form and a non-form.
+    await expect(formsPrint.setPrintLater(db, c.tenantId, inv.json.invoice.id, true, other!.id))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(formsPrint.setPrintLater(db, c.tenantId, c.bank, true, c.companyId))
+      .rejects.toMatchObject({ statusCode: 404 });
+    expect(await printLater(inv.json.invoice.id)).toBe(false);
+
+    // A refused edit (closed period) leaves the mark as it was.
+    await db.update(companies).set({ lockDate: '2026-12-31' }).where(eq(companies.id, c.companyId));
+    expect((await request('PUT', `/api/v1/invoices/${inv.json.invoice.id}`, c.token, invBody)).status).toBe(423);
+    expect(await printLater(inv.json.invoice.id)).toBe(false);
+    await db.update(companies).set({ lockDate: null }).where(eq(companies.id, c.companyId));
+    expect((await request('PUT', `/api/v1/invoices/${inv.json.invoice.id}`, c.token, invBody)).status).toBe(200);
+    expect(await printLater(inv.json.invoice.id)).toBe(true);
   });
 });

@@ -12,8 +12,11 @@
  * Every counter moves only the request's company row: the invoice counter
  * used to advance every company of the tenant.
  *
- * Numbers are claimed with one UPDATE ... RETURNING, so concurrent creates
- * get distinct numbers. A number typed by the user leaves the counter alone.
+ * A claim row-locks the company until its transaction ends, so concurrent
+ * creates get distinct numbers, and skips numbers a live document of the
+ * type already holds. Creates claim inside their posting transaction, so a
+ * failed post takes no number. A number typed by the user leaves the
+ * counter alone.
  */
 
 import { and, eq, ne, sql } from 'drizzle-orm';
@@ -41,8 +44,9 @@ export function isDocumentNumberType(t: unknown): t is DocumentNumberType {
 
 // The companies row holding the counters: the request's company when known,
 // else the tenant's first company (legacy callers without a company context).
-async function companyRow(executor: DbOrTx, tenantId: string, companyId: string | undefined) {
-  const [row] = await executor.select({
+// `lock` row-locks it until the end of the transaction (counter writes).
+async function companyRow(executor: DbOrTx, tenantId: string, companyId: string | undefined, lock = false) {
+  const q = executor.select({
     id: companies.id,
     invoicePrefix: companies.invoicePrefix,
     invoiceNextNumber: companies.invoiceNextNumber,
@@ -51,8 +55,14 @@ async function companyRow(executor: DbOrTx, tenantId: string, companyId: string 
     .where(companyId ? and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)) : eq(companies.tenantId, tenantId))
     .orderBy(companies.createdAt)
     .limit(1);
+  const [row] = lock ? await q.for('update') : await q;
   if (!row) throw AppError.notFound('Company not found');
   return row;
+}
+
+// Run fn in the caller's transaction, or in a new one when given the pool.
+function inTx<T>(executor: DbOrTx, fn: (tx: DbOrTx) => Promise<T>): Promise<T> {
+  return executor === db ? db.transaction((tx) => fn(tx)) : fn(executor);
 }
 
 function settingFrom(type: DocumentNumberType, row: Awaited<ReturnType<typeof companyRow>>): DocumentNumberSetting {
@@ -84,7 +94,10 @@ export async function update(
   tenantId: string, type: DocumentNumberType, input: { prefix?: string; nextNumber?: number }, companyId?: string,
 ): Promise<DocumentNumberSetting> {
   return await db.transaction(async (tx) => {
-    const row = await companyRow(tx, tenantId, companyId);
+    // Row-locked like claim, and only the sent keys are written: a
+    // concurrent claim can never have its `next` rolled back by a PUT that
+    // read the entry before the claim committed.
+    const row = await companyRow(tx, tenantId, companyId, true);
     if (type === 'invoice') {
       await tx.update(companies).set({
         ...(input.prefix !== undefined ? { invoicePrefix: input.prefix } : {}),
@@ -92,14 +105,17 @@ export async function update(
         updatedAt: new Date(),
       }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, row.id)));
     } else {
-      const current = settingFrom(type, row);
-      const entry = {
-        prefix: input.prefix ?? current.prefix,
-        next: input.nextNumber ?? current.nextNumber,
+      const sent: { prefix?: string; next?: number } = {
+        ...(input.prefix !== undefined ? { prefix: input.prefix } : {}),
+        ...(input.nextNumber !== undefined ? { next: input.nextNumber } : {}),
       };
       await tx.execute(sql`
         UPDATE companies
-        SET document_numbers = COALESCE(document_numbers, '{}'::jsonb) || jsonb_build_object(${type}::text, ${JSON.stringify(entry)}::jsonb),
+        SET document_numbers = jsonb_set(
+              COALESCE(document_numbers, '{}'::jsonb),
+              ARRAY[${type}::text],
+              COALESCE(document_numbers->${type}, '{}'::jsonb) || ${JSON.stringify(sent)}::jsonb
+            ),
             updated_at = now()
         WHERE tenant_id = ${tenantId} AND id = ${row.id}
       `);
@@ -108,40 +124,71 @@ export async function update(
   });
 }
 
+/** How far a claim skips past numbers already taken before giving up. */
+const MAX_SKIP = 10_000;
+
+// A live (not deleted) document of the type in the company (rows without a
+// company included, as in checkDuplicate) already holds txnNumber.
+async function numberTaken(
+  executor: DbOrTx, tenantId: string, type: Exclude<DocumentNumberType, 'statement'>, companyId: string, txnNumber: string,
+) {
+  const [hit] = await executor.select({ id: transactions.id }).from(transactions)
+    .where(and(
+      eq(transactions.tenantId, tenantId),
+      eq(transactions.txnType, type),
+      eq(transactions.txnNumber, txnNumber),
+      ne(transactions.status, 'deleted'),
+      sql`(${transactions.companyId} = ${companyId} OR ${transactions.companyId} IS NULL)`,
+    ))
+    .limit(1);
+  return !!hit;
+}
+
 /**
- * Take the next number of a type for the company (atomic). Returns the full
- * document number (prefix + number) and the integer that was taken.
+ * Take the next number of a type for the company. Returns the full document
+ * number (prefix + number) and the integer that was taken.
+ *
+ * The company row is locked until the end of the transaction, so concurrent
+ * claims get distinct numbers. A number a live document of the type already
+ * holds (typed by hand, or left behind when PUT moved the counter back) is
+ * skipped. Pass the posting transaction as `executor` so a failed post does
+ * not use up the number; with the pool, the claim commits on its own.
  */
 export async function claim(
   tenantId: string, type: DocumentNumberType, companyId?: string, executor: DbOrTx = db,
 ): Promise<{ type: DocumentNumberType; number: number; txnNumber: string }> {
-  const row = await companyRow(executor, tenantId, companyId);
-  if (type === 'invoice') {
-    const [updated] = await executor.update(companies)
-      .set({ invoiceNextNumber: sql`COALESCE(${companies.invoiceNextNumber}, ${DEFAULT_NEXT_NUMBER}) + 1`, updatedAt: new Date() })
-      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, row.id)))
-      .returning({ newNext: companies.invoiceNextNumber, prefix: companies.invoicePrefix });
-    if (!updated || updated.newNext === null) throw AppError.internal('Invoice counter not initialized for this company');
-    const number = updated.newNext - 1;
-    return { type, number, txnNumber: `${updated.prefix ?? 'INV-'}${number}` };
-  }
-  const res = await executor.execute(sql`
-    UPDATE companies
-    SET document_numbers = jsonb_set(
-      COALESCE(document_numbers, '{}'::jsonb),
-      ARRAY[${type}::text],
-      COALESCE(document_numbers->${type}, '{}'::jsonb) || jsonb_build_object(
-        'next', COALESCE((document_numbers->${type}->>'next')::int, ${DEFAULT_NEXT_NUMBER}) + 1
-      )
-    )
-    WHERE tenant_id = ${tenantId} AND id = ${row.id}
-    RETURNING (document_numbers->${type}->>'next')::int - 1 AS number,
-      COALESCE(document_numbers->${type}->>'prefix', '') AS prefix
-  `);
-  const r = res.rows[0] as { number: number; prefix: string } | undefined;
-  if (!r) throw AppError.internal('Failed to claim a document number');
-  const number = Number(r.number);
-  return { type, number, txnNumber: `${r.prefix}${number}` };
+  return inTx(executor, async (tx) => {
+    const row = await companyRow(tx, tenantId, companyId, true);
+    const { prefix, nextNumber } = settingFrom(type, row);
+    let number = nextNumber;
+    if (type !== 'statement') {
+      let skipped = 0;
+      while (await numberTaken(tx, tenantId, type, row.id, `${prefix}${number}`)) {
+        if (++skipped > MAX_SKIP) {
+          throw AppError.conflict(
+            `No free ${type} number within ${MAX_SKIP} of ${prefix}${nextNumber}. Set a higher next number.`,
+            'DOCUMENT_NUMBER_IN_USE', { txnNumber: `${prefix}${nextNumber}` },
+          );
+        }
+        number++;
+      }
+    }
+    if (type === 'invoice') {
+      await tx.update(companies).set({ invoiceNextNumber: number + 1, updatedAt: new Date() })
+        .where(and(eq(companies.tenantId, tenantId), eq(companies.id, row.id)));
+    } else {
+      await tx.execute(sql`
+        UPDATE companies
+        SET document_numbers = jsonb_set(
+          COALESCE(document_numbers, '{}'::jsonb),
+          ARRAY[${type}::text],
+          COALESCE(document_numbers->${type}, '{}'::jsonb) || jsonb_build_object('next', ${number + 1}::int)
+        )
+        WHERE tenant_id = ${tenantId} AND id = ${row.id}
+      `);
+    }
+    return { type, number, txnNumber: `${prefix}${number}` };
+  });
 }
 
 /** A duplicate document number: refused (409) unless the caller passed warnOnly. */
@@ -189,7 +236,7 @@ export async function checkDuplicate(
  */
 export async function numberForNew(
   tenantId: string, type: Exclude<DocumentNumberType, 'statement'>, typed: string | undefined, opts: {
-    companyId?: string; warnOnly?: boolean;
+    companyId?: string; warnOnly?: boolean; executor?: DbOrTx;
   },
 ): Promise<{ txnNumber: string; warnings: DocumentNumberWarning[] }> {
   const manual = typed?.trim();
@@ -197,6 +244,6 @@ export async function numberForNew(
     const warnings = await checkDuplicate(tenantId, type, manual, opts);
     return { txnNumber: manual, warnings };
   }
-  const { txnNumber } = await claim(tenantId, type, opts.companyId);
+  const { txnNumber } = await claim(tenantId, type, opts.companyId, opts.executor ?? db);
   return { txnNumber, warnings: [] };
 }

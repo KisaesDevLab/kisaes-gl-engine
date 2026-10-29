@@ -11,6 +11,7 @@ import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import * as documentNumbers from './document-number.service.js';
+import { claimIdempotency } from './idempotency.service.js';
 
 export async function createCreditMemo(tenantId: string, input: CreateCreditMemoInput, userId?: string, companyId?: string) {
   return (await createCreditMemoWithWarnings(tenantId, input, userId, companyId)).transaction;
@@ -46,22 +47,26 @@ export async function createCreditMemoWithWarnings(
     };
   });
 
-  const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'credit_memo', input.txnNumber, {
-    companyId, warnOnly: input.warnOnly === true,
+  // Number and posting in one transaction: a refused post takes no number.
+  return await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'credit_memo', input.txnNumber, {
+      companyId, warnOnly: input.warnOnly === true, executor: tx,
+    });
+    const transaction = await ledger.postTransaction(tenantId, {
+      txnType: 'credit_memo',
+      txnNumber,
+      printLater: input.printLater === true,
+      txnDate: input.txnDate,
+      contactId: input.contactId,
+      memo: input.memo,
+      total: subtotal.toFixed(4),
+      appliedToInvoiceId: input.appliedToInvoiceId,
+      lines: [
+        ...revenueLines,
+        { accountId: arAccount.id, debit: '0', credit: subtotal.toFixed(4) },
+      ],
+    }, userId, companyId, tx);
+    return { transaction, warnings };
   });
-  const transaction = await ledger.postTransaction(tenantId, {
-    txnType: 'credit_memo',
-    txnNumber,
-    printLater: input.printLater === true,
-    txnDate: input.txnDate,
-    contactId: input.contactId,
-    memo: input.memo,
-    total: subtotal.toFixed(4),
-    appliedToInvoiceId: input.appliedToInvoiceId,
-    lines: [
-      ...revenueLines,
-      { accountId: arAccount.id, debit: '0', credit: subtotal.toFixed(4) },
-    ],
-  }, userId, companyId);
-  return { transaction, warnings };
 }
