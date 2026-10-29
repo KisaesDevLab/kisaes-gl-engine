@@ -21,6 +21,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import bcrypt from 'bcrypt';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -258,6 +259,53 @@ describe('requeue records the spoiled number (U-106)', () => {
     expect(r.status).toBe(400);
     expect(r.json.error.code).toBe('CHECK_VOID');
     expect((await row(id)).checkNumber).toBe(1001);
+  });
+});
+
+describe('closed periods (U-81, Q-P19ac)', () => {
+  const CLOSING_PHRASE = 'reprint-closing-123'; // gitleaks:allow (test placeholder)
+
+  it('requeue and reprint of a single printed check dated on or before the closing date need the closing-date password, and are audited', async () => {
+    const lost = await writeCheck({ txnDate: '2026-06-15' });
+    const other = await writeCheck({ txnDate: '2026-06-20' });
+    const p = await print([lost, other], 1001);
+    expect(p.status, JSON.stringify(p.json)).toBe(200);
+    await db.update(companies).set({
+      lockDate: '2026-06-30', closingPasswordHash: await bcrypt.hash(CLOSING_PHRASE, 4),
+    }).where(eq(companies.id, c.companyId));
+    const overrides = () => db.select().from(auditLog).where(and(
+      eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'closing_date_override'),
+    ));
+
+    // One check of the batch (lost in the mail): refused without / with a wrong password, nothing changes.
+    let r = await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [lost] });
+    expect(r.status).toBe(423);
+    r = await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [lost], closingPassword: 'wrong-guess' });
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe('CLOSING_PASSWORD_INVALID');
+    expect((await row(lost)).checkNumber).toBe(1001);
+    expect(await db.select().from(spoiledCheckNumbers).where(eq(spoiledCheckNumbers.tenantId, c.tenantId))).toEqual([]);
+
+    r = await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [lost], closingPassword: CLOSING_PHRASE });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.checks).toEqual([{ id: lost, spoiledCheckNumber: 1001, bankAccountId: c.bank }]);
+    expect((await row(lost)).checkNumber).toBeNull();
+    // The rest of the batch is untouched.
+    expect((await row(other)).checkNumber).toBe(1002);
+    expect((await row(other)).printStatus).toBe('printed');
+    expect((await overrides()).length).toBeGreaterThanOrEqual(1);
+    const checkAudit = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'check'), eq(auditLog.entityId, lost)));
+    expect(checkAudit).toHaveLength(1);
+
+    // Reprint of the rest of the batch: same rule.
+    expect((await request('POST', `/api/v1/checks/reprint/${p.json.batchId}`, c.token, {})).status).toBe(423);
+    expect((await row(other)).checkNumber).toBe(1002);
+    const before = (await overrides()).length;
+    r = await request('POST', `/api/v1/checks/reprint/${p.json.batchId}`, c.token, { closingPassword: CLOSING_PHRASE });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.checks).toEqual([{ id: other, spoiledCheckNumber: 1002, bankAccountId: c.bank }]);
+    expect((await overrides()).length).toBeGreaterThan(before);
   });
 });
 
