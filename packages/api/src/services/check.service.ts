@@ -857,7 +857,7 @@ export async function printChecks(
       }
       // A void (or otherwise not posted) check never takes a number (U-115).
       if (txn.status !== 'posted') {
-        throw AppError.badRequest(`Check ${checkId} is void and cannot be printed.`, 'CHECK_VOID', { checkId });
+        throw AppError.badRequest(`Check ${checkId} isn't a posted check any more, so it can't be printed.`, 'CHECK_VOID', { checkId });
       }
       if (txn.printStatus !== 'queue') throw AppError.badRequest(`Check ${checkId} is not in the print queue`);
       // The numbers belong to bankAccountId's checkbook: a check drawn on
