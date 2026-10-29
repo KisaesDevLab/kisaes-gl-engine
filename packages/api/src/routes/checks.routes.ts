@@ -223,7 +223,8 @@ const requeuedDoc = z.object({
     bankAccountId: z.string().uuid().nullable(),
   })),
 });
-const requeueNote = 'The old number is spoiled on the check\'s bank account and audited; the payment stays posted (check-reprint-audit-v1). ';
+const requeueNote = 'The old number is spoiled on the check\'s bank account and audited; the payment stays posted (check-reprint-audit-v1). '
+  + 'A numbered check whose bank account can\'t be resolved is 400 CHECK_BANK_ACCOUNT_UNKNOWN (nothing changes). ';
 
 checksRouter.post('/reprint/:batchId', closingPasswordLimiter, lockContextMiddleware, describe({
   summary: 'Return a printed batch to the print queue (numbers spoiled, payments kept)',
@@ -240,7 +241,7 @@ checksRouter.post('/reprint/:batchId', closingPasswordLimiter, lockContextMiddle
 
 checksRouter.post('/requeue', closingPasswordLimiter, lockContextMiddleware, describe({
   summary: 'Return checks to the print queue (number and print stamp cleared, number spoiled)',
-  description: requeueNote + 'Every id must be a check of this company (404, nothing changes); a void check is 400 CHECK_VOID. ' + closedPeriodNote,
+  description: requeueNote + 'Every id must be a check of this company (404, nothing changes); a void check is 400 CHECK_VOID; a hand-written check (never printed here) is 400 CHECK_NOT_PRINTED. ' + closedPeriodNote,
   body: z.object({ checkIds: z.array(z.string().uuid()), closingPassword: closingPasswordDoc }),
   response: requeuedDoc,
 }), async (req, res) => {

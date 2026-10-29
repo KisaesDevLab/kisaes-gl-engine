@@ -20298,7 +20298,7 @@
     },
     "/api/v1/checks/reprint/{batchId}": {
       "post": {
-        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). 404 when the batch has no check in this company (or was already sent back). A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
+        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). A numbered check whose bank account can't be resolved is 400 CHECK_BANK_ACCOUNT_UNKNOWN (nothing changes). 404 when the batch has no check in this company (or was already sent back). A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_reprint_by_batchId",
         "parameters": [
           {
@@ -20409,7 +20409,7 @@
     },
     "/api/v1/checks/requeue": {
       "post": {
-        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). Every id must be a check of this company (404, nothing changes); a void check is 400 CHECK_VOID. A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
+        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). A numbered check whose bank account can't be resolved is 400 CHECK_BANK_ACCOUNT_UNKNOWN (nothing changes). Every id must be a check of this company (404, nothing changes); a void check is 400 CHECK_VOID; a hand-written check (never printed here) is 400 CHECK_NOT_PRINTED. A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_requeue",
         "requestBody": {
           "content": {

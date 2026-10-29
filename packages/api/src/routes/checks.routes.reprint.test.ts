@@ -24,7 +24,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, userTenantAccess, sessions, companies, accounts, auditLog, transactions, journalLines,
@@ -251,6 +251,40 @@ describe('requeue records the spoiled number (U-106)', () => {
     expect(spoiled.map((s) => [s.checkNumber, s.bankAccountId, s.reason])).toEqual([[1001, c.bank, 'edit_reprint']]);
   });
 
+  it('a hand-written check is refused (400 CHECK_NOT_PRINTED); its number is not spoiled', async () => {
+    const queued = await writeCheck();
+    const hw = await request('POST', '/api/v1/checks', c.token, {
+      bankAccountId: c.bank, payeeNameOnCheck: 'Ozark Lumber', txnDate: '2026-11-05', amount: '10.00',
+      printLater: false, checkNumber: 1200, lines: [{ accountId: c.expense, amount: '10.00' }],
+    });
+    expect(hw.status, JSON.stringify(hw.json)).toBe(201);
+    const id = hw.json.check.id as string;
+    expect((await row(id)).printStatus).toBe('hand_written');
+
+    // Alone or with a queued check: the whole request is refused.
+    for (const checkIds of [[id], [queued, id]]) {
+      const r = await request('POST', '/api/v1/checks/requeue', c.token, { checkIds });
+      expect(r.status).toBe(400);
+      expect(r.json.error.code).toBe('CHECK_NOT_PRINTED');
+    }
+    expect((await row(id)).checkNumber).toBe(1200);
+    expect((await row(id)).printStatus).toBe('hand_written');
+    expect(await db.select().from(spoiledCheckNumbers).where(eq(spoiledCheckNumbers.tenantId, c.tenantId))).toEqual([]);
+  });
+
+  it('a numbered check whose bank account cannot be resolved is refused (400 CHECK_BANK_ACCOUNT_UNKNOWN)', async () => {
+    const id = await writeCheck();
+    expect((await print([id], 1001)).status).toBe(200);
+    // No bank line left: the check's bank account can't be resolved.
+    await db.delete(journalLines).where(eq(journalLines.transactionId, id));
+    const r = await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [id] });
+    expect(r.status).toBe(400);
+    expect(r.json.error.code).toBe('CHECK_BANK_ACCOUNT_UNKNOWN');
+    expect((await row(id)).checkNumber).toBe(1001);
+    expect((await row(id)).printStatus).toBe('printed');
+    expect(await db.select().from(spoiledCheckNumbers).where(eq(spoiledCheckNumbers.tenantId, c.tenantId))).toEqual([]);
+  });
+
   it('a void check is refused (400 CHECK_VOID) and nothing changes', async () => {
     const id = await writeCheck();
     expect((await print([id], 1001)).status).toBe(200);
@@ -350,6 +384,38 @@ describe('company scope (U-106)', () => {
     const [theirs] = await db.select().from(companies).where(eq(companies.id, other!.id));
     expect((mine!.checkSettings as any).nextCheckNumbers[c.bank]).toBe(4002);
     expect((theirs!.checkSettings as any).nextCheckNumbers[c.bank]).toBe(500);
+  });
+
+  it('two parallel prints of different checks from the same starting number: exactly one is 409 CHECK_NUMBER_IN_USE', async () => {
+    const a = await writeCheck();
+    const b = await writeCheck();
+    // Hold the counter's companies row so both prints are in flight at the
+    // same time: without the lock taken before the range query, both pass
+    // the query, then queue on the counter UPDATE and both print #1001.
+    let both!: Promise<[Res, Res]>;
+    await db.transaction(async (holder) => {
+      await holder.execute(sql`SELECT 1 FROM companies WHERE id = ${c.companyId} FOR UPDATE`);
+      both = Promise.all([print([a], 1001), print([b], 1001)]);
+      // Release only once both prints are blocked on a row lock.
+      for (let i = 0; i < 250; i++) {
+        const waiting = await db.execute(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+        `);
+        if ((waiting.rows[0] as { n: number }).n >= 2) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    });
+    const [ra, rb] = await both;
+    expect([ra.status, rb.status].sort()).toEqual([200, 409]);
+    const loser = ra.status === 409 ? ra : rb;
+    expect(loser.json.error.code).toBe('CHECK_NUMBER_IN_USE');
+    expect(loser.json.error.details).toEqual({ checkNumber: '1001' });
+    const rows = [await row(a), await row(b)];
+    expect(rows.map((r) => r.checkNumber).sort()).toEqual([1001, null]);
+    expect(rows.map((r) => r.printStatus).sort()).toEqual(['printed', 'queue']);
+    const [mine] = await db.select().from(companies).where(eq(companies.id, c.companyId));
+    expect((mine!.checkSettings as any).nextCheckNumbers[c.bank]).toBe(1002);
   });
 
   it('print refuses a check drawn on another bank account', async () => {

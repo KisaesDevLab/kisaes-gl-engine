@@ -773,6 +773,12 @@ export async function printChecks(
   // number is left in an indeterminate state. Locking each check row
   // serializes concurrent print runs that overlap on a check id.
   return await db.transaction(async (tx) => {
+    // Lock the counter's companies row first, before the range query below:
+    // two print runs of different checks from the same starting number then
+    // serialize, and the second one's range query sees the first one's
+    // committed numbers and is refused (409) instead of printing duplicates.
+    await lockCheckCounter(tx, tenantId, companyId);
+
     // Server-side duplicate backstop: refuse to assign any check number in
     // [startingNumber .. startingNumber+n-1] that a non-void transaction on
     // THIS bank account already holds. There is no DB unique constraint on
@@ -981,6 +987,15 @@ async function sendBackToQueue(
   const out: RequeuedCheck[] = [];
   for (const row of rows) {
     const bankAccountId = await checkBankAccountId(tx, tenantId, row.id);
+    // A numbered check whose bank account can't be resolved (no bank line)
+    // would lose its number without a spoiled row: refused, nothing changes.
+    if (row.checkNumber !== null && !bankAccountId) {
+      throw AppError.badRequest(
+        `Check ${row.id} has no bank account, so its number can't be recorded as spoiled. Fix the check's bank account first.`,
+        'CHECK_BANK_ACCOUNT_UNKNOWN',
+        { checkId: row.id },
+      );
+    }
     let spoiled: number | null = null;
     if (row.checkNumber !== null && bankAccountId) {
       spoiled = row.checkNumber;
@@ -1025,7 +1040,8 @@ function inOtherCompany(row: { companyId: string | null }, companyId: string | u
  * spoiled and audited (U-106, check-reprint-audit-v1). A check dated in a
  * closed period needs the closing-date password (U-81). Every id must be a
  * check of the request's company (404 otherwise) that is not void (400
- * CHECK_VOID); the whole request is one database transaction, so a refusal
+ * CHECK_VOID) and printed or still queued (a hand-written check is 400
+ * CHECK_NOT_PRINTED); the whole request is one database transaction, so a refusal
  * changes none of the checks.
  */
 export async function requeueChecks(
@@ -1043,6 +1059,16 @@ export async function requeueChecks(
     if (usable.length !== ids.length) throw AppError.notFound('Check not found');
     if (usable.some((r) => r.status === 'void')) {
       throw AppError.badRequest('A voided check cannot go back to the print queue.', 'CHECK_VOID');
+    }
+    // Only a printed check goes back (a queued one is a no-op): a
+    // hand-written check exists on paper with its number, never printed here.
+    const notPrinted = usable.find((r) => r.printStatus !== 'printed' && r.printStatus !== 'queue');
+    if (notPrinted) {
+      throw AppError.badRequest(
+        'Only a printed check can go back to the print queue. A hand-written check keeps its number.',
+        'CHECK_NOT_PRINTED',
+        { checkId: notPrinted.id },
+      );
     }
     const byId = new Map(usable.map((r) => [r.id, r]));
     return sendBackToQueue(tx, tenantId, ids.map((id) => byId.get(id)!), 'requeue', userId);
