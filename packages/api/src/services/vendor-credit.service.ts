@@ -20,10 +20,25 @@ async function getApAccountId(executor: DbOrTx, tenantId: string): Promise<strin
   return account.id;
 }
 
-async function getNextVendorCreditNumber(tenantId: string): Promise<string> {
-  const [row] = await db.select({ c: count() }).from(transactions)
-    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.txnType, 'vendor_credit')));
-  const next = (row?.c ?? 0) + 1;
+/**
+ * The next VC-nnnnn number for the company (U-117 N1), on the posting
+ * transaction: the company row is locked first, so concurrent saves take
+ * distinct numbers and a refused post takes none. The highest VC- number
+ * of the company's vendor credits (rows without a company included; any
+ * status, so a void credit's number is not handed out again) plus one; a
+ * count would repeat numbers once tenant-wide numbering left gaps.
+ */
+async function getNextVendorCreditNumber(tx: Tx, tenantId: string, companyId?: string): Promise<string> {
+  await tx.execute(companyId
+    ? sql`SELECT 1 FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} FOR UPDATE`
+    : sql`SELECT 1 FROM companies WHERE tenant_id = ${tenantId} FOR UPDATE`);
+  const res = await tx.execute(sql`
+    SELECT COALESCE(MAX(substring(txn_number FROM '^VC-([0-9]{1,9})$')::bigint), 0) AS hi
+    FROM transactions
+    WHERE tenant_id = ${tenantId} AND txn_type = 'vendor_credit'
+      ${companyId ? sql`AND (company_id = ${companyId} OR company_id IS NULL)` : sql``}
+  `);
+  const next = Number((res.rows[0] as { hi: string | number } | undefined)?.hi ?? 0) + 1;
   return `VC-${String(next).padStart(5, '0')}`;
 }
 
@@ -69,7 +84,7 @@ export async function createVendorCredit(tenantId: string, input: CreateVendorCr
     await assertApLineRefs(tx, tenantId, companyId, built.lines);
     await assertVendorInScope(tx, tenantId, input.contactId, companyId);
     const apAccountId = await getApAccountId(tx, tenantId);
-    const txnNumber = await getNextVendorCreditNumber(tenantId);
+    const txnNumber = await getNextVendorCreditNumber(tx, tenantId, companyId);
 
     const credit = await ledger.postTransaction(tenantId, {
       txnType: 'vendor_credit',
@@ -94,8 +109,10 @@ export async function createVendorCredit(tenantId: string, input: CreateVendorCr
   return outerTx ? run(outerTx) : db.transaction(run);
 }
 
-export async function getVendorCredit(tenantId: string, creditId: string) {
+/** companyId (U-117 security note): a credit of another company is 404 (rows without a company pass). */
+export async function getVendorCredit(tenantId: string, creditId: string, companyId?: string) {
   const credit = await ledger.getTransaction(tenantId, creditId);
+  if (companyId && credit.companyId && credit.companyId !== companyId) throw AppError.notFound('Transaction not found');
   if (credit.txnType !== 'vendor_credit') throw AppError.badRequest('Not a vendor credit');
   return credit;
 }
@@ -239,7 +256,8 @@ export async function listVendorCredits(tenantId: string, filters: {
   return { data, total: totalRow[0]?.c ?? 0 };
 }
 
-export async function getAvailableCredits(tenantId: string, vendorId: string) {
+/** companyId (U-117 security note): only the company's credits (rows without a company included, as in /bills/payable). */
+export async function getAvailableCredits(tenantId: string, vendorId: string, companyId?: string) {
   return db.select({
     id: transactions.id,
     txnNumber: transactions.txnNumber,
@@ -255,6 +273,7 @@ export async function getAvailableCredits(tenantId: string, vendorId: string) {
       eq(transactions.status, 'posted'),
       eq(transactions.contactId, vendorId),
       sql`COALESCE(${transactions.balanceDue}, 0) > 0`,
+      ...(companyId ? [sql`(${transactions.companyId} = ${companyId} OR ${transactions.companyId} IS NULL)`] : []),
     ))
     .orderBy(sql`${transactions.txnDate} ASC`);
 }

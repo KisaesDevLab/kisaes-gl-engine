@@ -477,8 +477,9 @@ export async function payBills(
           // Numbered now (U-103), like a hand-written check from Write Checks.
           checkNumber = checkNumberFor.get(grp.vendorId)!;
           printStatus = 'hand_written';
-        } else if (input.printLater !== false) {
-          // Default: queue for printing
+        } else if (input.printLater !== false && grp.netPayment.greaterThan(0)) {
+          // Default: queue for printing. A payment of credits and discounts
+          // only pays no cash, so there is no check to print (U-117 S1).
           printStatus = 'queue';
         }
       }
@@ -842,6 +843,8 @@ export async function voidBillPaymentInTx(
       voidReason: reason,
       voidedAt: new Date(),
       updatedAt: new Date(),
+      // A void check waiting to print leaves the print queue (U-115).
+      ...(payment.printStatus === 'queue' ? { printStatus: null } : {}),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
 
     // Recompute touched bills: those it paid (cash or discount) and those
@@ -856,6 +859,10 @@ export async function voidBillPaymentInTx(
       await billService.recomputeVendorCreditBalance(tx, tenantId, id);
     }
 
-    await auditLog(tenantId, 'void', 'transaction', paymentId, payment, { reason }, userId, tx);
+    // The application rows are deleted above: the before-image carries them,
+    // so the audit trail still shows what the payment settled (U-117 S5).
+    await auditLog(tenantId, 'void', 'transaction', paymentId, {
+      ...payment, billApplications: billApps, creditApplications: creditApps,
+    }, { reason }, userId, tx);
   }
 }

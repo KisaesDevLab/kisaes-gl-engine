@@ -821,6 +821,8 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       voidedAt: new Date(),
       updatedAt: new Date(),
       invoiceStatus: txn.txnType === 'invoice' ? 'void' : txn.invoiceStatus,
+      // A void check waiting to print leaves the print queue (U-115).
+      ...(txn.printStatus === 'queue' ? { printStatus: null } : {}),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
 
     // Create reversing journal lines (swap debits and credits) and

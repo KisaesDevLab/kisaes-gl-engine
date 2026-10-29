@@ -362,7 +362,7 @@ apiV2Router.get('/bills/payable', async (req, res) => {
 });
 
 apiV2Router.get('/bills/:id', async (req, res) => {
-  const bill = await billService.getBill(req.tenantId, req.params['id']!);
+  const bill = await billService.getBill(req.tenantId, req.params['id']!, req.companyId);
   res.json({ bill });
 });
 
@@ -379,7 +379,7 @@ apiV2Router.put('/bills/:id', async (req, res) => {
 apiV2Router.post('/bills/:id/void', async (req, res) => {
   const { reason } = voidTransactionSchema.parse(req.body);
   await billService.voidBill(req.tenantId, req.params['id']!, reason, req.userId);
-  const bill = await billService.getBill(req.tenantId, req.params['id']!);
+  const bill = await billService.getBill(req.tenantId, req.params['id']!, req.companyId);
   res.json({ bill });
 });
 
@@ -428,12 +428,12 @@ apiV2Router.get('/vendor-credits', async (req, res) => {
 });
 
 apiV2Router.get('/vendor-credits/available/:vendorId', async (req, res) => {
-  const credits = await vendorCreditService.getAvailableCredits(req.tenantId, req.params['vendorId']!);
+  const credits = await vendorCreditService.getAvailableCredits(req.tenantId, req.params['vendorId']!, req.companyId);
   res.json({ credits });
 });
 
 apiV2Router.get('/vendor-credits/:id', async (req, res) => {
-  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!);
+  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!, req.companyId);
   res.json({ credit });
 });
 
@@ -445,7 +445,7 @@ apiV2Router.post('/vendor-credits', async (req, res) => {
 apiV2Router.post('/vendor-credits/:id/void', async (req, res) => {
   const { reason } = voidTransactionSchema.parse(req.body);
   await vendorCreditService.voidVendorCredit(req.tenantId, req.params['id']!, reason, req.userId);
-  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!);
+  const credit = await vendorCreditService.getVendorCredit(req.tenantId, req.params['id']!, req.companyId);
   res.json({ credit });
 });
 

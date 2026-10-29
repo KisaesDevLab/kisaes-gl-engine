@@ -243,4 +243,11 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * company). Migration 0240 (U-113).
    */
   'forms-print-queue-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on POST /checks/print (`x-idempotency: true` in openapi.json): a
+   * replay returns the original {batchId, checksPrinted, checkNumberRange}. The set is fixed: more routes get a new name
+   * (U-116). With it (U-115, U-117): a void check leaves the print queue and print refuses it (400 CHECK_VOID);
+   * requeue / reprint skip void and deleted checks and return them in skipped: [{id, reason: 'void' | 'deleted'}].
+   */
+  'idempotency-check-print-v1',
 ];

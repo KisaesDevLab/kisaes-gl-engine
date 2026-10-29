@@ -90,13 +90,25 @@ export interface SignatureRenderData {
   maxAmount: string | null;
 }
 
-async function gatherCheckData(tenantId: string, checkId: string): Promise<CheckData> {
+/**
+ * The companies row whose settings and address print (U-117 security note):
+ * the request's company when known, else the tenant's first company.
+ */
+async function printingCompany(tenantId: string, companyId: string | null | undefined) {
+  return db.query.companies.findFirst({
+    where: companyId ? and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)) : eq(companies.tenantId, tenantId),
+    orderBy: companies.createdAt,
+  });
+}
+
+// companyId: a check of another company is 404 (rows without a company pass).
+async function gatherCheckData(tenantId: string, checkId: string, companyId?: string): Promise<CheckData> {
   const txn = await db.query.transactions.findFirst({
     where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)),
   });
-  if (!txn) throw AppError.notFound('Check not found');
+  if (!txn || (companyId && txn.companyId && txn.companyId !== companyId)) throw AppError.notFound('Check not found');
 
-  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
+  const company = await printingCompany(tenantId, companyId ?? txn.companyId);
   if (!company) throw AppError.internal('Company not found');
 
   const settings = (company.checkSettings as Record<string, any>) || {};
@@ -826,10 +838,11 @@ export async function generateCheckPdf(
   format: string = 'voucher',
   startingCheckNumber?: number | null,
   signature?: SignatureRenderData,
+  companyId?: string,
 ): Promise<Buffer> {
   const checks: CheckData[] = [];
   for (let i = 0; i < checkIds.length; i++) {
-    const c = await gatherCheckData(tenantId, checkIds[i]!);
+    const c = await gatherCheckData(tenantId, checkIds[i]!, companyId);
     if (c.checkNumber == null && startingCheckNumber != null) {
       c.checkNumber = startingCheckNumber + i;
     }
@@ -841,8 +854,8 @@ export async function generateCheckPdf(
 }
 
 /** Alignment test page: sample data over the tenant's real settings. */
-export async function generateTestCheckPdf(tenantId: string, format: string = 'voucher'): Promise<Buffer> {
-  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
+export async function generateTestCheckPdf(tenantId: string, format: string = 'voucher', companyId?: string): Promise<Buffer> {
+  const company = await printingCompany(tenantId, companyId);
   if (!company) throw AppError.internal('Company not found');
   const settings = (company.checkSettings as Record<string, any>) || {};
 
@@ -923,7 +936,7 @@ function drawEnvelope(page: PDFPage, fonts: Fonts, c: EnvelopeData): void {
   }
 }
 
-export async function generateEnvelopePdf(tenantId: string, checkIds: string[]): Promise<Buffer> {
+export async function generateEnvelopePdf(tenantId: string, checkIds: string[], companyId?: string): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.setTitle('Envelopes');
   doc.setProducer('Vibe MyBooks');
@@ -934,7 +947,7 @@ export async function generateEnvelopePdf(tenantId: string, checkIds: string[]):
     monoBold: await doc.embedFont(StandardFonts.CourierBold),
   };
   for (const id of checkIds) {
-    const c = await gatherCheckData(tenantId, id);
+    const c = await gatherCheckData(tenantId, id, companyId);
     const page = doc.addPage([ENV10_W, ENV10_H]);
     drawEnvelope(page, fonts, c);
   }

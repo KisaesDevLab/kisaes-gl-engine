@@ -285,13 +285,13 @@ describe('requeue records the spoiled number (U-106)', () => {
     expect(await db.select().from(spoiledCheckNumbers).where(eq(spoiledCheckNumbers.tenantId, c.tenantId))).toEqual([]);
   });
 
-  it('a void check is refused (400 CHECK_VOID) and nothing changes', async () => {
+  it('a void check is skipped (U-117) and nothing changes on it', async () => {
     const id = await writeCheck();
     expect((await print([id], 1001)).status).toBe(200);
     await db.update(transactions).set({ status: 'void' }).where(eq(transactions.id, id));
     const r = await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [id] });
-    expect(r.status).toBe(400);
-    expect(r.json.error.code).toBe('CHECK_VOID');
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ checks: [], skipped: [{ id, reason: 'void' }] });
     expect((await row(id)).checkNumber).toBe(1001);
   });
 });

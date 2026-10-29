@@ -68,9 +68,14 @@ export const IDEMPOTENCY_PAY_BILLS_V1_ROUTES = [
   'post /api/v1/bill-payments',
 ].sort();
 
+/** The idempotency-check-print-v1 set: check printing (U-116). */
+export const IDEMPOTENCY_CHECK_PRINT_V1_ROUTES = [
+  'post /api/v1/checks/print',
+].sort();
+
 const ALL_KEYED_ROUTES = [
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
-  ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES,
+  ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES,
 ].sort();
 
 let paths: Paths;
@@ -116,5 +121,6 @@ describe('idempotency-v1 in openapi.json', () => {
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-docs-v1');
     expect(DESKTOP_CAPABILITIES).toContain('document-drafts-attach-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-pay-bills-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('idempotency-check-print-v1');
   });
 });

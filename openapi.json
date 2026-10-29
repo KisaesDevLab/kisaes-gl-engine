@@ -20018,8 +20018,20 @@
     },
     "/api/v1/checks/print": {
       "post": {
-        "description": "Every check must be a queued check of this company (404) drawn on bankAccountId (400 CHECK_NOT_ON_BANK_ACCOUNT); a number in the range held by another check on the account is 409 CHECK_NUMBER_IN_USE (details.checkNumber) (check-reprint-audit-v1). A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
+        "description": "Response {batchId, checksPrinted, checkNumberRange}. Every check must be a queued check of this company (404) drawn on bankAccountId (400 CHECK_NOT_ON_BANK_ACCOUNT); a void check is 400 CHECK_VOID (details.checkId) (U-115); a number in the range held by another check on the account is 409 CHECK_NUMBER_IN_USE (details.checkNumber) (check-reprint-audit-v1). Idempotency-Key (idempotency-check-print-v1): a retry with the same key replays the original response. A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_print",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20075,6 +20087,35 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "batchId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "checkNumberRange": {
+                      "description": "\"first–last\" (en dash)",
+                      "type": "string"
+                    },
+                    "checksPrinted": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "batchId",
+                    "checksPrinted",
+                    "checkNumberRange"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -20090,7 +20131,8 @@
         "summary": "Print queued checks: assign numbers and mark them printed",
         "tags": [
           "checks"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/checks/print-queue": {
@@ -20377,11 +20419,37 @@
                     },
                     "message": {
                       "type": "string"
+                    },
+                    "skipped": {
+                      "description": "void or deleted checks left as they are (U-117); the others were sent back",
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "void",
+                              "deleted"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
                     "message",
-                    "checks"
+                    "checks",
+                    "skipped"
                   ],
                   "type": "object"
                 }
@@ -20409,7 +20477,7 @@
     },
     "/api/v1/checks/requeue": {
       "post": {
-        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). A numbered check whose bank account can't be resolved is 400 CHECK_BANK_ACCOUNT_UNKNOWN (nothing changes). Every id must be a check of this company (404, nothing changes); a void check is 400 CHECK_VOID; a hand-written check (never printed here) is 400 CHECK_NOT_PRINTED. A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
+        "description": "The old number is spoiled on the check's bank account and audited; the payment stays posted (check-reprint-audit-v1). A numbered check whose bank account can't be resolved is 400 CHECK_BANK_ACCOUNT_UNKNOWN (nothing changes). Every id must be a check of this company (404, nothing changes); a void or deleted check is skipped and listed in skipped while the others go back (U-117); a hand-written check (never printed here) is 400 CHECK_NOT_PRINTED. A check dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID (ledger-guards-v1).",
         "operationId": "post_api_v1_checks_requeue",
         "requestBody": {
           "content": {
@@ -20487,11 +20555,37 @@
                     },
                     "message": {
                       "type": "string"
+                    },
+                    "skipped": {
+                      "description": "void or deleted checks left as they are (U-117); the others were sent back",
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "void",
+                              "deleted"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
                     "message",
-                    "checks"
+                    "checks",
+                    "skipped"
                   ],
                   "type": "object"
                 }
@@ -20600,7 +20694,7 @@
         ]
       },
       "put": {
-        "description": "layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)}}; keys must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR.",
+        "description": "layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)}}; keys must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR. Keys not sent keep their stored values, written atomically against concurrent prints; a sent nextCheckNumbers map is merged per bank account (accounts not sent keep their counters) (U-117).",
         "operationId": "put_api_v1_checks_settings",
         "requestBody": {
           "content": {
@@ -20747,7 +20841,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Update check settings (shallow merge; a sent `layouts` map replaces the stored one)",
+        "summary": "Update check settings (only the sent keys; a sent `layouts` map replaces the stored one)",
         "tags": [
           "checks"
         ]
