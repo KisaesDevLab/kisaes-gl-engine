@@ -742,14 +742,18 @@ export async function listSpoiledCheckNumbers(tenantId: string, bankAccountId?: 
     WHERE ${sql.join(conds, sql` AND `)}
     ORDER BY s.spoiled_at DESC, s.check_number DESC
   `);
-  return (rows.rows as any[]).map((r) => ({
+  type SpoiledRow = {
+    check_number: number | string; transaction_id: string; bank_account_id: string; reason: SpoiledCheckReason;
+    spoiled_at: Date | string; spoiled_by: string | null; spoiled_by_name: string | null; txn_date: Date | string | null;
+  };
+  return (rows.rows as SpoiledRow[]).map((r) => ({
     checkNumber: Number(r.check_number),
-    checkId: r.transaction_id as string,
-    bankAccountId: r.bank_account_id as string,
-    reason: r.reason as SpoiledCheckReason,
+    checkId: r.transaction_id,
+    bankAccountId: r.bank_account_id,
+    reason: r.reason,
     spoiledAt: r.spoiled_at instanceof Date ? r.spoiled_at.toISOString() : String(r.spoiled_at),
-    spoiledBy: (r.spoiled_by as string | null) ?? null,
-    spoiledByName: (r.spoiled_by_name as string | null) ?? null,
+    spoiledBy: r.spoiled_by ?? null,
+    spoiledByName: r.spoiled_by_name ?? null,
     txnDate: r.txn_date instanceof Date ? r.txn_date.toISOString().slice(0, 10) : (r.txn_date ?? null),
   }));
 }
