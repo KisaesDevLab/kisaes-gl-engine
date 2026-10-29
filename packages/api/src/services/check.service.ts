@@ -6,8 +6,10 @@ import { eq, and, sql, count, inArray } from 'drizzle-orm';
 import type { WriteCheckInput, UpdateCheckInput } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import {
-  transactions, companies, journalLines as journalLinesTable, tags, transactionTags,
+  transactions, companies, journalLines as journalLinesTable, tags, transactionTags, spoiledCheckNumbers,
 } from '../db/schema/index.js';
+import type { SpoiledCheckReason } from '../db/schema/spoiled-check-numbers.js';
+import { checkPayeeAddressLines } from './check-address.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import { auditLog } from '../middleware/audit.js';
@@ -44,7 +46,8 @@ function setNextNumSql(bankAccountId: string, value: ReturnType<typeof sql>) {
 
 // Refuse a check number that a non-void, non-deleted transaction on this
 // bank account already holds (409). `excludeTxnId` skips the check being
-// edited, so re-saving a check with its own number is not a clash.
+// edited, so re-saving a check with its own number is not a clash. A number
+// spoiled by a reprint (U-106) may be used again (owner decision 2026-10-29).
 async function assertCheckNumberFree(
   executor: DbOrTx, tenantId: string, bankAccountId: string, checkNumber: number, excludeTxnId?: string,
 ) {
@@ -468,6 +471,13 @@ export async function updateCheck(
 
     await assertCheckRefsInScope(tx, tenantId, companyId, input);
 
+    // The bank account the current number was issued on, read before the
+    // ledger edit moves the bank line: a number cleared by sending the check
+    // back to the queue is spoiled there (U-106).
+    const sendsToQueue = printedChange === 'reprint' || (!wasPrinted && input.printLater === true);
+    const spoiledBank = sendsToQueue && existing.checkNumber !== null
+      ? await checkBankAccountId(tx, tenantId, checkId) : null;
+
     // Ledger first: closed-period, void, reconciliation and billed-line
     // refusals happen before any check number is touched.
     await ledger.updateTransaction(tenantId, checkId, {
@@ -483,7 +493,7 @@ export async function updateCheck(
     let checkNumber: number | null;
     let printStatus: string;
     let clearPrintStamp = false;
-    if (printedChange === 'reprint' || (!wasPrinted && input.printLater === true)) {
+    if (sendsToQueue) {
       checkNumber = null;
       printStatus = 'queue';
       clearPrintStamp = true;
@@ -544,6 +554,15 @@ export async function updateCheck(
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)));
 
+    let spoiledCheckNumber: number | null = null;
+    if (spoiledBank && existing.checkNumber !== null) {
+      spoiledCheckNumber = existing.checkNumber;
+      await recordSpoiledNumber(tx, {
+        tenantId, companyId: existing.companyId, bankAccountId: spoiledBank,
+        checkNumber: existing.checkNumber, transactionId: checkId, reason: 'edit_reprint', userId,
+      });
+    }
+
     const lines = await tx.select().from(journalLinesTable)
       .where(and(eq(journalLinesTable.tenantId, tenantId), eq(journalLinesTable.transactionId, checkId)));
 
@@ -570,6 +589,7 @@ export async function updateCheck(
       ...fields,
       printedCheckChange: printedChange,
       ...(printedChange ? { changedFields } : {}),
+      ...(spoiledCheckNumber !== null ? { spoiledCheckNumber, bankAccountId: spoiledBank } : {}),
     }, userId, tx);
 
     const [txn] = await tx.select().from(transactions)
@@ -628,11 +648,17 @@ export async function getPrintQueue(tenantId: string, bankAccountId?: string, co
     pqConds.push(sql`t.id IN (SELECT transaction_id FROM journal_lines WHERE account_id = ${bankAccountId} AND credit > 0)`);
   }
 
+  // U-107: the bank account (scalar subselect, so a check with several
+  // credit lines — a bill payment with a discount — is still one row), the
+  // transaction type and the payee address rows, so a client can lay out a
+  // window envelope without reading each check.
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_date, t.total, t.memo, t.payee_name_on_check, t.printed_memo,
-      t.source, c.display_name as contact_name, t.created_at
+      t.source, c.display_name as contact_name, t.created_at, t.txn_type, t.payee_address,
+      c.billing_line1, c.billing_line2, c.billing_city, c.billing_state, c.billing_zip,
+      ${bankAccountSubselect(sql`t`)} AS bank_account_id
     FROM transactions t
-    LEFT JOIN contacts c ON c.id = t.contact_id
+    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = t.tenant_id
     WHERE ${sql.join(pqConds, sql` AND `)}
     ORDER BY t.created_at ASC
   `);
@@ -649,6 +675,82 @@ export async function getPrintQueue(tenantId: string, bankAccountId?: string, co
     // 'client_portal' → rendered as a "Client requested" chip in the
     // print-queue UI so staff can see which checks a client triggered.
     source: r.source ?? null,
+    txnType: r.txn_type,
+    bankAccountId: r.bank_account_id ?? null,
+    payeeAddress: checkPayeeAddressLines(r.txn_type, r.payee_address, {
+      line1: r.billing_line1, line2: r.billing_line2, city: r.billing_city, state: r.billing_state, zip: r.billing_zip,
+    }),
+  }));
+}
+
+/**
+ * SQL: the bank account a check is drawn on — its credit line on an asset
+ * account (a bill payment's discount credit is on an income account), not a
+ * void reversal. `t` is the transactions alias.
+ */
+function bankAccountSubselect(t: ReturnType<typeof sql>) {
+  return sql`(
+    SELECT jl.account_id FROM journal_lines jl
+    JOIN accounts a ON a.id = jl.account_id
+    WHERE jl.transaction_id = ${t}.id AND jl.tenant_id = ${t}.tenant_id
+      AND jl.credit > 0 AND COALESCE(jl.is_void_reversal, false) = false
+    ORDER BY (a.account_type = 'asset') DESC, (a.detail_type = 'bank') DESC, jl.credit DESC, jl.account_id
+    LIMIT 1
+  )`;
+}
+
+/** The bank account a check is drawn on (see bankAccountSubselect), or null. */
+async function checkBankAccountId(executor: DbOrTx, tenantId: string, txnId: string): Promise<string | null> {
+  const res = await executor.execute(sql`
+    SELECT ${bankAccountSubselect(sql`t`)} AS bank_account_id
+    FROM transactions t WHERE t.tenant_id = ${tenantId} AND t.id = ${txnId}
+  `);
+  return (res.rows[0] as { bank_account_id: string | null } | undefined)?.bank_account_id ?? null;
+}
+
+/** Record a spoiled number (U-106). Listing only: the number may be used again (owner decision 2026-10-29). */
+async function recordSpoiledNumber(tx: DbOrTx, s: {
+  tenantId: string; companyId: string | null | undefined; bankAccountId: string; checkNumber: number;
+  transactionId: string; reason: SpoiledCheckReason; userId: string | undefined;
+}) {
+  await tx.insert(spoiledCheckNumbers).values({
+    tenantId: s.tenantId,
+    companyId: s.companyId ?? null,
+    bankAccountId: s.bankAccountId,
+    checkNumber: s.checkNumber,
+    transactionId: s.transactionId,
+    reason: s.reason,
+    spoiledBy: s.userId ?? null,
+  });
+}
+
+/**
+ * GET /checks/spoiled (U-106): the numbers spoiled by reprints, newest
+ * first, for the request's company (rows without a company included) and
+ * optionally one bank account. A register shows them as void checks.
+ */
+export async function listSpoiledCheckNumbers(tenantId: string, bankAccountId?: string, companyId?: string) {
+  const conds = [sql`s.tenant_id = ${tenantId}`];
+  if (companyId) conds.push(sql`(s.company_id = ${companyId} OR s.company_id IS NULL)`);
+  if (bankAccountId) conds.push(sql`s.bank_account_id = ${bankAccountId}`);
+  const rows = await db.execute(sql`
+    SELECT s.check_number, s.transaction_id, s.bank_account_id, s.reason, s.spoiled_at, s.spoiled_by,
+      u.display_name AS spoiled_by_name, t.txn_date
+    FROM spoiled_check_numbers s
+    LEFT JOIN users u ON u.id = s.spoiled_by
+    LEFT JOIN transactions t ON t.id = s.transaction_id AND t.tenant_id = s.tenant_id
+    WHERE ${sql.join(conds, sql` AND `)}
+    ORDER BY s.spoiled_at DESC, s.check_number DESC
+  `);
+  return (rows.rows as any[]).map((r) => ({
+    checkNumber: Number(r.check_number),
+    checkId: r.transaction_id as string,
+    bankAccountId: r.bank_account_id as string,
+    reason: r.reason as SpoiledCheckReason,
+    spoiledAt: r.spoiled_at instanceof Date ? r.spoiled_at.toISOString() : String(r.spoiled_at),
+    spoiledBy: (r.spoiled_by as string | null) ?? null,
+    spoiledByName: (r.spoiled_by_name as string | null) ?? null,
+    txnDate: r.txn_date instanceof Date ? r.txn_date.toISOString().slice(0, 10) : (r.txn_date ?? null),
   }));
 }
 
@@ -656,6 +758,7 @@ export async function printChecks(
   tenantId: string, bankAccountId: string, checkIds: string[],
   startingNumber: number, format: string, userId?: string,
   signature?: { id: string; maxAmount: string | null },
+  companyId?: string,
 ) {
   const batchId = crypto.randomUUID();
   let signedCount = 0;
@@ -685,7 +788,11 @@ export async function printChecks(
     `);
     if (clash.rows.length > 0) {
       const dupNum = (clash.rows[0] as { check_number: number }).check_number;
-      throw AppError.conflict(`Check #${dupNum} already exists on this bank account. Choose a starting number past the last used check.`);
+      throw AppError.conflict(
+        `Check #${dupNum} already exists on this bank account. Choose a starting number past the last used check.`,
+        'CHECK_NUMBER_IN_USE',
+        { checkNumber: String(dupNum) },
+      );
     }
 
     for (let i = 0; i < checkIds.length; i++) {
@@ -699,8 +806,20 @@ export async function printChecks(
         .for('update')
         .limit(1);
 
-      if (!txn) throw AppError.notFound(`Check ${checkId} not found`);
+      // Company scope (U-106): another company's check is not found.
+      if (!txn || (companyId && txn.companyId && txn.companyId !== companyId)) {
+        throw AppError.notFound(`Check ${checkId} not found`);
+      }
       if (txn.printStatus !== 'queue') throw AppError.badRequest(`Check ${checkId} is not in the print queue`);
+      // The numbers belong to bankAccountId's checkbook: a check drawn on
+      // another account is refused (U-106), nothing prints.
+      if (await checkBankAccountId(tx, tenantId, checkId) !== bankAccountId) {
+        throw AppError.badRequest(
+          `Check ${checkId} is not drawn on the bank account being printed.`,
+          'CHECK_NOT_ON_BANK_ACCOUNT',
+          { checkId },
+        );
+      }
       // Printing numbers the check: a closed-period change (U-81).
       await assertCheckPeriodOpen(tx, tenantId, txn);
 
@@ -732,7 +851,7 @@ export async function printChecks(
         bankAccountId,
         sql`to_jsonb(GREATEST(${nextNumFor(bankAccountId)}, ${newNext}))`,
       )}
-      WHERE tenant_id = ${tenantId}
+      WHERE ${counterScope(tenantId, companyId)}
     `);
 
     await auditLog(tenantId, 'create', 'check_print', batchId, null, {
@@ -830,46 +949,122 @@ async function updatePrintedMemoInTx(
   return { id: checkId, printedMemo: next };
 }
 
+/** One check a requeue or reprint sent back to the queue (U-106). */
+export interface RequeuedCheck {
+  id: string;
+  /** The number the check carried, now spoiled on bankAccountId; null when it had none. */
+  spoiledCheckNumber: number | null;
+  bankAccountId: string | null;
+}
+
+type RequeueRow = {
+  id: string; txnDate: string; companyId: string | null; checkNumber: number | null;
+  printStatus: string | null; printBatchId: string | null; status: string | null;
+};
+
 /**
- * Back to the print queue, number and print stamp cleared. A check dated in
- * a closed period needs the closing-date password (U-81); the whole request
- * is one database transaction, so a refusal changes none of the checks.
+ * Send locked check rows back to the print queue (U-106): number, print
+ * stamp, batch and signature cleared; the number each carried is recorded as
+ * spoiled on the check's bank account; one audit row per check with the
+ * before state. The payment itself (ledger lines, bill applications,
+ * balances) is never touched: a reprint is not a void (Q-P19b).
  */
-export async function requeueChecks(tenantId: string, checkIds: string[]) {
-  if (!Array.isArray(checkIds) || checkIds.length === 0) return;
-  await db.transaction(async (tx) => {
-    const rows = await tx.select({ id: transactions.id, txnDate: transactions.txnDate, companyId: transactions.companyId })
+async function sendBackToQueue(
+  tx: Tx, tenantId: string, rows: RequeueRow[], reason: 'requeue' | 'reprint', userId: string | undefined,
+  batchId?: string,
+): Promise<RequeuedCheck[]> {
+  for (const row of rows) await assertCheckPeriodOpen(tx, tenantId, row);
+  const out: RequeuedCheck[] = [];
+  for (const row of rows) {
+    const bankAccountId = await checkBankAccountId(tx, tenantId, row.id);
+    let spoiled: number | null = null;
+    if (row.checkNumber !== null && bankAccountId) {
+      spoiled = row.checkNumber;
+      await recordSpoiledNumber(tx, {
+        tenantId, companyId: row.companyId, bankAccountId, checkNumber: row.checkNumber,
+        transactionId: row.id, reason, userId,
+      });
+    }
+    await tx.update(transactions).set({
+      printStatus: 'queue',
+      checkNumber: null,
+      printedAt: null,
+      printBatchId: null,
+      printSignatureId: null,
+      updatedAt: new Date(),
+    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, row.id)));
+    await auditLog(tenantId, 'update', 'check', row.id,
+      { checkNumber: row.checkNumber, printStatus: row.printStatus, printBatchId: row.printBatchId },
+      {
+        checkNumber: null, printStatus: 'queue', printBatchId: null,
+        spoiledCheckNumber: spoiled, bankAccountId, reason, ...(batchId ? { batchId } : {}),
+      },
+      userId, tx);
+    out.push({ id: row.id, spoiledCheckNumber: spoiled, bankAccountId });
+  }
+  return out;
+}
+
+const requeueColumns = {
+  id: transactions.id, txnDate: transactions.txnDate, companyId: transactions.companyId,
+  checkNumber: transactions.checkNumber, printStatus: transactions.printStatus,
+  printBatchId: transactions.printBatchId, status: transactions.status,
+};
+
+/** Another company's row (rows without a company belong to every company, as in Pay Bills). */
+function inOtherCompany(row: { companyId: string | null }, companyId: string | undefined) {
+  return !!companyId && row.companyId !== null && row.companyId !== companyId;
+}
+
+/**
+ * Back to the print queue, number and print stamp cleared, the old number
+ * spoiled and audited (U-106, check-reprint-audit-v1). A check dated in a
+ * closed period needs the closing-date password (U-81). Every id must be a
+ * check of the request's company (404 otherwise) that is not void (400
+ * CHECK_VOID); the whole request is one database transaction, so a refusal
+ * changes none of the checks.
+ */
+export async function requeueChecks(
+  tenantId: string, checkIds: string[], userId?: string, companyId?: string,
+): Promise<RequeuedCheck[]> {
+  if (!Array.isArray(checkIds) || checkIds.length === 0) return [];
+  const ids = [...new Set(checkIds)];
+  return await db.transaction(async (tx) => {
+    const rows = await tx.select(requeueColumns)
       .from(transactions)
-      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, checkIds)))
+      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids)))
       .orderBy(transactions.id)
       .for('update');
-    for (const row of rows) await assertCheckPeriodOpen(tx, tenantId, row);
-    for (const id of checkIds) {
-      await tx.update(transactions).set({
-        printStatus: 'queue',
-        checkNumber: null,
-        printedAt: null,
-        printBatchId: null,
-        printSignatureId: null,
-        updatedAt: new Date(),
-      }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id)));
+    const usable = rows.filter((r) => r.printStatus !== null && r.status !== 'deleted' && !inOtherCompany(r, companyId));
+    if (usable.length !== ids.length) throw AppError.notFound('Check not found');
+    if (usable.some((r) => r.status === 'void')) {
+      throw AppError.badRequest('A voided check cannot go back to the print queue.', 'CHECK_VOID');
     }
+    const byId = new Map(usable.map((r) => [r.id, r]));
+    return sendBackToQueue(tx, tenantId, ids.map((id) => byId.get(id)!), 'requeue', userId);
   });
 }
 
-/** A printed batch back to the queue; closed-period checks as requeueChecks (U-81). */
-export async function reprintBatch(tenantId: string, batchId: string) {
-  await db.transaction(async (tx) => {
-    const rows = await tx.select({ id: transactions.id, txnDate: transactions.txnDate, companyId: transactions.companyId })
+/**
+ * A printed batch back to the queue (U-106): as requeueChecks for every
+ * check of the batch in the request's company; 404 when there is none (an
+ * unknown batch, another company's, or one already sent back). The payments
+ * stay posted.
+ */
+export async function reprintBatch(
+  tenantId: string, batchId: string, userId?: string, companyId?: string,
+): Promise<RequeuedCheck[]> {
+  return await db.transaction(async (tx) => {
+    const rows = await tx.select(requeueColumns)
       .from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.printBatchId, batchId)))
-      .orderBy(transactions.id)
+      .orderBy(transactions.checkNumber, transactions.id)
       .for('update');
-    for (const row of rows) await assertCheckPeriodOpen(tx, tenantId, row);
-    await tx.update(transactions).set({
-      printStatus: 'queue',
-      printedAt: null,
-      updatedAt: new Date(),
-    }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.printBatchId, batchId)));
+    if (rows.length === 0 || rows.some((r) => inOtherCompany(r, companyId))) {
+      throw AppError.notFound('Print batch not found');
+    }
+    // A voided or deleted check of the batch stays as it is.
+    const live = rows.filter((r) => r.status !== 'deleted' && r.status !== 'void');
+    return sendBackToQueue(tx, tenantId, live, 'reprint', userId, batchId);
   });
 }

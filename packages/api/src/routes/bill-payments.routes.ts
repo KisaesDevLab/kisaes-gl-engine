@@ -74,6 +74,8 @@ billPaymentsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idem
 billPaymentsRouter.get('/:id', describe({
   summary: 'Get a bill payment',
   description: 'Response {payment} with billApplications (amount = cash, discountAmount) and creditApplications. ' +
+    'Each bill application carries `bill` and each credit application `credit` (the vendor credit): ' +
+    '{txnNumber, vendorInvoiceNumber, txnDate, total (decimal string)} or null (U-108, check-reprint-audit-v1). ' +
     'A payment of another company is 404 (U-104).',
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
