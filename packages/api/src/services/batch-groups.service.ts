@@ -483,7 +483,8 @@ async function checkCheckNumbers(ex: DbOrTx, tenantId: string, companyId: string
         JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bank}
         WHERE t.tenant_id = ${tenantId}
           AND t.check_number IN (${sql.join(chunk.map((n) => sql`${n}`), sql`, `)})
-          AND t.status NOT IN ('void', 'deleted')
+          -- A void check keeps its number (Q-PR2a), as in assertCheckNumberFree.
+          AND t.status <> 'deleted'
       `);
       for (const row of res.rows as Array<{ check_number: number }>) taken.add(Number(row.check_number));
     }

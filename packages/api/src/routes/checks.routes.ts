@@ -224,7 +224,7 @@ checksRouter.post('/print', closingPasswordLimiter, lockContextMiddleware, signa
   description: 'Response {batchId, checksPrinted, checkNumberRange}. '
     + 'Every check must be a queued check of this company (404) drawn on bankAccountId (400 CHECK_NOT_ON_BANK_ACCOUNT); '
     + 'a void check is 400 CHECK_VOID (details.checkId) (U-115); '
-    + 'a number in the range held by another check on the account is 409 CHECK_NUMBER_IN_USE (details.checkNumber) (check-reprint-audit-v1). '
+    + 'a number in the range held by another check on the account, a void one included (Q-PR2a), is 409 CHECK_NUMBER_IN_USE (details.checkNumber) (check-reprint-audit-v1). '
     + 'Idempotency-Key (idempotency-check-print-v1): a retry with the same key replays the original response. '
     + closedPeriodNote,
   body: printCheckSchema.extend({ closingPassword: closingPasswordDoc }),

@@ -45,8 +45,9 @@ function setNextNumSql(bankAccountId: string, value: ReturnType<typeof sql>) {
   )`;
 }
 
-// Refuse a check number that a non-void, non-deleted transaction on this
-// bank account already holds (409). `excludeTxnId` skips the check being
+// Refuse a check number that a non-deleted transaction on this bank account
+// already holds (409). A void check keeps its number (owner decision Q-PR2a,
+// 2026-10-29): the paper exists, so the number is never handed out again. `excludeTxnId` skips the check being
 // edited, so re-saving a check with its own number is not a clash. A number
 // spoiled by a reprint (U-106) may be used again (owner decision 2026-10-29).
 async function assertCheckNumberFree(
@@ -58,9 +59,9 @@ async function assertCheckNumberFree(
     WHERE t.tenant_id = ${tenantId}
       -- No txn_type filter: hand-written checks post as 'expense' and
       -- printed bill payments carry check numbers too — a number is
-      -- taken if ANY non-void transaction on this bank account holds it.
+      -- taken if ANY non-deleted transaction (void included) on this bank account holds it.
       AND t.check_number = ${checkNumber}
-      AND t.status NOT IN ('void', 'deleted')
+      AND t.status <> 'deleted'
       ${excludeTxnId ? sql`AND t.id <> ${excludeTxnId}` : sql``}
     LIMIT 1
   `);
@@ -71,8 +72,8 @@ async function assertCheckNumberFree(
 
 /**
  * Pay Bills check numbers (U-103, bill-payment-check-number-v1): refuse the
- * range first..last when any number in it is held by a non-void,
- * non-deleted transaction on this bank account: 409 CHECK_NUMBER_IN_USE,
+ * range first..last when any number in it is held by a non-deleted
+ * transaction on this bank account, void ones included (Q-PR2a): 409 CHECK_NUMBER_IN_USE,
  * details.checkNumber the lowest one taken. Call after lockCheckCounter.
  */
 export async function assertCheckNumberRangeFree(
@@ -83,7 +84,7 @@ export async function assertCheckNumberRangeFree(
     JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bankAccountId}
     WHERE t.tenant_id = ${tenantId}
       AND t.check_number BETWEEN ${first} AND ${last}
-      AND t.status NOT IN ('void', 'deleted')
+      AND t.status <> 'deleted'
     ORDER BY t.check_number
     LIMIT 1
   `);
@@ -176,6 +177,13 @@ async function allocateCheckNumber(
     throw AppError.internal('Failed to allocate check number for tenant');
   }
   return Number(assigned);
+}
+
+/** The next number from the bank account's counter, on xecutor (Pay Bills hand-written checks, Q-PR2b). Call after lockCheckCounter. */
+export async function allocateNextCheckNumber(
+  executor: DbOrTx, tenantId: string, bankAccountId: string, companyId: string | undefined,
+): Promise<number> {
+  return allocateCheckNumber(executor, tenantId, bankAccountId, companyId);
 }
 
 type CheckBody = Pick<WriteCheckInput, 'amount' | 'lines' | 'bankAccountId'>;
@@ -803,7 +811,7 @@ export async function printChecks(
     await lockCheckCounter(tx, tenantId, companyId);
 
     // Server-side duplicate backstop: refuse to assign any check number in
-    // [startingNumber .. startingNumber+n-1] that a non-void transaction on
+    // [startingNumber .. startingNumber+n-1] that a non-deleted transaction (a void check keeps its number, Q-PR2a) on
     // THIS bank account already holds. There is no DB unique constraint on
     // check_number (uniqueness is per bank account, resolved via the journal
     // line), so this guard is what prevents a re-print — e.g. a stale manual
@@ -814,7 +822,7 @@ export async function printChecks(
       FROM transactions t
       JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.account_id = ${bankAccountId}
       WHERE t.tenant_id = ${tenantId}
-        AND t.status NOT IN ('void', 'deleted')
+        AND t.status <> 'deleted'
         AND t.check_number BETWEEN ${startingNumber} AND ${endNumber}
       ORDER BY t.check_number
       LIMIT 1

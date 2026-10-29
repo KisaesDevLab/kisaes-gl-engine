@@ -23,7 +23,7 @@ import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
 import { checkLockDate, auditLockOverride, assertAccountsInScope, assertNotStale, assertBalanced, inOtherCompany, round4 } from './ledger.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
-import { lockCheckCounter, assertCheckNumberRangeFree, advanceCheckCounterPast } from './check.service.js';
+import { lockCheckCounter, assertCheckNumberRangeFree, advanceCheckCounterPast, allocateNextCheckNumber } from './check.service.js';
 import { assertBillDiscountAccount, companyBillDiscountAccountId } from './bill-discount-account.js';
 
 // Comparisons are exact (review S1): every amount is rounded to the
@@ -38,24 +38,6 @@ async function getApAccountId(tenantId: string): Promise<string> {
   });
   if (!account) throw AppError.internal("System account 'accounts_payable' not found");
   return account.id;
-}
-
-async function allocateCheckNumber(tenantId: string): Promise<number> {
-  const result = await db.execute(sql`
-    UPDATE companies
-    SET check_settings = jsonb_set(
-      COALESCE(check_settings, '{}'::jsonb),
-      '{nextCheckNumber}',
-      to_jsonb(COALESCE((check_settings->>'nextCheckNumber')::int, 1001) + 1)
-    )
-    WHERE tenant_id = ${tenantId}
-    RETURNING (check_settings->>'nextCheckNumber')::int - 1 AS assigned_number
-  `);
-  const assigned = (result.rows[0] as { assigned_number: number | null } | undefined)?.assigned_number;
-  if (assigned === null || assigned === undefined) {
-    throw AppError.internal('Failed to allocate check number');
-  }
-  return Number(assigned);
 }
 
 /** Width of the printed_memo column. */
@@ -471,7 +453,11 @@ export async function payBills(
       }
       if (paysByCheck) {
         if (input.method === 'check_handwritten') {
-          checkNumber = await allocateCheckNumber(tenantId);
+          // The company's counter for this bank account, claimed on the posting
+          // transaction under the counter lock (Q-PR2b): a refused payment takes
+          // no number and companies of one tenant count independently.
+          await lockCheckCounter(tx, tenantId, companyId);
+          checkNumber = await allocateNextCheckNumber(tx, tenantId, input.bankAccountId, companyId);
           printStatus = 'hand_written';
         } else if (checkNumberFor.has(grp.vendorId)) {
           // Numbered now (U-103), like a hand-written check from Write Checks.

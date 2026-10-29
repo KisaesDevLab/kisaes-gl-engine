@@ -442,3 +442,79 @@ describe('company scope (U-117 security note)', () => {
     expect(test.headers['content-type']).toBe('application/pdf');
   });
 });
+
+describe('owner decisions Q-PR2a / Q-PR2b (2026-10-29)', () => {
+  it('Q-PR2a: a void check keeps its number; a number spoiled by requeue stays reusable', async () => {
+    const a = await writeCheck();
+    expect((await print([a], 1001)).status).toBe(200);
+    expect((await request('POST', `/api/v1/transactions/${a}/void`, c.token, { reason: 'torn' })).status).toBe(200);
+    expect((await row(a)).checkNumber).toBe(1001);
+
+    const b = await writeCheck();
+    const again = await print([b], 1001);
+    expect(again.status).toBe(409);
+    expect(again.json.error.code).toBe('CHECK_NUMBER_IN_USE');
+    expect(again.json.error.details).toEqual({ checkNumber: '1001' });
+    const typed = await request('POST', '/api/v1/checks', c.token, {
+      bankAccountId: c.bank, payeeNameOnCheck: 'Ozark Lumber', txnDate: '2026-11-05', amount: '10.00',
+      printLater: false, checkNumber: 1001, lines: [{ accountId: c.expense, amount: '10.00' }],
+    });
+    expect(typed.status).toBe(409);
+
+    // Spoiled by a requeue (the number was cleared): reusable.
+    expect((await print([b], 2001)).status).toBe(200);
+    expect((await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [b] })).status).toBe(200);
+    const d = await writeCheck();
+    expect((await print([d], 2001)).status).toBe(200);
+    expect((await row(d)).checkNumber).toBe(2001);
+  });
+
+  it('Q-PR2b: hand-written Pay Bills numbers come from each company\'s counter, in the posting transaction', async () => {
+    // Accounts shared by every company of the tenant, so company B can post.
+    await db.update(accounts).set({ companyId: null }).where(eq(accounts.tenantId, c.tenantId));
+    const [second] = await db.insert(companies).values({
+      tenantId: c.tenantId, businessName: 'Second Co', checkSettings: { nextCheckNumbers: { [c.bank]: 500 } },
+    }).returning();
+    await db.update(companies).set({ checkSettings: { nextCheckNumbers: { [c.bank]: 100 } } }).where(eq(companies.id, c.companyId));
+    const counterOf = async (id: string) =>
+      ((await db.select().from(companies).where(eq(companies.id, id)))[0]!.checkSettings as any).nextCheckNumbers[c.bank];
+    const asB = { 'X-Company-Id': second!.id };
+
+    const payHandwritten = async (headers: Record<string, string> = {}) => {
+      const bill = await request('POST', '/api/v1/bills', c.token, {
+        contactId: c.vendor, txnDate: '2026-11-01', paymentTerms: 'net_30', lines: [{ accountId: c.expense, amount: '50.00' }],
+      }, headers);
+      expect(bill.status, JSON.stringify(bill.json)).toBe(201);
+      return request('POST', '/api/v1/bill-payments', c.token, {
+        bankAccountId: c.bank, txnDate: '2026-11-04', method: 'check_handwritten',
+        bills: [{ billId: bill.json.bill.id, amount: '50.00' }],
+      }, headers);
+    };
+
+    const inA = await payHandwritten();
+    expect(inA.status, JSON.stringify(inA.json)).toBe(201);
+    const inB = await payHandwritten(asB);
+    expect(inB.status, JSON.stringify(inB.json)).toBe(201);
+    expect((await row(inA.json.payments[0].id)).checkNumber).toBe(100);
+    expect((await row(inB.json.payments[0].id)).checkNumber).toBe(500);
+    expect(await counterOf(c.companyId)).toBe(101);
+    expect(await counterOf(second!.id)).toBe(501);
+
+    // A payment that fails after the number is claimed takes none.
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION pr2_fail_bpa() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.tenant_id = '${c.tenantId}' THEN RAISE EXCEPTION 'forced failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER pr2_fail_bpa BEFORE INSERT ON bill_payment_applications FOR EACH ROW EXECUTE FUNCTION pr2_fail_bpa();
+    `));
+    try {
+      const failed = await payHandwritten();
+      expect(failed.status).toBe(500);
+    } finally {
+      await db.execute(sql.raw('DROP TRIGGER IF EXISTS pr2_fail_bpa ON bill_payment_applications; DROP FUNCTION IF EXISTS pr2_fail_bpa();'));
+    }
+    expect(await counterOf(c.companyId)).toBe(101);
+    const next = await payHandwritten();
+    expect(next.status).toBe(201);
+    expect((await row(next.json.payments[0].id)).checkNumber).toBe(101);
+  });
+});
