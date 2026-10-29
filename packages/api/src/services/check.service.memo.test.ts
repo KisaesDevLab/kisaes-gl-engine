@@ -138,7 +138,8 @@ describe('updatePrintedMemo', () => {
 
   it('rejects a transaction that is not a check', async () => {
     const check = await checkService.createCheck(tenantId, queuedCheck(), undefined, companyId);
-    await db.update(transactions).set({ printStatus: null }).where(eq(transactions.id, check.id));
+    // Not created as a check (Q-PR2e): no check mark and no print status.
+    await db.update(transactions).set({ printStatus: null, isCheck: false }).where(eq(transactions.id, check.id));
 
     await expect(
       checkService.updatePrintedMemo(tenantId, check.id, 'nope', undefined, companyId),

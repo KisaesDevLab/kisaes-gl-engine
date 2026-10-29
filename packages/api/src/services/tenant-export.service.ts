@@ -891,7 +891,7 @@ export async function importAsNewTenant(
         is_recurring, recurring_schedule_id, source_estimate_id,
         applied_to_invoice_id, void_reason, voided_at,
         check_number, print_status, payee_name_on_check, payee_address,
-        printed_memo, printed_at, payment_method, reference_number
+        printed_memo, printed_at, payment_method, reference_number, is_check
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${txn['txn_type'] as string},
@@ -932,7 +932,9 @@ export async function importAsNewTenant(
           (txn['printed_memo'] as string | null | undefined) ?? null},
         ${(txn['printed_at'] as string) || null},
         ${(txn['payment_method'] as string) || null},
-        ${(txn['reference_number'] as string) || null}
+        ${(txn['reference_number'] as string) || null},
+        ${/* Created as a check (U-117); exports before 0241 carry only the print status. */
+          txn['is_check'] === true || Boolean(txn['print_status'])}
       )
     `);
     counts.transactions++;

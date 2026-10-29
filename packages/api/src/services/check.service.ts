@@ -304,6 +304,7 @@ export async function createCheck(
     await tx.update(transactions).set({
       checkNumber,
       printStatus,
+      isCheck: true,
       payeeNameOnCheck: input.payeeNameOnCheck,
       payeeAddress: input.payeeAddress || null,
       printedMemo: input.printedMemo || null,
@@ -620,8 +621,10 @@ export async function listChecks(tenantId: string, filters?: {
     // bill_payment checks print through the same queue — without it here
     // they'd vanish from the Checks list the moment they printed.
     sql`t.txn_type IN ('expense', 'bill_payment')`,
-    // A void check whose queue status the void cleared (U-115) stays listed.
-    sql`(t.print_status IS NOT NULL OR (t.status = 'void' AND t.payment_method = 'check'))`,
+    // Created as checks only, voided or not (U-117, Q-PR2e): a void check
+    // whose queue status the void cleared (U-115) stays listed; a plain
+    // Expense paid "by check" is not a check.
+    sql`(t.is_check OR t.print_status IS NOT NULL)`,
     // Soft-deleted checks (txn-delete-v1) leave the list.
     sql`t.status <> 'deleted'`,
   ];
@@ -726,12 +729,13 @@ async function checkBankAccountId(executor: DbOrTx, tenantId: string, txnId: str
 }
 
 /**
- * A check: it has a print status, or it is a void check whose queue status
- * the void cleared (U-115; written checks and bill payments by check).
+ * A check: created as one (is_check: Write Checks, or a Pay Bills payment
+ * by check that pays cash), voided or not (U-117, Q-PR2e). A void check
+ * whose queue status the void cleared (U-115) is still a check; a plain
+ * Expense paid "by check" never is.
  */
-function isCheckRow(r: { printStatus: string | null; status: string | null; paymentMethod: string | null; txnType: string }) {
-  return r.printStatus !== null
-    || (r.status === 'void' && r.paymentMethod === 'check' && (r.txnType === 'expense' || r.txnType === 'bill_payment'));
+function isCheckRow(r: { printStatus: string | null; isCheck: boolean }) {
+  return r.isCheck || r.printStatus !== null;
 }
 
 /** Record a spoiled number (U-106). Listing only: the number may be used again (owner decision 2026-10-29). */
@@ -1083,7 +1087,7 @@ const requeueColumns = {
   id: transactions.id, txnDate: transactions.txnDate, companyId: transactions.companyId,
   checkNumber: transactions.checkNumber, printStatus: transactions.printStatus,
   printBatchId: transactions.printBatchId, status: transactions.status, txnType: transactions.txnType,
-  paymentMethod: transactions.paymentMethod,
+  paymentMethod: transactions.paymentMethod, isCheck: transactions.isCheck,
 };
 
 /** Another company's row (rows without a company belong to every company, as in Pay Bills). */

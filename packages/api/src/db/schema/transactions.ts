@@ -68,6 +68,9 @@ export const transactions = pgTable('transactions', {
   // unsigned). FK-less on purpose: historical record, survives signature
   // soft-delete. See check-signatures.ts.
   printSignatureId: uuid('print_signature_id'),
+  // Created as a check (Write Checks, or a Pay Bills payment by check that
+  // pays cash); stays true after a void (U-117, migration 0241).
+  isCheck: boolean('is_check').notNull().default(false),
   // How the payment was made (shared PAYMENT_METHODS) and the payer/payee's
   // reference for it — ACH trace, card auth, the customer's check number.
   // NULL on rows that predate migration 0178.

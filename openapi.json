@@ -20694,7 +20694,7 @@
         ]
       },
       "put": {
-        "description": "layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)}}; keys must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR. Keys not sent keep their stored values, written atomically against concurrent prints; a sent nextCheckNumbers map is merged per bank account (accounts not sent keep their counters) (U-117).",
+        "description": "layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)} | null}; keys with an entry must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR. Keys not sent keep their stored values, written atomically against concurrent prints; sent nextCheckNumbers and layouts maps are merged per bank account (accounts not sent keep their counters and styles; a layouts entry sent as null is removed) (U-117).",
         "operationId": "put_api_v1_checks_settings",
         "requestBody": {
           "content": {
@@ -20741,26 +20741,33 @@
                   },
                   "layouts": {
                     "additionalProperties": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "format": {
-                          "enum": [
-                            "voucher",
-                            "check_middle",
-                            "z_fold",
-                            "standard"
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "format": {
+                              "enum": [
+                                "voucher",
+                                "check_middle",
+                                "z_fold",
+                                "standard"
+                              ],
+                              "type": "string"
+                            },
+                            "printCompanyBlock": {
+                              "default": false,
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "format"
                           ],
-                          "type": "string"
+                          "type": "object"
                         },
-                        "printCompanyBlock": {
-                          "default": false,
-                          "type": "boolean"
+                        {
+                          "type": "null"
                         }
-                      },
-                      "required": [
-                        "format"
-                      ],
-                      "type": "object"
+                      ]
                     },
                     "propertyNames": {
                       "format": "uuid"
@@ -20841,7 +20848,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Update check settings (only the sent keys; a sent `layouts` map replaces the stored one)",
+        "summary": "Update check settings (only the sent keys; nextCheckNumbers and layouts are merged per bank account)",
         "tags": [
           "checks"
         ]

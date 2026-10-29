@@ -243,6 +243,37 @@ describe('void checks leave the print queue (U-115)', () => {
     expect(p.json.error.code).toBe('CHECK_VOID');
   });
 
+  it('only transactions created as checks are checks (Q-PR2e): a voided plain Expense paid by check is not', async () => {
+    const exp = await request('POST', '/api/v1/transactions', c.token, {
+      txnType: 'expense', txnDate: '2026-11-04', payFromAccountId: c.bank, contactId: c.vendor,
+      lines: [{ expenseAccountId: c.expense, amount: '12.50', description: 'Fuel' }],
+    });
+    expect(exp.status, JSON.stringify(exp.json)).toBe(201);
+    const expenseId = exp.json.transaction.id as string;
+    // Paid "by check" as far as the books say (an import or another client).
+    await db.update(transactions).set({ paymentMethod: 'check' }).where(eq(transactions.id, expenseId));
+    expect((await request('POST', `/api/v1/transactions/${expenseId}/void`, c.token, { reason: 'x' })).status).toBe(200);
+    expect((await row(expenseId)).isCheck).toBe(false);
+
+    // A written check and a To be printed bill-payment check, both voided while queued.
+    const checkId = await writeCheck();
+    const billId = await enterBill('60.00');
+    const pay = await request('POST', '/api/v1/bill-payments', c.token, {
+      bankAccountId: c.bank, txnDate: '2026-11-04', method: 'check', printLater: true, bills: [{ billId, amount: '60.00' }],
+    });
+    expect(pay.status, JSON.stringify(pay.json)).toBe(201);
+    const paymentId = pay.json.payments[0].id as string;
+    expect((await request('POST', `/api/v1/transactions/${checkId}/void`, c.token, { reason: 'x' })).status).toBe(200);
+    expect((await request('POST', `/api/v1/bill-payments/${paymentId}/void`, c.token, { reason: 'x' })).status).toBe(200);
+    expect((await row(paymentId)).printStatus).toBeNull();
+
+    const listed = ((await request('GET', '/api/v1/checks', c.token)).json.data as Array<{ id: string }>).map((r) => r.id);
+    expect(listed).toEqual(expect.arrayContaining([checkId, paymentId]));
+    expect(listed).not.toContain(expenseId);
+    expect((await request('PATCH', `/api/v1/checks/${expenseId}/memo`, c.token, { printedMemo: 'x' })).status).toBe(404);
+    expect((await request('POST', '/api/v1/checks/requeue', c.token, { checkIds: [expenseId] })).status).toBe(404);
+  });
+
   it('a void check still marked queue (voided before this fix) is not listed and does not print', async () => {
     const id = await writeCheck();
     await db.update(transactions).set({ status: 'void' }).where(eq(transactions.id, id));
@@ -315,6 +346,21 @@ describe('purchasing fixes (U-117)', () => {
     expect((await row(billId)).billStatus).toBe('paid');
   });
 
+  it('S1: a credits-only hand-written Pay Bills payment takes no check number', async () => {
+    await db.update(companies).set({ checkSettings: { nextCheckNumbers: { [c.bank]: 700 } } }).where(eq(companies.id, c.companyId));
+    const billId = await enterBill('80.00');
+    const credit = await enterCredit('80.00');
+    const pay = await request('POST', '/api/v1/bill-payments', c.token, {
+      bankAccountId: c.bank, txnDate: '2026-11-04', method: 'check_handwritten',
+      bills: [{ billId, amount: '80.00' }], credits: [{ creditId: credit.id, billId, amount: '80.00' }],
+    });
+    expect(pay.status, JSON.stringify(pay.json)).toBe(201);
+    const payment = await row(pay.json.payments[0].id as string);
+    expect(payment.checkNumber).toBeNull();
+    expect(payment.printStatus).toBeNull();
+    expect(await counter()).toBe(700);
+  });
+
   it('S2: requeue skips a void check and sends the others back', async () => {
     const a = await writeCheck();
     const b = await writeCheck();
@@ -360,6 +406,24 @@ describe('purchasing fixes (U-117)', () => {
     expect(put.status).toBe(200);
     expect(put.json.settings.nextCheckNumbers).toEqual({ [c.bank]: 5002, [other]: 9001 });
     expect(put.json.settings.format).toBe('check_middle');
+  });
+
+  it('S3: a sent layouts map is merged per bank account (another account\'s style is kept)', async () => {
+    const [bankB] = await db.insert(accounts).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: 'Payroll Checking', accountType: 'asset', detailType: 'bank',
+    }).returning();
+    const seed = await request('PUT', '/api/v1/checks/settings', c.token, { layouts: { [c.bank]: { format: 'z_fold', printCompanyBlock: true } } });
+    expect(seed.status, JSON.stringify(seed.json)).toBe(200);
+    const put = await request('PUT', '/api/v1/checks/settings', c.token, { layouts: { [bankB!.id]: { format: 'standard' } } });
+    expect(put.status, JSON.stringify(put.json)).toBe(200);
+    expect(put.json.settings.layouts).toEqual({
+      [c.bank]: { format: 'z_fold', printCompanyBlock: true },
+      [bankB!.id]: { format: 'standard', printCompanyBlock: false },
+    });
+    // null removes one account's entry only; {} changes nothing.
+    expect((await request('PUT', '/api/v1/checks/settings', c.token, { layouts: { [bankB!.id]: null } })).status).toBe(200);
+    const kept = await request('PUT', '/api/v1/checks/settings', c.token, { layouts: {} });
+    expect(kept.json.settings.layouts).toEqual({ [c.bank]: { format: 'z_fold', printCompanyBlock: true } });
   });
 
   it('S4: print and edit of the same check at the same time do not deadlock', async () => {

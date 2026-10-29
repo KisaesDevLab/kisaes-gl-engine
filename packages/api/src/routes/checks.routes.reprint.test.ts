@@ -535,6 +535,10 @@ describe('check layouts per bank account (U-109)', () => {
     expect(own.json.layout).toEqual({ format: 'z_fold', printCompanyBlock: true, source: 'bank_account' });
     const std = await request('GET', `/api/v1/checks/settings?bank_account_id=${c.bank2}`, c.token);
     expect(std.json.layout).toEqual({ format: 'standard', printCompanyBlock: false, source: 'bank_account' });
+    // Merged per bank account (U-117): bank keeps z_fold until sent; null removes bank2's entry.
+    expect((await request('PUT', '/api/v1/checks/settings', c.token, { layouts: { [c.bank2]: null } })).status).toBe(200);
+    expect((await request('GET', `/api/v1/checks/settings?bank_account_id=${c.bank}`, c.token)).json.layout)
+      .toEqual({ format: 'z_fold', printCompanyBlock: true, source: 'bank_account' });
     expect((await request('PUT', '/api/v1/checks/settings', c.token, { layouts: { [c.bank]: { format: 'voucher' } } })).status).toBe(200);
     const fallback = await request('GET', `/api/v1/checks/settings?bank_account_id=${c.bank2}`, c.token);
     expect(fallback.json.layout).toEqual({ format: 'check_middle', printCompanyBlock: false, source: 'company' });

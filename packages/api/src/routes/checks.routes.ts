@@ -321,22 +321,34 @@ checksRouter.get('/settings', describe({
 // One atomic UPDATE (U-117 S3): only the keys the request sends are
 // written, merged into the row as it is when the UPDATE takes its row lock,
 // so a concurrent print's check counter (nextCheckNumbers) is never rolled
-// back by a stale read. A sent nextCheckNumbers map is merged per bank
-// account: the accounts it leaves out keep their counters.
+// back by a stale read. Sent nextCheckNumbers and layouts maps are merged
+// per bank account in the same UPDATE: the accounts they leave out keep
+// their counters and check styles; a layouts entry sent as null is removed.
 checksRouter.put('/settings', validate(checkSettingsSchema), describe({
-  summary: 'Update check settings (only the sent keys; a sent `layouts` map replaces the stored one)',
-  description: 'layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)}}; '
-    + 'keys must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR. '
-    + 'Keys not sent keep their stored values, written atomically against concurrent prints; a sent nextCheckNumbers map '
-    + 'is merged per bank account (accounts not sent keep their counters) (U-117).',
+  summary: 'Update check settings (only the sent keys; nextCheckNumbers and layouts are merged per bank account)',
+  description: 'layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)} | null}; '
+    + 'keys with an entry must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR. '
+    + 'Keys not sent keep their stored values, written atomically against concurrent prints; sent nextCheckNumbers and layouts maps '
+    + 'are merged per bank account (accounts not sent keep their counters and styles; a layouts entry sent as null is removed) (U-117).',
 }), async (req, res) => {
-  if (req.body.layouts) await assertLayoutAccounts(req.tenantId, req.companyId, Object.keys(req.body.layouts));
-  const { nextCheckNumbers, ...rest } = req.body as Record<string, unknown> & { nextCheckNumbers?: Record<string, number> };
-  const merge = nextCheckNumbers
-    ? sql`(COALESCE(check_settings, '{}'::jsonb) || ${JSON.stringify(rest)}::jsonb)
-        || jsonb_build_object('nextCheckNumbers',
-             COALESCE(check_settings->'nextCheckNumbers', '{}'::jsonb) || ${JSON.stringify(nextCheckNumbers)}::jsonb)`
-    : sql`COALESCE(check_settings, '{}'::jsonb) || ${JSON.stringify(rest)}::jsonb`;
+  const { nextCheckNumbers, layouts, ...rest } = req.body as Record<string, unknown> & {
+    nextCheckNumbers?: Record<string, number>;
+    layouts?: Record<string, unknown>;
+  };
+  if (layouts) {
+    await assertLayoutAccounts(req.tenantId, req.companyId,
+      Object.entries(layouts).filter(([, v]) => v !== null).map(([k]) => k));
+  }
+  let merge = sql`COALESCE(check_settings, '{}'::jsonb) || ${JSON.stringify(rest)}::jsonb`;
+  if (nextCheckNumbers) {
+    merge = sql`(${merge}) || jsonb_build_object('nextCheckNumbers',
+      COALESCE(check_settings->'nextCheckNumbers', '{}'::jsonb) || ${JSON.stringify(nextCheckNumbers)}::jsonb)`;
+  }
+  if (layouts) {
+    // jsonb_strip_nulls drops the entries sent as null (removed accounts).
+    merge = sql`(${merge}) || jsonb_build_object('layouts', jsonb_strip_nulls(
+      COALESCE(check_settings->'layouts', '{}'::jsonb) || ${JSON.stringify(layouts)}::jsonb))`;
+  }
   const updated = await db.execute(sql`
     UPDATE companies SET check_settings = ${merge}
     WHERE tenant_id = ${req.tenantId} AND id = ${req.companyId}

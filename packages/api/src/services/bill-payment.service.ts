@@ -455,10 +455,14 @@ export async function payBills(
         if (input.method === 'check_handwritten') {
           // The company's counter for this bank account, claimed on the posting
           // transaction under the counter lock (Q-PR2b): a refused payment takes
-          // no number and companies of one tenant count independently.
-          await lockCheckCounter(tx, tenantId, companyId);
-          checkNumber = await allocateNextCheckNumber(tx, tenantId, input.bankAccountId, companyId);
-          printStatus = 'hand_written';
+          // no number and companies of one tenant count independently. A
+          // payment of credits and discounts only writes no check, so it takes
+          // no number either (U-117 S1).
+          if (grp.netPayment.greaterThan(0)) {
+            await lockCheckCounter(tx, tenantId, companyId);
+            checkNumber = await allocateNextCheckNumber(tx, tenantId, input.bankAccountId, companyId);
+            printStatus = 'hand_written';
+          }
         } else if (checkNumberFor.has(grp.vendorId)) {
           // Numbered now (U-103), like a hand-written check from Write Checks.
           checkNumber = checkNumberFor.get(grp.vendorId)!;
@@ -490,6 +494,8 @@ export async function payBills(
         status: 'posted',
         checkNumber,
         printStatus,
+        // A check was written or queued for this payment (U-117, Q-PR2e).
+        isCheck: printStatus !== null,
         printedMemo,
         paymentMethod: cleared
           ? (cleared.checkNumber != null ? 'check' : null)
