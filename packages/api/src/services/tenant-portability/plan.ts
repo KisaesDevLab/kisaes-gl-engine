@@ -354,6 +354,16 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'bill_payment_applications.company_id': 'tenant-ref:companies',
   'bill_payment_applications.payment_id': 'tenant-ref:transactions',
   'bill_payment_applications.bill_id': 'tenant-ref:transactions',
+  // Billable cost links (U-128, migration 0245): which invoice bills which
+  // cost line. The partial unique index (tenant_id, source_line_id) holds a
+  // remapped column.
+  'billable_cost_links.company_id': 'tenant-ref:companies',
+  'billable_cost_links.source_transaction_id': 'tenant-ref:transactions',
+  'billable_cost_links.source_line_id': 'tenant-ref:journal_lines',
+  'billable_cost_links.invoice_id': 'tenant-ref:transactions',
+  'billable_cost_links.markup_account_id': 'tenant-ref:accounts',
+  'billable_cost_links.created_by': 'identity',
+  'billable_cost_links.released_by': 'identity',
   'budget_lines.budget_id': 'tenant-ref:budgets',
   'budget_lines.account_id': 'tenant-ref:accounts',
   'budgets.company_id': 'tenant-ref:companies',
@@ -379,6 +389,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'closes.prepared_by': 'identity',
   'closes.reviewed_by': 'identity',
   'companies.bill_discount_account_id': 'tenant-ref:accounts',
+  'companies.billable_markup_account_id': 'tenant-ref:accounts',
   'companies.lock_date_set_by': 'identity',
   'company_tax_profiles.company_id': 'tenant-ref:companies',
   'conditional_rule_audit.bank_feed_item_id': 'tenant-ref:bank_feed_items',
@@ -477,6 +488,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'journal_lines.company_id': 'tenant-ref:companies',
   'journal_lines.contact_id': 'tenant-ref:contacts',
   'journal_lines.source_transaction_id': 'tenant-ref:transactions',
+  // An invoice's billable cost / markup line: the cost line it bills (U-128).
+  'journal_lines.billable_source_line_id': 'tenant-ref:journal_lines',
   'mcp_request_log.user_id': 'identity',
   'mcp_request_log.api_key_id': 'excluded-ref:api_keys',
   'mcp_request_log.oauth_client_id': 'excluded-ref:oauth_clients',
