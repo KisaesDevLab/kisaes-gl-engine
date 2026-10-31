@@ -37,6 +37,9 @@ export const contacts = pgTable('contacts', {
   defaultDiscountDays: integer('default_discount_days'),
   // The client's price level (U-40, price-levels-v1, migration 0243).
   priceLevelId: uuid('price_level_id'),
+  // Suggested markup on the client's billable costs, a percent (10 = 10 %),
+  // 0 to 1000 (U-128, migration 0245). A suggestion the client sends back.
+  defaultMarkupPercent: decimal('default_markup_percent', { precision: 9, scale: 4 }),
   openingBalance: decimal('opening_balance', { precision: 19, scale: 4 }).default('0'),
   openingBalanceDate: date('opening_balance_date'),
   // Vendor-specific

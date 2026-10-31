@@ -191,6 +191,10 @@ export const journalLines = pgTable('journal_lines', {
   // | price_level_percent | none).
   discountPercent: decimal('discount_percent', { precision: 7, scale: 4 }),
   unitPriceSource: varchar('unit_price_source', { length: 30 }),
+  // On an invoice's billable cost line (lineRole 'billable_cost') and its
+  // markup line ('billable_markup'): the cost line it bills (U-128,
+  // migration 0245). No FK; the source line keeps its id across edits.
+  billableSourceLineId: uuid('billable_source_line_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),
