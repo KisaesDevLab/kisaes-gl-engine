@@ -17347,6 +17347,236 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/billable-costs": {
+      "get": {
+        "description": "The costs marked billable to a customer (check, expense, card charge or bill lines with isBillable and a line customer) that no invoice bills yet: posted sources of the request's company (or of none), contactId = the line customer, sorted by source date then sourceLineId. totalCount and totalAmount (the sum of costAmount, 2 places) are over every page. defaultMarkupPercent: the client's (contactId) suggested markup percent, or null. suggestedIncomeAccountId: the cost item's income account (source \"item\"), else null; a suggestion the client sends back as the invoice line's accountId. projectId is accepted and ignored until projects-v1. Bill a cost with an invoice line {billableSourceLineId, accountId, markupPercent?} on POST / PUT /invoices.",
+        "operationId": "get_api_v1_billable_costs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projectId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "defaultMarkupPercent": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "contactId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "costAmount": {
+                            "description": "round2(sourceAmount), half away from zero: what the invoice bills before markup",
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "expenseAccountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "itemId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "quantity": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sourceAmount": {
+                            "description": "the cost line's debit - credit, 4 places, signed",
+                            "type": "string"
+                          },
+                          "sourceDate": {
+                            "type": "string"
+                          },
+                          "sourceLineId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "sourceNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sourceTransactionId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "sourceTxnType": {
+                            "type": "string"
+                          },
+                          "suggestedIncomeAccountId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "suggestedIncomeAccountSource": {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "item"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "unitCost": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "vendorName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "sourceLineId",
+                          "sourceTransactionId",
+                          "sourceTxnType",
+                          "sourceNumber",
+                          "sourceDate",
+                          "contactId",
+                          "vendorName",
+                          "description",
+                          "expenseAccountId",
+                          "itemId",
+                          "quantity",
+                          "unitCost",
+                          "sourceAmount",
+                          "costAmount",
+                          "suggestedIncomeAccountId",
+                          "suggestedIncomeAccountSource"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "totalAmount": {
+                      "type": "string"
+                    },
+                    "totalCount": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "totalCount",
+                    "totalAmount",
+                    "defaultMarkupPercent",
+                    "limit",
+                    "offset"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List unbilled billable costs (billable-costs-v1)",
+        "tags": [
+          "billable-costs"
+        ]
+      }
+    },
     "/api/v1/bills": {
       "get": {
         "description": "Rows carry billReceived, discountDate, updatedAt and daysOverdue (from the database date).",
@@ -22794,6 +23024,17 @@
                       }
                     ]
                   },
+                  "billableMarkupAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "categoryFilterMode": {
                     "enum": [
                       "by_type",
@@ -23728,6 +23969,17 @@
                       }
                     ]
                   },
+                  "defaultMarkupPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,4}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultPaymentTerms": {
                     "anyOf": [
                       {
@@ -24410,6 +24662,17 @@
                     "anyOf": [
                       {
                         "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultMarkupPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,4}(\\.\\d{1,4})?$",
                         "type": "string"
                       },
                       {
@@ -31367,7 +31630,7 @@
         ]
       },
       "post": {
-        "description": "Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "description": "Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
         "operationId": "post_api_v1_invoices",
         "parameters": [
           {
@@ -31420,6 +31683,10 @@
                           "format": "uuid",
                           "type": "string"
                         },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
                         "description": {
                           "maxLength": 4000,
                           "type": "string"
@@ -31442,6 +31709,11 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
                         },
                         "quantity": {
                           "minLength": 1,
@@ -31498,6 +31770,14 @@
                   },
                   "printLater": {
                     "type": "boolean"
+                  },
+                  "releaseBillableSourceLineIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "type": "array"
                   },
                   "tagIds": {
                     "items": {
@@ -31557,7 +31837,7 @@
     },
     "/api/v1/invoices/preview": {
       "post": {
-        "description": "invoice-pricing-v1: computes the invoice the body would post (POST /invoices; with invoiceId, PUT /invoices/:invoiceId) with the same code, and writes nothing. Response 200 {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, taxAmount}], subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client's open balance (contact-balance-v1) plus this total, with invoiceId's posted total taken out first. Errors as POST (400 VALIDATION_ERROR); invoiceId of another company or not found 404. Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "description": "invoice-pricing-v1: computes the invoice the body would post (POST /invoices; with invoiceId, PUT /invoices/:invoiceId) with the same code, and writes nothing. Response 200 {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, taxAmount}], subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client's open balance (contact-balance-v1) plus this total, with invoiceId's posted total taken out first. Errors as POST (400 VALIDATION_ERROR); invoiceId of another company or not found 404. Billable lines add {billableSourceLineId, costAmount, markupPercent, markupAmount, displayRate, error: {code: BILLABLE_ALREADY_BILLED, invoiceId, invoiceNumber} | null}; nothing is locked or claimed. Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
         "operationId": "post_api_v1_invoices_preview",
         "requestBody": {
           "content": {
@@ -31598,6 +31878,10 @@
                           "format": "uuid",
                           "type": "string"
                         },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
                         "description": {
                           "maxLength": 4000,
                           "type": "string"
@@ -31620,6 +31904,11 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
                         },
                         "quantity": {
                           "minLength": 1,
@@ -31673,6 +31962,14 @@
                   },
                   "printLater": {
                     "type": "boolean"
+                  },
+                  "releaseBillableSourceLineIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "type": "array"
                   },
                   "tagIds": {
                     "items": {
@@ -31763,7 +32060,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
         "operationId": "put_api_v1_invoices_by_id",
         "parameters": [
           {
@@ -31825,6 +32122,10 @@
                           "format": "uuid",
                           "type": "string"
                         },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
                         "description": {
                           "maxLength": 4000,
                           "type": "string"
@@ -31847,6 +32148,11 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
                         },
                         "quantity": {
                           "minLength": 1,
@@ -31903,6 +32209,14 @@
                   },
                   "printLater": {
                     "type": "boolean"
+                  },
+                  "releaseBillableSourceLineIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "type": "array"
                   },
                   "tagIds": {
                     "items": {
