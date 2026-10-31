@@ -218,6 +218,50 @@ export async function unarchive(tenantId: string, id: string, userId?: string) {
   return updated;
 }
 
+type StoredInvoiceLine = Awaited<ReturnType<typeof ledger.getTransaction>>['lines'][number];
+
+/** Billable cost and markup lines (U-128) of a stored invoice. */
+function isBillableLine(l: StoredInvoiceLine): boolean {
+  return !!l.billableSourceLineId || l.lineRole === 'billable_cost' || l.lineRole === 'billable_markup';
+}
+
+/**
+ * A recurring invoice's lines from its template invoice (Q-P20ah): every
+ * line but A/R and Sales Tax, as a signed amount (credit - debit), so
+ * negative lines and discounts carry over; billed costs never do (they are
+ * billed once). A discount keeps its item and percent ({itemId,
+ * discountPercent}) or its amount ({itemId, unitPrice}); a subtotal is
+ * {itemId}; other lines keep their item, quantity and stored price, or
+ * 1 x the signed amount when the price doesn't give it to the cent.
+ * Exported for the tests.
+ */
+export function recurringInvoiceLines(lines: readonly StoredInvoiceLine[], arAccountId?: string, taxAccountId?: string) {
+  return lines
+    .filter((l) => l.accountId !== arAccountId && l.accountId !== taxAccountId && !isBillableLine(l))
+    .flatMap((l) => {
+      const signed = new Decimal(l.credit || '0').minus(l.debit || '0');
+      const base = {
+        accountId: l.accountId,
+        ...(l.itemId ? { itemId: l.itemId } : {}),
+        description: l.description || undefined,
+        isTaxable: l.isTaxable ?? false,
+        taxRate: l.taxRate ?? '0',
+        tagId: l.tagId ?? null,
+      };
+      if (l.itemId && l.discountPercent) return [{ ...base, discountPercent: l.discountPercent }];
+      if (l.itemId && l.unitPriceSource === 'none') return [base]; // a subtotal: shown only
+      if (signed.isZero() && !l.itemId) return [];
+      if (l.itemId && signed.isNegative() && (l.quantity === null || l.quantity === undefined)) {
+        return [{ ...base, unitPrice: signed.abs().toFixed(4) }]; // an amount discount
+      }
+      const qty = l.quantity && !new Decimal(l.quantity).isZero() ? new Decimal(l.quantity) : null;
+      if (qty && l.unitPrice && qty.times(l.unitPrice).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).equals(signed)) {
+        return [{ ...base, quantity: qty.toString(), unitPrice: new Decimal(l.unitPrice).toFixed(4) }];
+      }
+      return [{ ...base, quantity: '1', unitPrice: signed.toFixed(4) }];
+    });
+}
+
 /**
  * The pre-0225 clone path, kept for 'legacy' templates whose source
  * transaction templates can't hold (invoice, bill, cash sale...): reads the
@@ -284,27 +328,17 @@ export async function postLegacyClone(
       db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')) }),
       db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'sales_tax_payable')) }),
     ]);
-    const revenueLines = template.lines
-      .filter((l) => new Decimal(l.credit || '0').greaterThan(0)
-        && l.accountId !== arAccount?.id
-        && l.accountId !== taxAccount?.id)
-      .map((l) => {
-        // Preserve quantity when present and derive unitPrice so qty*price ==
-        // the original line total exactly; otherwise fall back to qty 1 @ total.
-        const credit = new Decimal(l.credit);
-        const qty = l.quantity && new Decimal(l.quantity).greaterThan(0) ? new Decimal(l.quantity) : null;
-        return {
-          accountId: l.accountId,
-          description: l.description || undefined,
-          quantity: qty ? l.quantity! : '1',
-          unitPrice: qty ? credit.div(qty).toFixed(4) : credit.toFixed(4),
-          isTaxable: l.isTaxable ?? false,
-          taxRate: l.taxRate ?? '0',
-          tagId: l.tagId ?? null,
-        };
-      });
+    const revenueLines = recurringInvoiceLines(template.lines, arAccount?.id, taxAccount?.id);
 
     if (revenueLines.length === 0) {
+      // A schedule from before Q-P20ah whose invoice only billed costs: a
+      // copy never bills a cost again, so there is nothing to post.
+      if (template.lines.some(isBillableLine)) {
+        throw AppError.badRequest(
+          'This recurring invoice only bills costs, and a cost is billed once. Pause this schedule, or make a new one from an invoice without billable costs.',
+          'RECURRING_HAS_BILLABLE_COSTS',
+        );
+      }
       throw AppError.internal('Recurring invoice template has no revenue lines');
     }
 

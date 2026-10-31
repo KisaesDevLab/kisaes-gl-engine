@@ -8,13 +8,23 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
 import { idempotent } from '../middleware/idempotent.js';
+import { describe } from '../middleware/describe.js';
 import * as itemsService from '../services/items.service.js';
 
 export const itemsRouter = Router();
 itemsRouter.use(authenticate);
 itemsRouter.use(requireResource('items'));
 
-itemsRouter.get('/', async (req, res) => {
+const kindRules = 'Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes '
+  + 'discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable '
+  + 'discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. '
+  + 'Invoices price them per invoice-pricing-v1 (POST /invoices/preview).';
+
+itemsRouter.get('/', describe({
+  summary: 'List items',
+  description: `{data, total}. itemType filters by kind. ${kindRules}`,
+  query: itemFiltersSchema,
+}), async (req, res) => {
   const result = await itemsService.list(req.tenantId, itemFiltersSchema.parse(req.query));
   res.json(result);
 });
@@ -23,7 +33,11 @@ itemsRouter.get('/', async (req, res) => {
 itemsRouter.post('/', idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ item: await itemsService.getById(req.tenantId, entity!.id) }),
-}), validate(createItemSchema), async (req, res) => {
+}), validate(createItemSchema), describe({
+  summary: 'Create an item',
+  description: `Response 201 {item}. A name already used is 409. ${kindRules}`,
+  body: createItemSchema,
+}), async (req, res) => {
   const item = await itemsService.create(req.tenantId, req.body, req.userId);
   res.status(201).json({ item });
 });
@@ -45,7 +59,11 @@ itemsRouter.get('/:id', async (req, res) => {
   res.json({ item });
 });
 
-itemsRouter.put('/:id', validate(updateItemSchema), async (req, res) => {
+itemsRouter.put('/:id', validate(updateItemSchema), describe({
+  summary: 'Edit an item',
+  description: `Response {item}; omitted fields keep their values and the kind rules apply to the result. ${kindRules}`,
+  body: updateItemSchema,
+}), async (req, res) => {
   const item = await itemsService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ item });
 });

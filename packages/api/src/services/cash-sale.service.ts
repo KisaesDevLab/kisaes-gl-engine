@@ -7,12 +7,14 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { CreateCashSaleInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { accounts, companies } from '../db/schema/index.js';
+import { accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import * as documentNumbers from './document-number.service.js';
 import * as formsPrint from './forms-print.service.js';
 import { claimIdempotency } from './idempotency.service.js';
+import { getDefaultTaxRate } from './invoice.service.js';
+import { computeSalesDocument } from '../utils/sales-compute.js';
 
 async function getSystemAccount(tenantId: string, systemTag: string): Promise<string> {
   const account = await db.query.accounts.findFirst({
@@ -22,55 +24,49 @@ async function getSystemAccount(tenantId: string, systemTag: string): Promise<st
   return account.id;
 }
 
-async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput) {
-  const company = await db.query.companies.findFirst({ where: eq(companies.tenantId, tenantId) });
-  const defaultTaxRate = new Decimal(company?.defaultSalesTaxRate || '0');
+/** A signed amount as a journal side: positive on `positive`, negative on the other side. */
+function side(amount: string, positive: 'debit' | 'credit'): { debit: string; credit: string } {
+  const d = new Decimal(amount);
+  const abs = d.abs().toFixed(4);
+  return (d.isNegative() ? positive === 'credit' : positive === 'debit')
+    ? { debit: abs, credit: '0' } : { debit: '0', credit: abs };
+}
 
-  // All arithmetic runs through Decimal.js so invoice_total == sum of
-  // journal line amounts exactly — float math here was accumulating
-  // sub-cent drift that showed up as "Transaction does not balance"
-  // failures on very large cash sales.
-  let subtotal = new Decimal('0');
-  let totalTax = new Decimal('0');
+/**
+ * The cash sale's figures to the cent (U-122, sales-cents-v1): line =
+ * round2(qty x rate); tax = round2(taxable base x rate) once per rate,
+ * allocated to the taxable lines; the request company's default rate for a
+ * taxable line that sends none. Deposit account debited the total.
+ */
+async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput, companyId?: string) {
+  const defaultTaxRate = await getDefaultTaxRate(db, tenantId, companyId);
+  const computed = computeSalesDocument(input.lines.map((l) => ({
+    quantity: l.quantity, unitPrice: l.unitPrice, isTaxable: l.isTaxable !== false, taxRate: l.taxRate,
+  })), defaultTaxRate);
 
-  const revenueLines = input.lines.map((line) => {
-    const qty = new Decimal(line.quantity);
-    const price = new Decimal(line.unitPrice);
-    // Line amount and line tax rounded to the ledger's 4 places first; the
-    // deposit total adds up the rounded values, so it equals the stored
-    // credits exactly (U-65).
-    const lineTotal = ledger.round4(qty.times(price));
-    subtotal = subtotal.plus(lineTotal);
-
-    const taxable = line.isTaxable !== false;
-    const rate = taxable ? new Decimal(line.taxRate ?? defaultTaxRate.toString()) : new Decimal('0');
-    const lineTax = taxable && rate.greaterThan(0) ? ledger.round4(lineTotal.times(rate)) : new Decimal('0');
-    totalTax = totalTax.plus(lineTax);
-
+  const revenueLines = input.lines.map((line, i) => {
+    const c = computed.lines[i]!;
     return {
       accountId: line.accountId,
-      debit: '0',
-      credit: lineTotal.toFixed(4),
+      ...side(c.amount, 'credit'),
       description: line.description,
       quantity: line.quantity,
       unitPrice: line.unitPrice,
-      isTaxable: taxable,
-      taxRate: rate.greaterThan(0) ? rate.toString() : '0',
-      taxAmount: lineTax.toFixed(4),
+      isTaxable: c.isTaxable,
+      taxRate: c.taxRate,
+      taxAmount: new Decimal(c.taxAmount).toFixed(4),
       tagId: line.tagId,
     };
   });
 
-  const total = subtotal.plus(totalTax);
-
   const journalLines: any[] = [
-    { accountId: input.depositToAccountId, debit: total.toFixed(4), credit: '0' },
+    { accountId: input.depositToAccountId, ...side(computed.total, 'debit') },
     ...revenueLines,
   ];
 
-  if (totalTax.greaterThan(0)) {
+  if (!new Decimal(computed.taxTotal).isZero()) {
     const taxAccountId = await getSystemAccount(tenantId, 'sales_tax_payable');
-    journalLines.push({ accountId: taxAccountId, debit: '0', credit: totalTax.toFixed(4), description: 'Sales Tax' });
+    journalLines.push({ accountId: taxAccountId, ...side(computed.taxTotal, 'credit'), description: 'Sales Tax' });
   }
 
   return {
@@ -78,9 +74,9 @@ async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput
     txnDate: input.txnDate,
     contactId: input.contactId,
     memo: input.memo,
-    subtotal: subtotal.toFixed(4),
-    taxAmount: totalTax.toFixed(4),
-    total: total.toFixed(4),
+    subtotal: new Decimal(computed.subtotal).toFixed(4),
+    taxAmount: new Decimal(computed.taxTotal).toFixed(4),
+    total: new Decimal(computed.total).toFixed(4),
     lines: journalLines,
   };
 }
@@ -98,7 +94,7 @@ export async function createCashSale(tenantId: string, input: CreateCashSaleInpu
 export async function createCashSaleWithWarnings(
   tenantId: string, input: CreateCashSaleInput, userId?: string, companyId?: string,
 ) {
-  const payload = await buildCashSalePayload(tenantId, input);
+  const payload = await buildCashSalePayload(tenantId, input, companyId);
   // Number and posting in one transaction: a refused post takes no number.
   return await db.transaction(async (tx) => {
     await claimIdempotency(tx);
@@ -120,7 +116,7 @@ export async function updateCashSale(tenantId: string, txnId: string, input: Cre
 export async function updateCashSaleWithWarnings(
   tenantId: string, txnId: string, input: CreateCashSaleInput, userId?: string, companyId?: string,
 ) {
-  const payload = await buildCashSalePayload(tenantId, input);
+  const payload = await buildCashSalePayload(tenantId, input, companyId);
   const newNumber = input.txnNumber?.trim();
   // The ledger edit and the print-later mark commit together (U-113).
   return await db.transaction(async (tx) => {

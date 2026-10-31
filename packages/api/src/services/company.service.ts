@@ -13,6 +13,7 @@ import { authorizeLockDateChange, withoutClosingPasswordHash, type ClosingPasswo
 import { isDesktop } from '../desktop/profile.js';
 import { hasSessionSecret } from '../desktop/session-secrets.js';
 import { assertBillDiscountAccount } from './bill-discount-account.js';
+import { assertMarkupAccount } from './billable-links.js';
 
 /**
  * A company row as it leaves the service layer (responses, audit images):
@@ -100,6 +101,8 @@ const COMPANY_UPDATABLE_FIELDS = [
   'chatSupportEnabled',
   // Pay Bills discount account (U-101); validated in updateCompany.
   'billDiscountAccountId',
+  // Billable-cost markup account (U-128); validated in updateCompany.
+  'billableMarkupAccountId',
 ] as const;
 
 export async function updateCompany(
@@ -153,6 +156,11 @@ export async function updateCompany(
     const discountAccountId = updates['billDiscountAccountId'];
     if (typeof discountAccountId === 'string') {
       await assertBillDiscountAccount(tx, tenantId, companyId, discountAccountId);
+    }
+    // Billable-cost markup account (U-128): an active income account of this company.
+    const markupAccountId = updates['billableMarkupAccountId'];
+    if (typeof markupAccountId === 'string') {
+      await assertMarkupAccount(tx, tenantId, companyId, markupAccountId);
     }
 
     const [row] = await tx
@@ -215,6 +223,7 @@ export async function getSettings(tenantId: string, companyId?: string) {
     lockDate: company.lockDate || null,
     chatSupportEnabled: company.chatSupportEnabled ?? false,
     billDiscountAccountId: company.billDiscountAccountId ?? null,
+    billableMarkupAccountId: company.billableMarkupAccountId ?? null,
   };
 }
 

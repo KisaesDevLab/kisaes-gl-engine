@@ -354,6 +354,16 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'bill_payment_applications.company_id': 'tenant-ref:companies',
   'bill_payment_applications.payment_id': 'tenant-ref:transactions',
   'bill_payment_applications.bill_id': 'tenant-ref:transactions',
+  // Billable cost links (U-128, migration 0245): which invoice bills which
+  // cost line. The partial unique index (tenant_id, source_line_id) holds a
+  // remapped column.
+  'billable_cost_links.company_id': 'tenant-ref:companies',
+  'billable_cost_links.source_transaction_id': 'tenant-ref:transactions',
+  'billable_cost_links.source_line_id': 'tenant-ref:journal_lines',
+  'billable_cost_links.invoice_id': 'tenant-ref:transactions',
+  'billable_cost_links.markup_account_id': 'tenant-ref:accounts',
+  'billable_cost_links.created_by': 'identity',
+  'billable_cost_links.released_by': 'identity',
   'budget_lines.budget_id': 'tenant-ref:budgets',
   'budget_lines.account_id': 'tenant-ref:accounts',
   'budgets.company_id': 'tenant-ref:companies',
@@ -379,6 +389,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'closes.prepared_by': 'identity',
   'closes.reviewed_by': 'identity',
   'companies.bill_discount_account_id': 'tenant-ref:accounts',
+  'companies.billable_markup_account_id': 'tenant-ref:accounts',
   'companies.lock_date_set_by': 'identity',
   'company_tax_profiles.company_id': 'tenant-ref:companies',
   'conditional_rule_audit.bank_feed_item_id': 'tenant-ref:bank_feed_items',
@@ -390,6 +401,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'conditional_rules.forked_from_global_id': 'global-ref:null',
   'contacts.default_expense_account_id': 'tenant-ref:accounts',
   'contacts.company_id': 'tenant-ref:companies',
+  // The client's price level (U-40, migration 0243).
+  'contacts.price_level_id': 'tenant-ref:price_levels',
   'daily_sales_entries.company_id': 'tenant-ref:companies',
   'daily_sales_entries.template_id': 'tenant-ref:daily_sales_templates',
   'daily_sales_entries.transaction_id': 'tenant-ref:transactions',
@@ -408,6 +421,10 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   // Document drafts and vendor layouts (U-92, migration 0233).
   'document_drafts.converted_by': 'identity',
   'document_drafts.created_by': 'identity',
+  // Form send history (U-126, migration 0242).
+  'document_send_events.company_id': 'tenant-ref:companies',
+  'document_send_events.transaction_id': 'tenant-ref:transactions',
+  'document_send_events.user_id': 'identity',
   'document_requests.reviewed_by': 'identity',
   'document_requests.bank_connection_id': 'tenant-ref:bank_connections',
   'duplicate_dismissals.transaction_id_a': 'tenant-ref:transactions',
@@ -421,6 +438,11 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'extraction_review_queue.job_id': 'tenant-ref:extraction_jobs',
   'extraction_review_queue.reviewer': 'identity',
   'finding_events.user_id': 'identity',
+  // Email Outbox of forms (U-127, migration 0244): the message only; the PDF
+  // is made at send time (Q-P20q), so archives carry no attachment bytes.
+  'form_email_queue.company_id': 'tenant-ref:companies',
+  'form_email_queue.transaction_id': 'tenant-ref:transactions',
+  'form_email_queue.user_id': 'identity',
   'findings.company_id': 'tenant-ref:companies',
   'findings.transaction_id': 'tenant-ref:transactions',
   'findings.vendor_id': 'tenant-ref:contacts',
@@ -453,6 +475,11 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'import_sessions.company_id': 'tenant-ref:companies',
   'import_sessions.created_by': 'identity',
   'invoice_templates.company_id': 'tenant-ref:companies',
+  // The invoice layout an invoice prints with (U-130, migration 0246; NULL =
+  // the company default). invoice_templates.line_columns holds no ids.
+  'transactions.invoice_layout_id': 'tenant-ref:invoice_templates',
+  // The layout a client's new invoices start on (U-130; NULL = company default).
+  'contacts.default_invoice_layout_id': 'tenant-ref:invoice_templates',
   'items.income_account_id': 'tenant-ref:accounts',
   'items.company_id': 'tenant-ref:companies',
   'je_template_lines.template_id': 'tenant-ref:je_templates',
@@ -466,10 +493,16 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'journal_lines.company_id': 'tenant-ref:companies',
   'journal_lines.contact_id': 'tenant-ref:contacts',
   'journal_lines.source_transaction_id': 'tenant-ref:transactions',
+  // An invoice's billable cost / markup line: the cost line it bills (U-128).
+  'journal_lines.billable_source_line_id': 'tenant-ref:journal_lines',
   'mcp_request_log.user_id': 'identity',
   'mcp_request_log.api_key_id': 'excluded-ref:api_keys',
   'mcp_request_log.oauth_client_id': 'excluded-ref:oauth_clients',
   'mcp_request_log.company_id': 'tenant-ref:companies',
+  // Price levels (U-40, migration 0243).
+  'price_levels.company_id': 'tenant-ref:companies',
+  'price_level_items.price_level_id': 'tenant-ref:price_levels',
+  'price_level_items.item_id': 'tenant-ref:items',
   'payment_applications.payment_id': 'tenant-ref:transactions',
   'payment_applications.invoice_id': 'tenant-ref:transactions',
   'payment_applications.company_id': 'tenant-ref:companies',

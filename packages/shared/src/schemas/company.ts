@@ -55,6 +55,10 @@ export const updateCompanySettingsSchema = z.object({
   // Default account for early-payment discounts taken in Pay Bills
   // (U-101, bill-discounts-v1). An account of this company; null clears it.
   billDiscountAccountId: z.string().uuid().nullable().optional(),
+  // Income account billable-cost markups post to (U-128, billable-costs-v1).
+  // An active income account of this company (else 400
+  // MARKUP_ACCOUNT_INVALID); null clears it.
+  billableMarkupAccountId: z.string().uuid().nullable().optional(),
 });
 
 // Additional company under the same tenant. Used by `/company/create`.

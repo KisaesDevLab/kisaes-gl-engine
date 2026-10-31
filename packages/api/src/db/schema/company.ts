@@ -37,6 +37,9 @@ export const companies = pgTable('companies', {
   // bill-discounts-v1; migration 0238). NULL = none: a discount then needs
   // discountAccountId on the request.
   billDiscountAccountId: uuid('bill_discount_account_id'),
+  // Income account billable-cost markups post to (U-128, billable-costs-v1;
+  // migration 0245). NULL = none: a markup then is 400 MARKUP_ACCOUNT_REQUIRED.
+  billableMarkupAccountId: uuid('billable_markup_account_id'),
   // Prefix and next number per document type other than invoices (U-111,
   // migration 0240): {cash_sale|credit_memo|statement: {prefix, next}}.
   documentNumbers: jsonb('document_numbers').$type<Record<string, { prefix?: string; next?: number }>>().notNull().default({}),

@@ -144,15 +144,52 @@ export const createDepositSchema = z.object({
   strictAmounts: z.boolean().optional(),
 });
 
+// Sales receipt (cash sale) and estimate lines. taxRate (a fraction,
+// "0.0825"): sent, it is the line's rate; omitted, a taxable line takes the
+// request company's default rate (U-122, sales-cents-v1).
 const lineItemSchema = z.object({
   accountId: z.string().uuid(),
   description: z.string().optional(),
   quantity: z.string().min(1),
   unitPrice: z.string().min(1),
   isTaxable: z.boolean().default(false),
-  taxRate: z.string().default('0'),
+  taxRate: z.string().optional(),
   tagId: z.string().uuid().nullable().optional(),
 });
+
+// Invoice lines (U-123, invoice-fields-v1). itemId: an item of the company;
+// it supplies the income account when accountId is omitted and the taxable
+// flag when isTaxable is omitted. Without an item, accountId is required and
+// an omitted isTaxable is false, as before. serviceDate: YYYY-MM-DD or null.
+// quantity and unitPrice: decimal strings with at most 4 places, either may be
+// negative; the amount is round2(quantity x unitPrice) (U-122).
+// Pricing (U-129, invoice-pricing-v1): quantity omitted is 1; unitPrice
+// omitted takes the client's price level, else the item's price. A discount
+// item's line takes discountPercent (else the item's) or unitPrice (the
+// amount off), not both; a subtotal item's line ignores both. Rules:
+// packages/shared/fixtures/invoice-golden.json pricingRules.
+export const invoiceLineSchema = z.object({
+  accountId: z.string().uuid().optional(),
+  itemId: z.string().uuid().nullable().optional(),
+  description: z.string().max(4000).optional(),
+  quantity: z.string().min(1).optional(),
+  unitPrice: z.string().min(1).optional(),
+  discountPercent: z.string().min(1).max(12).optional(),
+  isTaxable: z.boolean().optional(),
+  taxRate: z.string().optional(),
+  tagId: z.string().uuid().nullable().optional(),
+  serviceDate: isoDateOnly.nullable().optional(),
+  // Billable cost (U-128, billable-costs-v1): the cost line (GET
+  // /billable-costs sourceLineId) this line bills. accountId (the income
+  // account its cost credits) is required (400
+  // BILLABLE_INCOME_ACCOUNT_REQUIRED); itemId, quantity and unitPrice come
+  // from the source (sending one is 400 BILLABLE_FIELDS_READONLY);
+  // isTaxable defaults to true; serviceDate to the source date.
+  billableSourceLineId: z.string().uuid().optional(),
+  // A percent ("10" = 10 %), 0 to 1000, at most 4 places; omitted is 0. A
+  // negative cost takes no markup (Q-P20z).
+  markupPercent: z.string().min(1).max(12).optional(),
+}).refine((l) => !!l.accountId || !!l.itemId || !!l.billableSourceLineId, { message: 'Each line needs an accountId or an itemId', path: ['accountId'] });
 
 export const createCashSaleSchema = z.object({
   txnDate: z.string().min(1),
@@ -172,11 +209,28 @@ export const createCashSaleSchema = z.object({
 
 export const createInvoiceSchema = z.object({
   txnDate: z.string().min(1),
+  // An explicit due date wins (stored as overridden). Omitted: computed from
+  // the terms (invoice-terms-v1); on an edit, recomputed when the date or the
+  // terms change and the stored one was not typed.
   dueDate: z.string().optional(),
   contactId: z.string().uuid(),
+  // A code from GET /payment-terms (U-125, invoice-terms-v1). Omitted: the
+  // client's default terms, else the company's. custom takes termsDays.
   paymentTerms: z.string().optional(),
-  lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
+  termsDays: z.number().int().min(0).max(3650).optional(),
+  lines: z.array(invoiceLineSchema).min(1).max(MAX_LINES),
+  // Internal memo; customerMessage is the text printed on the invoice (U-123).
   memo: z.string().optional(),
+  customerMessage: z.string().max(4000).optional(),
+  // The customer's PO number (U-123). On an edit, omitted keeps it and "" clears it.
+  poNumber: z.string().trim().max(50).optional(),
+  // Header tags (U-123): sent replaces the invoice's own tags; omitted keeps them.
+  tagIds: z.array(z.string().uuid()).max(50).optional(),
+  // Leave $0 lines off the printed invoice (U-123). Create: default false; edit: absent keeps.
+  hideZeroLines: z.boolean().optional(),
+  // invoice-edit-v1 (U-124): the invoice's updatedAt as last read; a mismatch
+  // on PUT is 409 STALE (details.updatedAt) and nothing changes.
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
   internalNotes: z.string().optional(),
   // Optional caller-supplied invoice number. When omitted, the server
   // auto-assigns the next number from the company counter. When provided
@@ -187,6 +241,72 @@ export const createInvoiceSchema = z.object({
   warnOnly: z.boolean().optional(),
   // Waiting to be printed (U-113). Create: default false; edit: absent keeps it.
   printLater: z.boolean().optional(),
+  // The invoice layout it prints with (U-130, invoice-layouts-v1): a layout
+  // of the company (GET /company/invoice-layouts); null = the company
+  // default. Create: default null; edit: absent keeps it.
+  layoutId: z.string().uuid().nullable().optional(),
+  // PUT only (U-128): billed costs this edit takes off the invoice. A cost
+  // the invoice bills must be re-sent (by billableSourceLineId) or named
+  // here, else 409 BILLABLE_LINES_MISSING.
+  releaseBillableSourceLineIds: z.array(z.string().uuid()).max(MAX_LINES).optional(),
+  // PUT only (invoice-pricing-lines-v1, U-129): true says the lines sent are
+  // every line the invoice keeps, so a discount or subtotal line left out was
+  // removed on purpose. Without it, a PUT that sends no itemId on an invoice
+  // with discount or subtotal lines is 409 INVOICE_LINES_MISSING (a client
+  // that doesn't know items would drop them).
+  pricingLinesComplete: z.boolean().optional(),
+});
+
+// POST /invoices/preview (U-129, invoice-pricing-v1): the create body, plus
+// invoiceId when previewing an edit (that invoice's posted total leaves the
+// client's balance before the new total is added).
+export const previewInvoiceSchema = createInvoiceSchema.extend({
+  invoiceId: z.string().uuid().optional(),
+});
+
+// Estimates keep the original invoice line shape (an account on every line).
+export const createEstimateSchema = z.object({
+  txnDate: z.string().min(1),
+  dueDate: z.string().optional(),
+  contactId: z.string().uuid(),
+  paymentTerms: z.string().optional(),
+  lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
+  memo: z.string().optional(),
+  internalNotes: z.string().optional(),
+});
+
+// POST /invoices/:id/sent (U-126, invoice-sent-history-v1). recipients:
+// email addresses for method email (never logged or audited); sentAt
+// defaults to now.
+export const recordDocumentSentSchema = z.object({
+  method: z.enum(['printed', 'email', 'pdf']),
+  recipients: z.array(z.string().trim().email().max(254)).max(50).optional(),
+  sentAt: z.string().datetime({ offset: true }).optional(),
+});
+
+// POST /invoices/:id/email-later (U-127, invoice-email-v1): the message of a
+// form email. Addresses are owner data (never logged or audited); subject
+// and body are plain text (CR/LF are removed from the subject).
+const emailAddressList = z.array(z.string().trim().email().max(254)).max(50);
+export const invoiceEmailMessageSchema = z.object({
+  to: emailAddressList.min(1),
+  cc: emailAddressList.default([]),
+  bcc: emailAddressList.default([]),
+  subject: z.string().max(500).default(''),
+  body: z.string().max(100_000).default(''),
+});
+
+/** Largest PDF an invoice email may attach, decoded (U-127, Q-P20q). */
+export const INVOICE_EMAIL_PDF_MAX_BYTES = 10 * 1024 * 1024;
+
+// POST /invoices/:id/email (U-127): the message plus the PDF the client
+// made (base64 of application/pdf, at most 10 MB decoded) and its file name;
+// outboxId sends a message of the Outbox and removes it in the same commit.
+export const emailInvoiceSchema = invoiceEmailMessageSchema.extend({
+  pdfFileName: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9 ._()#-]{0,115}\.pdf$/i,
+    'pdfFileName: letters, digits, space . _ - ( ) #, ending in .pdf'),
+  pdfBase64: z.string().min(1).max(Math.ceil(INVOICE_EMAIL_PDF_MAX_BYTES / 3) * 4 + 4),
+  outboxId: z.string().uuid().optional(),
 });
 
 export const recordPaymentSchema = z.object({
@@ -287,6 +407,13 @@ export const transactionFiltersSchema = z.object({
   includeDeleted: z.enum(['true', 'false']).optional(),
 });
 
+// GET /invoices: the transaction list filters plus sent (U-126): 'false' keeps
+// invoices never sent (no send event, no sent date, never marked sent), in
+// any status; 'true' the others.
+export const invoiceListFiltersSchema = transactionFiltersSchema.extend({
+  sent: z.enum(['true', 'false']).optional(),
+});
+
 // Transaction Report for a date range (GET /transactions/report.pdf). The
 // same lenses as the transactions list, minus paging: the service caps the
 // count itself and says so on the report.
@@ -345,3 +472,12 @@ export const bulkUpdateTransactionsSchema = z
   );
 
 // Tag schemas moved to schemas/tags.ts
+
+// GET /billable-costs (U-128, billable-costs-v1). projectId is accepted and
+// ignored until projects-v1.
+export const billableCostFiltersSchema = z.object({
+  contactId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});

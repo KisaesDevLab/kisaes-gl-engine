@@ -199,6 +199,18 @@ export interface JournalLineInput {
   // stored. `explicitUserTagId` (the column above) still wins.
   bankRuleTagId?: string | null;
   aiSuggestedTagId?: string | null;
+  // The day the line's work was done, YYYY-MM-DD (U-123). Persisted on
+  // journal_lines.service_date.
+  serviceDate?: string | null;
+  // Invoice pricing (U-129): the percent a discount line used, and where
+  // the line's price came from (input | item | price_level |
+  // price_level_percent | none).
+  discountPercent?: string | null;
+  unitPriceSource?: string | null;
+  // On an invoice's billable cost line (lineRole 'billable_cost') and its
+  // markup line ('billable_markup'): the cost line it bills (U-128).
+  // Persisted on journal_lines.billable_source_line_id.
+  billableSourceLineId?: string | null;
 }
 
 export interface CreateJournalEntryInput {
@@ -330,24 +342,55 @@ export interface CreateInvoiceInput {
   txnDate: string;
   dueDate?: string;
   contactId: string;
+  /** A PAYMENT_TERMS code (U-125); omitted: the client's, else the company's. */
   paymentTerms?: string;
+  /** Net days for custom terms (U-125). */
+  termsDays?: number;
   lines: Array<{
-    accountId: string;
+    /** Required unless itemId supplies the income account (U-123). */
+    accountId?: string;
+    itemId?: string | null;
     description?: string;
-    quantity: string;
-    unitPrice: string;
+    /** Omitted: 1 (U-129). */
+    quantity?: string;
+    /** Omitted: the client's price level, else the item's price (U-129). */
+    unitPrice?: string;
+    /** A discount line's percent off (U-129). */
+    discountPercent?: string;
     isTaxable?: boolean;
     taxRate?: string;
     tagId?: string | null;
+    /** YYYY-MM-DD (U-123). */
+    serviceDate?: string | null;
+    /** A billable cost this line bills (U-128); accountId required, no itemId / quantity / unitPrice. */
+    billableSourceLineId?: string;
+    /** Markup percent on the cost ("10" = 10 %), 0 to 1000 (U-128). */
+    markupPercent?: string;
   }>;
   memo?: string;
   internalNotes?: string;
+  /** Printed on the invoice; memo stays internal (U-123). */
+  customerMessage?: string;
+  /** The customer's PO number (U-123). */
+  poNumber?: string;
+  /** Header tags (U-123): sent replaces, omitted keeps. */
+  tagIds?: string[];
+  /** Leave $0 lines off the printed invoice (U-123). */
+  hideZeroLines?: boolean;
+  /** updatedAt as last read; mismatch 409 STALE (U-124). */
+  expectedUpdatedAt?: string;
   /** Optional manual invoice-number override; auto-assigned when omitted. */
   txnNumber?: string;
   /** A duplicate number posts with a warning instead of 409 (U-111). */
   warnOnly?: boolean;
   /** Waiting to be printed (U-113). */
   printLater?: boolean;
+  /** The invoice layout it prints with (U-130); null = the company default; edit: absent keeps. */
+  layoutId?: string | null;
+  /** PUT only (U-128): billed costs this edit releases. */
+  releaseBillableSourceLineIds?: string[];
+  /** PUT only (invoice-pricing-lines-v1): the lines sent are every line the invoice keeps. */
+  pricingLinesComplete?: boolean;
 }
 
 export interface RecordPaymentInput {

@@ -93,7 +93,7 @@ describe('ledger.round4', () => {
 });
 
 describe('posting builders sum rounded lines (M2)', () => {
-  it('invoice: two lines of 1.5 x 0.3333 post A/R 1.0000; line tax is rounded per line too', async () => {
+  it('invoice: two lines of 1.5 x 0.3333 post A/R 1.0000; tax is rounded once per invoice (sales-cents-v1)', async () => {
     const inv = await invoiceService.createInvoice(tenantId, {
       txnDate: '2026-07-31', contactId: ids.customer, lines: twoLines(ids.revenue, { isTaxable: false, taxRate: '0' }) as any,
     });
@@ -102,14 +102,15 @@ describe('posting builders sum rounded lines (M2)', () => {
     expect(amountOn(lines, ids.ar, 'debit')).toEqual(['1.0000']);
     expect(inv.total).toBe('1.0000');
 
-    // 0.5000 x 8.25% = 0.04125 -> 0.0413 per line; tax 0.0826, A/R 1.0826.
+    // U-122: lines to the cent (0.50 each); tax round2(1.00 x 8.25%) = 0.08
+    // once, allocated 0.04 + 0.04 (was 0.0413 per line, 0.0826); A/R 1.08.
     const taxed = await invoiceService.createInvoice(tenantId, {
       txnDate: '2026-07-31', contactId: ids.customer, lines: twoLines(ids.revenue, { isTaxable: true, taxRate: '0.0825' }) as any,
     });
     const tl = await linesOf(taxed.id);
-    expect(tl.filter((l) => l.accountId === ids.revenue).map((l) => l.taxAmount)).toEqual(['0.0413', '0.0413']);
-    expect(amountOn(tl, ids.tax, 'credit')).toEqual(['0.0826']);
-    expect(amountOn(tl, ids.ar, 'debit')).toEqual(['1.0826']);
+    expect(tl.filter((l) => l.accountId === ids.revenue).map((l) => l.taxAmount)).toEqual(['0.0400', '0.0400']);
+    expect(amountOn(tl, ids.tax, 'credit')).toEqual(['0.0800']);
+    expect(amountOn(tl, ids.ar, 'debit')).toEqual(['1.0800']);
   });
 
   it('cash sale: deposit account gets the sum of the rounded lines', async () => {

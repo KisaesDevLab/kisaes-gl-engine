@@ -71,6 +71,15 @@ export const transactions = pgTable('transactions', {
   // Created as a check (Write Checks, or a Pay Bills payment by check that
   // pays cash); stays true after a void (U-117, migration 0241).
   isCheck: boolean('is_check').notNull().default(false),
+  // Invoice fields (U-123, migration 0242): the customer's PO number, the
+  // message printed on the form (memo stays internal) and whether $0 lines
+  // are left off the printed form.
+  poNumber: varchar('po_number', { length: 50 }),
+  customerMessage: text('customer_message'),
+  hideZeroLines: boolean('hide_zero_lines').notNull().default(false),
+  // The invoice layout this invoice prints with (U-130, migration 0246; an
+  // invoice_templates row of its company). NULL: the company default. No FK.
+  layoutId: uuid('invoice_layout_id'),
   // How the payment was made (shared PAYMENT_METHODS) and the payer/payee's
   // reference for it — ACH trace, card auth, the customer's check number.
   // NULL on rows that predate migration 0178.
@@ -178,6 +187,17 @@ export const journalLines = pgTable('journal_lines', {
   // The line's job inside its document when lines must be told apart
   // (migration 0223): 'cash_back' on a deposit (U-53). NULL otherwise.
   lineRole: varchar('line_role', { length: 20 }),
+  // The day the line's work was done (U-123, migration 0242), YYYY-MM-DD.
+  serviceDate: date('service_date'),
+  // Invoice pricing (U-129, migration 0243): the percent a discount line
+  // used, and where the line's price came from (input | item | price_level
+  // | price_level_percent | none).
+  discountPercent: decimal('discount_percent', { precision: 7, scale: 4 }),
+  unitPriceSource: varchar('unit_price_source', { length: 30 }),
+  // On an invoice's billable cost line (lineRole 'billable_cost') and its
+  // markup line ('billable_markup'): the cost line it bills (U-128,
+  // migration 0245). No FK; the source line keeps its id across edits.
+  billableSourceLineId: uuid('billable_source_line_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

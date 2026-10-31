@@ -17347,6 +17347,236 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/billable-costs": {
+      "get": {
+        "description": "The costs marked billable to a customer (check, expense, card charge or bill lines with isBillable and a line customer) that no invoice bills yet: posted sources of the request's company (or of none), contactId = the line customer, sorted by source date, then source, then line order. Needs only the invoices permission (Q-P20ai: whoever bills a customer sees the vendor names, descriptions and amounts of the costs to bill). totalCount and totalAmount (the sum of costAmount, 2 places) are over every page. defaultMarkupPercent: the client's (contactId) suggested markup percent, or null. suggestedIncomeAccountId: the cost item's income account (source \"item\"), else null; a suggestion the client sends back as the invoice line's accountId. projectId is accepted and ignored until projects-v1. Bill a cost with an invoice line {billableSourceLineId, accountId, markupPercent?} on POST / PUT /invoices.",
+        "operationId": "get_api_v1_billable_costs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projectId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "defaultMarkupPercent": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "contactId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "costAmount": {
+                            "description": "round2(sourceAmount), half away from zero: what the invoice bills before markup",
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "expenseAccountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "itemId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "quantity": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sourceAmount": {
+                            "description": "the cost line's debit - credit, 4 places, signed",
+                            "type": "string"
+                          },
+                          "sourceDate": {
+                            "type": "string"
+                          },
+                          "sourceLineId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "sourceNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sourceTransactionId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "sourceTxnType": {
+                            "type": "string"
+                          },
+                          "suggestedIncomeAccountId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "suggestedIncomeAccountSource": {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "item"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "unitCost": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "vendorName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "sourceLineId",
+                          "sourceTransactionId",
+                          "sourceTxnType",
+                          "sourceNumber",
+                          "sourceDate",
+                          "contactId",
+                          "vendorName",
+                          "description",
+                          "expenseAccountId",
+                          "itemId",
+                          "quantity",
+                          "unitCost",
+                          "sourceAmount",
+                          "costAmount",
+                          "suggestedIncomeAccountId",
+                          "suggestedIncomeAccountSource"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "totalAmount": {
+                      "type": "string"
+                    },
+                    "totalCount": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "totalCount",
+                    "totalAmount",
+                    "defaultMarkupPercent",
+                    "limit",
+                    "offset"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List unbilled billable costs (billable-costs-v1)",
+        "tags": [
+          "billable-costs"
+        ]
+      }
+    },
     "/api/v1/bills": {
       "get": {
         "description": "Rows carry billReceived, discountDate, updatedAt and daysOverdue (from the database date).",
@@ -22199,6 +22429,1201 @@
         ]
       }
     },
+    "/api/v1/company/invoice-layouts": {
+      "get": {
+        "description": "Response {data: [layout]}: the layouts the picker offers; archived ones only with ?includeArchived=true. A company without layouts gets its default one (\"Standard\", a copy of the template it printed with) on first read.",
+        "operationId": "get_api_v1_company_invoice_layouts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "includeArchived",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accentColor": {
+                            "type": "string"
+                          },
+                          "columns": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "description": {
+                                "type": "boolean"
+                              },
+                              "item": {
+                                "type": "boolean"
+                              },
+                              "quantity": {
+                                "type": "boolean"
+                              },
+                              "rate": {
+                                "type": "boolean"
+                              },
+                              "serviceDate": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "item",
+                              "description",
+                              "serviceDate",
+                              "quantity",
+                              "rate"
+                            ],
+                            "type": "object"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "footerOverrides": {
+                            "additionalProperties": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "type": "object"
+                          },
+                          "footerText": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "invoiceCount": {
+                            "description": "invoices (void ones too) that print with this layout",
+                            "type": "integer"
+                          },
+                          "isArchived": {
+                            "type": "boolean"
+                          },
+                          "isDefault": {
+                            "type": "boolean"
+                          },
+                          "logoUrl": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "resolvedFooters": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "cash_sale": {
+                                "type": "string"
+                              },
+                              "credit_memo": {
+                                "type": "string"
+                              },
+                              "invoice": {
+                                "type": "string"
+                              },
+                              "statement": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "invoice",
+                              "cash_sale",
+                              "credit_memo",
+                              "statement"
+                            ],
+                            "type": "object"
+                          },
+                          "showPoNumber": {
+                            "type": "boolean"
+                          },
+                          "showShipTo": {
+                            "type": "boolean"
+                          },
+                          "showTerms": {
+                            "type": "boolean"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "isDefault",
+                          "isArchived",
+                          "accentColor",
+                          "logoUrl",
+                          "showShipTo",
+                          "showPoNumber",
+                          "showTerms",
+                          "footerText",
+                          "footerOverrides",
+                          "columns",
+                          "resolvedFooters",
+                          "invoiceCount",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The company's invoice layouts, default first (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "post": {
+        "description": "Response 201 {layout}; never the default. Omitted options copy the default layout. 409 INVOICE_LAYOUT_NAME_IN_USE (names are unique in the company, any case).",
+        "operationId": "post_api_v1_company_invoice_layouts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "accentColor": {
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "type": "string"
+                  },
+                  "columns": {
+                    "additionalProperties": false,
+                    "description": "line columns the form prints (amount always prints); sent keys are laid over the stored ones",
+                    "properties": {
+                      "description": {
+                        "type": "boolean"
+                      },
+                      "item": {
+                        "type": "boolean"
+                      },
+                      "quantity": {
+                        "type": "boolean"
+                      },
+                      "rate": {
+                        "type": "boolean"
+                      },
+                      "serviceDate": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "footerOverrides": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cash_sale": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "credit_memo": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "invoice": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "statement": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "footerText": {
+                    "anyOf": [
+                      {
+                        "maxLength": 1000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "logoUrl": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "showPoNumber": {
+                    "type": "boolean"
+                  },
+                  "showShipTo": {
+                    "type": "boolean"
+                  },
+                  "showTerms": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "isArchived",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create an invoice layout (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
+    "/api/v1/company/invoice-layouts/{id}": {
+      "delete": {
+        "description": "Always 405 INVOICE_LAYOUT_DELETE_NOT_ALLOWED: archive the layout instead (PUT {isArchived: true}).",
+        "operationId": "delete_api_v1_company_invoice_layouts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Invoice layouts are not deleted (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "get": {
+        "description": "Response {layout}. 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "operationId": "get_api_v1_company_invoice_layouts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "isArchived",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get an invoice layout (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "put": {
+        "description": "Response {layout}. Omitted fields keep their values; a footerOverrides map replaces the stored one. isArchived archives or unarchives: an archived layout leaves the picker and can’t be chosen for new invoices or clients; invoices (and clients) that already use it keep it. 409 STALE, 409 INVOICE_LAYOUT_NAME_IN_USE, 409 INVOICE_LAYOUT_IS_DEFAULT (archiving the default). 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "operationId": "put_api_v1_company_invoice_layouts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "accentColor": {
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "type": "string"
+                  },
+                  "columns": {
+                    "additionalProperties": false,
+                    "description": "line columns the form prints (amount always prints); sent keys are laid over the stored ones",
+                    "properties": {
+                      "description": {
+                        "type": "boolean"
+                      },
+                      "item": {
+                        "type": "boolean"
+                      },
+                      "quantity": {
+                        "type": "boolean"
+                      },
+                      "rate": {
+                        "type": "boolean"
+                      },
+                      "serviceDate": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "expectedUpdatedAt": {
+                    "description": "the layout updatedAt as last read; a mismatch is 409 STALE (details.updatedAt) and nothing changes",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "footerOverrides": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cash_sale": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "credit_memo": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "invoice": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "statement": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "footerText": {
+                    "anyOf": [
+                      {
+                        "maxLength": 1000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "isArchived": {
+                    "description": "archive (true) or unarchive (false); the default can’t be archived (409 INVOICE_LAYOUT_IS_DEFAULT)",
+                    "type": "boolean"
+                  },
+                  "logoUrl": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "showPoNumber": {
+                    "type": "boolean"
+                  },
+                  "showShipTo": {
+                    "type": "boolean"
+                  },
+                  "showTerms": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "isArchived",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit an invoice layout (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
+    "/api/v1/company/invoice-layouts/{id}/default": {
+      "post": {
+        "description": "Response {layout}. Invoices without their own layout print with it; GET/PUT /company/invoice-template read and write it. 409 INVOICE_LAYOUT_ARCHIVED (unarchive it first). 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "operationId": "post_api_v1_company_invoice_layouts_by_id_default",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "isArchived",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Make an invoice layout the company default (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
     "/api/v1/company/invoice-template": {
       "get": {
         "operationId": "get_api_v1_company_invoice_template",
@@ -22784,6 +24209,17 @@
                     "type": "string"
                   },
                   "billDiscountAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "billableMarkupAccountId": {
                     "anyOf": [
                       {
                         "format": "uuid",
@@ -23496,7 +24932,87 @@
     },
     "/api/v1/contacts": {
       "get": {
+        "description": "Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.",
         "operationId": "get_api_v1_contacts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactType",
+            "required": false,
+            "schema": {
+              "enum": [
+                "customer",
+                "vendor",
+                "both"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "isActive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "name",
+                "type",
+                "email",
+                "phone",
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -23510,6 +25026,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List contacts",
         "tags": [
           "contacts"
         ]
@@ -23647,6 +25164,28 @@
                       }
                     ]
                   },
+                  "defaultInvoiceLayoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultMarkupPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,4}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultPaymentTerms": {
                     "anyOf": [
                       {
@@ -23759,6 +25298,17 @@
                     "anyOf": [
                       {
                         "maxLength": 30,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "priceLevelId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -24164,6 +25714,7 @@
         ]
       },
       "get": {
+        "description": "Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.",
         "operationId": "get_api_v1_contacts_by_id",
         "parameters": [
           {
@@ -24171,6 +25722,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -24188,6 +25740,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Get a contact",
         "tags": [
           "contacts"
         ]
@@ -24322,6 +25875,28 @@
                       }
                     ]
                   },
+                  "defaultInvoiceLayoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultMarkupPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,4}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultPaymentTerms": {
                     "anyOf": [
                       {
@@ -24426,6 +26001,17 @@
                     "anyOf": [
                       {
                         "maxLength": 30,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "priceLevelId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -28456,7 +30042,6 @@
                           ]
                         },
                         "taxRate": {
-                          "default": "0",
                           "type": "string"
                         },
                         "unitPrice": {
@@ -28481,19 +30066,9 @@
                   "paymentTerms": {
                     "type": "string"
                   },
-                  "printLater": {
-                    "type": "boolean"
-                  },
                   "txnDate": {
                     "minLength": 1,
                     "type": "string"
-                  },
-                  "txnNumber": {
-                    "maxLength": 50,
-                    "type": "string"
-                  },
-                  "warnOnly": {
-                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -30471,9 +32046,176 @@
         ]
       }
     },
+    "/api/v1/forms/email-queue": {
+      "get": {
+        "description": "Each item: the message (to, cc, bcc, subject, body), the form it sends (transactionId, txnNumber, txnType, txnStatus, contactName), who queued it and when. No PDF is stored; the client makes it at send time (Q-P20q).",
+        "operationId": "get_api_v1_forms_email_queue",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "bcc": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "body": {
+                            "type": "string"
+                          },
+                          "cc": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "contactName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "transactionId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "txnNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnStatus": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnType": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "userId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "transactionId",
+                          "txnNumber",
+                          "txnType",
+                          "txnStatus",
+                          "contactName",
+                          "to",
+                          "cc",
+                          "bcc",
+                          "subject",
+                          "body",
+                          "userId",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The email Outbox: messages waiting to be sent, oldest first (invoice-email-v1)",
+        "tags": [
+          "forms"
+        ]
+      }
+    },
+    "/api/v1/forms/email-queue/{id}": {
+      "delete": {
+        "description": "Response 204. A message of another company, or one already sent or removed: 404 OUTBOX_ITEM_NOT_FOUND. One audit row (no recipients).",
+        "operationId": "delete_api_v1_forms_email_queue_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Remove a message from the email Outbox without sending it (invoice-email-v1)",
+        "tags": [
+          "forms"
+        ]
+      }
+    },
     "/api/v1/forms/mark-printed": {
       "post": {
-        "description": "Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes.",
+        "description": "Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes. Each form taken out of the queue (posted) also gets a \"printed\" send event (invoice-sent-history-v1); a draft invoice becomes sent.",
         "operationId": "post_api_v1_forms_mark_printed",
         "requestBody": {
           "content": {
@@ -30848,7 +32590,244 @@
     },
     "/api/v1/invoices": {
       "get": {
+        "description": "The transaction list filters, plus sent (invoice-sent-history-v1): \"false\" keeps the invoices never sent (no send event, no sent date, never marked sent) that are not void, whatever their payment status, so one that is partly paid still shows; \"true\" keeps the others.",
         "operationId": "get_api_v1_invoices",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "txnType",
+            "required": false,
+            "schema": {
+              "enum": [
+                "invoice",
+                "customer_payment",
+                "cash_sale",
+                "expense",
+                "deposit",
+                "transfer",
+                "journal_entry",
+                "credit_memo",
+                "customer_refund",
+                "bill",
+                "vendor_credit",
+                "bill_payment",
+                "daily_sales",
+                "aje"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "draft",
+                "posted",
+                "void",
+                "deleted"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "items": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "invoiceStatus",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [
+                  "draft",
+                  "sent",
+                  "viewed",
+                  "partial",
+                  "paid",
+                  "void"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accountId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tagId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "pattern": "^[a-zA-Z0-9_-]{1,40}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "cash",
+                "accrual"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "amount",
+            "required": false,
+            "schema": {
+              "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "date",
+                "type",
+                "number",
+                "payee",
+                "memo",
+                "category",
+                "amount",
+                "status",
+                "dueDate",
+                "balanceDue",
+                "invoiceStatus"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeDeleted",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sent",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -30862,12 +32841,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List invoices",
         "tags": [
           "invoices"
         ]
       },
       "post": {
-        "description": "Response 201 `{invoice, warnings}`. No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe.",
+        "description": "Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; on a document whose subtotal is above 0.00 a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total; Q-P20ag), while a document whose subtotal is 0.00 or less (a return) reverses its tax (Q-P20aj). a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines; stacked discounts under it compound); a percent of a group at or below 0.00 is 0.00; sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. A PUT on an invoice with discount or subtotal lines that sends no itemId on any line is 409 INVOICE_LINES_MISSING and nothing changes (a client that does not know items would drop them): send every non-A/R, non-tax line back, a discount as {itemId, discountPercent} or {itemId, unitPrice}, a subtotal as {itemId}. pricingLinesComplete: true (PUT, invoice-pricing-lines-v1) says the lines sent are every line the invoice keeps, so a discount or subtotal left out was removed on purpose and the check is skipped. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
         "operationId": "post_api_v1_invoices",
         "parameters": [
           {
@@ -30887,15 +32867,41 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "contactId": {
                     "format": "uuid",
+                    "type": "string"
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
                     "type": "string"
                   },
                   "dueDate": {
                     "type": "string"
                   },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
                   "internalNotes": {
                     "type": "string"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "lines": {
                     "items": {
@@ -30905,16 +32911,52 @@
                           "format": "uuid",
                           "type": "string"
                         },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
                         "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
                           "type": "string"
                         },
                         "isTaxable": {
-                          "default": false,
                           "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
                         },
                         "quantity": {
                           "minLength": 1,
                           "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
@@ -30928,7 +32970,6 @@
                           ]
                         },
                         "taxRate": {
-                          "default": "0",
                           "type": "string"
                         },
                         "unitPrice": {
@@ -30936,11 +32977,6 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "accountId",
-                        "quantity",
-                        "unitPrice"
-                      ],
                       "type": "object"
                     },
                     "maxItems": 500,
@@ -30950,11 +32986,42 @@
                   "memo": {
                     "type": "string"
                   },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "paymentTerms": {
                     "type": "string"
                   },
+                  "poNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "pricingLinesComplete": {
+                    "type": "boolean"
+                  },
                   "printLater": {
                     "type": "boolean"
+                  },
+                  "releaseBillableSourceLineIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "type": "array"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "termsDays": {
+                    "maximum": 3650,
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "txnDate": {
                     "minLength": 1,
@@ -30999,48 +33066,10 @@
         "x-idempotency": true
       }
     },
-    "/api/v1/invoices/{id}": {
-      "get": {
-        "operationId": "get_api_v1_invoices_by_id",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "Response not yet documented in this specification."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          },
-          {
-            "ApiKeyAuth": []
-          }
-        ],
-        "tags": [
-          "invoices"
-        ]
-      },
-      "put": {
-        "operationId": "put_api_v1_invoices_by_id",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+    "/api/v1/invoices/preview": {
+      "post": {
+        "description": "invoice-pricing-v1: computes the invoice the body would post (POST /invoices; with invoiceId, PUT /invoices/:invoiceId) with the same code, and writes nothing. Response 200 {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, taxAmount}], subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client's open balance (contact-balance-v1) plus this total, with invoiceId's posted total taken out first. Errors as POST (400 VALIDATION_ERROR); invoiceId of another company or not found 404. Billable lines add {billableSourceLineId, costAmount, markupPercent, markupAmount, displayRate, error: {code: BILLABLE_ALREADY_BILLED, invoiceId, invoiceNumber} | null}: a cost another invoice holds is reported on its line and the preview still answers; a cost no longer available (409 BILLABLE_COST_UNAVAILABLE) or billable to another customer (400 BILLABLE_CONTACT_MISMATCH) fails the whole preview, as POST would, with details.conflicts naming the lines. Nothing is locked or claimed. Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; on a document whose subtotal is above 0.00 a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total; Q-P20ag), while a document whose subtotal is 0.00 or less (a return) reverses its tax (Q-P20aj). a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines; stacked discounts under it compound); a percent of a group at or below 0.00 is 0.00; sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. A PUT on an invoice with discount or subtotal lines that sends no itemId on any line is 409 INVOICE_LINES_MISSING and nothing changes (a client that does not know items would drop them): send every non-A/R, non-tax line back, a discount as {itemId, discountPercent} or {itemId, unitPrice}, a subtotal as {itemId}. pricingLinesComplete: true (PUT, invoice-pricing-lines-v1) says the lines sent are every line the invoice keeps, so a discount or subtotal left out was removed on purpose and the check is skipped. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
+        "operationId": "post_api_v1_invoices_preview",
         "requestBody": {
           "content": {
             "application/json": {
@@ -31051,11 +33080,37 @@
                     "format": "uuid",
                     "type": "string"
                   },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
                   "dueDate": {
                     "type": "string"
                   },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
                   "internalNotes": {
                     "type": "string"
+                  },
+                  "invoiceId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "lines": {
                     "items": {
@@ -31065,16 +33120,52 @@
                           "format": "uuid",
                           "type": "string"
                         },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
                         "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
                           "type": "string"
                         },
                         "isTaxable": {
-                          "default": false,
                           "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
                         },
                         "quantity": {
                           "minLength": 1,
                           "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
@@ -31088,7 +33179,6 @@
                           ]
                         },
                         "taxRate": {
-                          "default": "0",
                           "type": "string"
                         },
                         "unitPrice": {
@@ -31096,11 +33186,6 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "accountId",
-                        "quantity",
-                        "unitPrice"
-                      ],
                       "type": "object"
                     },
                     "maxItems": 500,
@@ -31113,8 +33198,36 @@
                   "paymentTerms": {
                     "type": "string"
                   },
+                  "poNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "pricingLinesComplete": {
+                    "type": "boolean"
+                  },
                   "printLater": {
                     "type": "boolean"
+                  },
+                  "releaseBillableSourceLineIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "type": "array"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "termsDays": {
+                    "maximum": 3650,
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "txnDate": {
                     "minLength": 1,
@@ -31152,9 +33265,272 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Preview an invoice's figures",
         "tags": [
           "invoices"
         ]
+      }
+    },
+    "/api/v1/invoices/{id}": {
+      "get": {
+        "description": "Response {invoice}: the transaction with its lines (serviceDate, itemId, taxRate, taxAmount, accountSystemTag: the systemTag of the line account, so accounts_receivable and sales_tax_payable mark the engine own A/R and tax lines), poNumber, customerMessage, hideZeroLines, tagIds and sendHistory [{id, method: printed|email|pdf, recipients, sentAt, userId}] oldest first (kept across edits). An invoice of another company is 404; another transaction type is 400.",
+        "operationId": "get_api_v1_invoices_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get an invoice",
+        "tags": [
+          "invoices"
+        ]
+      },
+      "put": {
+        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; on a document whose subtotal is above 0.00 a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total; Q-P20ag), while a document whose subtotal is 0.00 or less (a return) reverses its tax (Q-P20aj). a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines; stacked discounts under it compound); a percent of a group at or below 0.00 is 0.00; sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. A PUT on an invoice with discount or subtotal lines that sends no itemId on any line is 409 INVOICE_LINES_MISSING and nothing changes (a client that does not know items would drop them): send every non-A/R, non-tax line back, a discount as {itemId, discountPercent} or {itemId, unitPrice}, a subtotal as {itemId}. pricingLinesComplete: true (PUT, invoice-pricing-lines-v1) says the lines sent are every line the invoice keeps, so a discount or subtotal left out was removed on purpose and the check is skipped. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
+        "operationId": "put_api_v1_invoices_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "dueDate": {
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "internalNotes": {
+                    "type": "string"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "paymentTerms": {
+                    "type": "string"
+                  },
+                  "poNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "pricingLinesComplete": {
+                    "type": "boolean"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "releaseBillableSourceLineIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "type": "array"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "termsDays": {
+                    "maximum": 3650,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "txnDate": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "contactId",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit an invoice",
+        "tags": [
+          "invoices"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/invoices/{id}/duplicate": {
@@ -31186,6 +33562,330 @@
         "tags": [
           "invoices"
         ]
+      }
+    },
+    "/api/v1/invoices/{id}/email": {
+      "post": {
+        "description": "Sends {to, cc, bcc, subject, body} with the PDF the client made attached (pdfBase64: application/pdf starting %PDF-, at most 10 MB decoded, else 400 ATTACHMENT_TOO_LARGE / VALIDATION_ERROR; pdfFileName e.g. Invoice-1042.pdf). Only when the server accepts it, an \"email\" send event (invoice-sent-history-v1, recipients = to + cc + bcc) is recorded and a draft becomes sent; a failed send records nothing. outboxId (optional): the Outbox message being sent; it is removed in the same commit, and 404 OUTBOX_ITEM_NOT_FOUND (nothing sent) when it is gone. Response 200 {invoice} with its sendHistory. Idempotency-Key: a retry with the key replays and sends nothing more; if the commit fails after the server accepted the message, a retry sends it again. Recipients, subject and body are never logged or audited (audit rows carry counts). Errors: 400 SMTP_NOT_CONFIGURED (no mail server for the company, no From address, or in desktop mode no session password or one given for another server; smtp-session-v1), 400 SMTP_SEND_FAILED (the server refused the message or the login; details.reason auth|send), 503 OFFLINE_UNAVAILABLE (desktop offline), 400 INVOICE_VOID, 404 (another company).",
+        "operationId": "post_api_v1_invoices_by_id_email",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "outboxId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "pdfBase64": {
+                    "maxLength": 13981020,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "pdfFileName": {
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()#-]{0,115}\\.pdf$",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to",
+                  "pdfFileName",
+                  "pdfBase64"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Email an invoice through the company mail server (invoice-email-v1)",
+        "tags": [
+          "invoices"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/invoices/{id}/email-later": {
+      "post": {
+        "description": "Stores {to, cc, bcc, subject, body} with the company; nothing is sent until the client sends it with POST /invoices/:id/email and outboxId. No PDF is stored: the client makes it when it sends (Q-P20q). Response 201 {item} (as GET /forms/email-queue). Void: 400 INVOICE_VOID; another company: 404. Recipients, subject and body are never logged or audited (audit rows carry counts).",
+        "operationId": "post_api_v1_invoices_by_id_email_later",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "item": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "bcc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "cc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "contactName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "subject": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "transactionId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "txnNumber": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnStatus": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnType": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "userId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "transactionId",
+                        "txnNumber",
+                        "txnType",
+                        "txnStatus",
+                        "contactName",
+                        "to",
+                        "cc",
+                        "bcc",
+                        "subject",
+                        "body",
+                        "userId",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "item"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Put an invoice email in the Outbox (invoice-email-v1)",
+        "tags": [
+          "invoices"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/invoices/{id}/mark-sent": {
@@ -31390,6 +34090,88 @@
         ]
       }
     },
+    "/api/v1/invoices/{id}/sent": {
+      "post": {
+        "description": "invoice-sent-history-v1: adds {method: printed|email|pdf, recipients (email only), sentAt (default now)} to the invoice's sendHistory. A draft becomes sent (its updatedAt moves); sentAt is kept from the first send. Recipients are stored but never logged or audited. Response 200 {invoice}. Void: 400 INVOICE_VOID; another company: 404.",
+        "operationId": "post_api_v1_invoices_by_id_sent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "method": {
+                    "enum": [
+                      "printed",
+                      "email",
+                      "pdf"
+                    ],
+                    "type": "string"
+                  },
+                  "recipients": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "sentAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "method"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Record that an invoice was sent",
+        "tags": [
+          "invoices"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/invoices/{id}/share-link": {
       "delete": {
         "operationId": "delete_api_v1_invoices_by_id_share_link",
@@ -31452,6 +34234,7 @@
     },
     "/api/v1/invoices/{id}/void": {
       "post": {
+        "description": "Response 200 {invoice}. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Refused while a live payment or credit is applied: 409 INVOICE_HAS_PAYMENTS (details {payments, credits}). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE. An invoice of another company is 404; another transaction type 400.",
         "operationId": "post_api_v1_invoices_by_id_void",
         "parameters": [
           {
@@ -31459,6 +34242,17 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -31469,9 +34263,16 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "expectedUpdatedAt": {
                     "format": "date-time",
                     "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
                   },
                   "reason": {
                     "minLength": 1,
@@ -31500,14 +34301,105 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Void an invoice",
         "tags": [
           "invoices"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/items": {
       "get": {
+        "description": "{data, total}. itemType filters by kind. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
         "operationId": "get_api_v1_items",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "isActive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "itemType",
+            "required": false,
+            "schema": {
+              "enum": [
+                "service",
+                "non_inventory",
+                "other_charge",
+                "discount",
+                "subtotal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "isTaxable",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "name",
+                "price",
+                "taxable",
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -31521,11 +34413,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List items",
         "tags": [
           "items"
         ]
       },
       "post": {
+        "description": "Response 201 {item}. A name already used is 409. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
         "operationId": "post_api_v1_items",
         "parameters": [
           {
@@ -31551,6 +34445,17 @@
                       "null"
                     ]
                   },
+                  "discountPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,3}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "incomeAccountId": {
                     "format": "uuid",
                     "type": "string"
@@ -31558,6 +34463,17 @@
                   "isTaxable": {
                     "default": true,
                     "type": "boolean"
+                  },
+                  "itemType": {
+                    "default": "service",
+                    "enum": [
+                      "service",
+                      "non_inventory",
+                      "other_charge",
+                      "discount",
+                      "subtotal"
+                    ],
+                    "type": "string"
                   },
                   "name": {
                     "maxLength": 255,
@@ -31594,6 +34510,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Create an item",
         "tags": [
           "items"
         ],
@@ -31752,6 +34669,7 @@
         ]
       },
       "put": {
+        "description": "Response {item}; omitted fields keep their values and the kind rules apply to the result. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
         "operationId": "put_api_v1_items_by_id",
         "parameters": [
           {
@@ -31775,6 +34693,17 @@
                       "null"
                     ]
                   },
+                  "discountPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,3}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "incomeAccountId": {
                     "format": "uuid",
                     "type": "string"
@@ -31784,6 +34713,16 @@
                   },
                   "isTaxable": {
                     "type": "boolean"
+                  },
+                  "itemType": {
+                    "enum": [
+                      "service",
+                      "non_inventory",
+                      "other_charge",
+                      "discount",
+                      "subtotal"
+                    ],
+                    "type": "string"
                   },
                   "name": {
                     "maxLength": 255,
@@ -31816,6 +34755,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Edit an item",
         "tags": [
           "items"
         ]
@@ -45791,6 +48731,254 @@
         ]
       }
     },
+    "/api/v1/price-levels": {
+      "get": {
+        "description": "price-levels-v1: {data: [level without itemPrices, plus itemPriceCount]} by name, the company's and those of no company. A level price is round2(item price x (1 + percent / 100)), half away from zero; a fixed item price wins (stored rounded to the cent). One level per client (contacts.priceLevelId); an inactive level prices nothing and can't be given to a client. Discount and subtotal items take no level price. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "operationId": "get_api_v1_price_levels",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "isActive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List price levels",
+        "tags": [
+          "price-levels"
+        ]
+      },
+      "post": {
+        "description": "price-levels-v1: response 201 {priceLevel: {id, name, percent (signed, 4 places: \"-7.5000\" = 7.5 % down), isActive, companyId, createdAt, updatedAt, itemPrices: [{itemId, unitPrice}]}}. A name already used (case-insensitive) is 409 PRICE_LEVEL_NAME_IN_USE; an item listed twice, of another company, or a discount / subtotal item is 400 VALIDATION_ERROR. A level price is round2(item price x (1 + percent / 100)), half away from zero; a fixed item price wins (stored rounded to the cent). One level per client (contacts.priceLevelId); an inactive level prices nothing and can't be given to a client. Discount and subtotal items take no level price. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "operationId": "post_api_v1_price_levels",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "itemPrices": {
+                    "default": [],
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "itemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "unitPrice"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 5000,
+                    "type": "array"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "percent": {
+                    "default": "0",
+                    "pattern": "^-?\\d{1,4}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a price level",
+        "tags": [
+          "price-levels"
+        ]
+      }
+    },
+    "/api/v1/price-levels/{id}": {
+      "delete": {
+        "description": "price-levels-v1: deletes the level and its item prices; 409 PRICE_LEVEL_IN_USE (details.clients) while a client has it (make it inactive instead). Response {message}.",
+        "operationId": "delete_api_v1_price_levels_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a price level",
+        "tags": [
+          "price-levels"
+        ]
+      },
+      "get": {
+        "description": "price-levels-v1: {priceLevel: {id, name, percent (signed, 4 places: \"-7.5000\" = 7.5 % down), isActive, companyId, createdAt, updatedAt, itemPrices: [{itemId, unitPrice}]}}; another company's is 404.",
+        "operationId": "get_api_v1_price_levels_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a price level",
+        "tags": [
+          "price-levels"
+        ]
+      },
+      "put": {
+        "description": "price-levels-v1: omitted fields keep their values; itemPrices sent replaces the whole list. Response {priceLevel}. Errors as create; 404 for another company's. A level price is round2(item price x (1 + percent / 100)), half away from zero; a fixed item price wins (stored rounded to the cent). One level per client (contacts.priceLevelId); an inactive level prices nothing and can't be given to a client. Discount and subtotal items take no level price. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "operationId": "put_api_v1_price_levels_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "isActive": {
+                    "type": "boolean"
+                  },
+                  "itemPrices": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "itemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "unitPrice"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 5000,
+                    "type": "array"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "percent": {
+                    "pattern": "^-?\\d{1,4}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a price level",
+        "tags": [
+          "price-levels"
+        ]
+      }
+    },
     "/api/v1/public/invoices/{token}": {
       "get": {
         "operationId": "get_api_v1_public_invoices_by_token",
@@ -45881,6 +49069,7 @@
         ]
       },
       "post": {
+        "description": "Snapshots the transaction into a template and schedules it. Response 201 {schedule}. An invoice that bills costs (U-128) is 400 RECURRING_HAS_BILLABLE_COSTS (Q-P20ah: each cost is billed once). A recurring invoice copy keeps every line but A/R and Sales Tax as a signed amount: discounts keep their item and percent or amount, subtotals their item; billed costs never carry over.",
         "operationId": "post_api_v1_recurring",
         "requestBody": {
           "content": {
@@ -45967,6 +49156,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Make a posted transaction recurring",
         "tags": [
           "recurring"
         ]
@@ -69646,7 +72836,7 @@
     },
     "/api/v1/templates/from-transaction": {
       "post": {
-        "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company or a transaction without a company.",
+        "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 400 RECURRING_HAS_BILLABLE_COSTS when a schedule is set on an invoice that bills costs (Q-P20ah: such an invoice cannot repeat; a copy never bills a cost again); 404 another company or a transaction without a company.",
         "operationId": "post_api_v1_templates_from_transaction",
         "parameters": [
           {
@@ -70019,7 +73209,7 @@
         ]
       },
       "put": {
-        "description": "Needs write access to the kind, else 403 PERMISSION_DENIED; the editor becomes the owner of the auto runs. Setting, moving or switching to an auto nextDate more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate).",
+        "description": "Needs write access to the kind, else 403 PERMISSION_DENIED; the editor becomes the owner of the auto runs. Setting, moving or switching to an auto nextDate more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate). A schedule on a legacy template of an invoice that bills costs: 400 RECURRING_HAS_BILLABLE_COSTS (Q-P20ah).",
         "operationId": "put_api_v1_templates_by_id",
         "parameters": [
           {

@@ -72,3 +72,14 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
 
   next();
 }
+
+/**
+ * True when `key` is a live API key (exists, active, not expired). For
+ * pre-auth gates (e.g. the larger invoice-email body limit) that must not
+ * trust a header's mere presence; authenticate still runs in full after.
+ */
+export async function isLiveApiKey(key: string): Promise<boolean> {
+  const record = await db.query.apiKeys.findFirst({ where: eq(apiKeys.keyHash, hashKey(key)) });
+  if (!record || !record.isActive) return false;
+  return !(record.expiresAt && new Date() > record.expiresAt);
+}

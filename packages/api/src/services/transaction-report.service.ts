@@ -55,8 +55,8 @@ const OUTFLOW_TYPES = new Set<string>(['expense', 'bill_payment', 'customer_refu
  * getTransaction itself — that has dozens of internal callers on hot paths
  * that want none of this.
  */
-export async function getTransactionDetail(tenantId: string, txnId: string) {
-  const txn = await ledger.getTransaction(tenantId, txnId);
+export async function getTransactionDetail(tenantId: string, txnId: string, companyId?: string | null) {
+  const txn = await ledger.getTransaction(tenantId, txnId, companyId);
   const lines = txn.lines;
 
   const accountIds = [...new Set(lines.map((l) => l.accountId))];

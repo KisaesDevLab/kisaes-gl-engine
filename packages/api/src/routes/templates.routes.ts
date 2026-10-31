@@ -159,7 +159,7 @@ templatesRouter.post('/', describe({
 
 templatesRouter.post('/from-transaction', describe({
   summary: 'Save a posted transaction as a template (templates-v1)',
-  description: 'Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company or a transaction without a company.',
+  description: 'Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 400 RECURRING_HAS_BILLABLE_COSTS when a schedule is set on an invoice that bills costs (Q-P20ah: such an invoice cannot repeat; a copy never bills a cost again); 404 another company or a transaction without a company.',
 }), validate(createTxnTemplateFromTransactionSchema), async (req, _res, next) => {
   const src = await loadSource(db, req.tenantId, req.companyId, req.body.transactionId);
   if (!src) throw AppError.notFound('Transaction not found');
@@ -177,7 +177,7 @@ templatesRouter.get('/:id', describe({ summary: 'Get a template with its draft a
 
 templatesRouter.put('/:id', describe({
   summary: 'Change a template (templates-v1); version mismatch: 409 STALE (details.version); schedule null removes it',
-  description: 'Needs write access to the kind, else 403 PERMISSION_DENIED; the editor becomes the owner of the auto runs. Setting, moving or switching to an auto nextDate more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate).',
+  description: 'Needs write access to the kind, else 403 PERMISSION_DENIED; the editor becomes the owner of the auto runs. Setting, moving or switching to an auto nextDate more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate). A schedule on a legacy template of an invoice that bills costs: 400 RECURRING_HAS_BILLABLE_COSTS (Q-P20ah).',
   params: idParams,
 }), validate(updateTxnTemplateSchema), async (req, res) => {
   const id = uuidParam(req.params['id']);

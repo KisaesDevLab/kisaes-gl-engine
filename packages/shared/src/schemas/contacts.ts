@@ -7,6 +7,11 @@ import { sortBySchema, sortDirSchema } from './list-view.js';
 
 const contactTypes = ['customer', 'vendor', 'both'] as const;
 
+// A markup percent (U-128): "0" to "1000", at most 4 places ("10" = 10 %).
+export const markupPercentSchema = z.string()
+  .regex(/^\d{1,4}(\.\d{1,4})?$/, 'A percent from 0 to 1000 with at most 4 decimal places, such as 10 for 10 %')
+  .refine((v) => Number(v) <= 1000, 'The markup percent must be at most 1000');
+
 export const createContactSchema = z.object({
   contactType: z.enum(contactTypes),
   displayName: z.string().min(1, 'Display name is required').max(255),
@@ -38,6 +43,14 @@ export const createContactSchema = z.object({
   openingBalance: z.string().default('0'),
   openingBalanceDate: z.string().nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
+  // The client's price level (U-40, price-levels-v1); null clears it.
+  priceLevelId: z.string().uuid().nullish(),
+  // Suggested markup on the client's billable costs (U-128, billable-costs-v1),
+  // a percent ("10" = 10 %), 0 to 1000, at most 4 places; null clears it.
+  defaultMarkupPercent: markupPercentSchema.nullish(),
+  // The invoice layout the client's new invoices start on (U-130,
+  // invoice-layouts-v1): a layout of the company, not archived; null clears it.
+  defaultInvoiceLayoutId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.
@@ -78,6 +91,14 @@ export const updateContactSchema = z.object({
     .refine((v) => /[1-9]/.test(v), 'The discount percent must be greater than 0').nullish(),
   defaultDiscountDays: z.number().int().min(0).max(365).nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
+  // The client's price level (U-40, price-levels-v1); null clears it.
+  priceLevelId: z.string().uuid().nullish(),
+  // Suggested markup on the client's billable costs (U-128, billable-costs-v1),
+  // a percent ("10" = 10 %), 0 to 1000, at most 4 places; null clears it.
+  defaultMarkupPercent: markupPercentSchema.nullish(),
+  // The invoice layout the client's new invoices start on (U-130,
+  // invoice-layouts-v1): a layout of the company, not archived; null clears it.
+  defaultInvoiceLayoutId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.

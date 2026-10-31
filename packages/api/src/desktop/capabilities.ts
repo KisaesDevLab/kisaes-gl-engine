@@ -250,4 +250,114 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * requeue / reprint skip void and deleted checks and return them in skipped: [{id, reason: 'void' | 'deleted'}].
    */
   'idempotency-check-print-v1',
+  /**
+   * Sales forms to the cent (U-122): invoice and sales receipt lines are round2(qty x unitPrice) half away from zero; tax is
+   * round2(taxable base x rate) once per document and rate, allocated to the taxable lines by largest remainder (floor, earlier
+   * line first on ties) so line taxes sum exactly; a taxable line without taxRate takes the request company's default rate;
+   * credit memo lines round to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. History is not restated.
+   */
+  'sales-cents-v1',
+  /**
+   * Invoices (U-124): POST, PUT and void take closingPassword / overrideConfirmed for a date on or before the closing date
+   * (423 / 403 / 429); PUT and void take expectedUpdatedAt (409 STALE, details.updatedAt); void with a live payment or credit
+   * applied is 409 INVOICE_HAS_PAYMENTS (also through POST /transactions/:id/void); every /invoices route is company-scoped
+   * (another company's invoice 404; customer, item, tag and default tax rate from the request's company).
+   */
+  'invoice-edit-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on exactly PUT /invoices/:id, POST /invoices/:id/void and
+   * POST /invoices/:id/sent (each `x-idempotency: true` in openapi.json). Refusals (409 STALE, INVOICE_HAS_PAYMENTS, 423, 403,
+   * 400) are never stored. The set is fixed: more routes get a new name (U-124).
+   */
+  'idempotency-invoice-v1',
+  /**
+   * Invoice terms (U-125): paymentTerms is a PAYMENT_TERMS code (GET /payment-terms; custom takes termsDays), omitted the
+   * client's default, else the company's; discount terms store discountPercent / discountDays / discountDate; dueDate sent wins
+   * (dueDateOverridden); PUT keeps the terms when omitted and recomputes the due date when the date or the terms change.
+   */
+  'invoice-terms-v1',
+  /**
+   * Invoice fields (U-123): line itemId (an item of the company; supplies the income account and the taxable flag when omitted)
+   * and serviceDate; header poNumber, customerMessage (printed; memo internal), tagIds, hideZeroLines; GET /invoices/:id returns
+   * them. The invoice PDF prints the message (else the memo), the PO number (template showPoNumber) and negative lines, and
+   * leaves $0 lines off with hideZeroLines. Migration 0242.
+   */
+  'invoice-fields-v1',
+  /**
+   * Send history (U-126): POST /invoices/:id/sent {method: printed|email|pdf, recipients?, sentAt?}; POST /forms/mark-printed
+   * records "printed" for each form it takes out of the queue; GET /invoices/:id returns sendHistory (kept across edits);
+   * GET /invoices?sent=false lists invoices never sent, whatever their payment status. Recipients are never logged or audited.
+   * Migration 0242 (document_send_events).
+   */
+  'invoice-sent-history-v1',
+  /**
+   * Contact open balances (U-38): GET /contacts and GET /contacts/:id add openBalance / oldestOpenDate (A/R) and
+   * payableBalance / oldestOpenBillDate (A/P), 4-place decimal strings, for the request's company.
+   */
+  'contact-balance-v1',
+  /**
+   * Sales item kinds (U-39a): items.itemType service | non_inventory | other_charge | discount | subtotal (existing items read as
+   * service; GET /items?itemType=); a discount item has discountPercent (0 < p <= 100) or unitPrice (the amount off), not both,
+   * and is taxable unless set otherwise; a subtotal item has neither. Migration 0243. (Purchase side and units: U-39b, item-types-v1.)
+   */
+  'item-kinds-sales-v1',
+  /**
+   * Price levels (U-40, Q-P20l): GET/POST /price-levels, GET/PUT/DELETE /price-levels/:id ({priceLevel: {id, name, percent, isActive,
+   * itemPrices: [{itemId, unitPrice}]}}); percent signed (-7.5 = 7.5 % down); fixed item prices stored rounded to the cent; 409
+   * PRICE_LEVEL_NAME_IN_USE / PRICE_LEVEL_IN_USE. contacts.priceLevelId (one level per client; active, of the company). Migration 0243.
+   */
+  'price-levels-v1',
+  /**
+   * Invoice pricing (U-129): POST /invoices/preview computes what POST / PUT /invoices posts (same code, nothing written): lines
+   * {unitPrice, unitPriceSource, discountPercent, amount, taxAmount, ...}, subtotal, taxableBase, taxRate, taxTotal, total, dueDate,
+   * priceLevel, contactBalanceAfter. Invoice lines: quantity omitted is 1; unitPrice omitted takes the client's level, else the item's
+   * price; discount lines (% or amount of the lines since the last subtotal; a taxable discount reduces the taxable base) and shown-only
+   * subtotal lines; lines read back with discountPercent and unitPriceSource. Golden: invoice-golden.json pricingCases.
+   */
+  'invoice-pricing-v1',
+  /**
+   * PUT /invoices/:id pricingLinesComplete: true (U-129 review): the lines sent are every line the invoice keeps, so a discount or
+   * subtotal left out was removed on purpose. Without it, a PUT that sends no itemId on an invoice with discount or subtotal lines is
+   * 409 INVOICE_LINES_MISSING and nothing changes.
+   */
+  'invoice-pricing-lines-v1',
+  /**
+   * Invoice email and the Outbox (U-127): POST /invoices/:id/email {to[], cc[], bcc[], subject, body, pdfFileName, pdfBase64
+   * (application/pdf, <= 10 MB decoded), outboxId?} sends through the company SMTP (desktop: the session password,
+   * smtp-session-v1) and, only on success, records an "email" send event (to + cc + bcc) in the same commit; 200 {invoice}.
+   * 400 SMTP_NOT_CONFIGURED / SMTP_SEND_FAILED (details.reason auth|send), ATTACHMENT_TOO_LARGE, INVOICE_VOID; 503 OFFLINE_UNAVAILABLE.
+   * POST /invoices/:id/email-later stores the message (no PDF; made at send time, Q-P20q) in the Outbox: 201 {item};
+   * GET /forms/email-queue {data} oldest first; DELETE /forms/email-queue/:id 204 (404 OUTBOX_ITEM_NOT_FOUND). Company scope;
+   * recipients never logged or audited. Idempotency-Key (idempotency-v1's contract) on POST /invoices/:id/email and
+   * /email-later; this set is fixed. Migration 0244 (form_email_queue).
+   */
+  'invoice-email-v1',
+  /**
+   * Billable costs (U-128): GET /billable-costs?contactId=&limit=&offset= lists the unbilled costs of the company (items
+   * {sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, sourceDate, vendorName, description, expenseAccountId, itemId,
+   * quantity, unitCost, sourceAmount, costAmount, suggestedIncomeAccountId}, totalCount, totalAmount over all pages,
+   * defaultMarkupPercent). An invoice line {billableSourceLineId, accountId (required), markupPercent? (a percent, 0-1000)} bills a cost
+   * whole, once, to its own customer: cost = round2(source), markup = round2(cost x pct / 100) (none on a negative cost), one visible
+   * line (rate = amount / quantity), journal cost line (lineRole billable_cost) + markup line (billable_markup, company
+   * billableMarkupAccountId, kept on edit). PUT re-sends or releases (releaseBillableSourceLineIds) every billed cost, else 409
+   * BILLABLE_LINES_MISSING; void / delete of the invoice through any route releases them. GET /invoices/:id billableCosts; source
+   * reads add billedInvoiceId / billedInvoiceNumber; contacts.defaultMarkupPercent. 409 BILLABLE_ALREADY_BILLED / COST_UNAVAILABLE /
+   * INVOICE_TOTAL_BELOW_PAID / RETRY; 400 BILLABLE_CONTACT_MISMATCH / DUPLICATE_LINE / FIELDS_READONLY / INCOME_ACCOUNT_REQUIRED,
+   * MARKUP_ACCOUNT_REQUIRED / INVALID. Golden: invoice-golden.json billableCases. Migration 0245.
+   */
+  'billable-costs-v1',
+  /**
+   * Invoice print layouts (U-130, Q-P20ac): GET /company/invoice-layouts[?includeArchived=true], POST /company/invoice-layouts,
+   * GET/PUT /company/invoice-layouts/:id, POST /company/invoice-layouts/:id/default. A layout {id, name, isDefault, isArchived,
+   * accentColor, logoUrl, showShipTo, showPoNumber, showTerms, footerText, footerOverrides, columns {item, description, serviceDate,
+   * quantity, rate}, resolvedFooters, invoiceCount, createdAt, updatedAt}; exactly one default per company (the first is "Standard");
+   * names unique per company (409 INVOICE_LAYOUT_NAME_IN_USE); PUT expectedUpdatedAt (409 STALE) and isArchived. Layouts are archived,
+   * never deleted (DELETE 405 INVOICE_LAYOUT_DELETE_NOT_ALLOWED); the default can't be archived (409 INVOICE_LAYOUT_IS_DEFAULT) and an
+   * archived layout can't become the default (409 INVOICE_LAYOUT_ARCHIVED). GET/PUT /company/invoice-template read and write the
+   * default layout. Invoices: layoutId (null = the company default; edit: absent keeps) on POST / PUT / preview / GET; a new invoice
+   * without layoutId starts on the client's contacts.defaultInvoiceLayoutId (unless archived). 400 INVOICE_LAYOUT_NOT_FOUND /
+   * INVOICE_LAYOUT_ARCHIVED for a new choice; an invoice or client keeps an archived layout it already has. GET /invoices/:id/pdf
+   * prints with it. Migration 0246.
+   */
+  'invoice-layouts-v1',
 ];

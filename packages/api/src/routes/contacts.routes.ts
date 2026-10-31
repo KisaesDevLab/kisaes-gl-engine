@@ -22,18 +22,28 @@ export const contactsRouter = Router();
 contactsRouter.use(authenticate);
 contactsRouter.use(requireResource('contacts'));
 
-contactsRouter.get('/', async (req, res) => {
+const balanceDoc = 'Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, '
+  + 'invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). '
+  + 'Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.';
+
+contactsRouter.get('/', companyContext, describe({
+  summary: 'List contacts',
+  description: balanceDoc,
+  query: contactFiltersSchema,
+}), async (req, res) => {
   const filters = contactFiltersSchema.parse(req.query);
-  const result = await contactsService.list(req.tenantId, filters);
+  const result = await contactsService.list(req.tenantId, filters, req.companyId);
   res.json(result);
 });
 
 // Idempotency-Key (idempotency-v1, U-18).
-contactsRouter.post('/', idempotent({
+// companyContext (U-130): the price level and default invoice layout are
+// checked against the request's company.
+contactsRouter.post('/', companyContext, idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ contact: await contactsService.getById(req.tenantId, entity!.id) }),
 }), validate(createContactSchema), async (req, res) => {
-  const contact = await contactsService.create(req.tenantId, req.body, req.userId);
+  const contact = await contactsService.create(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ contact });
 });
 
@@ -78,13 +88,17 @@ contactsRouter.post('/bulk-type', validate(bulkUpdateContactTypeSchema), async (
   res.json(result);
 });
 
-contactsRouter.get('/:id', async (req, res) => {
-  const contact = await contactsService.getById(req.tenantId, req.params['id']!);
+contactsRouter.get('/:id', companyContext, describe({
+  summary: 'Get a contact',
+  description: balanceDoc,
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
+  const contact = await contactsService.getWithBalance(req.tenantId, req.params['id']!, req.companyId);
   res.json({ contact });
 });
 
-contactsRouter.put('/:id', validate(updateContactSchema), async (req, res) => {
-  const contact = await contactsService.update(req.tenantId, req.params['id']!, req.body, req.userId);
+contactsRouter.put('/:id', companyContext, validate(updateContactSchema), async (req, res) => {
+  const contact = await contactsService.update(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ contact });
 });
 

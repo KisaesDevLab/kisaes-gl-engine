@@ -247,7 +247,7 @@ apiV2Router.get('/transactions', async (req, res) => {
 });
 
 apiV2Router.get('/transactions/:id', async (req, res) => {
-  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId);
   res.json({ transaction: txn });
 });
 
@@ -289,7 +289,7 @@ apiV2Router.post('/transactions', async (req, res) => {
 apiV2Router.post('/transactions/:id/void', apDocumentPermission('update'), async (req, res) => {
   const { reason } = voidTransactionSchema.parse(req.body);
   await ledger.voidTransaction(req.tenantId, req.params['id']!, reason, req.userId, { companyId: req.companyId });
-  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId);
   res.json({ transaction: txn });
 });
 
@@ -302,7 +302,7 @@ apiV2Router.get('/invoices', async (req, res) => {
 });
 
 apiV2Router.get('/invoices/:id', async (req, res) => {
-  const invoice = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  const invoice = await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId);
   res.json({ invoice });
 });
 

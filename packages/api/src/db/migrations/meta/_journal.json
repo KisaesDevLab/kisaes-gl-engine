@@ -1695,6 +1695,41 @@
       "when": 1785700014390,
       "tag": "0241_transactions_is_check",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1785800014380,
+      "tag": "0242_invoice_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1785900014380,
+      "tag": "0243_item_pricing",
+      "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1786000014380,
+      "tag": "0244_invoice_email_queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1786100014380,
+      "tag": "0245_billable_costs",
+      "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1786200014380,
+      "tag": "0246_invoice_layouts",
+      "breakpoints": true
     }
   ]
 }
