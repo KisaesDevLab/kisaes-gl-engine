@@ -16,6 +16,19 @@ export const emailTemplates = pgTable('email_templates', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
 
+export interface InvoiceLayoutColumns {
+  item: boolean;
+  description: boolean;
+  serviceDate: boolean;
+  quantity: boolean;
+  rate: boolean;
+}
+
+/** Today's printed form: description, quantity and rate (U-130). */
+export const DEFAULT_LAYOUT_COLUMNS: InvoiceLayoutColumns = {
+  item: false, description: true, serviceDate: false, quantity: true, rate: true,
+};
+
 export const invoiceTemplates = pgTable('invoice_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull(),
@@ -29,6 +42,10 @@ export const invoiceTemplates = pgTable('invoice_templates', {
   footerText: text('footer_text'),
   // Per-type footer text (U-111, migration 0240); blank or absent -> footerText.
   footerOverrides: jsonb('footer_overrides').$type<Record<string, string | null>>().notNull().default({}),
+  // Which line columns the printed invoice shows (U-130, migration 0246);
+  // the amount always prints. Each row is an invoice layout of its company;
+  // one per company is the default (uq_invoice_templates_company_default).
+  lineColumns: jsonb('line_columns').$type<InvoiceLayoutColumns>().notNull().default(DEFAULT_LAYOUT_COLUMNS),
   isDefault: boolean('is_default').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),

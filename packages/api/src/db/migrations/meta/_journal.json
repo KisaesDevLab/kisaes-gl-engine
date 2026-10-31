@@ -1723,6 +1723,13 @@
       "when": 1786100014380,
       "tag": "0245_billable_costs",
       "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1786200014380,
+      "tag": "0246_invoice_layouts",
+      "breakpoints": true
     }
   ]
 }

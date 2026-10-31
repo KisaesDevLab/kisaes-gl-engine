@@ -77,6 +77,9 @@ export const transactions = pgTable('transactions', {
   poNumber: varchar('po_number', { length: 50 }),
   customerMessage: text('customer_message'),
   hideZeroLines: boolean('hide_zero_lines').notNull().default(false),
+  // The invoice layout this invoice prints with (U-130, migration 0246; an
+  // invoice_templates row of its company). NULL: the company default. No FK.
+  layoutId: uuid('invoice_layout_id'),
   // How the payment was made (shared PAYMENT_METHODS) and the payer/payee's
   // reference for it — ACH trace, card auth, the customer's check number.
   // NULL on rows that predate migration 0178.
