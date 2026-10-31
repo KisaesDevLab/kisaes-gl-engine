@@ -670,6 +670,14 @@ describe('company scope (rule 8, security)', () => {
     const owner = await request('GET', `/api/v1/transactions/${txn.id}`, c.token, undefined, { 'X-Company-Id': co2 });
     const ownLine = (owner.json.transaction.lines as any[]).find((l) => l.id === ids[0]);
     expect([ownLine.billedInvoiceId, ownLine.billedInvoiceNumber]).toEqual([theirs.json.invoice.id, 'SECRET-78']);
+    // Fail closed: a read that names no company (any caller of
+    // getTransaction without the request company) names no invoice either.
+    const bare = await ledger.getTransaction(c.tenantId, txn.id);
+    const bareLine = bare.lines.find((l) => l.id === ids[0])!;
+    expect([bareLine.billedStatus, bareLine.billedInvoiceId, bareLine.billedInvoiceNumber]).toEqual(['billed', null, null]);
+    // The duplicate route reads the source with the request company.
+    const dup = await request('POST', `/api/v1/transactions/${txn.id}/duplicate`, c.token);
+    expect(JSON.stringify(dup.json)).not.toContain('SECRET-78');
   });
 });
 

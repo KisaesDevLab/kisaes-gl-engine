@@ -121,8 +121,9 @@ export async function assertSourceLinksIntact(executor: DbOrTx, tenantId: string
 /**
  * The invoice each billed line of a source is on (source reads):
  * Map<sourceLineId, {invoiceId, invoiceNumber}>. `companyId`: the reader's
- * company; an invoice of another company shows as null (review S-5: a
- * tenant-wide cost billed by another company must not name its invoice).
+ * company; the invoice is named only when it is of exactly that company,
+ * else null (review S-5: a tenant-wide cost billed by another company must
+ * not name its invoice; with no company given, only a company-less invoice).
  */
 export async function billedInvoicesForLines(
   executor: DbOrTx, tenantId: string, lineIds: readonly string[], companyId?: string | null,
@@ -138,7 +139,8 @@ export async function billedInvoicesForLines(
       inArray(billableCostLinks.sourceLineId, [...lineIds]),
       isNull(billableCostLinks.releasedAt),
     ));
-  return new Map(rows.map((r) => [r.lineId, companyId && r.invoiceCompanyId && r.invoiceCompanyId !== companyId
+  // Fail closed: named only when the invoice is of exactly the reader's company.
+  return new Map(rows.map((r) => [r.lineId, (r.invoiceCompanyId ?? null) !== (companyId ?? null)
     ? { invoiceId: null, invoiceNumber: null }
     : { invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber ?? null }]));
 }

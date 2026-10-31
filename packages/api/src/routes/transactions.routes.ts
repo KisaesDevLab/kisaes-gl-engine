@@ -55,11 +55,11 @@ transactionsRouter.use(lockContextMiddleware);
 // no stored response is left (the settle failed or the body was too big).
 const keyedCreate = idempotent({
   successStatus: 201,
-  replay: async (req, entity) => ({ transaction: await ledger.getTransaction(req.tenantId, entity!.id) }),
+  replay: async (req, entity) => ({ transaction: await ledger.getTransaction(req.tenantId, entity!.id, req.companyId) }),
 });
 const keyedById = idempotent({
   successStatus: 200,
-  replay: async (req) => ({ transaction: await ledger.getTransaction(req.tenantId, req.params['id']!) }),
+  replay: async (req) => ({ transaction: await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId) }),
 });
 
 transactionsRouter.get('/', describe({
@@ -368,7 +368,7 @@ transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
     expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
   });
-  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId);
   res.json({ transaction: txn });
 });
 
@@ -404,12 +404,12 @@ transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, (re
     reason: req.body.reason, userId: req.userId, companyId: req.companyId,
     expectedUpdatedAt: req.body.expectedUpdatedAt,
   });
-  const txn = await ledger.getTransaction(req.tenantId, parsed.data);
+  const txn = await ledger.getTransaction(req.tenantId, parsed.data, req.companyId);
   res.json({ transaction: txn });
 });
 
 transactionsRouter.post('/:id/duplicate', apDocumentPermission('create'), async (req, res) => {
-  const original = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  const original = await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId);
   // AJE duplication runs through /tb (numbering + firm gate, rule TB3).
   if (original.txnType === 'aje') {
     throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
