@@ -22431,8 +22431,22 @@
     },
     "/api/v1/company/invoice-layouts": {
       "get": {
-        "description": "Response {data: [layout]}. A company without layouts gets its default one (\"Standard\", a copy of the template it printed with) on first read.",
+        "description": "Response {data: [layout]}: the layouts the picker offers; archived ones only with ?includeArchived=true. A company without layouts gets its default one (\"Standard\", a copy of the template it printed with) on first read.",
         "operationId": "get_api_v1_company_invoice_layouts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "includeArchived",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -22501,6 +22515,9 @@
                             "description": "invoices (void ones too) that print with this layout",
                             "type": "integer"
                           },
+                          "isArchived": {
+                            "type": "boolean"
+                          },
                           "isDefault": {
                             "type": "boolean"
                           },
@@ -22554,6 +22571,7 @@
                           "id",
                           "name",
                           "isDefault",
+                          "isArchived",
                           "accentColor",
                           "logoUrl",
                           "showShipTo",
@@ -22796,6 +22814,9 @@
                           "description": "invoices (void ones too) that print with this layout",
                           "type": "integer"
                         },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
                         "isDefault": {
                           "type": "boolean"
                         },
@@ -22849,6 +22870,7 @@
                         "id",
                         "name",
                         "isDefault",
+                        "isArchived",
                         "accentColor",
                         "logoUrl",
                         "showShipTo",
@@ -22894,7 +22916,7 @@
     },
     "/api/v1/company/invoice-layouts/{id}": {
       "delete": {
-        "description": "Response 200 {reassignedCount}. 409 INVOICE_LAYOUT_IS_DEFAULT (make another the default first). A layout invoices print with (void ones too) is 409 INVOICE_LAYOUT_IN_USE (details.invoiceCount) unless ?reassignToDefault=true: those invoices then print with the default layout (layoutId null; their updatedAt is kept). 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "description": "Always 405 INVOICE_LAYOUT_DELETE_NOT_ALLOWED: archive the layout instead (PUT {isArchived: true}).",
         "operationId": "delete_api_v1_company_invoice_layouts_by_id",
         "parameters": [
           {
@@ -22905,40 +22927,9 @@
               "format": "uuid",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "reassignToDefault",
-            "required": false,
-            "schema": {
-              "enum": [
-                "true",
-                "false"
-              ],
-              "type": "string"
-            }
           }
         ],
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "properties": {
-                    "reassignedCount": {
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "reassignedCount"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Success"
-          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -22951,7 +22942,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Delete an invoice layout (invoice-layouts-v1)",
+        "summary": "Invoice layouts are not deleted (invoice-layouts-v1)",
         "tags": [
           "company"
         ]
@@ -23037,6 +23028,9 @@
                           "description": "invoices (void ones too) that print with this layout",
                           "type": "integer"
                         },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
                         "isDefault": {
                           "type": "boolean"
                         },
@@ -23090,6 +23084,7 @@
                         "id",
                         "name",
                         "isDefault",
+                        "isArchived",
                         "accentColor",
                         "logoUrl",
                         "showShipTo",
@@ -23133,7 +23128,7 @@
         ]
       },
       "put": {
-        "description": "Response {layout}. Omitted fields keep their values; a footerOverrides map replaces the stored one. 409 STALE, 409 INVOICE_LAYOUT_NAME_IN_USE. 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "description": "Response {layout}. Omitted fields keep their values; a footerOverrides map replaces the stored one. isArchived archives or unarchives: an archived layout leaves the picker and can’t be chosen for new invoices or clients; invoices (and clients) that already use it keep it. 409 STALE, 409 INVOICE_LAYOUT_NAME_IN_USE, 409 INVOICE_LAYOUT_IS_DEFAULT (archiving the default). 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
         "operationId": "put_api_v1_company_invoice_layouts_by_id",
         "parameters": [
           {
@@ -23244,6 +23239,10 @@
                       }
                     ]
                   },
+                  "isArchived": {
+                    "description": "archive (true) or unarchive (false); the default can’t be archived (409 INVOICE_LAYOUT_IS_DEFAULT)",
+                    "type": "boolean"
+                  },
                   "logoUrl": {
                     "anyOf": [
                       {
@@ -23343,6 +23342,9 @@
                           "description": "invoices (void ones too) that print with this layout",
                           "type": "integer"
                         },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
                         "isDefault": {
                           "type": "boolean"
                         },
@@ -23396,6 +23398,7 @@
                         "id",
                         "name",
                         "isDefault",
+                        "isArchived",
                         "accentColor",
                         "logoUrl",
                         "showShipTo",
@@ -23441,7 +23444,7 @@
     },
     "/api/v1/company/invoice-layouts/{id}/default": {
       "post": {
-        "description": "Response {layout}. Invoices without their own layout print with it; GET/PUT /company/invoice-template read and write it. 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "description": "Response {layout}. Invoices without their own layout print with it; GET/PUT /company/invoice-template read and write it. 409 INVOICE_LAYOUT_ARCHIVED (unarchive it first). 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
         "operationId": "post_api_v1_company_invoice_layouts_by_id_default",
         "parameters": [
           {
@@ -23521,6 +23524,9 @@
                           "description": "invoices (void ones too) that print with this layout",
                           "type": "integer"
                         },
+                        "isArchived": {
+                          "type": "boolean"
+                        },
                         "isDefault": {
                           "type": "boolean"
                         },
@@ -23574,6 +23580,7 @@
                         "id",
                         "name",
                         "isDefault",
+                        "isArchived",
                         "accentColor",
                         "logoUrl",
                         "showShipTo",
@@ -25157,6 +25164,17 @@
                       }
                     ]
                   },
+                  "defaultInvoiceLayoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultMarkupPercent": {
                     "anyOf": [
                       {
@@ -25847,6 +25865,17 @@
                     ]
                   },
                   "defaultExpenseAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "defaultInvoiceLayoutId": {
                     "anyOf": [
                       {
                         "format": "uuid",

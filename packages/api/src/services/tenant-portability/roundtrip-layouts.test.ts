@@ -53,7 +53,11 @@ async function layoutShape(tid: string) {
     SELECT t.txn_number AS n, l.name AS layout, (t.invoice_layout_id IS NULL) AS default_layout
     FROM transactions t LEFT JOIN invoice_templates l ON l.tenant_id = t.tenant_id AND l.id = t.invoice_layout_id
     WHERE t.tenant_id = $1 AND t.txn_type = 'invoice' ORDER BY t.txn_number`, [tid]);
-  return { rows, invoices };
+  const clients = await q<Record<string, unknown>>(`
+    SELECT c.display_name AS n, l.name AS layout FROM contacts c
+    JOIN invoice_templates l ON l.tenant_id = c.tenant_id AND l.id = c.default_invoice_layout_id
+    WHERE c.tenant_id = $1 ORDER BY c.display_name`, [tid]);
+  return { rows, invoices, clients };
 }
 
 beforeAll(async () => {
@@ -81,6 +85,8 @@ beforeAll(async () => {
   const line = [{ accountId: revenue, description: 'Visit', quantity: '1', unitPrice: '80.00' }];
   await invoiceService.createInvoice(tenantId, { txnDate: '2026-10-05', contactId: customer!.id, txnNumber: `RTL-1-${stamp}`, lines: line, layoutId: svc.id }, undefined, companyId);
   await invoiceService.createInvoice(tenantId, { txnDate: '2026-10-06', contactId: customer!.id, txnNumber: `RTL-2-${stamp}`, lines: line }, undefined, companyId);
+  // The client's default layout (set after the invoices, so the second one stays on the company default).
+  await db.update(contacts).set({ defaultInvoiceLayoutId: svc.id }).where(eq(contacts.id, customer!.id));
   archive = await runExport(tenantId, callerId, { passphrase: PASS, host: { app: 'ClientLedger', kind: 'backup' } });
 }, 180_000);
 
@@ -104,6 +110,7 @@ afterAll(async () => {
 describe('invoice layouts in tenant archives (U-130)', () => {
   it('classifies the new column', () => {
     expect(SOFT_REFS['transactions.invoice_layout_id']).toBe('tenant-ref:invoice_templates');
+    expect(SOFT_REFS['contacts.default_invoice_layout_id']).toBe('tenant-ref:invoice_templates');
     expect(plan.byName.get('invoice_templates')).toBeTruthy();
   });
 
@@ -118,6 +125,8 @@ describe('invoice layouts in tenant archives (U-130)', () => {
     expect(imported.verification).toMatchObject({ contentEqual: true, trialBalanceEqual: true });
     const after = await layoutShape(imported.tenantId);
     expect(after.rows).toEqual(before.rows);
+    expect(before.clients).toEqual([{ n: 'Hartley Residence', layout: 'Service with dates' }]);
+    expect(after.clients).toEqual(before.clients);
     expect(after.invoices.map((i) => [i['layout'], i['default_layout']])).toEqual([['Service with dates', false], [null, true]]);
     const leaked = await q<{ n: number }>(`SELECT count(*)::int AS n FROM transactions t
       WHERE t.tenant_id = $1 AND t.invoice_layout_id IN (SELECT id FROM invoice_templates WHERE tenant_id = $2)`, [imported.tenantId, tenantId]);

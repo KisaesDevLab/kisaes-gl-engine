@@ -397,13 +397,15 @@ const layoutNameSchema = z.string().trim().min(1).max(100);
 const createLayoutSchema = layoutFieldsSchema.extend({ name: layoutNameSchema }).strict();
 const updateLayoutSchema = layoutFieldsSchema.extend({
   name: layoutNameSchema.optional(),
+  isArchived: z.boolean().optional()
+    .describe('archive (true) or unarchive (false); the default can’t be archived (409 INVOICE_LAYOUT_IS_DEFAULT)'),
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional()
     .describe('the layout updatedAt as last read; a mismatch is 409 STALE (details.updatedAt) and nothing changes'),
 }).strict();
 const layoutIdParams = z.object({ id: z.string().uuid() });
-const deleteLayoutQuery = z.object({ reassignToDefault: z.enum(['true', 'false']).optional() });
+const listLayoutsQuery = z.object({ includeArchived: z.enum(['true', 'false']).optional() });
 const layoutDoc = z.object({
-  id: z.string().uuid(), name: z.string(), isDefault: z.boolean(), accentColor: z.string(), logoUrl: z.string().nullable(),
+  id: z.string().uuid(), name: z.string(), isDefault: z.boolean(), isArchived: z.boolean(), accentColor: z.string(), logoUrl: z.string().nullable(),
   showShipTo: z.boolean(), showPoNumber: z.boolean(), showTerms: z.boolean(), footerText: z.string().nullable(),
   footerOverrides: z.record(z.string(), z.string().nullable()),
   columns: z.object({ item: z.boolean(), description: z.boolean(), serviceDate: z.boolean(), quantity: z.boolean(), rate: z.boolean() }),
@@ -420,10 +422,14 @@ function validLayoutId(id: string | undefined): string {
 
 companyRouter.get('/invoice-layouts', describe({
   summary: "The company's invoice layouts, default first (invoice-layouts-v1)",
-  description: 'Response {data: [layout]}. A company without layouts gets its default one ("Standard", a copy of the template it printed with) on first read.',
+  description: 'Response {data: [layout]}: the layouts the picker offers; archived ones only with ?includeArchived=true. '
+    + 'A company without layouts gets its default one ("Standard", a copy of the template it printed with) on first read.',
+  query: listLayoutsQuery,
   response: z.object({ data: z.array(layoutDoc) }),
 }), async (req, res) => {
-  res.json({ data: await invoiceTemplateService.listLayouts(req.tenantId, req.companyId, req.userId) });
+  const q = listLayoutsQuery.safeParse(req.query);
+  if (!q.success) throw AppError.badRequest('includeArchived must be true or false', 'VALIDATION_ERROR');
+  res.json({ data: await invoiceTemplateService.listLayouts(req.tenantId, req.companyId, req.userId, { includeArchived: q.data.includeArchived === 'true' }) });
 });
 
 companyRouter.post('/invoice-layouts', requireCompanySettingsWrite, validate(createLayoutSchema), describe({
@@ -447,8 +453,9 @@ companyRouter.get('/invoice-layouts/:id', describe({
 
 companyRouter.put('/invoice-layouts/:id', requireCompanySettingsWrite, validate(updateLayoutSchema), describe({
   summary: 'Edit an invoice layout (invoice-layouts-v1)',
-  description: 'Response {layout}. Omitted fields keep their values; a footerOverrides map replaces the stored one. '
-    + `409 STALE, 409 INVOICE_LAYOUT_NAME_IN_USE. ${layoutErrors}`,
+  description: 'Response {layout}. Omitted fields keep their values; a footerOverrides map replaces the stored one. isArchived archives or unarchives: '
+    + 'an archived layout leaves the picker and can’t be chosen for new invoices or clients; invoices (and clients) that already use it keep it. '
+    + `409 STALE, 409 INVOICE_LAYOUT_NAME_IN_USE, 409 INVOICE_LAYOUT_IS_DEFAULT (archiving the default). ${layoutErrors}`,
   body: updateLayoutSchema,
   params: layoutIdParams,
   response: z.object({ layout: layoutDoc }),
@@ -459,27 +466,21 @@ companyRouter.put('/invoice-layouts/:id', requireCompanySettingsWrite, validate(
 
 companyRouter.post('/invoice-layouts/:id/default', requireCompanySettingsWrite, describe({
   summary: 'Make an invoice layout the company default (invoice-layouts-v1)',
-  description: `Response {layout}. Invoices without their own layout print with it; GET/PUT /company/invoice-template read and write it. ${layoutErrors}`,
+  description: `Response {layout}. Invoices without their own layout print with it; GET/PUT /company/invoice-template read and write it. 409 INVOICE_LAYOUT_ARCHIVED (unarchive it first). ${layoutErrors}`,
   params: layoutIdParams,
   response: z.object({ layout: layoutDoc }),
 }), async (req, res) => {
   res.json({ layout: await invoiceTemplateService.setDefaultLayout(req.tenantId, req.companyId, validLayoutId(req.params['id']), req.userId) });
 });
 
+// Layouts are archived, never deleted (owner 2026-10-31): invoices keep
+// printing with the layout they were made with.
 companyRouter.delete('/invoice-layouts/:id', requireCompanySettingsWrite, describe({
-  summary: 'Delete an invoice layout (invoice-layouts-v1)',
-  description: 'Response 200 {reassignedCount}. 409 INVOICE_LAYOUT_IS_DEFAULT (make another the default first). A layout invoices print with (void ones too) '
-    + 'is 409 INVOICE_LAYOUT_IN_USE (details.invoiceCount) unless ?reassignToDefault=true: those invoices then print with the default layout '
-    + `(layoutId null; their updatedAt is kept). ${layoutErrors}`,
+  summary: 'Invoice layouts are not deleted (invoice-layouts-v1)',
+  description: 'Always 405 INVOICE_LAYOUT_DELETE_NOT_ALLOWED: archive the layout instead (PUT {isArchived: true}).',
   params: layoutIdParams,
-  query: deleteLayoutQuery,
-  response: z.object({ reassignedCount: z.number().int() }),
-}), async (req, res) => {
-  const q = deleteLayoutQuery.safeParse(req.query);
-  if (!q.success) throw AppError.badRequest('reassignToDefault must be true or false', 'VALIDATION_ERROR');
-  const result = await invoiceTemplateService.deleteLayout(req.tenantId, req.companyId, validLayoutId(req.params['id']),
-    { reassignToDefault: q.data.reassignToDefault === 'true' }, req.userId);
-  res.json(result);
+}), async () => {
+  throw new AppError(405, 'Invoice layouts can’t be deleted. Archive the layout instead.', 'INVOICE_LAYOUT_DELETE_NOT_ALLOWED');
 });
 
 companyRouter.get('/smtp', async (req, res) => {

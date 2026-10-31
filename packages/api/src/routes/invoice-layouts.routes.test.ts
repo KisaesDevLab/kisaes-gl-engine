@@ -6,7 +6,9 @@
 //   - a company's first layout "Standard" (a copy of the template it printed
 //     with) is its default; GET/PUT /company/invoice-template use it;
 //   - create / update (columns merge, expectedUpdatedAt) / set default /
-//     delete (default refused, in use refused or reassigned);
+//     archive (never delete; the default can't be archived; archived layouts
+//     leave the picker, can't be chosen anew, keep printing their invoices);
+//   - a client's default layout for new invoices;
 //   - names unique per company; company scope; audit rows; one default under
 //     concurrent writes;
 //   - invoices: layoutId on POST / PUT / preview / GET and copies; the
@@ -26,6 +28,7 @@ import {
 } from '../db/schema/index.js';
 import { invoicesRouter } from './invoices.routes.js';
 import { companyRouter } from './company.routes.js';
+import { contactsRouter } from './contacts.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import * as pdfService from '../services/pdf.service.js';
@@ -106,6 +109,7 @@ beforeEach(async () => {
   app.use(express.json());
   app.use('/api/v1/invoices', invoicesRouter);
   app.use('/api/v1/company', companyRouter);
+  app.use('/api/v1/contacts', contactsRouter);
   app.use(errorHandler);
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => { port = (server!.address() as AddressInfo).port; resolve(); });
@@ -204,32 +208,93 @@ describe('invoice layouts (U-130)', () => {
     expect((await list()).filter((l) => l.isDefault)).toHaveLength(1);
   });
 
-  it('delete refuses the default and layouts in use unless reassigned to the default', async () => {
+  it('layouts are archived, never deleted; archived ones keep printing their invoices', async () => {
     const [standard] = await list();
     const prod = (await create({ name: 'Product' })).json.layout;
-    expect((await request('DELETE', `${L}/${standard.id}`, c.token)).json.error.code).toBe('INVOICE_LAYOUT_IS_DEFAULT');
+    const del = await request('DELETE', `${L}/${prod.id}`, c.token);
+    expect(del.status).toBe(405);
+    expect(del.json.error.code).toBe('INVOICE_LAYOUT_DELETE_NOT_ALLOWED');
 
     const inv = await invoice({ layoutId: prod.id });
     expect(inv.status, JSON.stringify(inv.json)).toBe(201);
-    const refused = await request('DELETE', `${L}/${prod.id}`, c.token);
-    expect(refused.status).toBe(409);
-    expect(refused.json.error).toMatchObject({ code: 'INVOICE_LAYOUT_IN_USE', details: { invoiceCount: 1 } });
-    expect((await list()).find((l) => l.id === prod.id)!.invoiceCount).toBe(1);
+    const id = inv.json.invoice.id;
 
-    const before = (await request('GET', `/api/v1/invoices/${inv.json.invoice.id}`, c.token)).json.invoice;
-    const del = await request('DELETE', `${L}/${prod.id}?reassignToDefault=true`, c.token);
-    expect(del.status, JSON.stringify(del.json)).toBe(200);
-    expect(del.json).toEqual({ reassignedCount: 1 });
-    const got = (await request('GET', `/api/v1/invoices/${inv.json.invoice.id}`, c.token)).json.invoice;
-    expect(got.layoutId).toBeNull();
-    expect(got.updatedAt).toBe(before.updatedAt);
-    expect((await request('GET', `${L}/${prod.id}`, c.token)).json.error.code).toBe('INVOICE_LAYOUT_NOT_FOUND');
-    expect((await request('DELETE', `${L}/not-a-uuid`, c.token)).status).toBe(404);
+    const noDefault = await request('PUT', `${L}/${standard.id}`, c.token, { isArchived: true });
+    expect(noDefault.status).toBe(409);
+    expect(noDefault.json.error.code).toBe('INVOICE_LAYOUT_IS_DEFAULT');
 
-    const unused = (await create({ name: 'Unused' })).json.layout;
-    expect((await request('DELETE', `${L}/${unused.id}`, c.token)).json).toEqual({ reassignedCount: 0 });
+    const arch = await request('PUT', `${L}/${prod.id}`, c.token, { isArchived: true });
+    expect(arch.status, JSON.stringify(arch.json)).toBe(200);
+    expect(arch.json.layout).toMatchObject({ isArchived: true, invoiceCount: 1 });
+    expect((await list()).map((l) => l.name)).toEqual(['Standard']);
+    expect((await request('GET', `${L}?includeArchived=true`, c.token)).json.data.map((l: any) => [l.name, l.isArchived]))
+      .toEqual([['Standard', false], ['Product', true]]);
+    expect((await request('GET', `${L}/${prod.id}`, c.token)).json.layout.isArchived).toBe(true);
+
+    // Not for new choices: a new invoice, another invoice, preview of a new one, the default.
+    const fresh = await invoice({ layoutId: prod.id });
+    expect(fresh.status).toBe(400);
+    expect(fresh.json.error.code).toBe('INVOICE_LAYOUT_ARCHIVED');
+    expect((await request('POST', '/api/v1/invoices/preview', c.token, body({ layoutId: prod.id }))).json.error.code).toBe('INVOICE_LAYOUT_ARCHIVED');
+    const other = (await invoice()).json.invoice.id;
+    expect((await request('PUT', `/api/v1/invoices/${other}`, c.token, body({ layoutId: prod.id }))).json.error.code).toBe('INVOICE_LAYOUT_ARCHIVED');
+    expect((await request('POST', `${L}/${prod.id}/default`, c.token)).json.error.code).toBe('INVOICE_LAYOUT_ARCHIVED');
+
+    // The invoice that has it keeps it: edits (omitted or re-sent), preview, print, copies fall back.
+    const kept = await request('PUT', `/api/v1/invoices/${id}`, c.token, body({ memo: 'edit' }));
+    expect(kept.json.invoice.layoutId).toBe(prod.id);
+    expect((await request('PUT', `/api/v1/invoices/${id}`, c.token, body({ layoutId: prod.id }))).status).toBe(200);
+    expect((await request('POST', '/api/v1/invoices/preview', c.token, body({ invoiceId: id, layoutId: prod.id }))).json.layoutId).toBe(prod.id);
+    const copy = await request('POST', `/api/v1/invoices/${id}/duplicate`, c.token);
+    const copyId = copy.json.invoice?.id ?? copy.json.id;
+    expect((await request('GET', `/api/v1/invoices/${copyId}`, c.token)).json.invoice.layoutId).toBeNull();
+
+    // Unarchive: back in the picker and choosable.
+    expect((await request('PUT', `${L}/${prod.id}`, c.token, { isArchived: false })).json.layout.isArchived).toBe(false);
+    expect((await invoice({ layoutId: prod.id })).status).toBe(201);
+    const audits = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'invoice_template'), eq(auditLog.entityId, prod.id)));
+    expect(audits.map((a) => a.action).sort()).toEqual(['create', 'update', 'update']);
   });
 
+  it('a client default layout starts the client new invoices', async () => {
+    await list();
+    const svc = (await create({ name: 'Service' })).json.layout;
+    const prod = (await create({ name: 'Product' })).json.layout;
+    const made = await request('POST', '/api/v1/contacts', c.token, { contactType: 'customer', displayName: 'Lakeside HOA', defaultInvoiceLayoutId: svc.id });
+    expect(made.status, JSON.stringify(made.json)).toBeLessThan(300);
+    const contact = made.json.contact ?? made.json;
+    expect(contact.defaultInvoiceLayoutId).toBe(svc.id);
+    const forClient = (extra: Record<string, unknown> = {}) => request('POST', '/api/v1/invoices', c.token, body({ contactId: contact.id, ...extra }));
+
+    expect((await request('POST', '/api/v1/invoices/preview', c.token, body({ contactId: contact.id }))).json.layoutId).toBe(svc.id);
+    const inv = await forClient();
+    expect(inv.status, JSON.stringify(inv.json)).toBe(201);
+    expect(inv.json.invoice.layoutId).toBe(svc.id);
+    expect((await request('GET', `/api/v1/invoices/${inv.json.invoice.id}`, c.token)).json.invoice.layoutId).toBe(svc.id);
+    expect((await forClient({ layoutId: null })).json.invoice.layoutId).toBeNull();
+    expect((await forClient({ layoutId: prod.id })).json.invoice.layoutId).toBe(prod.id);
+    // Other clients start on the company default.
+    expect((await invoice()).json.invoice.layoutId).toBeNull();
+
+    // Update: set, clear; foreign and archived layouts refused as a new choice.
+    const upd = await request('PUT', `/api/v1/contacts/${contact.id}`, c.token, { defaultInvoiceLayoutId: prod.id });
+    expect(upd.status, JSON.stringify(upd.json)).toBe(200);
+    expect((upd.json.contact ?? upd.json).defaultInvoiceLayoutId).toBe(prod.id);
+    await request('PUT', `${L}/${svc.id}`, c.token, { isArchived: true });
+    expect((await request('PUT', `/api/v1/contacts/${contact.id}`, c.token, { defaultInvoiceLayoutId: svc.id })).json.error.code).toBe('INVOICE_LAYOUT_ARCHIVED');
+    expect((await request('POST', '/api/v1/contacts', c.token, { contactType: 'customer', displayName: 'X', defaultInvoiceLayoutId: svc.id })).json.error.code)
+      .toBe('INVOICE_LAYOUT_ARCHIVED');
+    const [otherCo] = await db.insert(companies).values({ tenantId: c.tenantId, businessName: 'Second Co' }).returning();
+    const foreign = (await create({ name: 'Foreign' }, { 'X-Company-Id': otherCo!.id })).json.layout;
+    expect((await request('PUT', `/api/v1/contacts/${contact.id}`, c.token, { defaultInvoiceLayoutId: foreign.id })).json.error.code).toBe('INVOICE_LAYOUT_NOT_FOUND');
+
+    // A client default that was archived afterwards: the client keeps it, new invoices use the company default.
+    await request('PUT', `${L}/${prod.id}`, c.token, { isArchived: true });
+    expect((await request('PUT', `/api/v1/contacts/${contact.id}`, c.token, { displayName: 'Lakeside HOA 2', defaultInvoiceLayoutId: prod.id })).status).toBe(200);
+    expect((await forClient()).json.invoice.layoutId).toBeNull();
+    expect((await request('PUT', `/api/v1/contacts/${contact.id}`, c.token, { defaultInvoiceLayoutId: null })).status).toBe(200);
+  });
   it('layouts are company scoped', async () => {
     const mine = (await create({ name: 'Mine' })).json.layout;
     const [other] = await db.insert(companies).values({ tenantId: c.tenantId, businessName: 'Second Co' }).returning();
@@ -237,7 +302,7 @@ describe('invoice layouts (U-130)', () => {
     const theirs = await list(asOther);
     expect(theirs.map((l) => l.name)).toEqual(['Standard']);
     expect((await list()).map((l) => l.name)).toEqual(['Standard', 'Mine']);
-    for (const [m, p] of [['GET', ''], ['PUT', ''], ['DELETE', ''], ['POST', '/default']] as const) {
+    for (const [m, p] of [['GET', ''], ['PUT', ''], ['POST', '/default']] as const) {
       const r = await request(m, `${L}/${mine.id}${p}`, c.token, m === 'PUT' ? { name: 'Stolen' } : undefined, asOther);
       expect(r.status, `${m} ${p}`).toBe(404);
     }
@@ -311,8 +376,8 @@ describe('invoice layouts (U-130)', () => {
     expect(html).not.toContain('>Rate</th>');
     expect(html).toContain('Service footer');
 
-    // An invoice whose layout was deleted prints with the default.
-    await request('DELETE', `${L}/${svc.id}?reassignToDefault=true`, c.token);
-    expect(await pdfService.getInvoiceHtml(c.tenantId, dated.json.invoice.id)).not.toContain('Service Date');
+    // An invoice whose layout was archived still prints with it.
+    await request('PUT', `${L}/${svc.id}`, c.token, { isArchived: true });
+    expect(await pdfService.getInvoiceHtml(c.tenantId, dated.json.invoice.id)).toContain('>Service Date</th>');
   });
 });

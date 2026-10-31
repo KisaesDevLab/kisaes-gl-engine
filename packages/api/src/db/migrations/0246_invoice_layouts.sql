@@ -20,6 +20,10 @@
 --    unique index keeps it so. Legacy tenant-wide rows (company_id NULL) are
 --    left alone.
 -- 4. The seeded default named 'Default' is renamed 'Standard'.
+-- 5. invoice_templates.is_archived: layouts are archived, never deleted;
+--    invoices that use an archived layout keep printing with it.
+-- 6. contacts.default_invoice_layout_id (uuid, NULL = the company default):
+--    the layout a client's new invoices start on. Soft reference.
 --
 -- Additive; idempotent. Ordering: after 0245. Rollback:
 -- 0246_invoice_layouts.rollback.sql.
@@ -55,3 +59,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_templates_company_default
   ON invoice_templates (tenant_id, company_id) WHERE is_default IS TRUE AND company_id IS NOT NULL;
 --> statement-breakpoint
 UPDATE invoice_templates SET name = 'Standard' WHERE name = 'Default' AND is_default IS TRUE;
+--> statement-breakpoint
+ALTER TABLE invoice_templates ADD COLUMN IF NOT EXISTS is_archived boolean NOT NULL DEFAULT false;
+--> statement-breakpoint
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS default_invoice_layout_id uuid;

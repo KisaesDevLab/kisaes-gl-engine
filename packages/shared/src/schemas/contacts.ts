@@ -48,6 +48,9 @@ export const createContactSchema = z.object({
   // Suggested markup on the client's billable costs (U-128, billable-costs-v1),
   // a percent ("10" = 10 %), 0 to 1000, at most 4 places; null clears it.
   defaultMarkupPercent: markupPercentSchema.nullish(),
+  // The invoice layout the client's new invoices start on (U-130,
+  // invoice-layouts-v1): a layout of the company, not archived; null clears it.
+  defaultInvoiceLayoutId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.
@@ -93,6 +96,9 @@ export const updateContactSchema = z.object({
   // Suggested markup on the client's billable costs (U-128, billable-costs-v1),
   // a percent ("10" = 10 %), 0 to 1000, at most 4 places; null clears it.
   defaultMarkupPercent: markupPercentSchema.nullish(),
+  // The invoice layout the client's new invoices start on (U-130,
+  // invoice-layouts-v1): a layout of the company, not archived; null clears it.
+  defaultInvoiceLayoutId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.

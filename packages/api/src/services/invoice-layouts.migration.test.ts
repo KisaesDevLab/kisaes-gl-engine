@@ -3,7 +3,8 @@
 // Free for small businesses; see LICENSE for terms.
 //
 // U-130: migration 0246 adds invoice_templates.line_columns, transactions.
-// invoice_layout_id, one default per company (uq_invoice_templates_company_default)
+// invoice_layout_id, invoice_templates.is_archived, contacts.default_invoice_layout_id,
+// one default per company (uq_invoice_templates_company_default)
 // and renames the seeded 'Default' to 'Standard' (invoice-layouts-v1). The
 // rollback drops the additions and renames back; the forward migration is
 // idempotent. Every rollback runs inside a database transaction that is
@@ -54,11 +55,13 @@ async function added(tx: Tx) {
     layout: await hasColumn(tx, 'transactions', 'invoice_layout_id'),
     unique: await hasIndex(tx, 'uq_invoice_templates_company_default'),
     inUse: await hasIndex(tx, 'idx_txn_invoice_layout'),
+    archived: await hasColumn(tx, 'invoice_templates', 'is_archived'),
+    clientDefault: await hasColumn(tx, 'contacts', 'default_invoice_layout_id'),
   };
 }
 
-const ALL = { columns: true, layout: true, unique: true, inUse: true };
-const NONE = { columns: false, layout: false, unique: false, inUse: false };
+const ALL = { columns: true, layout: true, unique: true, inUse: true, archived: true, clientDefault: true };
+const NONE = { columns: false, layout: false, unique: false, inUse: false, archived: false, clientDefault: false };
 
 describe('migration 0246 invoice layouts', () => {
   it('is listed after 0245 and is additive', () => {

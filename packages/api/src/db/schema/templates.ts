@@ -46,6 +46,10 @@ export const invoiceTemplates = pgTable('invoice_templates', {
   // the amount always prints. Each row is an invoice layout of its company;
   // one per company is the default (uq_invoice_templates_company_default).
   lineColumns: jsonb('line_columns').$type<InvoiceLayoutColumns>().notNull().default(DEFAULT_LAYOUT_COLUMNS),
+  // Archived layouts (U-130) are never deleted: they leave the picker, can't
+  // be chosen for new invoices or clients, and still print the invoices
+  // that use them. The default can't be archived.
+  isArchived: boolean('is_archived').notNull().default(false),
   isDefault: boolean('is_default').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),

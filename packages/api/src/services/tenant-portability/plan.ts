@@ -478,6 +478,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   // The invoice layout an invoice prints with (U-130, migration 0246; NULL =
   // the company default). invoice_templates.line_columns holds no ids.
   'transactions.invoice_layout_id': 'tenant-ref:invoice_templates',
+  // The layout a client's new invoices start on (U-130; NULL = company default).
+  'contacts.default_invoice_layout_id': 'tenant-ref:invoice_templates',
   'items.income_account_id': 'tenant-ref:accounts',
   'items.company_id': 'tenant-ref:companies',
   'je_template_lines.template_id': 'tenant-ref:je_templates',

@@ -7,6 +7,7 @@ import type { CreateContactInput, UpdateContactInput, ContactFilters } from '@ki
 import { db } from '../db/index.js';
 import { contacts, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import * as invoiceTemplates from './invoice-template.service.js';
 import * as priceLevels from './price-levels.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
@@ -166,6 +167,8 @@ export async function create(tenantId: string, input: CreateContactInput, userId
     await claimIdempotency(tx);
     // A price level (U-40): active, of the tenant and of the company.
     if (input.priceLevelId) await priceLevels.assertAssignable(tx, tenantId, input.priceLevelId, companyId);
+    // A default invoice layout (U-130): an unarchived layout of the company.
+    await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.defaultInvoiceLayoutId, companyId);
     const [contact] = await tx.insert(contacts).values({
       tenantId,
       ...normalized,
@@ -185,6 +188,11 @@ export async function update(tenantId: string, id: string, input: UpdateContactI
   const existing = await getById(tenantId, id);
   if (input.priceLevelId && input.priceLevelId !== existing.priceLevelId) {
     await priceLevels.assertAssignable(db, tenantId, input.priceLevelId, companyId);
+  }
+  // U-130: a new default layout must be an unarchived layout of the company;
+  // the one the client already has may stay after it is archived.
+  if (input.defaultInvoiceLayoutId) {
+    await invoiceTemplates.assertInvoiceLayout(db, tenantId, input.defaultInvoiceLayoutId, companyId ?? existing.companyId, existing.defaultInvoiceLayoutId);
   }
 
   const normalized = {

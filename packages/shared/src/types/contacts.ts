@@ -33,6 +33,8 @@ export interface Contact {
   priceLevelId?: string | null;
   // Suggested markup on billable costs, a percent (U-128).
   defaultMarkupPercent?: string | null;
+  /** Invoice layout new invoices start on (U-130); null = the company default. */
+  defaultInvoiceLayoutId?: string | null;
   openingBalance: string;
   openingBalanceDate: string | null;
   defaultExpenseAccountId: string | null;
@@ -82,6 +84,8 @@ export interface CreateContactInput {
   priceLevelId?: string | null;
   // Suggested markup on billable costs, a percent (U-128).
   defaultMarkupPercent?: string | null;
+  /** Invoice layout new invoices start on (U-130); null = the company default. */
+  defaultInvoiceLayoutId?: string | null;
   openingBalance?: string;
   openingBalanceDate?: string | null;
   defaultExpenseAccountId?: string | null;
@@ -119,6 +123,8 @@ export interface UpdateContactInput {
   priceLevelId?: string | null;
   // Suggested markup on billable costs, a percent (U-128).
   defaultMarkupPercent?: string | null;
+  /** Invoice layout new invoices start on (U-130); null = the company default. */
+  defaultInvoiceLayoutId?: string | null;
   defaultExpenseAccountId?: string | null;
   defaultTagId?: string | null;
   taxId?: string | null;

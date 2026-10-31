@@ -341,14 +341,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'billable-costs-v1',
   /**
-   * Invoice print layouts (U-130, Q-P20ac): GET/POST /company/invoice-layouts, GET/PUT/DELETE /company/invoice-layouts/:id,
-   * POST /company/invoice-layouts/:id/default. A layout {id, name, isDefault, accentColor, logoUrl, showShipTo, showPoNumber,
-   * showTerms, footerText, footerOverrides, columns {item, description, serviceDate, quantity, rate}, resolvedFooters, invoiceCount,
-   * createdAt, updatedAt}; exactly one default per company (the first is "Standard"); names unique per company (409
-   * INVOICE_LAYOUT_NAME_IN_USE); PUT expectedUpdatedAt (409 STALE); DELETE refuses the default (409 INVOICE_LAYOUT_IS_DEFAULT) and a
-   * layout invoices use (409 INVOICE_LAYOUT_IN_USE {invoiceCount}) unless ?reassignToDefault=true ({reassignedCount}). GET/PUT
-   * /company/invoice-template read and write the default layout. Invoices: layoutId (null = the company default; edit: absent keeps;
-   * 400 INVOICE_LAYOUT_NOT_FOUND) on POST / PUT / preview / GET; GET /invoices/:id/pdf prints with it. Migration 0246.
+   * Invoice print layouts (U-130, Q-P20ac): GET /company/invoice-layouts[?includeArchived=true], POST /company/invoice-layouts,
+   * GET/PUT /company/invoice-layouts/:id, POST /company/invoice-layouts/:id/default. A layout {id, name, isDefault, isArchived,
+   * accentColor, logoUrl, showShipTo, showPoNumber, showTerms, footerText, footerOverrides, columns {item, description, serviceDate,
+   * quantity, rate}, resolvedFooters, invoiceCount, createdAt, updatedAt}; exactly one default per company (the first is "Standard");
+   * names unique per company (409 INVOICE_LAYOUT_NAME_IN_USE); PUT expectedUpdatedAt (409 STALE) and isArchived. Layouts are archived,
+   * never deleted (DELETE 405 INVOICE_LAYOUT_DELETE_NOT_ALLOWED); the default can't be archived (409 INVOICE_LAYOUT_IS_DEFAULT) and an
+   * archived layout can't become the default (409 INVOICE_LAYOUT_ARCHIVED). GET/PUT /company/invoice-template read and write the
+   * default layout. Invoices: layoutId (null = the company default; edit: absent keeps) on POST / PUT / preview / GET; a new invoice
+   * without layoutId starts on the client's contacts.defaultInvoiceLayoutId (unless archived). 400 INVOICE_LAYOUT_NOT_FOUND /
+   * INVOICE_LAYOUT_ARCHIVED for a new choice; an invoice or client keeps an archived layout it already has. GET /invoices/:id/pdf
+   * prints with it. Migration 0246.
    */
   'invoice-layouts-v1',
 ];

@@ -212,8 +212,8 @@ export async function seedDefault(tenantId: string) {
 // Each invoice_templates row of a company is one of its invoice print
 // layouts; exactly one is the default (uq_invoice_templates_company_default).
 // GET/PUT /company/invoice-template keep reading and writing the default.
-// Every write takes the company lock, so names, the default and deletes
-// don't race. Invoices name theirs in transactions.invoice_layout_id
+// Every write takes the company lock, so names, the default and archiving
+// don't race. Layouts are archived, never deleted (owner 2026-10-31). Invoices name theirs in transactions.invoice_layout_id
 // (NULL = the company default).
 
 export interface InvoiceLayoutInput {
@@ -226,6 +226,8 @@ export interface InvoiceLayoutInput {
   footerText?: string | null;
   footerOverrides?: Record<string, string | null | undefined>;
   columns?: Partial<InvoiceLayoutColumns>;
+  /** Update only: archive (true) or unarchive (false); the default can't be archived. */
+  isArchived?: boolean;
 }
 
 /** The columns a layout prints: its stored ones over today's form. */
@@ -239,6 +241,7 @@ export function layoutView(row: TemplateRow, invoiceCount?: number) {
     id: row.id,
     name: row.name,
     isDefault: row.isDefault === true,
+    isArchived: row.isArchived === true,
     accentColor: row.accentColor ?? '#2563EB',
     logoUrl: row.logoUrl,
     showShipTo: row.showShipTo ?? false,
@@ -285,11 +288,12 @@ async function invoiceCounts(executor: DbOrTx, tenantId: string, ids?: string[])
   return new Map(rows.map((r) => [r.id!, r.n]));
 }
 
-/** The company's layouts, default first, then by name; each with invoiceCount. */
-export async function listLayouts(tenantId: string, companyId: string, userId?: string) {
+/** The company's layouts, default first, then by name; each with invoiceCount. Archived ones only with includeArchived. */
+export async function listLayouts(tenantId: string, companyId: string, userId?: string, opts: { includeArchived?: boolean } = {}) {
   await getOrCreateCompanyDefault(tenantId, companyId, userId);
   const rows = await db.select().from(invoiceTemplates)
-    .where(and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.companyId, companyId)))
+    .where(and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.companyId, companyId),
+      ...(opts.includeArchived ? [] : [eq(invoiceTemplates.isArchived, false)])))
     .orderBy(desc(invoiceTemplates.isDefault), asc(sql`lower(${invoiceTemplates.name})`), asc(invoiceTemplates.id));
   const counts = rows.length ? await invoiceCounts(db, tenantId, rows.map((r) => r.id)) : new Map<string, number>();
   return rows.map((r) => layoutView(r, counts.get(r.id) ?? 0));
@@ -348,6 +352,9 @@ export async function updateLayout(
     if (input.name !== undefined && input.name.toLowerCase() !== before.name.toLowerCase()) {
       await assertNameFree(tx, tenantId, companyId, input.name, id);
     }
+    if (input.isArchived === true && before.isDefault) {
+      throw AppError.conflict('The default layout can’t be archived. Make another layout the default first.', 'INVOICE_LAYOUT_IS_DEFAULT');
+    }
     const overrides = footerOverridesOf(input.footerOverrides);
     const [updated] = await tx.update(invoiceTemplates).set({
       ...(input.name !== undefined ? { name: input.name } : {}),
@@ -359,6 +366,7 @@ export async function updateLayout(
       ...(input.footerText !== undefined ? { footerText: input.footerText } : {}),
       ...(overrides !== undefined ? { footerOverrides: overrides } : {}),
       ...(input.columns !== undefined ? { lineColumns: { ...layoutColumns(before), ...input.columns } } : {}),
+      ...(input.isArchived !== undefined ? { isArchived: input.isArchived } : {}),
       updatedAt: new Date(),
     }).where(and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.id, id))).returning();
     await auditLog(tenantId, 'update', 'invoice_template', id, before, updated, userId, tx);
@@ -373,6 +381,9 @@ export async function setDefaultLayout(tenantId: string, companyId: string, id: 
     await lockCompanyLayouts(tx, tenantId, companyId);
     const target = await loadLayout(tx, tenantId, companyId, id);
     if (target.isDefault) return;
+    if (target.isArchived) {
+      throw AppError.conflict('An archived layout can’t be the default. Unarchive it first.', 'INVOICE_LAYOUT_ARCHIVED');
+    }
     const previous = await ensureCompanyDefault(tx, tenantId, companyId, userId);
     const now = new Date();
     // Unset, then set, so the one-default index never sees two.
@@ -386,46 +397,40 @@ export async function setDefaultLayout(tenantId: string, companyId: string, id: 
 }
 
 /**
- * Deletes a layout. The default can't be deleted (409
- * INVOICE_LAYOUT_IS_DEFAULT: make another the default first). A layout
- * invoices print with (void ones too) is 409 INVOICE_LAYOUT_IN_USE
- * {invoiceCount}, unless reassignToDefault: then those invoices print with
- * the company default (layoutId null) — their updatedAt is left alone, so
- * an open invoice is not made stale — and the count is returned.
- */
-export async function deleteLayout(tenantId: string, companyId: string, id: string, opts: { reassignToDefault?: boolean }, userId?: string) {
-  return db.transaction(async (tx) => {
-    await lockCompanyLayouts(tx, tenantId, companyId);
-    const before = await loadLayout(tx, tenantId, companyId, id);
-    if (before.isDefault) {
-      throw AppError.conflict('The default layout can’t be deleted. Make another layout the default first.', 'INVOICE_LAYOUT_IS_DEFAULT');
-    }
-    const used = (await invoiceCounts(tx, tenantId, [id])).get(id) ?? 0;
-    if (used > 0 && opts.reassignToDefault !== true) {
-      throw AppError.conflict('Invoices print with this layout. Delete it with reassignToDefault to print them with the default layout.',
-        'INVOICE_LAYOUT_IN_USE', { invoiceCount: used });
-    }
-    const moved = await tx.update(transactions).set({ layoutId: null })
-      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.layoutId, id)))
-      .returning({ id: transactions.id });
-    await tx.delete(invoiceTemplates).where(and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.id, id)));
-    await auditLog(tenantId, 'delete', 'invoice_template', id, before, { reassignedInvoices: moved.length }, userId, tx);
-    return { reassignedCount: moved.length };
-  });
-}
-
-/**
  * An invoice's layoutId as sent (U-130): undefined keeps, null is the
- * company default, an id must be a layout of the invoice's company (400
- * INVOICE_LAYOUT_NOT_FOUND).
+ * company default, an id must be a layout of the company (400
+ * INVOICE_LAYOUT_NOT_FOUND) that is not archived (400
+ * INVOICE_LAYOUT_ARCHIVED) — unless it is `keepId`, the layout the invoice
+ * (or client) already has, which keeps working after it is archived.
  */
-export async function assertInvoiceLayout(executor: DbOrTx, tenantId: string, layoutId: string | null | undefined, companyId: string | null | undefined) {
+export async function assertInvoiceLayout(
+  executor: DbOrTx, tenantId: string, layoutId: string | null | undefined, companyId: string | null | undefined, keepId?: string | null,
+) {
   if (layoutId === undefined || layoutId === null) return;
-  const [row] = await executor.select({ id: invoiceTemplates.id, companyId: invoiceTemplates.companyId }).from(invoiceTemplates)
+  const [row] = await executor.select({ id: invoiceTemplates.id, companyId: invoiceTemplates.companyId, isArchived: invoiceTemplates.isArchived })
+    .from(invoiceTemplates)
     .where(and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.id, layoutId))).limit(1);
   if (!row || (row.companyId ?? null) !== (companyId ?? null)) {
     throw AppError.badRequest('That invoice layout does not exist in this company', 'INVOICE_LAYOUT_NOT_FOUND', { layoutId });
   }
+  if (row.isArchived && layoutId !== keepId) {
+    throw AppError.badRequest('That invoice layout is archived. Unarchive it or choose another layout.', 'INVOICE_LAYOUT_ARCHIVED', { layoutId });
+  }
+}
+
+/**
+ * The layout a client's new invoice starts on (U-130): the client's
+ * defaultInvoiceLayoutId while it is an unarchived layout of the company,
+ * else null (the company default).
+ */
+export async function clientDefaultLayoutId(
+  executor: DbOrTx, tenantId: string, client: { defaultInvoiceLayoutId?: string | null } | null | undefined, companyId: string | null | undefined,
+): Promise<string | null> {
+  const id = client?.defaultInvoiceLayoutId;
+  if (!id) return null;
+  const [row] = await executor.select({ companyId: invoiceTemplates.companyId, isArchived: invoiceTemplates.isArchived }).from(invoiceTemplates)
+    .where(and(eq(invoiceTemplates.tenantId, tenantId), eq(invoiceTemplates.id, id))).limit(1);
+  return row && !row.isArchived && (row.companyId ?? null) === (companyId ?? null) ? id : null;
 }
 
 /** The layout an invoice prints with: its own (when still a layout of its company), else the company default. */

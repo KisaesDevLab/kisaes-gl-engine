@@ -37,7 +37,9 @@ contactsRouter.get('/', companyContext, describe({
 });
 
 // Idempotency-Key (idempotency-v1, U-18).
-contactsRouter.post('/', idempotent({
+// companyContext (U-130): the price level and default invoice layout are
+// checked against the request's company.
+contactsRouter.post('/', companyContext, idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ contact: await contactsService.getById(req.tenantId, entity!.id) }),
 }), validate(createContactSchema), async (req, res) => {
@@ -95,7 +97,7 @@ contactsRouter.get('/:id', companyContext, describe({
   res.json({ contact });
 });
 
-contactsRouter.put('/:id', validate(updateContactSchema), async (req, res) => {
+contactsRouter.put('/:id', companyContext, validate(updateContactSchema), async (req, res) => {
   const contact = await contactsService.update(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ contact });
 });

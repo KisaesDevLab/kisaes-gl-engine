@@ -484,7 +484,7 @@ export async function previewInvoice(
   }
   const scope = companyId ?? existing?.companyId ?? undefined;
   // The layout it would print with (U-130): checked as POST / PUT check it.
-  await invoiceTemplates.assertInvoiceLayout(db, tenantId, input.layoutId, existing ? existing.companyId : scope);
+  await invoiceTemplates.assertInvoiceLayout(db, tenantId, input.layoutId, existing ? existing.companyId : scope, existing?.layoutId);
   // Billable costs (U-128 S3): checked without a lock or a claim; a cost
   // another invoice holds is reported on its line (error), not refused.
   const { company, customer, lines, priceLevel, computed, alreadyBilled } = await computeInvoiceFigures(db, tenantId, input, scope, {
@@ -517,8 +517,11 @@ export async function previewInvoice(
     })),
     subtotal: computed.subtotal,
     taxableBase: computed.taxableBase,
-    // The layout the invoice would print with (U-130): null = the company default.
-    layoutId: input.layoutId !== undefined ? input.layoutId : existing?.layoutId ?? null,
+    // The layout the invoice would print with (U-130): sent, else the edited
+    // invoice's, else (new) the client's default layout; null = the company default.
+    layoutId: input.layoutId !== undefined ? input.layoutId
+      : existing ? existing.layoutId ?? null
+      : await invoiceTemplates.clientDefaultLayoutId(db, tenantId, customer, scope),
     taxRate: rate,
     taxTotal: computed.taxTotal,
     total: computed.total,
@@ -592,7 +595,9 @@ export async function createInvoiceWithWarnings(
       poNumber: input.poNumber || null,
       customerMessage: input.customerMessage || null,
       hideZeroLines: input.hideZeroLines === true,
-      layoutId: input.layoutId ?? null,
+      // U-130: sent, else the client's default layout (null = the company default).
+      layoutId: input.layoutId !== undefined ? input.layoutId
+        : await invoiceTemplates.clientDefaultLayoutId(tx, tenantId, customer, invoice.companyId),
     };
     await tx.update(transactions).set(header)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoice.id)));
@@ -636,7 +641,7 @@ export async function updateInvoiceWithWarnings(
     ledger.assertNotStale(existing, input.expectedUpdatedAt, 'This invoice');
 
     const scope = companyId ?? existing.companyId ?? undefined;
-    await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.layoutId, existing.companyId);
+    await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.layoutId, existing.companyId, existing.layoutId);
 
     // Billable costs (U-128 rules 2-3, S2): every cost the invoice bills is
     // re-sent (kept) or named in releaseBillableSourceLineIds (released);
@@ -958,11 +963,12 @@ export async function duplicateInvoiceWithWarnings(tenantId: string, invoiceId: 
     invoiceStatus: 'draft',
     lines,
   }, userId, companyId);
-  // The copy prints with the original's layout (U-130).
-  if (original.layoutId) {
-    await db.update(transactions).set({ layoutId: original.layoutId })
+  // The copy prints with the original's layout (U-130), unless it is archived.
+  const copyLayoutId = await invoiceTemplates.clientDefaultLayoutId(db, tenantId, { defaultInvoiceLayoutId: original.layoutId }, invoice.companyId);
+  if (copyLayoutId) {
+    await db.update(transactions).set({ layoutId: copyLayoutId })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoice.id)));
-    return { invoice: { ...invoice, layoutId: original.layoutId }, warnings };
+    return { invoice: { ...invoice, layoutId: copyLayoutId }, warnings };
   }
   return { invoice, warnings };
 }
