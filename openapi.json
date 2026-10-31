@@ -23847,6 +23847,17 @@
                       }
                     ]
                   },
+                  "priceLevelId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "shippingCity": {
                     "anyOf": [
                       {
@@ -24510,6 +24521,17 @@
                     "anyOf": [
                       {
                         "maxLength": 30,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "priceLevelId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -31178,7 +31200,7 @@
         ]
       },
       "post": {
-        "description": "Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR.",
+        "description": "Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
         "operationId": "post_api_v1_invoices",
         "parameters": [
           {
@@ -31235,6 +31257,11 @@
                           "maxLength": 4000,
                           "type": "string"
                         },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "isTaxable": {
                           "type": "boolean"
                         },
@@ -31283,10 +31310,6 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "quantity",
-                        "unitPrice"
-                      ],
                       "type": "object"
                     },
                     "maxItems": 500,
@@ -31365,6 +31388,180 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/invoices/preview": {
+      "post": {
+        "description": "invoice-pricing-v1: computes the invoice the body would post (POST /invoices; with invoiceId, PUT /invoices/:invoiceId) with the same code, and writes nothing. Response 200 {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, taxAmount}], subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client's open balance (contact-balance-v1) plus this total, with invoiceId's posted total taken out first. Errors as POST (400 VALIDATION_ERROR); invoiceId of another company or not found 404. Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "operationId": "post_api_v1_invoices_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "dueDate": {
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "internalNotes": {
+                    "type": "string"
+                  },
+                  "invoiceId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "paymentTerms": {
+                    "type": "string"
+                  },
+                  "poNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "termsDays": {
+                    "maximum": 3650,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "txnDate": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "contactId",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Preview an invoice's figures",
+        "tags": [
+          "invoices"
+        ]
+      }
+    },
     "/api/v1/invoices/{id}": {
       "get": {
         "description": "Response {invoice}: the transaction with its lines (serviceDate, itemId, taxRate, taxAmount), poNumber, customerMessage, hideZeroLines, tagIds and sendHistory [{id, method: printed|email|pdf, recipients, sentAt, userId}] oldest first (kept across edits). An invoice of another company is 404; another transaction type is 400.",
@@ -31399,7 +31596,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR.",
+        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines); sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
         "operationId": "put_api_v1_invoices_by_id",
         "parameters": [
           {
@@ -31465,6 +31662,11 @@
                           "maxLength": 4000,
                           "type": "string"
                         },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "isTaxable": {
                           "type": "boolean"
                         },
@@ -31513,10 +31715,6 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "quantity",
-                        "unitPrice"
-                      ],
                       "type": "object"
                     },
                     "maxItems": 500,
@@ -32048,7 +32246,96 @@
     },
     "/api/v1/items": {
       "get": {
+        "description": "{data, total}. itemType filters by kind. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
         "operationId": "get_api_v1_items",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "isActive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "itemType",
+            "required": false,
+            "schema": {
+              "enum": [
+                "service",
+                "non_inventory",
+                "other_charge",
+                "discount",
+                "subtotal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "isTaxable",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "name",
+                "price",
+                "taxable",
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -32062,11 +32349,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List items",
         "tags": [
           "items"
         ]
       },
       "post": {
+        "description": "Response 201 {item}. A name already used is 409. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
         "operationId": "post_api_v1_items",
         "parameters": [
           {
@@ -32092,6 +32381,17 @@
                       "null"
                     ]
                   },
+                  "discountPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,3}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "incomeAccountId": {
                     "format": "uuid",
                     "type": "string"
@@ -32099,6 +32399,17 @@
                   "isTaxable": {
                     "default": true,
                     "type": "boolean"
+                  },
+                  "itemType": {
+                    "default": "service",
+                    "enum": [
+                      "service",
+                      "non_inventory",
+                      "other_charge",
+                      "discount",
+                      "subtotal"
+                    ],
+                    "type": "string"
                   },
                   "name": {
                     "maxLength": 255,
@@ -32135,6 +32446,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Create an item",
         "tags": [
           "items"
         ],
@@ -32293,6 +32605,7 @@
         ]
       },
       "put": {
+        "description": "Response {item}; omitted fields keep their values and the kind rules apply to the result. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
         "operationId": "put_api_v1_items_by_id",
         "parameters": [
           {
@@ -32316,6 +32629,17 @@
                       "null"
                     ]
                   },
+                  "discountPercent": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,3}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "incomeAccountId": {
                     "format": "uuid",
                     "type": "string"
@@ -32325,6 +32649,16 @@
                   },
                   "isTaxable": {
                     "type": "boolean"
+                  },
+                  "itemType": {
+                    "enum": [
+                      "service",
+                      "non_inventory",
+                      "other_charge",
+                      "discount",
+                      "subtotal"
+                    ],
+                    "type": "string"
                   },
                   "name": {
                     "maxLength": 255,
@@ -32357,6 +32691,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Edit an item",
         "tags": [
           "items"
         ]
@@ -46329,6 +46664,254 @@
         ],
         "tags": [
           "practice"
+        ]
+      }
+    },
+    "/api/v1/price-levels": {
+      "get": {
+        "description": "price-levels-v1: {data: [level without itemPrices, plus itemPriceCount]} by name, the company's and those of no company. A level price is round2(item price x (1 + percent / 100)), half away from zero; a fixed item price wins (stored rounded to the cent). One level per client (contacts.priceLevelId); an inactive level prices nothing and can't be given to a client. Discount and subtotal items take no level price. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "operationId": "get_api_v1_price_levels",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "isActive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List price levels",
+        "tags": [
+          "price-levels"
+        ]
+      },
+      "post": {
+        "description": "price-levels-v1: response 201 {priceLevel: {id, name, percent (signed, 4 places: \"-7.5000\" = 7.5 % down), isActive, companyId, createdAt, updatedAt, itemPrices: [{itemId, unitPrice}]}}. A name already used (case-insensitive) is 409 PRICE_LEVEL_NAME_IN_USE; an item listed twice, of another company, or a discount / subtotal item is 400 VALIDATION_ERROR. A level price is round2(item price x (1 + percent / 100)), half away from zero; a fixed item price wins (stored rounded to the cent). One level per client (contacts.priceLevelId); an inactive level prices nothing and can't be given to a client. Discount and subtotal items take no level price. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "operationId": "post_api_v1_price_levels",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "itemPrices": {
+                    "default": [],
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "itemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "unitPrice"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 5000,
+                    "type": "array"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "percent": {
+                    "default": "0",
+                    "pattern": "^-?\\d{1,4}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a price level",
+        "tags": [
+          "price-levels"
+        ]
+      }
+    },
+    "/api/v1/price-levels/{id}": {
+      "delete": {
+        "description": "price-levels-v1: deletes the level and its item prices; 409 PRICE_LEVEL_IN_USE (details.clients) while a client has it (make it inactive instead). Response {message}.",
+        "operationId": "delete_api_v1_price_levels_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a price level",
+        "tags": [
+          "price-levels"
+        ]
+      },
+      "get": {
+        "description": "price-levels-v1: {priceLevel: {id, name, percent (signed, 4 places: \"-7.5000\" = 7.5 % down), isActive, companyId, createdAt, updatedAt, itemPrices: [{itemId, unitPrice}]}}; another company's is 404.",
+        "operationId": "get_api_v1_price_levels_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a price level",
+        "tags": [
+          "price-levels"
+        ]
+      },
+      "put": {
+        "description": "price-levels-v1: omitted fields keep their values; itemPrices sent replaces the whole list. Response {priceLevel}. Errors as create; 404 for another company's. A level price is round2(item price x (1 + percent / 100)), half away from zero; a fixed item price wins (stored rounded to the cent). One level per client (contacts.priceLevelId); an inactive level prices nothing and can't be given to a client. Discount and subtotal items take no level price. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.",
+        "operationId": "put_api_v1_price_levels_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "isActive": {
+                    "type": "boolean"
+                  },
+                  "itemPrices": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "itemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "unitPrice"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 5000,
+                    "type": "array"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "percent": {
+                    "pattern": "^-?\\d{1,4}(\\.\\d{1,4})?$",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a price level",
+        "tags": [
+          "price-levels"
         ]
       }
     },

@@ -295,4 +295,24 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * payableBalance / oldestOpenBillDate (A/P), 4-place decimal strings, for the request's company.
    */
   'contact-balance-v1',
+  /**
+   * Sales item kinds (U-39a): items.itemType service | non_inventory | other_charge | discount | subtotal (existing items read as
+   * service; GET /items?itemType=); a discount item has discountPercent (0 < p <= 100) or unitPrice (the amount off), not both,
+   * and is taxable unless set otherwise; a subtotal item has neither. Migration 0243. (Purchase side and units: U-39b, item-types-v1.)
+   */
+  'item-kinds-sales-v1',
+  /**
+   * Price levels (U-40, Q-P20l): GET/POST /price-levels, GET/PUT/DELETE /price-levels/:id ({priceLevel: {id, name, percent, isActive,
+   * itemPrices: [{itemId, unitPrice}]}}); percent signed (-7.5 = 7.5 % down); fixed item prices stored rounded to the cent; 409
+   * PRICE_LEVEL_NAME_IN_USE / PRICE_LEVEL_IN_USE. contacts.priceLevelId (one level per client; active, of the company). Migration 0243.
+   */
+  'price-levels-v1',
+  /**
+   * Invoice pricing (U-129): POST /invoices/preview computes what POST / PUT /invoices posts (same code, nothing written): lines
+   * {unitPrice, unitPriceSource, discountPercent, amount, taxAmount, ...}, subtotal, taxableBase, taxRate, taxTotal, total, dueDate,
+   * priceLevel, contactBalanceAfter. Invoice lines: quantity omitted is 1; unitPrice omitted takes the client's level, else the item's
+   * price; discount lines (% or amount of the lines since the last subtotal; a taxable discount reduces the taxable base) and shown-only
+   * subtotal lines; lines read back with discountPercent and unitPriceSource. Golden: invoice-golden.json pricingCases.
+   */
+  'invoice-pricing-v1',
 ];
