@@ -5,6 +5,8 @@
 import fs from 'fs';
 import path from 'path';
 import { eq, and } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
+const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
 import { companies, contacts, transactions, journalLines, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -41,6 +43,8 @@ interface InvoicePdfData {
     balanceDue: string;
     memo: string | null;
     invoiceStatus: string | null;
+    /** The customer's PO number (U-123), shown when the template's showPoNumber is on. */
+    poNumber: string | null;
   };
   lines: Array<{
     description: string | null;
@@ -52,6 +56,7 @@ interface InvoicePdfData {
   accentColor: string;
   footerText: string;
   showTerms: boolean;
+  showPoNumber: boolean;
   documentType: 'Invoice' | 'Sales Receipt';
 }
 
@@ -89,10 +94,16 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
     ))
     .orderBy(journalLines.lineOrder);
 
-  // Get account names for revenue lines (credit side)
+  // The form's own lines: the item lines (they carry a quantity; a negative
+  // one, such as a discount, is a debit) and any other credit line. The A/R
+  // or deposit line and the sales tax line are left out. hideZeroLines
+  // (U-123) leaves $0 lines off.
   const revenueLines = [];
   for (const line of lines) {
-    if (parseFloat(line.credit) > 0) {
+    const amount = new Decimal(line.credit || '0').minus(line.debit || '0');
+    const isFormLine = line.quantity !== null || amount.greaterThan(0);
+    if (isFormLine && txn.hideZeroLines && amount.isZero()) continue;
+    if (isFormLine) {
       const account = await db.query.accounts.findFirst({
         where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, line.accountId)),
       });
@@ -100,7 +111,7 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
         description: line.description,
         quantity: line.quantity,
         unitPrice: line.unitPrice,
-        amount: line.credit,
+        amount: amount.toFixed(4),
         accountName: account?.name || 'Revenue',
       });
     }
@@ -128,13 +139,16 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
       total: txn.total || '0',
       amountPaid: txn.amountPaid || '0',
       balanceDue: txn.balanceDue || txn.total || '0',
-      memo: txn.memo,
+      // The printed message (U-123); invoices without one print the memo, as before.
+      memo: txn.customerMessage || txn.memo,
       invoiceStatus: txn.invoiceStatus,
+      poNumber: txn.poNumber,
     },
     lines: revenueLines,
     accentColor: template?.accentColor || '#2563EB',
     footerText: invoiceTemplateService.resolveFooter(template, txn.txnType === 'cash_sale' ? 'cash_sale' : 'invoice'),
     showTerms: template?.showTerms ?? true,
+    showPoNumber: template?.showPoNumber ?? false,
     documentType: txn.txnType === 'cash_sale' ? 'Sales Receipt' : 'Invoice',
   };
 }
@@ -149,7 +163,7 @@ function esc(text: string | null | undefined): string {
 }
 
 function renderInvoiceHtml(data: InvoicePdfData): string {
-  const { company: co, customer: cu, invoice: inv, lines, accentColor, footerText, showTerms, documentType } = data;
+  const { company: co, customer: cu, invoice: inv, lines, accentColor, footerText, showTerms, showPoNumber, documentType } = data;
 
   const lineRows = lines.map((l) => `
     <tr>
@@ -228,6 +242,7 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
     <div class="detail">Date: ${esc(inv.txnDate)}</div>
     ${inv.dueDate ? `<div class="detail">Due Date: ${esc(inv.dueDate)}</div>` : ''}
     ${showTerms && inv.paymentTerms ? `<div class="detail">Terms: ${esc(termsLabel)}</div>` : ''}
+    ${showPoNumber && inv.poNumber ? `<div class="detail">P.O. No.: ${esc(inv.poNumber)}</div>` : ''}
   </div>
 
   <!-- Return address — upper envelope window -->

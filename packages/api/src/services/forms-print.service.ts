@@ -14,6 +14,7 @@ import { db, type DbOrTx } from '../db/index.js';
 import { transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { recordSendEvent } from './document-send.service.js';
 
 export const PRINTABLE_FORM_TYPES = ['invoice', 'cash_sale', 'credit_memo'] as const;
 export type PrintableFormType = (typeof PRINTABLE_FORM_TYPES)[number];
@@ -83,6 +84,7 @@ export async function markPrinted(tenantId: string, ids: string[], userId?: stri
     const rows = await tx.select({
       id: transactions.id, txnType: transactions.txnType, companyId: transactions.companyId,
       printLater: transactions.printLater, status: transactions.status,
+      invoiceStatus: transactions.invoiceStatus, sentAt: transactions.sentAt,
     }).from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, unique)))
       .orderBy(transactions.id)
@@ -96,6 +98,9 @@ export async function markPrinted(tenantId: string, ids: string[], userId?: stri
       await tx.update(transactions).set({ printLater: false, updatedAt: new Date() })
         .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, r.id)));
       await auditLog(tenantId, 'update', 'form_print', r.id, { printLater: true }, { printLater: false, txnType: r.txnType }, userId, tx);
+      // Printing counts as sending (U-126, Q-P20e): a 'printed' send event;
+      // an invoice in draft becomes sent. Void forms only leave the queue.
+      if (r.status === 'posted') await recordSendEvent(tx, tenantId, r, { method: 'printed' }, userId);
       marked++;
     }
     return { marked, alreadyPrinted: ok.length - marked };

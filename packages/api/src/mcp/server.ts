@@ -275,7 +275,10 @@ registerTool('create_invoice', 'Create an invoice', {
   checkScope(auth, 'invoicing');
   const tenantId = await getTenantId(await resolveCompany(auth, p));
   const { createInvoice } = await import('../services/invoice.service.js');
-  const lines = typeof p.lines === 'string' ? JSON.parse(p.lines) : p.lines;
+  const raw = typeof p.lines === 'string' ? JSON.parse(p.lines) : p.lines;
+  // A line without isTaxable stays taxable here, as before (U-122 made the
+  // service default an omitted flag to the item's, else false).
+  const lines = Array.isArray(raw) ? raw.map((l: Record<string, unknown>) => ({ ...l, isTaxable: l['isTaxable'] ?? true })) : raw;
   return createInvoice(tenantId, { txnDate: p.date, dueDate: p.due_date, contactId: p.customer_id, lines, memo: p.memo || '' }, auth.userId);
 });
 

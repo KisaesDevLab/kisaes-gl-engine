@@ -199,6 +199,9 @@ export interface JournalLineInput {
   // stored. `explicitUserTagId` (the column above) still wins.
   bankRuleTagId?: string | null;
   aiSuggestedTagId?: string | null;
+  // The day the line's work was done, YYYY-MM-DD (U-123). Persisted on
+  // journal_lines.service_date.
+  serviceDate?: string | null;
 }
 
 export interface CreateJournalEntryInput {
@@ -330,18 +333,35 @@ export interface CreateInvoiceInput {
   txnDate: string;
   dueDate?: string;
   contactId: string;
+  /** A PAYMENT_TERMS code (U-125); omitted: the client's, else the company's. */
   paymentTerms?: string;
+  /** Net days for custom terms (U-125). */
+  termsDays?: number;
   lines: Array<{
-    accountId: string;
+    /** Required unless itemId supplies the income account (U-123). */
+    accountId?: string;
+    itemId?: string | null;
     description?: string;
     quantity: string;
     unitPrice: string;
     isTaxable?: boolean;
     taxRate?: string;
     tagId?: string | null;
+    /** YYYY-MM-DD (U-123). */
+    serviceDate?: string | null;
   }>;
   memo?: string;
   internalNotes?: string;
+  /** Printed on the invoice; memo stays internal (U-123). */
+  customerMessage?: string;
+  /** The customer's PO number (U-123). */
+  poNumber?: string;
+  /** Header tags (U-123): sent replaces, omitted keeps. */
+  tagIds?: string[];
+  /** Leave $0 lines off the printed invoice (U-123). */
+  hideZeroLines?: boolean;
+  /** updatedAt as last read; mismatch 409 STALE (U-124). */
+  expectedUpdatedAt?: string;
   /** Optional manual invoice-number override; auto-assigned when omitted. */
   txnNumber?: string;
   /** A duplicate number posts with a warning instead of 409 (U-111). */

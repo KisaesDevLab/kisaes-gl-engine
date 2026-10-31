@@ -45,7 +45,8 @@ formsRouter.get('/print-queue', describe({
 const markBody = z.object({ ids: z.array(z.string().uuid()).min(1).max(500) });
 formsRouter.post('/mark-printed', validate(markBody), describe({
   summary: 'Clear the print-later mark of forms after printing; one audit row each (forms-print-queue-v1)',
-  description: 'Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes.',
+  description: 'Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes. '
+    + 'Each form taken out of the queue (posted) also gets a "printed" send event (invoice-sent-history-v1); a draft invoice becomes sent.',
   response: z.object({ marked: z.number().int(), alreadyPrinted: z.number().int() }),
 }), async (req, res) => {
   res.json(await formsPrint.markPrinted(req.tenantId, req.body.ids, req.userId, req.companyId));

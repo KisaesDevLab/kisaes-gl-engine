@@ -669,6 +669,7 @@ export async function postTransaction(
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
       contactId: line.contactId ?? null,
+      serviceDate: line.serviceDate || null,
       ...billableColumns(line),
       ...settlementColumns(line),
       tagId: resolveDefaultTag({
@@ -744,7 +745,8 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
 
     if (!txn || txn.status === 'deleted' || inOtherCompany(txn, opts.companyId)) throw AppError.notFound('Transaction not found');
     if (opts.expectType && txn.txnType !== opts.expectType) {
-      throw AppError.badRequest(opts.expectType === 'bill' ? 'Not a bill' : opts.expectType === 'vendor_credit' ? 'Not a vendor credit' : 'Wrong transaction type');
+      throw AppError.badRequest(opts.expectType === 'bill' ? 'Not a bill' : opts.expectType === 'vendor_credit' ? 'Not a vendor credit'
+        : opts.expectType === 'invoice' ? 'Not an invoice' : 'Wrong transaction type');
     }
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
     assertNotStale(txn, opts.expectedUpdatedAt);
@@ -761,6 +763,9 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     // 409 BILL_HAS_PAYMENTS / CREDIT_APPLIED, read from the application rows
     // under this row lock.
     await assertApDocumentUnapplied(tx, tenantId, txn);
+    // An invoice with a live payment or credit applied can't be voided
+    // (U-124): 409 INVOICE_HAS_PAYMENTS, read under this row lock.
+    await assertInvoiceUnapplied(tx, tenantId, txn);
 
     // Check lock date against the transaction's date (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
@@ -893,6 +898,42 @@ export function assertNotStale(
       `${what} was changed by someone else since you opened it. Reload it and make your change again.`,
       'STALE',
       { updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null },
+    );
+  }
+}
+
+/**
+ * An invoice may be voided only while no live payment or credit is applied
+ * to it (U-124, invoice-edit-v1): payment_applications rows of a posted
+ * customer payment (Receive Payments), and posted transactions whose
+ * applied_to_invoice_id is the invoice (POST /invoices/:id/payment, credit
+ * memos). Read on the caller's transaction after the invoice row is locked.
+ * 409 INVOICE_HAS_PAYMENTS, details {payments, credits}. Other types: no-op.
+ */
+export async function assertInvoiceUnapplied(
+  executor: DbOrTx,
+  tenantId: string,
+  txn: { id: string; txnType: string },
+): Promise<void> {
+  if (txn.txnType !== 'invoice') return;
+  const res = await executor.execute(sql`
+    SELECT
+      (SELECT COUNT(*) FROM payment_applications pa
+         JOIN transactions p ON p.id = pa.payment_id AND p.tenant_id = pa.tenant_id
+        WHERE pa.tenant_id = ${tenantId} AND pa.invoice_id = ${txn.id} AND p.status = 'posted')::int
+      + (SELECT COUNT(*) FROM transactions t
+          WHERE t.tenant_id = ${tenantId} AND t.applied_to_invoice_id = ${txn.id}
+            AND t.status = 'posted' AND t.txn_type = 'customer_payment')::int AS payments,
+      (SELECT COUNT(*) FROM transactions t
+        WHERE t.tenant_id = ${tenantId} AND t.applied_to_invoice_id = ${txn.id}
+          AND t.status = 'posted' AND t.txn_type <> 'customer_payment')::int AS credits
+  `);
+  const row = (res.rows as Array<{ payments: number; credits: number }>)[0];
+  if ((row?.payments ?? 0) > 0 || (row?.credits ?? 0) > 0) {
+    throw AppError.conflict(
+      'This invoice has payments or credits applied. Void or remove those first.',
+      'INVOICE_HAS_PAYMENTS',
+      { payments: row?.payments ?? 0, credits: row?.credits ?? 0 },
     );
   }
 }
@@ -1408,6 +1449,7 @@ export async function updateTransaction(
         quantity: line.quantity || null, unitPrice: line.unitPrice || null,
         isTaxable: line.isTaxable || false, taxRate: line.taxRate || '0', taxAmount: line.taxAmount || '0',
         lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
+        serviceDate: line.serviceDate || null,
         ...billableFor(line),
         ...settlementColumns(line),
       }));
@@ -1501,6 +1543,7 @@ export async function updateTransaction(
       taxAmount: line.taxAmount || '0',
       lineOrder: i,
       contactId: line.contactId ?? null,
+      serviceDate: line.serviceDate || null,
       ...billableFor(line),
       ...settlementColumns(line),
       tagId: resolveDefaultTag({
@@ -1749,6 +1792,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
     billedStatus: journalLines.billedStatus,
     sourceTransactionId: journalLines.sourceTransactionId,
     lineRole: journalLines.lineRole,
+    serviceDate: journalLines.serviceDate,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     // Exclude the persisted void-reversal rows (rule 23) so the detail
@@ -1790,6 +1834,12 @@ export async function listTransactions(tenantId: string, filters: {
   txnType?: string; status?: string; contactId?: string | string[]; accountId?: string; startDate?: string; endDate?: string;
   /** Invoices list: keep these invoice statuses. */
   invoiceStatus?: string[];
+  /**
+   * Invoices list (U-126): false keeps the invoices never sent (no
+   * document_send_events row, no sent_at, never marked sent or viewed) and
+   * not void, whatever their payment status; true keeps the others.
+   */
+  invoiceSent?: boolean;
   // ADR 0XX §5.2 — header-level tag filter semantics: keep the
   // transaction if *any* of its journal_lines carries this tag.
   tagId?: string;
@@ -1831,6 +1881,13 @@ export async function listTransactions(tenantId: string, filters: {
   }
   if (filters.invoiceStatus && filters.invoiceStatus.length > 0) {
     conditions.push(inArray(transactions.invoiceStatus, filters.invoiceStatus));
+  }
+  if (filters.invoiceSent !== undefined) {
+    const neverSent = sql`(NOT EXISTS (SELECT 1 FROM document_send_events dse
+        WHERE dse.tenant_id = ${transactions.tenantId} AND dse.transaction_id = ${transactions.id})
+      AND ${transactions.sentAt} IS NULL
+      AND COALESCE(${transactions.invoiceStatus}, '') NOT IN ('sent', 'viewed'))`;
+    conditions.push(filters.invoiceSent ? sql`NOT ${neverSent}` : sql`(${neverSent} AND ${transactions.status} <> 'void')`);
   }
   if (filters.source) conditions.push(eq(transactions.source, filters.source));
   // Report-basis lens: keep transactions whose basis flag affects the chosen

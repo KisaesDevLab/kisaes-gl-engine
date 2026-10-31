@@ -22,9 +22,17 @@ export const contactsRouter = Router();
 contactsRouter.use(authenticate);
 contactsRouter.use(requireResource('contacts'));
 
-contactsRouter.get('/', async (req, res) => {
+const balanceDoc = 'Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, '
+  + 'invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). '
+  + 'Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.';
+
+contactsRouter.get('/', companyContext, describe({
+  summary: 'List contacts',
+  description: balanceDoc,
+  query: contactFiltersSchema,
+}), async (req, res) => {
   const filters = contactFiltersSchema.parse(req.query);
-  const result = await contactsService.list(req.tenantId, filters);
+  const result = await contactsService.list(req.tenantId, filters, req.companyId);
   res.json(result);
 });
 
@@ -78,8 +86,12 @@ contactsRouter.post('/bulk-type', validate(bulkUpdateContactTypeSchema), async (
   res.json(result);
 });
 
-contactsRouter.get('/:id', async (req, res) => {
-  const contact = await contactsService.getById(req.tenantId, req.params['id']!);
+contactsRouter.get('/:id', companyContext, describe({
+  summary: 'Get a contact',
+  description: balanceDoc,
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
+  const contact = await contactsService.getWithBalance(req.tenantId, req.params['id']!, req.companyId);
   res.json({ contact });
 });
 

@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import DecimalLib from 'decimal.js';
-import { createInvoiceSchema, transactionFiltersSchema } from '@kis-books/shared';
+import { createEstimateSchema, transactionFiltersSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
@@ -27,7 +27,7 @@ estimatesRouter.get('/', async (req, res) => {
   res.json({ data: [], total: 0 });
 });
 
-estimatesRouter.post('/', validate(createInvoiceSchema), async (req, res) => {
+estimatesRouter.post('/', validate(createEstimateSchema), async (req, res) => {
   // Create as draft invoice (estimate)
   const estimate = await ledger.postTransaction(req.tenantId, {
     txnType: 'invoice',

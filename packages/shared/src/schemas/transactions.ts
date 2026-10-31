@@ -144,15 +144,36 @@ export const createDepositSchema = z.object({
   strictAmounts: z.boolean().optional(),
 });
 
+// Sales receipt (cash sale) and estimate lines. taxRate (a fraction,
+// "0.0825"): sent, it is the line's rate; omitted, a taxable line takes the
+// request company's default rate (U-122, sales-cents-v1).
 const lineItemSchema = z.object({
   accountId: z.string().uuid(),
   description: z.string().optional(),
   quantity: z.string().min(1),
   unitPrice: z.string().min(1),
   isTaxable: z.boolean().default(false),
-  taxRate: z.string().default('0'),
+  taxRate: z.string().optional(),
   tagId: z.string().uuid().nullable().optional(),
 });
+
+// Invoice lines (U-123, invoice-fields-v1). itemId: an item of the company;
+// it supplies the income account when accountId is omitted and the taxable
+// flag when isTaxable is omitted. Without an item, accountId is required and
+// an omitted isTaxable is false, as before. serviceDate: YYYY-MM-DD or null.
+// quantity and unitPrice: decimal strings with at most 4 places, either may be
+// negative; the amount is round2(quantity x unitPrice) (U-122).
+export const invoiceLineSchema = z.object({
+  accountId: z.string().uuid().optional(),
+  itemId: z.string().uuid().nullable().optional(),
+  description: z.string().max(4000).optional(),
+  quantity: z.string().min(1),
+  unitPrice: z.string().min(1),
+  isTaxable: z.boolean().optional(),
+  taxRate: z.string().optional(),
+  tagId: z.string().uuid().nullable().optional(),
+  serviceDate: isoDateOnly.nullable().optional(),
+}).refine((l) => !!l.accountId || !!l.itemId, { message: 'Each line needs an accountId or an itemId', path: ['accountId'] });
 
 export const createCashSaleSchema = z.object({
   txnDate: z.string().min(1),
@@ -172,11 +193,28 @@ export const createCashSaleSchema = z.object({
 
 export const createInvoiceSchema = z.object({
   txnDate: z.string().min(1),
+  // An explicit due date wins (stored as overridden). Omitted: computed from
+  // the terms (invoice-terms-v1); on an edit, recomputed when the date or the
+  // terms change and the stored one was not typed.
   dueDate: z.string().optional(),
   contactId: z.string().uuid(),
+  // A code from GET /payment-terms (U-125, invoice-terms-v1). Omitted: the
+  // client's default terms, else the company's. custom takes termsDays.
   paymentTerms: z.string().optional(),
-  lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
+  termsDays: z.number().int().min(0).max(3650).optional(),
+  lines: z.array(invoiceLineSchema).min(1).max(MAX_LINES),
+  // Internal memo; customerMessage is the text printed on the invoice (U-123).
   memo: z.string().optional(),
+  customerMessage: z.string().max(4000).optional(),
+  // The customer's PO number (U-123). On an edit, omitted keeps it and "" clears it.
+  poNumber: z.string().trim().max(50).optional(),
+  // Header tags (U-123): sent replaces the invoice's own tags; omitted keeps them.
+  tagIds: z.array(z.string().uuid()).max(50).optional(),
+  // Leave $0 lines off the printed invoice (U-123). Create: default false; edit: absent keeps.
+  hideZeroLines: z.boolean().optional(),
+  // invoice-edit-v1 (U-124): the invoice's updatedAt as last read; a mismatch
+  // on PUT is 409 STALE (details.updatedAt) and nothing changes.
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
   internalNotes: z.string().optional(),
   // Optional caller-supplied invoice number. When omitted, the server
   // auto-assigns the next number from the company counter. When provided
@@ -187,6 +225,26 @@ export const createInvoiceSchema = z.object({
   warnOnly: z.boolean().optional(),
   // Waiting to be printed (U-113). Create: default false; edit: absent keeps it.
   printLater: z.boolean().optional(),
+});
+
+// Estimates keep the original invoice line shape (an account on every line).
+export const createEstimateSchema = z.object({
+  txnDate: z.string().min(1),
+  dueDate: z.string().optional(),
+  contactId: z.string().uuid(),
+  paymentTerms: z.string().optional(),
+  lines: z.array(lineItemSchema).min(1).max(MAX_LINES),
+  memo: z.string().optional(),
+  internalNotes: z.string().optional(),
+});
+
+// POST /invoices/:id/sent (U-126, invoice-sent-history-v1). recipients:
+// email addresses for method email (never logged or audited); sentAt
+// defaults to now.
+export const recordDocumentSentSchema = z.object({
+  method: z.enum(['printed', 'email', 'pdf']),
+  recipients: z.array(z.string().trim().email().max(254)).max(50).optional(),
+  sentAt: z.string().datetime({ offset: true }).optional(),
 });
 
 export const recordPaymentSchema = z.object({
@@ -285,6 +343,13 @@ export const transactionFiltersSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   // Soft-deleted transactions (txn-delete-v1) are left out unless asked for.
   includeDeleted: z.enum(['true', 'false']).optional(),
+});
+
+// GET /invoices: the transaction list filters plus sent (U-126): 'false' keeps
+// invoices never sent (no send event, no sent date, never marked sent), in
+// any status; 'true' the others.
+export const invoiceListFiltersSchema = transactionFiltersSchema.extend({
+  sent: z.enum(['true', 'false']).optional(),
 });
 
 // Transaction Report for a date range (GET /transactions/report.pdf). The

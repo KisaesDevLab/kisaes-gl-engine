@@ -12,6 +12,7 @@ import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import * as documentNumbers from './document-number.service.js';
 import { claimIdempotency } from './idempotency.service.js';
+import { salesLineAmount } from '../utils/sales-compute.js';
 
 export async function createCreditMemo(tenantId: string, input: CreateCreditMemoInput, userId?: string, companyId?: string) {
   return (await createCreditMemoWithWarnings(tenantId, input, userId, companyId)).transaction;
@@ -30,16 +31,18 @@ export async function createCreditMemoWithWarnings(
   });
   if (!arAccount) throw AppError.internal('AR account not found');
 
+  // Each line to the cent (U-122, sales-cents-v1): round2(qty x rate), half
+  // away from zero; the A/R credit is their exact sum. A negative line
+  // credits its account.
   let subtotal = new Decimal('0');
-  const revenueLines = input.lines.map((line) => {
-    // Rounded to the ledger's 4 places first; the A/R credit adds up the
-    // rounded values, so it equals the stored debits exactly (U-65).
-    const lineTotal = ledger.round4(new Decimal(line.quantity).times(line.unitPrice));
+  const revenueLines = input.lines.map((line, i) => {
+    const lineTotal = new Decimal(salesLineAmount(line.quantity, line.unitPrice, `lines[${i}]`));
     subtotal = subtotal.plus(lineTotal);
+    const abs = lineTotal.abs().toFixed(4);
     return {
       accountId: line.accountId,
-      debit: lineTotal.toFixed(4),
-      credit: '0',
+      debit: lineTotal.isNegative() ? '0' : abs,
+      credit: lineTotal.isNegative() ? abs : '0',
       description: line.description,
       quantity: line.quantity,
       unitPrice: line.unitPrice,
@@ -64,7 +67,9 @@ export async function createCreditMemoWithWarnings(
       appliedToInvoiceId: input.appliedToInvoiceId,
       lines: [
         ...revenueLines,
-        { accountId: arAccount.id, debit: '0', credit: subtotal.toFixed(4) },
+        subtotal.isNegative()
+          ? { accountId: arAccount.id, debit: subtotal.abs().toFixed(4), credit: '0' }
+          : { accountId: arAccount.id, debit: '0', credit: subtotal.toFixed(4) },
       ],
     }, userId, companyId, tx);
     return { transaction, warnings };
