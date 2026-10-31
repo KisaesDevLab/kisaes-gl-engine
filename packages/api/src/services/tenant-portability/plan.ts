@@ -427,6 +427,11 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'extraction_review_queue.job_id': 'tenant-ref:extraction_jobs',
   'extraction_review_queue.reviewer': 'identity',
   'finding_events.user_id': 'identity',
+  // Email Outbox of forms (U-127, migration 0244): the message only; the PDF
+  // is made at send time (Q-P20q), so archives carry no attachment bytes.
+  'form_email_queue.company_id': 'tenant-ref:companies',
+  'form_email_queue.transaction_id': 'tenant-ref:transactions',
+  'form_email_queue.user_id': 'identity',
   'findings.company_id': 'tenant-ref:companies',
   'findings.transaction_id': 'tenant-ref:transactions',
   'findings.vendor_id': 'tenant-ref:contacts',
