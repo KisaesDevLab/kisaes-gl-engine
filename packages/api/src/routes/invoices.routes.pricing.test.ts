@@ -34,6 +34,7 @@ import { contactsRouter } from './contacts.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
+import { getInvoiceHtml } from '../services/pdf.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -346,6 +347,24 @@ describe('invoice-pricing-v1 (U-129)', () => {
       contactId: c.customer, txnDate: '2026-11-03', invoiceId: '00000000-0000-4000-8000-000000000000', lines: [{ accountId: c.revenue, quantity: '1', unitPrice: '1' }],
     });
     expect(missing.status).toBe(404);
+  });
+
+  it('the printed invoice shows the subtotal amount and the discount percent', async () => {
+    const shrubs = await makeItem({ name: 'shrubs', unitPrice: '32.50' });
+    const sub = await makeItem({ name: 'sub', itemType: 'subtotal' });
+    const disc = await makeItem({ name: 'disc', itemType: 'discount', discountPercent: '10' });
+    const r = await request('POST', '/api/v1/invoices', c.token, {
+      contactId: c.customer, txnDate: '2026-11-03', hideZeroLines: true,
+      lines: [{ itemId: shrubs.id, quantity: '24', isTaxable: false, description: 'Shrubs' }, { itemId: sub.id, description: 'Plants subtotal' },
+        { itemId: disc.id, isTaxable: false, description: 'Spring discount' }],
+    });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect(r.json.invoice.total).toBe('702.0000');
+    const html = await getInvoiceHtml(c.tenantId, r.json.invoice.id);
+    const row = (label: string) => html.slice(html.indexOf(label), html.indexOf('</tr>', html.indexOf(label)));
+    expect(row('Plants subtotal')).toContain('$780.00');
+    expect(row('Spring discount')).toContain('10%');
+    expect(row('Spring discount')).toContain('$-78.00');
   });
 
   it('the client balance after counts the open invoices already posted', async () => {
