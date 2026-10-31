@@ -4,6 +4,7 @@
 
 import { z } from 'zod';
 import { sortBySchema, sortDirSchema } from './list-view.js';
+import { SALES_ITEM_TYPES } from '../types/items.js';
 
 export const itemSortKeys = ['name', 'price', 'taxable', 'status'] as const;
 
@@ -14,6 +15,8 @@ const boolParam = z.preprocess((v) => (v === 'true' ? true : v === 'false' ? fal
 // Active/Inactive select silently did nothing).
 export const itemFiltersSchema = z.object({
   isActive: boolParam,
+  // Item kind (U-39a, item-kinds-sales-v1).
+  itemType: z.enum(SALES_ITEM_TYPES).optional(),
   isTaxable: boolParam,
   search: z.string().optional(),
   sortBy: sortBySchema(itemSortKeys),
@@ -22,10 +25,22 @@ export const itemFiltersSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// Item kinds (U-39a, item-kinds-sales-v1): service (default), non_inventory,
+// other_charge, discount, subtotal. A discount item takes discountPercent (a
+// percent off, 0 < p <= 100, at most 4 places) or unitPrice (the amount off,
+// 0 or more), not both; a subtotal item takes neither. Discount items are
+// taxable unless isTaxable is false (a taxable discount reduces the taxable
+// base, Q-P20t).
+export const itemDiscountPercentSchema = z.string().trim()
+  .regex(/^\d{1,3}(\.\d{1,4})?$/, 'A percent with at most 4 decimal places')
+  .refine((v) => Number(v) > 0 && Number(v) <= 100, 'The discount percent must be above 0 and at most 100');
+
 export const createItemSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
   description: z.string().nullish(),
+  itemType: z.enum(SALES_ITEM_TYPES).default('service'),
   unitPrice: z.string().nullish(),
+  discountPercent: itemDiscountPercentSchema.nullish(),
   incomeAccountId: z.string().uuid(),
   isTaxable: z.boolean().default(true),
 });
@@ -33,7 +48,9 @@ export const createItemSchema = z.object({
 export const updateItemSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().nullish(),
+  itemType: z.enum(SALES_ITEM_TYPES).optional(),
   unitPrice: z.string().nullish(),
+  discountPercent: itemDiscountPercentSchema.nullish(),
   incomeAccountId: z.string().uuid().optional(),
   isTaxable: z.boolean().optional(),
   isActive: z.boolean().optional(),

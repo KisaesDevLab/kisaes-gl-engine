@@ -38,6 +38,8 @@ export const createContactSchema = z.object({
   openingBalance: z.string().default('0'),
   openingBalanceDate: z.string().nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
+  // The client's price level (U-40, price-levels-v1); null clears it.
+  priceLevelId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.
@@ -78,6 +80,8 @@ export const updateContactSchema = z.object({
     .refine((v) => /[1-9]/.test(v), 'The discount percent must be greater than 0').nullish(),
   defaultDiscountDays: z.number().int().min(0).max(365).nullish(),
   defaultExpenseAccountId: z.string().uuid().nullish(),
+  // The client's price level (U-40, price-levels-v1); null clears it.
+  priceLevelId: z.string().uuid().nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.

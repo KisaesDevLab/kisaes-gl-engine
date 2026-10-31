@@ -7,6 +7,7 @@ import type { CreateContactInput, UpdateContactInput, ContactFilters } from '@ki
 import { db } from '../db/index.js';
 import { contacts, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import * as priceLevels from './price-levels.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import * as ledger from './ledger.service.js';
@@ -153,7 +154,7 @@ export async function getWithBalance(tenantId: string, id: string, companyId?: s
   return { ...contact, ...balance };
 }
 
-export async function create(tenantId: string, input: CreateContactInput, userId?: string) {
+export async function create(tenantId: string, input: CreateContactInput, userId?: string, companyId?: string) {
   // Normalize empty email to null
   const normalized = {
     ...input,
@@ -163,6 +164,8 @@ export async function create(tenantId: string, input: CreateContactInput, userId
   // The insert, its audit row and an Idempotency-Key (U-18) commit together.
   return await db.transaction(async (tx) => {
     await claimIdempotency(tx);
+    // A price level (U-40): active, of the tenant and of the company.
+    if (input.priceLevelId) await priceLevels.assertAssignable(tx, tenantId, input.priceLevelId, companyId);
     const [contact] = await tx.insert(contacts).values({
       tenantId,
       ...normalized,
@@ -178,8 +181,11 @@ export async function create(tenantId: string, input: CreateContactInput, userId
   });
 }
 
-export async function update(tenantId: string, id: string, input: UpdateContactInput, userId?: string) {
+export async function update(tenantId: string, id: string, input: UpdateContactInput, userId?: string, companyId?: string) {
   const existing = await getById(tenantId, id);
+  if (input.priceLevelId && input.priceLevelId !== existing.priceLevelId) {
+    await priceLevels.assertAssignable(db, tenantId, input.priceLevelId, companyId);
+  }
 
   const normalized = {
     ...input,

@@ -202,6 +202,11 @@ export interface JournalLineInput {
   // The day the line's work was done, YYYY-MM-DD (U-123). Persisted on
   // journal_lines.service_date.
   serviceDate?: string | null;
+  // Invoice pricing (U-129): the percent a discount line used, and where
+  // the line's price came from (input | item | price_level |
+  // price_level_percent | none).
+  discountPercent?: string | null;
+  unitPriceSource?: string | null;
 }
 
 export interface CreateJournalEntryInput {
@@ -342,8 +347,12 @@ export interface CreateInvoiceInput {
     accountId?: string;
     itemId?: string | null;
     description?: string;
-    quantity: string;
-    unitPrice: string;
+    /** Omitted: 1 (U-129). */
+    quantity?: string;
+    /** Omitted: the client's price level, else the item's price (U-129). */
+    unitPrice?: string;
+    /** A discount line's percent off (U-129). */
+    discountPercent?: string;
     isTaxable?: boolean;
     taxRate?: string;
     tagId?: string | null;

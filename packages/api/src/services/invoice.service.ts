@@ -19,7 +19,9 @@ import * as documentNumbers from './document-number.service.js';
 import * as formsPrint from './forms-print.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { resolveBillTerms, type ResolvedBillTerms } from './bill.service.js';
-import { computeSalesDocument, type SalesDocumentResult } from '../utils/sales-compute.js';
+import { computeInvoice, type InvoiceComputeResult, type SalesItemType } from '../utils/invoice-compute.js';
+import { loadPricingLevel } from './price-levels.service.js';
+import { getBalances } from './contacts.service.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { listSendHistory, recordSendEvent } from './document-send.service.js';
@@ -107,20 +109,24 @@ type InvoiceLineInput = CreateInvoiceInput['lines'][number];
 interface ResolvedInvoiceLine {
   accountId: string;
   itemId: string | null;
+  itemType: SalesItemType | null;
   description?: string;
-  quantity: string;
-  unitPrice: string;
+  quantity?: string;
+  unitPrice?: string;
+  discountPercent?: string;
   isTaxable: boolean;
   taxRate?: string;
   tagId?: string | null;
   serviceDate: string | null;
+  item: { id: string; type: SalesItemType; unitPrice: string | null; discountPercent: string | null } | null;
 }
 
 /**
  * Lines with their item defaults (U-123): an item of the company supplies
  * the income account when accountId is omitted and the taxable flag when
  * isTaxable is omitted. Without an item an omitted flag is false (as the
- * schema default was).
+ * schema default was). The item's kind, price and discount percent go to
+ * the pricing step (U-129).
  */
 async function resolveInvoiceLines(
   executor: DbOrTx, tenantId: string, companyId: string | null | undefined, lines: readonly InvoiceLineInput[],
@@ -136,16 +142,21 @@ async function resolveInvoiceLines(
     const item = l.itemId ? byId.get(l.itemId) : undefined;
     const accountId = l.accountId ?? item?.incomeAccountId;
     if (!accountId) throw scopeError(`lines[${i}] needs an accountId or an itemId`);
+    const itemType = (item?.itemType ?? null) as SalesItemType | null;
     return {
       accountId,
       itemId: item?.id ?? null,
+      itemType,
       description: l.description,
       quantity: l.quantity,
       unitPrice: l.unitPrice,
-      isTaxable: l.isTaxable ?? (item ? item.isTaxable !== false : false),
+      discountPercent: l.discountPercent,
+      // A subtotal line is never taxed (U-129).
+      isTaxable: itemType === 'subtotal' ? false : l.isTaxable ?? (item ? item.isTaxable !== false : false),
       taxRate: l.taxRate,
       tagId: l.tagId,
       serviceDate: l.serviceDate ?? null,
+      item: item ? { id: item.id, type: itemType!, unitPrice: item.unitPrice, discountPercent: item.discountPercent } : null,
     };
   });
 }
@@ -167,7 +178,7 @@ function side(amount: string, positive: 'debit' | 'credit'): { debit: string; cr
  * document tax's allocation, so they sum to the tax line exactly.
  */
 async function buildInvoiceJournal(
-  executor: DbOrTx, tenantId: string, lines: ResolvedInvoiceLine[], computed: SalesDocumentResult,
+  executor: DbOrTx, tenantId: string, lines: ResolvedInvoiceLine[], computed: InvoiceComputeResult,
 ) {
   const arAccountId = await getSystemAccount(executor, tenantId, 'accounts_receivable');
   const journal: ledger.PostTransactionInput['lines'] = [
@@ -176,12 +187,17 @@ async function buildInvoiceJournal(
       const c = computed.lines[i]!;
       return {
         accountId: l.accountId,
-        ...side(c.amount, 'credit'),
+        // A subtotal line's amount is shown only; it posts $0 (U-129).
+        ...side(c.itemType === 'subtotal' ? '0' : c.amount, 'credit'),
         description: l.description,
         itemId: l.itemId,
-        quantity: l.quantity,
-        unitPrice: l.unitPrice,
-        isTaxable: l.isTaxable,
+        // The figures the pricing step used (U-129): a discount line keeps
+        // its percent, a subtotal line posts $0 with no quantity or price.
+        quantity: c.quantity ?? undefined,
+        unitPrice: c.unitPrice ?? undefined,
+        discountPercent: c.discountPercent,
+        unitPriceSource: c.unitPriceSource,
+        isTaxable: c.isTaxable,
         taxRate: c.taxRate,
         taxAmount: money4(c.taxAmount),
         // ADR 0XX — invoice revenue lines carry the user-selected tag.
@@ -277,17 +293,92 @@ async function headerOnlyTags(tx: Tx, tenantId: string, txnId: string): Promise<
   return rows.map((r) => r.tagId).filter((id) => !fromLines.has(id));
 }
 
-/** Everything the invoice computes from its request (U-122, U-123). */
+/**
+ * The invoice's figures from its request (U-122, U-123, U-129): the lines
+ * resolved against their items, priced with the client's level, and
+ * computed by utils/invoice-compute.ts. POST /invoices/preview stops here;
+ * POST and PUT post what this returns.
+ */
+async function computeInvoiceFigures(
+  executor: DbOrTx, tenantId: string, input: CreateInvoiceInput, companyId: string | null | undefined,
+) {
+  const company = await loadSalesCompany(executor, tenantId, companyId);
+  const customer = await loadCustomer(executor, tenantId, input.contactId, companyId);
+  const lines = await resolveInvoiceLines(executor, tenantId, companyId, input.lines);
+  await assertTagsInScope(executor, tenantId, companyId, input.tagIds);
+  const priceLevel = await loadPricingLevel(executor, tenantId, customer.priceLevelId, companyId);
+  const computed = computeInvoice(lines, { defaultTaxRate: company?.defaultSalesTaxRate || '0', priceLevel });
+  return { company, customer, lines, priceLevel, computed };
+}
+
+/** Everything the invoice posts from its request. */
 async function prepareInvoice(
   tx: Tx, tenantId: string, input: CreateInvoiceInput, companyId: string | null | undefined,
 ) {
-  const company = await loadSalesCompany(tx, tenantId, companyId);
-  const customer = await loadCustomer(tx, tenantId, input.contactId, companyId);
-  const lines = await resolveInvoiceLines(tx, tenantId, companyId, input.lines);
-  await assertTagsInScope(tx, tenantId, companyId, input.tagIds);
-  const computed = computeSalesDocument(lines, company?.defaultSalesTaxRate || '0');
+  const { company, customer, lines, computed } = await computeInvoiceFigures(tx, tenantId, input, companyId);
   const journal = await buildInvoiceJournal(tx, tenantId, lines, computed);
   return { company, customer, computed, journal };
+}
+
+/**
+ * POST /invoices/preview (U-129, invoice-pricing-v1): what POST (or PUT,
+ * with invoiceId) would post for this body, computed by the same code, with
+ * nothing written: no number claimed, no audit row, no idempotency key.
+ * contactBalanceAfter is the client's open balance (U-38) with this
+ * invoice's total; with invoiceId, that invoice's posted total is taken out
+ * first. dueDate as the terms resolve it (U-125; with invoiceId the
+ * invoice's own terms when the body sends none).
+ */
+export async function previewInvoice(
+  tenantId: string, input: CreateInvoiceInput & { invoiceId?: string }, companyId?: string,
+) {
+  let existing: typeof transactions.$inferSelect | undefined;
+  if (input.invoiceId) {
+    [existing] = await db.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, input.invoiceId))).limit(1);
+    if (!existing || existing.status === 'deleted' || ledger.inOtherCompany(existing, companyId)) {
+      throw AppError.notFound('Transaction not found');
+    }
+    if (existing.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
+  }
+  const scope = companyId ?? existing?.companyId ?? undefined;
+  const { company, customer, lines, priceLevel, computed } = await computeInvoiceFigures(db, tenantId, input, scope);
+  const paymentTerms = input.paymentTerms ?? existing?.paymentTerms ?? undefined;
+  const termsDays = input.termsDays ?? (input.paymentTerms === undefined ? existing?.termsDays ?? undefined : undefined);
+  const terms = resolveInvoiceTerms({ txnDate: input.txnDate, paymentTerms, termsDays, dueDate: input.dueDate }, customer, company);
+
+  const balances = await getBalances(tenantId, [customer.id], scope);
+  let before = new Decimal(balances.get(customer.id)?.openBalance ?? '0');
+  // The edited invoice's posted A/R leaves the balance (a void one has none).
+  if (existing && existing.status === 'posted' && existing.contactId === customer.id) {
+    before = before.minus(existing.total || '0');
+  }
+  const rate = new Decimal(company?.defaultSalesTaxRate || '0').toFixed(4);
+  return {
+    lines: computed.lines.map((c, i) => ({
+      itemId: lines[i]!.itemId,
+      itemType: c.itemType,
+      quantity: c.quantity,
+      unitPrice: c.unitPrice,
+      unitPriceSource: c.unitPriceSource,
+      discountPercent: c.discountPercent,
+      amount: c.amount,
+      isTaxable: c.isTaxable,
+      taxRate: c.taxRate,
+      taxAmount: c.taxAmount,
+    })),
+    subtotal: computed.subtotal,
+    taxableBase: computed.taxableBase,
+    taxRate: rate,
+    taxTotal: computed.taxTotal,
+    total: computed.total,
+    taxGroups: computed.taxGroups,
+    paymentTerms: terms.paymentTerms ?? null,
+    dueDate: terms.dueDate ?? null,
+    priceLevel: priceLevel ? { id: priceLevel.id, name: priceLevel.name, percent: priceLevel.percent } : null,
+    contactBalanceBefore: before.toFixed(2),
+    contactBalanceAfter: before.plus(computed.total).toFixed(2),
+  };
 }
 
 export async function createInvoice(tenantId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
@@ -625,6 +716,8 @@ export async function duplicateInvoice(tenantId: string, invoiceId: string, user
     taxRate: line.taxRate || undefined,
     taxAmount: line.taxAmount || undefined,
     serviceDate: line.serviceDate || undefined,
+    discountPercent: line.discountPercent ?? null,
+    unitPriceSource: line.unitPriceSource ?? null,
   }));
 
   return ledger.postTransaction(tenantId, {

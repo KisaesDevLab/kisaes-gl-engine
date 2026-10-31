@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import {
   createInvoiceSchema, recordPaymentSchema, voidTransactionSchema, invoiceListFiltersSchema, recordDocumentSentSchema,
+  previewInvoiceSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -48,6 +49,14 @@ const fieldRules = 'Lines (invoice-fields-v1): itemId (an item of the company) s
   + 'serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. '
   + 'Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client\'s default, else the company\'s; '
   + 'dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR.';
+const pricingRules = 'Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client\'s price level '
+  + '(a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item\'s price, else 400 VALIDATION_ERROR. '
+  + 'A discount item\'s line is -round2(group x discountPercent / 100) (discountPercent sent, else the item\'s) or -|unitPrice| (sent, else the item\'s amount), '
+  + 'where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal\'s lines); sending both is 400. '
+  + 'Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item\'s line shows the sum of the lines since the previous '
+  + 'subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource '
+  + '(input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. '
+  + 'Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.';
 
 invoicesRouter.get('/', describe({
   summary: 'List invoices',
@@ -72,12 +81,27 @@ invoicesRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempote
     + '(numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by '
     + 'an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in '
     + '`warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only '
-    + `\`{invoice}\`, without \`warnings\`: treat it as absent-safe. ${closedPeriodNote} ${moneyRules} ${fieldRules}`,
+    + `\`{invoice}\`, without \`warnings\`: treat it as absent-safe. ${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules}`,
   body: bodyDoc,
 }), async (req, res) => {
   // warnings (U-111): duplicate-number warnings of a warnOnly request; [] otherwise.
   const { invoice, warnings } = await invoiceService.createInvoiceWithWarnings(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ invoice: await invoiceService.getInvoice(req.tenantId, invoice.id, req.companyId), warnings });
+});
+
+// Before every /:id route. Posts nothing: no closing-date check, no number,
+// no audit row, no Idempotency-Key (U-129).
+invoicesRouter.post('/preview', validate(previewInvoiceSchema), describe({
+  summary: 'Preview an invoice\'s figures',
+  description: 'invoice-pricing-v1: computes the invoice the body would post (POST /invoices; with invoiceId, PUT /invoices/:invoiceId) with the same code, '
+    + 'and writes nothing. Response 200 {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, taxAmount}], '
+    + 'subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, '
+    + 'priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client\'s open '
+    + 'balance (contact-balance-v1) plus this total, with invoiceId\'s posted total taken out first. Errors as POST (400 VALIDATION_ERROR); '
+    + `invoiceId of another company or not found 404. ${moneyRules} ${pricingRules}`,
+  body: previewInvoiceSchema,
+}), async (req, res) => {
+  res.json(await invoiceService.previewInvoice(req.tenantId, req.body, req.companyId));
 });
 
 invoicesRouter.get('/:id', describe({
@@ -104,7 +128,7 @@ invoicesRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedI
   description: 'Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE '
     + '(details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice\'s; the due date '
     + 'is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and '
-    + `printLater keep their values. ${closedPeriodNote} ${moneyRules} ${fieldRules}`,
+    + `printLater keep their values. ${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules}`,
   body: bodyDoc,
   params: idParams,
 }), async (req, res) => {

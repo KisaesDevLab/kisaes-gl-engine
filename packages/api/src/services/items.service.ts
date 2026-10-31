@@ -16,6 +16,7 @@ export async function list(tenantId: string, filters?: ItemFilters) {
   const conditions = [eq(items.tenantId, tenantId)];
   if (filters?.isActive !== undefined) conditions.push(eq(items.isActive, filters.isActive));
   if (filters?.isTaxable !== undefined) conditions.push(eq(items.isTaxable, filters.isTaxable));
+  if (filters?.itemType) conditions.push(eq(items.itemType, filters.itemType));
   if (filters?.search) conditions.push(ilike(items.name, `%${escapeLike(filters.search)}%`));
 
   // Whitelisted column sort (the list paginates); name + id tiebreak.
@@ -44,7 +45,28 @@ export async function getById(tenantId: string, id: string) {
   return item;
 }
 
+/**
+ * Item kinds (U-39a, item-kinds-sales-v1): a discount item has a percent
+ * off (discountPercent) or an amount off (unitPrice, 0 or more), not both; a
+ * subtotal item has neither; other kinds have no discountPercent.
+ */
+function assertKindFields(item: { itemType?: string | null; unitPrice?: string | null; discountPercent?: string | null }) {
+  const type = item.itemType ?? 'service';
+  const hasPrice = item.unitPrice !== undefined && item.unitPrice !== null && item.unitPrice !== '';
+  const hasPercent = item.discountPercent !== undefined && item.discountPercent !== null && item.discountPercent !== '';
+  const bad = (message: string) => AppError.badRequest(message, 'VALIDATION_ERROR');
+  if (type === 'discount') {
+    if (hasPrice && hasPercent) throw bad('A discount item takes a percent or an amount, not both');
+    if (hasPrice && Number(item.unitPrice) < 0) throw bad('A discount amount must be 0 or more');
+  } else if (type === 'subtotal') {
+    if (hasPrice || hasPercent) throw bad('A subtotal item has no price or percent');
+  } else if (hasPercent) {
+    throw bad('Only a discount item takes a discount percent');
+  }
+}
+
 export async function create(tenantId: string, input: CreateItemInput, userId?: string) {
+  assertKindFields(input);
   const existing = await db.query.items.findFirst({ where: and(eq(items.tenantId, tenantId), eq(items.name, input.name)) });
   if (existing) throw AppError.conflict('An item with this name already exists');
 
@@ -61,6 +83,11 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
 
 export async function update(tenantId: string, id: string, input: UpdateItemInput, userId?: string) {
   const existing = await getById(tenantId, id);
+  assertKindFields({
+    itemType: input.itemType ?? existing.itemType,
+    unitPrice: input.unitPrice !== undefined ? input.unitPrice : existing.unitPrice,
+    discountPercent: input.discountPercent !== undefined ? input.discountPercent : existing.discountPercent,
+  });
   if (input.name && input.name !== existing.name) {
     const dup = await db.query.items.findFirst({ where: and(eq(items.tenantId, tenantId), eq(items.name, input.name)) });
     if (dup) throw AppError.conflict('An item with this name already exists');

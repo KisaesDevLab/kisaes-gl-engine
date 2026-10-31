@@ -41,7 +41,7 @@ contactsRouter.post('/', idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ contact: await contactsService.getById(req.tenantId, entity!.id) }),
 }), validate(createContactSchema), async (req, res) => {
-  const contact = await contactsService.create(req.tenantId, req.body, req.userId);
+  const contact = await contactsService.create(req.tenantId, req.body, req.userId, req.companyId);
   res.status(201).json({ contact });
 });
 
@@ -96,7 +96,7 @@ contactsRouter.get('/:id', companyContext, describe({
 });
 
 contactsRouter.put('/:id', validate(updateContactSchema), async (req, res) => {
-  const contact = await contactsService.update(req.tenantId, req.params['id']!, req.body, req.userId);
+  const contact = await contactsService.update(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ contact });
 });
 

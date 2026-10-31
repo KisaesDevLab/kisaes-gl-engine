@@ -670,6 +670,8 @@ export async function postTransaction(
       lineOrder: i,
       contactId: line.contactId ?? null,
       serviceDate: line.serviceDate || null,
+      discountPercent: line.discountPercent ?? null,
+      unitPriceSource: line.unitPriceSource ?? null,
       ...billableColumns(line),
       ...settlementColumns(line),
       tagId: resolveDefaultTag({
@@ -1450,6 +1452,8 @@ export async function updateTransaction(
         isTaxable: line.isTaxable || false, taxRate: line.taxRate || '0', taxAmount: line.taxAmount || '0',
         lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
         serviceDate: line.serviceDate || null,
+        discountPercent: line.discountPercent ?? null,
+        unitPriceSource: line.unitPriceSource ?? null,
         ...billableFor(line),
         ...settlementColumns(line),
       }));
@@ -1544,6 +1548,8 @@ export async function updateTransaction(
       lineOrder: i,
       contactId: line.contactId ?? null,
       serviceDate: line.serviceDate || null,
+      discountPercent: line.discountPercent ?? null,
+      unitPriceSource: line.unitPriceSource ?? null,
       ...billableFor(line),
       ...settlementColumns(line),
       tagId: resolveDefaultTag({
@@ -1793,6 +1799,8 @@ export async function getTransaction(tenantId: string, txnId: string) {
     sourceTransactionId: journalLines.sourceTransactionId,
     lineRole: journalLines.lineRole,
     serviceDate: journalLines.serviceDate,
+    discountPercent: journalLines.discountPercent,
+    unitPriceSource: journalLines.unitPriceSource,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     // Exclude the persisted void-reversal rows (rule 23) so the detail

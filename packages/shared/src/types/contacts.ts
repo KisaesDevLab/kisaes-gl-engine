@@ -30,6 +30,7 @@ export interface Contact {
   defaultTermsDays?: number | null;
   defaultDiscountPercent?: string | null;
   defaultDiscountDays?: number | null;
+  priceLevelId?: string | null;
   openingBalance: string;
   openingBalanceDate: string | null;
   defaultExpenseAccountId: string | null;
@@ -76,6 +77,7 @@ export interface CreateContactInput {
   defaultTermsDays?: number | null;
   defaultDiscountPercent?: string | null;
   defaultDiscountDays?: number | null;
+  priceLevelId?: string | null;
   openingBalance?: string;
   openingBalanceDate?: string | null;
   defaultExpenseAccountId?: string | null;
@@ -110,6 +112,7 @@ export interface UpdateContactInput {
   defaultTermsDays?: number | null;
   defaultDiscountPercent?: string | null;
   defaultDiscountDays?: number | null;
+  priceLevelId?: string | null;
   defaultExpenseAccountId?: string | null;
   defaultTagId?: string | null;
   taxId?: string | null;

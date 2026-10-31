@@ -163,12 +163,18 @@ const lineItemSchema = z.object({
 // an omitted isTaxable is false, as before. serviceDate: YYYY-MM-DD or null.
 // quantity and unitPrice: decimal strings with at most 4 places, either may be
 // negative; the amount is round2(quantity x unitPrice) (U-122).
+// Pricing (U-129, invoice-pricing-v1): quantity omitted is 1; unitPrice
+// omitted takes the client's price level, else the item's price. A discount
+// item's line takes discountPercent (else the item's) or unitPrice (the
+// amount off), not both; a subtotal item's line ignores both. Rules:
+// packages/shared/fixtures/invoice-golden.json pricingRules.
 export const invoiceLineSchema = z.object({
   accountId: z.string().uuid().optional(),
   itemId: z.string().uuid().nullable().optional(),
   description: z.string().max(4000).optional(),
-  quantity: z.string().min(1),
-  unitPrice: z.string().min(1),
+  quantity: z.string().min(1).optional(),
+  unitPrice: z.string().min(1).optional(),
+  discountPercent: z.string().min(1).max(12).optional(),
   isTaxable: z.boolean().optional(),
   taxRate: z.string().optional(),
   tagId: z.string().uuid().nullable().optional(),
@@ -225,6 +231,13 @@ export const createInvoiceSchema = z.object({
   warnOnly: z.boolean().optional(),
   // Waiting to be printed (U-113). Create: default false; edit: absent keeps it.
   printLater: z.boolean().optional(),
+});
+
+// POST /invoices/preview (U-129, invoice-pricing-v1): the create body, plus
+// invoiceId when previewing an edit (that invoice's posted total leaves the
+// client's balance before the new total is added).
+export const previewInvoiceSchema = createInvoiceSchema.extend({
+  invoiceId: z.string().uuid().optional(),
 });
 
 // Estimates keep the original invoice line shape (an account on every line).
