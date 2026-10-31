@@ -207,6 +207,10 @@ export interface JournalLineInput {
   // price_level_percent | none).
   discountPercent?: string | null;
   unitPriceSource?: string | null;
+  // On an invoice's billable cost line (lineRole 'billable_cost') and its
+  // markup line ('billable_markup'): the cost line it bills (U-128).
+  // Persisted on journal_lines.billable_source_line_id.
+  billableSourceLineId?: string | null;
 }
 
 export interface CreateJournalEntryInput {

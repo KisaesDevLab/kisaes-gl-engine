@@ -18,6 +18,7 @@ import { closingPasswordMatches, closingPasswordInvalid, auditClosingPasswordFai
 import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertNotDeposited, releaseDepositLinks, liveDepositsForSource } from './deposit-links.service.js';
+import { releaseBilledCosts, assertSourceLinksIntact, billedInvoicesForLines } from './billable-links.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -170,7 +171,9 @@ export function billableColumns(line: { isBillable?: boolean }): { isBillable: b
     : { isBillable: false, billedStatus: null };
 }
 
-type BillableCols = { isBillable: boolean; billedStatus: string | null };
+// id: a carried billed line is re-inserted with its old id (U-128 review B1),
+// so the billable_cost_links row that names it never dangles.
+type BillableCols = { id?: string; isBillable: boolean; billedStatus: string | null };
 type LedgerLine = PostTransactionInput['lines'][number];
 
 /** A transaction's live lines already billed to a customer ('billed'). */
@@ -179,10 +182,15 @@ type LedgerLine = PostTransactionInput['lines'][number];
  * settles (deposit grouping U-52 / vendor refund U-54) and its role inside
  * its document ('cash_back', U-53). Absent on the input → NULL.
  */
-export function settlementColumns(line: { sourceTransactionId?: string | null; lineRole?: string | null }): {
-  sourceTransactionId: string | null; lineRole: string | null;
+export function settlementColumns(line: { sourceTransactionId?: string | null; lineRole?: string | null; billableSourceLineId?: string | null }): {
+  sourceTransactionId: string | null; lineRole: string | null; billableSourceLineId: string | null;
 } {
-  return { sourceTransactionId: line.sourceTransactionId ?? null, lineRole: line.lineRole ?? null };
+  return {
+    sourceTransactionId: line.sourceTransactionId ?? null,
+    lineRole: line.lineRole ?? null,
+    // An invoice's billable cost / markup line: the cost line it bills (U-128).
+    billableSourceLineId: line.billableSourceLineId ?? null,
+  };
 }
 
 async function loadBilledLines(executor: DbOrTx, tenantId: string, txnId: string) {
@@ -191,7 +199,7 @@ async function loadBilledLines(executor: DbOrTx, tenantId: string, txnId: string
     eq(journalLines.transactionId, txnId),
     eq(journalLines.isVoidReversal, false),
     eq(journalLines.billedStatus, 'billed'),
-  ));
+  )).orderBy(journalLines.lineOrder, journalLines.id);
 }
 
 function billedLineConflict(line: { id: string; accountId: string }) {
@@ -211,14 +219,18 @@ function billedLineConflict(line: { id: string; accountId: string }) {
  * tag may change), and that input line keeps 'billed'. A billed line with
  * no such match — removed, or its amount / account / customer / billable
  * mark changed — refuses the edit with 409 LINE_BILLED. Every other line
- * gets billableColumns() (billable → 'unbilled').
+ * gets billableColumns() (billable → 'unbilled'). A carried line keeps its
+ * id (U-128 review B1): the edit deleted the old row earlier in the same
+ * transaction, so re-inserting it with that id can't clash, and the
+ * billable_cost_links row naming it stays valid. Identical billed lines pair
+ * up in line order.
  */
 function planBillableColumns(
   inputLines: readonly LedgerLine[],
   billedLines: Array<{ id: string; accountId: string; debit: string | null; credit: string | null; contactId: string | null }>,
 ): (line: LedgerLine) => BillableCols {
   const amt = (v: string | null | undefined) => new Decimal(v || '0');
-  const carried = new Set<LedgerLine>();
+  const carried = new Map<LedgerLine, string>();
   for (const billed of billedLines) {
     const match = inputLines.find((l) => !carried.has(l)
       && l.isBillable === true
@@ -227,9 +239,12 @@ function planBillableColumns(
       && amt(l.debit).equals(amt(billed.debit))
       && amt(l.credit).equals(amt(billed.credit)));
     if (!match) throw billedLineConflict(billed);
-    carried.add(match);
+    carried.set(match, billed.id);
   }
-  return (line) => (carried.has(line) ? { isBillable: true, billedStatus: 'billed' } : billableColumns(line));
+  return (line) => {
+    const id = carried.get(line);
+    return id ? { id, isBillable: true, billedStatus: 'billed' } : billableColumns(line);
+  };
 }
 
 /**
@@ -816,6 +831,10 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     const reversal = txn.txnType === 'journal_entry' ? await findLiveReversal(tx, tenantId, txnId) : null;
     if (reversal) await assertReversalUnchanged(tx, tenantId, reversal, originalLines);
 
+    // A billing document (an invoice) gives back the costs it billed (U-128,
+    // review B3): here, so every void path (the invoice route,
+    // /transactions, api-v2, MCP, duplicate merge) releases them.
+    const releasedCosts = await releaseBilledCosts(tx, tenantId, txnId, 'invoice_void', userId);
     // Billable lines stop being billable (U-50); a billed line refuses.
     await releaseBillableLines(tx, tenantId, txnId);
 
@@ -873,8 +892,11 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
 
     // Full before-image: the header AND the lines as they stood before the
     // void (the reversing lines are new rows, so originalLines is exact).
-    await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines },
-      releasedLinks.length > 0 ? { reason, releasedDepositLinks: releasedLinks } : { reason }, userId, tx);
+    await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines }, {
+      reason,
+      ...(releasedLinks.length > 0 ? { releasedDepositLinks: releasedLinks } : {}),
+      ...(releasedCosts.length > 0 ? { releasedBillableCosts: releasedCosts } : {}),
+    }, userId, tx);
 
     if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId, { companyId: opts.companyId });
   }
@@ -1175,6 +1197,8 @@ export async function deleteTransactionInTx(
     const reversal = txn.txnType === 'journal_entry' ? await findLiveReversal(tx, tenantId, txnId) : null;
     if (reversal) await assertReversalUnchanged(tx, tenantId, reversal, originalLines);
 
+    // A billing document gives back the costs it billed (U-128, review B3).
+    const releasedCosts = await releaseBilledCosts(tx, tenantId, txnId, 'invoice_delete', opts.userId);
     // Billable lines stop being billable (U-50); a billed line refuses.
     await releaseBillableLines(tx, tenantId, txnId);
 
@@ -1209,9 +1233,12 @@ export async function deleteTransactionInTx(
 
     await auditLog(tenantId, 'delete', 'transaction', txnId,
       { ...txn, lines: originalLines },
-      releasedLinks.length > 0
-        ? { status: 'deleted', reason: opts.reason ?? null, releasedDepositLinks: releasedLinks }
-        : { status: 'deleted', reason: opts.reason ?? null },
+      {
+        status: 'deleted',
+        reason: opts.reason ?? null,
+        ...(releasedLinks.length > 0 ? { releasedDepositLinks: releasedLinks } : {}),
+        ...(releasedCosts.length > 0 ? { releasedBillableCosts: releasedCosts } : {}),
+      },
       opts.userId, tx);
 
     // The reversal has its own updatedAt; the caller's token was for the original.
@@ -1339,7 +1366,8 @@ export async function updateTransaction(
 
     // Lines already billed to a customer keep their billed state by
     // identity, or the edit is refused (409 LINE_BILLED) — U-50.
-    const billableFor = planBillableColumns(input.lines, await loadBilledLines(tx, tenantId, txnId));
+    const billedBefore = await loadBilledLines(tx, tenantId, txnId);
+    const billableFor = planBillableColumns(input.lines, billedBefore);
 
     // Refuse to edit if any of this transaction's journal lines were
     // marked cleared inside a completed reconciliation. Allowing the edit
@@ -1480,6 +1508,8 @@ export async function updateTransaction(
       await syncTransactionTagsFromLines(tx, tenantId, existing.companyId ?? null, txnId, fullValues, headerOnlyTags);
       // Full before-image: header plus every line as it stood before the edit.
       await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: existingLines }, { reconciledPartialEdit: true }, userId, tx);
+      // Every billed cost still has its line (U-128 review B1); else 500, rolled back.
+      if (billedBefore.length > 0) await assertSourceLinksIntact(tx, tenantId, txnId);
       const refreshed = await tx.select().from(journalLines)
         .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
       const [updatedTxn] = await tx.select().from(transactions)
@@ -1573,6 +1603,8 @@ export async function updateTransaction(
     // Full before-image: header plus the lines this edit deleted, so the
     // audit trail can show (and restore) what the transaction was.
     await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: originalLines }, input, userId, tx);
+    // Every billed cost still has its line (U-128 review B1); else 500, rolled back.
+    if (billedBefore.length > 0) await assertSourceLinksIntact(tx, tenantId, txnId);
 
     const [updated] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
@@ -1775,7 +1807,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
     contactName = c?.displayName ?? null;
   }
 
-  const lines = await db.select({
+  const rawLines = await db.select({
     id: journalLines.id,
     tenantId: journalLines.tenantId,
     transactionId: journalLines.transactionId,
@@ -1801,6 +1833,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
     serviceDate: journalLines.serviceDate,
     discountPercent: journalLines.discountPercent,
     unitPriceSource: journalLines.unitPriceSource,
+    billableSourceLineId: journalLines.billableSourceLineId,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     // Exclude the persisted void-reversal rows (rule 23) so the detail
@@ -1812,6 +1845,17 @@ export async function getTransaction(tenantId: string, txnId: string) {
       eq(journalLines.isVoidReversal, false),
     ))
     .orderBy(journalLines.lineOrder);
+
+  // Billed cost lines (U-128): the invoice each is on (same company as the
+  // source: a claim requires it).
+  const billedIds = rawLines.filter((l) => l.billedStatus === 'billed').map((l) => l.id);
+  const billedOn = await billedInvoicesForLines(db, tenantId, billedIds);
+  const lines: Array<(typeof rawLines)[number] & { billedInvoiceId?: string | null; billedInvoiceNumber?: string | null }> =
+    rawLines.map((l) => {
+      if (l.billedStatus !== 'billed') return l;
+      const inv = billedOn.get(l.id);
+      return { ...l, billedInvoiceId: inv?.invoiceId ?? null, billedInvoiceNumber: inv?.invoiceNumber ?? null };
+    });
 
   // Journal entries (U-61): the live automatic reversal, if any.
   if (txn.txnType === 'journal_entry') {
@@ -2324,7 +2368,7 @@ export async function bulkUpdateTransactions(
       if (setCategoryAccountId !== undefined) {
         const catLines = await tx.select({
           id: journalLines.id, accountId: journalLines.accountId,
-          debit: journalLines.debit, credit: journalLines.credit,
+          debit: journalLines.debit, credit: journalLines.credit, billedStatus: journalLines.billedStatus,
         })
           .from(journalLines)
           .innerJoin(accounts, eq(journalLines.accountId, accounts.id))
@@ -2334,7 +2378,15 @@ export async function bulkUpdateTransactions(
             categoryLineAccountCond(),
           ));
 
-        if (catLines.length === 1) {
+        // A cost billed to a customer keeps its account (U-50, U-128 S11):
+        // skipped as 'billed' when the category was the only change, else left.
+        const billedMove = catLines.length === 1 && catLines[0]!.billedStatus === 'billed'
+          && catLines[0]!.accountId !== setCategoryAccountId;
+        if (billedMove && setPayeeContactId === undefined && setTagId === undefined) {
+          skipped.push({ id: txnId, reason: 'billed' });
+          continue;
+        }
+        if (catLines.length === 1 && !billedMove) {
           const line = catLines[0]!;
           if (line.accountId !== setCategoryAccountId) {
             if (txn.status === 'posted') {
