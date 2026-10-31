@@ -124,7 +124,7 @@ invoicesRouter.post('/preview', validate(previewInvoiceSchema), describe({
 
 invoicesRouter.get('/:id', describe({
   summary: 'Get an invoice',
-  description: 'Response {invoice}: the transaction with its lines (serviceDate, itemId, taxRate, taxAmount), poNumber, customerMessage, hideZeroLines, '
+  description: 'Response {invoice}: the transaction with its lines (serviceDate, itemId, taxRate, taxAmount, accountSystemTag: the systemTag of the line account, so accounts_receivable and sales_tax_payable mark the engine own A/R and tax lines), poNumber, customerMessage, hideZeroLines, '
     + 'tagIds and sendHistory [{id, method: printed|email|pdf, recipients, sentAt, userId}] oldest first (kept across edits). '
     + 'An invoice of another company is 404; another transaction type is 400.',
   params: idParams,

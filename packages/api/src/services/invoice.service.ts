@@ -798,7 +798,16 @@ export async function getInvoice(tenantId: string, invoiceId: string, companyId?
   ]);
   // One entry per billed cost (U-128): the form shows one row with these figures.
   const billableCosts = await billing.billableCostsForInvoice(db, tenantId, invoiceId, txn.lines);
-  return { ...txn, tagIds: tagRows.map((r) => r.tagId), sendHistory, billableCosts };
+  // Each line's account systemTag (review N-1): an editor tells the
+  // engine's own A/R ('accounts_receivable') and Sales Tax
+  // ('sales_tax_payable') lines from the form lines without paging the
+  // chart of accounts.
+  const accountIds = [...new Set(txn.lines.map((l) => l.accountId))];
+  const tagged = accountIds.length === 0 ? [] : await db.select({ id: accounts.id, systemTag: accounts.systemTag }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, accountIds)));
+  const tagOf = new Map(tagged.map((a) => [a.id, a.systemTag ?? null]));
+  const lines = txn.lines.map((l) => ({ ...l, accountSystemTag: tagOf.get(l.accountId) ?? null }));
+  return { ...txn, lines, tagIds: tagRows.map((r) => r.tagId), sendHistory, billableCosts };
 }
 
 /**

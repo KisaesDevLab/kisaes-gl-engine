@@ -358,6 +358,8 @@ describe('invoice-pricing-v1 (U-129)', () => {
     const posted = await request('POST', '/api/v1/invoices', c.token, body);
     expect(posted.status, JSON.stringify(posted.json)).toBe(201);
     const inv = posted.json.invoice;
+    // N-1: each line names its account's systemTag, so an editor tells the A/R and tax lines apart.
+    expect((inv.lines as any[]).filter((l) => l.accountSystemTag).map((l) => l.accountSystemTag).sort()).toEqual(['accounts_receivable', 'sales_tax_payable']);
     // An item-unaware client (the pre-fix web editor) sends the credit lines only.
     const old = await request('PUT', `/api/v1/invoices/${inv.id}`, c.token, {
       contactId: c.customer, txnDate: '2026-11-03', memo: 'memo fix', expectedUpdatedAt: inv.updatedAt,

@@ -33267,7 +33267,7 @@
     },
     "/api/v1/invoices/{id}": {
       "get": {
-        "description": "Response {invoice}: the transaction with its lines (serviceDate, itemId, taxRate, taxAmount), poNumber, customerMessage, hideZeroLines, tagIds and sendHistory [{id, method: printed|email|pdf, recipients, sentAt, userId}] oldest first (kept across edits). An invoice of another company is 404; another transaction type is 400.",
+        "description": "Response {invoice}: the transaction with its lines (serviceDate, itemId, taxRate, taxAmount, accountSystemTag: the systemTag of the line account, so accounts_receivable and sales_tax_payable mark the engine own A/R and tax lines), poNumber, customerMessage, hideZeroLines, tagIds and sendHistory [{id, method: printed|email|pdf, recipients, sentAt, userId}] oldest first (kept across edits). An invoice of another company is 404; another transaction type is 400.",
         "operationId": "get_api_v1_invoices_by_id",
         "parameters": [
           {
