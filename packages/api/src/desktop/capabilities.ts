@@ -326,4 +326,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * /email-later; this set is fixed. Migration 0244 (form_email_queue).
    */
   'invoice-email-v1',
+  /**
+   * Billable costs (U-128): GET /billable-costs?contactId=&limit=&offset= lists the unbilled costs of the company (items
+   * {sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, sourceDate, vendorName, description, expenseAccountId, itemId,
+   * quantity, unitCost, sourceAmount, costAmount, suggestedIncomeAccountId}, totalCount, totalAmount over all pages,
+   * defaultMarkupPercent). An invoice line {billableSourceLineId, accountId (required), markupPercent? (a percent, 0-1000)} bills a cost
+   * whole, once, to its own customer: cost = round2(source), markup = round2(cost x pct / 100) (none on a negative cost), one visible
+   * line (rate = amount / quantity), journal cost line (lineRole billable_cost) + markup line (billable_markup, company
+   * billableMarkupAccountId, kept on edit). PUT re-sends or releases (releaseBillableSourceLineIds) every billed cost, else 409
+   * BILLABLE_LINES_MISSING; void / delete of the invoice through any route releases them. GET /invoices/:id billableCosts; source
+   * reads add billedInvoiceId / billedInvoiceNumber; contacts.defaultMarkupPercent. 409 BILLABLE_ALREADY_BILLED / COST_UNAVAILABLE /
+   * INVOICE_TOTAL_BELOW_PAID / RETRY; 400 BILLABLE_CONTACT_MISMATCH / DUPLICATE_LINE / FIELDS_READONLY / INCOME_ACCOUNT_REQUIRED,
+   * MARKUP_ACCOUNT_REQUIRED / INVALID. Golden: invoice-golden.json billableCases. Migration 0245.
+   */
+  'billable-costs-v1',
 ];

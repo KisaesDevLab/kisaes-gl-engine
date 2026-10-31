@@ -179,7 +179,17 @@ export const invoiceLineSchema = z.object({
   taxRate: z.string().optional(),
   tagId: z.string().uuid().nullable().optional(),
   serviceDate: isoDateOnly.nullable().optional(),
-}).refine((l) => !!l.accountId || !!l.itemId, { message: 'Each line needs an accountId or an itemId', path: ['accountId'] });
+  // Billable cost (U-128, billable-costs-v1): the cost line (GET
+  // /billable-costs sourceLineId) this line bills. accountId (the income
+  // account its cost credits) is required (400
+  // BILLABLE_INCOME_ACCOUNT_REQUIRED); itemId, quantity and unitPrice come
+  // from the source (sending one is 400 BILLABLE_FIELDS_READONLY);
+  // isTaxable defaults to true; serviceDate to the source date.
+  billableSourceLineId: z.string().uuid().optional(),
+  // A percent ("10" = 10 %), 0 to 1000, at most 4 places; omitted is 0. A
+  // negative cost takes no markup (Q-P20z).
+  markupPercent: z.string().min(1).max(12).optional(),
+}).refine((l) => !!l.accountId || !!l.itemId || !!l.billableSourceLineId, { message: 'Each line needs an accountId or an itemId', path: ['accountId'] });
 
 export const createCashSaleSchema = z.object({
   txnDate: z.string().min(1),
@@ -231,6 +241,10 @@ export const createInvoiceSchema = z.object({
   warnOnly: z.boolean().optional(),
   // Waiting to be printed (U-113). Create: default false; edit: absent keeps it.
   printLater: z.boolean().optional(),
+  // PUT only (U-128): billed costs this edit takes off the invoice. A cost
+  // the invoice bills must be re-sent (by billableSourceLineId) or named
+  // here, else 409 BILLABLE_LINES_MISSING.
+  releaseBillableSourceLineIds: z.array(z.string().uuid()).max(MAX_LINES).optional(),
 });
 
 // POST /invoices/preview (U-129, invoice-pricing-v1): the create body, plus
@@ -448,3 +462,12 @@ export const bulkUpdateTransactionsSchema = z
   );
 
 // Tag schemas moved to schemas/tags.ts
+
+// GET /billable-costs (U-128, billable-costs-v1). projectId is accepted and
+// ignored until projects-v1.
+export const billableCostFiltersSchema = z.object({
+  contactId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});

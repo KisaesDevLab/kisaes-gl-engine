@@ -230,6 +230,7 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       lockDate: company.lockDate,
       chatSupportEnabled: company.chatSupportEnabled,
       billDiscountAccountId: company.billDiscountAccountId ?? null,
+      billableMarkupAccountId: company.billableMarkupAccountId ?? null,
     },
   });
 });

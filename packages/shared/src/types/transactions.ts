@@ -362,6 +362,10 @@ export interface CreateInvoiceInput {
     tagId?: string | null;
     /** YYYY-MM-DD (U-123). */
     serviceDate?: string | null;
+    /** A billable cost this line bills (U-128); accountId required, no itemId / quantity / unitPrice. */
+    billableSourceLineId?: string;
+    /** Markup percent on the cost ("10" = 10 %), 0 to 1000 (U-128). */
+    markupPercent?: string;
   }>;
   memo?: string;
   internalNotes?: string;
@@ -381,6 +385,8 @@ export interface CreateInvoiceInput {
   warnOnly?: boolean;
   /** Waiting to be printed (U-113). */
   printLater?: boolean;
+  /** PUT only (U-128): billed costs this edit releases. */
+  releaseBillableSourceLineIds?: string[];
 }
 
 export interface RecordPaymentInput {

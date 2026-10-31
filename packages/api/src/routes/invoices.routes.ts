@@ -59,6 +59,18 @@ const pricingRules = 'Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-le
   + '(input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. '
   + 'Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.';
 
+const billableRules = 'Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), '
+  + 'markupPercent? (a percent, "10" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost '
+  + '(400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, '
+  + 'one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup '
+  + 'is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the '
+  + 'invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. '
+  + 'Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE '
+  + '(stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, '
+  + '400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts '
+  + '[{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, '
+  + 'markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.';
+
 invoicesRouter.get('/', describe({
   summary: 'List invoices',
   description: 'The transaction list filters, plus sent (invoice-sent-history-v1): "false" keeps the invoices never sent (no send event, no sent date, never marked sent) '
@@ -82,7 +94,7 @@ invoicesRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempote
     + '(numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by '
     + 'an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in '
     + '`warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only '
-    + `\`{invoice}\`, without \`warnings\`: treat it as absent-safe. ${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules}`,
+    + `\`{invoice}\`, without \`warnings\`: treat it as absent-safe. ${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules} ${billableRules}`,
   body: bodyDoc,
 }), async (req, res) => {
   // warnings (U-111): duplicate-number warnings of a warnOnly request; [] otherwise.
@@ -99,7 +111,7 @@ invoicesRouter.post('/preview', validate(previewInvoiceSchema), describe({
     + 'subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, '
     + 'priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client\'s open '
     + 'balance (contact-balance-v1) plus this total, with invoiceId\'s posted total taken out first. Errors as POST (400 VALIDATION_ERROR); '
-    + `invoiceId of another company or not found 404. ${moneyRules} ${pricingRules}`,
+    + `invoiceId of another company or not found 404. Billable lines add {billableSourceLineId, costAmount, markupPercent, markupAmount, displayRate, error: {code: BILLABLE_ALREADY_BILLED, invoiceId, invoiceNumber} | null}; nothing is locked or claimed. ${moneyRules} ${pricingRules} ${billableRules}`,
   body: previewInvoiceSchema,
 }), async (req, res) => {
   res.json(await invoiceService.previewInvoice(req.tenantId, req.body, req.companyId));
@@ -129,7 +141,7 @@ invoicesRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedI
   description: 'Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE '
     + '(details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice\'s; the due date '
     + 'is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and '
-    + `printLater keep their values. ${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules}`,
+    + `printLater keep their values. ${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules} ${billableRules}`,
   body: bodyDoc,
   params: idParams,
 }), async (req, res) => {
@@ -294,6 +306,7 @@ invoicesRouter.delete('/:id/share-link', async (req, res) => {
 });
 
 invoicesRouter.post('/:id/duplicate', async (req, res) => {
-  const invoice = await invoiceService.duplicateInvoice(req.tenantId, req.params['id']!, req.userId, req.companyId);
-  res.status(201).json({ invoice });
+  // warnings: BILLABLE_COPIED_AS_PLAIN when billed costs were copied as plain lines (U-128 S4).
+  const { invoice, warnings } = await invoiceService.duplicateInvoiceWithWarnings(req.tenantId, req.params['id']!, req.userId, req.companyId);
+  res.status(201).json({ invoice, warnings });
 });

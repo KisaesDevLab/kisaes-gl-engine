@@ -84,4 +84,6 @@ export interface CompanySettings {
   chatSupportEnabled?: boolean;
   /** Default account for early-payment discounts taken in Pay Bills (bill-discounts-v1); null = none. */
   billDiscountAccountId?: string | null;
+  /** Income account billable-cost markups post to (billable-costs-v1); null = none. */
+  billableMarkupAccountId?: string | null;
 }

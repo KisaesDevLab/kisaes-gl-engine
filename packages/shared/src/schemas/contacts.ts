@@ -7,6 +7,11 @@ import { sortBySchema, sortDirSchema } from './list-view.js';
 
 const contactTypes = ['customer', 'vendor', 'both'] as const;
 
+// A markup percent (U-128): "0" to "1000", at most 4 places ("10" = 10 %).
+export const markupPercentSchema = z.string()
+  .regex(/^\d{1,4}(\.\d{1,4})?$/, 'A percent from 0 to 1000 with at most 4 decimal places, such as 10 for 10 %')
+  .refine((v) => Number(v) <= 1000, 'The markup percent must be at most 1000');
+
 export const createContactSchema = z.object({
   contactType: z.enum(contactTypes),
   displayName: z.string().min(1, 'Display name is required').max(255),
@@ -40,6 +45,9 @@ export const createContactSchema = z.object({
   defaultExpenseAccountId: z.string().uuid().nullish(),
   // The client's price level (U-40, price-levels-v1); null clears it.
   priceLevelId: z.string().uuid().nullish(),
+  // Suggested markup on the client's billable costs (U-128, billable-costs-v1),
+  // a percent ("10" = 10 %), 0 to 1000, at most 4 places; null clears it.
+  defaultMarkupPercent: markupPercentSchema.nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.
@@ -82,6 +90,9 @@ export const updateContactSchema = z.object({
   defaultExpenseAccountId: z.string().uuid().nullish(),
   // The client's price level (U-40, price-levels-v1); null clears it.
   priceLevelId: z.string().uuid().nullish(),
+  // Suggested markup on the client's billable costs (U-128, billable-costs-v1),
+  // a percent ("10" = 10 %), 0 to 1000, at most 4 places; null clears it.
+  defaultMarkupPercent: markupPercentSchema.nullish(),
   taxId: z.string().max(30).nullish(),
   // Free text on purpose — vendor account numbers carry dashes, letters and
   // leading zeros. Trimmed so a stray space doesn't print on the check.

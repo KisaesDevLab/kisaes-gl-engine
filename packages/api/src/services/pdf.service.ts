@@ -104,11 +104,45 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
   // $0 lines off. A subtotal line (price source 'none') posts $0 and prints
   // the sum of the form lines since the previous subtotal.
   const revenueLines: InvoicePdfData['lines'] = [];
+  // A billable cost prints as one line (U-128, Q-P20w): its markup line adds
+  // to the cost line, and the rate is amount / quantity.
+  const billableRows = new Map<string, { row: InvoicePdfData['lines'][number]; qty: InstanceType<typeof Decimal> }>();
+  const billableRate = (amount: InstanceType<typeof Decimal>, qty: InstanceType<typeof Decimal>) =>
+    amount.dividedBy(qty).toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
   let group = new Decimal(0);
   for (const line of lines) {
     const posted = new Decimal(line.credit || '0').minus(line.debit || '0');
+    if (line.lineRole === 'billable_markup' && line.billableSourceLineId) {
+      const b = billableRows.get(line.billableSourceLineId);
+      group = group.plus(posted);
+      if (b) {
+        const total = new Decimal(b.row.amount).plus(posted);
+        b.row.amount = total.toFixed(4);
+        b.row.unitPrice = billableRate(total, b.qty);
+      }
+      continue;
+    }
     const isFormLine = line.quantity !== null || line.unitPriceSource !== null || posted.greaterThan(0);
     if (!isFormLine) continue;
+    if (line.lineRole === 'billable_cost' && line.billableSourceLineId) {
+      group = group.plus(posted);
+      const qty = line.quantity && !new Decimal(line.quantity).isZero() ? new Decimal(line.quantity) : new Decimal(1);
+      const account = await db.query.accounts.findFirst({
+        where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, line.accountId)),
+      });
+      const row: InvoicePdfData['lines'][number] = {
+        description: line.description,
+        quantity: qty.toString(),
+        unitPrice: billableRate(posted, qty),
+        amount: posted.toFixed(4),
+        accountName: account?.name || 'Revenue',
+        kind: 'line',
+        discountPercent: null,
+      };
+      billableRows.set(line.billableSourceLineId, { row, qty });
+      revenueLines.push(row);
+      continue;
+    }
     const isSubtotal = line.unitPriceSource === 'none';
     const amount = isSubtotal ? group : posted;
     if (isSubtotal) group = new Decimal(0);

@@ -442,5 +442,7 @@ transactionsRouter.post('/:id/duplicate', apDocumentPermission('create'), async 
     lines,
   }, req.userId, req.companyId);
 
-  res.status(201).json({ transaction: result });
+  // A billed cost's lines are copied as plain lines (U-128 S4): warnings says so.
+  const { billableCopyWarnings } = await import('../services/invoice.service.js');
+  res.status(201).json({ transaction: result, warnings: billableCopyWarnings(original.lines) });
 });

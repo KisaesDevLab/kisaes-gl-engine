@@ -25,6 +25,9 @@ import { getBalances } from './contacts.service.js';
 import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { listSendHistory, recordSendEvent } from './document-send.service.js';
+import * as billing from './billable-costs.service.js';
+import { activeLinksForInvoice, lockSourceTransactions, releaseBilledCosts } from './billable-links.js';
+import { billableFigures, parseMarkupPercent, type BillableFigures } from '../utils/invoice-compute.js';
 
 // Calendar arithmetic (U-86, review S3): the old `new Date(d).setDate(+n)`
 // worked in local time, so in a US time zone a term window crossing the
@@ -119,6 +122,19 @@ interface ResolvedInvoiceLine {
   tagId?: string | null;
   serviceDate: string | null;
   item: { id: string; type: SalesItemType; unitPrice: string | null; discountPercent: string | null } | null;
+  /** A billable cost line (U-128): the cost it bills, filled in by resolveBillableLines. */
+  bill: {
+    sourceLineId: string;
+    markupPercent?: string;
+    source?: billing.BillableSource;
+    figures?: BillableFigures;
+    markupAccountId?: string | null;
+    existingLinkId?: string | null;
+  } | null;
+}
+
+function billableError(message: string, code: string, details?: Record<string, unknown>): AppError {
+  return AppError.badRequest(message, code, details);
 }
 
 /**
@@ -138,7 +154,29 @@ async function resolveInvoiceLines(
     throw scopeError('One or more line items do not belong to this company');
   }
   const byId = new Map(rows.map((r) => [r.id, r]));
+  const seen = new Set<string>();
   return lines.map((l, i) => {
+    // A billable cost (U-128): item, quantity and price come from the cost;
+    // the income account is the owner's pick, required (Q-P20p).
+    if (l.billableSourceLineId) {
+      if (l.itemId || l.quantity !== undefined || l.unitPrice !== undefined || l.discountPercent !== undefined) {
+        throw billableError(`lines[${i}]: a billable cost's item, quantity and price come from the cost; don't send them`,
+          'BILLABLE_FIELDS_READONLY', { line: i });
+      }
+      if (!l.accountId) {
+        throw billableError(`lines[${i}] needs the income account the cost is billed to (accountId)`, 'BILLABLE_INCOME_ACCOUNT_REQUIRED', { line: i });
+      }
+      if (seen.has(l.billableSourceLineId)) {
+        throw billableError('The same cost appears twice on this invoice', 'BILLABLE_DUPLICATE_LINE', { sourceLineId: l.billableSourceLineId });
+      }
+      seen.add(l.billableSourceLineId);
+      parseMarkupPercent(l.markupPercent, `lines[${i}].markupPercent`);
+      return {
+        accountId: l.accountId, itemId: null, itemType: null, description: l.description,
+        isTaxable: l.isTaxable ?? true, taxRate: l.taxRate, tagId: l.tagId, serviceDate: l.serviceDate ?? null,
+        item: null, bill: { sourceLineId: l.billableSourceLineId, markupPercent: l.markupPercent },
+      };
+    }
     const item = l.itemId ? byId.get(l.itemId) : undefined;
     const accountId = l.accountId ?? item?.incomeAccountId;
     if (!accountId) throw scopeError(`lines[${i}] needs an accountId or an itemId`);
@@ -157,8 +195,59 @@ async function resolveInvoiceLines(
       tagId: l.tagId,
       serviceDate: l.serviceDate ?? null,
       item: item ? { id: item.id, type: itemType!, unitPrice: item.unitPrice, discountPercent: item.discountPercent } : null,
+      bill: null,
     };
   });
+}
+
+interface BillingContext {
+  /** The invoice being edited (or previewed as an edit); null on POST. */
+  invoiceId: string | null;
+  /** Take the source row locks in this transaction (POST / PUT). */
+  lockTx?: Tx;
+  /** Sources of the invoice's current links, locked with the requested ones. */
+  alsoLockTxnIds?: string[];
+  /** Preview: report costs another invoice holds per line instead of refusing. */
+  preview?: boolean;
+}
+
+/**
+ * The billable lines' costs (U-128 rule 1, rules 5-7): loaded (and locked,
+ * in id order, on POST / PUT) and checked; the figures come from the
+ * locked cost line, never from the request or a preview. The markup
+ * account: the link's when this invoice already bills the cost (kept on
+ * every edit), else the company's (400 MARKUP_ACCOUNT_REQUIRED when a
+ * markup has none).
+ */
+async function resolveBillableLines(
+  executor: DbOrTx, tenantId: string, companyId: string | null | undefined, customerId: string,
+  company: { billableMarkupAccountId: string | null } | null, lines: ResolvedInvoiceLine[], ctx: BillingContext,
+) {
+  const ids = lines.flatMap((l) => (l.bill ? [l.bill.sourceLineId] : []));
+  if (ids.length === 0) {
+    if (ctx.lockTx && ctx.alsoLockTxnIds?.length) await lockSourceTransactions(ctx.lockTx, tenantId, ctx.alsoLockTxnIds);
+    return new Map<string, { invoiceId: string | null; invoiceNumber: string | null }>();
+  }
+  const sources = await billing.loadBillableSources(executor, tenantId, ids, { lockTx: ctx.lockTx, alsoLockTxnIds: ctx.alsoLockTxnIds });
+  const { alreadyBilled } = billing.checkBillableSources(sources, ids, {
+    contactId: customerId, invoiceId: ctx.invoiceId, companyId, reportBilled: ctx.preview,
+  });
+  lines.forEach((l, i) => {
+    if (!l.bill) return;
+    const s = sources.get(l.bill.sourceLineId)!;
+    const cost = new Decimal(s.line.debit || '0').minus(s.line.credit || '0');
+    const figures = billableFigures(cost.toFixed(4), s.line.quantity, l.bill.markupPercent, `lines[${i}]`);
+    const ours = s.link && ctx.invoiceId !== null && s.link.invoiceId === ctx.invoiceId ? s.link : null;
+    const markupAccountId = ours?.markupAccountId ?? company?.billableMarkupAccountId ?? null;
+    if (!new Decimal(figures.markupAmount).isZero() && !markupAccountId) {
+      throw billableError('Set the account markups post to (company settings) before billing a cost with a markup.',
+        'MARKUP_ACCOUNT_REQUIRED', { line: i });
+    }
+    l.bill = { ...l.bill, source: s, figures, markupAccountId, existingLinkId: ours?.id ?? null };
+    if (l.description === undefined) l.description = s.line.description ?? undefined;
+    if (!l.serviceDate) l.serviceDate = s.txn.txnDate;
+  });
+  return alreadyBilled;
 }
 
 const money4 = (v: string) => new Decimal(v).toFixed(4);
@@ -183,9 +272,31 @@ async function buildInvoiceJournal(
   const arAccountId = await getSystemAccount(executor, tenantId, 'accounts_receivable');
   const journal: ledger.PostTransactionInput['lines'] = [
     { accountId: arAccountId, ...side(computed.total, 'debit') },
-    ...lines.map((l, i) => {
+    ...lines.flatMap((l, i): ledger.PostTransactionInput['lines'] => {
       const c = computed.lines[i]!;
-      return {
+      // A billable cost (U-128 rule 6): the cost line credits the line's own
+      // income account for the cost and carries the line's tax; the markup
+      // line (when not 0) credits the markup account, tax 0. One visible
+      // line (Q-P20w): GET /invoices/:id billableCosts joins them again.
+      if (l.bill?.figures && l.bill.source) {
+        const f = l.bill.figures;
+        const src = l.bill.source.line;
+        const common = {
+          description: l.description, isTaxable: c.isTaxable, taxRate: c.taxRate, tagId: l.tagId,
+          serviceDate: l.serviceDate, unitPriceSource: 'billable_cost', billableSourceLineId: l.bill.sourceLineId,
+        };
+        const costLine = {
+          accountId: l.accountId, ...side(f.costAmount, 'credit'), ...common,
+          itemId: src.itemId, quantity: src.quantity ?? undefined, unitPrice: src.unitPrice ?? undefined,
+          taxAmount: money4(c.taxAmount), lineRole: 'billable_cost',
+        };
+        if (new Decimal(f.markupAmount).isZero()) return [costLine];
+        return [costLine, {
+          accountId: l.bill.markupAccountId!, ...side(f.markupAmount, 'credit'), ...common,
+          taxAmount: '0', lineRole: 'billable_markup',
+        }];
+      }
+      return [{
         accountId: l.accountId,
         // A subtotal line's amount is shown only; it posts $0 (U-129).
         ...side(c.itemType === 'subtotal' ? '0' : c.amount, 'credit'),
@@ -204,7 +315,7 @@ async function buildInvoiceJournal(
         // AR and sales-tax lines remain untagged (internal postings).
         tagId: l.tagId,
         serviceDate: l.serviceDate,
-      };
+      }];
     }),
   ];
   if (!new Decimal(computed.taxTotal).isZero()) {
@@ -301,23 +412,52 @@ async function headerOnlyTags(tx: Tx, tenantId: string, txnId: string): Promise<
  */
 async function computeInvoiceFigures(
   executor: DbOrTx, tenantId: string, input: CreateInvoiceInput, companyId: string | null | undefined,
+  billingCtx: BillingContext = { invoiceId: null },
 ) {
   const company = await loadSalesCompany(executor, tenantId, companyId);
   const customer = await loadCustomer(executor, tenantId, input.contactId, companyId);
   const lines = await resolveInvoiceLines(executor, tenantId, companyId, input.lines);
   await assertTagsInScope(executor, tenantId, companyId, input.tagIds);
+  const alreadyBilled = await resolveBillableLines(executor, tenantId, companyId, customer.id, company, lines, billingCtx);
   const priceLevel = await loadPricingLevel(executor, tenantId, customer.priceLevelId, companyId);
-  const computed = computeInvoice(lines, { defaultTaxRate: company?.defaultSalesTaxRate || '0', priceLevel });
-  return { company, customer, lines, priceLevel, computed };
+  // A billable line is a fixed amount: never priced by a level (S10).
+  const computed = computeInvoice(lines.map((l) => ({ ...l, billable: l.bill?.figures ?? null })), {
+    defaultTaxRate: company?.defaultSalesTaxRate || '0', priceLevel,
+  });
+  return { company, customer, lines, priceLevel, computed, alreadyBilled };
 }
 
 /** Everything the invoice posts from its request. */
 async function prepareInvoice(
-  tx: Tx, tenantId: string, input: CreateInvoiceInput, companyId: string | null | undefined,
+  tx: Tx, tenantId: string, input: CreateInvoiceInput, companyId: string | null | undefined, billingCtx: BillingContext,
 ) {
-  const { company, customer, lines, computed } = await computeInvoiceFigures(tx, tenantId, input, companyId);
+  const { company, customer, lines, computed } = await computeInvoiceFigures(tx, tenantId, input, companyId, billingCtx);
   const journal = await buildInvoiceJournal(tx, tenantId, lines, computed);
-  return { company, customer, computed, journal };
+  const claims: billing.BillableClaim[] = lines.flatMap((l) => (l.bill?.figures && l.bill.source ? [{
+    sourceLineId: l.bill.sourceLineId,
+    sourceTransactionId: l.bill.source.txn.id,
+    figures: l.bill.figures,
+    markupAccountId: l.bill.markupAccountId ?? null,
+    existingLinkId: l.bill.existingLinkId ?? null,
+  }] : []));
+  return { company, customer, computed, journal, claims };
+}
+
+/** A billable line's preview fields (U-128): its figures, and an error when another invoice holds the cost. */
+function billablePreview(
+  bill: NonNullable<ResolvedInvoiceLine['bill']>,
+  alreadyBilled: Map<string, { invoiceId: string | null; invoiceNumber: string | null }>,
+) {
+  const f = bill.figures!;
+  const held = alreadyBilled.get(bill.sourceLineId);
+  return {
+    billableSourceLineId: bill.sourceLineId,
+    costAmount: f.costAmount,
+    markupPercent: f.markupPercent,
+    markupAmount: f.markupAmount,
+    displayRate: f.displayRate,
+    error: held ? { code: 'BILLABLE_ALREADY_BILLED', invoiceId: held.invoiceId, invoiceNumber: held.invoiceNumber } : null,
+  };
 }
 
 /**
@@ -342,7 +482,11 @@ export async function previewInvoice(
     if (existing.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
   }
   const scope = companyId ?? existing?.companyId ?? undefined;
-  const { company, customer, lines, priceLevel, computed } = await computeInvoiceFigures(db, tenantId, input, scope);
+  // Billable costs (U-128 S3): checked without a lock or a claim; a cost
+  // another invoice holds is reported on its line (error), not refused.
+  const { company, customer, lines, priceLevel, computed, alreadyBilled } = await computeInvoiceFigures(db, tenantId, input, scope, {
+    invoiceId: existing?.id ?? null, preview: true,
+  });
   const paymentTerms = input.paymentTerms ?? existing?.paymentTerms ?? undefined;
   const termsDays = input.termsDays ?? (input.paymentTerms === undefined ? existing?.termsDays ?? undefined : undefined);
   const terms = resolveInvoiceTerms({ txnDate: input.txnDate, paymentTerms, termsDays, dueDate: input.dueDate }, customer, company);
@@ -366,6 +510,7 @@ export async function previewInvoice(
       isTaxable: c.isTaxable,
       taxRate: c.taxRate,
       taxAmount: c.taxAmount,
+      ...(lines[i]!.bill?.figures ? billablePreview(lines[i]!.bill!, alreadyBilled) : {}),
     })),
     subtotal: computed.subtotal,
     taxableBase: computed.taxableBase,
@@ -396,9 +541,16 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
 export async function createInvoiceWithWarnings(
   tenantId: string, input: CreateInvoiceInput, userId?: string, companyId?: string,
 ) {
-  return await db.transaction(async (tx) => {
+  if (input.releaseBillableSourceLineIds?.length) {
+    throw AppError.badRequest('releaseBillableSourceLineIds is for editing an invoice', 'VALIDATION_ERROR');
+  }
+  return await billing.mapBillableDbErrors(() => db.transaction(async (tx) => {
     await claimIdempotency(tx);
-    const { company, customer, computed, journal } = await prepareInvoice(tx, tenantId, input, companyId);
+    // Billable costs (U-128): their sources are locked (id order) and
+    // checked before anything posts; claimed in this transaction below.
+    const { company, customer, computed, journal, claims } = await prepareInvoice(tx, tenantId, input, companyId, {
+      invoiceId: null, lockTx: tx,
+    });
     const terms = resolveInvoiceTerms(input, customer, company);
     // A typed number skips the counter, so a one-off custom number doesn't
     // advance the sequence; otherwise the next free number is claimed.
@@ -438,8 +590,12 @@ export async function createInvoiceWithWarnings(
     await tx.update(transactions).set(header)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoice.id)));
     await writeHeaderTags(tx, tenantId, invoice.id, invoice.companyId, input.tagIds, []);
+    if (claims.length > 0) {
+      const claimed = await billing.writeClaims(tx, tenantId, invoice.companyId, invoice.id, claims, userId);
+      await auditLog(tenantId, 'update', 'invoice', invoice.id, null, { billableClaimed: claimed }, userId, tx);
+    }
     return { invoice: { ...invoice, ...header }, warnings };
-  });
+  }));
 }
 
 export async function updateInvoice(tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
@@ -458,7 +614,7 @@ export async function updateInvoice(tenantId: string, invoiceId: string, input: 
 export async function updateInvoiceWithWarnings(
   tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string, companyId?: string,
 ) {
-  const warnings = await db.transaction(async (tx) => {
+  const warnings = await billing.mapBillableDbErrors(() => db.transaction(async (tx) => {
     await claimIdempotency(tx);
     const [existing] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)))
@@ -473,7 +629,34 @@ export async function updateInvoiceWithWarnings(
     ledger.assertNotStale(existing, input.expectedUpdatedAt, 'This invoice');
 
     const scope = companyId ?? existing.companyId ?? undefined;
-    const { company, customer, computed, journal } = await prepareInvoice(tx, tenantId, input, scope);
+
+    // Billable costs (U-128 rules 2-3, S2): every cost the invoice bills is
+    // re-sent (kept) or named in releaseBillableSourceLineIds (released);
+    // a PUT that just leaves one out (an older client) is 409
+    // BILLABLE_LINES_MISSING and nothing is unbilled.
+    const links = await activeLinksForInvoice(tx, tenantId, invoiceId);
+    const sent = new Set(input.lines.flatMap((l) => (l.billableSourceLineId ? [l.billableSourceLineId] : [])));
+    const release = new Set(input.releaseBillableSourceLineIds ?? []);
+    const both = [...release].filter((id) => sent.has(id));
+    if (both.length > 0) {
+      throw AppError.badRequest('A cost can’t be both on the invoice and released from it', 'VALIDATION_ERROR', { sourceLineIds: both });
+    }
+    const missing = links.filter((l) => !sent.has(l.sourceLineId) && !release.has(l.sourceLineId)).map((l) => l.sourceLineId);
+    if (missing.length > 0) {
+      throw AppError.conflict(
+        'This invoice bills costs this change leaves out. Send them again, or release them (releaseBillableSourceLineIds).',
+        'BILLABLE_LINES_MISSING', { sourceLineIds: missing },
+      );
+    }
+    const { company, customer, computed, journal, claims } = await prepareInvoice(tx, tenantId, input, scope, {
+      invoiceId, lockTx: tx, alsoLockTxnIds: links.map((l) => l.sourceTransactionId),
+    });
+    // The total can't drop below what was paid (U-128 S6).
+    const paid = new Decimal(existing.amountPaid || '0');
+    if (paid.greaterThan(0) && new Decimal(computed.total).lessThan(paid)) {
+      throw AppError.conflict('The invoice total would be less than what the customer already paid.',
+        'INVOICE_TOTAL_BELOW_PAID', { total: computed.total, amountPaid: paid.toFixed(2) });
+    }
 
     // Terms: the invoice's own when the edit sends none.
     const paymentTerms = input.paymentTerms ?? existing.paymentTerms ?? undefined;
@@ -533,8 +716,18 @@ export async function updateInvoiceWithWarnings(
     if (input.printLater !== undefined) {
       await formsPrint.setPrintLater(tx, tenantId, invoiceId, input.printLater, scope);
     }
+    // Released costs go back to unbilled; new ones are claimed; kept ones
+    // keep their link and markup account (U-128 rules 2-3).
+    const released = await releaseBilledCosts(tx, tenantId, invoiceId, 'removed', userId,
+      links.filter((l) => release.has(l.sourceLineId)).map((l) => l.sourceLineId));
+    const claimed = await billing.writeClaims(tx, tenantId, existing.companyId, invoiceId, claims, userId);
+    if (claimed.length > 0 || released.length > 0) {
+      await auditLog(tenantId, 'update', 'invoice', invoiceId, null, {
+        billableClaimed: claimed, billableReleased: released.map((r) => r.sourceLineId),
+      }, userId, tx);
+    }
     return warnings;
-  });
+  }));
   return { invoice: await getInvoice(tenantId, invoiceId, companyId), warnings };
 }
 
@@ -553,7 +746,9 @@ export async function getInvoice(tenantId: string, invoiceId: string, companyId?
       .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, invoiceId))),
     listSendHistory(db, tenantId, invoiceId),
   ]);
-  return { ...txn, tagIds: tagRows.map((r) => r.tagId), sendHistory };
+  // One entry per billed cost (U-128): the form shows one row with these figures.
+  const billableCosts = await billing.billableCostsForInvoice(db, tenantId, invoiceId, txn.lines);
+  return { ...txn, tagIds: tagRows.map((r) => r.tagId), sendHistory, billableCosts };
 }
 
 /**
@@ -701,8 +896,27 @@ export async function voidInvoice(
   return ledger.voidTransaction(tenantId, invoiceId, reason, userId, { ...opts, expectType: 'invoice' });
 }
 
+/**
+ * A copy of a billed cost's lines is a plain line with no claim (U-128 S4):
+ * the client would be billed again for the same cost, so the copy carries
+ * this warning.
+ */
+export function billableCopyWarnings(lines: ReadonlyArray<{ billableSourceLineId?: string | null }>) {
+  const ids = [...new Set(lines.flatMap((l) => (l.billableSourceLineId ? [l.billableSourceLineId] : [])))];
+  return ids.length === 0 ? [] : [{
+    code: 'BILLABLE_COPIED_AS_PLAIN',
+    message: 'Billable costs were copied as ordinary lines; the costs stay billed on the original invoice.',
+    sourceLineIds: ids,
+  }];
+}
+
 export async function duplicateInvoice(tenantId: string, invoiceId: string, userId?: string, companyId?: string) {
+  return (await duplicateInvoiceWithWarnings(tenantId, invoiceId, userId, companyId)).invoice;
+}
+
+export async function duplicateInvoiceWithWarnings(tenantId: string, invoiceId: string, userId?: string, companyId?: string) {
   const original = await getInvoice(tenantId, invoiceId, companyId);
+  const warnings = billableCopyWarnings(original.lines);
 
   const lines = original.lines.map((line) => ({
     accountId: line.accountId,
@@ -717,10 +931,11 @@ export async function duplicateInvoice(tenantId: string, invoiceId: string, user
     taxAmount: line.taxAmount || undefined,
     serviceDate: line.serviceDate || undefined,
     discountPercent: line.discountPercent ?? null,
-    unitPriceSource: line.unitPriceSource ?? null,
+    // A billed cost's copy is a plain line: no lineRole, no billableSourceLineId (U-128 S4).
+    unitPriceSource: line.unitPriceSource === 'billable_cost' ? 'input' : line.unitPriceSource ?? null,
   }));
 
-  return ledger.postTransaction(tenantId, {
+  const invoice = await ledger.postTransaction(tenantId, {
     txnType: 'invoice',
     txnDate: new Date().toISOString().split('T')[0]!,
     contactId: original.contactId || undefined,
@@ -734,4 +949,5 @@ export async function duplicateInvoice(tenantId: string, invoiceId: string, user
     invoiceStatus: 'draft',
     lines,
   }, userId, companyId);
+  return { invoice, warnings };
 }

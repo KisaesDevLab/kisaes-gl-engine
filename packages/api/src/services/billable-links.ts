@@ -17,7 +17,7 @@
 
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { DbOrTx, Tx } from '../db/index.js';
-import { billableCostLinks, journalLines, transactions } from '../db/schema/index.js';
+import { accounts, billableCostLinks, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 
@@ -177,4 +177,25 @@ export async function checkBillableInvariant(executor: DbOrTx, tenantId: string)
     GROUP BY source_line_id HAVING count(*) > 1`);
   for (const r of dup.rows as Array<{ source_line_id: string }>) problems.push(`two active links: ${r.source_line_id}`);
   return problems;
+}
+
+/**
+ * The company's billable-cost markup account (U-128): an active income
+ * account (revenue or other_revenue) of this tenant, tenant-wide or of
+ * `companyId`. Otherwise 400 MARKUP_ACCOUNT_INVALID.
+ */
+export async function assertMarkupAccount(
+  executor: DbOrTx, tenantId: string, companyId: string | null | undefined, accountId: string,
+): Promise<void> {
+  const [row] = await executor.select({
+    id: accounts.id, companyId: accounts.companyId, accountType: accounts.accountType, isActive: accounts.isActive,
+  }).from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId))).limit(1);
+  const invalid = (message: string) => AppError.badRequest(message, 'MARKUP_ACCOUNT_INVALID', { accountId });
+  if (!row || (companyId && row.companyId !== null && row.companyId !== companyId)) {
+    throw invalid('The markup account is not an account of this company.');
+  }
+  if (row.isActive === false) throw invalid('The markup account is inactive.');
+  if (row.accountType !== 'revenue' && row.accountType !== 'other_revenue') {
+    throw invalid('The markup account must be an income account.');
+  }
 }
