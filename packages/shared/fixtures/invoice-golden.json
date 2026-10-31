@@ -1,0 +1,179 @@
+{
+  "description": "Sales-form money rule (U-122, sales-cents-v1) shared by the engine (packages/api/src/utils/sales-compute.ts: invoices and cash sales; credit memo lines use the line rule) and the ClientLedger client (fixtures/invoices/golden.json, byte-identical). Synthetic. Every amount is a decimal string; rates are fractions (\"0.081\" = 8.1 %).",
+  "rules": {
+    "lineAmount": "round2(quantity x unitPrice), half away from zero (decimal.js ROUND_HALF_UP, precision 40). quantity and unitPrice: decimal strings with at most 4 places; either may be negative.",
+    "taxRate": "A line's taxRate when sent, else the request company's default rate; rounded half away from zero to the 4 places journal_lines.tax_rate stores; 0 <= rate < 1. A line that is not taxable has rate 0.",
+    "tax": "Once per document and rate: round2(taxable base x rate), half away from zero. The taxable base is the SIGNED sum of the taxable line amounts at that rate, so a taxable negative line (a discount or a return) reduces it (Q-P20t). Different rates on one document are separate groups whose taxes add up.",
+    "allocation": "Mixed-sign and discount rule: the group's tax is split over its taxable lines by largest remainder. Each line's exact share is amount x rate. In cents, every share is floored toward minus infinity (so -72.5 cents floors to -73), the remainders (each in [0, 1)) are kept, and the cents still missing to reach the rounded tax (a whole number from 0 to the line count) go one each to the lines with the largest remainder, the earlier line first on a tie. Line taxes therefore always sum exactly to the document tax, whatever the signs. Lines that are not taxable get 0.00.",
+    "total": "subtotal (sum of line amounts) + tax total. Every figure is exact at 2 places; the ledger stores them at 4 (\"154.7200\")."
+  },
+  "cases": [
+    {
+      "name": "mockup invoice (AC1): 3,080.15 + 154.72 = 3,234.87",
+      "defaultTaxRate": "0.081",
+      "lines": [
+        { "quantity": "18", "unitPrice": "65.00", "isTaxable": false },
+        { "quantity": "24", "unitPrice": "32.50", "isTaxable": true },
+        { "quantity": "6", "unitPrice": "48.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "842.15", "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "1170.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "amount": "780.00", "taxRate": "0.0810", "taxAmount": "63.18" },
+          { "amount": "288.00", "taxRate": "0.0810", "taxAmount": "23.33" },
+          { "amount": "842.15", "taxRate": "0.0810", "taxAmount": "68.21" }
+        ],
+        "subtotal": "3080.15", "taxableBase": "1910.15", "taxTotal": "154.72", "total": "3234.87"
+      }
+    },
+    {
+      "name": "three 1.05 lines at 8.1 % tax 0.26 once (per-line rounding would give 0.27)",
+      "defaultTaxRate": "0.081",
+      "lines": [
+        { "quantity": "1", "unitPrice": "1.05", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "1.05", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "1.05", "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "1.05", "taxRate": "0.0810", "taxAmount": "0.09" },
+          { "amount": "1.05", "taxRate": "0.0810", "taxAmount": "0.09" },
+          { "amount": "1.05", "taxRate": "0.0810", "taxAmount": "0.08" }
+        ],
+        "subtotal": "3.15", "taxableBase": "3.15", "taxTotal": "0.26", "total": "3.41"
+      }
+    },
+    {
+      "name": "10 % of 0.25 is 0.03 (half away from zero, not bankers)",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "quantity": "1", "unitPrice": "0.25", "isTaxable": true, "taxRate": "0.10" }
+      ],
+      "expect": {
+        "lines": [ { "amount": "0.25", "taxRate": "0.1000", "taxAmount": "0.03" } ],
+        "subtotal": "0.25", "taxableBase": "0.25", "taxTotal": "0.03", "total": "0.28"
+      }
+    },
+    {
+      "name": "mixed signs: a taxable negative line floors toward minus infinity and the leftover cents go to the largest remainders",
+      "defaultTaxRate": "0.0725",
+      "lines": [
+        { "quantity": "1", "unitPrice": "33.33", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "33.33", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "-10.00", "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "33.33", "taxRate": "0.0725", "taxAmount": "2.42" },
+          { "amount": "33.33", "taxRate": "0.0725", "taxAmount": "2.42" },
+          { "amount": "-10.00", "taxRate": "0.0725", "taxAmount": "-0.73" }
+        ],
+        "subtotal": "56.66", "taxableBase": "56.66", "taxTotal": "4.11", "total": "60.77"
+      }
+    },
+    {
+      "name": "taxable discount line reduces the base; a non-taxable line stays out of it",
+      "defaultTaxRate": "0.0825",
+      "lines": [
+        { "quantity": "1", "unitPrice": "100.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "50.00", "isTaxable": false },
+        { "quantity": "1", "unitPrice": "-15.00", "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "100.00", "taxRate": "0.0825", "taxAmount": "8.25" },
+          { "amount": "50.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "amount": "-15.00", "taxRate": "0.0825", "taxAmount": "-1.24" }
+        ],
+        "subtotal": "135.00", "taxableBase": "85.00", "taxTotal": "7.01", "total": "142.01"
+      }
+    },
+    {
+      "name": "equal remainders: the earlier lines take the leftover cents",
+      "defaultTaxRate": "0.05",
+      "lines": [
+        { "quantity": "1", "unitPrice": "0.10", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "0.10", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "0.10", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "0.10", "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "0.10", "taxRate": "0.0500", "taxAmount": "0.01" },
+          { "amount": "0.10", "taxRate": "0.0500", "taxAmount": "0.01" },
+          { "amount": "0.10", "taxRate": "0.0500", "taxAmount": "0.00" },
+          { "amount": "0.10", "taxRate": "0.0500", "taxAmount": "0.00" }
+        ],
+        "subtotal": "0.40", "taxableBase": "0.40", "taxTotal": "0.02", "total": "0.42"
+      }
+    },
+    {
+      "name": "two rates on one document are taxed as two groups",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "quantity": "1", "unitPrice": "10.01", "isTaxable": true, "taxRate": "0.0825" },
+        { "quantity": "1", "unitPrice": "10.01", "isTaxable": true, "taxRate": "0.06" }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "10.01", "taxRate": "0.0825", "taxAmount": "0.83" },
+          { "amount": "10.01", "taxRate": "0.0600", "taxAmount": "0.60" }
+        ],
+        "subtotal": "20.02", "taxableBase": "20.02", "taxTotal": "1.43", "total": "21.45"
+      }
+    },
+    {
+      "name": "line amounts round half away from zero to the cent",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "quantity": "3", "unitPrice": "0.335", "isTaxable": false },
+        { "quantity": "2.5", "unitPrice": "19.99", "isTaxable": false },
+        { "quantity": "-1", "unitPrice": "0.125", "isTaxable": false },
+        { "quantity": "1.5", "unitPrice": "0.3333", "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "1.01", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "amount": "49.98", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "amount": "-0.13", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "amount": "0.50", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "51.36", "taxableBase": "0.00", "taxTotal": "0.00", "total": "51.36"
+      }
+    },
+    {
+      "name": "a rate sent as a float artifact is the 4-place rate stored",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "quantity": "1", "unitPrice": "100.00", "isTaxable": true, "taxRate": "0.011000000000000001" }
+      ],
+      "expect": {
+        "lines": [ { "amount": "100.00", "taxRate": "0.0110", "taxAmount": "1.10" } ],
+        "subtotal": "100.00", "taxableBase": "100.00", "taxTotal": "1.10", "total": "101.10"
+      }
+    },
+    {
+      "name": "taxable with no rate of its own takes the company default; rate 0 taxes nothing",
+      "defaultTaxRate": "0.0825",
+      "lines": [
+        { "quantity": "1", "unitPrice": "100.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "40.00", "isTaxable": true, "taxRate": "0" }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "100.00", "taxRate": "0.0825", "taxAmount": "8.25" },
+          { "amount": "40.00", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "140.00", "taxableBase": "140.00", "taxTotal": "8.25", "total": "148.25"
+      }
+    }
+  ],
+  "errors": [
+    { "name": "quantity with 5 decimals", "lines": [ { "quantity": "1.23456", "unitPrice": "1.00", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
+    { "name": "price with 5 decimals", "lines": [ { "quantity": "1", "unitPrice": "1.00001", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
+    { "name": "price is not a number", "lines": [ { "quantity": "1", "unitPrice": "12abc", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
+    { "name": "rate of 100 % or more", "lines": [ { "quantity": "1", "unitPrice": "1.00", "isTaxable": true, "taxRate": "1" } ], "error": "VALIDATION_ERROR" },
+    { "name": "negative rate", "lines": [ { "quantity": "1", "unitPrice": "1.00", "isTaxable": true, "taxRate": "-0.05" } ], "error": "VALIDATION_ERROR" }
+  ]
+}
