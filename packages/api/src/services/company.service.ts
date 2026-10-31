@@ -19,11 +19,13 @@ import { assertMarkupAccount } from './billable-links.js';
  * A company row as it leaves the service layer (responses, audit images):
  * without the closing-date password hash (U-15) and without the intake
  * folders (U-93), whose paths are read only through
- * GET /company/intake-settings and never audited.
+ * GET /company/intake-settings and never audited, and without the stored
+ * SMTP password, which only the internal send path reads
+ * (getSmtpTransportSettings).
  */
-export function publicCompanyRow<T extends { closingPasswordHash?: unknown; intakeSettings?: unknown }>(row: T): Omit<T, 'closingPasswordHash' | 'intakeSettings'> {
-  const { intakeSettings: _intake, ...rest } = withoutClosingPasswordHash(row);
-  return rest as Omit<T, 'closingPasswordHash' | 'intakeSettings'>;
+export function publicCompanyRow<T extends { closingPasswordHash?: unknown; intakeSettings?: unknown; smtpPass?: unknown }>(row: T): Omit<T, 'closingPasswordHash' | 'intakeSettings' | 'smtpPass'> {
+  const { intakeSettings: _intake, smtpPass: _smtpPass, ...rest } = withoutClosingPasswordHash(row);
+  return rest as Omit<T, 'closingPasswordHash' | 'intakeSettings' | 'smtpPass'>;
 }
 
 // List all companies for a tenant, filtered by accountant exclusions if applicable
@@ -239,21 +241,53 @@ export function assertSmtpPasswordNotStoredInDesktop(smtpPass: string | null | u
   );
 }
 
-export async function getSmtpSettings(tenantId: string, companyId?: string) {
-  const company = await getCompany(tenantId, companyId);
+/**
+ * INTERNAL — the company's SMTP settings for building a transport,
+ * including the stored password. Only the send path (email.service) calls
+ * this; no route returns it and its result is never logged. In desktop mode
+ * the stored column is always empty and createMailTransport substitutes the
+ * session password (U-13).
+ */
+export async function getSmtpTransportSettings(tenantId: string, companyId?: string) {
+  const [company] = await db.select({
+    smtpHost: companies.smtpHost,
+    smtpPort: companies.smtpPort,
+    smtpUser: companies.smtpUser,
+    smtpPass: companies.smtpPass,
+    smtpFrom: companies.smtpFrom,
+    smtpFromName: companies.smtpFromName,
+    email: companies.email,
+  }).from(companies)
+    .where(companyId ? and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)) : eq(companies.tenantId, tenantId))
+    .limit(1);
+  if (!company) throw AppError.notFound('Company not found');
   return {
     smtpHost: company.smtpHost || '',
     smtpPort: company.smtpPort || 587,
     smtpUser: company.smtpUser || '',
-    // Never return the stored password — it's encryption-at-rest only.
-    // The frontend treats an empty value as "leave alone" on save. A
-    // `passwordConfigured` boolean lets the UI render a placeholder.
-    smtpPass: '',
-    // Desktop (U-13): the password is a per-session secret, never a column.
-    passwordConfigured: isDesktop() ? hasSessionSecret('smtp.password') : !!company.smtpPass,
+    smtpPass: company.smtpPass || '',
     smtpFrom: company.smtpFrom || company.email || '',
     smtpFromName: company.smtpFromName || '',
     configured: !!company.smtpHost,
+  };
+}
+
+/** The company's SMTP settings as the settings screen reads them: the password is never returned. */
+export async function getSmtpSettings(tenantId: string, companyId?: string) {
+  const { smtpPass, ...smtp } = await getSmtpTransportSettings(tenantId, companyId);
+  return {
+    smtpHost: smtp.smtpHost,
+    smtpPort: smtp.smtpPort,
+    smtpUser: smtp.smtpUser,
+    // Never return the stored password. The frontend treats an empty value
+    // as "leave alone" on save. A `passwordConfigured` boolean lets the UI
+    // render a placeholder.
+    smtpPass: '',
+    // Desktop (U-13): the password is a per-session secret, never a column.
+    passwordConfigured: isDesktop() ? hasSessionSecret('smtp.password') : !!smtpPass,
+    smtpFrom: smtp.smtpFrom,
+    smtpFromName: smtp.smtpFromName,
+    configured: smtp.configured,
   };
 }
 
@@ -308,8 +342,7 @@ export async function updateSmtpSettings(
 
   // No secret leaves the service layer: neither the closing-date password
   // hash (U-15) nor the stored SMTP password.
-  const { smtpPass: _smtpPass, ...safe } = publicCompanyRow(updated);
-  return safe;
+  return publicCompanyRow(updated);
 }
 
 export async function createCompanyForTenant(tenantId: string, businessName: string, entityType?: string) {
