@@ -331,6 +331,14 @@ export async function postLegacyClone(
     const revenueLines = recurringInvoiceLines(template.lines, arAccount?.id, taxAccount?.id);
 
     if (revenueLines.length === 0) {
+      // A schedule from before Q-P20ah whose invoice only billed costs: a
+      // copy never bills a cost again, so there is nothing to post.
+      if (template.lines.some(isBillableLine)) {
+        throw AppError.badRequest(
+          'This recurring invoice only bills costs, and a cost is billed once. Pause this schedule, or make a new one from an invoice without billable costs.',
+          'RECURRING_HAS_BILLABLE_COSTS',
+        );
+      }
       throw AppError.internal('Recurring invoice template has no revenue lines');
     }
 

@@ -730,6 +730,12 @@ describe('copies are plain lines (S4)', () => {
     expect(occTxn!.subtotal).toBe('90.0000');
     expect(await activeLinks()).toHaveLength(1);
     expect(await checkBillableInvariant(db, c.tenantId)).toEqual([]);
+
+    // An old schedule whose invoice only bills costs: a clean 400, not a 500.
+    const { ids: ids2 } = await postCosts([{ amount: '12.00' }]);
+    const onlyCosts = (await postInvoice([billLine(ids2[0]!)])).json.invoice;
+    await expect(postLegacyClone(c.tenantId, { id: crypto.randomUUID(), templateTransactionId: onlyCosts.id, nextOccurrence: '2026-11-10' }))
+      .rejects.toMatchObject({ statusCode: 400, code: 'RECURRING_HAS_BILLABLE_COSTS' });
   });
 
   it('recurring_invoice_keeps_discounts: a copy of a discounted invoice has the same total', async () => {
