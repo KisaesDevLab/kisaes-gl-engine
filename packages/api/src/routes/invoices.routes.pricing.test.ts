@@ -372,6 +372,14 @@ describe('invoice-pricing-v1 (U-129)', () => {
     const ok = await request('PUT', `/api/v1/invoices/${inv.id}`, c.token, { ...body, memo: 'memo fix', expectedUpdatedAt: inv.updatedAt });
     expect(ok.status, JSON.stringify(ok.json)).toBe(200);
     expect(ok.json.invoice.total).toBe(inv.total);
+    // A client that removed the discount on purpose says so (invoice-pricing-lines-v1).
+    expect(DESKTOP_CAPABILITIES).toContain('invoice-pricing-lines-v1');
+    const removed = await request('PUT', `/api/v1/invoices/${inv.id}`, c.token, {
+      contactId: c.customer, txnDate: '2026-11-03', expectedUpdatedAt: ok.json.invoice.updatedAt, pricingLinesComplete: true,
+      lines: [{ accountId: c.revenue, quantity: '1', unitPrice: '1068.00', isTaxable: true }],
+    });
+    expect(removed.status, JSON.stringify(removed.json)).toBe(200);
+    expect(removed.json.invoice.total).toBe('1154.5100'); // 1,068.00 + 8.1 % (86.51), no discount
     // An invoice without discount or subtotal lines edits as before.
     const plain = await request('POST', '/api/v1/invoices', c.token, { ...body, lines: [body.lines[0]] });
     const p2 = await request('PUT', `/api/v1/invoices/${plain.json.invoice.id}`, c.token, {

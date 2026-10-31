@@ -316,6 +316,12 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'invoice-pricing-v1',
   /**
+   * PUT /invoices/:id pricingLinesComplete: true (U-129 review): the lines sent are every line the invoice keeps, so a discount or
+   * subtotal left out was removed on purpose. Without it, a PUT that sends no itemId on an invoice with discount or subtotal lines is
+   * 409 INVOICE_LINES_MISSING and nothing changes.
+   */
+  'invoice-pricing-lines-v1',
+  /**
    * Invoice email and the Outbox (U-127): POST /invoices/:id/email {to[], cc[], bcc[], subject, body, pdfFileName, pdfBase64
    * (application/pdf, <= 10 MB decoded), outboxId?} sends through the company SMTP (desktop: the session password,
    * smtp-session-v1) and, only on success, records an "email" send event (to + cc + bcc) in the same commit; 200 {invoice}.

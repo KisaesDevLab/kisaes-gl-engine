@@ -249,6 +249,12 @@ export const createInvoiceSchema = z.object({
   // the invoice bills must be re-sent (by billableSourceLineId) or named
   // here, else 409 BILLABLE_LINES_MISSING.
   releaseBillableSourceLineIds: z.array(z.string().uuid()).max(MAX_LINES).optional(),
+  // PUT only (invoice-pricing-lines-v1, U-129): true says the lines sent are
+  // every line the invoice keeps, so a discount or subtotal line left out was
+  // removed on purpose. Without it, a PUT that sends no itemId on an invoice
+  // with discount or subtotal lines is 409 INVOICE_LINES_MISSING (a client
+  // that doesn't know items would drop them).
+  pricingLinesComplete: z.boolean().optional(),
 });
 
 // POST /invoices/preview (U-129, invoice-pricing-v1): the create body, plus

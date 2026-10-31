@@ -62,6 +62,8 @@ const pricingRules = 'Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-le
   + '(input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. '
   + 'A PUT on an invoice with discount or subtotal lines that sends no itemId on any line is 409 INVOICE_LINES_MISSING and nothing changes (a client that does not '
   + 'know items would drop them): send every non-A/R, non-tax line back, a discount as {itemId, discountPercent} or {itemId, unitPrice}, a subtotal as {itemId}. '
+  + 'pricingLinesComplete: true (PUT, invoice-pricing-lines-v1) says the lines sent are every line the invoice keeps, so a discount or subtotal left out was '
+  + 'removed on purpose and the check is skipped. '
   + 'Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.';
 
 const billableRules = 'Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), '

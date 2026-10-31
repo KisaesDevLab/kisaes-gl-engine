@@ -624,7 +624,9 @@ export async function createInvoiceWithWarnings(
  * the stored invoice has discount or subtotal lines and the PUT sends no
  * itemId on any line, the edit would silently drop them (and raise the
  * total), so it is 409 INVOICE_LINES_MISSING and nothing changes. A client
- * that sends its item lines back (itemId) may remove a discount as usual.
+ * that sends its item lines back (itemId) may remove a discount as usual;
+ * pricingLinesComplete: true (invoice-pricing-lines-v1) skips the check: the
+ * client says the lines sent are all it keeps.
  */
 async function assertPricingLinesSent(
   tx: Tx, tenantId: string, invoiceId: string, lines: CreateInvoiceInput['lines'],
@@ -696,7 +698,7 @@ export async function updateInvoiceWithWarnings(
         'BILLABLE_LINES_MISSING', { sourceLineIds: missing },
       );
     }
-    await assertPricingLinesSent(tx, tenantId, invoiceId, input.lines);
+    if (input.pricingLinesComplete !== true) await assertPricingLinesSent(tx, tenantId, invoiceId, input.lines);
     const { company, customer, computed, journal, claims } = await prepareInvoice(tx, tenantId, input, scope, {
       invoiceId, lockTx: tx, alsoLockTxnIds: links.map((l) => l.sourceTransactionId),
     });

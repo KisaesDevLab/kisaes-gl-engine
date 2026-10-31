@@ -389,6 +389,8 @@ export interface CreateInvoiceInput {
   layoutId?: string | null;
   /** PUT only (U-128): billed costs this edit releases. */
   releaseBillableSourceLineIds?: string[];
+  /** PUT only (invoice-pricing-lines-v1): the lines sent are every line the invoice keeps. */
+  pricingLinesComplete?: boolean;
 }
 
 export interface RecordPaymentInput {
