@@ -241,6 +241,10 @@ export const createInvoiceSchema = z.object({
   warnOnly: z.boolean().optional(),
   // Waiting to be printed (U-113). Create: default false; edit: absent keeps it.
   printLater: z.boolean().optional(),
+  // The invoice layout it prints with (U-130, invoice-layouts-v1): a layout
+  // of the company (GET /company/invoice-layouts); null = the company
+  // default. Create: default null; edit: absent keeps it.
+  layoutId: z.string().uuid().nullable().optional(),
   // PUT only (U-128): billed costs this edit takes off the invoice. A cost
   // the invoice bills must be re-sent (by billableSourceLineId) or named
   // here, else 409 BILLABLE_LINES_MISSING.

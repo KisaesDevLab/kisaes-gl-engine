@@ -475,6 +475,9 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'import_sessions.company_id': 'tenant-ref:companies',
   'import_sessions.created_by': 'identity',
   'invoice_templates.company_id': 'tenant-ref:companies',
+  // The invoice layout an invoice prints with (U-130, migration 0246; NULL =
+  // the company default). invoice_templates.line_columns holds no ids.
+  'transactions.invoice_layout_id': 'tenant-ref:invoice_templates',
   'items.income_account_id': 'tenant-ref:accounts',
   'items.company_id': 'tenant-ref:companies',
   'je_template_lines.template_id': 'tenant-ref:je_templates',

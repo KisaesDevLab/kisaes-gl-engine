@@ -340,4 +340,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * MARKUP_ACCOUNT_REQUIRED / INVALID. Golden: invoice-golden.json billableCases. Migration 0245.
    */
   'billable-costs-v1',
+  /**
+   * Invoice print layouts (U-130, Q-P20ac): GET/POST /company/invoice-layouts, GET/PUT/DELETE /company/invoice-layouts/:id,
+   * POST /company/invoice-layouts/:id/default. A layout {id, name, isDefault, accentColor, logoUrl, showShipTo, showPoNumber,
+   * showTerms, footerText, footerOverrides, columns {item, description, serviceDate, quantity, rate}, resolvedFooters, invoiceCount,
+   * createdAt, updatedAt}; exactly one default per company (the first is "Standard"); names unique per company (409
+   * INVOICE_LAYOUT_NAME_IN_USE); PUT expectedUpdatedAt (409 STALE); DELETE refuses the default (409 INVOICE_LAYOUT_IS_DEFAULT) and a
+   * layout invoices use (409 INVOICE_LAYOUT_IN_USE {invoiceCount}) unless ?reassignToDefault=true ({reassignedCount}). GET/PUT
+   * /company/invoice-template read and write the default layout. Invoices: layoutId (null = the company default; edit: absent keeps;
+   * 400 INVOICE_LAYOUT_NOT_FOUND) on POST / PUT / preview / GET; GET /invoices/:id/pdf prints with it. Migration 0246.
+   */
+  'invoice-layouts-v1',
 ];

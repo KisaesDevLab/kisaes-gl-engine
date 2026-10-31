@@ -379,6 +379,109 @@ companyRouter.put('/invoice-template', requireCompanySettingsWrite, validate(inv
   res.json({ template, resolvedFooters: invoiceTemplateService.resolvedFooters(template) });
 });
 
+// ── Invoice layouts (U-130, invoice-layouts-v1) ──
+// Several named print layouts per company, one the default. The
+// /invoice-template routes above read and write the default layout.
+const layoutColumnsSchema = z.object({
+  item: z.boolean().optional(),
+  description: z.boolean().optional(),
+  serviceDate: z.boolean().optional(),
+  quantity: z.boolean().optional(),
+  rate: z.boolean().optional(),
+}).strict();
+const layoutFieldsSchema = invoiceTemplateUpdateSchema.omit({ name: true }).extend({
+  columns: layoutColumnsSchema.optional()
+    .describe('line columns the form prints (amount always prints); sent keys are laid over the stored ones'),
+});
+const layoutNameSchema = z.string().trim().min(1).max(100);
+const createLayoutSchema = layoutFieldsSchema.extend({ name: layoutNameSchema }).strict();
+const updateLayoutSchema = layoutFieldsSchema.extend({
+  name: layoutNameSchema.optional(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional()
+    .describe('the layout updatedAt as last read; a mismatch is 409 STALE (details.updatedAt) and nothing changes'),
+}).strict();
+const layoutIdParams = z.object({ id: z.string().uuid() });
+const deleteLayoutQuery = z.object({ reassignToDefault: z.enum(['true', 'false']).optional() });
+const layoutDoc = z.object({
+  id: z.string().uuid(), name: z.string(), isDefault: z.boolean(), accentColor: z.string(), logoUrl: z.string().nullable(),
+  showShipTo: z.boolean(), showPoNumber: z.boolean(), showTerms: z.boolean(), footerText: z.string().nullable(),
+  footerOverrides: z.record(z.string(), z.string().nullable()),
+  columns: z.object({ item: z.boolean(), description: z.boolean(), serviceDate: z.boolean(), quantity: z.boolean(), rate: z.boolean() }),
+  resolvedFooters: z.object({ invoice: z.string(), cash_sale: z.string(), credit_memo: z.string(), statement: z.string() }),
+  invoiceCount: z.number().int().describe('invoices (void ones too) that print with this layout'),
+  createdAt: z.string(), updatedAt: z.string(),
+});
+const layoutErrors = '404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).';
+
+function validLayoutId(id: string | undefined): string {
+  if (!id || !layoutIdParams.safeParse({ id }).success) throw new AppError(404, 'Invoice layout not found', 'INVOICE_LAYOUT_NOT_FOUND');
+  return id;
+}
+
+companyRouter.get('/invoice-layouts', describe({
+  summary: "The company's invoice layouts, default first (invoice-layouts-v1)",
+  description: 'Response {data: [layout]}. A company without layouts gets its default one ("Standard", a copy of the template it printed with) on first read.',
+  response: z.object({ data: z.array(layoutDoc) }),
+}), async (req, res) => {
+  res.json({ data: await invoiceTemplateService.listLayouts(req.tenantId, req.companyId, req.userId) });
+});
+
+companyRouter.post('/invoice-layouts', requireCompanySettingsWrite, validate(createLayoutSchema), describe({
+  summary: 'Create an invoice layout (invoice-layouts-v1)',
+  description: 'Response 201 {layout}; never the default. Omitted options copy the default layout. 409 INVOICE_LAYOUT_NAME_IN_USE (names are unique in the company, any case).',
+  body: createLayoutSchema,
+  response: z.object({ layout: layoutDoc }),
+}), async (req, res) => {
+  const layout = await invoiceTemplateService.createLayout(req.tenantId, req.companyId, req.body, req.userId);
+  res.status(201).json({ layout });
+});
+
+companyRouter.get('/invoice-layouts/:id', describe({
+  summary: 'Get an invoice layout (invoice-layouts-v1)',
+  description: `Response {layout}. ${layoutErrors}`,
+  params: layoutIdParams,
+  response: z.object({ layout: layoutDoc }),
+}), async (req, res) => {
+  res.json({ layout: await invoiceTemplateService.getLayout(req.tenantId, req.companyId, validLayoutId(req.params['id'])) });
+});
+
+companyRouter.put('/invoice-layouts/:id', requireCompanySettingsWrite, validate(updateLayoutSchema), describe({
+  summary: 'Edit an invoice layout (invoice-layouts-v1)',
+  description: 'Response {layout}. Omitted fields keep their values; a footerOverrides map replaces the stored one. '
+    + `409 STALE, 409 INVOICE_LAYOUT_NAME_IN_USE. ${layoutErrors}`,
+  body: updateLayoutSchema,
+  params: layoutIdParams,
+  response: z.object({ layout: layoutDoc }),
+}), async (req, res) => {
+  const layout = await invoiceTemplateService.updateLayout(req.tenantId, req.companyId, validLayoutId(req.params['id']), req.body, req.userId);
+  res.json({ layout });
+});
+
+companyRouter.post('/invoice-layouts/:id/default', requireCompanySettingsWrite, describe({
+  summary: 'Make an invoice layout the company default (invoice-layouts-v1)',
+  description: `Response {layout}. Invoices without their own layout print with it; GET/PUT /company/invoice-template read and write it. ${layoutErrors}`,
+  params: layoutIdParams,
+  response: z.object({ layout: layoutDoc }),
+}), async (req, res) => {
+  res.json({ layout: await invoiceTemplateService.setDefaultLayout(req.tenantId, req.companyId, validLayoutId(req.params['id']), req.userId) });
+});
+
+companyRouter.delete('/invoice-layouts/:id', requireCompanySettingsWrite, describe({
+  summary: 'Delete an invoice layout (invoice-layouts-v1)',
+  description: 'Response 200 {reassignedCount}. 409 INVOICE_LAYOUT_IS_DEFAULT (make another the default first). A layout invoices print with (void ones too) '
+    + 'is 409 INVOICE_LAYOUT_IN_USE (details.invoiceCount) unless ?reassignToDefault=true: those invoices then print with the default layout '
+    + `(layoutId null; their updatedAt is kept). ${layoutErrors}`,
+  params: layoutIdParams,
+  query: deleteLayoutQuery,
+  response: z.object({ reassignedCount: z.number().int() }),
+}), async (req, res) => {
+  const q = deleteLayoutQuery.safeParse(req.query);
+  if (!q.success) throw AppError.badRequest('reassignToDefault must be true or false', 'VALIDATION_ERROR');
+  const result = await invoiceTemplateService.deleteLayout(req.tenantId, req.companyId, validLayoutId(req.params['id']),
+    { reassignToDefault: q.data.reassignToDefault === 'true' }, req.userId);
+  res.json(result);
+});
+
 companyRouter.get('/smtp', async (req, res) => {
   const smtp = await companyService.getSmtpSettings(req.tenantId, req.companyId);
   res.json(smtp);

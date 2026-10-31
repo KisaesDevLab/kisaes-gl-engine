@@ -8,7 +8,8 @@ import { eq, and } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
-import { companies, contacts, transactions, journalLines, accounts } from '../db/schema/index.js';
+import { companies, contacts, transactions, journalLines, accounts, items } from '../db/schema/index.js';
+import type { InvoiceLayoutColumns } from '../db/schema/templates.js';
 import { AppError } from '../utils/errors.js';
 import * as invoiceTemplateService from './invoice-template.service.js';
 
@@ -55,7 +56,12 @@ interface InvoicePdfData {
     /** U-129: a percent discount prints its percent; a subtotal prints no quantity or rate. */
     kind?: 'line' | 'discount_percent' | 'subtotal';
     discountPercent?: string | null;
+    /** U-130: printed when the layout shows those columns. */
+    serviceDate?: string | null;
+    itemName?: string | null;
   }>;
+  /** The line columns the invoice's layout prints (U-130); the amount always prints. */
+  columns: InvoiceLayoutColumns;
   accentColor: string;
   footerText: string;
   showTerms: boolean;
@@ -77,7 +83,18 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
   // Branding comes from the tenant's default invoice template (Settings →
   // Invoice Template). Falls back to the built-in defaults when none is set.
   // U-111: the invoice's company template (legacy tenant-wide fallback).
-  const template = await invoiceTemplateService.getDefault(tenantId, txn.companyId ?? undefined);
+  // U-130: the invoice's own layout (layoutId), else the company default.
+  const template = await invoiceTemplateService.layoutForInvoice(tenantId, txn);
+  const columns = invoiceTemplateService.layoutColumns(template);
+  const itemNames = new Map<string, string>();
+  const itemName = async (itemId: string | null) => {
+    if (!columns.item || !itemId) return null;
+    if (!itemNames.has(itemId)) {
+      const it = await db.query.items.findFirst({ where: and(eq(items.tenantId, tenantId), eq(items.id, itemId)) });
+      itemNames.set(itemId, it?.name ?? '');
+    }
+    return itemNames.get(itemId) || null;
+  };
 
   let customer = { displayName: 'Customer', billingLine1: null as string | null, billingCity: null as string | null, billingState: null as string | null, billingZip: null as string | null, email: null as string | null };
   if (txn.contactId) {
@@ -138,6 +155,8 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
         accountName: account?.name || 'Revenue',
         kind: 'line',
         discountPercent: null,
+        serviceDate: line.serviceDate,
+        itemName: await itemName(line.itemId),
       };
       billableRows.set(line.billableSourceLineId, { row, qty });
       revenueLines.push(row);
@@ -159,6 +178,8 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
       accountName: account?.name || (isSubtotal ? 'Subtotal' : 'Revenue'),
       kind: isSubtotal ? 'subtotal' : line.discountPercent !== null ? 'discount_percent' : 'line',
       discountPercent: line.discountPercent,
+      serviceDate: isSubtotal ? null : line.serviceDate,
+      itemName: isSubtotal ? null : await itemName(line.itemId),
     });
   }
 
@@ -190,6 +211,7 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
       poNumber: txn.poNumber,
     },
     lines: revenueLines,
+    columns,
     accentColor: template?.accentColor || '#2563EB',
     footerText: invoiceTemplateService.resolveFooter(template, txn.txnType === 'cash_sale' ? 'cash_sale' : 'invoice'),
     showTerms: template?.showTerms ?? true,
@@ -208,14 +230,29 @@ function esc(text: string | null | undefined): string {
 }
 
 function renderInvoiceHtml(data: InvoicePdfData): string {
-  const { company: co, customer: cu, invoice: inv, lines, accentColor, footerText, showTerms, showPoNumber, documentType } = data;
+  const { company: co, customer: cu, invoice: inv, lines, columns, accentColor, footerText, showTerms, showPoNumber, documentType } = data;
 
+  // The line columns of the invoice's layout (U-130). Amount always prints.
+  // With neither item nor description shown, the description column stays
+  // so every line is named; a line with no description names its account.
+  const cell = 'padding:8px;border-bottom:1px solid #e5e7eb';
+  const showDescription = columns.description || !columns.item;
+  const headers = [
+    columns.serviceDate ? '<th style="width:80px">Service Date</th>' : '',
+    columns.item ? '<th>Item</th>' : '',
+    showDescription ? '<th>Description</th>' : '',
+    columns.quantity ? '<th style="text-align:center;width:60px">Qty</th>' : '',
+    columns.rate ? '<th style="text-align:right;width:90px">Rate</th>' : '',
+    '<th style="text-align:right;width:90px">Amount</th>',
+  ].join('');
   const lineRows = lines.map((l) => `
     <tr>
-      <td style="padding:8px;border-bottom:1px solid #e5e7eb">${esc(l.description || l.accountName)}</td>
-      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:center">${l.kind === 'subtotal' || l.kind === 'discount_percent' ? '' : esc(l.quantity || '1')}</td>
-      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${l.kind === 'subtotal' ? '' : l.kind === 'discount_percent' ? `${esc(new Decimal(l.discountPercent || '0').toString())}%` : `$${fmt(l.unitPrice)}`}</td>
-      <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">$${fmt(l.amount)}</td>
+      ${columns.serviceDate ? `<td style="${cell}">${esc(l.serviceDate)}</td>` : ''}
+      ${columns.item ? `<td style="${cell}">${esc(l.itemName || (showDescription ? '' : l.description || l.accountName))}</td>` : ''}
+      ${showDescription ? `<td style="${cell}">${esc(l.description || (columns.item && l.itemName ? '' : l.accountName))}</td>` : ''}
+      ${columns.quantity ? `<td style="${cell};text-align:center">${l.kind === 'subtotal' || l.kind === 'discount_percent' ? '' : esc(l.quantity || '1')}</td>` : ''}
+      ${columns.rate ? `<td style="${cell};text-align:right">${l.kind === 'subtotal' ? '' : l.kind === 'discount_percent' ? `${esc(new Decimal(l.discountPercent || '0').toString())}%` : `$${fmt(l.unitPrice)}`}</td>` : ''}
+      <td style="${cell};text-align:right">$${fmt(l.amount)}</td>
     </tr>
   `).join('');
 
@@ -313,12 +350,7 @@ function renderInvoiceHtml(data: InvoicePdfData): string {
   <div class="content">
     <table>
       <thead>
-        <tr>
-          <th>Description</th>
-          <th style="text-align:center;width:60px">Qty</th>
-          <th style="text-align:right;width:90px">Rate</th>
-          <th style="text-align:right;width:90px">Amount</th>
-        </tr>
+        <tr>${headers}</tr>
       </thead>
       <tbody>${lineRows}</tbody>
     </table>

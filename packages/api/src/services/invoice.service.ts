@@ -26,6 +26,7 @@ import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { listSendHistory, recordSendEvent } from './document-send.service.js';
 import * as billing from './billable-costs.service.js';
+import * as invoiceTemplates from './invoice-template.service.js';
 import { activeLinksForInvoice, lockSourceTransactions, releaseBilledCosts } from './billable-links.js';
 import { billableFigures, parseMarkupPercent, type BillableFigures } from '../utils/invoice-compute.js';
 
@@ -482,6 +483,8 @@ export async function previewInvoice(
     if (existing.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
   }
   const scope = companyId ?? existing?.companyId ?? undefined;
+  // The layout it would print with (U-130): checked as POST / PUT check it.
+  await invoiceTemplates.assertInvoiceLayout(db, tenantId, input.layoutId, existing ? existing.companyId : scope);
   // Billable costs (U-128 S3): checked without a lock or a claim; a cost
   // another invoice holds is reported on its line (error), not refused.
   const { company, customer, lines, priceLevel, computed, alreadyBilled } = await computeInvoiceFigures(db, tenantId, input, scope, {
@@ -514,6 +517,8 @@ export async function previewInvoice(
     })),
     subtotal: computed.subtotal,
     taxableBase: computed.taxableBase,
+    // The layout the invoice would print with (U-130): null = the company default.
+    layoutId: input.layoutId !== undefined ? input.layoutId : existing?.layoutId ?? null,
     taxRate: rate,
     taxTotal: computed.taxTotal,
     total: computed.total,
@@ -552,6 +557,7 @@ export async function createInvoiceWithWarnings(
       invoiceId: null, lockTx: tx,
     });
     const terms = resolveInvoiceTerms(input, customer, company);
+    await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.layoutId, companyId);
     // A typed number skips the counter, so a one-off custom number doesn't
     // advance the sequence; otherwise the next free number is claimed.
     const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'invoice', input.txnNumber, {
@@ -586,6 +592,7 @@ export async function createInvoiceWithWarnings(
       poNumber: input.poNumber || null,
       customerMessage: input.customerMessage || null,
       hideZeroLines: input.hideZeroLines === true,
+      layoutId: input.layoutId ?? null,
     };
     await tx.update(transactions).set(header)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoice.id)));
@@ -629,6 +636,7 @@ export async function updateInvoiceWithWarnings(
     ledger.assertNotStale(existing, input.expectedUpdatedAt, 'This invoice');
 
     const scope = companyId ?? existing.companyId ?? undefined;
+    await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.layoutId, existing.companyId);
 
     // Billable costs (U-128 rules 2-3, S2): every cost the invoice bills is
     // re-sent (kept) or named in releaseBillableSourceLineIds (released);
@@ -709,6 +717,7 @@ export async function updateInvoiceWithWarnings(
       ...(input.poNumber !== undefined ? { poNumber: input.poNumber || null } : {}),
       ...(input.customerMessage !== undefined ? { customerMessage: input.customerMessage || null } : {}),
       ...(input.hideZeroLines !== undefined ? { hideZeroLines: input.hideZeroLines } : {}),
+      ...(input.layoutId !== undefined ? { layoutId: input.layoutId } : {}),
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
     await writeHeaderTags(tx, tenantId, invoiceId, existing.companyId, input.tagIds, keepTags);
@@ -949,5 +958,11 @@ export async function duplicateInvoiceWithWarnings(tenantId: string, invoiceId: 
     invoiceStatus: 'draft',
     lines,
   }, userId, companyId);
+  // The copy prints with the original's layout (U-130).
+  if (original.layoutId) {
+    await db.update(transactions).set({ layoutId: original.layoutId })
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoice.id)));
+    return { invoice: { ...invoice, layoutId: original.layoutId }, warnings };
+  }
   return { invoice, warnings };
 }

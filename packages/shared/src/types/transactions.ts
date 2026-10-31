@@ -385,6 +385,8 @@ export interface CreateInvoiceInput {
   warnOnly?: boolean;
   /** Waiting to be printed (U-113). */
   printLater?: boolean;
+  /** The invoice layout it prints with (U-130); null = the company default; edit: absent keeps. */
+  layoutId?: string | null;
   /** PUT only (U-128): billed costs this edit releases. */
   releaseBillableSourceLineIds?: string[];
 }
