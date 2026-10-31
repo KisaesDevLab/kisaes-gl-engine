@@ -142,8 +142,28 @@ export function allocateCents(shares: readonly DecimalValue[], total: DecimalVal
  * taxable lines that send no rate of their own.
  */
 export function computeSalesDocument(lines: readonly SalesLineInput[], defaultTaxRate: unknown): SalesDocumentResult {
+  return computeSalesTotals(lines.map((l, i) => ({
+    amount: salesLineAmount(l.quantity, l.unitPrice, `lines[${i}]`),
+    isTaxable: l.isTaxable,
+    taxRate: l.taxRate,
+  })), defaultTaxRate);
+}
+
+export interface SalesAmountInput {
+  /** The line's amount, already to the cent (2-place decimal string). */
+  amount: string;
+  isTaxable: boolean;
+  taxRate?: unknown;
+}
+
+/**
+ * The tax and totals of lines whose amounts are already computed to the
+ * cent (U-122 tax rule; invoice-compute.ts uses it for discount and
+ * subtotal lines, U-129). computeSalesDocument is this after the line rule.
+ */
+export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTaxRate: unknown): SalesDocumentResult {
   const fallbackRate = parseSalesTaxRate(defaultTaxRate ?? '0', 'defaultTaxRate');
-  const amounts = lines.map((l, i) => new Decimal(salesLineAmount(l.quantity, l.unitPrice, `lines[${i}]`)));
+  const amounts = lines.map((l) => new Decimal(l.amount));
   const rates = lines.map((l, i) => (
     !l.isTaxable ? new Decimal(0)
       : l.taxRate === undefined || l.taxRate === null || l.taxRate === '' ? fallbackRate

@@ -175,5 +175,165 @@
     { "name": "price is not a number", "lines": [ { "quantity": "1", "unitPrice": "12abc", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
     { "name": "rate of 100 % or more", "lines": [ { "quantity": "1", "unitPrice": "1.00", "isTaxable": true, "taxRate": "1" } ], "error": "VALIDATION_ERROR" },
     { "name": "negative rate", "lines": [ { "quantity": "1", "unitPrice": "1.00", "isTaxable": true, "taxRate": "-0.05" } ], "error": "VALIDATION_ERROR" }
+  ],
+  "pricingRules": {
+    "unitPrice": "Item kinds (U-39a, item-kinds-sales-v1): service, non_inventory, other_charge, discount, subtotal. For a line that is not a discount or subtotal: the line's unitPrice when sent (source input); else the client's price level fixed price for the item (price_level); else round2(item price x (1 + level percent / 100)) (price_level_percent); else the item's price (item); else 400 VALIDATION_ERROR. quantity omitted is 1. Then the U-122 line rule.",
+    "priceLevel": "Price levels (U-40, price-levels-v1, Q-P20l): a name and a signed percent (-7.5 = 7.5 % down; -100 to 1000, at most 4 places) plus optional fixed prices for chosen items (stored rounded half away from zero to the cent); one level per client. A level price is round2(item price x (1 + percent / 100)), half away from zero. Discount and subtotal items never take a level price.",
+    "discount": "A discount line (item kind discount) applies to its group: the signed sum of the line amounts since the last subtotal line (earlier discounts included); a discount right under a subtotal takes that subtotal's amount; with nothing above it the group is 0.00. Percent (the line's discountPercent, else the item's; 0 < p <= 100): amount = -round2(group x p / 100), half away from zero. Amount (the line's unitPrice, else the item's price): amount = -|round2(price)|. quantity is not used; sending both discountPercent and unitPrice is 400. Discount items are taxable unless set otherwise: a taxable discount is a negative taxable line and reduces the taxable base (Q-P20t); a non-taxable discount leaves the base whole.",
+    "subtotal": "A subtotal line (item kind subtotal) shows the signed sum of the line amounts since the previous subtotal. It is not part of the document subtotal, the taxable base or the total and is never taxed; quantity and unitPrice are ignored. It posts as a $0 line.",
+    "preview": "POST /invoices/preview computes with the same code as POST and PUT /invoices (packages/api/src/utils/invoice-compute.ts) and posts nothing: for the same body its lines and totals equal what the invoice posts."
+  },
+  "pricingCases": [
+    {
+      "name": "price level -7.5 % (Q-P20l): 32.50 becomes 30.06; a fixed level price wins over the percent; a typed rate wins over both",
+      "defaultTaxRate": "0.081",
+      "priceLevel": { "percent": "-7.5", "itemPrices": { "mulch": "45.00" } },
+      "lines": [
+        { "item": { "id": "shrubs", "type": "non_inventory", "unitPrice": "32.50", "discountPercent": null }, "quantity": "24", "isTaxable": true },
+        { "item": { "id": "mulch", "type": "non_inventory", "unitPrice": "48.00", "discountPercent": null }, "quantity": "6", "isTaxable": true },
+        { "item": { "id": "labor", "type": "service", "unitPrice": "65.00", "discountPercent": null }, "quantity": "18", "unitPrice": "65.00", "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": "non_inventory", "quantity": "24", "unitPrice": "30.06", "unitPriceSource": "price_level_percent", "discountPercent": null, "amount": "721.44", "taxRate": "0.0810", "taxAmount": "58.44" },
+          { "itemType": "non_inventory", "quantity": "6", "unitPrice": "45.00", "unitPriceSource": "price_level", "discountPercent": null, "amount": "270.00", "taxRate": "0.0810", "taxAmount": "21.87" },
+          { "itemType": "service", "quantity": "18", "unitPrice": "65.00", "unitPriceSource": "input", "discountPercent": null, "amount": "1170.00", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "2161.44", "taxableBase": "991.44", "taxTotal": "80.31", "total": "2241.75"
+      }
+    },
+    {
+      "name": "price level rounds half away from zero: 0.30 + 5 % = 0.315 is 0.32; quantity omitted is 1",
+      "defaultTaxRate": "0",
+      "priceLevel": { "percent": "5", "itemPrices": {} },
+      "lines": [
+        { "item": { "id": "clip", "type": "other_charge", "unitPrice": "0.30", "discountPercent": null }, "isTaxable": false },
+        { "item": { "id": "fee", "type": "other_charge", "unitPrice": "12.00", "discountPercent": null }, "unitPrice": "12.00", "isTaxable": false },
+        { "quantity": "2", "unitPrice": "5.00", "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": "other_charge", "quantity": "1", "unitPrice": "0.32", "unitPriceSource": "price_level_percent", "discountPercent": null, "amount": "0.32", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": "other_charge", "quantity": "1", "unitPrice": "12.00", "unitPriceSource": "input", "discountPercent": null, "amount": "12.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": null, "quantity": "2", "unitPrice": "5.00", "unitPriceSource": "input", "discountPercent": null, "amount": "10.00", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "22.32", "taxableBase": "0.00", "taxTotal": "0.00", "total": "22.32"
+      }
+    },
+    {
+      "name": "no price level: the item's own price",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "item": { "id": "shrubs", "type": "non_inventory", "unitPrice": "32.50", "discountPercent": null }, "quantity": "2", "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": "non_inventory", "quantity": "2", "unitPrice": "32.50", "unitPriceSource": "item", "discountPercent": null, "amount": "65.00", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "65.00", "taxableBase": "0.00", "taxTotal": "0.00", "total": "65.00"
+      }
+    },
+    {
+      "name": "10 % discount of the lines above: 10 % of 1,068.00 is -106.80; a taxable discount reduces the taxable base (Q-P20t)",
+      "defaultTaxRate": "0.081",
+      "lines": [
+        { "item": { "id": "shrubs", "type": "non_inventory", "unitPrice": "32.50", "discountPercent": null }, "quantity": "24", "isTaxable": true },
+        { "item": { "id": "mulch", "type": "non_inventory", "unitPrice": "48.00", "discountPercent": null }, "quantity": "6", "isTaxable": true },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": "non_inventory", "quantity": "24", "unitPrice": "32.50", "unitPriceSource": "item", "discountPercent": null, "amount": "780.00", "taxRate": "0.0810", "taxAmount": "63.18" },
+          { "itemType": "non_inventory", "quantity": "6", "unitPrice": "48.00", "unitPriceSource": "item", "discountPercent": null, "amount": "288.00", "taxRate": "0.0810", "taxAmount": "23.33" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "10.0000", "amount": "-106.80", "taxRate": "0.0810", "taxAmount": "-8.65" }
+        ],
+        "subtotal": "961.20", "taxableBase": "961.20", "taxTotal": "77.86", "total": "1039.06"
+      }
+    },
+    {
+      "name": "a non-taxable discount leaves the taxable base whole",
+      "defaultTaxRate": "0.081",
+      "lines": [
+        { "item": { "id": "shrubs", "type": "non_inventory", "unitPrice": "32.50", "discountPercent": null }, "quantity": "24", "isTaxable": true },
+        { "item": { "id": "mulch", "type": "non_inventory", "unitPrice": "48.00", "discountPercent": null }, "quantity": "6", "isTaxable": true },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": "non_inventory", "quantity": "24", "unitPrice": "32.50", "unitPriceSource": "item", "discountPercent": null, "amount": "780.00", "taxRate": "0.0810", "taxAmount": "63.18" },
+          { "itemType": "non_inventory", "quantity": "6", "unitPrice": "48.00", "unitPriceSource": "item", "discountPercent": null, "amount": "288.00", "taxRate": "0.0810", "taxAmount": "23.33" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "10.0000", "amount": "-106.80", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "961.20", "taxableBase": "1068.00", "taxTotal": "86.51", "total": "1047.71"
+      }
+    },
+    {
+      "name": "subtotals: a discount right under a subtotal takes that subtotal's lines; lines above an earlier subtotal stay out; subtotals are shown only",
+      "defaultTaxRate": "0.0825",
+      "lines": [
+        { "quantity": "1", "unitPrice": "100.00", "isTaxable": false },
+        { "item": { "id": "subtotal", "type": "subtotal", "unitPrice": null, "discountPercent": null }, "isTaxable": false },
+        { "quantity": "2", "unitPrice": "25.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "25.00", "isTaxable": true },
+        { "item": { "id": "subtotal", "type": "subtotal", "unitPrice": null, "discountPercent": null }, "isTaxable": false },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": true },
+        { "item": { "id": "subtotal", "type": "subtotal", "unitPrice": null, "discountPercent": null }, "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": null, "quantity": "1", "unitPrice": "100.00", "unitPriceSource": "input", "discountPercent": null, "amount": "100.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": "subtotal", "quantity": null, "unitPrice": null, "unitPriceSource": "none", "discountPercent": null, "amount": "100.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": null, "quantity": "2", "unitPrice": "25.00", "unitPriceSource": "input", "discountPercent": null, "amount": "50.00", "taxRate": "0.0825", "taxAmount": "4.13" },
+          { "itemType": null, "quantity": "1", "unitPrice": "25.00", "unitPriceSource": "input", "discountPercent": null, "amount": "25.00", "taxRate": "0.0825", "taxAmount": "2.06" },
+          { "itemType": "subtotal", "quantity": null, "unitPrice": null, "unitPriceSource": "none", "discountPercent": null, "amount": "75.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "10.0000", "amount": "-7.50", "taxRate": "0.0825", "taxAmount": "-0.62" },
+          { "itemType": "subtotal", "quantity": null, "unitPrice": null, "unitPriceSource": "none", "discountPercent": null, "amount": "-7.50", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "167.50", "taxableBase": "67.50", "taxTotal": "5.57", "total": "173.07"
+      }
+    },
+    {
+      "name": "amount discounts: the item's 15.00 off; a typed amount wins (its sign is ignored); a typed percent wins over the item's",
+      "defaultTaxRate": "0.0725",
+      "lines": [
+        { "quantity": "2", "unitPrice": "40.00", "isTaxable": true },
+        { "item": { "id": "disc15", "type": "discount", "unitPrice": "15.00", "discountPercent": null }, "isTaxable": true },
+        { "item": { "id": "disc15", "type": "discount", "unitPrice": "15.00", "discountPercent": null }, "unitPrice": "5", "isTaxable": true },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "discountPercent": "2.5", "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": null, "quantity": "2", "unitPrice": "40.00", "unitPriceSource": "input", "discountPercent": null, "amount": "80.00", "taxRate": "0.0725", "taxAmount": "5.80" },
+          { "itemType": "discount", "quantity": null, "unitPrice": "-15.00", "unitPriceSource": "item", "discountPercent": null, "amount": "-15.00", "taxRate": "0.0725", "taxAmount": "-1.09" },
+          { "itemType": "discount", "quantity": null, "unitPrice": "-5.00", "unitPriceSource": "input", "discountPercent": null, "amount": "-5.00", "taxRate": "0.0725", "taxAmount": "-0.36" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "input", "discountPercent": "2.5000", "amount": "-1.50", "taxRate": "0.0725", "taxAmount": "-0.11" }
+        ],
+        "subtotal": "58.50", "taxableBase": "58.50", "taxTotal": "4.24", "total": "62.74"
+      }
+    },
+    {
+      "name": "discount rounding half away from zero: 15 % of 0.10 is -0.02; a discount with nothing above it is 0.00",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": false },
+        { "quantity": "1", "unitPrice": "0.10", "isTaxable": false },
+        { "item": { "id": "disc15", "type": "discount", "unitPrice": "15.00", "discountPercent": null }, "discountPercent": "15", "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "10.0000", "amount": "0.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": null, "quantity": "1", "unitPrice": "0.10", "unitPriceSource": "input", "discountPercent": null, "amount": "0.10", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "input", "discountPercent": "15.0000", "amount": "-0.02", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "0.08", "taxableBase": "0.00", "taxTotal": "0.00", "total": "0.08"
+      }
+    }
+  ],
+  "pricingErrors": [
+    { "name": "an item with no price, no level price and no typed rate", "lines": [ { "item": { "id": "x", "type": "service", "unitPrice": null, "discountPercent": null }, "quantity": "1", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
+    { "name": "a line with no item and no rate", "lines": [ { "quantity": "1", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
+    { "name": "a discount with both a percent and an amount", "lines": [ { "quantity": "1", "unitPrice": "10.00", "isTaxable": false }, { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "discountPercent": "5", "unitPrice": "1.00", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
+    { "name": "a discount percent above 100", "lines": [ { "quantity": "1", "unitPrice": "10.00", "isTaxable": false }, { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "discountPercent": "100.5", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
+    { "name": "a discount item with no percent and no amount", "lines": [ { "item": { "id": "d", "type": "discount", "unitPrice": null, "discountPercent": null }, "isTaxable": false } ], "error": "VALIDATION_ERROR" }
   ]
 }
