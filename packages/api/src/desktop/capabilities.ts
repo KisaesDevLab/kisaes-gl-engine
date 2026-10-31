@@ -250,4 +250,49 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * requeue / reprint skip void and deleted checks and return them in skipped: [{id, reason: 'void' | 'deleted'}].
    */
   'idempotency-check-print-v1',
+  /**
+   * Sales forms to the cent (U-122): invoice and sales receipt lines are round2(qty x unitPrice) half away from zero; tax is
+   * round2(taxable base x rate) once per document and rate, allocated to the taxable lines by largest remainder (floor, earlier
+   * line first on ties) so line taxes sum exactly; a taxable line without taxRate takes the request company's default rate;
+   * credit memo lines round to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. History is not restated.
+   */
+  'sales-cents-v1',
+  /**
+   * Invoices (U-124): POST, PUT and void take closingPassword / overrideConfirmed for a date on or before the closing date
+   * (423 / 403 / 429); PUT and void take expectedUpdatedAt (409 STALE, details.updatedAt); void with a live payment or credit
+   * applied is 409 INVOICE_HAS_PAYMENTS (also through POST /transactions/:id/void); every /invoices route is company-scoped
+   * (another company's invoice 404; customer, item, tag and default tax rate from the request's company).
+   */
+  'invoice-edit-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on exactly PUT /invoices/:id, POST /invoices/:id/void and
+   * POST /invoices/:id/sent (each `x-idempotency: true` in openapi.json). Refusals (409 STALE, INVOICE_HAS_PAYMENTS, 423, 403,
+   * 400) are never stored. The set is fixed: more routes get a new name (U-124).
+   */
+  'idempotency-invoice-v1',
+  /**
+   * Invoice terms (U-125): paymentTerms is a PAYMENT_TERMS code (GET /payment-terms; custom takes termsDays), omitted the
+   * client's default, else the company's; discount terms store discountPercent / discountDays / discountDate; dueDate sent wins
+   * (dueDateOverridden); PUT keeps the terms when omitted and recomputes the due date when the date or the terms change.
+   */
+  'invoice-terms-v1',
+  /**
+   * Invoice fields (U-123): line itemId (an item of the company; supplies the income account and the taxable flag when omitted)
+   * and serviceDate; header poNumber, customerMessage (printed; memo internal), tagIds, hideZeroLines; GET /invoices/:id returns
+   * them. The invoice PDF prints the message (else the memo), the PO number (template showPoNumber) and negative lines, and
+   * leaves $0 lines off with hideZeroLines. Migration 0242.
+   */
+  'invoice-fields-v1',
+  /**
+   * Send history (U-126): POST /invoices/:id/sent {method: printed|email|pdf, recipients?, sentAt?}; POST /forms/mark-printed
+   * records "printed" for each form it takes out of the queue; GET /invoices/:id returns sendHistory (kept across edits);
+   * GET /invoices?sent=false lists invoices never sent, whatever their payment status. Recipients are never logged or audited.
+   * Migration 0242 (document_send_events).
+   */
+  'invoice-sent-history-v1',
+  /**
+   * Contact open balances (U-38): GET /contacts and GET /contacts/:id add openBalance / oldestOpenDate (A/R) and
+   * payableBalance / oldestOpenBillDate (A/P), 4-place decimal strings, for the request's company.
+   */
+  'contact-balance-v1',
 ];

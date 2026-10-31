@@ -23496,7 +23496,87 @@
     },
     "/api/v1/contacts": {
       "get": {
+        "description": "Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.",
         "operationId": "get_api_v1_contacts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactType",
+            "required": false,
+            "schema": {
+              "enum": [
+                "customer",
+                "vendor",
+                "both"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "isActive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "name",
+                "type",
+                "email",
+                "phone",
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -23510,6 +23590,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List contacts",
         "tags": [
           "contacts"
         ]
@@ -24164,6 +24245,7 @@
         ]
       },
       "get": {
+        "description": "Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.",
         "operationId": "get_api_v1_contacts_by_id",
         "parameters": [
           {
@@ -24171,6 +24253,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -24188,6 +24271,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Get a contact",
         "tags": [
           "contacts"
         ]
@@ -28456,7 +28540,6 @@
                           ]
                         },
                         "taxRate": {
-                          "default": "0",
                           "type": "string"
                         },
                         "unitPrice": {
@@ -28481,19 +28564,9 @@
                   "paymentTerms": {
                     "type": "string"
                   },
-                  "printLater": {
-                    "type": "boolean"
-                  },
                   "txnDate": {
                     "minLength": 1,
                     "type": "string"
-                  },
-                  "txnNumber": {
-                    "maxLength": 50,
-                    "type": "string"
-                  },
-                  "warnOnly": {
-                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -30473,7 +30546,7 @@
     },
     "/api/v1/forms/mark-printed": {
       "post": {
-        "description": "Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes.",
+        "description": "Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes. Each form taken out of the queue (posted) also gets a \"printed\" send event (invoice-sent-history-v1); a draft invoice becomes sent.",
         "operationId": "post_api_v1_forms_mark_printed",
         "requestBody": {
           "content": {
@@ -30848,7 +30921,244 @@
     },
     "/api/v1/invoices": {
       "get": {
+        "description": "The transaction list filters, plus sent (invoice-sent-history-v1): \"false\" keeps the invoices never sent (no send event, no sent date, never marked sent) that are not void, whatever their payment status, so one that is partly paid still shows; \"true\" keeps the others.",
         "operationId": "get_api_v1_invoices",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "txnType",
+            "required": false,
+            "schema": {
+              "enum": [
+                "invoice",
+                "customer_payment",
+                "cash_sale",
+                "expense",
+                "deposit",
+                "transfer",
+                "journal_entry",
+                "credit_memo",
+                "customer_refund",
+                "bill",
+                "vendor_credit",
+                "bill_payment",
+                "daily_sales",
+                "aje"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "draft",
+                "posted",
+                "void",
+                "deleted"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "items": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "invoiceStatus",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [
+                  "draft",
+                  "sent",
+                  "viewed",
+                  "partial",
+                  "paid",
+                  "void"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accountId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tagId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "pattern": "^[a-zA-Z0-9_-]{1,40}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "cash",
+                "accrual"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "amount",
+            "required": false,
+            "schema": {
+              "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "date",
+                "type",
+                "number",
+                "payee",
+                "memo",
+                "category",
+                "amount",
+                "status",
+                "dueDate",
+                "balanceDue",
+                "invoiceStatus"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeDeleted",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sent",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -30862,12 +31172,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List invoices",
         "tags": [
           "invoices"
         ]
       },
       "post": {
-        "description": "Response 201 `{invoice, warnings}`. No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe.",
+        "description": "Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company's invoice counter (numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in `warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only `{invoice}`, without `warnings`: treat it as absent-safe. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR.",
         "operationId": "post_api_v1_invoices",
         "parameters": [
           {
@@ -30887,12 +31198,27 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "contactId": {
                     "format": "uuid",
                     "type": "string"
                   },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
                   "dueDate": {
                     "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
                   },
                   "internalNotes": {
                     "type": "string"
@@ -30906,15 +31232,37 @@
                           "type": "string"
                         },
                         "description": {
+                          "maxLength": 4000,
                           "type": "string"
                         },
                         "isTaxable": {
-                          "default": false,
                           "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "quantity": {
                           "minLength": 1,
                           "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
@@ -30928,7 +31276,6 @@
                           ]
                         },
                         "taxRate": {
-                          "default": "0",
                           "type": "string"
                         },
                         "unitPrice": {
@@ -30937,7 +31284,6 @@
                         }
                       },
                       "required": [
-                        "accountId",
                         "quantity",
                         "unitPrice"
                       ],
@@ -30950,11 +31296,31 @@
                   "memo": {
                     "type": "string"
                   },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "paymentTerms": {
+                    "type": "string"
+                  },
+                  "poNumber": {
+                    "maxLength": 50,
                     "type": "string"
                   },
                   "printLater": {
                     "type": "boolean"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "termsDays": {
+                    "maximum": 3650,
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "txnDate": {
                     "minLength": 1,
@@ -31001,6 +31367,7 @@
     },
     "/api/v1/invoices/{id}": {
       "get": {
+        "description": "Response {invoice}: the transaction with its lines (serviceDate, itemId, taxRate, taxAmount), poNumber, customerMessage, hideZeroLines, tagIds and sendHistory [{id, method: printed|email|pdf, recipients, sentAt, userId}] oldest first (kept across edits). An invoice of another company is 404; another transaction type is 400.",
         "operationId": "get_api_v1_invoices_by_id",
         "parameters": [
           {
@@ -31008,6 +31375,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -31025,11 +31393,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Get an invoice",
         "tags": [
           "invoices"
         ]
       },
       "put": {
+        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR.",
         "operationId": "put_api_v1_invoices_by_id",
         "parameters": [
           {
@@ -31037,6 +31407,17 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -31047,12 +31428,27 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "contactId": {
                     "format": "uuid",
                     "type": "string"
                   },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
                   "dueDate": {
                     "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
                   },
                   "internalNotes": {
                     "type": "string"
@@ -31066,15 +31462,37 @@
                           "type": "string"
                         },
                         "description": {
+                          "maxLength": 4000,
                           "type": "string"
                         },
                         "isTaxable": {
-                          "default": false,
                           "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "quantity": {
                           "minLength": 1,
                           "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "tagId": {
                           "anyOf": [
@@ -31088,7 +31506,6 @@
                           ]
                         },
                         "taxRate": {
-                          "default": "0",
                           "type": "string"
                         },
                         "unitPrice": {
@@ -31097,7 +31514,6 @@
                         }
                       },
                       "required": [
-                        "accountId",
                         "quantity",
                         "unitPrice"
                       ],
@@ -31110,11 +31526,31 @@
                   "memo": {
                     "type": "string"
                   },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "paymentTerms": {
+                    "type": "string"
+                  },
+                  "poNumber": {
+                    "maxLength": 50,
                     "type": "string"
                   },
                   "printLater": {
                     "type": "boolean"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "termsDays": {
+                    "maximum": 3650,
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "txnDate": {
                     "minLength": 1,
@@ -31152,9 +31588,11 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Edit an invoice",
         "tags": [
           "invoices"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/invoices/{id}/duplicate": {
@@ -31390,6 +31828,88 @@
         ]
       }
     },
+    "/api/v1/invoices/{id}/sent": {
+      "post": {
+        "description": "invoice-sent-history-v1: adds {method: printed|email|pdf, recipients (email only), sentAt (default now)} to the invoice's sendHistory. A draft becomes sent (its updatedAt moves); sentAt is kept from the first send. Recipients are stored but never logged or audited. Response 200 {invoice}. Void: 400 INVOICE_VOID; another company: 404.",
+        "operationId": "post_api_v1_invoices_by_id_sent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "method": {
+                    "enum": [
+                      "printed",
+                      "email",
+                      "pdf"
+                    ],
+                    "type": "string"
+                  },
+                  "recipients": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "sentAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "method"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Record that an invoice was sent",
+        "tags": [
+          "invoices"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/invoices/{id}/share-link": {
       "delete": {
         "operationId": "delete_api_v1_invoices_by_id_share_link",
@@ -31452,6 +31972,7 @@
     },
     "/api/v1/invoices/{id}/void": {
       "post": {
+        "description": "Response 200 {invoice}. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Refused while a live payment or credit is applied: 409 INVOICE_HAS_PAYMENTS (details {payments, credits}). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE. An invoice of another company is 404; another transaction type 400.",
         "operationId": "post_api_v1_invoices_by_id_void",
         "parameters": [
           {
@@ -31459,6 +31980,17 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -31469,9 +32001,16 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "expectedUpdatedAt": {
                     "format": "date-time",
                     "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
                   },
                   "reason": {
                     "minLength": 1,
@@ -31500,9 +32039,11 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Void an invoice",
         "tags": [
           "invoices"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/items": {

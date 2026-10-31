@@ -73,9 +73,16 @@ export const IDEMPOTENCY_CHECK_PRINT_V1_ROUTES = [
   'post /api/v1/checks/print',
 ].sort();
 
+/** The idempotency-invoice-v1 set: invoice edit, void and sent (U-124). */
+export const IDEMPOTENCY_INVOICE_V1_ROUTES = [
+  'put /api/v1/invoices/{id}',
+  'post /api/v1/invoices/{id}/void',
+  'post /api/v1/invoices/{id}/sent',
+].sort();
+
 const ALL_KEYED_ROUTES = [
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
-  ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES,
+  ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES, ...IDEMPOTENCY_INVOICE_V1_ROUTES,
 ].sort();
 
 let paths: Paths;
@@ -122,5 +129,6 @@ describe('idempotency-v1 in openapi.json', () => {
     expect(DESKTOP_CAPABILITIES).toContain('document-drafts-attach-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-pay-bills-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-check-print-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('idempotency-invoice-v1');
   });
 });
