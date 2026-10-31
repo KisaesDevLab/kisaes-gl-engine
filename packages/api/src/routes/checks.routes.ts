@@ -34,7 +34,7 @@ checksRouter.use(requireResource('checks'));
 // closingPassword / overrideConfirmed as POST /transactions (U-15).
 // Idempotency-Key (idempotency-v1, U-18): the readers replay the check as it
 // is now when no stored response is left.
-const readCheck = (req: { tenantId: string }, id: string) => ledger.getTransaction(req.tenantId, id);
+const readCheck = (req: { tenantId: string; companyId?: string }, id: string) => ledger.getTransaction(req.tenantId, id, req.companyId);
 
 checksRouter.post('/', idempotent({
   successStatus: 201,

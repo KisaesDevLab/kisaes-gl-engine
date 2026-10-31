@@ -338,7 +338,7 @@ transactionsRouter.get('/:id/report.pdf', expensiveOpLimiter, async (req, res) =
 });
 
 transactionsRouter.get('/:id', async (req, res) => {
-  const txn = await transactionReport.getTransactionDetail(req.tenantId, req.params['id']!);
+  const txn = await transactionReport.getTransactionDetail(req.tenantId, req.params['id']!, req.companyId);
   res.json({ transaction: txn });
 });
 

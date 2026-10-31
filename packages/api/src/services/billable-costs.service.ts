@@ -315,7 +315,7 @@ export async function mapBillableDbErrors<T>(fn: () => Promise<T>): Promise<T> {
  */
 export async function billableCostsForInvoice(
   executor: DbOrTx, tenantId: string, invoiceId: string,
-  lines: ReadonlyArray<{ id: string; accountId: string; credit: string | null; debit: string | null; lineRole: string | null; billableSourceLineId: string | null }>,
+  lines: ReadonlyArray<{ id: string; accountId: string; credit: string | null; debit: string | null; lineRole: string | null; billableSourceLineId: string | null; quantity?: string | null }>,
 ) {
   const byLine = new Map<string, { cost?: (typeof lines)[number]; markup?: (typeof lines)[number] }>();
   for (const l of lines) {
@@ -328,10 +328,8 @@ export async function billableCostsForInvoice(
   const ids = [...byLine.keys()];
   const rows = await executor.select({
     link: billableCostLinks, sourceTxnType: transactions.txnType, sourceNumber: transactions.txnNumber,
-    quantity: journalLines.quantity,
   }).from(billableCostLinks)
     .leftJoin(transactions, and(eq(transactions.tenantId, billableCostLinks.tenantId), eq(transactions.id, billableCostLinks.sourceTransactionId)))
-    .leftJoin(journalLines, and(eq(journalLines.tenantId, billableCostLinks.tenantId), eq(journalLines.id, billableCostLinks.sourceLineId)))
     .where(and(
       eq(billableCostLinks.tenantId, tenantId),
       eq(billableCostLinks.invoiceId, invoiceId),
@@ -345,7 +343,10 @@ export async function billableCostsForInvoice(
     const e = byLine.get(id)!;
     const r = latest.get(id);
     const amount = money(e.cost).plus(money(e.markup));
-    const q = r?.quantity && !new Decimal(r.quantity).isZero() ? new Decimal(r.quantity) : new Decimal(1);
+    // The invoice's own cost line quantity, as the PDF prints it (review S-6):
+    // a later edit of the source line's quantity doesn't move it.
+    const sq = e.cost?.quantity;
+    const q = sq && !new Decimal(sq).isZero() ? new Decimal(sq) : new Decimal(1);
     return {
       sourceLineId: id,
       sourceTransactionId: r?.link.sourceTransactionId ?? null,

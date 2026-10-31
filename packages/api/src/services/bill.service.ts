@@ -491,7 +491,7 @@ export async function createBill(tenantId: string, input: CreateBillInput, userI
 
 /** companyId (U-117 security note): a bill of another company is 404 (rows without a company pass). */
 export async function getBill(tenantId: string, billId: string, companyId?: string) {
-  const bill = await ledger.getTransaction(tenantId, billId);
+  const bill = await ledger.getTransaction(tenantId, billId, companyId);
   if (companyId && bill.companyId && bill.companyId !== companyId) throw AppError.notFound('Transaction not found');
   if (bill.txnType !== 'bill') throw AppError.badRequest('Not a bill');
   return bill;

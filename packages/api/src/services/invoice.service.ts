@@ -27,7 +27,7 @@ import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { listSendHistory, recordSendEvent } from './document-send.service.js';
 import * as billing from './billable-costs.service.js';
 import * as invoiceTemplates from './invoice-template.service.js';
-import { activeLinksForInvoice, lockSourceTransactions, releaseBilledCosts } from './billable-links.js';
+import { activeLinksForInvoice, assertMarkupAccount, lockSourceTransactions, releaseBilledCosts } from './billable-links.js';
 import { billableFigures, parseMarkupPercent, type BillableFigures } from '../utils/invoice-compute.js';
 
 // Calendar arithmetic (U-86, review S3): the old `new Date(d).setDate(+n)`
@@ -233,21 +233,30 @@ async function resolveBillableLines(
   const { alreadyBilled } = billing.checkBillableSources(sources, ids, {
     contactId: customerId, invoiceId: ctx.invoiceId, companyId, reportBilled: ctx.preview,
   });
-  lines.forEach((l, i) => {
-    if (!l.bill) return;
+  let settingChecked = false;
+  for (const [i, l] of lines.entries()) {
+    if (!l.bill) continue;
     const s = sources.get(l.bill.sourceLineId)!;
     const cost = new Decimal(s.line.debit || '0').minus(s.line.credit || '0');
     const figures = billableFigures(cost.toFixed(4), s.line.quantity, l.bill.markupPercent, `lines[${i}]`);
     const ours = s.link && ctx.invoiceId !== null && s.link.invoiceId === ctx.invoiceId ? s.link : null;
     const markupAccountId = ours?.markupAccountId ?? company?.billableMarkupAccountId ?? null;
-    if (!new Decimal(figures.markupAmount).isZero() && !markupAccountId) {
+    const hasMarkup = !new Decimal(figures.markupAmount).isZero();
+    if (hasMarkup && !markupAccountId) {
       throw billableError('Set the account markups post to (company settings) before billing a cost with a markup.',
         'MARKUP_ACCOUNT_REQUIRED', { line: i });
+    }
+    // A new markup posts to the company setting: checked again now, since the
+    // account may have been deactivated, merged or retyped since it was saved
+    // (review S-4). A kept link keeps its stored account.
+    if (hasMarkup && !ours?.markupAccountId && !settingChecked) {
+      await assertMarkupAccount(executor, tenantId, companyId, markupAccountId!);
+      settingChecked = true;
     }
     l.bill = { ...l.bill, source: s, figures, markupAccountId, existingLinkId: ours?.id ?? null };
     if (l.description === undefined) l.description = s.line.description ?? undefined;
     if (!l.serviceDate) l.serviceDate = s.txn.txnDate;
-  });
+  }
   return alreadyBilled;
 }
 

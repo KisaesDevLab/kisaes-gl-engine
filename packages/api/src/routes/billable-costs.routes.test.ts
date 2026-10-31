@@ -289,6 +289,11 @@ describe('claim and list (rule 1, S7, B4)', () => {
       ['billable_cost', '0.0000', '12.3500'], ['billable_markup', '0.0000', '1.2400'],
       ['billable_cost', '20.0000', '0.0000'], ['billable_cost', '0.0000', '842.1500'], ['billable_cost', '0.0000', '100.0000'],
     ]);
+    // The rate shown is the invoice's own, as printed (S-6): a later change
+    // of the source line's quantity doesn't move it.
+    await db.update(journalLines).set({ quantity: '6' }).where(eq(journalLines.id, ids[2]!));
+    const again = (await getInvoice(r.json.invoice.id)).billableCosts.find((b: any) => b.sourceLineId === ids[2]);
+    expect([again.quantity, again.displayRate]).toEqual(['3', '280.7167']);
     expect(r.json.invoice.total).toBe('935.7400');
   });
 
@@ -308,6 +313,22 @@ describe('claim and list (rule 1, S7, B4)', () => {
     const err = await code([billLine(ids[1]!)], 400, 'BILLABLE_CONTACT_MISMATCH');
     expect(err.details.conflicts).toEqual([{ sourceLineId: ids[1] }]);
     await code([billLine(crypto.randomUUID())], 409, 'BILLABLE_COST_UNAVAILABLE');
+    // The saved markup account is checked again when a new markup posts to
+    // it (S-4): deactivated or retyped since, it is 400 MARKUP_ACCOUNT_INVALID.
+    await db.update(accounts).set({ isActive: false }).where(eq(accounts.id, c.markup));
+    await code([billLine(ids[0]!, { markupPercent: '5' })], 400, 'MARKUP_ACCOUNT_INVALID');
+    await db.update(accounts).set({ isActive: true, accountType: 'expense' }).where(eq(accounts.id, c.markup));
+    await code([billLine(ids[0]!, { markupPercent: '5' })], 400, 'MARKUP_ACCOUNT_INVALID');
+    await db.update(accounts).set({ accountType: 'other_revenue' }).where(eq(accounts.id, c.markup));
+    // A kept link keeps its stored account, even one deactivated since.
+    const kept = await postInvoice([billLine(ids[0]!, { markupPercent: '5' })]);
+    expect(kept.status, JSON.stringify(kept.json)).toBe(201);
+    await db.update(accounts).set({ isActive: false }).where(eq(accounts.id, c.markup));
+    const edit = await putInvoice(kept.json.invoice, [billLine(ids[0]!, { markupPercent: '5' })], { memo: 'kept' });
+    expect(edit.status, JSON.stringify(edit.json)).toBe(200);
+    await db.update(accounts).set({ isActive: true }).where(eq(accounts.id, c.markup));
+    const freed = await putInvoice(edit.json.invoice, [{ accountId: c.revenue, quantity: '1', unitPrice: '1.00' }], { releaseBillableSourceLineIds: [ids[0]] });
+    expect(freed.status, JSON.stringify(freed.json)).toBe(200);
     await db.update(companies).set({ billableMarkupAccountId: null }).where(eq(companies.id, c.companyId));
     await code([billLine(ids[0]!, { markupPercent: '5' })], 400, 'MARKUP_ACCOUNT_REQUIRED');
     // At cost needs no markup account.
@@ -619,6 +640,27 @@ describe('company scope (rule 8, security)', () => {
     expect(ours.json.error.details.conflicts).toEqual([{ sourceLineId: ids[0] }]);
     expect(JSON.stringify(ours.json)).not.toContain('SECRET-77');
     expect(JSON.stringify(ours.json)).not.toContain(theirs.json.invoice.id);
+  });
+
+  it('source_read_no_leak (S-5): GET /transactions/:id of a tenant-wide cost names the billing invoice only to its own company', async () => {
+    const co2 = await secondCompany();
+    const [shared] = await db.insert(contacts).values({ tenantId: c.tenantId, contactType: 'customer', displayName: 'Shared client' }).returning();
+    const { txn, ids } = await postCosts([{ amount: '75', contactId: shared!.id }], { companyId: null });
+    const theirs = await request('POST', '/api/v1/invoices', c.token, {
+      contactId: shared!.id, txnDate: '2026-10-10', lines: [billLine(ids[0]!)], txnNumber: 'SECRET-78',
+    }, { 'X-Company-Id': co2 });
+    expect(theirs.status, JSON.stringify(theirs.json)).toBe(201);
+    // Read from this company: billed, but no invoice named.
+    const mine = await request('GET', `/api/v1/transactions/${txn.id}`, c.token);
+    expect(mine.status, JSON.stringify(mine.json)).toBe(200);
+    const line = (mine.json.transaction.lines as any[]).find((l) => l.id === ids[0]);
+    expect([line.billedStatus, line.billedInvoiceId, line.billedInvoiceNumber]).toEqual(['billed', null, null]);
+    expect(JSON.stringify(mine.json)).not.toContain('SECRET-78');
+    expect(JSON.stringify(mine.json)).not.toContain(theirs.json.invoice.id);
+    // Read from the billing company: named.
+    const owner = await request('GET', `/api/v1/transactions/${txn.id}`, c.token, undefined, { 'X-Company-Id': co2 });
+    const ownLine = (owner.json.transaction.lines as any[]).find((l) => l.id === ids[0]);
+    expect([ownLine.billedInvoiceId, ownLine.billedInvoiceNumber]).toEqual([theirs.json.invoice.id, 'SECRET-78']);
   });
 });
 

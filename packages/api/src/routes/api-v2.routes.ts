@@ -247,7 +247,7 @@ apiV2Router.get('/transactions', async (req, res) => {
 });
 
 apiV2Router.get('/transactions/:id', async (req, res) => {
-  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!);
+  const txn = await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId);
   res.json({ transaction: txn });
 });
 

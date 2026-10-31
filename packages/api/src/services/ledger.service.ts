@@ -1790,7 +1790,12 @@ export async function getTransactionType(tenantId: string, txnId: string): Promi
   return row?.txnType ?? null;
 }
 
-export async function getTransaction(tenantId: string, txnId: string) {
+/**
+ * A transaction with its lines. `companyId` (the reader's company, else the
+ * transaction's own): a billed cost line names its invoice only when that
+ * invoice is of this company (review S-5).
+ */
+export async function getTransaction(tenantId: string, txnId: string, companyId?: string | null) {
   const txn = await db.query.transactions.findFirst({
     where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)),
   });
@@ -1849,7 +1854,7 @@ export async function getTransaction(tenantId: string, txnId: string) {
   // Billed cost lines (U-128): the invoice each is on (same company as the
   // source: a claim requires it).
   const billedIds = rawLines.filter((l) => l.billedStatus === 'billed').map((l) => l.id);
-  const billedOn = await billedInvoicesForLines(db, tenantId, billedIds);
+  const billedOn = await billedInvoicesForLines(db, tenantId, billedIds, companyId ?? txn.companyId ?? null);
   const lines: Array<(typeof rawLines)[number] & { billedInvoiceId?: string | null; billedInvoiceNumber?: string | null }> =
     rawLines.map((l) => {
       if (l.billedStatus !== 'billed') return l;

@@ -120,14 +120,17 @@ export async function assertSourceLinksIntact(executor: DbOrTx, tenantId: string
 
 /**
  * The invoice each billed line of a source is on (source reads):
- * Map<sourceLineId, {invoiceId, invoiceNumber}>.
+ * Map<sourceLineId, {invoiceId, invoiceNumber}>. `companyId`: the reader's
+ * company; an invoice of another company shows as null (review S-5: a
+ * tenant-wide cost billed by another company must not name its invoice).
  */
 export async function billedInvoicesForLines(
-  executor: DbOrTx, tenantId: string, lineIds: readonly string[],
-): Promise<Map<string, { invoiceId: string; invoiceNumber: string | null }>> {
+  executor: DbOrTx, tenantId: string, lineIds: readonly string[], companyId?: string | null,
+): Promise<Map<string, { invoiceId: string | null; invoiceNumber: string | null }>> {
   if (lineIds.length === 0) return new Map();
   const rows = await executor.select({
     lineId: billableCostLinks.sourceLineId, invoiceId: billableCostLinks.invoiceId, invoiceNumber: transactions.txnNumber,
+    invoiceCompanyId: transactions.companyId,
   }).from(billableCostLinks)
     .leftJoin(transactions, and(eq(transactions.tenantId, billableCostLinks.tenantId), eq(transactions.id, billableCostLinks.invoiceId)))
     .where(and(
@@ -135,7 +138,9 @@ export async function billedInvoicesForLines(
       inArray(billableCostLinks.sourceLineId, [...lineIds]),
       isNull(billableCostLinks.releasedAt),
     ));
-  return new Map(rows.map((r) => [r.lineId, { invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber ?? null }]));
+  return new Map(rows.map((r) => [r.lineId, companyId && r.invoiceCompanyId && r.invoiceCompanyId !== companyId
+    ? { invoiceId: null, invoiceNumber: null }
+    : { invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber ?? null }]));
 }
 
 /**
