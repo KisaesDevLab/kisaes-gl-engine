@@ -295,6 +295,11 @@ describe('POST /invoices/:id/email', () => {
     const max = await request('POST', `/api/v1/invoices/${inv.id}/email`, c.token, emailBody({ pdfBase64: pdfOf(10 * 1024 * 1024).toString('base64') }));
     expect(max.status, JSON.stringify(max.json).slice(0, 300)).toBe(200);
     expect(mocks.sent[0]!['attachments'][0].content.length).toBe(10 * 1024 * 1024);
+    // The larger body limit is only for a signed-in caller (nit 4): without a
+    // valid token the body meets the global 10 MB parser before auth runs.
+    const anon = await request('POST', `/api/v1/invoices/${inv.id}/email`, 'not-a-token', emailBody({ pdfBase64: pdfOf(10 * 1024 * 1024).toString('base64') }));
+    expect(anon.status).toBe(413);
+    expect(mocks.sent).toHaveLength(1);
   }, 60_000);
 
   it('validates recipients; a void invoice is 400 INVOICE_VOID; another tenant\'s invoice is 404; nothing is sent', async () => {

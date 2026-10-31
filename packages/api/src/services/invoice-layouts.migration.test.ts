@@ -6,7 +6,7 @@
 // invoice_layout_id, invoice_templates.is_archived, contacts.default_invoice_layout_id,
 // one default per company (uq_invoice_templates_company_default)
 // and renames the seeded 'Default' to 'Standard' (invoice-layouts-v1). The
-// rollback drops the additions and renames back; the forward migration is
+// rollback drops the additions and keeps the name; the forward migration is
 // idempotent. Every rollback runs inside a database transaction that is
 // rolled back, so the rest of the suite never sees the old schema.
 
@@ -121,7 +121,8 @@ describe('migration 0246 invoice layouts', () => {
       ]);
       await run(tx, ROLLBACK);
       const back = (await tx.execute(sql`SELECT name AS n FROM invoice_templates WHERE tenant_id = ${t} AND company_id IS NULL`)).rows as Array<{ n: string }>;
-      expect(back).toEqual([{ n: 'Default' }]);
+      // The rename is kept: a default the owner named 'Standard' stays so.
+      expect(back).toEqual([{ n: 'Standard' }]);
     });
   });
 });

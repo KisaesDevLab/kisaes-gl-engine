@@ -7,12 +7,11 @@
 -- shows and which layout each invoice prints with (every invoice prints with
 -- the company default again), which layouts are archived and each client's
 -- default layout. The extra layouts stay as rows the old code
--- ignores. The default that 0246 renamed is renamed back, so a default the
--- owner named 'Standard' himself also becomes 'Default'. The one-default
--- clean-up is kept (it only fixed duplicates).
+-- ignores. The default that 0246 renamed keeps the name 'Standard' (the
+-- old code shows any name; renaming back could also rename a default the
+-- owner named 'Standard' himself). The one-default clean-up is kept (it
+-- only fixed duplicates).
 
-UPDATE invoice_templates SET name = 'Default' WHERE name = 'Standard' AND is_default IS TRUE;
---> statement-breakpoint
 DROP INDEX IF EXISTS uq_invoice_templates_company_default;
 --> statement-breakpoint
 DROP INDEX IF EXISTS idx_txn_invoice_layout;

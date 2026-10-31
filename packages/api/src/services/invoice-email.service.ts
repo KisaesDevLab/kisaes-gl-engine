@@ -25,12 +25,13 @@
 
 import { and, asc, eq } from 'drizzle-orm';
 import { db, type Tx } from '../db/index.js';
-import { companies, contacts, formEmailQueue, transactions } from '../db/schema/index.js';
+import { contacts, formEmailQueue, transactions } from '../db/schema/index.js';
 import { INVOICE_EMAIL_PDF_MAX_BYTES } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { createMailTransport } from '../utils/mail-transport.js';
 import { getSmtpSettings as getSystemSmtp } from './admin.service.js';
+import { getSmtpTransportSettings } from './company.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { recordSendEvent } from './document-send.service.js';
 import * as ledger from './ledger.service.js';
@@ -87,17 +88,16 @@ export function decodePdf(base64: string): Buffer {
  * when the session password is missing.
  */
 async function resolveSmtp(tenantId: string, companyId?: string) {
-  const [company] = await db.select({
-    host: companies.smtpHost, port: companies.smtpPort, user: companies.smtpUser, pass: companies.smtpPass,
-    from: companies.smtpFrom, fromName: companies.smtpFromName, email: companies.email,
-  }).from(companies)
-    .where(companyId ? and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)) : eq(companies.tenantId, tenantId))
-    .limit(1);
+  // The company's settings as every mail path reads them (review nit 7).
+  const company = await getSmtpTransportSettings(tenantId, companyId).catch((e: unknown) => {
+    if (e instanceof AppError && e.statusCode === 404) return null;
+    throw e;
+  });
   let smtp: { host: string; port: number; user: string; pass: string; from: string; fromName: string };
-  if (company?.host) {
+  if (company?.configured) {
     smtp = {
-      host: company.host, port: company.port || 587, user: company.user || '', pass: company.pass || '',
-      from: company.from || company.email || '', fromName: company.fromName || '',
+      host: company.smtpHost, port: company.smtpPort, user: company.smtpUser, pass: company.smtpPass,
+      from: company.smtpFrom, fromName: company.smtpFromName,
     };
   } else {
     const sys = await getSystemSmtp();

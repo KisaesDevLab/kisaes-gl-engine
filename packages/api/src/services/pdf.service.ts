@@ -182,6 +182,12 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
       itemName: isSubtotal ? null : await itemName(line.itemId),
     });
   }
+  // hideZeroLines covers a billable cost too (review nit 11), once its
+  // markup is added: a cost that rounds to 0.00 with no markup prints nothing.
+  if (txn.hideZeroLines) {
+    const zero = new Set([...billableRows.values()].filter((b) => new Decimal(b.row.amount).isZero()).map((b) => b.row));
+    if (zero.size > 0) revenueLines.splice(0, revenueLines.length, ...revenueLines.filter((r) => !zero.has(r)));
+  }
 
   return {
     company: {

@@ -3,6 +3,8 @@
 // Free for small businesses; see LICENSE for terms.
 
 import express, { Router } from 'express';
+import jwt from 'jsonwebtoken';
+import { env } from '../config/env.js';
 import { z } from 'zod';
 import {
   createInvoiceSchema, recordPaymentSchema, voidTransactionSchema, invoiceListFiltersSchema, recordDocumentSentSchema,
@@ -114,7 +116,7 @@ invoicesRouter.post('/preview', validate(previewInvoiceSchema), describe({
     + 'subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, '
     + 'priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client\'s open '
     + 'balance (contact-balance-v1) plus this total, with invoiceId\'s posted total taken out first. Errors as POST (400 VALIDATION_ERROR); '
-    + `invoiceId of another company or not found 404. Billable lines add {billableSourceLineId, costAmount, markupPercent, markupAmount, displayRate, error: {code: BILLABLE_ALREADY_BILLED, invoiceId, invoiceNumber} | null}; nothing is locked or claimed. ${moneyRules} ${pricingRules} ${billableRules}`,
+    + `invoiceId of another company or not found 404. Billable lines add {billableSourceLineId, costAmount, markupPercent, markupAmount, displayRate, error: {code: BILLABLE_ALREADY_BILLED, invoiceId, invoiceNumber} | null}: a cost another invoice holds is reported on its line and the preview still answers; a cost no longer available (409 BILLABLE_COST_UNAVAILABLE) or billable to another customer (400 BILLABLE_CONTACT_MISMATCH) fails the whole preview, as POST would, with details.conflicts naming the lines. Nothing is locked or claimed. ${moneyRules} ${pricingRules} ${billableRules}`,
   body: previewInvoiceSchema,
 }), async (req, res) => {
   res.json(await invoiceService.previewInvoice(req.tenantId, req.body, req.companyId));
@@ -172,13 +174,35 @@ invoicesRouter.post('/:id/sent', keyedInvoiceById(200), validate(recordDocumentS
 export const INVOICE_EMAIL_JSON_LIMIT = '15mb';
 const invoiceEmailJsonParser = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
 const INVOICE_EMAIL_PATH = /^\/api\/v1\/invoices\/[^/]+\/email\/?$/;
+const INVOICE_EMAIL_JSON_MAX_BYTES = 15 * 1024 * 1024;
+
+/**
+ * The larger limit only for a caller that looks signed in (review nit 4: it
+ * runs before authenticate): a Bearer token this server signed, or an API
+ * key header (checked by authenticate next), and a Content-Length within the
+ * limit. Anyone else gets the global 10 MB parser, as every route does.
+ */
+function mayUseLargeEmailBody(req: express.Request): boolean {
+  const len = Number(req.headers['content-length']);
+  if (!Number.isFinite(len) || len <= 0 || len > INVOICE_EMAIL_JSON_MAX_BYTES) return false;
+  if (req.headers['x-api-key']) return true;
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith('Bearer ')) return false;
+  try {
+    jwt.verify(auth.slice(7), env.JWT_SECRET, { algorithms: ['HS256'] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Mount with app.use(invoiceEmailJson) (no path: not a route family of its
  * own) ahead of the global JSON parser; it parses POST
  * /api/v1/invoices/:id/email only and passes everything else on.
  */
 export const invoiceEmailJson: express.RequestHandler = (req, res, next) => {
-  if (req.method === 'POST' && INVOICE_EMAIL_PATH.test(req.path)) invoiceEmailJsonParser(req, res, next);
+  if (req.method === 'POST' && INVOICE_EMAIL_PATH.test(req.path) && mayUseLargeEmailBody(req)) invoiceEmailJsonParser(req, res, next);
   else next();
 };
 

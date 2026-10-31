@@ -267,6 +267,15 @@ describe('claim and list (rule 1, S7, B4)', () => {
     expect(html).not.toContain('84.22');
   });
 
+  it('hideZeroLines leaves a billed cost of 0.00 off the PDF (nit 11)', async () => {
+    const { ids } = await postCosts([{ amount: '0.004', desc: 'Rounding crumbs' }, { amount: '50', desc: 'Gravel' }]);
+    const r = await postInvoice([billLine(ids[0]!), billLine(ids[1]!)], { hideZeroLines: true });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const html = await getInvoiceHtml(c.tenantId, r.json.invoice.id);
+    expect(html).toContain('Gravel');
+    expect(html).not.toContain('Rounding crumbs');
+  });
+
   it('a 4-place cost, a negative cost at cost (Q-P20z), quantity 3 (rule 5; price levels: golden billableCases)', async () => {
     const { ids } = await postCosts([
       { amount: '12.3456' }, { amount: '-20.00', desc: 'rebate' }, { amount: '842.1501', qty: '3', unitPrice: '280.7167' }, { amount: '100' },
