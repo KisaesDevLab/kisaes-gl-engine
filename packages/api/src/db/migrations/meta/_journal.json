@@ -1702,6 +1702,13 @@
       "when": 1785800014380,
       "tag": "0242_invoice_core",
       "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1785900014380,
+      "tag": "0243_item_pricing",
+      "breakpoints": true
     }
   ]
 }

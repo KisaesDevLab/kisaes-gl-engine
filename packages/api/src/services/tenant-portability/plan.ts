@@ -390,6 +390,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'conditional_rules.forked_from_global_id': 'global-ref:null',
   'contacts.default_expense_account_id': 'tenant-ref:accounts',
   'contacts.company_id': 'tenant-ref:companies',
+  // The client's price level (U-40, migration 0243).
+  'contacts.price_level_id': 'tenant-ref:price_levels',
   'daily_sales_entries.company_id': 'tenant-ref:companies',
   'daily_sales_entries.template_id': 'tenant-ref:daily_sales_templates',
   'daily_sales_entries.transaction_id': 'tenant-ref:transactions',
@@ -474,6 +476,10 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'mcp_request_log.api_key_id': 'excluded-ref:api_keys',
   'mcp_request_log.oauth_client_id': 'excluded-ref:oauth_clients',
   'mcp_request_log.company_id': 'tenant-ref:companies',
+  // Price levels (U-40, migration 0243).
+  'price_levels.company_id': 'tenant-ref:companies',
+  'price_level_items.price_level_id': 'tenant-ref:price_levels',
+  'price_level_items.item_id': 'tenant-ref:items',
   'payment_applications.payment_id': 'tenant-ref:transactions',
   'payment_applications.invoice_id': 'tenant-ref:transactions',
   'payment_applications.company_id': 'tenant-ref:companies',

@@ -958,7 +958,8 @@ export async function importAsNewTenant(
       INSERT INTO journal_lines (
         id, tenant_id, company_id, transaction_id, account_id,
         debit, credit, description, item_id, quantity, unit_price,
-        is_taxable, tax_rate, tax_amount, line_order, service_date
+        is_taxable, tax_rate, tax_amount, line_order, service_date,
+        discount_percent, unit_price_source
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${transactionId},
@@ -973,7 +974,9 @@ export async function importAsNewTenant(
         ${(jl['tax_rate'] as string) || '0'},
         ${(jl['tax_amount'] as string) || '0'},
         ${(jl['line_order'] as number) || 0},
-        ${/* U-123, 0242; absent in older exports. */ (jl['service_date'] as string) || null}
+        ${/* U-123, 0242; absent in older exports. */ (jl['service_date'] as string) || null},
+        ${/* U-129, 0243; absent in older exports. */ (jl['discount_percent'] as string) || null},
+        ${(jl['unit_price_source'] as string) || null}
       )
     `);
     counts.journal_lines++;

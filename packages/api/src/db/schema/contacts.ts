@@ -35,6 +35,8 @@ export const contacts = pgTable('contacts', {
   // Vendor custom-terms discount (U-86, migration 0230).
   defaultDiscountPercent: decimal('default_discount_percent', { precision: 7, scale: 4 }),
   defaultDiscountDays: integer('default_discount_days'),
+  // The client's price level (U-40, price-levels-v1, migration 0243).
+  priceLevelId: uuid('price_level_id'),
   openingBalance: decimal('opening_balance', { precision: 19, scale: 4 }).default('0'),
   openingBalanceDate: date('opening_balance_date'),
   // Vendor-specific

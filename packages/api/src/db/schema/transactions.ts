@@ -186,6 +186,11 @@ export const journalLines = pgTable('journal_lines', {
   lineRole: varchar('line_role', { length: 20 }),
   // The day the line's work was done (U-123, migration 0242), YYYY-MM-DD.
   serviceDate: date('service_date'),
+  // Invoice pricing (U-129, migration 0243): the percent a discount line
+  // used, and where the line's price came from (input | item | price_level
+  // | price_level_percent | none).
+  discountPercent: decimal('discount_percent', { precision: 7, scale: 4 }),
+  unitPriceSource: varchar('unit_price_source', { length: 30 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

@@ -10,7 +10,12 @@ export const items = pgTable('items', {
   companyId: uuid('company_id'),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
+  // A discount item without discountPercent: the amount off (U-39a).
   unitPrice: decimal('unit_price', { precision: 19, scale: 4 }),
+  // Sales item kind (U-39a, item-kinds-sales-v1, migration 0243).
+  itemType: varchar('item_type', { length: 20 }).$type<'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal'>().notNull().default('service'),
+  // A discount item's percent off, 0 < p <= 100 (U-39a).
+  discountPercent: decimal('discount_percent', { precision: 7, scale: 4 }),
   incomeAccountId: uuid('income_account_id').notNull(),
   isTaxable: boolean('is_taxable').default(true),
   isActive: boolean('is_active').default(true),
