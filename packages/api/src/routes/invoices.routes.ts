@@ -155,7 +155,12 @@ invoicesRouter.post('/:id/sent', keyedInvoiceById(200), validate(recordDocumentS
 // 13.4 MB encoded), over the app's 10 MB JSON limit: app.ts mounts
 // invoiceEmailJson for this route ahead of the global parser.
 export const INVOICE_EMAIL_JSON_LIMIT = '15mb';
-export const invoiceEmailJson = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
+const invoiceEmailJsonParser = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
+/** Mount with app.use('/api/v1/invoices/:id/email', invoiceEmailJson) ahead of the global JSON parser. */
+export const invoiceEmailJson: express.RequestHandler = (req, res, next) => {
+  if (req.method === 'POST' && (req.path === '/' || req.path === '')) invoiceEmailJsonParser(req, res, next);
+  else next();
+};
 
 const emailRules = 'Recipients, subject and body are never logged or audited (audit rows carry counts). '
   + 'Errors: 400 SMTP_NOT_CONFIGURED (no mail server for the company, no From address, or in desktop mode no session password or one given for another server; '

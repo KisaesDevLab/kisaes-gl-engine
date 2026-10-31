@@ -30566,6 +30566,173 @@
         ]
       }
     },
+    "/api/v1/forms/email-queue": {
+      "get": {
+        "description": "Each item: the message (to, cc, bcc, subject, body), the form it sends (transactionId, txnNumber, txnType, txnStatus, contactName), who queued it and when. No PDF is stored; the client makes it at send time (Q-P20q).",
+        "operationId": "get_api_v1_forms_email_queue",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "bcc": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "body": {
+                            "type": "string"
+                          },
+                          "cc": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "contactName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "transactionId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "txnNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnStatus": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnType": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "userId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "transactionId",
+                          "txnNumber",
+                          "txnType",
+                          "txnStatus",
+                          "contactName",
+                          "to",
+                          "cc",
+                          "bcc",
+                          "subject",
+                          "body",
+                          "userId",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The email Outbox: messages waiting to be sent, oldest first (invoice-email-v1)",
+        "tags": [
+          "forms"
+        ]
+      }
+    },
+    "/api/v1/forms/email-queue/{id}": {
+      "delete": {
+        "description": "Response 204. A message of another company, or one already sent or removed: 404 OUTBOX_ITEM_NOT_FOUND. One audit row (no recipients).",
+        "operationId": "delete_api_v1_forms_email_queue_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Remove a message from the email Outbox without sending it (invoice-email-v1)",
+        "tags": [
+          "forms"
+        ]
+      }
+    },
     "/api/v1/forms/mark-printed": {
       "post": {
         "description": "Every id must be an invoice, cash sale or credit memo of this company, else 404 and nothing changes. Each form taken out of the queue (posted) also gets a \"printed\" send event (invoice-sent-history-v1); a draft invoice becomes sent.",
@@ -31822,6 +31989,330 @@
         "tags": [
           "invoices"
         ]
+      }
+    },
+    "/api/v1/invoices/{id}/email": {
+      "post": {
+        "description": "Sends {to, cc, bcc, subject, body} with the PDF the client made attached (pdfBase64: application/pdf starting %PDF-, at most 10 MB decoded, else 400 ATTACHMENT_TOO_LARGE / VALIDATION_ERROR; pdfFileName e.g. Invoice-1042.pdf). Only when the server accepts it, an \"email\" send event (invoice-sent-history-v1, recipients = to + cc + bcc) is recorded and a draft becomes sent; a failed send records nothing. outboxId (optional): the Outbox message being sent; it is removed in the same commit, and 404 OUTBOX_ITEM_NOT_FOUND (nothing sent) when it is gone. Response 200 {invoice} with its sendHistory. Idempotency-Key: a retry with the key replays and sends nothing more; if the commit fails after the server accepted the message, a retry sends it again. Recipients, subject and body are never logged or audited (audit rows carry counts). Errors: 400 SMTP_NOT_CONFIGURED (no mail server for the company, no From address, or in desktop mode no session password or one given for another server; smtp-session-v1), 400 SMTP_SEND_FAILED (the server refused the message or the login; details.reason auth|send), 503 OFFLINE_UNAVAILABLE (desktop offline), 400 INVOICE_VOID, 404 (another company).",
+        "operationId": "post_api_v1_invoices_by_id_email",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "outboxId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "pdfBase64": {
+                    "maxLength": 13981020,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "pdfFileName": {
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()#-]{0,115}\\.pdf$",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to",
+                  "pdfFileName",
+                  "pdfBase64"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Email an invoice through the company mail server (invoice-email-v1)",
+        "tags": [
+          "invoices"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/invoices/{id}/email-later": {
+      "post": {
+        "description": "Stores {to, cc, bcc, subject, body} with the company; nothing is sent until the client sends it with POST /invoices/:id/email and outboxId. No PDF is stored: the client makes it when it sends (Q-P20q). Response 201 {item} (as GET /forms/email-queue). Void: 400 INVOICE_VOID; another company: 404. Recipients, subject and body are never logged or audited (audit rows carry counts).",
+        "operationId": "post_api_v1_invoices_by_id_email_later",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "item": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "bcc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "cc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "contactName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "subject": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "transactionId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "txnNumber": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnStatus": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnType": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "userId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "transactionId",
+                        "txnNumber",
+                        "txnType",
+                        "txnStatus",
+                        "contactName",
+                        "to",
+                        "cc",
+                        "bcc",
+                        "subject",
+                        "body",
+                        "userId",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "item"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Put an invoice email in the Outbox (invoice-email-v1)",
+        "tags": [
+          "invoices"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/invoices/{id}/mark-sent": {
