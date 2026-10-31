@@ -58,7 +58,10 @@ recurringRouter.get('/', async (req, res) => {
   res.json({ schedules: result.data, total: result.total, limit: result.limit, offset: result.offset });
 });
 
-recurringRouter.post('/', validate(createScheduleSchema), async (req, res) => {
+recurringRouter.post('/', describe({
+  summary: 'Make a posted transaction recurring',
+  description: 'Snapshots the transaction into a template and schedules it. Response 201 {schedule}. An invoice that bills costs (U-128) is 400 RECURRING_HAS_BILLABLE_COSTS (Q-P20ah: each cost is billed once). A recurring invoice copy keeps every line but A/R and Sales Tax as a signed amount: discounts keep their item and percent or amount, subtotals their item; billed costs never carry over.',
+}), validate(createScheduleSchema), async (req, res) => {
   const { templateTransactionId, ...schedule } = req.body;
   const sched = await recurringService.create(req.tenantId, templateTransactionId, schedule, req.userId);
   res.status(201).json({ schedule: sched });

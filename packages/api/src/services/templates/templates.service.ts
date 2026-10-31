@@ -33,6 +33,7 @@ import {
 } from './draft.js';
 import { loadSource, snapshotForCreate, snapshotTransaction } from './snapshot.js';
 import { autoUnsupported } from './replay.js';
+import { assertNoBillableCostsForRecurring } from '../billable-links.js';
 
 export type TemplateRow = typeof templateTransactions.$inferSelect;
 export type ScheduleRow = typeof recurringSchedules.$inferSelect;
@@ -323,6 +324,10 @@ export async function writeSchedule(
   }
   if (input.endDate && input.endDate < input.nextDate) {
     throw AppError.badRequest('The end date must be on or after the next date', 'VALIDATION_ERROR');
+  }
+  // An invoice that bills costs can't repeat (Q-P20ah).
+  if (tpl.kind === 'legacy' && tpl.sourceTransactionId) {
+    await assertNoBillableCostsForRecurring(tx, tpl.tenantId, tpl.sourceTransactionId);
   }
   const mode = input.mode === 'auto' ? 'auto' : 'reminder';
   // An auto schedule never starts a catch-up of more than a year: a next
@@ -630,6 +635,8 @@ export async function templateForSchedule(
 ): Promise<TemplateRow> {
   const src = await loadSource(tx, tenantId, null, templateTransactionId);
   if (!src) throw AppError.notFound('Transaction not found');
+  // An invoice that bills costs can't repeat (Q-P20ah).
+  await assertNoBillableCostsForRecurring(tx, tenantId, src.id);
   const snap = src.status === 'posted' ? await snapshotTransaction(tx, tenantId, src) : null;
   const companyId = src.companyId;
   const name = await uniqueTemplateName(tx, tenantId, companyId,

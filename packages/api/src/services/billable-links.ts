@@ -15,7 +15,7 @@
  * (Q-P20x) and does not touch the source's updated_at.
  */
 
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { DbOrTx, Tx } from '../db/index.js';
 import { accounts, billableCostLinks, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -197,5 +197,27 @@ export async function assertMarkupAccount(
   if (row.isActive === false) throw invalid('The markup account is inactive.');
   if (row.accountType !== 'revenue' && row.accountType !== 'other_revenue') {
     throw invalid('The markup account must be an income account.');
+  }
+}
+
+/**
+ * 400 RECURRING_HAS_BILLABLE_COSTS when the transaction is an invoice that
+ * bills costs (Q-P20ah): such an invoice can't be made recurring, since
+ * each cost is billed once.
+ */
+export async function assertNoBillableCostsForRecurring(executor: DbOrTx, tenantId: string, transactionId: string): Promise<void> {
+  const [row] = await executor.select({ id: journalLines.id }).from(journalLines)
+    .innerJoin(transactions, and(eq(transactions.tenantId, journalLines.tenantId), eq(transactions.id, journalLines.transactionId)))
+    .where(and(
+      eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, transactionId),
+      eq(transactions.txnType, 'invoice'),
+      or(isNotNull(journalLines.billableSourceLineId), inArray(journalLines.lineRole, ['billable_cost', 'billable_markup'])),
+    ))
+    .limit(1);
+  if (row) {
+    throw AppError.badRequest(
+      'An invoice that bills costs can\'t repeat: each cost is billed once. Make the schedule from an invoice without billable costs.',
+      'RECURRING_HAS_BILLABLE_COSTS',
+    );
   }
 }

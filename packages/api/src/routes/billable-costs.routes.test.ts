@@ -33,6 +33,8 @@ import * as authService from '../services/auth.service.js';
 import * as ledger from '../services/ledger.service.js';
 import * as companyService from '../services/company.service.js';
 import { postLegacyClone } from '../services/recurring.service.js';
+import * as recurringService from '../services/recurring.service.js';
+import * as templatesService from '../services/templates/templates.service.js';
 import { checkBillableInvariant } from '../services/billable-links.js';
 import { getInvoiceHtml } from '../services/pdf.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -637,16 +639,62 @@ describe('copies are plain lines (S4)', () => {
     expect(await activeLinks()).toHaveLength(1);
   });
 
-  it('recurring_invoice_plain_lines', async () => {
+  it('recurring_invoice_refused_and_never_rebills (Q-P20ah)', async () => {
     const { ids } = await postCosts([{ amount: '842.15' }]);
-    const inv = (await postInvoice([billLine(ids[0]!, { markupPercent: '10' })])).json.invoice;
+    const [disc] = await db.insert(items).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: `disc-${suffix()}`, itemType: 'discount',
+      discountPercent: '10', incomeAccountId: c.revenue, isTaxable: true,
+    }).returning();
+    const inv = (await postInvoice([
+      { accountId: c.revenue, quantity: '1', unitPrice: '100.00', isTaxable: true },
+      billLine(ids[0]!, { markupPercent: '10' }),
+      { itemId: disc!.id },
+    ])).json.invoice;
+
+    // Scheduling it is refused, by either route into a schedule.
+    await expect(recurringService.create(c.tenantId, inv.id, { frequency: 'monthly', startDate: '2026-11-10' }))
+      .rejects.toMatchObject({ statusCode: 400, code: 'RECURRING_HAS_BILLABLE_COSTS' });
+    await expect(templatesService.createFromTransaction(c.tenantId, c.companyId, undefined, {
+      transactionId: inv.id, name: `t-${suffix()}`, schedule: { frequency: 'monthly', intervalValue: 1, mode: 'reminder', nextDate: '2026-11-10' } as any,
+    })).rejects.toMatchObject({ code: 'RECURRING_HAS_BILLABLE_COSTS' });
+
+    // A copy made anyway (a schedule from before) never bills the cost again
+    // and keeps the discount, as a signed line with its item and percent.
     const occ = await postLegacyClone(c.tenantId, { id: crypto.randomUUID(), templateTransactionId: inv.id, nextOccurrence: '2026-11-10' });
     const occId = (occ as { id: string }).id;
     const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, occId));
     expect(lines.every((l) => l.billableSourceLineId === null && l.lineRole === null)).toBe(true);
+    const discLine = lines.find((l) => l.itemId === disc!.id)!;
+    expect([discLine.discountPercent, discLine.debit]).toEqual(['10.0000', '10.0000']);
+    // 100.00 + 926.37 billed = 1,026.37; 10 % = -102.64. The copy: 100.00 - 10.00 + tax.
     const [occTxn] = await db.select().from(transactions).where(eq(transactions.id, occId));
-    expect(occTxn!.total).toBe(inv.total);
+    expect(occTxn!.subtotal).toBe('90.0000');
     expect(await activeLinks()).toHaveLength(1);
+    expect(await checkBillableInvariant(db, c.tenantId)).toEqual([]);
+  });
+
+  it('recurring_invoice_keeps_discounts: a copy of a discounted invoice has the same total', async () => {
+    const [disc] = await db.insert(items).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: `disc-${suffix()}`, itemType: 'discount',
+      discountPercent: '10', incomeAccountId: c.revenue, isTaxable: true,
+    }).returning();
+    const [sub] = await db.insert(items).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: `sub-${suffix()}`, itemType: 'subtotal', incomeAccountId: c.revenue,
+    }).returning();
+    const [amt] = await db.insert(items).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: `amt-${suffix()}`, itemType: 'discount',
+      unitPrice: '5.00', incomeAccountId: c.revenue, isTaxable: true,
+    }).returning();
+    const r = await postInvoice([
+      { accountId: c.revenue, quantity: '3', unitPrice: '356.00', isTaxable: true },
+      { accountId: c.revenue, quantity: '-1', unitPrice: '20.00', isTaxable: true },
+      { itemId: sub!.id }, { itemId: disc!.id }, { itemId: amt!.id },
+    ]);
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const inv = r.json.invoice;
+    const occ = await postLegacyClone(c.tenantId, { id: crypto.randomUUID(), templateTransactionId: inv.id, nextOccurrence: '2026-11-10' });
+    const [occTxn] = await db.select().from(transactions).where(eq(transactions.id, (occ as { id: string }).id));
+    expect([occTxn!.subtotal, occTxn!.taxAmount, occTxn!.total]).toEqual([inv.subtotal, inv.taxAmount, inv.total]);
   });
 });
 

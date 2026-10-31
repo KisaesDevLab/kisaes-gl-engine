@@ -49060,6 +49060,7 @@
         ]
       },
       "post": {
+        "description": "Snapshots the transaction into a template and schedules it. Response 201 {schedule}. An invoice that bills costs (U-128) is 400 RECURRING_HAS_BILLABLE_COSTS (Q-P20ah: each cost is billed once). A recurring invoice copy keeps every line but A/R and Sales Tax as a signed amount: discounts keep their item and percent or amount, subtotals their item; billed costs never carry over.",
         "operationId": "post_api_v1_recurring",
         "requestBody": {
           "content": {
@@ -49146,6 +49147,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Make a posted transaction recurring",
         "tags": [
           "recurring"
         ]
@@ -72825,7 +72827,7 @@
     },
     "/api/v1/templates/from-transaction": {
       "post": {
-        "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 404 another company or a transaction without a company.",
+        "description": "Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 400 RECURRING_HAS_BILLABLE_COSTS when a schedule is set on an invoice that bills costs (Q-P20ah: such an invoice cannot repeat; a copy never bills a cost again); 404 another company or a transaction without a company.",
         "operationId": "post_api_v1_templates_from_transaction",
         "parameters": [
           {
@@ -73198,7 +73200,7 @@
         ]
       },
       "put": {
-        "description": "Needs write access to the kind, else 403 PERMISSION_DENIED; the editor becomes the owner of the auto runs. Setting, moving or switching to an auto nextDate more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate).",
+        "description": "Needs write access to the kind, else 403 PERMISSION_DENIED; the editor becomes the owner of the auto runs. Setting, moving or switching to an auto nextDate more than 366 days ago: 400 VALIDATION_ERROR (details.field schedule.nextDate). A schedule on a legacy template of an invoice that bills costs: 400 RECURRING_HAS_BILLABLE_COSTS (Q-P20ah).",
         "operationId": "put_api_v1_templates_by_id",
         "parameters": [
           {
