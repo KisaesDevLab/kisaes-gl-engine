@@ -41,7 +41,7 @@ const itemDoc = z.object({
 billableCostsRouter.get('/', describe({
   summary: 'List unbilled billable costs (billable-costs-v1)',
   description: 'The costs marked billable to a customer (check, expense, card charge or bill lines with isBillable and a line customer) that no invoice bills yet: '
-    + 'posted sources of the request\'s company (or of none), contactId = the line customer, sorted by source date then sourceLineId. '
+    + 'posted sources of the request\'s company (or of none), contactId = the line customer, sorted by source date, then source, then line order. Needs only the invoices permission (Q-P20ai: whoever bills a customer sees the vendor names, descriptions and amounts of the costs to bill). '
     + 'totalCount and totalAmount (the sum of costAmount, 2 places) are over every page. defaultMarkupPercent: the client\'s (contactId) suggested markup '
     + 'percent, or null. suggestedIncomeAccountId: the cost item\'s income account (source "item"), else null; a suggestion the client sends back as the '
     + 'invoice line\'s accountId. projectId is accepted and ignored until projects-v1. Bill a cost with an invoice line {billableSourceLineId, accountId, '
