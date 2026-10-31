@@ -2,11 +2,11 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { z } from 'zod';
 import {
   createInvoiceSchema, recordPaymentSchema, voidTransactionSchema, invoiceListFiltersSchema, recordDocumentSentSchema,
-  previewInvoiceSchema,
+  previewInvoiceSchema, emailInvoiceSchema, invoiceEmailMessageSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -20,6 +20,7 @@ import * as invoiceService from '../services/invoice.service.js';
 import * as ledger from '../services/ledger.service.js';
 import * as pdfService from '../services/pdf.service.js';
 import * as emailService from '../services/email.service.js';
+import * as invoiceEmail from '../services/invoice-email.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
 
@@ -146,6 +147,70 @@ invoicesRouter.post('/:id/sent', keyedInvoiceById(200), validate(recordDocumentS
 }), async (req, res) => {
   const invoice = await invoiceService.recordInvoiceSent(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ invoice });
+});
+
+// Invoice email and the Outbox (U-127, invoice-email-v1). Idempotency-Key on
+// both routes under that capability name (idempotency-invoice-v1 is fixed).
+// The email body carries the PDF as base64 (up to 10 MB decoded, about
+// 13.4 MB encoded), over the app's 10 MB JSON limit: app.ts mounts
+// invoiceEmailJson for this route ahead of the global parser.
+export const INVOICE_EMAIL_JSON_LIMIT = '15mb';
+export const invoiceEmailJson = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
+
+const emailRules = 'Recipients, subject and body are never logged or audited (audit rows carry counts). '
+  + 'Errors: 400 SMTP_NOT_CONFIGURED (no mail server for the company, no From address, or in desktop mode no session password or one given for another server; '
+  + 'smtp-session-v1), 400 SMTP_SEND_FAILED (the server refused the message or the login; details.reason auth|send), 503 OFFLINE_UNAVAILABLE (desktop offline), '
+  + '400 INVOICE_VOID, 404 (another company).';
+
+invoicesRouter.post('/:id/email', idempotent({
+  successStatus: 200,
+  replay: async (req) => ({ invoice: await invoiceService.getInvoice(req.tenantId, req.params['id']!, req.companyId) }),
+}), validate(emailInvoiceSchema), describe({
+  summary: 'Email an invoice through the company mail server (invoice-email-v1)',
+  description: 'Sends {to, cc, bcc, subject, body} with the PDF the client made attached (pdfBase64: application/pdf starting %PDF-, at most 10 MB decoded, '
+    + 'else 400 ATTACHMENT_TOO_LARGE / VALIDATION_ERROR; pdfFileName e.g. Invoice-1042.pdf). Only when the server accepts it, an "email" send event '
+    + '(invoice-sent-history-v1, recipients = to + cc + bcc) is recorded and a draft becomes sent; a failed send records nothing. outboxId (optional): '
+    + 'the Outbox message being sent; it is removed in the same commit, and 404 OUTBOX_ITEM_NOT_FOUND (nothing sent) when it is gone. '
+    + 'Response 200 {invoice} with its sendHistory. Idempotency-Key: a retry with the key replays and sends nothing more; '
+    + 'if the commit fails after the server accepted the message, a retry sends it again. '
+    + emailRules,
+  body: emailInvoiceSchema,
+  params: idParams,
+}), async (req, res) => {
+  const invoice = await invoiceEmail.emailInvoice(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
+  res.json({ invoice });
+});
+
+export const outboxItemDoc = z.object({
+  id: z.string().uuid(),
+  transactionId: z.string().uuid(),
+  txnNumber: z.string().nullable(),
+  txnType: z.string().nullable(),
+  txnStatus: z.string().nullable(),
+  contactName: z.string().nullable(),
+  to: z.array(z.string()),
+  cc: z.array(z.string()),
+  bcc: z.array(z.string()),
+  subject: z.string(),
+  body: z.string(),
+  userId: z.string().uuid().nullable(),
+  createdAt: z.string(),
+});
+
+invoicesRouter.post('/:id/email-later', idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => ({ item: await invoiceEmail.getEmailQueueItem(req.tenantId, entity!.id, req.companyId) }),
+}), validate(invoiceEmailMessageSchema), describe({
+  summary: 'Put an invoice email in the Outbox (invoice-email-v1)',
+  description: 'Stores {to, cc, bcc, subject, body} with the company; nothing is sent until the client sends it with POST /invoices/:id/email and outboxId. '
+    + 'No PDF is stored: the client makes it when it sends (Q-P20q). Response 201 {item} (as GET /forms/email-queue). '
+    + 'Void: 400 INVOICE_VOID; another company: 404. ' + emailRules.split(' Errors:')[0],
+  body: invoiceEmailMessageSchema,
+  params: idParams,
+  response: z.object({ item: outboxItemDoc }),
+}), async (req, res) => {
+  const item = await invoiceEmail.queueInvoiceEmail(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
+  res.status(201).json({ item });
 });
 
 invoicesRouter.post('/:id/mark-sent', async (req, res) => {

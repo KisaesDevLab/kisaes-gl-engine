@@ -315,4 +315,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * subtotal lines; lines read back with discountPercent and unitPriceSource. Golden: invoice-golden.json pricingCases.
    */
   'invoice-pricing-v1',
+  /**
+   * Invoice email and the Outbox (U-127): POST /invoices/:id/email {to[], cc[], bcc[], subject, body, pdfFileName, pdfBase64
+   * (application/pdf, <= 10 MB decoded), outboxId?} sends through the company SMTP (desktop: the session password,
+   * smtp-session-v1) and, only on success, records an "email" send event (to + cc + bcc) in the same commit; 200 {invoice}.
+   * 400 SMTP_NOT_CONFIGURED / SMTP_SEND_FAILED (details.reason auth|send), ATTACHMENT_TOO_LARGE, INVOICE_VOID; 503 OFFLINE_UNAVAILABLE.
+   * POST /invoices/:id/email-later stores the message (no PDF; made at send time, Q-P20q) in the Outbox: 201 {item};
+   * GET /forms/email-queue {data} oldest first; DELETE /forms/email-queue/:id 204 (404 OUTBOX_ITEM_NOT_FOUND). Company scope;
+   * recipients never logged or audited. Idempotency-Key (idempotency-v1's contract) on POST /invoices/:id/email and
+   * /email-later; this set is fixed. Migration 0244 (form_email_queue).
+   */
+  'invoice-email-v1',
 ];

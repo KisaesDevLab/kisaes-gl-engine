@@ -300,6 +300,11 @@ app.post('/api/v1/csp-report',
   },
 );
 
+// POST /invoices/:id/email carries the invoice PDF as base64 (U-127: up to
+// 10 MB decoded, ~13.4 MB encoded): its own larger limit, on that route only.
+// The global parser below skips a body that is already parsed.
+import { invoiceEmailJson } from './routes/invoices.routes.js';
+app.post('/api/v1/invoices/:id/email', invoiceEmailJson);
 app.use(express.json({ limit: '10mb' }));
 // Bound the array elements a body may carry before any schema sees it
 // (middleware/json-array-cap.ts): zod 3 keeps one issue per failing

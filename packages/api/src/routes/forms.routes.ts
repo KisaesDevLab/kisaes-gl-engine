@@ -11,6 +11,8 @@ import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import * as formsPrint from '../services/forms-print.service.js';
 import { AppError } from '../utils/errors.js';
+import * as invoiceEmail from '../services/invoice-email.service.js';
+import { outboxItemDoc } from './invoices.routes.js';
 
 // Forms print queue (U-113, forms-print-queue-v1): invoices, cash sales and
 // credit memos created or edited with printLater: true.
@@ -50,4 +52,27 @@ formsRouter.post('/mark-printed', validate(markBody), describe({
   response: z.object({ marked: z.number().int(), alreadyPrinted: z.number().int() }),
 }), async (req, res) => {
   res.json(await formsPrint.markPrinted(req.tenantId, req.body.ids, req.userId, req.companyId));
+});
+
+// Email Outbox (U-127, invoice-email-v1): messages put aside with POST
+// /invoices/:id/email-later, sent when the owner chooses (the client sends
+// each with POST /invoices/:id/email and outboxId). Company scope.
+formsRouter.get('/email-queue', describe({
+  summary: 'The email Outbox: messages waiting to be sent, oldest first (invoice-email-v1)',
+  description: 'Each item: the message (to, cc, bcc, subject, body), the form it sends (transactionId, txnNumber, txnType, txnStatus, contactName), '
+    + 'who queued it and when. No PDF is stored; the client makes it at send time (Q-P20q).',
+  response: z.object({ data: z.array(outboxItemDoc) }),
+}), async (req, res) => {
+  res.json({ data: await invoiceEmail.listEmailQueue(req.tenantId, req.companyId) });
+});
+
+formsRouter.delete('/email-queue/:id', describe({
+  summary: 'Remove a message from the email Outbox without sending it (invoice-email-v1)',
+  description: 'Response 204. A message of another company, or one already sent or removed: 404 OUTBOX_ITEM_NOT_FOUND. One audit row (no recipients).',
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
+  const id = z.string().uuid().safeParse(req.params['id']);
+  if (!id.success) throw new AppError(404, 'That message is no longer in the Outbox', 'OUTBOX_ITEM_NOT_FOUND');
+  await invoiceEmail.deleteEmailQueueItem(req.tenantId, id.data, req.userId, req.companyId);
+  res.status(204).end();
 });
