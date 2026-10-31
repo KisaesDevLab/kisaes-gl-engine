@@ -299,6 +299,9 @@ describe('POST /invoices/:id/email', () => {
     // valid token the body meets the global 10 MB parser before auth runs.
     const anon = await request('POST', `/api/v1/invoices/${inv.id}/email`, 'not-a-token', emailBody({ pdfBase64: pdfOf(10 * 1024 * 1024).toString('base64') }));
     expect(anon.status).toBe(413);
+    // A junk API key doesn't unlock it either (the key is looked up first).
+    const junk = await request('POST', `/api/v1/invoices/${inv.id}/email`, 'not-a-token', emailBody({ pdfBase64: pdfOf(10 * 1024 * 1024).toString('base64') }), { 'X-Api-Key': 'kb_junk_' + 'x'.repeat(40) });
+    expect(junk.status).toBe(413);
     expect(mocks.sent).toHaveLength(1);
   }, 60_000);
 

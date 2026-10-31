@@ -5,6 +5,7 @@
 import express, { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
+import { isLiveApiKey } from '../middleware/api-key-auth.js';
 import { z } from 'zod';
 import {
   createInvoiceSchema, recordPaymentSchema, voidTransactionSchema, invoiceListFiltersSchema, recordDocumentSentSchema,
@@ -179,15 +180,16 @@ const INVOICE_EMAIL_PATH = /^\/api\/v1\/invoices\/[^/]+\/email\/?$/;
 const INVOICE_EMAIL_JSON_MAX_BYTES = 15 * 1024 * 1024;
 
 /**
- * The larger limit only for a caller that looks signed in (review nit 4: it
- * runs before authenticate): a Bearer token this server signed, or an API
- * key header (checked by authenticate next), and a Content-Length within the
+ * The larger limit only for a signed-in caller (review nit 4: it runs
+ * before authenticate): a Bearer token this server signed, or a live API key
+ * (looked up; a junk key does not count), and a Content-Length within the
  * limit. Anyone else gets the global 10 MB parser, as every route does.
  */
-function mayUseLargeEmailBody(req: express.Request): boolean {
+async function mayUseLargeEmailBody(req: express.Request): Promise<boolean> {
   const len = Number(req.headers['content-length']);
   if (!Number.isFinite(len) || len <= 0 || len > INVOICE_EMAIL_JSON_MAX_BYTES) return false;
-  if (req.headers['x-api-key']) return true;
+  const apiKey = req.headers['x-api-key'];
+  if (typeof apiKey === 'string' && apiKey) return isLiveApiKey(apiKey);
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) return false;
   try {
@@ -204,8 +206,11 @@ function mayUseLargeEmailBody(req: express.Request): boolean {
  * /api/v1/invoices/:id/email only and passes everything else on.
  */
 export const invoiceEmailJson: express.RequestHandler = (req, res, next) => {
-  if (req.method === 'POST' && INVOICE_EMAIL_PATH.test(req.path) && mayUseLargeEmailBody(req)) invoiceEmailJsonParser(req, res, next);
-  else next();
+  if (req.method !== 'POST' || !INVOICE_EMAIL_PATH.test(req.path)) { next(); return; }
+  mayUseLargeEmailBody(req).then((ok) => {
+    if (ok) invoiceEmailJsonParser(req, res, next);
+    else next();
+  }, next);
 };
 
 const emailRules = 'Recipients, subject and body are never logged or audited (audit rows carry counts). '
