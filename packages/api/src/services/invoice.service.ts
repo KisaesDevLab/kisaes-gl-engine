@@ -147,7 +147,7 @@ function billableError(message: string, code: string, details?: Record<string, u
 async function resolveInvoiceLines(
   executor: DbOrTx, tenantId: string, companyId: string | null | undefined, lines: readonly InvoiceLineInput[],
 ): Promise<ResolvedInvoiceLine[]> {
-  const ids = [...new Set(lines.map((l) => l.itemId).filter((v): v is string => !!v))];
+  const ids = [...new Set(lines.filter((l) => !l.billableSourceLineId).map((l) => l.itemId).filter((v): v is string => !!v))];
   const rows = ids.length === 0 ? [] : await executor.select().from(items)
     .where(and(eq(items.tenantId, tenantId), inArray(items.id, ids)));
   if (rows.length !== ids.length || rows.some((r) => ledger.inOtherCompany(r, companyId))) {
