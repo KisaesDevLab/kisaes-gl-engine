@@ -9,7 +9,9 @@ import { companies, contacts, transactions } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import * as pdfService from './pdf.service.js';
 import { AppError } from '../utils/errors.js';
-import { getSmtpSettings as getCompanySmtp } from './company.service.js';
+// The send path needs the stored password; getSmtpSettings is the masked
+// read shape for GET /company/smtp and always returns smtpPass ''.
+import { getSmtpTransportSettings as getCompanySmtp } from './company.service.js';
 import { getSmtpSettings as getSystemSmtp } from './admin.service.js';
 
 /**
@@ -81,9 +83,9 @@ async function createTransport(tenantId: string, companyId?: string) {
     };
   }
 
-  // Desktop: createMailTransport replaces `pass` with the session secret
-  // (U-13) and throws 400 SMTP_NOT_CONFIGURED when none was provided; the
-  // stored column is never used there.
+  // Server: `pass` is the stored password. Desktop: createMailTransport
+  // replaces it with the session secret (U-13) and throws 400
+  // SMTP_NOT_CONFIGURED when none was provided (the column is empty there).
   return {
     from,
     transport: createMailTransport({
