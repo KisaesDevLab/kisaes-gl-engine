@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DecimalLib from 'decimal.js';
 import { computeSalesDocument, allocateCents, salesLineAmount } from './sales-compute.js';
-import { computeInvoice, priceLevelPrice, type InvoiceComputeLineInput, type PricingLevel } from './invoice-compute.js';
+import { computeInvoice, priceLevelPrice, billableFigures, type InvoiceComputeLineInput, type PricingLevel } from './invoice-compute.js';
 import { AppError } from './errors.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
@@ -113,6 +113,55 @@ describe('invoice pricing golden cases (item-kinds-sales-v1, price-levels-v1, in
     expect(priceLevelPrice('0.30', '5')).toBe('0.32');
     expect(priceLevelPrice('19.99', '-100')).toBe('0.00');
     expect(() => priceLevelPrice('1', '-100.5')).toThrow(AppError);
+  });
+});
+
+interface BillableIn { sourceCost: string; sourceQuantity: string | null; markupPercent: string }
+const billableGolden = golden as unknown as {
+  billableRules: Record<string, string>;
+  billableCases: Array<{
+    name: string; defaultTaxRate: string; priceLevel?: PricingLevel;
+    lines: Array<Omit<InvoiceComputeLineInput, 'billable'> & { billable?: BillableIn }>;
+    expect: { lines: Array<Record<string, string | null>>; subtotal: string; taxableBase: string; taxTotal: string; total: string };
+  }>;
+  billableErrors: Array<{ name: string; billable: BillableIn; error: string }>;
+};
+
+describe('billable cost golden cases (billable-costs-v1, U-128)', () => {
+  it('states every billable rule', () => {
+    expect(Object.keys(billableGolden.billableRules).sort()).toEqual(['cost', 'journal', 'line', 'markup']);
+  });
+
+  it.each(billableGolden.billableCases)('$name', (c) => {
+    const figures = c.lines.map((l) => (l.billable
+      ? billableFigures(l.billable.sourceCost, l.billable.sourceQuantity, l.billable.markupPercent) : null));
+    const r = computeInvoice(c.lines.map((l, i) => ({ ...l, billable: figures[i] })), {
+      defaultTaxRate: c.defaultTaxRate, priceLevel: c.priceLevel ?? null,
+    });
+    expect(r.lines.map((l, i) => ({
+      costAmount: figures[i]?.costAmount ?? null,
+      markupPercent: figures[i]?.markupPercent ?? null,
+      markupAmount: figures[i]?.markupAmount ?? null,
+      amount: l.amount, quantity: l.quantity, unitPrice: l.unitPrice, taxAmount: l.taxAmount,
+    }))).toEqual(c.expect.lines);
+    expect([r.subtotal, r.taxableBase, r.taxTotal, r.total])
+      .toEqual([c.expect.subtotal, c.expect.taxableBase, c.expect.taxTotal, c.expect.total]);
+    r.lines.forEach((l, i) => {
+      const f = figures[i];
+      if (!f) return;
+      expect(l.unitPriceSource).toBe('billable_cost');
+      // amount = cost + markup; markup = round2(cost x pct / 100).
+      expect(new Decimal(f.costAmount).plus(f.markupAmount).toFixed(2)).toBe(l.amount);
+      expect(new Decimal(f.costAmount).times(f.markupPercent).dividedBy(100)
+        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)).toBe(f.markupAmount === '0.00' ? '0.00' : f.markupAmount);
+    });
+  });
+
+  it.each(billableGolden.billableErrors)('refuses: $name', (c) => {
+    let err: unknown;
+    try { billableFigures(c.billable.sourceCost, c.billable.sourceQuantity, c.billable.markupPercent); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).code).toBe(c.error);
   });
 });
 

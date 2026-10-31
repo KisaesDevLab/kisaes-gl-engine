@@ -46,7 +46,57 @@ const Decimal = BaseDecimal.clone({ precision: 40, rounding: BaseDecimal.ROUND_H
 type DecimalValue = InstanceType<typeof Decimal>;
 
 export type SalesItemType = 'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal';
-export type UnitPriceSource = 'input' | 'item' | 'price_level' | 'price_level_percent' | 'none';
+export type UnitPriceSource = 'input' | 'item' | 'price_level' | 'price_level_percent' | 'none' | 'billable_cost';
+
+/**
+ * A billable cost's figures on an invoice (U-128, billable-costs-v1; golden
+ * billableCases). Half away from zero, sign kept:
+ *   costAmount   = round2(source cost), the source line's debit - credit
+ *   markupAmount = round2(costAmount x markupPercent / 100); a negative cost
+ *                  takes no markup and passes through at cost (Q-P20z), so
+ *                  its effective markupPercent is 0
+ *   amount       = costAmount + markupAmount (one visible line, Q-P20w)
+ *   quantity     = the source quantity, else 1
+ *   displayRate  = amount / quantity, 4 places (exact when quantity is 1)
+ */
+export interface BillableFigures {
+  costAmount: string;
+  markupPercent: string;
+  markupAmount: string;
+  amount: string;
+  quantity: string;
+  displayRate: string;
+}
+
+const MARKUP_RE = /^\d{1,4}(\.\d{1,4})?$/;
+
+/** A markup percent: "0" to "1000", at most 4 places (10 = 10 %). */
+export function parseMarkupPercent(value: unknown, field: string): DecimalValue {
+  const s = value === undefined || value === null || value === '' ? '0' : asString(value);
+  if (!MARKUP_RE.test(s)) throw invalid(`${field} must be a percent from 0 to 1000 with at most 4 decimal places, such as 10 for 10 %`);
+  const p = new Decimal(s);
+  if (p.greaterThan(1000)) throw invalid(`${field} must be from 0 to 1000`);
+  return p;
+}
+
+export function billableFigures(sourceCost: unknown, sourceQuantity: unknown, markupPercent: unknown, field = 'line'): BillableFigures {
+  const cost = new Decimal(asString(sourceCost) || '0').toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  const sent = parseMarkupPercent(markupPercent, `${field}.markupPercent`);
+  const pct = cost.isNegative() ? new Decimal(0) : sent;
+  let markup = cost.times(pct).dividedBy(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  if (markup.isZero()) markup = new Decimal(0);
+  const amount = cost.plus(markup);
+  const q = present(sourceQuantity) ? new Decimal(asString(sourceQuantity)) : new Decimal(1);
+  const quantity = q.isZero() ? new Decimal(1) : q;
+  return {
+    costAmount: (cost.isZero() ? new Decimal(0) : cost).toFixed(2),
+    markupPercent: pct.toFixed(4),
+    markupAmount: markup.toFixed(2),
+    amount: (amount.isZero() ? new Decimal(0) : amount).toFixed(2),
+    quantity: quantity.toFixed(4).replace(/\.?0+$/, '') || '0',
+    displayRate: amount.dividedBy(quantity).toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4),
+  };
+}
 
 /** The item a line names, as the service read it (prices are decimal strings). */
 export interface PricingItem {
@@ -70,6 +120,12 @@ export interface InvoiceComputeLineInput {
   /** Resolved taxable flag (the request's, else the item's, else false). */
   isTaxable: boolean;
   taxRate?: unknown;
+  /**
+   * A billable cost (U-128): the line is this fixed amount, never priced
+   * from the item or a price level; quantity and unitPrice (the display
+   * rate) are the figures' own.
+   */
+  billable?: BillableFigures | null;
 }
 
 export interface InvoiceComputeLine {
@@ -165,6 +221,19 @@ export function computeInvoice(
   lines.forEach((l, i) => {
     const field = `lines[${i}]`;
     const type = l.item?.type ?? null;
+
+    // A billable cost: a fixed amount in the group like any money line, so a
+    // discount after it covers it at its full amount, markup included.
+    if (l.billable) {
+      const b = l.billable;
+      out.push({
+        itemType: type, quantity: b.quantity, unitPrice: b.displayRate, unitPriceSource: 'billable_cost',
+        discountPercent: null, amount: b.amount, isTaxable: l.isTaxable,
+      });
+      group = group.plus(b.amount);
+      lastSubtotal = null;
+      return;
+    }
 
     if (type === 'subtotal') {
       out.push({

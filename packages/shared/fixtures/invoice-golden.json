@@ -335,5 +335,104 @@
     { "name": "a discount with both a percent and an amount", "lines": [ { "quantity": "1", "unitPrice": "10.00", "isTaxable": false }, { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "discountPercent": "5", "unitPrice": "1.00", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
     { "name": "a discount percent above 100", "lines": [ { "quantity": "1", "unitPrice": "10.00", "isTaxable": false }, { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "discountPercent": "100.5", "isTaxable": false } ], "error": "VALIDATION_ERROR" },
     { "name": "a discount item with no percent and no amount", "lines": [ { "item": { "id": "d", "type": "discount", "unitPrice": null, "discountPercent": null }, "isTaxable": false } ], "error": "VALIDATION_ERROR" }
+  ],
+  "billableRules": {
+    "cost": "costAmount = round2(the source line's debit - credit), half away from zero, sign kept (a 4-place bill or check cost becomes cents here, so A/R stays cent-exact).",
+    "markup": "markupPercent is a percent (\"10\" = 10 %), 0 to 1000, at most 4 places. markupAmount = round2(costAmount x markupPercent / 100), half away from zero. A negative cost takes no markup and passes through at cost (Q-P20z): its effective markupPercent is 0.",
+    "line": "One visible line (Q-P20w): amount = costAmount + markupAmount; quantity = the source quantity, else 1; the rate shown (unitPrice, unitPriceSource billable_cost) = round4(amount / quantity). Price levels never reprice it; a discount after it covers its full amount, markup included. Tax is computed on the visible amount (the U-122 rule).",
+    "journal": "The cost line credits the line's own income account for costAmount and carries the line's taxAmount; the markup line (only when markupAmount is not 0) credits the company markup account for markupAmount with taxAmount 0. Both carry billableSourceLineId; lineRole billable_cost / billable_markup."
+  },
+  "billableCases": [
+    {
+      "name": "842.15 at 10 % markup, taxable at 8.1 %: 842.15 + 84.22 = 926.37 (plan 6)",
+      "defaultTaxRate": "0.081",
+      "lines": [ { "billable": { "sourceCost": "842.1500", "sourceQuantity": null, "markupPercent": "10" }, "isTaxable": true } ],
+      "expect": {
+        "lines": [ { "costAmount": "842.15", "markupPercent": "10.0000", "markupAmount": "84.22", "amount": "926.37", "quantity": "1", "unitPrice": "926.3700", "taxAmount": "75.04" } ],
+        "subtotal": "926.37", "taxableBase": "926.37", "taxTotal": "75.04", "total": "1001.41"
+      }
+    },
+    {
+      "name": "a 4-place cost 12.3456 at 10 %: 12.35 + 1.24 = 13.59",
+      "defaultTaxRate": "0",
+      "lines": [ { "billable": { "sourceCost": "12.3456", "sourceQuantity": null, "markupPercent": "10" }, "isTaxable": false } ],
+      "expect": {
+        "lines": [ { "costAmount": "12.35", "markupPercent": "10.0000", "markupAmount": "1.24", "amount": "13.59", "quantity": "1", "unitPrice": "13.5900", "taxAmount": "0.00" } ],
+        "subtotal": "13.59", "taxableBase": "0.00", "taxTotal": "0.00", "total": "13.59"
+      }
+    },
+    {
+      "name": "a negative cost -0.25 sent with 10 % passes through at cost (Q-P20z): -0.25, no markup",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "quantity": "1", "unitPrice": "10.00", "isTaxable": false },
+        { "billable": { "sourceCost": "-0.2500", "sourceQuantity": null, "markupPercent": "10" }, "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "costAmount": null, "markupPercent": null, "markupAmount": null, "amount": "10.00", "quantity": "1", "unitPrice": "10.00", "taxAmount": "0.00" },
+          { "costAmount": "-0.25", "markupPercent": "0.0000", "markupAmount": "0.00", "amount": "-0.25", "quantity": "1", "unitPrice": "-0.2500", "taxAmount": "0.00" }
+        ],
+        "subtotal": "9.75", "taxableBase": "0.00", "taxTotal": "0.00", "total": "9.75"
+      }
+    },
+    {
+      "name": "markup 0: the cost as is (one journal line)",
+      "defaultTaxRate": "0",
+      "lines": [ { "billable": { "sourceCost": "100.0000", "sourceQuantity": null, "markupPercent": "0" }, "isTaxable": false } ],
+      "expect": {
+        "lines": [ { "costAmount": "100.00", "markupPercent": "0.0000", "markupAmount": "0.00", "amount": "100.00", "quantity": "1", "unitPrice": "100.0000", "taxAmount": "0.00" } ],
+        "subtotal": "100.00", "taxableBase": "0.00", "taxTotal": "0.00", "total": "100.00"
+      }
+    },
+    {
+      "name": "quantity 3 x 280.7167 (842.1501): 842.15 at cost shows a rate of 280.7167; at 10 % 926.37 shows 308.7900",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "billable": { "sourceCost": "842.1501", "sourceQuantity": "3.0000", "markupPercent": "0" }, "isTaxable": false },
+        { "billable": { "sourceCost": "842.1501", "sourceQuantity": "3.0000", "markupPercent": "10" }, "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "costAmount": "842.15", "markupPercent": "0.0000", "markupAmount": "0.00", "amount": "842.15", "quantity": "3", "unitPrice": "280.7167", "taxAmount": "0.00" },
+          { "costAmount": "842.15", "markupPercent": "10.0000", "markupAmount": "84.22", "amount": "926.37", "quantity": "3", "unitPrice": "308.7900", "taxAmount": "0.00" }
+        ],
+        "subtotal": "1768.52", "taxableBase": "0.00", "taxTotal": "0.00", "total": "1768.52"
+      }
+    },
+    {
+      "name": "a 10 % discount after a subtotal covers the billable line at its full amount, markup included; taxable at 8.1 %",
+      "defaultTaxRate": "0.081",
+      "lines": [
+        { "billable": { "sourceCost": "842.1500", "sourceQuantity": null, "markupPercent": "10" }, "isTaxable": true },
+        { "quantity": "1", "unitPrice": "100.00", "isTaxable": true },
+        { "item": { "id": "sub", "type": "subtotal", "unitPrice": null, "discountPercent": null }, "isTaxable": false },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "costAmount": "842.15", "markupPercent": "10.0000", "markupAmount": "84.22", "amount": "926.37", "quantity": "1", "unitPrice": "926.3700", "taxAmount": "75.03" },
+          { "costAmount": null, "markupPercent": null, "markupAmount": null, "amount": "100.00", "quantity": "1", "unitPrice": "100.00", "taxAmount": "8.10" },
+          { "costAmount": null, "markupPercent": null, "markupAmount": null, "amount": "1026.37", "quantity": null, "unitPrice": null, "taxAmount": "0.00" },
+          { "costAmount": null, "markupPercent": null, "markupAmount": null, "amount": "-102.64", "quantity": null, "unitPrice": null, "taxAmount": "-8.31" }
+        ],
+        "subtotal": "923.73", "taxableBase": "923.73", "taxTotal": "74.82", "total": "998.55"
+      }
+    },
+    {
+      "name": "a price level never reprices a billable line",
+      "defaultTaxRate": "0",
+      "priceLevel": { "percent": "-50", "itemPrices": { "rock": "1.00" } },
+      "lines": [ { "item": { "id": "rock", "type": "non_inventory", "unitPrice": "80.00", "discountPercent": null }, "billable": { "sourceCost": "60.0000", "sourceQuantity": "2.0000", "markupPercent": "25" }, "isTaxable": false } ],
+      "expect": {
+        "lines": [ { "costAmount": "60.00", "markupPercent": "25.0000", "markupAmount": "15.00", "amount": "75.00", "quantity": "2", "unitPrice": "37.5000", "taxAmount": "0.00" } ],
+        "subtotal": "75.00", "taxableBase": "0.00", "taxTotal": "0.00", "total": "75.00"
+      }
+    }
+  ],
+  "billableErrors": [
+    { "name": "a markup above 1000 %", "billable": { "sourceCost": "10.00", "sourceQuantity": null, "markupPercent": "1000.0001" }, "error": "VALIDATION_ERROR" },
+    { "name": "a negative markup", "billable": { "sourceCost": "10.00", "sourceQuantity": null, "markupPercent": "-5" }, "error": "VALIDATION_ERROR" },
+    { "name": "a markup with 5 places", "billable": { "sourceCost": "10.00", "sourceQuantity": null, "markupPercent": "10.12345" }, "error": "VALIDATION_ERROR" }
   ]
 }
