@@ -22429,6 +22429,1194 @@
         ]
       }
     },
+    "/api/v1/company/invoice-layouts": {
+      "get": {
+        "description": "Response {data: [layout]}. A company without layouts gets its default one (\"Standard\", a copy of the template it printed with) on first read.",
+        "operationId": "get_api_v1_company_invoice_layouts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accentColor": {
+                            "type": "string"
+                          },
+                          "columns": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "description": {
+                                "type": "boolean"
+                              },
+                              "item": {
+                                "type": "boolean"
+                              },
+                              "quantity": {
+                                "type": "boolean"
+                              },
+                              "rate": {
+                                "type": "boolean"
+                              },
+                              "serviceDate": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "item",
+                              "description",
+                              "serviceDate",
+                              "quantity",
+                              "rate"
+                            ],
+                            "type": "object"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "footerOverrides": {
+                            "additionalProperties": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "type": "object"
+                          },
+                          "footerText": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "invoiceCount": {
+                            "description": "invoices (void ones too) that print with this layout",
+                            "type": "integer"
+                          },
+                          "isDefault": {
+                            "type": "boolean"
+                          },
+                          "logoUrl": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "resolvedFooters": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "cash_sale": {
+                                "type": "string"
+                              },
+                              "credit_memo": {
+                                "type": "string"
+                              },
+                              "invoice": {
+                                "type": "string"
+                              },
+                              "statement": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "invoice",
+                              "cash_sale",
+                              "credit_memo",
+                              "statement"
+                            ],
+                            "type": "object"
+                          },
+                          "showPoNumber": {
+                            "type": "boolean"
+                          },
+                          "showShipTo": {
+                            "type": "boolean"
+                          },
+                          "showTerms": {
+                            "type": "boolean"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "isDefault",
+                          "accentColor",
+                          "logoUrl",
+                          "showShipTo",
+                          "showPoNumber",
+                          "showTerms",
+                          "footerText",
+                          "footerOverrides",
+                          "columns",
+                          "resolvedFooters",
+                          "invoiceCount",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The company's invoice layouts, default first (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "post": {
+        "description": "Response 201 {layout}; never the default. Omitted options copy the default layout. 409 INVOICE_LAYOUT_NAME_IN_USE (names are unique in the company, any case).",
+        "operationId": "post_api_v1_company_invoice_layouts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "accentColor": {
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "type": "string"
+                  },
+                  "columns": {
+                    "additionalProperties": false,
+                    "description": "line columns the form prints (amount always prints); sent keys are laid over the stored ones",
+                    "properties": {
+                      "description": {
+                        "type": "boolean"
+                      },
+                      "item": {
+                        "type": "boolean"
+                      },
+                      "quantity": {
+                        "type": "boolean"
+                      },
+                      "rate": {
+                        "type": "boolean"
+                      },
+                      "serviceDate": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "footerOverrides": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cash_sale": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "credit_memo": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "invoice": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "statement": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "footerText": {
+                    "anyOf": [
+                      {
+                        "maxLength": 1000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "logoUrl": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "showPoNumber": {
+                    "type": "boolean"
+                  },
+                  "showShipTo": {
+                    "type": "boolean"
+                  },
+                  "showTerms": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create an invoice layout (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
+    "/api/v1/company/invoice-layouts/{id}": {
+      "delete": {
+        "description": "Response 200 {reassignedCount}. 409 INVOICE_LAYOUT_IS_DEFAULT (make another the default first). A layout invoices print with (void ones too) is 409 INVOICE_LAYOUT_IN_USE (details.invoiceCount) unless ?reassignToDefault=true: those invoices then print with the default layout (layoutId null; their updatedAt is kept). 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "operationId": "delete_api_v1_company_invoice_layouts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reassignToDefault",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "reassignedCount": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "reassignedCount"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete an invoice layout (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "get": {
+        "description": "Response {layout}. 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "operationId": "get_api_v1_company_invoice_layouts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get an invoice layout (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "put": {
+        "description": "Response {layout}. Omitted fields keep their values; a footerOverrides map replaces the stored one. 409 STALE, 409 INVOICE_LAYOUT_NAME_IN_USE. 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "operationId": "put_api_v1_company_invoice_layouts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "accentColor": {
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "type": "string"
+                  },
+                  "columns": {
+                    "additionalProperties": false,
+                    "description": "line columns the form prints (amount always prints); sent keys are laid over the stored ones",
+                    "properties": {
+                      "description": {
+                        "type": "boolean"
+                      },
+                      "item": {
+                        "type": "boolean"
+                      },
+                      "quantity": {
+                        "type": "boolean"
+                      },
+                      "rate": {
+                        "type": "boolean"
+                      },
+                      "serviceDate": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "expectedUpdatedAt": {
+                    "description": "the layout updatedAt as last read; a mismatch is 409 STALE (details.updatedAt) and nothing changes",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "footerOverrides": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cash_sale": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "credit_memo": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "invoice": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "statement": {
+                        "anyOf": [
+                          {
+                            "maxLength": 1000,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "footerText": {
+                    "anyOf": [
+                      {
+                        "maxLength": 1000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "logoUrl": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "showPoNumber": {
+                    "type": "boolean"
+                  },
+                  "showShipTo": {
+                    "type": "boolean"
+                  },
+                  "showTerms": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit an invoice layout (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
+    "/api/v1/company/invoice-layouts/{id}/default": {
+      "post": {
+        "description": "Response {layout}. Invoices without their own layout print with it; GET/PUT /company/invoice-template read and write it. 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
+        "operationId": "post_api_v1_company_invoice_layouts_by_id_default",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "layout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accentColor": {
+                          "type": "string"
+                        },
+                        "columns": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "description": {
+                              "type": "boolean"
+                            },
+                            "item": {
+                              "type": "boolean"
+                            },
+                            "quantity": {
+                              "type": "boolean"
+                            },
+                            "rate": {
+                              "type": "boolean"
+                            },
+                            "serviceDate": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "item",
+                            "description",
+                            "serviceDate",
+                            "quantity",
+                            "rate"
+                          ],
+                          "type": "object"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "footerOverrides": {
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": "object"
+                        },
+                        "footerText": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "invoiceCount": {
+                          "description": "invoices (void ones too) that print with this layout",
+                          "type": "integer"
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "logoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "resolvedFooters": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "cash_sale": {
+                              "type": "string"
+                            },
+                            "credit_memo": {
+                              "type": "string"
+                            },
+                            "invoice": {
+                              "type": "string"
+                            },
+                            "statement": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "invoice",
+                            "cash_sale",
+                            "credit_memo",
+                            "statement"
+                          ],
+                          "type": "object"
+                        },
+                        "showPoNumber": {
+                          "type": "boolean"
+                        },
+                        "showShipTo": {
+                          "type": "boolean"
+                        },
+                        "showTerms": {
+                          "type": "boolean"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "isDefault",
+                        "accentColor",
+                        "logoUrl",
+                        "showShipTo",
+                        "showPoNumber",
+                        "showTerms",
+                        "footerText",
+                        "footerOverrides",
+                        "columns",
+                        "resolvedFooters",
+                        "invoiceCount",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "layout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Make an invoice layout the company default (invoice-layouts-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
     "/api/v1/company/invoice-template": {
       "get": {
         "operationId": "get_api_v1_company_invoice_template",
@@ -31675,6 +32863,17 @@
                   "internalNotes": {
                     "type": "string"
                   },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "lines": {
                     "items": {
                       "additionalProperties": true,
@@ -31869,6 +33068,17 @@
                   "invoiceId": {
                     "format": "uuid",
                     "type": "string"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "lines": {
                     "items": {
@@ -32113,6 +33323,17 @@
                   },
                   "internalNotes": {
                     "type": "string"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "lines": {
                     "items": {
