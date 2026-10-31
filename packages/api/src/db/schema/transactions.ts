@@ -71,6 +71,12 @@ export const transactions = pgTable('transactions', {
   // Created as a check (Write Checks, or a Pay Bills payment by check that
   // pays cash); stays true after a void (U-117, migration 0241).
   isCheck: boolean('is_check').notNull().default(false),
+  // Invoice fields (U-123, migration 0242): the customer's PO number, the
+  // message printed on the form (memo stays internal) and whether $0 lines
+  // are left off the printed form.
+  poNumber: varchar('po_number', { length: 50 }),
+  customerMessage: text('customer_message'),
+  hideZeroLines: boolean('hide_zero_lines').notNull().default(false),
   // How the payment was made (shared PAYMENT_METHODS) and the payer/payee's
   // reference for it — ACH trace, card auth, the customer's check number.
   // NULL on rows that predate migration 0178.
@@ -178,6 +184,8 @@ export const journalLines = pgTable('journal_lines', {
   // The line's job inside its document when lines must be told apart
   // (migration 0223): 'cash_back' on a deposit (U-53). NULL otherwise.
   lineRole: varchar('line_role', { length: 20 }),
+  // The day the line's work was done (U-123, migration 0242), YYYY-MM-DD.
+  serviceDate: date('service_date'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

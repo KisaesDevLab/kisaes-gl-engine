@@ -891,7 +891,8 @@ export async function importAsNewTenant(
         is_recurring, recurring_schedule_id, source_estimate_id,
         applied_to_invoice_id, void_reason, voided_at,
         check_number, print_status, payee_name_on_check, payee_address,
-        printed_memo, printed_at, payment_method, reference_number, is_check
+        printed_memo, printed_at, payment_method, reference_number, is_check,
+        po_number, customer_message, hide_zero_lines
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${txn['txn_type'] as string},
@@ -934,7 +935,11 @@ export async function importAsNewTenant(
         ${(txn['payment_method'] as string) || null},
         ${(txn['reference_number'] as string) || null},
         ${/* Created as a check (U-117); exports before 0241 carry only the print status. */
-          txn['is_check'] === true || Boolean(txn['print_status'])}
+          txn['is_check'] === true || Boolean(txn['print_status'])},
+        ${/* Invoice fields (U-123, 0242); absent in older exports. */
+          (txn['po_number'] as string) || null},
+        ${(txn['customer_message'] as string) || null},
+        ${txn['hide_zero_lines'] === true}
       )
     `);
     counts.transactions++;
@@ -953,7 +958,7 @@ export async function importAsNewTenant(
       INSERT INTO journal_lines (
         id, tenant_id, company_id, transaction_id, account_id,
         debit, credit, description, item_id, quantity, unit_price,
-        is_taxable, tax_rate, tax_amount, line_order
+        is_taxable, tax_rate, tax_amount, line_order, service_date
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${transactionId},
@@ -967,7 +972,8 @@ export async function importAsNewTenant(
         ${jl['is_taxable'] === true},
         ${(jl['tax_rate'] as string) || '0'},
         ${(jl['tax_amount'] as string) || '0'},
-        ${(jl['line_order'] as number) || 0}
+        ${(jl['line_order'] as number) || 0},
+        ${/* U-123, 0242; absent in older exports. */ (jl['service_date'] as string) || null}
       )
     `);
     counts.journal_lines++;

@@ -408,6 +408,10 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   // Document drafts and vendor layouts (U-92, migration 0233).
   'document_drafts.converted_by': 'identity',
   'document_drafts.created_by': 'identity',
+  // Form send history (U-126, migration 0242).
+  'document_send_events.company_id': 'tenant-ref:companies',
+  'document_send_events.transaction_id': 'tenant-ref:transactions',
+  'document_send_events.user_id': 'identity',
   'document_requests.reviewed_by': 'identity',
   'document_requests.bank_connection_id': 'tenant-ref:bank_connections',
   'duplicate_dismissals.transaction_id_a': 'tenant-ref:transactions',
