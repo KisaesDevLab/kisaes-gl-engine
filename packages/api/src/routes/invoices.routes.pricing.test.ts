@@ -349,6 +349,35 @@ describe('invoice-pricing-v1 (U-129)', () => {
     expect(missing.status).toBe(404);
   });
 
+  it('a PUT that sends no itemId on an invoice with discount or subtotal lines is 409 INVOICE_LINES_MISSING (B-1)', async () => {
+    const disc = await makeItem({ name: 'd', itemType: 'discount', discountPercent: '10' });
+    const body = {
+      contactId: c.customer, txnDate: '2026-11-03',
+      lines: [{ accountId: c.revenue, quantity: '1', unitPrice: '1068.00', isTaxable: true }, { itemId: disc.id }],
+    };
+    const posted = await request('POST', '/api/v1/invoices', c.token, body);
+    expect(posted.status, JSON.stringify(posted.json)).toBe(201);
+    const inv = posted.json.invoice;
+    // An item-unaware client (the pre-fix web editor) sends the credit lines only.
+    const old = await request('PUT', `/api/v1/invoices/${inv.id}`, c.token, {
+      contactId: c.customer, txnDate: '2026-11-03', memo: 'memo fix', expectedUpdatedAt: inv.updatedAt,
+      lines: [{ accountId: c.revenue, quantity: '1', unitPrice: '1068.00', isTaxable: true }],
+    });
+    expect([old.status, old.json.error.code]).toEqual([409, 'INVOICE_LINES_MISSING']);
+    const after = (await request('GET', `/api/v1/invoices/${inv.id}`, c.token)).json.invoice;
+    expect([after.total, after.updatedAt]).toEqual([inv.total, inv.updatedAt]);
+    // A client that sends the discount back saves.
+    const ok = await request('PUT', `/api/v1/invoices/${inv.id}`, c.token, { ...body, memo: 'memo fix', expectedUpdatedAt: inv.updatedAt });
+    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    expect(ok.json.invoice.total).toBe(inv.total);
+    // An invoice without discount or subtotal lines edits as before.
+    const plain = await request('POST', '/api/v1/invoices', c.token, { ...body, lines: [body.lines[0]] });
+    const p2 = await request('PUT', `/api/v1/invoices/${plain.json.invoice.id}`, c.token, {
+      ...body, lines: [body.lines[0]], expectedUpdatedAt: plain.json.invoice.updatedAt,
+    });
+    expect(p2.status, JSON.stringify(p2.json)).toBe(200);
+  });
+
   it('the printed invoice shows the subtotal amount and the discount percent', async () => {
     const shrubs = await makeItem({ name: 'shrubs', unitPrice: '32.50' });
     const sub = await makeItem({ name: 'sub', itemType: 'subtotal' });

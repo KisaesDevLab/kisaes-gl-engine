@@ -610,6 +610,32 @@ export async function createInvoiceWithWarnings(
   }));
 }
 
+/**
+ * Fails closed for a client that doesn't know items (U-129, review B-1): when
+ * the stored invoice has discount or subtotal lines and the PUT sends no
+ * itemId on any line, the edit would silently drop them (and raise the
+ * total), so it is 409 INVOICE_LINES_MISSING and nothing changes. A client
+ * that sends its item lines back (itemId) may remove a discount as usual.
+ */
+async function assertPricingLinesSent(
+  tx: Tx, tenantId: string, invoiceId: string, lines: CreateInvoiceInput['lines'],
+) {
+  if (lines.some((l) => !!l.itemId)) return;
+  const stored = await tx.select({ itemType: items.itemType }).from(journalLines)
+    .innerJoin(items, and(eq(items.tenantId, journalLines.tenantId), eq(items.id, journalLines.itemId)))
+    .where(and(
+      eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, invoiceId),
+      eq(journalLines.isVoidReversal, false), inArray(items.itemType, ['discount', 'subtotal']),
+    ))
+    .limit(1);
+  if (stored.length > 0) {
+    throw AppError.conflict(
+      'This invoice has discount or subtotal lines this change leaves out. Reload the invoice and send its lines with their itemId.',
+      'INVOICE_LINES_MISSING',
+    );
+  }
+}
+
 export async function updateInvoice(tenantId: string, invoiceId: string, input: CreateInvoiceInput, userId?: string, companyId?: string) {
   return (await updateInvoiceWithWarnings(tenantId, invoiceId, input, userId, companyId)).invoice;
 }
@@ -661,6 +687,7 @@ export async function updateInvoiceWithWarnings(
         'BILLABLE_LINES_MISSING', { sourceLineIds: missing },
       );
     }
+    await assertPricingLinesSent(tx, tenantId, invoiceId, input.lines);
     const { company, customer, computed, journal, claims } = await prepareInvoice(tx, tenantId, input, scope, {
       invoiceId, lockTx: tx, alsoLockTxnIds: links.map((l) => l.sourceTransactionId),
     });

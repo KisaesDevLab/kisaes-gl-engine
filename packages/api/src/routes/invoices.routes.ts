@@ -57,6 +57,8 @@ const pricingRules = 'Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-le
   + 'Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item\'s line shows the sum of the lines since the previous '
   + 'subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource '
   + '(input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. '
+  + 'A PUT on an invoice with discount or subtotal lines that sends no itemId on any line is 409 INVOICE_LINES_MISSING and nothing changes (a client that does not '
+  + 'know items would drop them): send every non-A/R, non-tax line back, a discount as {itemId, discountPercent} or {itemId, unitPrice}, a subtotal as {itemId}. '
   + 'Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases.';
 
 const billableRules = 'Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), '
