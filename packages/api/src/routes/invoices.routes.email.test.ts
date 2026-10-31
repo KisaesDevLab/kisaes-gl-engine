@@ -141,7 +141,7 @@ beforeEach(async () => {
     spies.push(vi.spyOn(console, m).mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); }));
   }
   const app = express();
-  app.use('/api/v1/invoices/:id/email', invoiceEmailJson);
+  app.use(invoiceEmailJson);
   app.use(express.json({ limit: '10mb' }));
   app.use('/api/v1/invoices', invoicesRouter);
   app.use('/api/v1/forms', formsRouter);

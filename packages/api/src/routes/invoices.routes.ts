@@ -156,9 +156,14 @@ invoicesRouter.post('/:id/sent', keyedInvoiceById(200), validate(recordDocumentS
 // invoiceEmailJson for this route ahead of the global parser.
 export const INVOICE_EMAIL_JSON_LIMIT = '15mb';
 const invoiceEmailJsonParser = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
-/** Mount with app.use('/api/v1/invoices/:id/email', invoiceEmailJson) ahead of the global JSON parser. */
+const INVOICE_EMAIL_PATH = /^\/api\/v1\/invoices\/[^/]+\/email\/?$/;
+/**
+ * Mount with app.use(invoiceEmailJson) (no path: not a route family of its
+ * own) ahead of the global JSON parser; it parses POST
+ * /api/v1/invoices/:id/email only and passes everything else on.
+ */
 export const invoiceEmailJson: express.RequestHandler = (req, res, next) => {
-  if (req.method === 'POST' && (req.path === '/' || req.path === '')) invoiceEmailJsonParser(req, res, next);
+  if (req.method === 'POST' && INVOICE_EMAIL_PATH.test(req.path)) invoiceEmailJsonParser(req, res, next);
   else next();
 };
 
