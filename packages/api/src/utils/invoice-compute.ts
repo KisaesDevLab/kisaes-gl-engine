@@ -36,7 +36,9 @@
  *               document subtotal, the taxable base or the total, and is
  *               never taxed. quantity / unitPrice are ignored.
  *   tax, total  the U-122 rule (sales-compute.ts computeSalesTotals); a
- *               rate's taxable base below 0.00 taxes 0.00 (Q-P20ag).
+ *               rate's taxable base below 0.00 taxes 0.00 when the document
+ *               subtotal is above 0.00 (Q-P20ag); a wholly negative document
+ *               reverses its tax (Q-P20aj).
  */
 
 import DecimalLib from 'decimal.js';

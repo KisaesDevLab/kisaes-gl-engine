@@ -46,7 +46,7 @@ const voidBodyDoc = voidTransactionSchema.extend({ closingPassword: closingPassw
 
 const moneyRules = 'Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, '
   + 'either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; '
-  + 'a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total). '
+  + 'on a document whose subtotal is above 0.00 a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total; Q-P20ag), while a document whose subtotal is 0.00 or less (a return) reverses its tax (Q-P20aj). '
   + 'a taxable line without taxRate takes the request company\'s default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. '
   + 'Golden cases: packages/shared/fixtures/invoice-golden.json.';
 const fieldRules = 'Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; '

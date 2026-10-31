@@ -106,7 +106,7 @@ export interface SalesLineResult {
 export interface SalesDocumentResult {
   lines: SalesLineResult[];
   subtotal: string;
-  /** Sum of each rate's taxable base (the signed sum of its taxable lines), a negative base counted as 0.00 (Q-P20ag). */
+  /** Sum of each rate's taxable base (the signed sum of its taxable lines), a negative base counted as 0.00 when the document subtotal is above 0.00 (Q-P20ag, Q-P20aj). */
   taxableBase: string;
   taxTotal: string;
   total: string;
@@ -182,13 +182,19 @@ export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTa
   const taxes = lines.map(() => new Decimal(0));
   const taxGroups: SalesDocumentResult['taxGroups'] = [];
   let taxTotal = new Decimal(0);
+  const subtotal = amounts.reduce<DecimalValue>((s, a) => s.plus(a), new Decimal(0));
+  // The floor applies only to a document whose subtotal is above 0.00
+  // (Q-P20ag, Q-P20aj): a wholly negative invoice or cash sale (a return)
+  // reverses its tax.
+  const floorBases = subtotal.greaterThan(0);
   for (const [key, idx] of groups) {
     const rate = new Decimal(key);
     const base = idx.reduce<DecimalValue>((s, i) => s.plus(amounts[i]!), new Decimal(0));
-    // A rate's taxable base never goes below 0.00 (Q-P20ag): a negative base
-    // (a taxable discount bigger than the taxable lines) taxes 0.00 and each
-    // line of the group gets 0.00; the discount still lowers the total.
-    if (base.isNegative()) {
+    // On a document with a positive subtotal a rate's taxable base never goes
+    // below 0.00 (Q-P20ag): a negative base (a taxable discount bigger than
+    // the taxable lines) taxes 0.00 and each line of the group gets 0.00; the
+    // discount still lowers the total.
+    if (floorBases && base.isNegative()) {
       taxGroups.push({ rate: key, base: '0.00', tax: '0.00' });
       continue;
     }
@@ -199,17 +205,16 @@ export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTa
     taxTotal = taxTotal.plus(tax);
   }
 
-  const subtotal = amounts.reduce<DecimalValue>((s, a) => s.plus(a), new Decimal(0));
-  // Each rate's taxable base floored at 0.00 (Q-P20ag), summed; the taxable
-  // lines at rate 0 count as one more rate. With no negative base this is the
-  // signed sum of the taxable lines, as before.
+  // Each rate's taxable base, floored at 0.00 when the floor applies, summed;
+  // the taxable lines at rate 0 count as one more rate. With no negative base
+  // (or no floor) this is the signed sum of the taxable lines, as before.
   const baseByRate = new Map<string, DecimalValue>();
   lines.forEach((l, i) => {
     if (!l.isTaxable) return;
     const key = rates[i]!.toFixed(4);
     baseByRate.set(key, (baseByRate.get(key) ?? new Decimal(0)).plus(amounts[i]!));
   });
-  const taxableBase = [...baseByRate.values()].reduce<DecimalValue>((s, b) => (b.isNegative() ? s : s.plus(b)), new Decimal(0));
+  const taxableBase = [...baseByRate.values()].reduce<DecimalValue>((s, b) => (floorBases && b.isNegative() ? s : s.plus(b)), new Decimal(0));
   const total = subtotal.plus(taxTotal);
   if (total.abs().greaterThanOrEqualTo(MONEY_LIMIT)) throw invalid('The total is too large');
 

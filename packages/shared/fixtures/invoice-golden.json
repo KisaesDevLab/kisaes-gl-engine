@@ -3,7 +3,7 @@
   "rules": {
     "lineAmount": "round2(quantity x unitPrice), half away from zero (decimal.js ROUND_HALF_UP, precision 40). quantity and unitPrice: decimal strings with at most 4 places; either may be negative.",
     "taxRate": "A line's taxRate when sent, else the request company's default rate; rounded half away from zero to the 4 places journal_lines.tax_rate stores; 0 <= rate < 1. A line that is not taxable has rate 0.",
-    "tax": "Once per document and rate: round2(taxable base x rate), half away from zero. The taxable base is the SIGNED sum of the taxable line amounts at that rate, so a taxable negative line (a discount or a return) reduces it (Q-P20t). A rate's base never goes below 0.00 (Q-P20ag): a negative base taxes 0.00, every line of that rate gets tax 0.00, and the document taxableBase counts it as 0.00; the negative lines still lower the subtotal and the total. Different rates on one document are separate groups whose taxes add up.",
+    "tax": "Once per document and rate: round2(taxable base x rate), half away from zero. The taxable base is the SIGNED sum of the taxable line amounts at that rate, so a taxable negative line (a discount or a return) reduces it (Q-P20t). On a document whose subtotal is above 0.00, a rate's base never goes below 0.00 (Q-P20ag): a negative base taxes 0.00, every line of that rate gets tax 0.00, and the document taxableBase counts it as 0.00; the negative lines still lower the subtotal and the total. A document whose subtotal is 0.00 or less (a return) reverses its tax: its bases and tax stay negative (Q-P20aj). Different rates on one document are separate groups whose taxes add up.",
     "allocation": "Mixed-sign and discount rule: the group's tax is split over its taxable lines by largest remainder. Each line's exact share is amount x rate. In cents, every share is floored toward minus infinity (so -72.5 cents floors to -73), the remainders (each in [0, 1)) are kept, and the cents still missing to reach the rounded tax (a whole number from 0 to the line count) go one each to the lines with the largest remainder, the earlier line first on a tie. Line taxes therefore always sum exactly to the document tax, whatever the signs. Lines that are not taxable get 0.00.",
     "total": "subtotal (sum of line amounts) + tax total. Every figure is exact at 2 places; the ledger stores them at 4 (\"154.7200\")."
   },
@@ -185,6 +185,23 @@
           { "amount": "50.00", "taxRate": "0.0500", "taxAmount": "2.50" }
         ],
         "subtotal": "959.00", "taxableBase": "50.00", "taxTotal": "2.50", "total": "961.50"
+      }
+    },
+    {
+      "name": "a wholly negative document reverses its tax (Q-P20aj): a return of 100.00 and 20.00 at 8.25 % taxes -9.90",
+      "defaultTaxRate": "0.0825",
+      "lines": [
+        { "quantity": "-1", "unitPrice": "100.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "-20.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "5.00", "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "-100.00", "taxRate": "0.0825", "taxAmount": "-8.25" },
+          { "amount": "-20.00", "taxRate": "0.0825", "taxAmount": "-1.65" },
+          { "amount": "5.00", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "-115.00", "taxableBase": "-120.00", "taxTotal": "-9.90", "total": "-124.90"
       }
     }
   ],
