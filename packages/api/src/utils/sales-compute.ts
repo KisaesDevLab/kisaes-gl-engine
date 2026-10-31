@@ -106,11 +106,11 @@ export interface SalesLineResult {
 export interface SalesDocumentResult {
   lines: SalesLineResult[];
   subtotal: string;
-  /** Signed sum of the taxable line amounts (every rate). */
+  /** Sum of each rate's taxable base (the signed sum of its taxable lines), a negative base counted as 0.00 (Q-P20ag). */
   taxableBase: string;
   taxTotal: string;
   total: string;
-  /** One entry per distinct rate with taxable lines, in first-seen order. */
+  /** One entry per distinct rate with taxable lines, in first-seen order; a negative base shows as 0.00 with tax 0.00. */
   taxGroups: Array<{ rate: string; base: string; tax: string }>;
 }
 
@@ -185,6 +185,13 @@ export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTa
   for (const [key, idx] of groups) {
     const rate = new Decimal(key);
     const base = idx.reduce<DecimalValue>((s, i) => s.plus(amounts[i]!), new Decimal(0));
+    // A rate's taxable base never goes below 0.00 (Q-P20ag): a negative base
+    // (a taxable discount bigger than the taxable lines) taxes 0.00 and each
+    // line of the group gets 0.00; the discount still lowers the total.
+    if (base.isNegative()) {
+      taxGroups.push({ rate: key, base: '0.00', tax: '0.00' });
+      continue;
+    }
     const tax = base.times(rate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
     const shares = allocateCents(idx.map((i) => amounts[i]!.times(rate)), tax);
     idx.forEach((i, k) => { taxes[i] = shares[k]!; });
@@ -193,7 +200,16 @@ export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTa
   }
 
   const subtotal = amounts.reduce<DecimalValue>((s, a) => s.plus(a), new Decimal(0));
-  const taxableBase = lines.reduce<DecimalValue>((s, l, i) => (l.isTaxable ? s.plus(amounts[i]!) : s), new Decimal(0));
+  // Each rate's taxable base floored at 0.00 (Q-P20ag), summed; the taxable
+  // lines at rate 0 count as one more rate. With no negative base this is the
+  // signed sum of the taxable lines, as before.
+  const baseByRate = new Map<string, DecimalValue>();
+  lines.forEach((l, i) => {
+    if (!l.isTaxable) return;
+    const key = rates[i]!.toFixed(4);
+    baseByRate.set(key, (baseByRate.get(key) ?? new Decimal(0)).plus(amounts[i]!));
+  });
+  const taxableBase = [...baseByRate.values()].reduce<DecimalValue>((s, b) => (b.isNegative() ? s : s.plus(b)), new Decimal(0));
   const total = subtotal.plus(taxTotal);
   if (total.abs().greaterThanOrEqualTo(MONEY_LIMIT)) throw invalid('The total is too large');
 

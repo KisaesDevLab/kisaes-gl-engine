@@ -74,7 +74,7 @@ export async function listBillableCosts(tenantId: string, filters: BillableCostL
     LEFT JOIN contacts v ON v.tenant_id = t.tenant_id AND v.id = t.contact_id
     LEFT JOIN items i ON i.tenant_id = jl.tenant_id AND i.id = jl.item_id
     WHERE ${where}
-    ORDER BY t.txn_date, jl.id
+    ORDER BY t.txn_date, jl.transaction_id, jl.line_order, jl.id
     LIMIT ${limit} OFFSET ${offset}`);
   let defaultMarkupPercent: string | null = null;
   if (filters.contactId) {

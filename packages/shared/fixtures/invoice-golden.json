@@ -3,7 +3,7 @@
   "rules": {
     "lineAmount": "round2(quantity x unitPrice), half away from zero (decimal.js ROUND_HALF_UP, precision 40). quantity and unitPrice: decimal strings with at most 4 places; either may be negative.",
     "taxRate": "A line's taxRate when sent, else the request company's default rate; rounded half away from zero to the 4 places journal_lines.tax_rate stores; 0 <= rate < 1. A line that is not taxable has rate 0.",
-    "tax": "Once per document and rate: round2(taxable base x rate), half away from zero. The taxable base is the SIGNED sum of the taxable line amounts at that rate, so a taxable negative line (a discount or a return) reduces it (Q-P20t). Different rates on one document are separate groups whose taxes add up.",
+    "tax": "Once per document and rate: round2(taxable base x rate), half away from zero. The taxable base is the SIGNED sum of the taxable line amounts at that rate, so a taxable negative line (a discount or a return) reduces it (Q-P20t). A rate's base never goes below 0.00 (Q-P20ag): a negative base taxes 0.00, every line of that rate gets tax 0.00, and the document taxableBase counts it as 0.00; the negative lines still lower the subtotal and the total. Different rates on one document are separate groups whose taxes add up.",
     "allocation": "Mixed-sign and discount rule: the group's tax is split over its taxable lines by largest remainder. Each line's exact share is amount x rate. In cents, every share is floored toward minus infinity (so -72.5 cents floors to -73), the remainders (each in [0, 1)) are kept, and the cents still missing to reach the rounded tax (a whole number from 0 to the line count) go one each to the lines with the largest remainder, the earlier line first on a tie. Line taxes therefore always sum exactly to the document tax, whatever the signs. Lines that are not taxable get 0.00.",
     "total": "subtotal (sum of line amounts) + tax total. Every figure is exact at 2 places; the ledger stores them at 4 (\"154.7200\")."
   },
@@ -167,6 +167,25 @@
         ],
         "subtotal": "140.00", "taxableBase": "140.00", "taxTotal": "8.25", "total": "148.25"
       }
+    },
+    {
+      "name": "a negative taxable base taxes 0.00 (Q-P20ag): 10.00 - 101.00 at 8.1 % is a base of -91.00, tax 0.00; the 5 % rate keeps its own tax",
+      "defaultTaxRate": "0.081",
+      "lines": [
+        { "quantity": "1", "unitPrice": "1000.00", "isTaxable": false },
+        { "quantity": "1", "unitPrice": "10.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "-101.00", "isTaxable": true },
+        { "quantity": "1", "unitPrice": "50.00", "isTaxable": true, "taxRate": "0.05" }
+      ],
+      "expect": {
+        "lines": [
+          { "amount": "1000.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "amount": "10.00", "taxRate": "0.0810", "taxAmount": "0.00" },
+          { "amount": "-101.00", "taxRate": "0.0810", "taxAmount": "0.00" },
+          { "amount": "50.00", "taxRate": "0.0500", "taxAmount": "2.50" }
+        ],
+        "subtotal": "959.00", "taxableBase": "50.00", "taxTotal": "2.50", "total": "961.50"
+      }
     }
   ],
   "errors": [
@@ -179,7 +198,7 @@
   "pricingRules": {
     "unitPrice": "Item kinds (U-39a, item-kinds-sales-v1): service, non_inventory, other_charge, discount, subtotal. For a line that is not a discount or subtotal: the line's unitPrice when sent (source input); else the client's price level fixed price for the item (price_level); else round2(item price x (1 + level percent / 100)) (price_level_percent); else the item's price (item); else 400 VALIDATION_ERROR. quantity omitted is 1. Then the U-122 line rule.",
     "priceLevel": "Price levels (U-40, price-levels-v1, Q-P20l): a name and a signed percent (-7.5 = 7.5 % down; -100 to 1000, at most 4 places) plus optional fixed prices for chosen items (stored rounded half away from zero to the cent); one level per client. A level price is round2(item price x (1 + percent / 100)), half away from zero. Discount and subtotal items never take a level price.",
-    "discount": "A discount line (item kind discount) applies to its group: the signed sum of the line amounts since the last subtotal line (earlier discounts included); a discount right under a subtotal takes that subtotal's amount; with nothing above it the group is 0.00. Percent (the line's discountPercent, else the item's; 0 < p <= 100): amount = -round2(group x p / 100), half away from zero. Amount (the line's unitPrice, else the item's price): amount = -|round2(price)|. quantity is not used; sending both discountPercent and unitPrice is 400. Discount items are taxable unless set otherwise: a taxable discount is a negative taxable line and reduces the taxable base (Q-P20t); a non-taxable discount leaves the base whole.",
+    "discount": "A discount line (item kind discount) applies to its group: the signed sum of the line amounts since the last subtotal line (earlier discounts included); a discount right under a subtotal takes that subtotal's amount, and each discount right under that one takes the subtotal less the discounts between them (stacked discounts compound; later subtotals still show the lines since the previous subtotal); with nothing above it the group is 0.00. Percent (the line's discountPercent, else the item's; 0 < p <= 100): amount = -round2(group x p / 100), half away from zero, and 0.00 when the group is 0.00 or less (a discount never adds). Amount (the line's unitPrice, else the item's price): amount = -|round2(price)|. quantity is not used; sending both discountPercent and unitPrice is 400. Discount items are taxable unless set otherwise: a taxable discount is a negative taxable line and reduces the taxable base (Q-P20t); a non-taxable discount leaves the base whole.",
     "subtotal": "A subtotal line (item kind subtotal) shows the signed sum of the line amounts since the previous subtotal. It is not part of the document subtotal, the taxable base or the total and is never taxed; quantity and unitPrice are ignored. It posts as a $0 line.",
     "preview": "POST /invoices/preview computes with the same code as POST and PUT /invoices (packages/api/src/utils/invoice-compute.ts) and posts nothing: for the same body its lines and totals equal what the invoice posts."
   },
@@ -326,6 +345,61 @@
           { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "input", "discountPercent": "15.0000", "amount": "-0.02", "taxRate": "0.0000", "taxAmount": "0.00" }
         ],
         "subtotal": "0.08", "taxableBase": "0.00", "taxTotal": "0.00", "total": "0.08"
+      }
+    },
+    {
+      "name": "stacked discounts under a subtotal compound: 10 % of 100.00 is -10.00, then 5 % of 90.00 is -4.50; the next subtotal shows the lines since the previous one",
+      "defaultTaxRate": "0.0825",
+      "lines": [
+        { "quantity": "1", "unitPrice": "100.00", "isTaxable": true },
+        { "item": { "id": "subtotal", "type": "subtotal", "unitPrice": null, "discountPercent": null }, "isTaxable": false },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": true },
+        { "item": { "id": "disc5", "type": "discount", "unitPrice": null, "discountPercent": "5" }, "isTaxable": true },
+        { "item": { "id": "subtotal", "type": "subtotal", "unitPrice": null, "discountPercent": null }, "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": null, "quantity": "1", "unitPrice": "100.00", "unitPriceSource": "input", "discountPercent": null, "amount": "100.00", "taxRate": "0.0825", "taxAmount": "8.25" },
+          { "itemType": "subtotal", "quantity": null, "unitPrice": null, "unitPriceSource": "none", "discountPercent": null, "amount": "100.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "10.0000", "amount": "-10.00", "taxRate": "0.0825", "taxAmount": "-0.83" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "5.0000", "amount": "-4.50", "taxRate": "0.0825", "taxAmount": "-0.37" },
+          { "itemType": "subtotal", "quantity": null, "unitPrice": null, "unitPriceSource": "none", "discountPercent": null, "amount": "-14.50", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "85.50", "taxableBase": "85.50", "taxTotal": "7.05", "total": "92.55"
+      }
+    },
+    {
+      "name": "a percent discount of a group at or below 0.00 is 0.00: 10.00 less 25.00 off leaves -15.00, so 10 % of it is 0.00, never +1.50",
+      "defaultTaxRate": "0",
+      "lines": [
+        { "quantity": "1", "unitPrice": "10.00", "isTaxable": false },
+        { "item": { "id": "disc15", "type": "discount", "unitPrice": "15.00", "discountPercent": null }, "unitPrice": "25", "isTaxable": false },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": false }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": null, "quantity": "1", "unitPrice": "10.00", "unitPriceSource": "input", "discountPercent": null, "amount": "10.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": "discount", "quantity": null, "unitPrice": "-25.00", "unitPriceSource": "input", "discountPercent": null, "amount": "-25.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "10.0000", "amount": "0.00", "taxRate": "0.0000", "taxAmount": "0.00" }
+        ],
+        "subtotal": "-15.00", "taxableBase": "0.00", "taxTotal": "0.00", "total": "-15.00"
+      }
+    },
+    {
+      "name": "a taxable discount bigger than the taxable lines taxes 0.00 (Q-P20ag): 10 % of 1,010.00 is -101.00 against 10.00 taxable, base -91.00, tax 0.00",
+      "defaultTaxRate": "0.081",
+      "lines": [
+        { "quantity": "1", "unitPrice": "1000.00", "isTaxable": false },
+        { "quantity": "1", "unitPrice": "10.00", "isTaxable": true },
+        { "item": { "id": "disc10", "type": "discount", "unitPrice": null, "discountPercent": "10" }, "isTaxable": true }
+      ],
+      "expect": {
+        "lines": [
+          { "itemType": null, "quantity": "1", "unitPrice": "1000.00", "unitPriceSource": "input", "discountPercent": null, "amount": "1000.00", "taxRate": "0.0000", "taxAmount": "0.00" },
+          { "itemType": null, "quantity": "1", "unitPrice": "10.00", "unitPriceSource": "input", "discountPercent": null, "amount": "10.00", "taxRate": "0.0810", "taxAmount": "0.00" },
+          { "itemType": "discount", "quantity": null, "unitPrice": null, "unitPriceSource": "item", "discountPercent": "10.0000", "amount": "-101.00", "taxRate": "0.0810", "taxAmount": "0.00" }
+        ],
+        "subtotal": "909.00", "taxableBase": "0.00", "taxTotal": "0.00", "total": "909.00"
       }
     }
   ],

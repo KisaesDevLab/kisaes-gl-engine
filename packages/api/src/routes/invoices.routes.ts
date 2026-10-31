@@ -44,6 +44,7 @@ const voidBodyDoc = voidTransactionSchema.extend({ closingPassword: closingPassw
 
 const moneyRules = 'Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, '
   + 'either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; '
+  + 'a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total). '
   + 'a taxable line without taxRate takes the request company\'s default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. '
   + 'Golden cases: packages/shared/fixtures/invoice-golden.json.';
 const fieldRules = 'Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; '
@@ -53,7 +54,7 @@ const fieldRules = 'Lines (invoice-fields-v1): itemId (an item of the company) s
 const pricingRules = 'Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client\'s price level '
   + '(a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item\'s price, else 400 VALIDATION_ERROR. '
   + 'A discount item\'s line is -round2(group x discountPercent / 100) (discountPercent sent, else the item\'s) or -|unitPrice| (sent, else the item\'s amount), '
-  + 'where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal\'s lines); sending both is 400. '
+  + 'where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal\'s lines; stacked discounts under it compound); a percent of a group at or below 0.00 is 0.00; sending both is 400. '
   + 'Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item\'s line shows the sum of the lines since the previous '
   + 'subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource '
   + '(input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. '

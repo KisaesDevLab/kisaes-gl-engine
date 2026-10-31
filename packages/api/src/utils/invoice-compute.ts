@@ -19,9 +19,12 @@
  *   discount    applies to the group: the signed sum of the line amounts
  *               since the last subtotal line (earlier discounts included);
  *               a discount right under a subtotal takes that subtotal's
- *               amount; nothing above it is a group of 0.00. Percent (the
+ *               amount, and each discount right under that one the subtotal
+ *               less the discounts between (stacked discounts compound);
+ *               nothing above it is a group of 0.00. Percent (the
  *               line's discountPercent, else the item's, 0 < p <= 100):
- *               amount = -round2(group x p / 100), half away from zero.
+ *               amount = -round2(group x p / 100), half away from zero;
+ *               0.00 when the group is 0.00 or less (a discount never adds).
  *               Amount (the line's unitPrice, else the item's price):
  *               amount = -|round2(price)|; quantity is not used. Sending
  *               both discountPercent and unitPrice is 400. Taxable unless
@@ -32,7 +35,8 @@
  *               previous subtotal; shown only: it is not part of the
  *               document subtotal, the taxable base or the total, and is
  *               never taxed. quantity / unitPrice are ignored.
- *   tax, total  the U-122 rule (sales-compute.ts computeSalesTotals).
+ *   tax, total  the U-122 rule (sales-compute.ts computeSalesTotals); a
+ *               rate's taxable base below 0.00 taxes 0.00 (Q-P20ag).
  */
 
 import DecimalLib from 'decimal.js';
@@ -257,7 +261,10 @@ export function computeInvoice(
         : present(l.unitPrice) ? undefined : item.discountPercent;
       if (present(percentRaw)) {
         const p = parseDiscountPercent(percentRaw, `${field}.discountPercent`);
-        amount = base.times(p).dividedBy(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).negated();
+        // A percent of a base at or below 0.00 is 0.00: a discount never adds.
+        amount = base.isPositive() && !base.isZero()
+          ? base.times(p).dividedBy(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).negated()
+          : zero;
         line = {
           itemType: type, quantity: null, unitPrice: null, discountPercent: p.toFixed(4),
           unitPriceSource: present(l.discountPercent) ? 'input' : 'item', isTaxable: l.isTaxable,
@@ -274,7 +281,11 @@ export function computeInvoice(
       if (amount.isZero()) amount = zero; // no "-0.00"
       out.push({ ...line, amount: amount.toFixed(2) });
       group = group.plus(amount);
-      lastSubtotal = null;
+      // Stacked discounts under a subtotal compound: the next one takes the
+      // subtotal less the discounts above it (100.00, Subtotal, 10 %, 5 % is
+      // -10.00 then -4.50). The running group is unchanged, so a later
+      // subtotal still shows the lines since the previous one.
+      lastSubtotal = lastSubtotal === null ? null : lastSubtotal.plus(amount);
       return;
     }
 
