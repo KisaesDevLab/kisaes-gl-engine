@@ -41,6 +41,17 @@ export const creditMemoSchema = z.object({
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
+/**
+ * PUT /credit-memos/:id: the create body without applications. Applications
+ * are not taken on an edit (use /credit-memos/:id/apply and /unapply); a
+ * non-empty list is 400 VALIDATION_ERROR rather than dropped silently.
+ */
+export const creditMemoUpdateSchema = creditMemoSchema.extend({
+  applications: z.array(z.unknown())
+    .max(0, 'applications are not taken on PUT; apply the credit with POST /credit-memos/:id/apply')
+    .optional(),
+});
+
 /** POST /credit-memos/preview: the create body (applications ignored) + editingId. */
 export const creditMemoPreviewSchema = creditMemoSchema.extend({ editingId: z.string().uuid().optional() });
 
@@ -58,6 +69,7 @@ export const salesReceiptSchema = z.object({
 export const salesReceiptPreviewSchema = salesReceiptSchema.extend({ editingId: z.string().uuid().optional() });
 
 export type CreditMemoInput = z.infer<typeof creditMemoSchema>;
+export type CreditMemoUpdateInput = z.infer<typeof creditMemoUpdateSchema>;
 export type CreditMemoPreviewInput = z.infer<typeof creditMemoPreviewSchema>;
 export type SalesReceiptInput = z.infer<typeof salesReceiptSchema>;
 export type SalesReceiptPreviewInput = z.infer<typeof salesReceiptPreviewSchema>;

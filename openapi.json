@@ -26738,7 +26738,7 @@
         ]
       },
       "put": {
-        "description": "Response {creditMemo: CreditMemoRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice (at most 4 places), discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Line = round2(qty x rate) half away from zero; tax once per rate (P20). Posting: Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total. expectedUpdatedAt: mismatch 409 STALE. The closing date meets the old date, the new date and every live refund's date. 409 CREDIT_IN_USE {inUse} when the new total is below what is applied and refunded, or the client changes while an application or refund is live; 400 SOURCE_DATE_AFTER_USE {firstUsed} when the new date is after its first later use; 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE. Live applications are kept; applications in the body are ignored on PUT (use /apply, /unapply). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.",
+        "description": "Response {creditMemo: CreditMemoRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice (at most 4 places), discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Line = round2(qty x rate) half away from zero; tax once per rate (P20). Posting: Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total. expectedUpdatedAt: mismatch 409 STALE. The closing date meets the old date, the new date and every live refund's date. 409 CREDIT_IN_USE {inUse} when the new total is below what is applied and refunded, or the client changes while an application or refund is live; 400 SOURCE_DATE_AFTER_USE {firstUsed} when the new date is after its first later use; 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE. Live applications are kept; a non-empty applications list is 400 VALIDATION_ERROR on PUT (apply with /apply, take off with /unapply). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.",
         "operationId": "put_api_v1_credit_memos_by_id",
         "parameters": [
           {
@@ -26768,29 +26768,8 @@
                 "additionalProperties": true,
                 "properties": {
                   "applications": {
-                    "items": {
-                      "additionalProperties": true,
-                      "properties": {
-                        "amount": {
-                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
-                          "type": "string"
-                        },
-                        "expectedBalanceDue": {
-                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
-                          "type": "string"
-                        },
-                        "invoiceId": {
-                          "format": "uuid",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "invoiceId",
-                        "amount"
-                      ],
-                      "type": "object"
-                    },
-                    "maxItems": 1000,
+                    "items": {},
+                    "maxItems": 0,
                     "type": "array"
                   },
                   "closingPassword": {

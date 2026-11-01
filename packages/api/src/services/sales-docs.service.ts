@@ -300,9 +300,14 @@ export async function createCreditMemoDocument(tenantId: string, input: CreditMe
  * {inUse} when the new total is below what is applied and refunded, or
  * the client changes while an application or refund is live; 400
  * SOURCE_DATE_AFTER_USE when the new date is after its first use. Live
- * applications stay (applications in the body are not used on PUT).
+ * applications stay; applications in the body are 400 VALIDATION_ERROR
+ * (apply with /credit-memos/:id/apply), never dropped silently.
  */
 export async function updateCreditMemoDocument(tenantId: string, id: string, input: CreditMemoInput, userId?: string, companyId?: string) {
+  if (input.applications && input.applications.length > 0) {
+    throw AppError.badRequest('A credit memo edit doesn’t apply credit. Apply it with POST /credit-memos/:id/apply.', 'VALIDATION_ERROR',
+      { field: 'applications' });
+  }
   return db.transaction(async (tx) => {
     await claimIdempotency(tx);
     const payments = await import('./payment.service.js');

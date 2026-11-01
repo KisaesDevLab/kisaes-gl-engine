@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { applyCreditMemoSchema, unapplyCreditMemoSchema, creditMemoSchema, creditMemoPreviewSchema } from '@kis-books/shared';
+import { applyCreditMemoSchema, unapplyCreditMemoSchema, creditMemoSchema, creditMemoUpdateSchema, creditMemoPreviewSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
@@ -139,14 +139,14 @@ creditMemosRouter.get('/:id', describe({
 creditMemosRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, idempotent({
   successStatus: 200,
   replay: async (req) => ({ creditMemo: await salesDocs.getCreditMemoRecord(db, req.tenantId, req.params['id']!, req.companyId), warnings: [] }),
-}), validate(creditMemoSchema), describe({
+}), validate(creditMemoUpdateSchema), describe({
   summary: 'Edit a credit memo (credit-memo-edit-v1)',
   description: `Response {creditMemo: CreditMemoRecord, warnings}. ${lineRules} expectedUpdatedAt: mismatch 409 STALE. The closing ` +
     'date meets the old date, the new date and every live refund\'s date. 409 CREDIT_IN_USE {inUse} when the new total is below what ' +
     'is applied and refunded, or the client changes while an application or refund is live; 400 SOURCE_DATE_AFTER_USE {firstUsed} ' +
-    'when the new date is after its first later use; 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE. Live applications are kept; ' +
-    `applications in the body are ignored on PUT (use /apply, /unapply). ${closedPeriodNote}`,
-  body: creditMemoSchema.extend(closing),
+    'when the new date is after its first later use; 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE. Live applications are kept; a non-empty ' +
+    `applications list is 400 VALIDATION_ERROR on PUT (apply with /apply, take off with /unapply). ${closedPeriodNote}`,
+  body: creditMemoUpdateSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
   res.json(await salesDocs.updateCreditMemoDocument(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId));
