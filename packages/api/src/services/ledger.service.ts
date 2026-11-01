@@ -762,6 +762,16 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
   {
     await claimIdempotency(tx);
     await recordIdempotentEntity(tx, 'transaction', txnId);
+    // Customer payments and bounces lock what they are linked to (the deposit
+    // holding the payment first) before the row itself, in the order every
+    // payment write uses (U-132, E-B1).
+    const [peek] = await tx.select({ id: transactions.id, txnType: transactions.txnType, sourceTxnId: transactions.sourceTxnId })
+      .from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+      .limit(1);
+    if (peek && (peek.txnType === 'customer_payment' || peek.txnType === 'returned_payment')) {
+      await (await import('./payment.service.js')).lockForVoidInTx(tx, tenantId, peek);
+    }
     const [txn] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update')

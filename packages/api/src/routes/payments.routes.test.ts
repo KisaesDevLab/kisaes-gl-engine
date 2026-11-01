@@ -473,6 +473,13 @@ describe('receive-payment-v1 (U-132)', () => {
     r = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, { ...same, amount: '5600.00',
       applications: [{ invoiceId: i1091, amount: '4340.00' }, { invoiceId: i1095, amount: '1260.00' }] });
     expect([r.status, r.json.error.code]).toEqual([409, 'TXN_DEPOSITED']);
+    // A memo edit of a deposited payment in a closed period needs the closing password (review SF4).
+    await db.update(companies).set({ lockDate: '2026-11-30', closingPasswordHash: await bcrypt.hash(CLOSING_PHRASE, 4) }).where(eq(companies.id, c.companyId));
+    r = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, { ...same, memo: 'closed' });
+    expect(r.status).toBe(423);
+    r = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, { ...same, memo: 'closed', closingPassword: CLOSING_PHRASE });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.payment.memo).toBe('closed');
   });
 
   it('averageDaysToPay: null below 3 cleared invoices, then the mean days to the payment that cleared each', async () => {
@@ -594,6 +601,9 @@ describe('payment-bounce-v1 (U-132)', () => {
     const { payment } = await previewThenReceive({ amount: '4000.00' });
     let r = await request('POST', `/api/v1/payments/${payment.id}/bounce`, c.token, { date: '2026-11-10', bankFeeAmount: '35.00', bankFeeAccountId: c.fee });
     expect([r.status, r.json.error?.code]).toEqual([400, 'FEE_BANK_REQUIRED']);
+    // The fee account can't be the bank the fee comes out of (Dr X / Cr X).
+    r = await request('POST', `/api/v1/payments/${payment.id}/bounce`, c.token, { date: '2026-11-10', bankFeeAmount: '35.00', bankFeeAccountId: c.bank, bankFeeBankAccountId: c.bank });
+    expect([r.status, r.json.error?.code]).toEqual([400, 'FEE_ACCOUNT_INVALID']);
     r = await request('POST', `/api/v1/payments/${payment.id}/bounce`, c.token, { date: '2026-11-10', bankFeeAmount: '35.00', bankFeeAccountId: c.fee, bankFeeBankAccountId: c.bank });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
     expect(r.json.heldIn).toEqual({ accountId: c.clearing, kind: 'payments_clearing' });

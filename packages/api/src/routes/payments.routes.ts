@@ -197,7 +197,8 @@ paymentsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, idempo
     'date, the old applications are set aside and their invoices restored, the header and lines rewritten, the new applications ' +
     'validated and written. expectedBalanceDue is the invoice\'s balance with this payment\'s own share added back (POST ' +
     '/payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and ' +
-    'refNo only: any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is 409 PAYMENT_BOUNCED. ' +
+    'refNo only (still checked against the closing date): any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is ' +
+    '409 PAYMENT_BOUNCED. 409 STALE also when the payment was deposited or changed while this waited for its locks. ' +
     `${exactRules} ${receiveErrors} ${closedPeriodNote}`,
   body: updateCustomerPaymentSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),
@@ -239,9 +240,10 @@ paymentsRouter.post('/:id/bounce', closingPasswordLimiter, lockContextMiddleware
     'bank holding the money, or bankFeeBankAccountId when that is Payments Clearing) in the same transaction, source_txn_id = the ' +
     'bounce. A fee charged to the customer is a separate POST /invoices. Voiding the returned_payment (POST /transactions/:id/void) ' +
     're-applies what it reversed: 409 INVOICE_VOIDED / INVOICE_BALANCE_CHANGED when it no longer can; the fee is left to void ' +
-    'separately. Errors: 409 PAYMENT_BOUNCED (a live bounce exists), 409 STALE (expectedUpdatedAt), 400 BOUNCE_DATE_INVALID (before ' +
+    'separately. Errors: 409 PAYMENT_BOUNCED (a live bounce exists), 409 STALE (expectedUpdatedAt, or the payment was deposited, ' +
+    'applied or voided while this waited for its locks; reload and retry), 400 NO_MONEY_RECEIVED (a 0.00 payment), 400 BOUNCE_DATE_INVALID (before ' +
     'the payment\'s or its deposit\'s date), 400 FEE_ACCOUNT_REQUIRED, 400 FEE_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer ' +
-    `Deposits, the account holding the money, inactive or another company's), 400 FEE_BANK_REQUIRED. ${closedPeriodNote} ` +
+    `Deposits, the account holding the money or paying the fee, inactive or another company's), 400 FEE_BANK_REQUIRED. ${closedPeriodNote} ` +
     'Replay (Idempotency-Key) rebuilds the response from the returned_payment.',
   body: bouncePaymentSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),
