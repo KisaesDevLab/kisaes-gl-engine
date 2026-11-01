@@ -103,6 +103,10 @@ export const transactions = pgTable('transactions', {
   sourceTxnId: uuid('source_txn_id'),
   // A customer refund of a payment's credit (U-133, migration 0248).
   sourcePaymentId: uuid('source_payment_id'),
+  // Customer deposits (U-135, migration 0249): a payment held as a deposit,
+  // and a payment that draws on one.
+  holdsDeposit: boolean('holds_deposit').notNull().default(false),
+  fromDepositId: uuid('from_deposit_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),
   stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),

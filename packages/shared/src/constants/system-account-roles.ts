@@ -151,6 +151,15 @@ export const SYSTEM_ACCOUNT_ROLES: SystemAccountRole[] = [
     accountType: 'liability',
     required: false,
   },
+  // Customer deposits (U-135, customer-deposits-v1) — created lazily by
+  // getOrCreateSystemAccount() the first time a payment is held as a deposit.
+  {
+    tag: 'customer_deposits',
+    label: 'Customer Deposits',
+    description: 'Money a client paid ahead of an invoice, held as a liability until it is applied (Receive Payment).',
+    accountType: 'liability',
+    required: false,
+  },
   // Suspense — the holding account for amounts that must post now but are
   // not yet classified. Created/adopted lazily by
   // getOrCreateSystemAccount() in system-accounts.service.ts, which prefers

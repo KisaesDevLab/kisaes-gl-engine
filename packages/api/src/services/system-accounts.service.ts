@@ -57,6 +57,14 @@ export interface SystemAccountSpec {
 export const SYSTEM_ACCOUNT_SPECS: SystemAccountSpec[] = [
   ...DAILY_SALES_SYSTEM_ACCOUNTS.map((s) => ({ ...s })),
   {
+    systemTag: 'customer_deposits',
+    name: 'Customer Deposits',
+    accountType: 'liability',
+    detailType: 'other_current_liability',
+    accountNumber: '21500',
+    adoptNames: ['customer deposits'],
+  },
+  {
     systemTag: SUSPENSE_TAG,
     name: 'Uncategorized',
     accountType: 'other_expense',

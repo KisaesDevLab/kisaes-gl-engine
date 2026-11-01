@@ -40,6 +40,7 @@ import {
   type ComputeInvoice, type ComputeProblem, type ComputeCredit,
 } from './payment-compute.js';
 import { assertWriteOffAccount, assertSalesDiscountAccount, companySettleSettings } from './write-off-account.js';
+import { getOrCreateSystemAccount } from './system-accounts.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -68,6 +69,11 @@ function wholeCents(value: string, field: string): DecimalValue {
     throw AppError.badRequest(`${field} must be an amount with at most 2 decimal places`, 'VALIDATION_ERROR');
   }
   return d;
+}
+
+/** GET /payments/deposits-on-hand: the customer must be of this company (404). */
+export async function assertCustomerInCompany(tenantId: string, customerId: string, companyId?: string) {
+  await assertCustomer(db, tenantId, customerId, companyId);
 }
 
 /** The customer, in the tenant and the request's company: else 404. */
@@ -224,8 +230,38 @@ async function liveRefundTotal(executor: DbOrTx, tenantId: string, paymentId: st
  */
 export async function creditRemaining(executor: DbOrTx, tenantId: string, p: TxnRow): Promise<DecimalValue> {
   if (p.status !== 'posted' || await liveBounce(executor, tenantId, p.id)) return new Decimal(0);
+  if (p.holdsDeposit) return depositRemaining(executor, tenantId, p);
   const applied = (await liveApplications(executor, tenantId, p.id)).reduce((s, a) => s.plus(a.amount), new Decimal(0));
   return Decimal.max(dec(p.total).minus(applied).minus(await liveRefundTotal(executor, tenantId, p.id)), 0);
+}
+
+/** Posted draws on a held deposit (U-135). */
+async function liveDraws(executor: DbOrTx, tenantId: string, depositId: string): Promise<TxnRow[]> {
+  return executor.select().from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.fromDepositId, depositId), eq(transactions.status, 'posted')))
+    .orderBy(transactions.id);
+}
+
+/**
+ * What is left of a held deposit (U-135): amount - posted draws - live
+ * refunds; 0.00 for a void or bounced deposit.
+ */
+export async function depositRemaining(executor: DbOrTx, tenantId: string, p: TxnRow): Promise<DecimalValue> {
+  if (!p.holdsDeposit || p.status !== 'posted' || await liveBounce(executor, tenantId, p.id)) return new Decimal(0);
+  const drawn = (await liveDraws(executor, tenantId, p.id)).reduce((t, d) => t.plus(d.total ?? '0'), new Decimal(0));
+  return Decimal.max(dec(p.total).minus(drawn).minus(await liveRefundTotal(executor, tenantId, p.id)), 0);
+}
+
+async function customerDepositsAccount(tenantId: string, companyId?: string | null): Promise<string> {
+  return getOrCreateSystemAccount(tenantId, 'customer_deposits', companyId ?? undefined);
+}
+
+function depositApplied(paymentId: string): AppError {
+  return AppError.conflict(
+    'Part of this deposit was applied to invoices. Void those first.',
+    'DEPOSIT_APPLIED',
+    { paymentId },
+  );
 }
 
 function paymentRefunded(paymentId: string): AppError {
@@ -412,11 +448,12 @@ async function validateSources(
       throw AppError.badRequest('That credit belongs to another client.', 'CREDIT_NOT_FOR_CUSTOMER', { sourcePaymentId: id });
     }
     if (await liveBounce(tx, tenantId, id)) throw paymentBounced(id);
+    if (src.fromDepositId) throw AppError.notFound('Credit not found');
     const remaining = await creditRemaining(tx, tenantId, src);
     if (total.greaterThan(remaining)) {
       throw AppError.conflict(
-        `Only ${money2(remaining)} of that credit is left.`,
-        'CREDIT_NOT_AVAILABLE',
+        `Only ${money2(remaining)} of that ${src.holdsDeposit ? 'deposit' : 'credit'} is left.`,
+        src.holdsDeposit ? 'DEPOSIT_NOT_AVAILABLE' : 'CREDIT_NOT_AVAILABLE',
         { sourcePaymentId: id, remaining: money2(remaining) },
       );
     }
@@ -487,7 +524,19 @@ function paymentLines(
 async function writeSettlement(
   tx: Tx, tenantId: string, companyId: string | undefined, paymentId: string, date: string,
   v: { apps: ValidatedApplication[]; credits: ValidatedCredit[] }, accounts: SettleAccounts,
+  sources: Map<string, TxnRow> = new Map(), userId?: string,
 ): Promise<void> {
+  // Draws on held deposits (U-135): one customer payment per deposit,
+  // Dr Customer Deposits / Cr A/R, carrying those applications; posted
+  // inside this payment (source_txn_id), voided and replayed with it.
+  const byDeposit = new Map<string, ValidatedCredit[]>();
+  for (const c of v.credits) {
+    if (sources.get(c.sourcePaymentId)?.holdsDeposit) byDeposit.set(c.sourcePaymentId, [...(byDeposit.get(c.sourcePaymentId) ?? []), c]);
+  }
+  for (const [depositId, rows] of byDeposit) {
+    await postDraw(tx, tenantId, sources.get(depositId)!, date, rows.map((r) => ({ inv: r.inv, amount: r.amount })), paymentId, userId, companyId);
+  }
+  v = { apps: v.apps, credits: v.credits.filter((c) => !byDeposit.has(c.sourcePaymentId)) };
   for (const a of v.apps) {
     await tx.insert(paymentApplications).values({
       tenantId, companyId: companyId ?? a.inv.companyId ?? null, paymentId, invoiceId: a.inv.id, amount: a.amount.toFixed(4),
@@ -511,6 +560,41 @@ async function writeSettlement(
 }
 
 /**
+ * A draw on a held deposit (U-135): Dr Customer Deposits / Cr A/R for the
+ * sum, with the applications; insideOf = the payment it was made inside.
+ */
+async function postDraw(
+  tx: Tx, tenantId: string, deposit: TxnRow, date: string, rows: Array<{ inv: TxnRow; amount: DecimalValue }>,
+  insideOf: string | null, userId?: string, companyId?: string,
+): Promise<string> {
+  const cd = await customerDepositsAccount(tenantId, companyId ?? deposit.companyId);
+  const ar = await arAccountId(tx, tenantId);
+  const total = rows.reduce((t, r) => t.plus(r.amount), new Decimal(0)).toFixed(4);
+  const draw = await ledger.postTransaction(tenantId, {
+    txnType: 'customer_payment',
+    txnDate: date,
+    contactId: deposit.contactId ?? undefined,
+    memo: `Applied from deposit${deposit.referenceNumber ? ` ${deposit.referenceNumber}` : ''}`,
+    total,
+    fromDepositId: deposit.id,
+    ...(insideOf ? { sourceTxnId: insideOf } : {}),
+    lines: [
+      { accountId: cd, debit: total, credit: '0' },
+      { accountId: ar, debit: '0', credit: total, contactId: deposit.contactId ?? undefined },
+    ],
+  }, userId, companyId ?? deposit.companyId ?? undefined, tx);
+  for (const r of rows) {
+    await tx.insert(paymentApplications).values({
+      tenantId, companyId: companyId ?? r.inv.companyId ?? null, paymentId: draw.id, invoiceId: r.inv.id, amount: r.amount.toFixed(4),
+    });
+    Object.assign(r.inv, await moveInvoicePaid(tx, tenantId, r.inv, r.amount));
+  }
+  await tx.update(transactions).set({ updatedAt: new Date() })
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, deposit.id)));
+  return draw.id;
+}
+
+/**
  * Receives a payment in the caller's database transaction: validation, the
  * ledger post (Dr depositTo, Dr write-off, Dr discount, Cr A/R) and the
  * applications and credits, atomically, in the lock order (credit sources,
@@ -527,6 +611,7 @@ export async function receivePaymentInTx(
   const parsed = parseSettlement(input);
   await assertCustomer(tx, tenantId, input.customerId, companyId);
   await assertDepositAccount(tx, tenantId, input.depositTo, companyId);
+  if (input.holdAsDeposit) return receiveDepositInTx(tx, tenantId, input, parsed, userId, companyId);
   const accounts = await resolveSettleAccounts(tx, tenantId, companyId, input, parsed);
   const ar = await arAccountId(tx, tenantId);
 
@@ -547,8 +632,34 @@ export async function receivePaymentInTx(
     lines: paymentLines(input.depositTo, ar, input.customerId, parsed, accounts),
   }, userId, companyId, tx);
 
-  await writeSettlement(tx, tenantId, companyId, payment.id, input.date, valid, accounts);
+  await writeSettlement(tx, tenantId, companyId, payment.id, input.date, valid, accounts, sources, userId);
   return payment;
+}
+
+/** A hold (U-135): Dr depositTo / Cr Customer Deposits; no applications or credits (400 DEPOSIT_WITH_APPLICATIONS). */
+async function receiveDepositInTx(
+  tx: Tx, tenantId: string, input: ReceivePaymentInput, parsed: Parsed, userId?: string, companyId?: string,
+) {
+  if (parsed.apps.length > 0 || parsed.credits.length > 0) {
+    throw AppError.badRequest('A deposit holds the whole amount: leave the invoices and credits out.', 'DEPOSIT_WITH_APPLICATIONS');
+  }
+  if (!parsed.amount.greaterThan(0)) throw AppError.badRequest('Enter the amount received.', 'AMOUNT_REQUIRED');
+  const cd = await customerDepositsAccount(tenantId, companyId);
+  const amount = parsed.amount.toFixed(4);
+  return ledger.postTransaction(tenantId, {
+    txnType: 'customer_payment',
+    txnDate: input.date,
+    contactId: input.customerId,
+    memo: input.memo,
+    total: amount,
+    paymentMethod: input.paymentMethod,
+    referenceNumber: input.refNo,
+    holdsDeposit: true,
+    lines: [
+      { accountId: input.depositTo, debit: amount, credit: '0' },
+      { accountId: cd, debit: '0', credit: amount, contactId: input.customerId },
+    ],
+  }, userId, companyId, tx);
 }
 
 /** Receives a payment in its own database transaction (routes, api-v2, MCP, Stripe, bank feed). */
@@ -590,6 +701,8 @@ export interface PaymentRecord {
   unappliedRemaining: string;
   holdsDeposit: boolean;
   depositRemaining: string;
+  /** U-135: the held deposit this payment draws on. */
+  fromDepositId?: string;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -644,7 +757,7 @@ export async function getPaymentRecord(executor: DbOrTx, tenantId: string, payme
     if (d) depositedIn = { depositId: d.id, date: d.txnDate };
   }
   const bounce = await liveBounce(executor, tenantId, paymentId);
-  const remaining = await creditRemaining(executor, tenantId, p);
+  const remaining = p.holdsDeposit ? new Decimal(0) : await creditRemaining(executor, tenantId, p);
   return {
     id: p.id,
     txnType: 'customer_payment',
@@ -662,8 +775,9 @@ export async function getPaymentRecord(executor: DbOrTx, tenantId: string, payme
     ...(bounce ? { bounce: { returnId: bounce.id, date: bounce.txnDate } } : {}),
     applications: apps,
     unappliedRemaining: money2(round2(remaining)),
-    holdsDeposit: false,
-    depositRemaining: '0.00',
+    holdsDeposit: p.holdsDeposit,
+    depositRemaining: money2(round2(await depositRemaining(executor, tenantId, p))),
+    ...(p.fromDepositId ? { fromDepositId: p.fromDepositId } : {}),
   };
 }
 
@@ -815,6 +929,8 @@ export interface PaymentPreview {
   shortfalls: ReturnType<typeof computePayment>['shortfalls'];
   overpayment: string;
   credits: ComputeCredit[];
+  depositsOnHand: DepositOnHand[];
+  holdAsDepositOffered: boolean;
   pendingDeposits: { count: number; total: string };
   averageDaysToPay: number | null;
   problems: Array<ComputeProblem | { code: string; invoiceId?: string }>;
@@ -868,6 +984,7 @@ async function openCredits(tenantId: string, customerId: string, companyId: stri
     FROM transactions t
     WHERE t.tenant_id = ${tenantId} AND t.txn_type = 'customer_payment' AND t.status = 'posted'
       AND t.contact_id = ${customerId} ${scope} ${except}
+      AND t.holds_deposit = false AND t.from_deposit_id IS NULL
       AND NOT EXISTS (SELECT 1 FROM transactions b WHERE b.tenant_id = t.tenant_id AND b.source_txn_id = t.id
                       AND b.txn_type = 'returned_payment' AND b.status = 'posted')
     ORDER BY t.txn_date, t.created_at, t.id
@@ -878,6 +995,36 @@ async function openCredits(tenantId: string, customerId: string, companyId: stri
       remaining: money2(round2(String(r['remaining']))),
     }))
     .filter((c) => dec(c.remaining).greaterThan(0));
+}
+
+export interface DepositOnHand { paymentId: string; date: string; refNo: string | null; amount: string; remaining: string }
+
+/**
+ * Held customer deposits with money left (U-135): posted, not bounced,
+ * amount - posted draws - live refunds above 0.00; oldest first.
+ */
+export async function depositsOnHand(tenantId: string, customerId: string, companyId?: string): Promise<DepositOnHand[]> {
+  const scope = companyId ? sql`AND (t.company_id = ${companyId} OR t.company_id IS NULL)` : sql``;
+  const rows = await db.execute(sql`
+    SELECT t.id, to_char(t.txn_date, 'YYYY-MM-DD') AS date, t.reference_number, t.total::text AS total,
+      (t.total
+        - COALESCE((SELECT SUM(d.total) FROM transactions d WHERE d.tenant_id = t.tenant_id AND d.from_deposit_id = t.id
+                    AND d.status = 'posted'), 0)
+        - COALESCE((SELECT SUM(r.total) FROM transactions r WHERE r.tenant_id = t.tenant_id AND r.source_payment_id = t.id
+                    AND r.txn_type = 'customer_refund' AND r.status = 'posted'), 0))::text AS remaining
+    FROM transactions t
+    WHERE t.tenant_id = ${tenantId} AND t.txn_type = 'customer_payment' AND t.status = 'posted' AND t.holds_deposit = true
+      AND t.contact_id = ${customerId} ${scope}
+      AND NOT EXISTS (SELECT 1 FROM transactions b WHERE b.tenant_id = t.tenant_id AND b.source_txn_id = t.id
+                      AND b.txn_type = 'returned_payment' AND b.status = 'posted')
+    ORDER BY t.txn_date, t.created_at, t.id
+  `);
+  return (rows.rows as Array<Record<string, unknown>>)
+    .map((r) => ({
+      paymentId: String(r['id']), date: String(r['date']), refNo: (r['reference_number'] as string | null) ?? null,
+      amount: money2(round2(String(r['total']))), remaining: money2(round2(String(r['remaining']))),
+    }))
+    .filter((d) => dec(d.remaining).greaterThan(0));
 }
 
 async function pendingDepositTotals(tenantId: string, companyId: string | undefined, exceptId?: string) {
@@ -916,6 +1063,11 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     return share ? { ...r, balanceDueExact: dec(r.balanceDueExact).plus(share).toFixed(4) } : r;
   });
   const credits = await openCredits(tenantId, input.customerId, companyId, input.editingPaymentId);
+  const onHand = (await depositsOnHand(tenantId, input.customerId, companyId)).filter((d) => d.paymentId !== input.editingPaymentId);
+  const sourcesForCompute: ComputeCredit[] = [
+    ...credits,
+    ...onHand.map((d) => ({ sourcePaymentId: d.paymentId, date: d.date, refNo: d.refNo, remaining: d.remaining })),
+  ];
   const settings = await companySettleSettings(db, tenantId, companyId);
   const result = computePayment(compute, {
     date: input.date,
@@ -923,8 +1075,14 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     applications: input.applications ?? null,
     creditApplications: input.creditApplications ?? null,
     writeOffThreshold: settings.writeOffThreshold === null ? null : money2(round2(settings.writeOffThreshold)),
-  }, credits);
+  }, sourcesForCompute);
   problems.unshift(...result.problems);
+  if (input.holdAsDeposit && ((input.applications?.length ?? 0) > 0 || (input.creditApplications?.length ?? 0) > 0)) {
+    problems.push({ code: 'DEPOSIT_WITH_APPLICATIONS' });
+  }
+  const onHandIds = new Set(onHand.map((d) => d.paymentId));
+  const drawsUsed = result.creditApplications.filter((c) => onHandIds.has(c.sourcePaymentId))
+    .reduce((t, c) => t.plus(c.amount), new Decimal(0));
   if ((input.applications?.length ?? 0) + (input.creditApplications?.length ?? 0) > MAX_APPLICATIONS) problems.push({ code: 'TOO_MANY_APPLICATIONS' });
 
   let pcId: string | null = null;
@@ -947,8 +1105,9 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
   return {
     contactBalanceBefore: money2(round2(before)),
     // Credits are in A/R already; discounts and write-offs take it down too.
-    contactBalanceAfter: money2(round2(before.minus(amount)
-      .minus(dec(result.totals.discountsAndCredits).minus(creditsUsed(result))).minus(result.totals.writeOffs))),
+    // Credits are in A/R already; draws on deposits take A/R down (U-135); a hold leaves it alone.
+    contactBalanceAfter: input.holdAsDeposit ? money2(round2(before)) : money2(round2(before.minus(amount)
+      .minus(dec(result.totals.discountsAndCredits).minus(creditsUsed(result))).minus(result.totals.writeOffs).minus(drawsUsed))),
     amount: result.amount,
     amountSource: result.amountSource,
     invoices: result.invoices,
@@ -956,6 +1115,9 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     shortfalls: result.shortfalls,
     overpayment: result.overpayment,
     credits,
+    depositsOnHand: onHand,
+    holdAsDepositOffered: amount.greaterThan(0) && !dec(result.totals.applied).greaterThan(0)
+      && result.creditApplications.length === 0 && !dec(result.totals.writeOffs).greaterThan(0),
     pendingDeposits: {
       count: pending.count + (counts ? 1 : 0),
       total: money2(round2(pending.total.plus(counts ? amount : 0))),
@@ -976,6 +1138,15 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
  */
 export async function releasePaymentForVoidInTx(tx: Tx, tenantId: string, payment: TxnRow, userId?: string): Promise<void> {
   if (await liveBounce(tx, tenantId, payment.id)) throw paymentBounced(payment.id);
+  // U-135: a deposit with live draws stays; a draw on a bounced deposit stays.
+  if (payment.holdsDeposit && (await liveDraws(tx, tenantId, payment.id)).length > 0) throw depositApplied(payment.id);
+  if (payment.fromDepositId && await liveBounce(tx, tenantId, payment.fromDepositId)) throw paymentBounced(payment.fromDepositId);
+  // Draws made inside this payment are voided with it.
+  const inner = await tx.select({ id: transactions.id }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourceTxnId, payment.id),
+      eq(transactions.txnType, 'customer_payment'), eq(transactions.status, 'posted')))
+    .orderBy(transactions.id);
+  for (const d of inner) await ledger.voidTransactionInTx(tx, tenantId, d.id, 'Voided with the payment it was applied in', userId);
   // A refund drew on its credit (Q-P21j): void the refund first.
   if ((await liveRefundTotal(tx, tenantId, payment.id)).greaterThan(0)) throw paymentRefunded(payment.id);
   // Its own rows and credit applied later, plus other credits applied inside it (U-133).
@@ -1139,10 +1310,30 @@ export async function bouncePayment(
       }
     }
 
-    const apps = await liveApplications(tx, tenantId, paymentId);
+    if (payment.fromDepositId) {
+      throw AppError.badRequest('This payment was applied from a deposit; record the bounce on the deposit.', 'VALIDATION_ERROR');
+    }
+    // A held deposit (U-135): its draws' applications are reversed, A/R
+    // debited for what was drawn, Customer Deposits for the rest; no draw is
+    // voided, so nothing dated earlier changes.
+    const draws = payment.holdsDeposit ? await liveDraws(tx, tenantId, paymentId) : [];
+    if (draws.length > 0) await lockPayments(tx, tenantId, draws.map((d) => d.id));
+    const drawn = draws.reduce((t, d) => t.plus(d.total ?? '0'), new Decimal(0));
+    const apps = payment.holdsDeposit
+      ? (await Promise.all(draws.map((d) => liveApplications(tx, tenantId, d.id)))).flat()
+      : await liveApplications(tx, tenantId, paymentId);
     const invoices = await lockInvoices(tx, tenantId, apps.map((a) => a.invoiceId));
     const ar = await arAccountId(tx, tenantId);
     const amount = dec(payment.total).toFixed(4);
+    const holdLines = payment.holdsDeposit
+      ? [
+        ...(drawn.greaterThan(0) ? [{ accountId: ar, debit: drawn.toFixed(4), credit: '0', contactId: payment.contactId ?? undefined }] : []),
+        ...(dec(payment.total).minus(drawn).greaterThan(0)
+          ? [{ accountId: await customerDepositsAccount(tenantId, payment.companyId), debit: dec(payment.total).minus(drawn).toFixed(4), credit: '0' }]
+          : []),
+        { accountId: held.accountId, debit: '0', credit: amount },
+      ]
+      : null;
     const scope = companyId ?? payment.companyId ?? undefined;
 
     // Discounts and write-offs it settled come back too (U-133, U-134).
@@ -1163,7 +1354,7 @@ export async function bouncePayment(
       referenceNumber: payment.referenceNumber ?? undefined,
       paymentMethod: (payment.paymentMethod ?? undefined) as PaymentMethod | undefined,
       sourceTxnId: paymentId,
-      lines: [
+      lines: holdLines ?? [
         { accountId: ar, debit: arDebit, credit: '0', contactId: payment.contactId ?? undefined },
         { accountId: held.accountId, debit: '0', credit: amount },
         ...[...back.entries()].sort(([x], [y]) => (x < y ? -1 : 1))
@@ -1247,6 +1438,9 @@ export async function bounceResult(tenantId: string, returnId: string, companyId
  */
 export async function reapplyBounceForVoidInTx(tx: Tx, tenantId: string, ret: TxnRow, userId?: string): Promise<{ feeId: string | null }> {
   if (ret.sourceTxnId) await lockPayments(tx, tenantId, [ret.sourceTxnId]);
+  const res0 = await tx.select({ paymentId: paymentApplications.paymentId }).from(paymentApplications)
+    .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.reversedByTxnId, ret.id)));
+  await lockPayments(tx, tenantId, res0.map((r) => r.paymentId).filter((id) => id !== ret.sourceTxnId));
   const res = await tx.select().from(paymentApplications)
     .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.reversedByTxnId, ret.id)))
     .orderBy(paymentApplications.invoiceId, paymentApplications.id);
@@ -1312,6 +1506,13 @@ export async function updatePayment(
     if (payment.status !== 'posted') throw AppError.badRequest('Cannot update a void transaction');
     ledger.assertNotStale(payment, input.expectedUpdatedAt, 'This payment');
     if (await liveBounce(tx, tenantId, paymentId)) throw paymentBounced(paymentId);
+    if (payment.fromDepositId) {
+      throw AppError.badRequest('This payment was applied from a deposit; void it and apply the deposit again.', 'VALIDATION_ERROR');
+    }
+    if (payment.holdsDeposit !== !!input.holdAsDeposit) {
+      throw AppError.badRequest('holdAsDeposit can’t change on an edit; void the payment and enter it again.', 'VALIDATION_ERROR');
+    }
+    if (payment.holdsDeposit && (await liveDraws(tx, tenantId, paymentId)).length > 0) throw depositApplied(paymentId);
     if (parsed.credits.some((c) => c.sourcePaymentId === paymentId)) {
       throw AppError.badRequest('A payment can’t use its own credit.', 'VALIDATION_ERROR');
     }
@@ -1361,6 +1562,10 @@ export async function updatePayment(
       ...own.map((a) => a.invoiceId), ...inside.map((a) => a.invoiceId),
       ...parsed.apps.map((a) => a.invoiceId), ...parsed.credits.map((c) => c.invoiceId),
     ]);
+    const innerDraws = await tx.select({ id: transactions.id }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourceTxnId, paymentId),
+        eq(transactions.txnType, 'customer_payment'), eq(transactions.status, 'posted')));
+    for (const d of innerDraws) await ledger.voidTransactionInTx(tx, tenantId, d.id, 'Re-made with the edited payment', userId);
     const now = new Date();
     for (const a of [...own, ...inside]) {
       const inv = invoices.get(a.invoiceId);
@@ -1372,6 +1577,9 @@ export async function updatePayment(
     const valid = validateInvoices(parsed, invoices, input.customerId, companyId);
 
     const ar = await arAccountId(tx, tenantId);
+    if (payment.holdsDeposit && (parsed.apps.length > 0 || parsed.credits.length > 0)) {
+      throw AppError.badRequest('A deposit holds the whole amount: leave the invoices and credits out.', 'DEPOSIT_WITH_APPLICATIONS');
+    }
     await ledger.updateTransaction(tenantId, paymentId, {
       txnType: 'customer_payment',
       txnDate: input.date,
@@ -1380,9 +1588,14 @@ export async function updatePayment(
       total: parsed.amount.toFixed(4),
       paymentMethod: input.paymentMethod,
       referenceNumber: input.refNo,
-      lines: paymentLines(input.depositTo, ar, input.customerId, parsed, accounts),
+      lines: payment.holdsDeposit
+        ? [
+          { accountId: input.depositTo, debit: parsed.amount.toFixed(4), credit: '0' },
+          { accountId: await customerDepositsAccount(tenantId, companyId), debit: '0', credit: parsed.amount.toFixed(4), contactId: input.customerId },
+        ]
+        : paymentLines(input.depositTo, ar, input.customerId, parsed, accounts),
     }, userId, companyId, tx);
-    await writeSettlement(tx, tenantId, companyId, paymentId, input.date, valid, accounts);
+    await writeSettlement(tx, tenantId, companyId, paymentId, input.date, valid, accounts, locked, userId);
     await auditLog(tenantId, 'update', 'payment_applications', paymentId,
       { applications: [...own, ...inside].map((a) => ({ paymentId: a.paymentId, invoiceId: a.invoiceId, amount: a.amount, discount: a.discountAmount, writeOff: a.writeOffAmount })) },
       {
@@ -1396,7 +1609,7 @@ export async function updatePayment(
 
 // ─── Apply a credit later ───────────────────────────────────────────
 
-export interface ApplyCreditResult { applied: Array<{ invoiceId: string; amount: string }>; remaining: string }
+export interface ApplyCreditResult { applied: Array<{ invoiceId: string; amount: string }>; remaining: string; drawId?: string }
 
 /**
  * POST /payments/:id/apply (U-133): applies a payment's unapplied credit to
@@ -1423,8 +1636,10 @@ export async function applyCredit(
       throw AppError.badRequest(`At most ${MAX_APPLICATIONS} invoices per payment.`, 'TOO_MANY_APPLICATIONS', { max: MAX_APPLICATIONS });
     }
     await ledger.checkLockDate(tx, tenantId, input.date, payment.companyId, undefined, { txnId: paymentId, oldDate: null, newDate: input.date });
+    if (payment.fromDepositId) throw AppError.badRequest('This payment was applied from a deposit already.', 'VALIDATION_ERROR');
     let left = await creditRemaining(tx, tenantId, payment);
     const invoices = await lockInvoices(tx, tenantId, input.applications.map((a) => a.invoiceId));
+    const drawRows: Array<{ inv: TxnRow; amount: DecimalValue }> = [];
     const seen = new Set<string>();
     const applied: ApplyCreditResult['applied'] = [];
     for (const a of input.applications) {
@@ -1440,10 +1655,17 @@ export async function applyCredit(
         );
       }
       if (x.greaterThan(left)) {
-        throw AppError.conflict(`Only ${money2(left)} of this credit is left.`, 'CREDIT_NOT_AVAILABLE',
+        throw AppError.conflict(`Only ${money2(left)} of this ${payment.holdsDeposit ? 'deposit' : 'credit'} is left.`,
+          payment.holdsDeposit ? 'DEPOSIT_NOT_AVAILABLE' : 'CREDIT_NOT_AVAILABLE',
           { sourcePaymentId: paymentId, remaining: money2(left) });
       }
       if (!x.greaterThan(0)) continue;
+      if (payment.holdsDeposit) {
+        drawRows.push({ inv, amount: x });
+        left = left.minus(x);
+        applied.push({ invoiceId: inv.id, amount: money2(x) });
+        continue;
+      }
       await tx.insert(paymentApplications).values({
         tenantId, companyId: companyId ?? inv.companyId ?? null, paymentId, invoiceId: inv.id,
         amount: x.toFixed(4), appliedDate: input.date,
@@ -1452,11 +1674,13 @@ export async function applyCredit(
       left = left.minus(x);
       applied.push({ invoiceId: inv.id, amount: money2(x) });
     }
+    let drawId: string | undefined;
+    if (drawRows.length > 0) drawId = await postDraw(tx, tenantId, payment, input.date, drawRows, null, userId, companyId);
     await tx.update(transactions).set({ updatedAt: new Date() })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
     await auditLog(tenantId, 'update', 'payment_applications', paymentId,
-      { applications: [] }, { applications: applied, via: 'apply_credit', date: input.date }, userId, tx);
-    return { applied, remaining: money2(left) };
+      { applications: [] }, { applications: applied, via: payment.holdsDeposit ? 'apply_deposit' : 'apply_credit', date: input.date, drawId: drawId ?? null }, userId, tx);
+    return { applied, remaining: money2(left), ...(drawId ? { drawId } : {}) };
   });
 }
 

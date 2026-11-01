@@ -24,7 +24,7 @@ export async function createCustomerRefund(tenantId: string, input: CreateCustom
   });
   if (!arAccount) throw AppError.internal('AR account not found');
 
-  const post = (tx?: Tx) => ledger.postTransaction(tenantId, {
+  const post = (tx?: Tx, debitAccountId: string = arAccount.id) => ledger.postTransaction(tenantId, {
     txnType: 'customer_refund',
     txnDate: input.txnDate,
     contactId: input.contactId,
@@ -33,7 +33,7 @@ export async function createCustomerRefund(tenantId: string, input: CreateCustom
     ...(input.sourcePaymentId ? { sourcePaymentId: input.sourcePaymentId } : {}),
     lines: [
       // DR: AR (reduce what customer owes — they overpaid or we owe them)
-      { accountId: arAccount.id, debit: input.amount, credit: '0' },
+      { accountId: debitAccountId, debit: input.amount, credit: '0' },
       // CR: Bank (money goes out)
       { accountId: input.refundFromAccountId, debit: '0', credit: input.amount },
     ],
@@ -65,7 +65,10 @@ export async function createCustomerRefund(tenantId: string, input: CreateCustom
       throw AppError.conflict(`Only ${remaining.toFixed(2)} of that credit is left.`, 'CREDIT_NOT_AVAILABLE',
         { sourcePaymentId: sourceId, remaining: remaining.toFixed(2) });
     }
-    const refund = await post(tx);
+    // A held deposit's refund comes out of Customer Deposits, not A/R (U-135).
+    const { getOrCreateSystemAccount } = await import('./system-accounts.service.js');
+    const debit = src.holdsDeposit ? await getOrCreateSystemAccount(tenantId, 'customer_deposits', companyId) : arAccount.id;
+    const refund = await post(tx, debit);
     await tx.update(transactions).set({ updatedAt: new Date() })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, sourceId)));
     return refund;

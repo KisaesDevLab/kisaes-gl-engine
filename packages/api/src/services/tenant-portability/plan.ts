@@ -647,6 +647,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'transactions.source_txn_id': 'tenant-ref:transactions',
   // A refund of a payment's credit (U-133, migration 0248).
   'transactions.source_payment_id': 'tenant-ref:transactions',
+  // A draw on a held customer deposit (U-135, migration 0249).
+  'transactions.from_deposit_id': 'tenant-ref:transactions',
   'transactions.print_batch_id': 'tenant-ref:check_runs',
   'transactions.company_id': 'tenant-ref:companies',
   'transactions.print_signature_id': 'tenant-ref:check_signatures',

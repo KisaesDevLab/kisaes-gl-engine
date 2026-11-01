@@ -50,7 +50,10 @@ const receiveErrors = '400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_A
   'Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, ' +
   'expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its ' +
   'remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 ' +
-  'CREDIT_NOT_FOR_CUSTOMER.';
+  'CREDIT_NOT_FOR_CUSTOMER. customer-deposits-v1: holdAsDeposit true holds the whole amount as a customer deposit (Dr depositTo, Cr the ' +
+  'Customer Deposits liability, created on first use); applications or credits with it are 400 DEPOSIT_WITH_APPLICATIONS. A held ' +
+  'deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr ' +
+  'A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE.';
 
 const paymentRecordNote = 'PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, ' +
   'status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, ' +
@@ -106,7 +109,10 @@ paymentsRouter.post('/preview', validate(previewPaymentSchema), describe({
     'payment = cent balance - discountAvailable exactly); totals.writeOffs; overpayment (= unapplied); shortfalls[].withinWriteOffLimit ' +
     '(shortfall <= the company writeOffThreshold; false without one); credits [{sourcePaymentId, date, refNo, remaining}] (the open ' +
     'credits of the client, bounced payments left out); contactBalanceAfter = before - amount - discounts - write-offs (credits are in A/R ' +
-    'already). Order per invoice: typed cash, discount and write-off, then credits, then cash fill / auto. editingPaymentId: that payment\'s own live share is added ' +
+    'already). Order per invoice: typed cash, discount and write-off, then credits, then cash fill / auto. customer-deposits-v1: ' +
+    'depositsOnHand [{paymentId, date, refNo, amount, remaining}] (usable as creditApplications sources: draws), holdAsDepositOffered ' +
+    '(an amount with nothing applied, no credits, no write-off), holdAsDeposit (contactBalanceAfter = before; with applications the ' +
+    'problem DEPOSIT_WITH_APPLICATIONS); draws on deposits lower contactBalanceAfter. editingPaymentId: that payment\'s own live share is added ' +
     'back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it ' +
     'out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in ' +
     'problems[], never 4xx. Money as 2-place strings.',
@@ -123,16 +129,34 @@ paymentsRouter.post('/:id/apply', closingPasswordLimiter, lockContextMiddleware,
     return { applied: [], remaining: p.unappliedRemaining };
   },
 }), validate(applyPaymentCreditSchema), describe({
-  summary: 'Apply the credit of a payment to invoices (payment-settle-v1)',
+  summary: 'Apply the credit of a payment, or a held deposit, to invoices (payment-settle-v1, customer-deposits-v1)',
   description: 'Response {applied: [{invoiceId, amount}], remaining}. Applies the unapplied credit of the payment to invoices of the same ' +
     'client on `date`; no GL effect (rows dated appliedDate). A row without amount fills min(credit left, cent balance). The payment is ' +
     'locked, then the invoices. 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; 400 OVERAPPLIED; 409 INVOICE_BALANCE_CHANGED ' +
-    '(expectedBalanceDue); 409 PAYMENT_BOUNCED; 409 STALE (expectedUpdatedAt); closing date on `date`. Audited. ' + closedPeriodNote,
+    '(expectedBalanceDue); 409 PAYMENT_BOUNCED; 409 STALE (expectedUpdatedAt); closing date on `date`. Audited. On a held deposit ' +
+    '(customer-deposits-v1) it posts one draw (Dr Customer Deposits, Cr A/R, fromDepositId) carrying the applications and returns drawId; ' +
+    'over the deposit 409 DEPOSIT_NOT_AVAILABLE. ' + closedPeriodNote,
   body: applyPaymentCreditSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
   const result = await paymentService.applyCredit(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json(result);
+});
+
+paymentsRouter.get('/deposits-on-hand', describe({
+  summary: 'Held customer deposits with money left (customer-deposits-v1)',
+  description: 'Response {data: [{paymentId, date, refNo, amount, remaining}], total}: posted held deposits of the customer in this ' +
+    'company, not bounced, remaining = amount - posted draws - live refunds above 0.00, oldest first. A customer of another company is 404.',
+  query: z.object({ customerId: z.string().uuid() }),
+}), async (req, res) => {
+  const customerId = String(req.query['customerId'] ?? '');
+  if (!/^[0-9a-f-]{36}$/i.test(customerId)) {
+    res.status(400).json({ error: { message: 'customerId is required', code: 'VALIDATION_ERROR' } });
+    return;
+  }
+  await paymentService.assertCustomerInCompany(req.tenantId, customerId, req.companyId);
+  const data = await paymentService.depositsOnHand(req.tenantId, customerId, req.companyId);
+  res.json({ data, total: data.length });
 });
 
 paymentsRouter.get('/open-invoices/:customerId', describe({
@@ -212,7 +236,8 @@ paymentsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, 
   summary: 'Void a customer payment',
   description: 'Response {voided: true}. The invoices it paid reopen (every void path does this, /transactions/:id/void too); its ' +
     'applications are kept, marked set aside. expectedUpdatedAt: mismatch 409 STALE. 409 TXN_DEPOSITED {depositIds} while a posted ' +
-    'deposit holds it; 409 PAYMENT_BOUNCED while its bounce is live; 409 PAYMENT_REFUNDED while a refund of its credit is live (Q-P21j); ' +
+    'deposit holds it; 409 PAYMENT_BOUNCED while its bounce is live (or, for a draw, its deposit\'s); 409 PAYMENT_REFUNDED while a refund of its credit is live (Q-P21j); ' +
+    '409 DEPOSIT_APPLIED for a held deposit with live draws; draws made inside it are voided with it; ' +
     'credits applied inside it are set aside too; 400 when the reconciliation it is cleared in is complete. ' +
     `Closed period on the payment's date. ${closedPeriodNote}`,
   body: voidPaymentSchema.extend(closing),

@@ -808,3 +808,126 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect([r.status, r.json.error.code]).toEqual([400, 'WRITE_OFF_ACCOUNT_INVALID']);
   });
 });
+
+describe('customer-deposits-v1 (U-135)', () => {
+  const cdAccount = () => bySystemTag(c.tenantId, 'customer_deposits');
+
+  async function hold(amount: string, depositTo = c.clearing, date = '2026-11-01') {
+    const r = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date, depositTo, amount, applications: [], holdAsDeposit: true,
+    }, { 'Idempotency-Key': key() });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    return r.json.payment;
+  }
+
+  it('advertises customer-deposits-v1', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('customer-deposits-v1');
+  });
+
+  it('golden 6: hold 500.00, apply to a 1,200.00 invoice, the liability clears; voiding the draw brings it back; DEPOSIT_APPLIED', async () => {
+    let p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ amount: '500.00' }));
+    expect(p.json.holdAsDepositOffered).toBe(true);
+    p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ amount: '500.00', holdAsDeposit: true }));
+    expect(p.json.contactBalanceAfter).toBe(p.json.contactBalanceBefore);
+    const bad = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date: '2026-11-01', depositTo: c.clearing, amount: '500.00', holdAsDeposit: true,
+      applications: [{ invoiceId: await invoice('10.00', '2026-10-01'), amount: '10.00' }],
+    });
+    expect([bad.status, bad.json.error.code]).toEqual([400, 'DEPOSIT_WITH_APPLICATIONS']);
+    const h = await hold('500.00');
+    const cd = await cdAccount();
+    expect(await linesOf(h.id)).toEqual([[c.clearing, '500.0000', '0.0000'], [cd, '0.0000', '500.0000']]);
+    expect([h.holdsDeposit, h.depositRemaining, h.unappliedRemaining]).toEqual([true, '500.00', '0.00']);
+    let onHand = await request('GET', `/api/v1/payments/deposits-on-hand?customerId=${c.customer}`, c.token);
+    expect(onHand.json).toEqual({ data: [{ paymentId: h.id, date: '2026-11-01', refNo: null, amount: '500.00', remaining: '500.00' }], total: 1 });
+    p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({}));
+    expect(p.json.credits).toEqual([]);
+    expect(p.json.depositsOnHand.map((d: any) => d.paymentId)).toEqual([h.id]);
+
+    const inv1 = await invoice('1200.00', '2026-11-05');
+    let a = await request('POST', `/api/v1/payments/${h.id}/apply`, c.token, { date: '2026-11-06', applications: [{ invoiceId: inv1, amount: '600.00' }] });
+    expect([a.status, a.json.error.code]).toEqual([409, 'DEPOSIT_NOT_AVAILABLE']);
+    a = await request('POST', `/api/v1/payments/${h.id}/apply`, c.token, { date: '2026-11-06', applications: [{ invoiceId: inv1 }] }, { 'Idempotency-Key': key() });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    expect([a.json.applied, a.json.remaining]).toEqual([[{ invoiceId: inv1, amount: '500.00' }], '0.00']);
+    expect(await linesOf(a.json.drawId)).toEqual([[cd, '500.0000', '0.0000'], [c.ar, '0.0000', '500.0000']]);
+    expect((await inv(inv1)).balanceDue).toBe('700.0000');
+    expect(await balance(cd)).toBe('0.0000');
+    onHand = await request('GET', `/api/v1/payments/deposits-on-hand?customerId=${c.customer}`, c.token);
+    expect(onHand.json.data).toEqual([]);
+    let v = await request('POST', `/api/v1/payments/${h.id}/void`, c.token, {});
+    expect([v.status, v.json.error.code]).toEqual([409, 'DEPOSIT_APPLIED']);
+    v = await request('POST', `/api/v1/payments/${a.json.drawId}/void`, c.token, {});
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    expect(await balance(cd)).toBe('-500.0000');
+    expect((await inv(inv1)).balanceDue).toBe('1200.0000');
+    expect((await request('GET', `/api/v1/payments/${h.id}`, c.token)).json.payment.depositRemaining).toBe('500.00');
+  });
+
+  it('a hold as a credit source draws inside the receipt; voiding the receipt voids the draw', async () => {
+    const h = await hold('500.00', c.bank);
+    const inv1 = await invoice('1200.00', '2026-11-05');
+    const p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ amount: '700.00',
+      applications: [{ invoiceId: inv1, amount: null }], creditApplications: [{ sourcePaymentId: h.id, invoiceId: inv1, amount: null }] }));
+    expect(p.json.invoices[0].credits).toBe('500.00');
+    expect(p.json.invoices[0].payment).toBe('700.00');
+    expect(p.json.contactBalanceAfter).toBe('0.00');
+    const r = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date: '2026-11-06', depositTo: c.bank, amount: '700.00',
+      applications: [{ invoiceId: inv1, amount: '700.00' }], creditApplications: [{ sourcePaymentId: h.id, invoiceId: inv1, amount: '500.00' }],
+    });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect((await inv(inv1)).invoiceStatus).toBe('paid');
+    const draws = await db.select().from(transactions).where(and(eq(transactions.tenantId, c.tenantId), eq(transactions.fromDepositId, h.id)));
+    expect(draws.map((d) => [d.sourceTxnId, d.total, d.status])).toEqual([[r.json.payment.id, '500.0000', 'posted']]);
+    const v = await request('POST', `/api/v1/payments/${r.json.payment.id}/void`, c.token, {});
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    expect((await db.select().from(transactions).where(eq(transactions.id, draws[0]!.id)))[0]!.status).toBe('void');
+    expect((await inv(inv1)).balanceDue).toBe('1200.0000');
+    expect(await balance(await cdAccount())).toBe('-500.0000');
+  });
+
+  it('golden 11: a deposited hold with a 300.00 draw bounces: Cr bank 500.00, Dr A/R 300.00, Dr CD 200.00; the draw stays', async () => {
+    const bankBefore = await balance(c.bank);
+    const h = await hold('500.00', c.bank);
+    const inv1 = await invoice('1200.00', '2026-11-05');
+    const a = await request('POST', `/api/v1/payments/${h.id}/apply`, c.token, { date: '2026-11-06', applications: [{ invoiceId: inv1, amount: '300.00' }] });
+    expect(a.status).toBe(200);
+    // The draw's date is now in a closed period: the bounce needs no password.
+    await db.update(companies).set({ lockDate: '2026-11-07', closingPasswordHash: await bcrypt.hash(CLOSING_PHRASE, 4) }).where(eq(companies.id, c.companyId));
+    const b = await request('POST', `/api/v1/payments/${h.id}/bounce`, c.token, { date: '2026-11-10' });
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    const cd = await cdAccount();
+    expect(await linesOf(b.json.returnId)).toEqual([[c.ar, '300.0000', '0.0000'], [cd, '200.0000', '0.0000'], [c.bank, '0.0000', '500.0000']]);
+    expect((await inv(inv1)).balanceDue).toBe('1200.0000');
+    expect(await balance(cd)).toBe('0.0000');
+    expect(await balance(c.bank)).toBe(bankBefore);
+    expect((await db.select().from(transactions).where(eq(transactions.id, a.json.drawId)))[0]!.status).toBe('posted');
+    const v = await request('POST', `/api/v1/payments/${a.json.drawId}/void`, c.token, { closingPassword: CLOSING_PHRASE });
+    expect([v.status, v.json.error.code]).toEqual([409, 'PAYMENT_BOUNCED']);
+    const pl = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
+    expect(Number(pl.totalRevenue).toFixed(2)).toBe('0.00');
+  });
+
+  it('an undeposited hold bounces against Payments Clearing: the liability and Payments Clearing are both 0', async () => {
+    const h = await hold('500.00');
+    const b = await request('POST', `/api/v1/payments/${h.id}/bounce`, c.token, { date: '2026-11-03' });
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    expect(await balance(await cdAccount())).toBe('0.0000');
+    expect(await balance(c.clearing)).toBe('0.0000');
+    const onHand = await request('GET', `/api/v1/payments/deposits-on-hand?customerId=${c.customer}`, c.token);
+    expect(onHand.json.data).toEqual([]);
+  });
+
+  it('a refund of a held deposit debits Customer Deposits', async () => {
+    const h = await hold('500.00', c.bank);
+    const f = await request('POST', '/api/v1/customer-refunds', c.token, {
+      txnDate: '2026-11-04', contactId: c.customer, refundFromAccountId: c.bank, amount: '200.00', sourcePaymentId: h.id,
+    });
+    expect(f.status, JSON.stringify(f.json)).toBe(201);
+    const cd = await cdAccount();
+    expect(await linesOf(f.json.transaction.id)).toEqual([[cd, '200.0000', '0.0000'], [c.bank, '0.0000', '200.0000']]);
+    expect((await request('GET', `/api/v1/payments/${h.id}`, c.token)).json.payment.depositRemaining).toBe('300.00');
+    expect(await balance(cd)).toBe('-300.0000');
+  });
+});
