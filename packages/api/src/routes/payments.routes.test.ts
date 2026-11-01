@@ -599,6 +599,9 @@ describe('payment-bounce-v1 (U-132)', () => {
     const { payment } = await previewThenReceive({ amount: '4000.00' });
     let r = await request('POST', `/api/v1/payments/${payment.id}/bounce`, c.token, { date: '2026-11-10', bankFeeAmount: '35.00', bankFeeAccountId: c.fee });
     expect([r.status, r.json.error?.code]).toEqual([400, 'FEE_BANK_REQUIRED']);
+    // The fee account can't be the bank the fee comes out of (Dr X / Cr X).
+    r = await request('POST', `/api/v1/payments/${payment.id}/bounce`, c.token, { date: '2026-11-10', bankFeeAmount: '35.00', bankFeeAccountId: c.bank, bankFeeBankAccountId: c.bank });
+    expect([r.status, r.json.error?.code]).toEqual([400, 'FEE_ACCOUNT_INVALID']);
     r = await request('POST', `/api/v1/payments/${payment.id}/bounce`, c.token, { date: '2026-11-10', bankFeeAmount: '35.00', bankFeeAccountId: c.fee, bankFeeBankAccountId: c.bank });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
     expect(r.json.heldIn).toEqual({ accountId: c.clearing, kind: 'payments_clearing' });

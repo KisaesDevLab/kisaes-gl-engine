@@ -944,7 +944,6 @@ export async function bouncePayment(
       if (!feeAccount) {
         throw AppError.badRequest('Choose the account for the bank fee, or set one in Preferences.', 'FEE_ACCOUNT_REQUIRED');
       }
-      await assertFeeAccount(tx, tenantId, feeAccount, companyId ?? payment.companyId, [held.accountId]);
       if (held.kind === 'bank') feeBank = held.accountId;
       else {
         if (!input.bankFeeBankAccountId) {
@@ -953,6 +952,8 @@ export async function bouncePayment(
         await assertDepositAccount(tx, tenantId, input.bankFeeBankAccountId, companyId ?? payment.companyId ?? undefined);
         feeBank = input.bankFeeBankAccountId;
       }
+      // Never the account the fee is paid from (Dr X / Cr X).
+      await assertFeeAccount(tx, tenantId, feeAccount, companyId ?? payment.companyId, [held.accountId, feeBank]);
     }
 
     const apps = await liveApplications(tx, tenantId, paymentId);
