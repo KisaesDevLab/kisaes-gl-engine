@@ -132,7 +132,19 @@ interface PaymentScope { depositIds: string[]; paymentIds: string[] }
 /** Read on the caller's executor: before the locks to know what to lock, and again under them. */
 async function paymentScope(executor: DbOrTx, tenantId: string, paymentId: string): Promise<PaymentScope> {
   const deposits = await liveDepositsForSource(executor, tenantId, paymentId);
-  return { depositIds: [...new Set(deposits.map((d) => d.depositId))].sort(), paymentIds: [paymentId] };
+  // U-133: the payments its credit was applied inside (their void restores
+  // those rows) and the sources of the credits applied inside it.
+  const links = await executor.execute(sql`
+    SELECT pa.applied_in_txn_id AS id FROM payment_applications pa
+    WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${paymentId} AND pa.applied_in_txn_id IS NOT NULL
+      AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+    UNION
+    SELECT pa.payment_id FROM payment_applications pa
+    WHERE pa.tenant_id = ${tenantId} AND pa.applied_in_txn_id = ${paymentId}
+      AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+  `);
+  const ids = new Set([paymentId, ...(links.rows as Array<{ id: string }>).map((r) => String(r.id))]);
+  return { depositIds: [...new Set(deposits.map((d) => d.depositId))].sort(), paymentIds: [...ids].sort() };
 }
 
 interface LockedScope {
@@ -173,7 +185,17 @@ async function lockPaymentScope(tx: Tx, tenantId: string, paymentId: string, ext
  */
 export async function lockForVoidInTx(tx: Tx, tenantId: string, txn: { id: string; txnType: string; sourceTxnId: string | null }): Promise<void> {
   if (txn.txnType === 'customer_payment') await lockPaymentScope(tx, tenantId, txn.id);
-  else if (txn.txnType === 'returned_payment' && txn.sourceTxnId) await lockPaymentScope(tx, tenantId, txn.sourceTxnId);
+  else if (txn.txnType === 'returned_payment' && txn.sourceTxnId) {
+    // The rows the bounce reversed come back live: lock the payments they
+    // belong to and were applied inside (U-133) with the bounced payment.
+    const res = await tx.execute(sql`
+      SELECT pa.payment_id AS id FROM payment_applications pa WHERE pa.tenant_id = ${tenantId} AND pa.reversed_by_txn_id = ${txn.id}
+      UNION
+      SELECT pa.applied_in_txn_id FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.reversed_by_txn_id = ${txn.id} AND pa.applied_in_txn_id IS NOT NULL
+    `);
+    await lockPaymentScope(tx, tenantId, txn.sourceTxnId, (res.rows as Array<{ id: string }>).map((r) => String(r.id)));
+  }
 }
 
 /**
@@ -1070,10 +1092,11 @@ export async function releasePaymentForVoidInTx(tx: Tx, tenantId: string, paymen
   if (await liveBounce(tx, tenantId, payment.id)) throw paymentBounced(payment.id);
   // A refund drew on its credit (Q-P21j): void the refund first.
   if ((await liveRefundTotal(tx, tenantId, payment.id)).greaterThan(0)) throw paymentRefunded(payment.id);
-  // Its own rows and credit applied later, plus other credits applied inside it (U-133).
+  // Its own rows and credit applied later, plus other credits applied inside
+  // it (U-133). voidTransactionInTx locked the credit sources with the
+  // payment (lockForVoidInTx) before any invoice (E-B1, review SF8).
   const apps = [...await liveApplications(tx, tenantId, payment.id), ...await creditsAppliedIn(tx, tenantId, payment.id)];
   if (apps.length === 0) return;
-  await lockPayments(tx, tenantId, apps.filter((a) => a.paymentId !== payment.id).map((a) => a.paymentId));
   const invoices = await lockInvoices(tx, tenantId, apps.map((a) => a.invoiceId));
   const now = new Date();
   for (const a of apps) {
@@ -1182,9 +1205,17 @@ async function assertFeeAccount(
 export async function bouncePayment(
   tenantId: string, paymentId: string, input: BouncePaymentInput, userId?: string, companyId?: string,
 ): Promise<BounceResult> {
-  return db.transaction(async (tx) => {
-    // Lock order: the deposit holding the payment, the payment, its invoices;
-    // the deposit is read again under the locks (E-B1).
+  return db.transaction((tx) => bouncePaymentInTx(tx, tenantId, paymentId, input, userId, companyId));
+}
+
+/** bouncePayment inside the caller's database transaction. */
+export async function bouncePaymentInTx(
+  tx: Tx, tenantId: string, paymentId: string, input: BouncePaymentInput, userId?: string, companyId?: string,
+): Promise<BounceResult> {
+  {
+    // Lock order: the deposit holding the payment, the payment and the
+    // payments its credit was applied inside, its invoices; the links are
+    // read again under the locks (E-B1).
     const { payment, deposit: depositRow } = await lockPaymentScope(tx, tenantId, paymentId);
     const depositId = depositRow?.id ?? null;
     if (!payment || payment.txnType !== 'customer_payment' || payment.status === 'deleted' || ledger.inOtherCompany(payment, companyId)) {
@@ -1296,7 +1327,7 @@ export async function bouncePayment(
       { applications: [], via: 'bounce', returnId: ret.id, feeId: feeId ?? null }, userId, tx);
 
     return { returnId: ret.id, ...(feeId ? { feeId } : {}), heldIn: held, reopened };
-  });
+  }
 }
 
 /** Rebuilds a bounce's response from its returned_payment (Idempotency-Key replay). */

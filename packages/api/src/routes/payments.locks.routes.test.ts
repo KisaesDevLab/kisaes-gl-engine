@@ -246,6 +246,49 @@ describe('lock order and re-read under lock (U-132, E-B1)', () => {
     expect([x.balanceDue, x.amountPaid]).toEqual(['500.0000', '0.0000']);
   });
 
+  /** P pays 4,385.00 with 4,440.00 (55.00 credit); X pays 250.00 of a 300.00 invoice and uses 30.00 of P's credit. */
+  async function creditUsedInside() {
+    const i1 = await invoice('4385.00', '2026-09-15');
+    const p = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date: '2026-11-03', depositTo: c.bank, amount: '4440.00',
+      applications: [{ invoiceId: i1, amount: '4385.00' }],
+    });
+    expect(p.status, JSON.stringify(p.json)).toBe(201);
+    const n1 = await invoice('300.00', '2026-11-10');
+    const x = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date: '2026-11-12', depositTo: c.bank, amount: '250.00',
+      applications: [{ invoiceId: n1, amount: '250.00' }], creditApplications: [{ sourcePaymentId: p.json.payment.id, invoiceId: n1, amount: '30.00' }],
+    });
+    expect(x.status, JSON.stringify(x.json)).toBe(201);
+    expect((await row(n1)).balanceDue).toBe('20.0000');
+    return { i1, n1, p: p.json.payment.id as string, x: x.json.payment.id as string };
+  }
+
+  it('source bounce versus a void of the payment its credit was applied inside: n1 is restored once', async () => {
+    const s = await creditUsedInside();
+    const { bouncePaymentInTx } = await import('../services/payment.service.js');
+    const r = await interleave(
+      (tx) => bouncePaymentInTx(tx, c.tenantId, s.p, { date: '2026-11-15' } as never, c.userId, c.companyId),
+      () => request('POST', `/api/v1/payments/${s.x}/void`, c.token, {}),
+    );
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const n1 = await row(s.n1);
+    expect([n1.balanceDue, n1.amountPaid]).toEqual(['300.0000', '0.0000']);
+    expect((await row(s.i1)).balanceDue).toBe('4385.0000');
+  });
+
+  it('void of the applying payment versus the source bounce: n1 is restored once', async () => {
+    const s = await creditUsedInside();
+    const r = await interleave(
+      (tx) => ledger.voidTransactionInTx(tx, c.tenantId, s.x, 'wrong client', c.userId),
+      () => request('POST', `/api/v1/payments/${s.p}/bounce`, c.token, { date: '2026-11-15' }),
+    );
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const n1 = await row(s.n1);
+    expect([n1.balanceDue, n1.amountPaid]).toEqual(['300.0000', '0.0000']);
+    expect((await row(s.i1)).balanceDue).toBe('4385.0000');
+  });
+
   it('two unapplies of the same row: the invoice moves once', async () => {
     const i1 = await invoice('500.00', '2026-09-15');
     const p = await receive(i1, '200.00', c.bank);
