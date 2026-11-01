@@ -161,3 +161,52 @@ describe('refund-credit-memo-v1 / refund-checks-v1 (U-139)', () => {
     expect(m2(pl.netIncome)).toBe('210.00');
   });
 });
+
+describe('P22 review fixes (E3)', () => {
+  it('a queued refund check of a memo: the memo can\'t be voided and the check stays queued; voiding the refund takes it out', async () => {
+    const memo = await h.legacyMemo(c, '2026-11-02', '120.00');
+    const r = await refund(memo, { date: '2026-11-05', amount: '70.00', paymentMethod: 'check', from: 'operating' });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const id = r.json['transaction'].id;
+    expect(!!(await inQueue(id))).toBe(true);
+    const vm = await h.request('POST', `/api/v1/transactions/${memo}/void`, c.token, { reason: 't' });
+    expect([vm.status, vm.json['error'].code, vm.json['error'].details?.refundIds]).toEqual([409, 'CREDIT_REFUNDED', [id]]);
+    expect(!!(await inQueue(id))).toBe(true);
+    expect(await remaining(memo)).toBe('50.00');
+    const v = await h.request('POST', `/api/v1/transactions/${id}/void`, c.token, { reason: 't' });
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    expect(await inQueue(id)).toBeUndefined();
+    expect((await txn(id)).status).toBe('void');
+    expect(await remaining(memo)).toBe('120.00');
+    const rec = await h.request('GET', `/api/v1/customer-refunds/${id}`, c.token);
+    expect(rec.json['refund']?.status).toBe('void');
+    const vm2 = await h.request('POST', `/api/v1/transactions/${memo}/void`, c.token, { reason: 't' });
+    expect(vm2.status, JSON.stringify(vm2.json)).toBe(200);
+  });
+
+  it('printLater true with a checkNumber is 400 VALIDATION_ERROR and posts nothing', async () => {
+    const memo = await h.legacyMemo(c, '2026-11-02', '100.00');
+    const r = await h.request('POST', '/api/v1/customer-refunds', c.token, { sourceId: memo, txnDate: '2026-11-03', contactId: c.customer,
+      amount: '10.00', paymentMethod: 'check', printLater: true, checkNumber: 5002, refundFromAccountId: c.roles['operating'] });
+    expect([r.status, r.json['error'].code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect(await remaining(memo)).toBe('100.00');
+  });
+
+  it("another company's refund is 404; a role without receive_payment is 403", async () => {
+    const memo = await h.legacyMemo(c, '2026-11-02', '100.00');
+    const r = await refund(memo, { date: '2026-11-05', amount: '10.00', paymentMethod: 'cash', from: 'operating' });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const id = r.json['transaction'].id;
+    const b = await h.secondCompany(c);
+    expect((await h.request('GET', `/api/v1/customer-refunds/${id}`, c.token, undefined, b)).status).toBe(404);
+    const other = await refund(memo, { date: '2026-11-05', amount: '10.00', paymentMethod: 'cash', from: 'operating' }, b);
+    expect(other.status, JSON.stringify(other.json)).toBeGreaterThanOrEqual(400);
+    expect(await remaining(memo)).toBe('90.00');
+    const bankingOnly = await h.staffToken(c, { banking: 'full' });
+    for (const [method, path] of [['GET', `/api/v1/customer-refunds/${id}`], ['POST', '/api/v1/customer-refunds']] as const) {
+      const x = await h.request(method, path, bankingOnly, method === 'POST' ? { sourceId: memo, txnDate: '2026-11-05', contactId: c.customer,
+        amount: '10.00', refundFromAccountId: c.roles['operating'] } : undefined);
+      expect([x.status, x.json['error']?.code], `${method} ${path}`).toEqual([403, 'PERMISSION_DENIED']);
+    }
+  });
+});
