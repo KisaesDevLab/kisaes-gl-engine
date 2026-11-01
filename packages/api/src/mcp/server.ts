@@ -294,7 +294,9 @@ registerTool('record_payment', 'Record a customer payment and apply it to open i
   deposit_to: 'string', applications: 'string', payment_method: 'string?', memo: 'string?',
 }, async (p, auth) => {
   checkScope(auth, 'invoicing');
-  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  // The company scopes the customer, the invoices and the deposit account (U-132).
+  const companyId = await resolveCompany(auth, p);
+  const tenantId = await getTenantId(companyId);
   const { receivePaymentSchema } = await import('@kis-books/shared');
   const { receivePayment } = await import('../services/payment.service.js');
   const applications = typeof p.applications === 'string' ? JSON.parse(p.applications) : p.applications;
@@ -302,16 +304,17 @@ registerTool('record_payment', 'Record a customer payment and apply it to open i
     customerId: p.customer_id, date: p.date, amount: p.amount, depositTo: p.deposit_to,
     paymentMethod: p.payment_method, memo: p.memo, applications,
   });
-  return receivePayment(tenantId, input, auth.userId);
+  return receivePayment(tenantId, input, auth.userId, companyId);
 });
 
 registerTool('get_open_invoices', 'List open invoices for a customer (for payment application)', {
   company_id: 'string?', customer_id: 'string',
 }, async (p, auth) => {
   checkScope(auth, 'read');
-  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const companyId = await resolveCompany(auth, p);
+  const tenantId = await getTenantId(companyId);
   const { getOpenInvoicesForCustomer } = await import('../services/payment.service.js');
-  return getOpenInvoicesForCustomer(tenantId, p.customer_id);
+  return getOpenInvoicesForCustomer(tenantId, p.customer_id, companyId);
 });
 
 registerTool('create_deposit', 'Create a bank deposit', {

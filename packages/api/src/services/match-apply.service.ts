@@ -119,24 +119,30 @@ async function applyInvoiceMatch(
     throw AppError.badRequest('Invoice has no customer attached');
   }
 
-  // Apply amount is min(feedAmount, balanceDue) — partial payment
-  // when feed is short, paid-in-full when feed equals or exceeds.
-  const balanceDue = parseFloat(invoice.balanceDue ?? '0');
-  const application = Math.min(applyAmountNum, balanceDue).toFixed(4);
-  const partial = applyAmountNum < balanceDue;
+  // Apply amount is min(feedAmount, cent balance) — partial payment when
+  // the feed is short, paid in full when it equals or exceeds; anything
+  // above stays an A/R credit (U-132: exact Decimal, no tolerance).
+  void applyAmountNum;
+  const { round2, centBalance } = await import('./payment-compute.js');
+  const feedAmount = round2(applyAmount);
+  const balanceDue = invoice.invoiceStatus === 'paid' ? round2('0') : centBalance(invoice.balanceDue ?? '0');
+  const appliedDec = feedAmount.lessThan(balanceDue) ? feedAmount : balanceDue;
+  const application = appliedDec.toFixed(2);
+  const partial = feedAmount.lessThan(balanceDue);
 
   const payment = await paymentService.receivePayment(
     tenantId,
     {
       customerId: invoice.contactId,
       date: item.feedDate,
-      amount: applyAmount,
+      amount: feedAmount.toFixed(2),
       depositTo: bankAccountId,
       memo: item.description ?? undefined,
-      applications: [{ invoiceId: invoice.id, amount: application }],
+      applications: appliedDec.greaterThan(0) ? [{ invoiceId: invoice.id, amount: application }] : [],
     },
     userId,
     companyId ?? undefined,
+    { allowUnapplied: true },
   );
 
   await bankFeedService.match(tenantId, item.id, payment.id);

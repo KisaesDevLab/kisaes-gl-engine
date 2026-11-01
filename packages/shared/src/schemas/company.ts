@@ -59,6 +59,14 @@ export const updateCompanySettingsSchema = z.object({
   // An active income account of this company (else 400
   // MARKUP_ACCOUNT_INVALID); null clears it.
   billableMarkupAccountId: z.string().uuid().nullable().optional(),
+  // Bounced payments (U-132, payment-bounce-v1): the expense account of the
+  // bank's fee, the income account of the fee charged to the client, and
+  // that fee (whole cents; null = none). Accounts of this company, active,
+  // not A/R, A/P, Payments Clearing or Customer Deposits (else 400
+  // NSF_ACCOUNT_INVALID); null clears.
+  nsfBankFeeAccountId: z.string().uuid().nullable().optional(),
+  nsfFeeIncomeAccountId: z.string().uuid().nullable().optional(),
+  nsfCustomerFee: z.string().regex(/^\d{1,15}(\.\d{1,2})?$/, 'an amount with at most 2 decimal places').nullable().optional(),
 });
 
 // Additional company under the same tenant. Used by `/company/create`.

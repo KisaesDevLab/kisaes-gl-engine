@@ -86,10 +86,19 @@ export const IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES = [
   'post /api/v1/invoices/{id}/email-later',
 ].sort();
 
+/** Keyed by idempotency-receive-payment-v1, with idempotency-v1's contract (U-132). */
+export const IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES = [
+  'post /api/v1/payments/receive',
+  'put /api/v1/payments/{id}',
+  'post /api/v1/payments/{id}/void',
+  'post /api/v1/payments/unapply',
+  'post /api/v1/payments/{id}/bounce',
+].sort();
+
 const ALL_KEYED_ROUTES = [
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
   ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES, ...IDEMPOTENCY_INVOICE_V1_ROUTES,
-  ...IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES,
+  ...IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES, ...IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES,
 ].sort();
 
 let paths: Paths;
@@ -138,5 +147,6 @@ describe('idempotency-v1 in openapi.json', () => {
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-check-print-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-invoice-v1');
     expect(DESKTOP_CAPABILITIES).toContain('invoice-email-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('idempotency-receive-payment-v1');
   });
 });

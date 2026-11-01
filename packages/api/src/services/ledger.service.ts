@@ -526,6 +526,9 @@ interface PostTransactionInput {
   // Automatic reversing entry (U-61): the journal entry this one reverses.
   // Create only.
   reversesTransactionId?: string;
+  // Posted as part of another transaction (U-132): a returned_payment -> the
+  // payment it returns; a bounce's bank fee -> the bounce. Create only.
+  sourceTxnId?: string;
   // The recurring schedule that posted this transaction (U-64). Create only.
   recurringScheduleId?: string;
   lines: JournalLineInput[];
@@ -653,6 +656,7 @@ export async function postTransaction(
       referenceNumber: input.referenceNumber?.trim() || null,
       isAdjusting: input.isAdjusting ?? input.txnType === 'aje',
       reversesTransactionId: input.reversesTransactionId || null,
+      sourceTxnId: input.sourceTxnId || null,
       recurringScheduleId: input.recurringScheduleId || null,
     }).returning();
 
@@ -820,6 +824,18 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     // TXN_DEPOSITED. A deposit being voided releases what it settled
     // (U-52, U-54), so those items are pending again.
     await assertNotDeposited(tx, tenantId, txnId, 'void');
+    // Customer payments keep their applications right on every void path
+    // (U-132), after the guards above: a deposit whose payment bounced
+    // can't be voided (409 PAYMENT_BOUNCED, the bank would drop twice); a
+    // payment reopens the invoices it paid (409 PAYMENT_BOUNCED while its
+    // bounce is live); a bounce re-applies what it reversed.
+    let voidedBounceFeeId: string | null = null;
+    if (txn.txnType === 'deposit' || txn.txnType === 'customer_payment' || txn.txnType === 'returned_payment') {
+      const payments = await import('./payment.service.js');
+      if (txn.txnType === 'deposit') await payments.assertDepositSourcesNotBounced(tx, tenantId, txnId);
+      else if (txn.txnType === 'customer_payment') await payments.releasePaymentForVoidInTx(tx, tenantId, txn, userId);
+      else voidedBounceFeeId = (await payments.reapplyBounceForVoidInTx(tx, tenantId, txn, userId)).feeId;
+    }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
 
     // Get original lines
@@ -896,6 +912,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       reason,
       ...(releasedLinks.length > 0 ? { releasedDepositLinks: releasedLinks } : {}),
       ...(releasedCosts.length > 0 ? { releasedBillableCosts: releasedCosts } : {}),
+      ...(voidedBounceFeeId ? { bounceFeeId: voidedBounceFeeId } : {}),
     }, userId, tx);
 
     if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId, { companyId: opts.companyId });
@@ -944,7 +961,8 @@ export async function assertInvoiceUnapplied(
     SELECT
       (SELECT COUNT(*) FROM payment_applications pa
          JOIN transactions p ON p.id = pa.payment_id AND p.tenant_id = pa.tenant_id
-        WHERE pa.tenant_id = ${tenantId} AND pa.invoice_id = ${txn.id} AND p.status = 'posted')::int
+        WHERE pa.tenant_id = ${tenantId} AND pa.invoice_id = ${txn.id} AND p.status = 'posted'
+          AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL)::int
       + (SELECT COUNT(*) FROM transactions t
           WHERE t.tenant_id = ${tenantId} AND t.applied_to_invoice_id = ${txn.id}
             AND t.status = 'posted' AND t.txn_type = 'customer_payment')::int AS payments,
@@ -1169,6 +1187,10 @@ export async function deleteTransactionInTx(
         'TXN_DELETE_LINKED',
         { links: ['deposit'] },
       );
+    }
+    // A deposit holding a bounced payment stays (U-132): 409 PAYMENT_BOUNCED.
+    if (txn.txnType === 'deposit') {
+      await (await import('./payment.service.js')).assertDepositSourcesNotBounced(tx, tenantId, txnId);
     }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
 

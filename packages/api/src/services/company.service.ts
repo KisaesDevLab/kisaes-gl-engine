@@ -5,8 +5,9 @@
 import { seedEquityRolesBestEffort } from './equity-roles.service.js';
 import { eq, and, notInArray, count } from 'drizzle-orm';
 import type { UpdateCompanyInput } from '@kis-books/shared';
-import { db } from '../db/index.js';
-import { companies, accountantCompanyExclusions, transactions, bankFeedItems, bankConnections } from '../db/schema/index.js';
+import DecimalLib from 'decimal.js';
+import { db, type DbOrTx } from '../db/index.js';
+import { accounts, companies, accountantCompanyExclusions, transactions, bankFeedItems, bankConnections } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { authorizeLockDateChange, withoutClosingPasswordHash, type ClosingPasswordActor } from './closing-password.service.js';
@@ -14,6 +15,8 @@ import { isDesktop } from '../desktop/profile.js';
 import { hasSessionSecret } from '../desktop/session-secrets.js';
 import { assertBillDiscountAccount } from './bill-discount-account.js';
 import { assertMarkupAccount } from './billable-links.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
 
 /**
  * A company row as it leaves the service layer (responses, audit images):
@@ -103,6 +106,10 @@ const COMPANY_UPDATABLE_FIELDS = [
   'billDiscountAccountId',
   // Billable-cost markup account (U-128); validated in updateCompany.
   'billableMarkupAccountId',
+  // Bounced-payment preferences (U-132); validated in updateCompany.
+  'nsfBankFeeAccountId',
+  'nsfFeeIncomeAccountId',
+  'nsfCustomerFee',
 ] as const;
 
 export async function updateCompany(
@@ -156,6 +163,12 @@ export async function updateCompany(
     const discountAccountId = updates['billDiscountAccountId'];
     if (typeof discountAccountId === 'string') {
       await assertBillDiscountAccount(tx, tenantId, companyId, discountAccountId);
+    }
+    // Bounced-payment accounts (U-132): accounts of this company, active,
+    // not A/R, A/P, Payments Clearing or Customer Deposits.
+    for (const field of ['nsfBankFeeAccountId', 'nsfFeeIncomeAccountId'] as const) {
+      const id = updates[field];
+      if (typeof id === 'string') await assertNsfAccount(tx, tenantId, companyId, id);
     }
     // Billable-cost markup account (U-128): an active income account of this company.
     const markupAccountId = updates['billableMarkupAccountId'];
@@ -224,7 +237,22 @@ export async function getSettings(tenantId: string, companyId?: string) {
     chatSupportEnabled: company.chatSupportEnabled ?? false,
     billDiscountAccountId: company.billDiscountAccountId ?? null,
     billableMarkupAccountId: company.billableMarkupAccountId ?? null,
+    nsfBankFeeAccountId: company.nsfBankFeeAccountId ?? null,
+    nsfFeeIncomeAccountId: company.nsfFeeIncomeAccountId ?? null,
+    nsfCustomerFee: company.nsfCustomerFee == null ? null : new Decimal(company.nsfCustomerFee).toFixed(2),
   };
+}
+
+/** A bounced-payment preference account (U-132): else 400 NSF_ACCOUNT_INVALID. */
+async function assertNsfAccount(executor: DbOrTx, tenantId: string, companyId: string, accountId: string): Promise<void> {
+  const [row] = await executor.select({
+    companyId: accounts.companyId, systemTag: accounts.systemTag, isActive: accounts.isActive, detailType: accounts.detailType,
+  }).from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId))).limit(1);
+  if (!row || (row.companyId !== null && row.companyId !== companyId) || row.isActive === false
+    || ['accounts_receivable', 'accounts_payable', 'payments_clearing', 'customer_deposits'].includes(row.systemTag ?? '')
+    || row.detailType === 'accounts_receivable' || row.detailType === 'accounts_payable') {
+    throw AppError.badRequest('Choose an active income or expense account of this company.', 'NSF_ACCOUNT_INVALID', { accountId });
+  }
 }
 
 /**

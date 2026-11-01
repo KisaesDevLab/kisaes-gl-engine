@@ -272,6 +272,10 @@ transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, descri
       res.json({ transaction: updated.transaction, warnings: updated.warnings });
       return;
     }
+    case 'customer_payment':
+      // Customer payments keep their applications (U-132): edit them through PUT /payments/:id.
+      res.status(400).json({ error: { message: 'Edit customer payments with PUT /api/v1/payments/:id', code: 'TXN_EDIT_UNSUPPORTED' } });
+      return;
     default:
       res.status(400).json({ error: { message: `Editing ${txnType} transactions is not supported` } });
       return;

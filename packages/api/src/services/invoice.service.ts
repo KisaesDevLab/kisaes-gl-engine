@@ -894,54 +894,35 @@ export async function sendInvoice(tenantId: string, invoiceId: string, userId?: 
     { invoiceStatus: txn.invoiceStatus }, { invoiceStatus: 'sent', via: 'send_invoice' }, userId);
 }
 
+/**
+ * Records a payment against one invoice (the invoice page's Record Payment).
+ * U-132 (Q-P21g / Q-P21t): through the Receive Payment path, so it writes a
+ * payment_applications row (a void or bounce reopens the invoice) and checks
+ * exactly, with no tolerance. The amount is stored in whole cents (half away
+ * from zero); the invoice takes min(amount, its cent balance) and anything
+ * above stays an A/R credit on the client. One database transaction.
+ */
 export async function recordPayment(tenantId: string, invoiceId: string, input: RecordPaymentInput, userId?: string, companyId?: string) {
   const invoice = await getInvoice(tenantId, invoiceId, companyId);
   if (invoice.status === 'void') throw AppError.badRequest('Cannot pay a void invoice');
-
-  const arAccountId = await getSystemAccount(db, tenantId, 'accounts_receivable');
-  const paymentAmount = new Decimal(input.amount);
-  const currentPaid = new Decimal(invoice.amountPaid || '0');
-  const invoiceTotal = new Decimal(invoice.total || '0');
-  const newPaid = currentPaid.plus(paymentAmount);
-  const newBalance = invoiceTotal.minus(newPaid);
-
-  // Both writes — the payment ledger post AND the invoice-header update
-  // — run in a single outer transaction. postTransaction accepts our tx
-  // and reuses it instead of opening its own, so a mid-flight crash
-  // rolls back BOTH or COMMITS BOTH atomically. The prior implementation
-  // committed the payment first and then performed a separate UPDATE;
-  // a crash in the gap left the invoice header stale (amountPaid /
-  // balanceDue / invoiceStatus out of sync with the journal).
-  const tolerance = new Decimal('0.01');
-  const invoiceStatus = newBalance.lessThanOrEqualTo(tolerance) ? 'paid' : 'partial';
-  const clampedBalance = newBalance.isNegative() ? new Decimal('0') : newBalance;
-
-  return await db.transaction(async (tx) => {
-    const payment = await ledger.postTransaction(tenantId, {
-      txnType: 'customer_payment',
-      txnDate: input.txnDate,
-      contactId: invoice.contactId || undefined,
-      memo: input.memo || `Payment for invoice ${invoice.txnNumber || invoice.id}`,
-      total: input.amount,
-      appliedToInvoiceId: invoiceId,
-      paymentMethod: input.paymentMethod,
-      referenceNumber: input.refNo,
-      lines: [
-        { accountId: input.depositToAccountId, debit: input.amount, credit: '0' },
-        { accountId: arAccountId, debit: '0', credit: input.amount },
-      ],
-    }, userId, companyId, tx);
-
-    await tx.update(transactions).set({
-      amountPaid: newPaid.toFixed(4),
-      balanceDue: clampedBalance.toFixed(4),
-      invoiceStatus,
-      paidAt: invoiceStatus === 'paid' ? new Date() : null,
-      updatedAt: new Date(),
-    }).where(eq(transactions.id, invoiceId));
-
-    return payment;
-  });
+  if (!invoice.contactId) throw AppError.badRequest('This invoice has no customer.');
+  const { receivePayment } = await import('./payment.service.js');
+  const { round2, centBalance } = await import('./payment-compute.js');
+  let amount;
+  try { amount = round2(input.amount); } catch { throw AppError.badRequest('amount must be a decimal amount', 'VALIDATION_ERROR'); }
+  if (!amount.greaterThan(0)) throw AppError.badRequest('Enter the amount received.', 'AMOUNT_REQUIRED');
+  const payable = invoice.invoiceStatus === 'paid' ? new Decimal(0) : Decimal.max(centBalance(invoice.balanceDue ?? '0'), 0);
+  const applied = Decimal.min(amount, payable);
+  return receivePayment(tenantId, {
+    customerId: invoice.contactId,
+    date: input.txnDate,
+    amount: amount.toFixed(2),
+    depositTo: input.depositToAccountId,
+    paymentMethod: input.paymentMethod,
+    refNo: input.refNo,
+    memo: input.memo || `Payment for invoice ${invoice.txnNumber || invoice.id}`,
+    applications: applied.greaterThan(0) ? [{ invoiceId, amount: applied.toFixed(2) }] : [],
+  }, userId, companyId, { allowUnapplied: true, appliedToInvoiceId: invoiceId });
 }
 
 /**

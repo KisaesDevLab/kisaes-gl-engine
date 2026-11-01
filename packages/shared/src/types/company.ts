@@ -86,4 +86,10 @@ export interface CompanySettings {
   billDiscountAccountId?: string | null;
   /** Income account billable-cost markups post to (billable-costs-v1); null = none. */
   billableMarkupAccountId?: string | null;
+  /** Bounced payments (payment-bounce-v1): bank fee expense account; null = none. */
+  nsfBankFeeAccountId?: string | null;
+  /** Bounced payments: income account of the fee charged to the client; null = none. */
+  nsfFeeIncomeAccountId?: string | null;
+  /** Bounced payments: the fee charged to the client, 2-place string; null = not set. */
+  nsfCustomerFee?: string | null;
 }

@@ -24292,6 +24292,39 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "nsfBankFeeAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "nsfCustomerFee": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,15}(\\.\\d{1,2})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "nsfFeeIncomeAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "type": "object"
@@ -32612,7 +32645,8 @@
                 "vendor_credit",
                 "bill_payment",
                 "daily_sales",
-                "aje"
+                "aje",
+                "returned_payment"
               ],
               "type": "string"
             }
@@ -35472,8 +35506,80 @@
         ]
       }
     },
+    "/api/v1/payments": {
+      "get": {
+        "description": "Response {data: PaymentSummary[], total}: {id, customerId, customerName, date, amount, paymentMethod, refNo, memo, status, bounced, deposited, unappliedRemaining, updatedAt}, newest first, this company only.",
+        "operationId": "get_api_v1_payments",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List customer payments (receive-payment-v1)",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
     "/api/v1/payments/for-invoice/{invoiceId}": {
       "get": {
+        "description": "Response {payments}: live applications of posted payments. An invoice of another company is 404.",
         "operationId": "get_api_v1_payments_for_invoice_by_invoiceId",
         "parameters": [
           {
@@ -35481,6 +35587,7 @@
             "name": "invoiceId",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -35498,6 +35605,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Live payments applied to an invoice",
         "tags": [
           "payments"
         ]
@@ -35505,6 +35613,7 @@
     },
     "/api/v1/payments/open-invoices/{customerId}": {
       "get": {
+        "description": "Response {invoices: [{id, invoiceNumber, txnDate, dueDate, total, amountPaid, balanceDue (cent balance, 2 places), balanceDueExact (stored, 4 places), invoiceStatus}]}: posted, not paid or void, cent balance above 0.00, oldest first. A customer of another company is 404.",
         "operationId": "get_api_v1_payments_open_invoices_by_customerId",
         "parameters": [
           {
@@ -35512,6 +35621,7 @@
             "name": "customerId",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -35529,6 +35639,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Open invoices of a customer",
         "tags": [
           "payments"
         ]
@@ -35571,9 +35682,10 @@
         ]
       }
     },
-    "/api/v1/payments/receive": {
+    "/api/v1/payments/preview": {
       "post": {
-        "operationId": "post_api_v1_payments_receive",
+        "description": "Every figure of the Receive Payment form, from the engine (the same compute the posting routes use). Auto: no applications, the amount fills open invoices oldest first (txnDate, number, id). Explicit: the rows sent; amount null fills what is left of the payment in date order; rows not sent get 0.00; with no amount, fill rows take their cent balance and amount is their sum (amountSource from_applications). Response PaymentPreview: {contactBalanceBefore, contactBalanceAfter, amount, amountSource: typed | from_applications, invoices: [{invoiceId, invoiceNumber, txnDate, dueDate, total, balanceDue (cent balance), balanceDueExact (stored, 4 places: send it back as expectedBalanceDue), payment, remaining}] (all open invoices, oldest first), totals {amountDue, applied, discountsAndCredits, unapplied}, shortfalls [{invoiceId, amount}], pendingDeposits {count, total} (after saving: this payment counts when depositTo is Payments Clearing), averageDaysToPay (integer days from invoice date to the payment that cleared it, over invoices paid in the 12 months to date; null below 3), problems [{code, invoiceId?}]}. Problem codes: AMOUNT_REQUIRED, APPLICATIONS_EXCEED_AMOUNT, OVERAPPLIED, INVOICE_NOT_OPEN, DUPLICATE_INVOICE, DEPOSIT_ACCOUNT_INVALID, TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment). editingPaymentId: that payment's own live share is added back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in problems[], never 4xx. Money as 2-place strings.",
+        "operationId": "post_api_v1_payments_preview",
         "requestBody": {
           "content": {
             "application/json": {
@@ -35581,7 +35693,114 @@
                 "additionalProperties": true,
                 "properties": {
                   "amount": {
-                    "minLength": 1,
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "applications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoiceId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "customerId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "date": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "depositTo": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "editingPaymentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "customerId",
+                  "date"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Preview a customer payment; posts nothing (receive-payment-v1)",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/api/v1/payments/receive": {
+      "post": {
+        "description": "Response 201 {payment: PaymentRecord}. Posts Dr depositTo / Cr A/R for the amount and writes the applications in one database transaction. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside), unappliedRemaining (0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
+        "operationId": "post_api_v1_payments_receive",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "amount": {
+                    "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
                     "type": "string"
                   },
                   "applications": {
@@ -35589,7 +35808,11 @@
                       "additionalProperties": true,
                       "properties": {
                         "amount": {
-                          "minLength": 1,
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
                           "type": "string"
                         },
                         "invoiceId": {
@@ -35606,6 +35829,10 @@
                     "minItems": 1,
                     "type": "array"
                   },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
                   "customerId": {
                     "format": "uuid",
                     "type": "string"
@@ -35620,6 +35847,9 @@
                   },
                   "memo": {
                     "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
                   },
                   "paymentMethod": {
                     "enum": [
@@ -35662,14 +35892,65 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Receive a customer payment (receive-payment-v1)",
         "tags": [
           "payments"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/payments/unapply": {
       "post": {
+        "description": "Response {message}. The invoice reopens (status from its cent balance: partial while anything is applied, else viewed / sent / draft); the money stays an A/R credit on the client. The application row is kept, marked set aside, and the change is audited. expectedUpdatedAt (the payment's): mismatch 409 STALE. 409 PAYMENT_BOUNCED for a bounced payment; 404 when the payment has no live application to the invoice. Closed period on the payment's date. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
         "operationId": "post_api_v1_payments_unapply",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "invoiceId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "paymentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "paymentId",
+                  "invoiceId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -35683,9 +35964,342 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Take one invoice off a payment",
+        "tags": [
+          "payments"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/payments/{id}": {
+      "get": {
+        "description": "Response {payment: PaymentRecord}. A payment of another company is 404. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside), unappliedRemaining (0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
+        "operationId": "get_api_v1_payments_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a customer payment (receive-payment-v1)",
         "tags": [
           "payments"
         ]
+      },
+      "put": {
+        "description": "Response {payment: PaymentRecord}. One database transaction: the closing date is checked for the old and the new date, the old applications are set aside and their invoices restored, the header and lines rewritten, the new applications validated and written. expectedBalanceDue is the invoice's balance with this payment's own share added back (POST /payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and refNo only: any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is 409 PAYMENT_BOUNCED. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
+        "operationId": "put_api_v1_payments_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "amount": {
+                    "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                    "type": "string"
+                  },
+                  "applications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoiceId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "customerId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "date": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "depositTo": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "paymentMethod": {
+                    "enum": [
+                      "check",
+                      "ach",
+                      "credit_card",
+                      "cash",
+                      "other"
+                    ],
+                    "type": "string"
+                  },
+                  "refNo": {
+                    "maxLength": 100,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "customerId",
+                  "date",
+                  "amount",
+                  "depositTo",
+                  "applications"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a customer payment (receive-payment-v1)",
+        "tags": [
+          "payments"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/payments/{id}/bounce": {
+      "post": {
+        "description": "Response 201 {returnId, feeId?, heldIn: {accountId, kind: bank | payments_clearing}, reopened: [{invoiceId, balanceDue}]}. One database transaction posts a returned_payment (\"Bounced payment\") dated `date`: Cr the account holding the money (its live deposit's bank, else the bank it went to, else Payments Clearing, which takes it off the pending deposits), Dr A/R for the customer; every live application is restored onto its invoice and marked reversed; the payment has no credit left and can't be deposited, applied, edited or bounced again. No deposit is voided and nothing dated earlier changes, so only `date` meets the closing date. bankFeeAmount posts an expense (Dr bankFeeAccountId, default the company setting nsfBankFeeAccountId; Cr the bank holding the money, or bankFeeBankAccountId when that is Payments Clearing) in the same transaction, source_txn_id = the bounce. A fee charged to the customer is a separate POST /invoices. Voiding the returned_payment (POST /transactions/:id/void) re-applies what it reversed: 409 INVOICE_VOIDED / INVOICE_BALANCE_CHANGED when it no longer can; the fee is left to void separately. Errors: 409 PAYMENT_BOUNCED (a live bounce exists), 409 STALE (expectedUpdatedAt), 400 BOUNCE_DATE_INVALID (before the payment's or its deposit's date), 400 FEE_ACCOUNT_REQUIRED, 400 FEE_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, the account holding the money, inactive or another company's), 400 FEE_BANK_REQUIRED. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. Replay (Idempotency-Key) rebuilds the response from the returned_payment.",
+        "operationId": "post_api_v1_payments_by_id_bounce",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bankFeeAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "bankFeeAmount": {
+                    "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                    "type": "string"
+                  },
+                  "bankFeeBankAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "date": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "memo": {
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "date"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Record a bounced payment (payment-bounce-v1)",
+        "tags": [
+          "payments"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/payments/{id}/void": {
+      "post": {
+        "description": "Response {voided: true}. The invoices it paid reopen (every void path does this, /transactions/:id/void too); its applications are kept, marked set aside. expectedUpdatedAt: mismatch 409 STALE. 409 TXN_DEPOSITED {depositIds} while a posted deposit holds it; 409 PAYMENT_BOUNCED while its bounce is live; 400 when the reconciliation it is cleared in is complete. Closed period on the payment's date. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
+        "operationId": "post_api_v1_payments_by_id_void",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Void a customer payment",
+        "tags": [
+          "payments"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/payroll-import/account-mappings/{companyId}": {
@@ -74687,7 +75301,8 @@
                 "vendor_credit",
                 "bill_payment",
                 "daily_sales",
-                "aje"
+                "aje",
+                "returned_payment"
               ],
               "type": "string"
             }

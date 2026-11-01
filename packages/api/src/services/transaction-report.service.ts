@@ -46,6 +46,12 @@ import { appendFramedPdf, appendPdfDocument, htmlToPdfBytes, launchPdfBrowser, s
 // plus credit cards and lines of credit.
 const MONEY_DETAIL_TYPES = new Set<string>([...CASH_ACCOUNT_DETAIL_TYPES, ...RECONCILABLE_LIABILITY_DETAIL_TYPES]);
 // Money leaves on these types, arrives on the rest.
+// Application rows are never deleted (U-132): one an unapply or edit set
+// aside while its payment stayed posted is gone from the links; a void
+// payment's rows stay (shown flagged by its status) and so do bounced ones.
+const keptApplication = sql`(pa.voided_at IS NULL OR NOT EXISTS (
+  SELECT 1 FROM transactions px WHERE px.id = pa.payment_id AND px.tenant_id = pa.tenant_id AND px.status = 'posted'))`;
+
 const OUTFLOW_TYPES = new Set<string>(['expense', 'bill_payment', 'customer_refund']);
 
 /**
@@ -174,6 +180,7 @@ function linksFor(tenantId: string, txnId: string, txnType: string, appliedToInv
       return sql`
         SELECT pa.payment_id AS id, 'payment' AS relation, pa.amount::numeric AS amount
           FROM payment_applications pa WHERE pa.tenant_id = ${tenantId} AND pa.invoice_id = ${txnId}
+            AND ${keptApplication}
         UNION ALL
         SELECT tp.id, CASE WHEN tp.txn_type = 'customer_payment' THEN 'payment' ELSE 'credit' END, tp.total::numeric
           FROM transactions tp
@@ -184,6 +191,7 @@ function linksFor(tenantId: string, txnId: string, txnType: string, appliedToInv
       return sql`
         SELECT pa.invoice_id AS id, 'paid_invoice' AS relation, pa.amount::numeric AS amount
           FROM payment_applications pa WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${txnId}
+            AND ${keptApplication}
         UNION ALL
         SELECT tp.applied_to_invoice_id, 'paid_invoice', tp.total::numeric
           FROM transactions tp
