@@ -873,6 +873,18 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect([r.status, r.json.error.code]).toEqual([409, 'TXN_DEPOSITED']);
   });
 
+  it('review SF1: a 0.00 payment with credits only previews AMOUNT_REQUIRED, as the post answers', async () => {
+    await mockup();
+    const { payment: p } = await previewThenReceive({ amount: '5700.00' });
+    const n1 = await invoice('300.00', '2026-11-10');
+    const credits = [{ sourcePaymentId: p.id, invoiceId: n1, amount: '30.00' }];
+    const pv = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-12', amount: '0.00', creditApplications: credits }));
+    expect(pv.json.creditApplications.map((x: any) => x.amount)).toEqual(['30.00']);
+    expect(pv.json.problems).toEqual([{ code: 'AMOUNT_REQUIRED' }]);
+    const r = await receive({ date: '2026-11-12', amount: '0.00', applications: [], creditApplications: credits });
+    expect([r.status, r.json.error.code]).toEqual([400, 'AMOUNT_REQUIRED']);
+  });
+
   it('review SF5: a payment whose credit is in use elsewhere can\'t move to another client', async () => {
     const s = await creditInside();
     const r = await request('PUT', `/api/v1/payments/${s.p.id}`, c.token, {

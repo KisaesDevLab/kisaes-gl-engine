@@ -1097,6 +1097,14 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     writeOffThreshold: settings.writeOffThreshold === null ? null : money2(round2(settings.writeOffThreshold)),
   }, credits);
   problems.unshift(...result.problems);
+  // Receive and PUT refuse 0.00 without a discount or write-off, credits or
+  // not (400 AMOUNT_REQUIRED); the preview says so too (review SF1). Credits
+  // alone are applied with POST /payments/:id/apply.
+  const discountsOnly = dec(result.totals.discountsAndCredits).minus(creditsUsed(result));
+  if (!dec(result.amount).greaterThan(0) && !discountsOnly.greaterThan(0) && !dec(result.totals.writeOffs).greaterThan(0)
+    && !problems.some((x) => x.code === 'AMOUNT_REQUIRED')) {
+    problems.push({ code: 'AMOUNT_REQUIRED' });
+  }
   if ((input.applications?.length ?? 0) + (input.creditApplications?.length ?? 0) > MAX_APPLICATIONS) problems.push({ code: 'TOO_MANY_APPLICATIONS' });
 
   let pcId: string | null = null;
