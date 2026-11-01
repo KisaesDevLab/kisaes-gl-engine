@@ -24325,6 +24325,39 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "salesDiscountAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "writeOffAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "writeOffThreshold": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,15}(\\.\\d{1,2})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "type": "object"
@@ -26262,6 +26295,90 @@
         "tags": [
           "csp-report"
         ]
+      }
+    },
+    "/api/v1/customer-refunds": {
+      "post": {
+        "description": "Response 201 {transaction}: a customer_refund, Dr A/R / Cr refundFromAccountId. sourcePaymentId (optional): the customer payment whose unapplied credit this refunds, locked; the refund must be within its remaining credit (409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}); a bounced payment is 409 PAYMENT_BOUNCED; a payment of another client is 400 CREDIT_NOT_FOR_CUSTOMER. Voiding the refund gives the credit back; a payment with a live refund can't be voided or bounced (409 PAYMENT_REFUNDED, Q-P21j). Amounts whole cents (at most 2 places). A refund dated on or before the closing date needs closingPassword.",
+        "operationId": "post_api_v1_customer_refunds",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "amount": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "refundFromAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "sourcePaymentId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "txnDate": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "contactId",
+                  "refundFromAccountId",
+                  "amount"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Refund a customer (payment-settle-v1)",
+        "tags": [
+          "customer-refunds"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/daily-sales/entries": {
@@ -35613,7 +35730,7 @@
     },
     "/api/v1/payments/open-invoices/{customerId}": {
       "get": {
-        "description": "Response {invoices: [{id, invoiceNumber, txnDate, dueDate, total, amountPaid, balanceDue (cent balance, 2 places), balanceDueExact (stored, 4 places), invoiceStatus}]}: posted, not paid or void, cent balance above 0.00, oldest first. A customer of another company is 404.",
+        "description": "Response {invoices: [{id, invoiceNumber, txnDate, dueDate, total, amountPaid, balanceDue (cent balance, 2 places), balanceDueExact (stored, 4 places), invoiceStatus, discountPercent, discountDate, discountAvailable (on ?date=, default today; payment-discounts-v1)}]}: posted, not paid or void, cent balance above 0.00, oldest first. A customer of another company is 404.",
         "operationId": "get_api_v1_payments_open_invoices_by_customerId",
         "parameters": [
           {
@@ -35622,6 +35739,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "type": "string"
             }
           }
@@ -35684,7 +35810,7 @@
     },
     "/api/v1/payments/preview": {
       "post": {
-        "description": "Every figure of the Receive Payment form, from the engine (the same compute the posting routes use). Auto: no applications, the amount fills open invoices oldest first (txnDate, number, id). Explicit: the rows sent; amount null fills what is left of the payment in date order; rows not sent get 0.00; with no amount, fill rows take their cent balance and amount is their sum (amountSource from_applications). Response PaymentPreview: {contactBalanceBefore, contactBalanceAfter, amount, amountSource: typed | from_applications, invoices: [{invoiceId, invoiceNumber, txnDate, dueDate, total, balanceDue (cent balance), balanceDueExact (stored, 4 places: send it back as expectedBalanceDue), payment, remaining}] (all open invoices, oldest first), totals {amountDue, applied, discountsAndCredits, unapplied}, shortfalls [{invoiceId, amount}], pendingDeposits {count, total} (after saving: this payment counts when depositTo is Payments Clearing), averageDaysToPay (integer days from invoice date to the payment that cleared it, over invoices paid in the 12 months to date; null below 3), problems [{code, invoiceId?}]}. Problem codes: AMOUNT_REQUIRED, APPLICATIONS_EXCEED_AMOUNT, OVERAPPLIED, INVOICE_NOT_OPEN, DUPLICATE_INVOICE, DEPOSIT_ACCOUNT_INVALID, TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment). editingPaymentId: that payment's own live share is added back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in problems[], never 4xx. Money as 2-place strings.",
+        "description": "Every figure of the Receive Payment form, from the engine (the same compute the posting routes use). Auto: no applications, the amount fills open invoices oldest first (txnDate, number, id). Explicit: the rows sent; amount null fills what is left of the payment in date order; rows not sent get 0.00; with no amount, fill rows take their cent balance and amount is their sum (amountSource from_applications). Response PaymentPreview: {contactBalanceBefore, contactBalanceAfter, amount, amountSource: typed | from_applications, invoices: [{invoiceId, invoiceNumber, txnDate, dueDate, total, balanceDue (cent balance), balanceDueExact (stored, 4 places: send it back as expectedBalanceDue), payment, remaining}] (all open invoices, oldest first), totals {amountDue, applied, discountsAndCredits, unapplied}, shortfalls [{invoiceId, amount}], pendingDeposits {count, total} (after saving: this payment counts when depositTo is Payments Clearing), averageDaysToPay (integer days from invoice date to the payment that cleared it, over invoices paid in the 12 months to date; null below 3), problems [{code, invoiceId?}]}. Problem codes: AMOUNT_REQUIRED, APPLICATIONS_EXCEED_AMOUNT, OVERAPPLIED, INVOICE_NOT_OPEN, DUPLICATE_INVOICE, DEPOSIT_ACCOUNT_INVALID, TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment), CREDIT_NOT_AVAILABLE. payment-settle-v1 / payment-discounts-v1: applications[].writeOffAmount / discountAmount and creditApplications [{sourcePaymentId, invoiceId, amount | null (fill)}] as on receive; invoices[] add discount, writeOff, credits, discountPercent, discountDate, discountAvailable (round2(total x percent / 100) half away from zero, capped at the cent balance, on or before the discount date, once per invoice) and suggestDiscount (none typed and payment = cent balance - discountAvailable exactly); totals.writeOffs; overpayment (= unapplied); shortfalls[].withinWriteOffLimit (shortfall <= the company writeOffThreshold; false without one); credits [{sourcePaymentId, date, refNo, remaining}] (the open credits of the client, bounced payments left out); contactBalanceAfter = before - amount - discounts - write-offs (credits are in A/R already). Order per invoice: typed cash, discount and write-off, then credits, then cash fill / auto. editingPaymentId: that payment's own live share is added back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in problems[], never 4xx. Money as 2-place strings.",
         "operationId": "post_api_v1_payments_preview",
         "requestBody": {
           "content": {
@@ -35718,12 +35844,67 @@
                             }
                           ]
                         },
+                        "discountAmount": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "writeOffAmount": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "invoiceId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "creditApplications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "sourcePaymentId": {
                           "format": "uuid",
                           "type": "string"
                         }
                       },
                       "required": [
+                        "sourcePaymentId",
                         "invoiceId",
                         "amount"
                       ],
@@ -35779,7 +35960,7 @@
     },
     "/api/v1/payments/receive": {
       "post": {
-        "description": "Response 201 {payment: PaymentRecord}. Posts Dr depositTo / Cr A/R for the amount and writes the applications in one database transaction. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside), unappliedRemaining (0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
+        "description": "Response 201 {payment: PaymentRecord}. Posts Dr depositTo / Cr A/R for the amount and writes the applications in one database transaction. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. payment-settle-v1 / payment-discounts-v1: applications may be empty (the whole amount stays a credit); applications[].writeOffAmount and .discountAmount settle more of the invoice (cash + discount + write-off + credits <= the cent balance, else OVERAPPLIED); amount may be 0.00 only with a write-off or discount (then no deposit line). Posting: Dr depositTo amount, Dr writeOffAccountId (default the company setting writeOffAccountId) the write-offs, Dr discountAccountId (default salesDiscountAccountId) the discounts, Cr A/R the sum. 400 WRITE_OFF_ACCOUNT_REQUIRED / WRITE_OFF_ACCOUNT_INVALID, DISCOUNT_ACCOUNT_REQUIRED / DISCOUNT_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 CREDIT_NOT_FOR_CUSTOMER. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside; its credit applied later carries that date), unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
         "operationId": "post_api_v1_payments_receive",
         "parameters": [
           {
@@ -35811,12 +35992,20 @@
                           "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
                           "type": "string"
                         },
+                        "discountAmount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
                         "expectedBalanceDue": {
                           "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
                           "type": "string"
                         },
                         "invoiceId": {
                           "format": "uuid",
+                          "type": "string"
+                        },
+                        "writeOffAmount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
                           "type": "string"
                         }
                       },
@@ -35826,12 +36015,41 @@
                       ],
                       "type": "object"
                     },
-                    "minItems": 1,
                     "type": "array"
                   },
                   "closingPassword": {
                     "description": "closing-date password (closing-password-v1); never stored or echoed",
                     "type": "string"
+                  },
+                  "creditApplications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "sourcePaymentId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "sourcePaymentId",
+                        "invoiceId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
                   },
                   "customerId": {
                     "format": "uuid",
@@ -35842,6 +36060,10 @@
                     "type": "string"
                   },
                   "depositTo": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "discountAccountId": {
                     "format": "uuid",
                     "type": "string"
                   },
@@ -35863,6 +36085,10 @@
                   },
                   "refNo": {
                     "maxLength": 100,
+                    "type": "string"
+                  },
+                  "writeOffAccountId": {
+                    "format": "uuid",
                     "type": "string"
                   }
                 },
@@ -35973,7 +36199,7 @@
     },
     "/api/v1/payments/{id}": {
       "get": {
-        "description": "Response {payment: PaymentRecord}. A payment of another company is 404. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside), unappliedRemaining (0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
+        "description": "Response {payment: PaymentRecord}. A payment of another company is 404. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside; its credit applied later carries that date), unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
         "operationId": "get_api_v1_payments_by_id",
         "parameters": [
           {
@@ -36005,7 +36231,7 @@
         ]
       },
       "put": {
-        "description": "Response {payment: PaymentRecord}. One database transaction: the closing date is checked for the old and the new date, the old applications are set aside and their invoices restored, the header and lines rewritten, the new applications validated and written. expectedBalanceDue is the invoice's balance with this payment's own share added back (POST /payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and refNo only: any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is 409 PAYMENT_BOUNCED. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
+        "description": "Response {payment: PaymentRecord}. One database transaction: the closing date is checked for the old and the new date, the old applications are set aside and their invoices restored, the header and lines rewritten, the new applications validated and written. expectedBalanceDue is the invoice's balance with this payment's own share added back (POST /payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and refNo only: any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is 409 PAYMENT_BOUNCED. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. payment-settle-v1 / payment-discounts-v1: applications may be empty (the whole amount stays a credit); applications[].writeOffAmount and .discountAmount settle more of the invoice (cash + discount + write-off + credits <= the cent balance, else OVERAPPLIED); amount may be 0.00 only with a write-off or discount (then no deposit line). Posting: Dr depositTo amount, Dr writeOffAccountId (default the company setting writeOffAccountId) the write-offs, Dr discountAccountId (default salesDiscountAccountId) the discounts, Cr A/R the sum. 400 WRITE_OFF_ACCOUNT_REQUIRED / WRITE_OFF_ACCOUNT_INVALID, DISCOUNT_ACCOUNT_REQUIRED / DISCOUNT_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 CREDIT_NOT_FOR_CUSTOMER. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
         "operationId": "put_api_v1_payments_by_id",
         "parameters": [
           {
@@ -36046,12 +36272,20 @@
                           "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
                           "type": "string"
                         },
+                        "discountAmount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
                         "expectedBalanceDue": {
                           "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
                           "type": "string"
                         },
                         "invoiceId": {
                           "format": "uuid",
+                          "type": "string"
+                        },
+                        "writeOffAmount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
                           "type": "string"
                         }
                       },
@@ -36061,12 +36295,41 @@
                       ],
                       "type": "object"
                     },
-                    "minItems": 1,
                     "type": "array"
                   },
                   "closingPassword": {
                     "description": "closing-date password (closing-password-v1); never stored or echoed",
                     "type": "string"
+                  },
+                  "creditApplications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "sourcePaymentId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "sourcePaymentId",
+                        "invoiceId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
                   },
                   "customerId": {
                     "format": "uuid",
@@ -36077,6 +36340,10 @@
                     "type": "string"
                   },
                   "depositTo": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "discountAccountId": {
                     "format": "uuid",
                     "type": "string"
                   },
@@ -36102,6 +36369,10 @@
                   },
                   "refNo": {
                     "maxLength": 100,
+                    "type": "string"
+                  },
+                  "writeOffAccountId": {
+                    "format": "uuid",
                     "type": "string"
                   }
                 },
@@ -36132,6 +36403,108 @@
           }
         ],
         "summary": "Edit a customer payment (receive-payment-v1)",
+        "tags": [
+          "payments"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/payments/{id}/apply": {
+      "post": {
+        "description": "Response {applied: [{invoiceId, amount}], remaining}. Applies the unapplied credit of the payment to invoices of the same client on `date`; no GL effect (rows dated appliedDate). A row without amount fills min(credit left, cent balance). The payment is locked, then the invoices. 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; 400 OVERAPPLIED; 409 INVOICE_BALANCE_CHANGED (expectedBalanceDue); 409 PAYMENT_BOUNCED; 409 STALE (expectedUpdatedAt); closing date on `date`. Audited. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
+        "operationId": "post_api_v1_payments_by_id_apply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "applications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoiceId"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "date": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "date",
+                  "applications"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Apply the credit of a payment to invoices (payment-settle-v1)",
         "tags": [
           "payments"
         ],
@@ -36232,7 +36605,7 @@
     },
     "/api/v1/payments/{id}/void": {
       "post": {
-        "description": "Response {voided: true}. The invoices it paid reopen (every void path does this, /transactions/:id/void too); its applications are kept, marked set aside. expectedUpdatedAt: mismatch 409 STALE. 409 TXN_DEPOSITED {depositIds} while a posted deposit holds it; 409 PAYMENT_BOUNCED while its bounce is live; 400 when the reconciliation it is cleared in is complete. Closed period on the payment's date. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
+        "description": "Response {voided: true}. The invoices it paid reopen (every void path does this, /transactions/:id/void too); its applications are kept, marked set aside. expectedUpdatedAt: mismatch 409 STALE. 409 TXN_DEPOSITED {depositIds} while a posted deposit holds it; 409 PAYMENT_BOUNCED while its bounce is live; 409 PAYMENT_REFUNDED while a refund of its credit is live (Q-P21j); credits applied inside it are set aside too; 400 when the reconciliation it is cleared in is complete. Closed period on the payment's date. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
         "operationId": "post_api_v1_payments_by_id_void",
         "parameters": [
           {
