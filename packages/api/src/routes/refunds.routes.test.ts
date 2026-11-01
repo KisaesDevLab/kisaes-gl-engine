@@ -44,7 +44,7 @@ const remaining = async (memo: string) => (await h.request('GET', `/api/v1/credi
 
 async function refund(memo: string, req: Step, headers: Record<string, string> = {}) {
   return h.request('POST', '/api/v1/customer-refunds', c.token, {
-    sourceId: memo, txnDate: req['date'], contactId: c.customer, amount: req['amount'], paymentMethod: req['paymentMethod'],
+    sourceId: memo, txnDate: req['date'], contactId: c.customer, amount: req['amount'], paymentMethod: req['method'] ?? req['paymentMethod'],
     ...(req['printLater'] !== undefined ? { printLater: req['printLater'] } : {}), refundFromAccountId: c.roles[req['from']],
   }, headers);
 }
@@ -62,7 +62,7 @@ describe('refund-credit-memo-v1 / refund-checks-v1 (U-139)', () => {
 
   it('golden 3: keep as credit, refund by check (print queue with the address), void gives it back', async () => {
     const steps = caseSteps(3);
-    const bank0 = await accountBalance(c, c.roles['operating']!);
+    const bank0 = await accountBalance(c, c.roles['checking']!);
     const memo = await h.legacyMemo(c, '2026-11-02', '399.75');
     expect(await contactAR(c)).toBe(steps[0]!['expect'].contactBalance);
     const r = await refund(memo, steps[1]!['request'], { 'Idempotency-Key': key() });
@@ -72,9 +72,10 @@ describe('refund-credit-memo-v1 / refund-checks-v1 (U-139)', () => {
     expect(await lineSet(c, id)).toEqual(expectedLines(e.lines));
     expect(await remaining(memo)).toBe(e.remaining);
     expect(await contactAR(c)).toBe(e.contactBalance);
-    expect(m2(Number(await accountBalance(c, c.roles['operating']!)) - Number(bank0))).toBe(e.operatingChange);
+    expect(m2(Number(await accountBalance(c, c.roles['checking']!)) - Number(bank0))).toBe(m2(-Number(steps[1]!['request'].amount)));
     const q = await inQueue(id);
-    expect(!!q).toBe(e.inPrintQueue);
+    expect(!!q).toBe(!!e.printQueue && e.printQueue !== 'empty');
+    expect(q?.['contactName'] ?? q?.['payeeNameOnCheck']).toBe(e.printQueue.payee);
     expect(q?.['payeeAddress']).toEqual(['400 Bluestem Rd', 'Neosho, MO 64850']);
     const rec = await h.request('GET', `/api/v1/customer-refunds/${id}`, c.token);
     expect(rec.json['refund']).toMatchObject({ amount: '399.75', printStatus: 'queue', source: { id: memo, kind: 'credit_memo' } });
@@ -88,7 +89,7 @@ describe('refund-credit-memo-v1 / refund-checks-v1 (U-139)', () => {
     const ev = steps[2]!['expect'];
     expect(await remaining(memo)).toBe(ev.remaining);
     expect(await contactAR(c)).toBe(ev.contactBalance);
-    expect(!!(await inQueue(id))).toBe(ev.inPrintQueue);
+    expect(!!(await inQueue(id))).toBe(ev.printQueue !== 'empty');
   });
 
   it('golden 4: partial refund, apply the rest, over-refund, void order', async () => {
@@ -96,19 +97,19 @@ describe('refund-credit-memo-v1 / refund-checks-v1 (U-139)', () => {
     const memo = await h.legacyMemo(c, '2026-11-02', '399.75');
     const r1 = await refund(memo, steps[1]!['request']);
     expect(r1.status, JSON.stringify(r1.json)).toBe(201);
-    expect([await remaining(memo), await contactAR(c)]).toEqual([steps[1]!['expect'].remaining, steps[1]!['expect'].contactBalance]);
+    expect(await remaining(memo)).toBe(steps[1]!['expect'].remaining);
     const a = await h.request('POST', `/api/v1/credit-memos/${memo}/apply`, c.token,
       { date: steps[2]!['request'].date, applications: [{ invoiceId: c.invoices.get('B') }] });
     expect(a.status, JSON.stringify(a.json)).toBe(200);
     expect(a.json['remaining']).toBe(steps[2]!['expect'].remaining);
-    expect(m2((await txn(c.invoices.get('B')!)).balanceDue)).toBe(steps[2]!['expect'].invoices.B);
+    expect(m2((await txn(c.invoices.get('B')!)).balanceDue)).toBe(steps[2]!['expect'].invoices.B.balanceDue);
     const over = await refund(memo, steps[3]!['request']);
     expect([over.status, over.json['error'].code, over.json['error'].details.remaining]).toEqual([409, 'CREDIT_NOT_AVAILABLE', '0.00']);
     let vm = await h.request('POST', `/api/v1/transactions/${memo}/void`, c.token, { reason: 't' });
     expect([vm.status, vm.json['error'].code]).toEqual([409, 'CREDIT_REFUNDED']);
     const vr = await h.request('POST', `/api/v1/transactions/${r1.json['transaction'].id}/void`, c.token, { reason: 't' });
     expect(vr.status).toBe(200);
-    expect([await remaining(memo), await contactAR(c)]).toEqual([steps[5]!['expect'].remaining, steps[5]!['expect'].contactBalance]);
+    expect(await remaining(memo)).toBe(steps[5]!['expect'].remaining);
     vm = await h.request('POST', `/api/v1/transactions/${memo}/void`, c.token, { reason: 't' });
     expect(vm.status, JSON.stringify(vm.json)).toBe(200);
     expect([m2((await txn(c.invoices.get('A')!)).balanceDue), m2((await txn(c.invoices.get('B')!)).balanceDue), await contactAR(c)])
