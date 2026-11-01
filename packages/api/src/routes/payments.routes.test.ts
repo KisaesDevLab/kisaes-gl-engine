@@ -707,8 +707,15 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     const pl = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
     expect(Number(pl.netIncome).toFixed(2)).toBe('1079.50');
 
-    const b = await request('POST', `/api/v1/payments/${r.json.payment.id}/bounce`, c.token, { date: '2026-10-20' });
+    // The record carries the accounts its write-off and discount went to (review D-SF2).
+    expect([r.json.payment.writeOffAccountId, r.json.payment.discountAccountId]).toEqual([c.fee, c.revenue]);
+    const bk = { 'Idempotency-Key': key() };
+    const b = await request('POST', `/api/v1/payments/${r.json.payment.id}/bounce`, c.token, { date: '2026-10-20' }, bk);
     expect(b.status, JSON.stringify(b.json)).toBe(201);
+    expect(b.json.heldIn).toEqual({ accountId: c.bank, kind: 'bank' });
+    // A replay reads the held account, not the discount or write-off line it reverses (review SF7).
+    const replay = await request('POST', `/api/v1/payments/${r.json.payment.id}/bounce`, c.token, { date: '2026-10-20' }, bk);
+    expect([replay.status, replay.json.heldIn]).toEqual([201, { accountId: c.bank, kind: 'bank' }]);
     const lines = await linesOf(b.json.returnId);
     expect(lines).toContainEqual([c.ar, '1100.0000', '0.0000']);
     expect(lines).toContainEqual([c.bank, '0.0000', '1079.5000']);
@@ -816,5 +823,78 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     r = await request('PUT', '/api/v1/company/settings', c.token, { writeOffAccountId: c.ar });
     expect([r.status, r.json.error.code]).toEqual([400, 'WRITE_OFF_ACCOUNT_INVALID']);
+  });
+
+  /** P overpays 1091 + 1095 by 55.00; n1 = 300.00; X pays 250.00 of n1 to Payments Clearing and uses 30.00 of P's credit. */
+  async function creditInside() {
+    const { i1091, i1095 } = await mockup();
+    const { payment: p } = await previewThenReceive({ amount: '5700.00' });
+    const n1 = await invoice('300.00', '2026-11-10', c.customer, '1101');
+    const x = await receive({ date: '2026-11-12', amount: '250.00',
+      applications: [{ invoiceId: n1, amount: '250.00' }], creditApplications: [{ sourcePaymentId: p.id, invoiceId: n1, amount: '30.00' }] });
+    expect(x.status, JSON.stringify(x.json)).toBe(201);
+    return { i1091, i1095, n1, p, x: x.json.payment };
+  }
+
+  it('review E-B2: the record lists the credits applied inside a payment; sending them back keeps them and reopens nothing', async () => {
+    const s = await creditInside();
+    expect(s.x.creditApplications).toEqual([{ sourcePaymentId: s.p.id, invoiceId: s.n1, invoiceNumber: '1101', amount: '30.00', fromDeposit: false }]);
+    const pRec = (await request('GET', `/api/v1/payments/${s.p.id}`, c.token)).json.payment;
+    expect(pRec.applications.map((a: any) => [a.appliedLater, a.appliedInTxnId])).toEqual([[false, null], [false, null], [true, s.x.id]]);
+    const before = await inv(s.n1);
+    expect([before.balanceDue, before.invoiceStatus]).toEqual(['20.0000', 'partial']);
+    // The edit preview counts the 30.00 as available to this payment again.
+    const p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-12', editingPaymentId: s.x.id, amount: '250.00',
+      applications: [{ invoiceId: s.n1, amount: '250.00' }], creditApplications: [{ sourcePaymentId: s.p.id, invoiceId: s.n1, amount: '30.00' }] }));
+    expect(p.json.problems).toEqual([]);
+    expect(p.json.credits).toEqual([{ sourcePaymentId: s.p.id, date: '2026-11-03', refNo: null, remaining: '55.00' }]);
+    // Memo only, everything else sent back as loaded: no row set aside, n1 untouched.
+    const body = { customerId: c.customer, date: '2026-11-12', depositTo: c.clearing, amount: '250.00',
+      applications: [{ invoiceId: s.n1, amount: '250.00' }],
+      creditApplications: s.x.creditApplications.map((k: any) => ({ sourcePaymentId: k.sourcePaymentId, invoiceId: k.invoiceId, amount: k.amount })) };
+    let r = await request('PUT', `/api/v1/payments/${s.x.id}`, c.token, { ...body, memo: 'memo only', expectedUpdatedAt: s.x.updatedAt });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.payment.creditApplications).toEqual(s.x.creditApplications);
+    expect(r.json.payment.memo).toBe('memo only');
+    const after = await inv(s.n1);
+    expect([after.balanceDue, after.invoiceStatus, after.updatedAt]).toEqual(['20.0000', 'partial', before.updatedAt]);
+    const setAside = await db.select().from(paymentApplications).where(and(eq(paymentApplications.tenantId, c.tenantId), sql`${paymentApplications.voidedAt} IS NOT NULL`));
+    expect(setAside).toEqual([]);
+    // Deposited, the same memo edit still goes through (no TXN_DEPOSITED).
+    const d = await request('POST', '/api/v1/transactions', c.token, {
+      txnType: 'deposit', txnDate: '2026-11-13', depositToAccountId: c.bank,
+      lines: [{ accountId: c.clearing, amount: '250.00', sourceTransactionId: s.x.id }],
+    });
+    expect(d.status, JSON.stringify(d.json)).toBe(201);
+    r = await request('PUT', `/api/v1/payments/${s.x.id}`, c.token, { ...body, memo: 'deposited memo' });
+    expect([r.status, r.json.payment?.memo]).toEqual([200, 'deposited memo']);
+    // Leaving the credit out is a change: refused while deposited.
+    r = await request('PUT', `/api/v1/payments/${s.x.id}`, c.token, { ...body, creditApplications: [] });
+    expect([r.status, r.json.error.code]).toEqual([409, 'TXN_DEPOSITED']);
+  });
+
+  it('review SF5: a payment whose credit is in use elsewhere can\'t move to another client', async () => {
+    const s = await creditInside();
+    const r = await request('PUT', `/api/v1/payments/${s.p.id}`, c.token, {
+      customerId: c.other, date: '2026-11-03', depositTo: c.clearing, amount: '5700.00', applications: [],
+    });
+    expect([r.status, r.json.error.code, r.json.error.details]).toEqual([409, 'CREDIT_IN_USE', { inUse: '30.00' }]);
+  });
+
+  it('review SF6: a 0.00 write-off payment has no depositTo and can\'t be bounced or edited', async () => {
+    await settings();
+    const { i1091 } = await mockup();
+    await receive({ amount: '4384.25', applications: [{ invoiceId: i1091, amount: '4384.25' }] });
+    const r = await receive({ amount: '0.00', applications: [{ invoiceId: i1091, amount: '0.00', writeOffAmount: '0.75' }] });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect(r.json.payment.depositTo).toBeNull();
+    const b = await request('POST', `/api/v1/payments/${r.json.payment.id}/bounce`, c.token, { date: '2026-11-12' });
+    expect([b.status, b.json.error.code]).toEqual([400, 'NO_MONEY_RECEIVED']);
+    const e = await request('PUT', `/api/v1/payments/${r.json.payment.id}`, c.token, {
+      customerId: c.customer, date: '2026-11-03', depositTo: c.clearing, amount: '0.00',
+      applications: [{ invoiceId: i1091, amount: '0.00', writeOffAmount: '0.75' }], memo: 'x',
+    });
+    expect([e.status, e.json.error.code]).toEqual([400, 'NO_MONEY_RECEIVED']);
+    expect((await inv(i1091)).invoiceStatus).toBe('paid');
   });
 });

@@ -54,8 +54,11 @@ const receiveErrors = '400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_A
 
 const paymentRecordNote = 'PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, ' +
   'status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, ' +
-  'discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside; its credit applied later carries that date), ' +
-  'unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), ' +
+  'discount, writeOff, appliedDate, appliedLater, appliedInTxnId, voided, reversed}] (every row, live and set aside; its credit applied ' +
+  'later carries that date, appliedLater true and, when applied inside another payment, that payment\'s id), creditApplications: ' +
+  '[{sourcePaymentId, invoiceId, invoiceNumber, amount, fromDeposit}] (the live credits applied inside this payment; send them back on PUT ' +
+  'to keep them), writeOffAccountId, discountAccountId (the accounts its live write-offs and discounts went to, or null), depositTo (null ' +
+  'when it received no money), unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), ' +
   'holdsDeposit, depositRemaining}; money as 2-place strings.';
 
 // ─── Literal routes first: GET /:id is registered last so it can't shadow them.
@@ -199,6 +202,10 @@ paymentsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, idempo
     '/payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and ' +
     'refNo only (still checked against the closing date): any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is ' +
     '409 PAYMENT_BOUNCED. 409 STALE also when the payment was deposited or changed while this waited for its locks. ' +
+    'A body equal to the saved payment but for memo and refNo (applications with their amounts, discounts, write-offs and accounts, ' +
+    'and creditApplications as PaymentRecord.creditApplications lists them) changes only the header: nothing is set aside and no ' +
+    'invoice reopens. Leaving out a credit applied inside it gives it back to its source. 409 CREDIT_IN_USE also for another ' +
+    'customerId while any of its credit is applied elsewhere or refunded. 400 NO_MONEY_RECEIVED for a 0.00 payment. ' +
     `${exactRules} ${receiveErrors} ${closedPeriodNote}`,
   body: updateCustomerPaymentSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),

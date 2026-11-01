@@ -665,8 +665,22 @@ export interface PaymentApplicationRecord {
   discount: string;
   writeOff: string;
   appliedDate: string;
+  /** review E-B2 / D-SF1: true for its credit applied after it was saved (/apply or inside another payment). */
+  appliedLater: boolean;
+  /** The payment this credit row was applied inside; null for its own rows and /apply. */
+  appliedInTxnId: string | null;
   voided: boolean;
   reversed: boolean;
+}
+
+/** A live credit applied inside this payment (review E-B2): send it back on PUT to keep it. */
+export interface PaymentCreditRecord {
+  sourcePaymentId: string;
+  invoiceId: string;
+  invoiceNumber: string | null;
+  amount: string;
+  /** True when the source is a held customer deposit (U-135). */
+  fromDeposit: boolean;
 }
 
 export interface PaymentRecord {
@@ -685,6 +699,11 @@ export interface PaymentRecord {
   depositedIn?: { depositId: string; date: string };
   bounce?: { returnId: string; date: string };
   applications: PaymentApplicationRecord[];
+  /** review E-B2: the live credits applied inside it. */
+  creditApplications: PaymentCreditRecord[];
+  /** The write-off and discount accounts its live rows use (null when none). */
+  writeOffAccountId: string | null;
+  discountAccountId: string | null;
   unappliedRemaining: string;
   holdsDeposit: boolean;
   depositRemaining: string;
@@ -731,22 +750,29 @@ export async function getPaymentRecord(executor: DbOrTx, tenantId: string, payme
   const p = await loadPayment(executor, tenantId, paymentId, companyId);
   const appsRes = await executor.execute(sql`
     SELECT pa.invoice_id, inv.txn_number, pa.amount, pa.discount_amount, pa.write_off_amount,
-      to_char(pa.applied_date, 'YYYY-MM-DD') AS applied_date, pa.voided_at, pa.reversed_by_txn_id
+      to_char(pa.applied_date, 'YYYY-MM-DD') AS applied_date, pa.applied_in_txn_id, pa.voided_at, pa.reversed_by_txn_id,
+      pa.write_off_account_id, pa.discount_account_id
     FROM payment_applications pa
     LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
     WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${paymentId}
     ORDER BY pa.created_at, inv.txn_date, inv.txn_number, pa.id
   `);
-  const apps = (appsRes.rows as Array<Record<string, unknown>>).map((r) => ({
+  const appRows = appsRes.rows as Array<Record<string, unknown>>;
+  const apps = appRows.map((r) => ({
     invoiceId: String(r['invoice_id']),
     invoiceNumber: (r['txn_number'] as string | null) ?? null,
     amount: money2(round2(String(r['amount']))),
     discount: money2(round2(String(r['discount_amount'] ?? '0'))),
     writeOff: money2(round2(String(r['write_off_amount'] ?? '0'))),
     appliedDate: (r['applied_date'] as string | null) ?? p.txnDate,
+    appliedLater: r['applied_date'] != null,
+    appliedInTxnId: (r['applied_in_txn_id'] as string | null) ?? null,
     voided: r['voided_at'] != null,
     reversed: r['reversed_by_txn_id'] != null,
   }));
+  const liveOwn = appRows.filter((r) => r['applied_date'] == null && r['voided_at'] == null && r['reversed_by_txn_id'] == null);
+  const accountOf = (col: string) => (liveOwn.map((r) => r[col] as string | null).find((x) => x != null) ?? null);
+  const creditApplications = await creditsInsideRecord(executor, tenantId, paymentId);
   const deposits = await liveDepositsForSource(executor, tenantId, paymentId);
   let depositedIn: PaymentRecord['depositedIn'];
   if (deposits[0]) {
@@ -772,10 +798,35 @@ export async function getPaymentRecord(executor: DbOrTx, tenantId: string, payme
     ...(depositedIn ? { depositedIn } : {}),
     ...(bounce ? { bounce: { returnId: bounce.id, date: bounce.txnDate } } : {}),
     applications: apps,
+    creditApplications,
+    writeOffAccountId: accountOf('write_off_account_id'),
+    discountAccountId: accountOf('discount_account_id'),
     unappliedRemaining: money2(round2(remaining)),
     holdsDeposit: false,
     depositRemaining: '0.00',
   };
+}
+
+/**
+ * The live credits applied inside a payment (review E-B2), in the shape PUT
+ * takes back as creditApplications: other payments' rows applied inside it.
+ */
+async function creditsInsideRecord(executor: DbOrTx, tenantId: string, paymentId: string): Promise<PaymentCreditRecord[]> {
+  const res = await executor.execute(sql`
+    SELECT pa.payment_id AS source_id, pa.invoice_id, inv.txn_number, pa.amount, false AS from_deposit
+    FROM payment_applications pa
+    LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
+    WHERE pa.tenant_id = ${tenantId} AND pa.applied_in_txn_id = ${paymentId}
+      AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+    ORDER BY pa.created_at, pa.id
+  `);
+  return (res.rows as Array<Record<string, unknown>>).map((r) => ({
+    sourcePaymentId: String(r['source_id']),
+    invoiceId: String(r['invoice_id']),
+    invoiceNumber: (r['txn_number'] as string | null) ?? null,
+    amount: money2(round2(String(r['amount']))),
+    fromDeposit: r['from_deposit'] === true,
+  }));
 }
 
 export async function getPayment(tenantId: string, paymentId: string, companyId?: string) {
@@ -968,7 +1019,11 @@ function creditsUsed(result: ReturnType<typeof computePayment>): DecimalValue {
  * The client's open credits (U-133): posted customer payments with credit
  * left, not bounced, oldest first; the payment being edited is left out.
  */
-async function openCredits(tenantId: string, customerId: string, companyId: string | undefined, exceptId?: string): Promise<ComputeCredit[]> {
+async function openCredits(
+  tenantId: string, customerId: string, companyId: string | undefined, exceptId?: string,
+  /** Edit preview (review E-B2): what the edited payment uses of each source counts as left, as PUT sets it aside first. */
+  usedInside: Map<string, DecimalValue> = new Map(),
+): Promise<ComputeCredit[]> {
   const scope = companyId ? sql`AND (t.company_id = ${companyId} OR t.company_id IS NULL)` : sql``;
   const except = exceptId ? sql`AND t.id <> ${exceptId}` : sql``;
   const rows = await db.execute(sql`
@@ -988,7 +1043,7 @@ async function openCredits(tenantId: string, customerId: string, companyId: stri
   return (rows.rows as Array<Record<string, unknown>>)
     .map((r) => ({
       sourcePaymentId: String(r['id']), date: String(r['date']), refNo: (r['reference_number'] as string | null) ?? null,
-      remaining: money2(round2(String(r['remaining']))),
+      remaining: money2(round2(dec(String(r['remaining'])).plus(usedInside.get(String(r['id'])) ?? 0))),
     }))
     .filter((c) => dec(c.remaining).greaterThan(0));
 }
@@ -1011,6 +1066,7 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
   const own = new Map<string, DecimalValue>();
   const addOwn = (id: string, x: DecimalValue) => own.set(id, (own.get(id) ?? new Decimal(0)).plus(x));
   let ownAmount = new Decimal(0);
+  const usedInside = new Map<string, DecimalValue>();
   if (input.editingPaymentId) {
     const p = await loadPayment(db, tenantId, input.editingPaymentId, companyId);
     if (p.status === 'posted') {
@@ -1019,7 +1075,10 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
       for (const a of await liveApplications(db, tenantId, p.id)) {
         if (a.appliedDate === null) { addOwn(a.invoiceId, settledBy(a)); ownAmount = ownAmount.plus(a.discountAmount).plus(a.writeOffAmount); }
       }
-      for (const a of await creditsAppliedIn(db, tenantId, p.id)) addOwn(a.invoiceId, dec(a.amount));
+      for (const a of await creditsAppliedIn(db, tenantId, p.id)) {
+        addOwn(a.invoiceId, dec(a.amount));
+        usedInside.set(a.paymentId, (usedInside.get(a.paymentId) ?? new Decimal(0)).plus(a.amount));
+      }
       if (await liveBounce(db, tenantId, p.id)) problems.push({ code: 'PAYMENT_BOUNCED' });
     }
   }
@@ -1028,7 +1087,7 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     const share = own.get(r.invoiceId);
     return share ? { ...r, balanceDueExact: dec(r.balanceDueExact).plus(share).toFixed(4) } : r;
   });
-  const credits = await openCredits(tenantId, input.customerId, companyId, input.editingPaymentId);
+  const credits = await openCredits(tenantId, input.customerId, companyId, input.editingPaymentId, usedInside);
   const settings = await companySettleSettings(db, tenantId, companyId);
   const result = computePayment(compute, {
     date: input.date,
@@ -1447,24 +1506,32 @@ export async function updatePayment(
     const later = all.filter((a) => a.appliedDate !== null);
     const inside = await creditsAppliedIn(tx, tenantId, paymentId);
     const oldDepositTo = await depositToOf(tx, tenantId, paymentId);
+    // A payment that took in no money has nothing to edit against (review SF6).
+    if (oldDepositTo === null) throw noMoneyReceived(paymentId);
     const header = { memo: input.memo ?? null, referenceNumber: input.refNo?.trim() || null };
-    if (deposits.length > 0) {
-      const newApps = parsed.apps.filter((a) => a.amount.plus(a.discount).plus(a.writeOff).greaterThan(0));
-      const sameApps = own.length === newApps.length && newApps.every((a) => own.some((o) => o.invoiceId === a.invoiceId
-        && dec(o.amount).equals(a.amount) && dec(o.discountAmount).equals(a.discount) && dec(o.writeOffAmount).equals(a.writeOff)));
-      const newCredits = parsed.credits.filter((c) => c.amount.greaterThan(0));
-      const sameCredits = inside.length === newCredits.length && newCredits.every((c) => inside.some((o) =>
-        o.paymentId === c.sourcePaymentId && o.invoiceId === c.invoiceId && dec(o.amount).equals(c.amount)));
-      const unchanged = dec(payment.total).equals(parsed.amount) && oldDepositTo === input.depositTo && sameApps && sameCredits
-        && payment.txnDate === input.date && payment.contactId === input.customerId
-        && (input.paymentMethod ?? payment.paymentMethod) === payment.paymentMethod;
-      if (!unchanged) {
-        throw AppError.conflict(
-          'This payment is in a deposit. Remove it from the deposit first, or record a bounced check.',
-          'TXN_DEPOSITED', { depositIds: [...new Set(deposits.map((d) => d.depositId))] },
-        );
-      }
-      // A memo or reference edit still changes a closed-period payment (review SF4).
+    // Everything but memo and refNo as saved (review E-B2): its own rows with
+    // their discount and write-off accounts, the credits applied inside it.
+    const newApps = parsed.apps.filter((a) => a.amount.plus(a.discount).plus(a.writeOff).greaterThan(0));
+    const sameApps = own.length === newApps.length && newApps.every((a) => own.some((o) => o.invoiceId === a.invoiceId
+      && dec(o.amount).equals(a.amount) && dec(o.discountAmount).equals(a.discount) && dec(o.writeOffAmount).equals(a.writeOff)
+      && (!a.writeOff.greaterThan(0) || (input.writeOffAccountId ?? o.writeOffAccountId) === o.writeOffAccountId)
+      && (!a.discount.greaterThan(0) || (input.discountAccountId ?? o.discountAccountId) === o.discountAccountId)));
+    const newCredits = parsed.credits.filter((c) => c.amount.greaterThan(0));
+    const sameCredits = inside.length === newCredits.length && newCredits.every((c) => inside.some((o) =>
+      o.paymentId === c.sourcePaymentId && o.invoiceId === c.invoiceId && dec(o.amount).equals(c.amount)));
+    const unchanged = dec(payment.total).equals(parsed.amount) && oldDepositTo === input.depositTo && sameApps && sameCredits
+      && payment.txnDate === input.date && payment.contactId === input.customerId
+      && (input.paymentMethod ?? payment.paymentMethod) === payment.paymentMethod;
+    if (deposits.length > 0 && !unchanged) {
+      throw AppError.conflict(
+        'This payment is in a deposit. Remove it from the deposit first, or record a bounced check.',
+        'TXN_DEPOSITED', { depositIds: [...new Set(deposits.map((d) => d.depositId))] },
+      );
+    }
+    if (unchanged) {
+      // Memo and refNo only: nothing is set aside, no invoice reopens (review
+      // E-B2). It still changes the payment, so its date meets the closing
+      // date (review SF4).
       await ledger.checkLockDate(tx, tenantId, payment.txnDate, payment.companyId, undefined, {
         txnId: paymentId, oldDate: payment.txnDate, newDate: payment.txnDate,
       });
@@ -1477,6 +1544,13 @@ export async function updatePayment(
 
     // Its credit used elsewhere and refunded stays covered (U-133).
     const drawn = later.reduce((t, a) => t.plus(a.amount), new Decimal(0)).plus(await liveRefundTotal(tx, tenantId, paymentId));
+    // ...and stays this client's: no other client while any of it is in use (review SF5).
+    if (input.customerId !== payment.contactId && drawn.greaterThan(0)) {
+      throw AppError.conflict(
+        `${money2(drawn)} of this payment's credit is in use, so it can't move to another client. Unapply or void those first.`,
+        'CREDIT_IN_USE', { inUse: money2(drawn) },
+      );
+    }
     if (parsed.amount.minus(parsed.cash).lessThan(drawn)) {
       throw AppError.conflict(
         `${money2(drawn)} of this payment's credit is in use elsewhere, so the amount can't leave less than that unapplied.`,
