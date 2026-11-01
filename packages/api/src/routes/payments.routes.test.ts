@@ -1125,5 +1125,54 @@ describe('customer-deposits-v1 (U-135)', () => {
     expect(await linesOf(f.json.transaction.id)).toEqual([[cd, '200.0000', '0.0000'], [c.bank, '0.0000', '200.0000']]);
     expect((await request('GET', `/api/v1/payments/${h.id}`, c.token)).json.payment.depositRemaining).toBe('300.00');
     expect(await balance(cd)).toBe('-300.0000');
+    // review SF9: the list shows what is left of the deposit, not the full amount.
+    const list = await request('GET', `/api/v1/payments?contactId=${c.customer}`, c.token);
+    expect(list.json.data.find((p: any) => p.id === h.id)).toMatchObject({ holdsDeposit: true, unappliedRemaining: '0.00', depositRemaining: '300.00' });
+    // Voiding the refund gives the deposit back exactly.
+    const bankBefore = await balance(c.bank);
+    const v = await request('POST', `/api/v1/transactions/${f.json.transaction.id}/void`, c.token, { reason: 'x' });
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    expect((await request('GET', `/api/v1/payments/${h.id}`, c.token)).json.payment.depositRemaining).toBe('500.00');
+    expect(await balance(cd)).toBe('-500.0000');
+    expect(Number(await balance(c.bank)) - Number(bankBefore)).toBe(200);
+    const onHand = await request('GET', `/api/v1/payments/deposits-on-hand?customerId=${c.customer}`, c.token);
+    expect(onHand.json.data.map((d: any) => d.remaining)).toEqual(['500.00']);
+  });
+
+  it('review E-B2: draws made inside a receipt are listed; a memo edit keeps the draw; an amount edit re-makes it exactly', async () => {
+    const h = await hold('500.00', c.bank);
+    const inv1 = await invoice('1200.00', '2026-11-05');
+    const r = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date: '2026-11-06', depositTo: c.bank, amount: '700.00',
+      applications: [{ invoiceId: inv1, amount: '700.00' }], creditApplications: [{ sourcePaymentId: h.id, invoiceId: inv1, amount: '500.00' }],
+    });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const rec = r.json.payment;
+    expect(rec.creditApplications).toEqual([{ sourcePaymentId: h.id, invoiceId: inv1, invoiceNumber: expect.anything(), amount: '500.00', fromDeposit: true }]);
+    const draw = (await db.select().from(transactions).where(eq(transactions.fromDepositId, h.id)))[0]!;
+    // The edit preview gives back the draw: no problems, the balance before counts it.
+    const credits = rec.creditApplications.map((k: any) => ({ sourcePaymentId: k.sourcePaymentId, invoiceId: k.invoiceId, amount: k.amount }));
+    const p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-06', depositTo: c.bank, editingPaymentId: rec.id,
+      amount: '700.00', applications: [{ invoiceId: inv1, amount: '700.00' }], creditApplications: credits }));
+    expect(p.json.problems).toEqual([]);
+    expect(p.json.contactBalanceBefore).toBe('1200.00');
+    expect(p.json.depositsOnHand.map((d: any) => [d.paymentId, d.remaining])).toEqual([[h.id, '500.00']]);
+    expect(p.json.invoices.find((i: any) => i.invoiceId === inv1).balanceDueExact).toBe('1200.0000');
+    const body = { customerId: c.customer, date: '2026-11-06', depositTo: c.bank, amount: '700.00',
+      applications: [{ invoiceId: inv1, amount: '700.00' }], creditApplications: credits };
+    let e = await request('PUT', `/api/v1/payments/${rec.id}`, c.token, { ...body, memo: 'memo only' });
+    expect(e.status, JSON.stringify(e.json)).toBe(200);
+    expect((await db.select().from(transactions).where(eq(transactions.id, draw.id)))[0]!.status).toBe('posted');
+    expect((await inv(inv1)).invoiceStatus).toBe('paid');
+    // A real edit voids and re-makes the draw; the invoice ends exact.
+    e = await request('PUT', `/api/v1/payments/${rec.id}`, c.token, { ...body, amount: '600.00', applications: [{ invoiceId: inv1, amount: '600.00' }] });
+    expect(e.status, JSON.stringify(e.json)).toBe(200);
+    const x = await inv(inv1);
+    expect([x.balanceDue, x.amountPaid, x.invoiceStatus]).toEqual(['100.0000', '1100.0000', 'partial']);
+    expect(await balance(await cdAccount())).toBe('0.0000');
+    // review SF2: a draw's row can't be unapplied.
+    const draws = await db.select().from(transactions).where(and(eq(transactions.fromDepositId, h.id), eq(transactions.status, 'posted')));
+    const u = await request('POST', '/api/v1/payments/unapply', c.token, { paymentId: draws[0]!.id, invoiceId: inv1 });
+    expect([u.status, u.json.error.code]).toEqual([400, 'APPLIED_FROM_DEPOSIT']);
   });
 });
