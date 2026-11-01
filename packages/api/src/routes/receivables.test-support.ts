@@ -162,6 +162,25 @@ export class Harness {
     return created.id;
   }
 
+  /**
+   * A second company in the client's tenant; the returned headers select it
+   * (X-Company-Id), for the "another company's id is 404" tests.
+   */
+  async secondCompany(co: Co): Promise<Record<string, string>> {
+    const [b] = await db.insert(companies).values({ tenantId: co.tenantId, businessName: 'Second Books', setupComplete: true }).returning();
+    return { 'X-Company-Id': b!.id };
+  }
+
+  /** A bookkeeper token in the company's tenant whose permissions are only `overrides` (deny by default). */
+  async staffToken(co: Co, overrides: Record<string, string>): Promise<string> {
+    const [u] = await db.insert(users).values({
+      tenantId: co.tenantId, email: `bk-${suffix()}@example.com`, passwordHash: 'x', displayName: 'Bookkeeper', role: 'bookkeeper',
+    }).returning();
+    await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: co.tenantId, role: 'bookkeeper' });
+    await db.insert(userPermissions).values({ tenantId: co.tenantId, userId: u!.id, overrides: overrides as never });
+    return (await authService.issueSession({ userId: u!.id, tenantId: co.tenantId, role: 'bookkeeper', email: u!.email } as never)).accessToken;
+  }
+
   /** The bluestem seed of golden cases 1-5 and 7: invoices A and B for the client. */
   async seed(co: Co) {
     for (const inv of golden['seeds'].bluestem.invoices as Array<{ name: string; number: string; date: string; dueDate: string; total: string }>) {

@@ -39,7 +39,7 @@ const closing = {
 const closedPeriodNote = 'A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): ' +
   'without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.';
 
-async function remainingOf(tenantId: string, memoId: string): Promise<string> {
+async function remainingOf(tenantId: string, companyId: string, memoId: string): Promise<string> {
   const res = await db.execute(sql`
     SELECT (t.total
       - COALESCE((SELECT SUM(pa.amount) FROM payment_applications pa WHERE pa.tenant_id = t.tenant_id AND pa.payment_id = t.id
@@ -47,6 +47,7 @@ async function remainingOf(tenantId: string, memoId: string): Promise<string> {
       - COALESCE((SELECT SUM(r.total) FROM transactions r WHERE r.tenant_id = t.tenant_id AND r.source_payment_id = t.id
                   AND r.txn_type = 'customer_refund' AND r.status = 'posted'), 0))::numeric(19,2)::text AS remaining
     FROM transactions t WHERE t.tenant_id = ${tenantId} AND t.id = ${memoId}
+      AND (t.company_id = ${companyId} OR t.company_id IS NULL)
   `);
   const r = (res.rows as Array<{ remaining: string }>)[0]?.remaining ?? '0.00';
   return r.startsWith('-') ? '0.00' : r;
@@ -54,7 +55,7 @@ async function remainingOf(tenantId: string, memoId: string): Promise<string> {
 
 creditMemosRouter.post('/:id/apply', closingPasswordLimiter, lockContextMiddleware, idempotent({
   successStatus: 200,
-  replay: async (req) => ({ applied: [], remaining: await remainingOf(req.tenantId, req.params['id']!) }),
+  replay: async (req) => ({ applied: [], remaining: await remainingOf(req.tenantId, req.companyId, req.params['id']!) }),
 }), validate(applyCreditMemoSchema), describe({
   summary: 'Apply a credit memo to invoices (credit-memo-apply-v1)',
   description: 'Response {applied: [{invoiceId, amount}], remaining}. Applies the remaining credit of the memo to open invoices of the ' +
@@ -74,7 +75,7 @@ creditMemosRouter.post('/:id/apply', closingPasswordLimiter, lockContextMiddlewa
 
 creditMemosRouter.post('/:id/unapply', closingPasswordLimiter, lockContextMiddleware, idempotent({
   successStatus: 200,
-  replay: async (req) => ({ remaining: await remainingOf(req.tenantId, req.params['id']!) }),
+  replay: async (req) => ({ remaining: await remainingOf(req.tenantId, req.companyId, req.params['id']!) }),
 }), validate(unapplyCreditMemoSchema), describe({
   summary: 'Take one invoice off a credit memo (credit-memo-apply-v1)',
   description: 'Response {remaining}. The invoice reopens (status from its cent balance) and the amount is back in the memo\'s ' +
