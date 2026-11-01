@@ -1023,9 +1023,12 @@ export async function bounceResult(tenantId: string, returnId: string, companyId
   if (!ret || ret.txnType !== 'returned_payment' || ledger.inOtherCompany(ret, companyId)) throw AppError.notFound('Bounce not found');
   const [fee] = await db.select({ id: transactions.id }).from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourceTxnId, returnId))).limit(1);
+  // The bounce posts the held account as its first credit line; discounts and
+  // write-offs it reverses come after it (review SF7).
   const [credit] = await db.select({ accountId: journalLines.accountId }).from(journalLines)
     .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, returnId),
-      eq(journalLines.isVoidReversal, false), sql`${journalLines.credit} > 0`)).limit(1);
+      eq(journalLines.isVoidReversal, false), sql`${journalLines.credit} > 0`))
+    .orderBy(journalLines.lineOrder).limit(1);
   const pc = await systemAccountId(db, tenantId, 'payments_clearing');
   const res = await db.execute(sql`
     SELECT pa.invoice_id, inv.balance_due FROM payment_applications pa
