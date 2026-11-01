@@ -189,3 +189,42 @@ describe('customer-statement-send-v1 (U-140)', () => {
     expect((back.rows[0] as { t: string | null }).t).not.toBeNull();
   });
 });
+
+describe('P22 review fixes (E4)', () => {
+  const runIn = (headers: Record<string, string> = {}, token = c.token) => h.request('POST', '/api/v1/customer-statement-runs', token,
+    { asOf: '2026-11-30', contactIds: [c.customer] }, { 'Idempotency-Key': key(), ...headers });
+
+  it("another company's client and statements are 404 on every statement route", async () => {
+    const r = await runIn();
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const id = r.json['statements'][0].statementId;
+    const b = await h.secondCompany(c);
+    const other = await runIn(b);
+    expect(other.status, JSON.stringify(other.json)).toBe(404);
+    const rep = await h.request('GET', `/api/v1/reports/customer-statement?contactId=${c.customer}&asOf=2026-11-30`, c.token, undefined, b);
+    expect(rep.status).toBe(404);
+    expect((await h.request('GET', `/api/v1/customer-statements/${id}`, c.token, undefined, b)).status).toBe(404);
+    const list = await h.request('GET', `/api/v1/customer-statements?contactId=${c.customer}`, c.token, undefined, b);
+    expect([list.status, list.json['data']]).toEqual([200, []]);
+    const msg = { to: ['ap@bluestem.example'], cc: [], bcc: [], subject: 's', body: 'b' };
+    for (const [p, body] of [[`/${id}/sent`, { method: 'printed' }], [`/${id}/email-later`, msg],
+      [`/${id}/email`, { ...msg, pdfFileName: 'Statement.pdf', pdfBase64: PDF }]] as const) {
+      const x = await h.request('POST', `/api/v1/customer-statements${p}`, c.token, body, { 'Idempotency-Key': key(), ...b });
+      expect(x.status, `${p} ${JSON.stringify(x.json)}`).toBe(404);
+    }
+    expect(mocks.sent.length).toBe(0);
+    const mine = (await h.request('GET', `/api/v1/customer-statements/${id}`, c.token)).json['statement'];
+    expect(mine.sendHistory).toEqual([]);
+  });
+
+  it('roles without invoices (runs, statements) or reports (statement report) are 403', async () => {
+    const bankingOnly = await h.staffToken(c, { banking: 'full' });
+    const r = await runIn({}, bankingOnly);
+    expect([r.status, r.json['error']?.code]).toEqual([403, 'PERMISSION_DENIED']);
+    for (const path of ['/api/v1/customer-statements', `/api/v1/reports/customer-statement?contactId=${c.customer}&asOf=2026-11-30`,
+      '/api/v1/reports/customer-statements?asOf=2026-11-30']) {
+      const x = await h.request('GET', path, bankingOnly);
+      expect([x.status, x.json['error']?.code], path).toEqual([403, 'PERMISSION_DENIED']);
+    }
+  });
+});
