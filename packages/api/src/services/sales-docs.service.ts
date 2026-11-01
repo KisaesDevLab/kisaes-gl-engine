@@ -131,7 +131,7 @@ export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id
       (pa.voided_at IS NOT NULL OR pa.reversed_by_txn_id IS NOT NULL) AS voided
     FROM payment_applications pa LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
     WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${id}
-    ORDER BY pa.created_at, pa.id
+    ORDER BY pa.created_at, inv.txn_date NULLS LAST, inv.txn_number NULLS LAST, pa.invoice_id, pa.id
   `);
   const refunds = await executor.execute(sql`
     SELECT r.id, to_char(r.txn_date, 'YYYY-MM-DD') AS d, r.total::text AS total, r.payment_method, r.status
