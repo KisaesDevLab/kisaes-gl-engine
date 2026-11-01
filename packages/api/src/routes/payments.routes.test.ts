@@ -885,6 +885,26 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect([r.status, r.json.error.code]).toEqual([400, 'AMOUNT_REQUIRED']);
   });
 
+  it('review SF3: unapplying a credit applied later meets the closing date on its applied date; the audit keeps its figures', async () => {
+    await mockup();
+    const { payment: p } = await previewThenReceive({ amount: '5700.00' });
+    const n1 = await invoice('300.00', '2026-11-10');
+    const a = await request('POST', `/api/v1/payments/${p.id}/apply`, c.token, { date: '2026-12-05', applications: [{ invoiceId: n1, amount: '20.00' }] });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    await db.update(companies).set({ lockDate: '2026-11-30', closingPasswordHash: await bcrypt.hash(CLOSING_PHRASE, 4) }).where(eq(companies.id, c.companyId));
+    // The payment is dated in the closed period; the row was applied after it: no password.
+    let r = await request('POST', '/api/v1/payments/unapply', c.token, { paymentId: p.id, invoiceId: n1 });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect((await inv(n1)).balanceDue).toBe('300.0000');
+    const audits = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'payment_applications')));
+    const unapply = audits.find((x) => JSON.stringify(x.afterData).includes('"unapply"'))!;
+    expect((unapply.beforeData as any).applications[0]).toMatchObject({ amount: '20.0000', discount: '0.0000', writeOff: '0.0000', appliedDate: '2026-12-05' });
+    // Its own row is dated 11-03: closed.
+    const own = (await request('GET', `/api/v1/payments/${p.id}`, c.token)).json.payment.applications[0].invoiceId;
+    r = await request('POST', '/api/v1/payments/unapply', c.token, { paymentId: p.id, invoiceId: own });
+    expect(r.status).toBe(423);
+  });
+
   it('review SF5: a payment whose credit is in use elsewhere can\'t move to another client', async () => {
     const s = await creditInside();
     const r = await request('PUT', `/api/v1/payments/${s.p.id}`, c.token, {

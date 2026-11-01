@@ -1209,8 +1209,11 @@ export async function unapplyPayment(
     if (await liveBounce(tx, tenantId, paymentId)) throw paymentBounced(paymentId);
     const app = (await liveApplications(tx, tenantId, paymentId)).find((a) => a.invoiceId === invoiceId);
     if (!app) throw AppError.notFound('Payment application not found');
-    await ledger.checkLockDate(tx, tenantId, payment.txnDate, payment.companyId, undefined, {
-      txnId: payment.id, oldDate: payment.txnDate, newDate: payment.txnDate,
+    // Cash basis books a credit applied later on its applied date, so that is
+    // the date the closing date meets (review SF3).
+    const booked = app.appliedDate ?? payment.txnDate;
+    await ledger.checkLockDate(tx, tenantId, booked, payment.companyId, undefined, {
+      txnId: payment.id, oldDate: booked, newDate: booked,
     });
     const inv = (await lockInvoices(tx, tenantId, [invoiceId])).get(invoiceId);
     if (!await retireApplication(tx, tenantId, app.id, { voidedAt: new Date() })) throw scopeChanged(paymentId);
@@ -1218,7 +1221,8 @@ export async function unapplyPayment(
     await tx.update(transactions).set({ updatedAt: new Date() })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
     await auditLog(tenantId, 'update', 'payment_applications', paymentId,
-      { applications: [{ invoiceId, amount: app.amount }] }, { applications: [], via: 'unapply', invoiceId }, opts.userId, tx);
+      { applications: [{ invoiceId, amount: app.amount, discount: app.discountAmount, writeOff: app.writeOffAmount, appliedDate: app.appliedDate }] },
+      { applications: [], via: 'unapply', invoiceId }, opts.userId, tx);
   });
 }
 
