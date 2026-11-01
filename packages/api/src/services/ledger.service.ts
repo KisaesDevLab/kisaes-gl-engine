@@ -1366,6 +1366,17 @@ export async function updateTransaction(
     }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
+    // A finance-charge invoice keeps its client (U-145, Q-P22v): the charge
+    // was assessed on that client's overdue balance and its assessment rows
+    // point at it. Amount and date edits stay allowed. Every edit path (PUT
+    // /invoices/:id, PUT /transactions/:id) comes through here.
+    if (existing.isFinanceCharge && (input.contactId || null) !== (existing.contactId ?? null)) {
+      throw AppError.conflict(
+        'A finance charge stays with the client it was assessed for. Void it and assess again for the right client.',
+        'FINANCE_CHARGE_CLIENT_CHANGE',
+      );
+    }
+
     // A bill, vendor credit or bill payment is edited only through its own
     // service (review B1): a generic edit (PUT /transactions/:id sent as an
     // expense against a bill id, say) would rewrite its lines and blank

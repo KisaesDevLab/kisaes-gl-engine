@@ -21,6 +21,7 @@ import { transactionsRouter } from './transactions.routes.js';
 import { financeChargesRouter } from './finance-charges.routes.js';
 import { invoicesRouter } from './invoices.routes.js';
 import { assertAssessmentDateNotFuture } from '../services/finance-charge.service.js';
+import * as ledger from '../services/ledger.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { Harness, type Co, golden, key, txn, m2 } from './receivables.test-support.js';
 
@@ -250,5 +251,45 @@ describe('P22 review fixes (E5)', () => {
     expect(live.map((x) => x.voidedAt)).toEqual([null]);
     const again = await assess();
     expect([again.status, again.json['error']?.code]).toEqual([409, 'FINANCE_CHARGE_ASSESSED']);
+  });
+
+  it('U-145: changing the client of a finance-charge invoice is 409 FINANCE_CHARGE_CLIENT_CHANGE on every edit path; nothing changes', async () => {
+    await settings();
+    const a = await assess();
+    expect(a.status, JSON.stringify(a.json)).toBe(201);
+    const id = a.json['invoices'][0].invoiceId as string;
+    const before = await txn(id);
+    const body = (contactId: string, extra: Record<string, unknown> = {}) => ({
+      contactId, txnDate: '2026-10-31',
+      lines: [{ accountId: c.roles['income'], description: 'Finance charge', quantity: '1', unitPrice: '15.68', isTaxable: false }], ...extra,
+    });
+    const moved = await h.request('PUT', `/api/v1/invoices/${id}`, c.token, body(c.customer, { expectedUpdatedAt: before.updatedAt!.toISOString() }),
+      { 'Idempotency-Key': key() });
+    expect([moved.status, moved.json['error']?.code]).toEqual([409, 'FINANCE_CHARGE_CLIENT_CHANGE']);
+    expect(moved.json['error'].message).toContain('Void it and assess again for the right client');
+    // The generic edit path refuses it too (ledger.updateTransaction).
+    await expect(ledger.updateTransaction(c.tenantId, id, {
+      txnType: 'invoice', txnDate: '2026-10-31', contactId: c.customer,
+      lines: [{ accountId: c.roles['accounts_receivable']!, debit: '15.68', credit: '0' }, { accountId: c.roles['income']!, debit: '0', credit: '15.68' }],
+    } as never, c.userId, c.companyId)).rejects.toMatchObject({ statusCode: 409, code: 'FINANCE_CHARGE_CLIENT_CHANGE' });
+    const after = await txn(id);
+    expect([after.contactId, after.updatedAt?.toISOString(), m2(after.total)]).toEqual([pfId(), before.updatedAt?.toISOString(), m2(before.total)]);
+    // Same client: an amount and date edit stays allowed.
+    const ok = await h.request('PUT', `/api/v1/invoices/${id}`, c.token, body(pfId(), {
+      txnDate: '2026-10-30', expectedUpdatedAt: before.updatedAt!.toISOString(),
+      lines: [{ accountId: c.roles['income'], description: 'Finance charge', quantity: '1', unitPrice: '12.00', isTaxable: false }],
+    }));
+    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    const edited = await txn(id);
+    expect([edited.contactId, edited.txnDate, m2(edited.total), edited.isFinanceCharge]).toEqual([pfId(), '2026-10-30', '12.00', true]);
+    // An ordinary invoice can still change its client.
+    const plain = await h.invoice(c, { date: '2026-10-15', total: '50.00' }, pfId());
+    const p = await txn(plain);
+    const change = await h.request('PUT', `/api/v1/invoices/${plain}`, c.token, {
+      contactId: c.customer, txnDate: '2026-10-15', expectedUpdatedAt: p.updatedAt!.toISOString(),
+      lines: [{ accountId: c.roles['sales'], description: 'Work', quantity: '1', unitPrice: '50.00', isTaxable: false }],
+    });
+    expect(change.status, JSON.stringify(change.json)).toBe(200);
+    expect((await txn(plain)).contactId).toBe(c.customer);
   });
 });

@@ -149,7 +149,9 @@ invoicesRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedI
   description: 'Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE '
     + '(details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice\'s; the due date '
     + 'is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and '
-    + `printLater keep their values. ${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules} ${billableRules}`,
+    + 'printLater keep their values. A finance-charge invoice (finance-charges-v1) keeps its client: a contactId change is 409 '
+    + 'FINANCE_CHARGE_CLIENT_CHANGE ("Void it and assess again for the right client"); amount and date edits are allowed. '
+    + `${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules} ${billableRules}`,
   body: bodyDoc,
   params: idParams,
 }), async (req, res) => {
@@ -176,8 +178,9 @@ invoicesRouter.post('/:id/sent', keyedInvoiceById(200), validate(recordDocumentS
 // invoiceEmailJson for this route ahead of the global parser.
 export const INVOICE_EMAIL_JSON_LIMIT = '15mb';
 const invoiceEmailJsonParser = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
-// U-140: a customer statement email carries its PDF the same way.
-const INVOICE_EMAIL_PATH = /^\/api\/v1\/(invoices|customer-statements)\/[^/]+\/email\/?$/;
+// U-140: a customer statement email carries its PDF the same way; U-144
+// credit memos and sales receipts too.
+const INVOICE_EMAIL_PATH = /^\/api\/v1\/(invoices|customer-statements|credit-memos|sales-receipts)\/[^/]+\/email\/?$/;
 const INVOICE_EMAIL_JSON_MAX_BYTES = 15 * 1024 * 1024;
 
 /**
@@ -214,7 +217,7 @@ export const invoiceEmailJson: express.RequestHandler = (req, res, next) => {
   }, next);
 };
 
-const emailRules = 'Recipients, subject and body are never logged or audited (audit rows carry counts). '
+export const emailRules = 'Recipients, subject and body are never logged or audited (audit rows carry counts). '
   + 'Errors: 400 SMTP_NOT_CONFIGURED (no mail server for the company, no From address, or in desktop mode no session password or one given for another server; '
   + 'smtp-session-v1), 400 SMTP_SEND_FAILED (the server refused the message or the login; details.reason auth|send), 503 OFFLINE_UNAVAILABLE (desktop offline), '
   + '400 INVOICE_VOID, 404 (another company).';
@@ -241,8 +244,10 @@ invoicesRouter.post('/:id/email', idempotent({
 export const outboxItemDoc = z.object({
   id: z.string().uuid(),
   transactionId: z.string().uuid().nullable(),
-  // U-140: Outbox rows of customer statements (transactionId null).
-  kind: z.enum(['transaction', 'customer_statement']),
+  // U-140: Outbox rows of customer statements (transactionId null). U-144
+  // (sales-doc-email-v1): credit_memo and sales_receipt rows (txnType
+  // credit_memo / cash_sale); transaction stays the invoice kind.
+  kind: z.enum(invoiceEmail.OUTBOX_KINDS),
   customerStatementId: z.string().uuid().nullable(),
   txnNumber: z.string().nullable(),
   txnType: z.string().nullable(),

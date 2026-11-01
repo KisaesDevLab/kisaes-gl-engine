@@ -60,7 +60,9 @@ formsRouter.post('/mark-printed', validate(markBody), describe({
 formsRouter.get('/email-queue', describe({
   summary: 'The email Outbox: messages waiting to be sent, oldest first (invoice-email-v1)',
   description: 'Each item: the message (to, cc, bcc, subject, body), the form it sends (transactionId, txnNumber, txnType, txnStatus, contactName), '
-    + 'who queued it and when. No PDF is stored; the client makes it at send time (Q-P20q).',
+    + 'who queued it and when. No PDF is stored; the client makes it at send time (Q-P20q). kind says which route sends it: transaction '
+    + '(an invoice) POST /invoices/:id/email, credit_memo POST /credit-memos/:id/email, sales_receipt (txnType cash_sale) POST '
+    + '/sales-receipts/:id/email (sales-doc-email-v1), customer_statement POST /customer-statements/:id/email, each with outboxId.',
   response: z.object({ data: z.array(outboxItemDoc) }),
 }), async (req, res) => {
   res.json({ data: await invoiceEmail.listEmailQueue(req.tenantId, req.companyId) });

@@ -26323,7 +26323,7 @@
     },
     "/api/v1/credit-memos": {
       "post": {
-        "description": "Response 201 {creditMemo: CreditMemoRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice (at most 4 places), discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Line = round2(qty x rate) half away from zero; tax once per rate (P20). Posting: Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total. Stores subtotal and tax_amount. Total 0.00 or less is 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE (record a return with money back as a sales receipt). applications: [{invoiceId, amount, expectedBalanceDue}] are applied in the same database transaction, dated with the memo (applied_date NULL); errors as POST /credit-memos/:id/apply (OVERAPPLIED, INVOICE_NOT_FOR_CUSTOMER, 409 INVOICE_BALANCE_CHANGED, CREDIT_NOT_AVAILABLE); any failure posts nothing. txnNumber: typed or the next from the credit_memo counter (409 DOCUMENT_NUMBER_IN_USE). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, date, amount, method, voided}], remaining}. applications[].appliedDate is null for rows applied when the memo was saved.",
+        "description": "Response 201 {creditMemo: CreditMemoRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice (at most 4 places), discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Line = round2(qty x rate) half away from zero; tax once per rate (P20). Posting: Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total. Stores subtotal and tax_amount. Total 0.00 or less is 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE (record a return with money back as a sales receipt). applications: [{invoiceId, amount, expectedBalanceDue}] are applied in the same database transaction, dated with the memo (applied_date NULL); errors as POST /credit-memos/:id/apply (OVERAPPLIED, INVOICE_NOT_FOR_CUSTOMER, 409 INVOICE_BALANCE_CHANGED, CREDIT_NOT_AVAILABLE); any failure posts nothing. txnNumber: typed or the next from the credit_memo counter (409 DOCUMENT_NUMBER_IN_USE). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, date, amount, method, voided}], remaining, sendHistory: [{id, method: printed|email|pdf, recipients, sentAt, userId}] (oldest first; sales-doc-email-v1)}. applications[].appliedDate is null for rows applied when the memo was saved.",
         "operationId": "post_api_v1_credit_memos",
         "parameters": [
           {
@@ -26743,7 +26743,7 @@
     },
     "/api/v1/credit-memos/{id}": {
       "get": {
-        "description": "Response {creditMemo: CreditMemoRecord}. Another company's memo is 404. CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, date, amount, method, voided}], remaining}. applications[].appliedDate is null for rows applied when the memo was saved.",
+        "description": "Response {creditMemo: CreditMemoRecord}. Another company's memo is 404. CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, date, amount, method, voided}], remaining, sendHistory: [{id, method: printed|email|pdf, recipients, sentAt, userId}] (oldest first; sales-doc-email-v1)}. applications[].appliedDate is null for rows applied when the memo was saved.",
         "operationId": "get_api_v1_credit_memos_by_id",
         "parameters": [
           {
@@ -27075,6 +27075,359 @@
           }
         ],
         "summary": "Apply a credit memo to invoices (credit-memo-apply-v1)",
+        "tags": [
+          "credit-memos"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/credit-memos/{id}/email": {
+      "post": {
+        "description": "As POST /invoices/:id/email (U-127): sends {to, cc, bcc, subject, body} with the PDF the client made attached (pdfBase64: application/pdf starting %PDF-, at most 10 MB decoded, else 400 ATTACHMENT_TOO_LARGE / VALIDATION_ERROR; pdfFileName e.g. CreditMemo-1042.pdf). Only when the server accepts it, an \"email\" send event (recipients = to + cc + bcc) is recorded; a failed send records nothing. outboxId (optional): the Outbox message being sent; it is removed in the same commit, and 404 OUTBOX_ITEM_NOT_FOUND (nothing sent) when it is gone. Response 200 {creditMemo: CreditMemoRecord} with its sendHistory. Idempotency-Key: a retry with the key replays and sends nothing more. The closing date does not apply to sending. Recipients, subject and body are never logged or audited (audit rows carry counts). Errors: 400 SMTP_NOT_CONFIGURED (no mail server for the company, no From address, or in desktop mode no session password or one given for another server; smtp-session-v1), 400 SMTP_SEND_FAILED (the server refused the message or the login; details.reason auth|send), 503 OFFLINE_UNAVAILABLE (desktop offline), 400 DOCUMENT_VOID (a void credit memo), 404 (unknown id, another type or another company).",
+        "operationId": "post_api_v1_credit_memos_by_id_email",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "outboxId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "pdfBase64": {
+                    "maxLength": 13981020,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "pdfFileName": {
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()#-]{0,115}\\.pdf$",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to",
+                  "pdfFileName",
+                  "pdfBase64"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Email a credit memo through the company mail server (sales-doc-email-v1)",
+        "tags": [
+          "credit-memos"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/credit-memos/{id}/email-later": {
+      "post": {
+        "description": "Stores {to, cc, bcc, subject, body} with the company; nothing is sent until the client sends it with POST /credit-memos/:id/email and outboxId. No PDF is stored: the client makes it when it sends. Response 201 {item} (as GET /forms/email-queue; kind credit_memo). Void: 400 DOCUMENT_VOID; unknown id, another type or another company: 404. Recipients, subject and body are never logged or audited (audit rows carry counts).",
+        "operationId": "post_api_v1_credit_memos_by_id_email_later",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "item": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "bcc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "cc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "contactName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "customerStatementId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "transaction",
+                            "credit_memo",
+                            "sales_receipt",
+                            "customer_statement"
+                          ],
+                          "type": "string"
+                        },
+                        "subject": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "transactionId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "txnNumber": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnStatus": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnType": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "userId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "transactionId",
+                        "kind",
+                        "customerStatementId",
+                        "txnNumber",
+                        "txnType",
+                        "txnStatus",
+                        "contactName",
+                        "to",
+                        "cc",
+                        "bcc",
+                        "subject",
+                        "body",
+                        "userId",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "item"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Put a credit memo email in the Outbox (sales-doc-email-v1)",
         "tags": [
           "credit-memos"
         ],
@@ -33734,7 +34087,7 @@
     },
     "/api/v1/forms/email-queue": {
       "get": {
-        "description": "Each item: the message (to, cc, bcc, subject, body), the form it sends (transactionId, txnNumber, txnType, txnStatus, contactName), who queued it and when. No PDF is stored; the client makes it at send time (Q-P20q).",
+        "description": "Each item: the message (to, cc, bcc, subject, body), the form it sends (transactionId, txnNumber, txnType, txnStatus, contactName), who queued it and when. No PDF is stored; the client makes it at send time (Q-P20q). kind says which route sends it: transaction (an invoice) POST /invoices/:id/email, credit_memo POST /credit-memos/:id/email, sales_receipt (txnType cash_sale) POST /sales-receipts/:id/email (sales-doc-email-v1), customer_statement POST /customer-statements/:id/email, each with outboxId.",
         "operationId": "get_api_v1_forms_email_queue",
         "responses": {
           "200": {
@@ -33789,6 +34142,8 @@
                           "kind": {
                             "enum": [
                               "transaction",
+                              "credit_memo",
+                              "sales_receipt",
                               "customer_statement"
                             ],
                             "type": "string"
@@ -35019,7 +35374,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; on a document whose subtotal is above 0.00 a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total; Q-P20ag), while a document whose subtotal is 0.00 or less (a return) reverses its tax (Q-P20aj). a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines; stacked discounts under it compound); a percent of a group at or below 0.00 is 0.00; sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. A PUT on an invoice with discount or subtotal lines that sends no itemId on any line is 409 INVOICE_LINES_MISSING and nothing changes (a client that does not know items would drop them): send every non-A/R, non-tax line back, a discount as {itemId, discountPercent} or {itemId, unitPrice}, a subtotal as {itemId}. pricingLinesComplete: true (PUT, invoice-pricing-lines-v1) says the lines sent are every line the invoice keeps, so a discount or subtotal left out was removed on purpose and the check is skipped. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
+        "description": "Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE (details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice's; the due date is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and printLater keep their values. A finance-charge invoice (finance-charges-v1) keeps its client: a contactId change is 409 FINANCE_CHARGE_CLIENT_CHANGE (\"Void it and assess again for the right client\"); amount and date edits are allowed. An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1). Money (sales-cents-v1): each line amount is round2(quantity x unitPrice), half away from zero (quantity and unitPrice: decimal strings, at most 4 places, either may be negative); tax is round2(taxable base x rate) once per rate, allocated to the taxable lines by largest remainder so line taxAmounts sum to the tax; on a document whose subtotal is above 0.00 a rate whose taxable base is below 0.00 taxes 0.00 (its lines tax 0.00; the negative lines still lower the total; Q-P20ag), while a document whose subtotal is 0.00 or less (a return) reverses its tax (Q-P20aj). a taxable line without taxRate takes the request company's default rate; rates are rounded to 4 places. Totals and amounts are stored at 4 places, exact to the cent. Golden cases: packages/shared/fixtures/invoice-golden.json. Lines (invoice-fields-v1): itemId (an item of the company) supplies the income account when accountId is omitted and the taxable flag when isTaxable is omitted; serviceDate YYYY-MM-DD. Header: poNumber, customerMessage (printed; memo stays internal), tagIds (header tags), hideZeroLines. Terms (invoice-terms-v1): paymentTerms is a code from GET /payment-terms (custom takes termsDays), omitted the client's default, else the company's; dueDate sent wins (stored as overridden), else computed. A customer, item or tag of another company is 400 VALIDATION_ERROR. Pricing (invoice-pricing-v1, item-kinds-sales-v1, price-levels-v1): quantity omitted is 1; unitPrice omitted takes the client's price level (a fixed level price for the item, else round2(item price x (1 + level percent / 100)) half away from zero), else the item's price, else 400 VALIDATION_ERROR. A discount item's line is -round2(group x discountPercent / 100) (discountPercent sent, else the item's) or -|unitPrice| (sent, else the item's amount), where the group is the signed sum of the lines since the last subtotal line (a discount right under a subtotal takes that subtotal's lines; stacked discounts under it compound); a percent of a group at or below 0.00 is 0.00; sending both is 400. Discounts are taxable unless isTaxable is false: a taxable discount reduces the taxable base. A subtotal item's line shows the sum of the lines since the previous subtotal, is not part of the totals, is never taxed and posts $0. Lines read back with discountPercent and unitPriceSource (input | item | price_level | price_level_percent | none). On PUT a line without unitPrice is priced again: send the stored unitPrice to keep it. A PUT on an invoice with discount or subtotal lines that sends no itemId on any line is 409 INVOICE_LINES_MISSING and nothing changes (a client that does not know items would drop them): send every non-A/R, non-tax line back, a discount as {itemId, discountPercent} or {itemId, unitPrice}, a subtotal as {itemId}. pricingLinesComplete: true (PUT, invoice-pricing-lines-v1) says the lines sent are every line the invoice keeps, so a discount or subtotal left out was removed on purpose and the check is skipped. Golden cases: packages/shared/fixtures/invoice-golden.json pricingCases. Billable costs (billable-costs-v1, U-128): a line {billableSourceLineId (GET /billable-costs sourceLineId), accountId (required: the income account the cost credits), markupPercent? (a percent, \"10\" = 10 %, 0-1000)} bills that cost whole, once, to its own customer (the invoice contactId); itemId, quantity and unitPrice come from the cost (400 BILLABLE_FIELDS_READONLY). costAmount = round2(cost), markupAmount = round2(costAmount x markupPercent / 100), none on a negative cost; amount = cost + markup, one visible line, rate = amount / quantity (unitPriceSource billable_cost); isTaxable defaults to true. Journal: a billable_cost line on accountId and, when the markup is not 0, a billable_markup line on the company billableMarkupAccountId (400 MARKUP_ACCOUNT_REQUIRED without one; kept on edit). PUT must re-send every cost the invoice bills or name it in releaseBillableSourceLineIds (409 BILLABLE_LINES_MISSING {sourceLineIds}); a void or delete through any route releases them. Errors: 409 BILLABLE_ALREADY_BILLED (details.conflicts [{sourceLineId, invoiceId?, invoiceNumber?}], named only within the company), 409 BILLABLE_COST_UNAVAILABLE (stale id, not billable, source void / deleted / of another company: reload), 400 BILLABLE_CONTACT_MISMATCH, 400 BILLABLE_DUPLICATE_LINE, 400 BILLABLE_INCOME_ACCOUNT_REQUIRED, 409 INVOICE_TOTAL_BELOW_PAID (an edit below the amount paid), 409 RETRY (deadlock: retry). GET returns billableCosts [{sourceLineId, sourceTransactionId, sourceTxnType, sourceNumber, costAmount, markupPercent, markupAmount, amount, displayRate, quantity, incomeAccountId, markupAccountId, costLineId, markupLineId, billed}]; lines carry lineRole and billableSourceLineId. Golden: invoice-golden.json billableCases.",
         "operationId": "put_api_v1_invoices_by_id",
         "parameters": [
           {
@@ -35527,6 +35882,8 @@
                         "kind": {
                           "enum": [
                             "transaction",
+                            "credit_memo",
+                            "sales_receipt",
                             "customer_statement"
                           ],
                           "type": "string"
@@ -54600,7 +54957,7 @@
     },
     "/api/v1/sales-receipts": {
       "post": {
-        "description": "Response 201 {salesReceipt: SalesReceiptRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice, discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Posting: Dr depositToAccountId (default Payments Clearing) the total, Cr each income line, Cr Sales Tax Payable the tax. A total below 0.00 (a return with money back) to Payments Clearing is 400 NEGATIVE_RECEIPT_NEEDS_BANK; a deposit account that is not an asset of this company (or is A/R / Customer Deposits) is 400 DEPOSIT_ACCOUNT_INVALID. txnNumber: typed or the next from the cash_sale counter. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. SalesReceiptRecord: {id, number, date, customerId, depositToAccountId, paymentMethod, refNo, lines, totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited}.",
+        "description": "Response 201 {salesReceipt: SalesReceiptRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice, discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Posting: Dr depositToAccountId (default Payments Clearing) the total, Cr each income line, Cr Sales Tax Payable the tax. A total below 0.00 (a return with money back) to Payments Clearing is 400 NEGATIVE_RECEIPT_NEEDS_BANK; a deposit account that is not an asset of this company (or is A/R / Customer Deposits) is 400 DEPOSIT_ACCOUNT_INVALID. txnNumber: typed or the next from the cash_sale counter. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. SalesReceiptRecord: {id, number, date, customerId, depositToAccountId, paymentMethod, refNo, lines, totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited, sendHistory: [{id, method: printed|email|pdf, recipients, sentAt, userId}] (oldest first; sales-doc-email-v1)}.",
         "operationId": "post_api_v1_sales_receipts",
         "parameters": [
           {
@@ -55016,7 +55373,7 @@
     },
     "/api/v1/sales-receipts/{id}": {
       "get": {
-        "description": "Response {salesReceipt: SalesReceiptRecord}. Another company's receipt is 404. SalesReceiptRecord: {id, number, date, customerId, depositToAccountId, paymentMethod, refNo, lines, totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited}.",
+        "description": "Response {salesReceipt: SalesReceiptRecord}. Another company's receipt is 404. SalesReceiptRecord: {id, number, date, customerId, depositToAccountId, paymentMethod, refNo, lines, totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited, sendHistory: [{id, method: printed|email|pdf, recipients, sentAt, userId}] (oldest first; sales-doc-email-v1)}.",
         "operationId": "get_api_v1_sales_receipts_by_id",
         "parameters": [
           {
@@ -55265,6 +55622,359 @@
           }
         ],
         "summary": "Edit a sales receipt (sales-receipt-lines-v1)",
+        "tags": [
+          "sales-receipts"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-receipts/{id}/email": {
+      "post": {
+        "description": "As POST /invoices/:id/email (U-127): sends {to, cc, bcc, subject, body} with the PDF the client made attached (pdfBase64: application/pdf starting %PDF-, at most 10 MB decoded, else 400 ATTACHMENT_TOO_LARGE / VALIDATION_ERROR; pdfFileName e.g. SalesReceipt-1042.pdf). Only when the server accepts it, an \"email\" send event (recipients = to + cc + bcc) is recorded; a failed send records nothing. outboxId (optional): the Outbox message being sent; it is removed in the same commit, and 404 OUTBOX_ITEM_NOT_FOUND (nothing sent) when it is gone. Response 200 {salesReceipt: SalesReceiptRecord} with its sendHistory. Idempotency-Key: a retry with the key replays and sends nothing more. The closing date does not apply to sending. Recipients, subject and body are never logged or audited (audit rows carry counts). Errors: 400 SMTP_NOT_CONFIGURED (no mail server for the company, no From address, or in desktop mode no session password or one given for another server; smtp-session-v1), 400 SMTP_SEND_FAILED (the server refused the message or the login; details.reason auth|send), 503 OFFLINE_UNAVAILABLE (desktop offline), 400 DOCUMENT_VOID (a void sales receipt), 404 (unknown id, another type or another company).",
+        "operationId": "post_api_v1_sales_receipts_by_id_email",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "outboxId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "pdfBase64": {
+                    "maxLength": 13981020,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "pdfFileName": {
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._()#-]{0,115}\\.pdf$",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to",
+                  "pdfFileName",
+                  "pdfBase64"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Email a sales receipt through the company mail server (sales-doc-email-v1)",
+        "tags": [
+          "sales-receipts"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-receipts/{id}/email-later": {
+      "post": {
+        "description": "Stores {to, cc, bcc, subject, body} with the company; nothing is sent until the client sends it with POST /sales-receipts/:id/email and outboxId. No PDF is stored: the client makes it when it sends. Response 201 {item} (as GET /forms/email-queue; kind sales_receipt). Void: 400 DOCUMENT_VOID; unknown id, another type or another company: 404. Recipients, subject and body are never logged or audited (audit rows carry counts).",
+        "operationId": "post_api_v1_sales_receipts_by_id_email_later",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "default": "",
+                    "maxLength": 100000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "subject": {
+                    "default": "",
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "maxLength": 254,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "item": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "bcc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "cc": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "contactName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "customerStatementId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "transaction",
+                            "credit_memo",
+                            "sales_receipt",
+                            "customer_statement"
+                          ],
+                          "type": "string"
+                        },
+                        "subject": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "transactionId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "txnNumber": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnStatus": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "txnType": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "userId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "transactionId",
+                        "kind",
+                        "customerStatementId",
+                        "txnNumber",
+                        "txnType",
+                        "txnStatus",
+                        "contactName",
+                        "to",
+                        "cc",
+                        "bcc",
+                        "subject",
+                        "body",
+                        "userId",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "item"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Put a sales receipt email in the Outbox (sales-doc-email-v1)",
         "tags": [
           "sales-receipts"
         ],
@@ -79059,7 +79769,7 @@
         ]
       },
       "put": {
-        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED. ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); an expense edit of a printed check that changes its printed face (amount, payee, memo line, bank account, date) is 409 CHECK_PRINTED (details.checkNumber, printedAt, changedFields), edit it with PUT /checks/:id; a check keeps its own header tags.",
+        "description": "Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED. ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); an expense edit of a printed check that changes its printed face (amount, payee, memo line, bank account, date) is 409 CHECK_PRINTED (details.checkNumber, printedAt, changedFields), edit it with PUT /checks/:id; a check keeps its own header tags. A finance-charge invoice keeps its client: a contactId change is 409 FINANCE_CHARGE_CLIENT_CHANGE.",
         "operationId": "put_api_v1_transactions_by_id",
         "parameters": [
           {

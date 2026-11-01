@@ -17,6 +17,11 @@
  * makes it at send time (Q-P20q) and sends it with `outboxId`, which removes
  * the queued row in the same commit as the send event.
  *
+ * U-144 (sales-doc-email-v1): the same send and Outbox for credit memos and
+ * sales receipts (emailSalesDocument, queueSalesDocumentEmail); their Outbox
+ * rows have kind credit_memo / sales_receipt. No migration: the queue and
+ * the send events already key on any transaction id.
+ *
  * Recipients, subjects and bodies are owner data: never logged, never in an
  * audit row (audit rows carry counts). Mail transports come from
  * createMailTransport, so tests replace nodemailer (vi.mock) and no network
@@ -149,13 +154,39 @@ function oneLine(s: string): string {
   return s.replace(/[\r\n]+/g, ' ').trim();
 }
 
-/** The invoice row for a send, under a row lock, or the reason it can't be sent. */
-async function lockInvoice(tx: Tx, tenantId: string, invoiceId: string, companyId?: string) {
+/**
+ * The sales documents that can be emailed with a client-made PDF (U-127;
+ * U-144 sales-doc-email-v1 adds credit memos and sales receipts). An
+ * invoice keeps its U-127 answers (another type 400, void 400 INVOICE_VOID);
+ * a credit memo or sales receipt answers as its own routes do (an unknown
+ * id or another type 404, void 400 DOCUMENT_VOID).
+ */
+export type EmailableTxnType = 'invoice' | 'credit_memo' | 'cash_sale';
+
+const DOC_NAMES: Record<EmailableTxnType, string> = {
+  invoice: 'invoice', credit_memo: 'credit memo', cash_sale: 'sales receipt',
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function docNotFound(txnType: EmailableTxnType): AppError {
+  if (txnType === 'invoice') return AppError.notFound('Transaction not found');
+  return AppError.notFound(txnType === 'credit_memo' ? 'Credit memo not found' : 'Sales receipt not found');
+}
+
+function assertDocType(row: { txnType: string }, txnType: EmailableTxnType): void {
+  if (row.txnType === txnType) return;
+  if (txnType === 'invoice') throw AppError.badRequest('Not an invoice');
+  throw docNotFound(txnType);
+}
+
+/** The document row for a send, under a row lock, or the reason it can't be sent. */
+async function lockDocument(tx: Tx, tenantId: string, txnType: EmailableTxnType, id: string, companyId?: string) {
   const [row] = await tx.select().from(transactions)
-    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)))
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id)))
     .for('update').limit(1);
-  if (!row || row.status === 'deleted' || ledger.inOtherCompany(row, companyId)) throw AppError.notFound('Transaction not found');
-  if (row.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
+  if (!row || row.status === 'deleted' || ledger.inOtherCompany(row, companyId)) throw docNotFound(txnType);
+  assertDocType(row, txnType);
   return row;
 }
 
@@ -163,8 +194,14 @@ function outboxGone(): AppError {
   return new AppError(404, 'That message is no longer in the Outbox', 'OUTBOX_ITEM_NOT_FOUND');
 }
 
-function voidRefusal(): AppError {
-  return AppError.badRequest('A void invoice can’t be sent', 'INVOICE_VOID');
+function voidRefusal(txnType: EmailableTxnType = 'invoice'): AppError {
+  if (txnType === 'invoice') return AppError.badRequest('A void invoice can’t be sent', 'INVOICE_VOID');
+  return AppError.badRequest(`A void ${DOC_NAMES[txnType]} can’t be sent`, 'DOCUMENT_VOID');
+}
+
+/** A credit memo or sales receipt id that is not a uuid is 404, as on their other routes. */
+function assertId(txnType: EmailableTxnType, id: string): void {
+  if (txnType !== 'invoice' && !UUID_RE.test(id)) throw docNotFound(txnType);
 }
 
 /**
@@ -181,6 +218,20 @@ function voidRefusal(): AppError {
 export async function emailInvoice(
   tenantId: string, invoiceId: string, input: InvoiceEmailInput, userId?: string, companyId?: string,
 ) {
+  await emailSalesDocument(tenantId, 'invoice', invoiceId, input, userId, companyId);
+  return getInvoice(tenantId, invoiceId, companyId);
+}
+
+/**
+ * POST /invoices|credit-memos|sales-receipts/:id/email (U-127; U-144
+ * sales-doc-email-v1): the send of emailInvoice for any emailable sales
+ * document. Returns nothing; each route reads its document back.
+ */
+export async function emailSalesDocument(
+  tenantId: string, txnType: EmailableTxnType, docId: string, input: InvoiceEmailInput, userId?: string, companyId?: string,
+): Promise<void> {
+  assertId(txnType, docId);
+  const invoiceId = docId;
   const pdf = decodePdf(input.pdfBase64);
   const smtp = await resolveSmtp(tenantId, companyId);
   let transport: ReturnType<typeof createMailTransport>;
@@ -196,9 +247,9 @@ export async function emailInvoice(
     const [pre] = await tx.select({
       id: transactions.id, txnType: transactions.txnType, status: transactions.status, companyId: transactions.companyId,
     }).from(transactions).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId))).limit(1);
-    if (!pre || pre.status === 'deleted' || ledger.inOtherCompany(pre, companyId)) throw AppError.notFound('Transaction not found');
-    if (pre.txnType !== 'invoice') throw AppError.badRequest('Not an invoice');
-    if (pre.status === 'void') throw voidRefusal();
+    if (!pre || pre.status === 'deleted' || ledger.inOtherCompany(pre, companyId)) throw docNotFound(txnType);
+    assertDocType(pre, txnType);
+    if (pre.status === 'void') throw voidRefusal(txnType);
     if (input.outboxId) {
       const [queued] = await tx.select({ id: formEmailQueue.id }).from(formEmailQueue)
         .where(and(
@@ -223,8 +274,8 @@ export async function emailInvoice(
       throw mailError(err);
     }
 
-    // Sent: record it even if the invoice was voided meanwhile (it went out).
-    const row = await lockInvoice(tx, tenantId, invoiceId, companyId);
+    // Sent: record it even if the document was voided meanwhile (it went out).
+    const row = await lockDocument(tx, tenantId, txnType, invoiceId, companyId);
     await recordSendEvent(tx, tenantId, row, { method: 'email', recipients }, userId);
     if (input.outboxId) {
       await tx.delete(formEmailQueue).where(and(eq(formEmailQueue.tenantId, tenantId), eq(formEmailQueue.id, input.outboxId)));
@@ -232,7 +283,6 @@ export async function emailInvoice(
         { via: 'sent', transactionId: invoiceId }, userId, tx);
     }
   });
-  return getInvoice(tenantId, invoiceId, companyId);
 }
 
 const itemColumns = {
@@ -288,11 +338,25 @@ function statementQueueQuery(tenantId: string, companyId?: string, id?: string) 
 
 type QueueRow = Awaited<ReturnType<typeof queueQuery>>[number];
 type StatementQueueRow = Awaited<ReturnType<typeof statementQueueQuery>>[number];
-/** An Outbox row (U-127; U-140 adds kind and customerStatementId). */
+/**
+ * What an Outbox row sends (U-140; U-144): `transaction` (an invoice, as
+ * before), `credit_memo`, `sales_receipt` (txnType cash_sale) or
+ * `customer_statement`. The client sends a row with the matching
+ * POST /invoices|credit-memos|sales-receipts|customer-statements/:id/email.
+ */
+export type OutboxKind = 'transaction' | 'credit_memo' | 'sales_receipt' | 'customer_statement';
+export const OUTBOX_KINDS = ['transaction', 'credit_memo', 'sales_receipt', 'customer_statement'] as const;
+
+/** An Outbox row (U-127; U-140 adds kind and customerStatementId; U-144 the credit_memo and sales_receipt kinds). */
 export type OutboxItem = Omit<QueueRow, 'transactionId'> & {
-  transactionId: string | null; kind: 'transaction' | 'customer_statement'; customerStatementId: string | null;
+  transactionId: string | null; kind: OutboxKind; customerStatementId: string | null;
 };
-const fromForm = (r: QueueRow): OutboxItem => ({ ...r, kind: 'transaction', customerStatementId: null });
+function formKind(txnType: string | null): OutboxKind {
+  if (txnType === 'credit_memo') return 'credit_memo';
+  if (txnType === 'cash_sale') return 'sales_receipt';
+  return 'transaction';
+}
+const fromForm = (r: QueueRow): OutboxItem => ({ ...r, kind: formKind(r.txnType), customerStatementId: null });
 const fromStatement = (r: StatementQueueRow): OutboxItem => ({
   id: r.id, transactionId: null, txnNumber: r.txnNumber ?? null, txnType: 'customer_statement', txnStatus: null,
   contactName: r.contactName ?? null, to: r.to, cc: r.cc, bcc: r.bcc, subject: r.subject, body: r.body, userId: r.userId,
@@ -323,10 +387,21 @@ export async function getEmailQueueItem(tenantId: string, id: string, companyId?
 export async function queueInvoiceEmail(
   tenantId: string, invoiceId: string, input: InvoiceEmailMessage, userId?: string, companyId?: string,
 ) {
+  return queueSalesDocumentEmail(tenantId, 'invoice', invoiceId, input, userId, companyId);
+}
+
+/**
+ * POST /invoices|credit-memos|sales-receipts/:id/email-later (U-127; U-144):
+ * the Outbox row of any emailable sales document (kind from its type).
+ */
+export async function queueSalesDocumentEmail(
+  tenantId: string, txnType: EmailableTxnType, invoiceId: string, input: InvoiceEmailMessage, userId?: string, companyId?: string,
+) {
+  assertId(txnType, invoiceId);
   const id = await db.transaction(async (tx) => {
     await claimIdempotency(tx);
-    const row = await lockInvoice(tx, tenantId, invoiceId, companyId);
-    if (row.status === 'void') throw voidRefusal();
+    const row = await lockDocument(tx, tenantId, txnType, invoiceId, companyId);
+    if (row.status === 'void') throw voidRefusal(txnType);
     const [item] = await tx.insert(formEmailQueue).values({
       tenantId,
       companyId: row.companyId ?? companyId ?? null,
