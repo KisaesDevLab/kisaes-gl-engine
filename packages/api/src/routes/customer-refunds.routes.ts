@@ -42,7 +42,7 @@ customerRefundsRouter.post('/', closingPasswordLimiter, lockContextMiddleware, i
     'account of the company (not Payments Clearing, A/R or Customer Deposits): 400 REFUND_ACCOUNT_INVALID; printLater puts the refund ' +
     'in the check print queue (GET /checks/print-queue, payee address = the client billing address); paymentMethod check with no ' +
     'checkNumber defaults to printLater (Q-P22d); a typed checkNumber already used on the bank account is 409 CHECK_NUMBER_IN_USE; ' +
-    'printLater true with a checkNumber is 400 VALIDATION_ERROR (the print run numbers queued checks). ' +
+    'printLater true with a checkNumber is 400 CHECK_NUMBER_WITH_PRINT_LATER {field: checkNumber} (the print run numbers queued checks). ' +
     'Voiding the refund (POST /transactions/:id/void) takes it out of the queue and gives the credit back.',
   body: createCustomerRefundSchema.extend({ closingPassword: z.string().optional(), overrideConfirmed: z.boolean().optional() }),
 }), async (req, res) => {

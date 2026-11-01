@@ -184,11 +184,11 @@ describe('P22 review fixes (E3)', () => {
     expect(vm2.status, JSON.stringify(vm2.json)).toBe(200);
   });
 
-  it('printLater true with a checkNumber is 400 VALIDATION_ERROR and posts nothing', async () => {
+  it('printLater true with a checkNumber is 400 CHECK_NUMBER_WITH_PRINT_LATER and posts nothing', async () => {
     const memo = await h.legacyMemo(c, '2026-11-02', '100.00');
     const r = await h.request('POST', '/api/v1/customer-refunds', c.token, { sourceId: memo, txnDate: '2026-11-03', contactId: c.customer,
       amount: '10.00', paymentMethod: 'check', printLater: true, checkNumber: 5002, refundFromAccountId: c.roles['operating'] });
-    expect([r.status, r.json['error'].code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect([r.status, r.json['error'].code, r.json['error'].details?.field]).toEqual([400, 'CHECK_NUMBER_WITH_PRINT_LATER', 'checkNumber']);
     expect(await remaining(memo)).toBe('100.00');
   });
 

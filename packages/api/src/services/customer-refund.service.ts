@@ -46,15 +46,15 @@ async function assertRefundAccount(executor: DbOrTx, tenantId: string, accountId
  * the check print queue (on POST /customer-refunds, paymentMethod check
  * with no number defaults to printLater, Q-P22d); a typed checkNumber is
  * checked against the bank account (409 CHECK_NUMBER_IN_USE). Both
- * printLater true and a checkNumber is 400 VALIDATION_ERROR (the queue
+ * printLater true and a checkNumber is 400 CHECK_NUMBER_WITH_PRINT_LATER (the queue
  * numbers the check when it prints).
  */
 export async function createCustomerRefund(
   tenantId: string, input: CreateCustomerRefundInput, userId?: string, companyId?: string, opts: CustomerRefundOptions = {},
 ) {
   if (input.printLater === true && input.checkNumber !== undefined) {
-    throw AppError.badRequest('Either print the check later or type its number, not both.', 'VALIDATION_ERROR',
-      { fields: ['printLater', 'checkNumber'] });
+    throw AppError.badRequest('Either print the check later or type its number, not both.', 'CHECK_NUMBER_WITH_PRINT_LATER',
+      { field: 'checkNumber' });
   }
   const sourceId = input.sourcePaymentId ?? input.sourceId;
   const byCheck = input.printLater === true || input.checkNumber !== undefined
