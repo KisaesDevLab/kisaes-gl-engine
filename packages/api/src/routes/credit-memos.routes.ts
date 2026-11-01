@@ -18,6 +18,7 @@ import { db } from '../db/index.js';
 import * as paymentService from '../services/payment.service.js';
 import * as salesDocs from '../services/sales-docs.service.js';
 import { mountSalesDocEmail } from './sales-doc-email.js';
+import { deadlockAsRetry } from '../utils/deadlock.js';
 
 /**
  * Credit memos as A/R credit sources (U-137, credit-memo-apply-v1). A memo's
@@ -160,3 +161,6 @@ creditMemosRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, ide
 }), async (req, res) => {
   res.json(await salesDocs.updateCreditMemoDocument(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId));
 });
+
+// U-146 S1: a deadlock between two of these writes is 409 RETRY (last, after every route).
+creditMemosRouter.use(deadlockAsRetry);

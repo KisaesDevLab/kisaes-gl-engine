@@ -680,6 +680,10 @@ export async function updateInvoiceWithWarnings(
     if (existing.status === 'void') throw AppError.badRequest('Cannot edit a void invoice');
     if (existing.invoiceStatus === 'paid') throw AppError.badRequest('Cannot edit a paid invoice');
     ledger.assertNotStale(existing, input.expectedUpdatedAt, 'This invoice');
+    // The client can't move while a payment, credit or finance-charge
+    // assessment points at the invoice (U-145, U-146 B1); checked first,
+    // under this row lock (ledger.updateTransaction checks it again).
+    await ledger.assertInvoiceClientChangeAllowed(tx, tenantId, existing, input.contactId);
 
     const scope = companyId ?? existing.companyId ?? undefined;
     await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.layoutId, existing.companyId, existing.layoutId);
@@ -765,6 +769,10 @@ export async function updateInvoiceWithWarnings(
       ...(input.customerMessage !== undefined ? { customerMessage: input.customerMessage || null } : {}),
       ...(input.hideZeroLines !== undefined ? { hideZeroLines: input.hideZeroLines } : {}),
       ...(input.layoutId !== undefined ? { layoutId: input.layoutId } : {}),
+      // An edit down to exactly what was paid leaves nothing due: paid, not
+      // partial at 0.00 (U-146 N2; the total can't go below paid).
+      ...(paid.greaterThan(0) && !balanceDue.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).greaterThan(0)
+        ? { invoiceStatus: 'paid', paidAt: existing.paidAt ?? new Date() } : {}),
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
     await writeHeaderTags(tx, tenantId, invoiceId, existing.companyId, input.tagIds, keepTags);

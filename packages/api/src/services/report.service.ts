@@ -183,27 +183,34 @@ export function cashBasisLinesWith(
       -- the payment it was applied inside (else its own payment), and
       -- moves A/R by a virtual line of its own (rule 2b) instead of
       -- reducing its payment's A/R leg.
+      -- U-146 B2: every branch keeps only rows of a posted invoice, as
+      -- rule 3 and the open items do: an invoice voided after its payment
+      -- bounced must not clear the payment's or the bounce's A/R leg.
       SELECT pa.payment_id, pa.invoice_id,
         (pa.amount + pa.discount_amount + pa.write_off_amount)::numeric AS amount, NULL::date AS rec_date, 'own' AS kind
       FROM payment_applications pa
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NULL
         AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
       UNION ALL
       SELECT COALESCE(pa.applied_in_txn_id, pa.payment_id), pa.invoice_id, pa.amount::numeric, pa.applied_date, 'credit'
       FROM payment_applications pa
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
       UNION ALL
       SELECT pa.reversed_by_txn_id, pa.invoice_id,
         -(pa.amount + pa.discount_amount + pa.write_off_amount)::numeric, NULL::date, 'mirror'
       FROM payment_applications pa
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
       UNION ALL
       SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric, NULL::date, 'own'
       FROM transactions tp
       WHERE tp.tenant_id = ${tenantId} AND tp.txn_type = 'customer_payment'
         AND tp.applied_to_invoice_id IS NOT NULL AND tp.total IS NOT NULL
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = tp.applied_to_invoice_id AND iv.tenant_id = tp.tenant_id AND iv.status = 'posted')
         AND NOT EXISTS (
           SELECT 1 FROM payment_applications pa2
           WHERE pa2.tenant_id = ${tenantId} AND pa2.payment_id = tp.id
@@ -1737,6 +1744,10 @@ export async function buildSalesByCustomer(
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
         WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
+          -- U-146 S4: a bounce counts only its rule-3 mirror rows (credit <= 0); its own
+          -- credit to a discount or write-off account is not a sale (the payment's own
+          -- discount debit was never counted).
+          AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
           -- Sale documents + the payments their revenue re-emits at
           -- (cb_lines rule 3 stamps the PAYMENT's txn_type). Without this,
           -- cash-basis "Sales" would count revenue credits from deposits and
@@ -1795,6 +1806,10 @@ export async function buildSalesByItem(
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN items i ON i.id = cb.item_id AND i.tenant_id = ${tenantId}
         WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
+          -- U-146 S4: a bounce counts only its rule-3 mirror rows (credit <= 0); its own
+          -- credit to a discount or write-off account is not a sale (the payment's own
+          -- discount debit was never counted).
+          AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
           -- Same sale-document restriction as Sales by Customer (see note there).
           -- A refund of a credit memo re-emits the memo's income debits at the
           -- refund date (cb_lines rule 3b): returns, counted negative.

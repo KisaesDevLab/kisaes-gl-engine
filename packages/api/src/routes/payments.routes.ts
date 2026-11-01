@@ -18,6 +18,7 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import { idempotent } from '../middleware/idempotent.js';
 import { db } from '../db/index.js';
 import * as paymentService from '../services/payment.service.js';
+import { deadlockAsRetry } from '../utils/deadlock.js';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -313,3 +314,6 @@ paymentsRouter.get('/:id', describe({
   const payment = await paymentService.getPaymentRecord(db, req.tenantId, req.params['id']!, req.companyId);
   res.json({ payment });
 });
+
+// U-146 S1: a deadlock between two of these writes is 409 RETRY (last, after every route).
+paymentsRouter.use(deadlockAsRetry);

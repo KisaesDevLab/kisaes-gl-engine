@@ -13,6 +13,7 @@ import { closingPasswordLimiter } from '../middleware/closing-password-limiter.j
 import { lockContextMiddleware } from '../services/lock-context.js';
 import { idempotent } from '../middleware/idempotent.js';
 import * as fc from '../services/finance-charge.service.js';
+import { deadlockAsRetry } from '../utils/deadlock.js';
 
 /**
  * Finance charges (U-141; finance-charges-v1, idempotency-finance-charges-v1).
@@ -77,3 +78,6 @@ financeChargesRouter.get('/', describe({
   const p = typeof req.query['period'] === 'string' && /^\d{4}-\d{2}$/.test(req.query['period']) ? req.query['period'] : undefined;
   res.json(await fc.listAssessments(req.tenantId, req.companyId, p));
 });
+
+// U-146 S1: a deadlock between two of these writes is 409 RETRY (last, after every route).
+financeChargesRouter.use(deadlockAsRetry);

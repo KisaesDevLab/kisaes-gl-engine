@@ -236,7 +236,8 @@ transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, descri
     'a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED. ' +
     'ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); ' +
     'an expense edit of a printed check that changes its printed face (amount, payee, memo line, bank account, date) is 409 CHECK_PRINTED (details.checkNumber, printedAt, changedFields), edit it with PUT /checks/:id; ' +
-    'a check keeps its own header tags. A finance-charge invoice keeps its client: a contactId change is 409 FINANCE_CHARGE_CLIENT_CHANGE.',
+    'a check keeps its own header tags. A finance-charge invoice keeps its client: a contactId change is 409 FINANCE_CHARGE_CLIENT_CHANGE; ' +
+    'another invoice with a live payment or credit applied: 409 INVOICE_HAS_PAYMENTS (invoice-client-guard-v1).',
   body: registerEntryBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
