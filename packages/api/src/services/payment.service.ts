@@ -203,7 +203,9 @@ async function lockPaymentScope(tx: Tx, tenantId: string, paymentId: string, ext
  * locks in the same order as bounce, unapply and edit (E-B1).
  */
 export async function lockForVoidInTx(tx: Tx, tenantId: string, txn: { id: string; txnType: string; sourceTxnId: string | null }): Promise<void> {
-  if (txn.txnType === 'customer_payment') await lockPaymentScope(tx, tenantId, txn.id);
+  // U-137 (S1): a credit memo locks itself and the receipts it was applied
+  // inside (applied_in_txn_id), in id order, as a receipt void does.
+  if (txn.txnType === 'customer_payment' || txn.txnType === 'credit_memo') await lockPaymentScope(tx, tenantId, txn.id);
   else if (txn.txnType === 'returned_payment' && txn.sourceTxnId) {
     // The rows the bounce reversed come back live: lock the payments they
     // belong to and were applied inside (U-133) with the bounced payment.
@@ -435,6 +437,60 @@ function balanceChanged(inv: TxnRow): AppError {
   );
 }
 
+// ─── Credit sources (U-137) ─────────────────────────────────────────
+
+/** A/R credit sources: a customer payment's unapplied credit or a credit memo. */
+export function isCreditSourceType(txnType: string): boolean {
+  return txnType === 'customer_payment' || txnType === 'credit_memo';
+}
+
+/**
+ * 400 APPLY_DATE_BEFORE_SOURCE (U-137, B1b): an application is dated on or
+ * after its source (a payment or credit memo). An application dated before
+ * its invoice is allowed (a prepayment).
+ */
+function assertApplyDate(src: Pick<TxnRow, 'id' | 'txnDate'>, date: string): void {
+  if (date < src.txnDate) {
+    throw AppError.badRequest(
+      `A credit can't be used before its own date (${src.txnDate}).`,
+      'APPLY_DATE_BEFORE_SOURCE',
+      { sourceId: src.id, sourceDate: src.txnDate },
+    );
+  }
+}
+
+/**
+ * The earliest date a source is used after it was saved (U-137, B1b): its
+ * live rows applied later (their applied date) and its live refunds (their
+ * date). Null when nothing uses it.
+ */
+export async function earliestUse(executor: DbOrTx, tenantId: string, sourceId: string): Promise<string | null> {
+  const res = await executor.execute(sql`
+    SELECT to_char(MIN(d), 'YYYY-MM-DD') AS d FROM (
+      SELECT pa.applied_date AS d FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${sourceId} AND pa.applied_date IS NOT NULL
+        AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+      UNION ALL
+      SELECT r.txn_date FROM transactions r
+      WHERE r.tenant_id = ${tenantId} AND r.source_payment_id = ${sourceId}
+        AND r.txn_type = 'customer_refund' AND r.status = 'posted'
+    ) x
+  `);
+  return (res.rows as Array<{ d: string | null }>)[0]?.d ?? null;
+}
+
+/** 400 SOURCE_DATE_AFTER_USE (U-137, B1b): a source's date may not move after its earliest use. */
+export async function assertSourceDate(executor: DbOrTx, tenantId: string, sourceId: string, newDate: string): Promise<void> {
+  const first = await earliestUse(executor, tenantId, sourceId);
+  if (first !== null && newDate > first) {
+    throw AppError.badRequest(
+      `This credit was already used on ${first}; its date can't be later.`,
+      'SOURCE_DATE_AFTER_USE',
+      { sourceId, firstUsed: first },
+    );
+  }
+}
+
 // ─── Receive ────────────────────────────────────────────────────────
 
 export interface ReceiveApplication {
@@ -548,14 +604,17 @@ async function resolveSettleAccounts(
  */
 async function validateSources(
   tx: Tx, tenantId: string, sources: Map<string, TxnRow>, credits: ParsedCredit[], customerId: string, companyId: string | undefined,
+  date?: string,
 ): Promise<void> {
   const want = new Map<string, DecimalValue>();
   for (const c of credits) want.set(c.sourcePaymentId, (want.get(c.sourcePaymentId) ?? new Decimal(0)).plus(c.amount));
   for (const [id, total] of want) {
     const src = sources.get(id);
-    if (!src || src.txnType !== 'customer_payment' || src.status === 'deleted' || ledger.inOtherCompany(src, companyId)) {
+    if (!src || !isCreditSourceType(src.txnType) || src.status === 'deleted' || ledger.inOtherCompany(src, companyId)) {
       throw AppError.notFound('Credit not found');
     }
+    // U-137 (B1b): a credit is never used before its own date.
+    if (date !== undefined) assertApplyDate(src, date);
     if (src.contactId !== customerId) {
       throw AppError.badRequest('That credit belongs to another client.', 'CREDIT_NOT_FOR_CUSTOMER', { sourcePaymentId: id });
     }
@@ -566,7 +625,7 @@ async function validateSources(
       throw AppError.conflict(
         `Only ${money2(remaining)} of that ${src.holdsDeposit ? 'deposit' : 'credit'} is left.`,
         src.holdsDeposit ? 'DEPOSIT_NOT_AVAILABLE' : 'CREDIT_NOT_AVAILABLE',
-        { sourcePaymentId: id, remaining: money2(remaining) },
+        { sourcePaymentId: id, sourceId: id, remaining: money2(remaining) },
       );
     }
   }
@@ -733,7 +792,7 @@ export async function receivePaymentInTx(
   const ar = await arAccountId(tx, tenantId);
 
   const sources = await lockPayments(tx, tenantId, parsed.credits.map((c) => c.sourcePaymentId));
-  await validateSources(tx, tenantId, sources, parsed.credits, input.customerId, companyId);
+  await validateSources(tx, tenantId, sources, parsed.credits, input.customerId, companyId, input.date);
   const invoices = await lockInvoices(tx, tenantId, [...parsed.apps.map((a) => a.invoiceId), ...parsed.credits.map((c) => c.invoiceId)]);
   const valid = validateInvoices(parsed, invoices, input.customerId, companyId);
 
@@ -1187,6 +1246,10 @@ async function averageDaysToPay(tenantId: string, customerId: string, date: stri
       JOIN transactions p ON p.id = pa.payment_id AND p.tenant_id = pa.tenant_id AND p.status = 'posted'
       WHERE inv.tenant_id = ${tenantId} AND inv.txn_type = 'invoice' AND inv.status = 'posted'
         AND inv.invoice_status = 'paid' AND inv.contact_id = ${customerId} ${scope}
+        -- U-137 (S3): an invoice settled in any part by a credit memo is left out (a memo isn't a payment).
+        AND NOT EXISTS (SELECT 1 FROM payment_applications pm JOIN transactions m ON m.id = pm.payment_id AND m.tenant_id = pm.tenant_id
+          WHERE pm.tenant_id = inv.tenant_id AND pm.invoice_id = inv.id AND pm.voided_at IS NULL AND pm.reversed_by_txn_id IS NULL
+            AND m.txn_type = 'credit_memo' AND m.status = 'posted')
       GROUP BY inv.id, inv.txn_date
     ) x
     WHERE cleared <= ${date}::date AND cleared > (${date}::date - INTERVAL '12 months')
@@ -1213,14 +1276,14 @@ async function openCredits(
   const scope = companyId ? sql`AND (t.company_id = ${companyId} OR t.company_id IS NULL)` : sql``;
   const except = exceptId ? sql`AND t.id <> ${exceptId}` : sql``;
   const rows = await db.execute(sql`
-    SELECT t.id, to_char(t.txn_date, 'YYYY-MM-DD') AS date, t.reference_number,
+    SELECT t.id, t.txn_type, t.txn_number, to_char(t.txn_date, 'YYYY-MM-DD') AS date, t.reference_number,
       (t.total
         - COALESCE((SELECT SUM(pa.amount) FROM payment_applications pa WHERE pa.tenant_id = t.tenant_id AND pa.payment_id = t.id
                     AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL), 0)
         - COALESCE((SELECT SUM(r.total) FROM transactions r WHERE r.tenant_id = t.tenant_id AND r.source_payment_id = t.id
                     AND r.txn_type = 'customer_refund' AND r.status = 'posted'), 0))::text AS remaining
     FROM transactions t
-    WHERE t.tenant_id = ${tenantId} AND t.txn_type = 'customer_payment' AND t.status = 'posted'
+    WHERE t.tenant_id = ${tenantId} AND t.txn_type IN ('customer_payment', 'credit_memo') AND t.status = 'posted'
       AND t.contact_id = ${customerId} ${scope} ${except}
       AND t.holds_deposit = false AND t.from_deposit_id IS NULL
       AND NOT EXISTS (SELECT 1 FROM transactions b WHERE b.tenant_id = t.tenant_id AND b.source_txn_id = t.id
@@ -1231,6 +1294,10 @@ async function openCredits(
     .map((r) => ({
       sourcePaymentId: String(r['id']), date: String(r['date']), refNo: (r['reference_number'] as string | null) ?? null,
       remaining: money2(round2(dec(String(r['remaining'])).plus(usedInside.get(String(r['id'])) ?? 0))),
+      // U-137: credit memos are sources too.
+      kind: r['txn_type'] === 'credit_memo' ? 'credit_memo' as const : 'payment' as const,
+      number: r['txn_type'] === 'credit_memo' ? ((r['txn_number'] as string | null) ?? null)
+        : ((r['reference_number'] as string | null) ?? (r['txn_number'] as string | null) ?? null),
     }))
     .filter((c) => dec(c.remaining).greaterThan(0));
 }
@@ -1332,6 +1399,11 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     writeOffThreshold: settings.writeOffThreshold === null ? null : money2(round2(settings.writeOffThreshold)),
   }, sourcesForCompute);
   problems.unshift(...result.problems);
+  // U-137 (B1b): a credit used before its own date is refused on save.
+  for (const c of result.creditApplications) {
+    const src = sourcesForCompute.find((s) => s.sourcePaymentId === c.sourcePaymentId);
+    if (src && input.date < src.date) problems.push({ code: 'APPLY_DATE_BEFORE_SOURCE', sourceId: src.sourcePaymentId } as never);
+  }
   // Receive and PUT refuse 0.00 without a discount or write-off, credits or
   // not (400 AMOUNT_REQUIRED); the preview says so too (review SF1). Credits
   // alone are applied with POST /payments/:id/apply.
@@ -1471,6 +1543,9 @@ export async function unapplyPayment(
     }
     const app = (await liveApplications(tx, tenantId, paymentId)).find((a) => a.invoiceId === invoiceId);
     if (!app) throw AppError.notFound('Payment application not found');
+    // U-137 (B1a): the payment keeps its discount and write-off lines in the
+    // GL; restoring them to the invoice would split the subledger from A/R.
+    assertNoAdjustments(app);
     // Cash basis books a credit applied later on its applied date, so that is
     // the date the closing date meets (review SF3).
     const booked = app.appliedDate ?? payment.txnDate;
@@ -1853,6 +1928,8 @@ export async function updatePayment(
     }
 
     // Its credit used elsewhere and refunded stays covered (U-133).
+    // U-137 (B1b): its date may not move after its credit was used or refunded.
+    if (input.date !== payment.txnDate) await assertSourceDate(tx, tenantId, paymentId, input.date);
     const drawn = later.reduce((t, a) => t.plus(a.amount), new Decimal(0)).plus(await liveRefundTotal(tx, tenantId, paymentId));
     // ...and stays this client's: no other client while any of it is in use (review SF5).
     if (input.customerId !== payment.contactId && drawn.greaterThan(0)) {
@@ -1884,7 +1961,7 @@ export async function updatePayment(
       const inv = invoices.get(a.invoiceId);
       if (inv) Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, settledBy(a).negated()));
     }
-    await validateSources(tx, tenantId, locked, parsed.credits, input.customerId, companyId);
+    await validateSources(tx, tenantId, locked, parsed.credits, input.customerId, companyId, input.date);
     const valid = validateInvoices(parsed, invoices, input.customerId, companyId);
 
     const ar = await arAccountId(tx, tenantId);
@@ -1943,56 +2020,267 @@ export async function applyCredit(
     if (payment.status !== 'posted') throw AppError.badRequest('This payment is void.');
     ledger.assertNotStale(payment, input.expectedUpdatedAt, 'This payment');
     if (await liveBounce(tx, tenantId, paymentId)) throw paymentBounced(paymentId);
-    if (input.applications.length > MAX_APPLICATIONS) {
-      throw AppError.badRequest(`At most ${MAX_APPLICATIONS} invoices per payment.`, 'TOO_MANY_APPLICATIONS', { max: MAX_APPLICATIONS });
-    }
-    await ledger.checkLockDate(tx, tenantId, input.date, payment.companyId, undefined, { txnId: paymentId, oldDate: null, newDate: input.date });
     if (payment.fromDepositId) throw AppError.badRequest('This payment was applied from a deposit already.', 'VALIDATION_ERROR');
-    let left = await creditRemaining(tx, tenantId, payment);
-    const invoices = await lockInvoices(tx, tenantId, input.applications.map((a) => a.invoiceId));
-    const drawRows: Array<{ inv: TxnRow; amount: DecimalValue }> = [];
-    const seen = new Set<string>();
-    const applied: ApplyCreditResult['applied'] = [];
-    for (const a of input.applications) {
-      if (seen.has(a.invoiceId)) throw AppError.badRequest('An invoice is listed twice.', 'VALIDATION_ERROR', { invoiceId: a.invoiceId });
-      seen.add(a.invoiceId);
-      const inv = checkInvoice(invoices.get(a.invoiceId), a.invoiceId, a.expectedBalanceDue, payment.contactId ?? '', companyId);
-      const cap = payableCents(inv);
-      const x = a.amount === undefined ? Decimal.min(left, cap) : wholeCents(a.amount, 'applications[].amount');
-      if (x.greaterThan(cap)) {
-        throw AppError.badRequest(
-          `The credit on invoice ${inv.txnNumber || inv.id} (${money2(x)}) is more than its balance due (${money2(cap)}).`,
-          'OVERAPPLIED', { invoiceId: inv.id, balanceDue: money2(cap) },
-        );
-      }
-      if (x.greaterThan(left)) {
-        throw AppError.conflict(`Only ${money2(left)} of this ${payment.holdsDeposit ? 'deposit' : 'credit'} is left.`,
-          payment.holdsDeposit ? 'DEPOSIT_NOT_AVAILABLE' : 'CREDIT_NOT_AVAILABLE',
-          { sourcePaymentId: paymentId, remaining: money2(left) });
-      }
-      if (!x.greaterThan(0)) continue;
-      if (payment.holdsDeposit) {
-        drawRows.push({ inv, amount: x });
-        left = left.minus(x);
-        applied.push({ invoiceId: inv.id, amount: money2(x) });
-        continue;
-      }
-      await tx.insert(paymentApplications).values({
-        tenantId, companyId: companyId ?? inv.companyId ?? null, paymentId, invoiceId: inv.id,
-        amount: x.toFixed(4), appliedDate: input.date,
-      });
-      Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, x));
+    return applyCreditInTx(tx, tenantId, payment, input, userId, companyId);
+  });
+}
+
+/**
+ * Applies a credit source's remaining credit to invoices of the same client
+ * (U-137): shared by POST /payments/:id/apply, POST /credit-memos/:id/apply
+ * and a credit memo's applications at save. The source row is locked by the
+ * caller (credit sources before invoices, the lock order); the invoices are
+ * locked here in id order. A row without an amount fills min(credit left,
+ * cent balance). `withSource`: rows dated with the source (applied_date NULL,
+ * a memo's apply at save); else applied_date = date, which must be on or
+ * after the source's date (400 APPLY_DATE_BEFORE_SOURCE) and meets the
+ * closing date. Audited.
+ */
+export async function applyCreditInTx(
+  tx: Tx, tenantId: string, source: TxnRow, input: Pick<ApplyPaymentCreditInput, 'date' | 'applications'>,
+  userId?: string, companyId?: string, opts: { withSource?: boolean } = {},
+): Promise<ApplyCreditResult> {
+  if (input.applications.length > MAX_APPLICATIONS) {
+    throw AppError.badRequest(`At most ${MAX_APPLICATIONS} invoices per payment.`, 'TOO_MANY_APPLICATIONS', { max: MAX_APPLICATIONS });
+  }
+  if (!opts.withSource) {
+    assertApplyDate(source, input.date);
+    await ledger.checkLockDate(tx, tenantId, input.date, source.companyId, undefined, { txnId: source.id, oldDate: null, newDate: input.date });
+  }
+  const sourceId = source.id;
+  let left = await creditRemaining(tx, tenantId, source);
+  const invoices = await lockInvoices(tx, tenantId, input.applications.map((a) => a.invoiceId));
+  const drawRows: Array<{ inv: TxnRow; amount: DecimalValue }> = [];
+  const seen = new Set<string>();
+  const applied: ApplyCreditResult['applied'] = [];
+  for (const a of input.applications) {
+    if (seen.has(a.invoiceId)) throw AppError.badRequest('An invoice is listed twice.', 'VALIDATION_ERROR', { invoiceId: a.invoiceId });
+    seen.add(a.invoiceId);
+    const inv = checkInvoice(invoices.get(a.invoiceId), a.invoiceId, a.expectedBalanceDue, source.contactId ?? '', companyId);
+    const cap = payableCents(inv);
+    const x = a.amount === undefined ? Decimal.min(left, cap) : wholeCents(a.amount, 'applications[].amount');
+    if (x.greaterThan(cap)) {
+      throw AppError.badRequest(
+        `The credit on invoice ${inv.txnNumber || inv.id} (${money2(x)}) is more than its balance due (${money2(cap)}).`,
+        'OVERAPPLIED', { invoiceId: inv.id, balanceDue: money2(cap) },
+      );
+    }
+    if (x.greaterThan(left)) {
+      throw AppError.conflict(`Only ${money2(left)} of this ${source.holdsDeposit ? 'deposit' : 'credit'} is left.`,
+        source.holdsDeposit ? 'DEPOSIT_NOT_AVAILABLE' : 'CREDIT_NOT_AVAILABLE',
+        { sourcePaymentId: sourceId, sourceId, remaining: money2(left) });
+    }
+    if (!x.greaterThan(0)) continue;
+    if (source.holdsDeposit) {
+      drawRows.push({ inv, amount: x });
       left = left.minus(x);
       applied.push({ invoiceId: inv.id, amount: money2(x) });
+      continue;
     }
-    let drawId: string | undefined;
-    if (drawRows.length > 0) drawId = await postDraw(tx, tenantId, payment, input.date, drawRows, null, userId, companyId);
-    await tx.update(transactions).set({ updatedAt: new Date() })
-      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
-    await auditLog(tenantId, 'update', 'payment_applications', paymentId,
-      { applications: [] }, { applications: applied, via: payment.holdsDeposit ? 'apply_deposit' : 'apply_credit', date: input.date, drawId: drawId ?? null }, userId, tx);
-    return { applied, remaining: money2(left), ...(drawId ? { drawId } : {}) };
+    await tx.insert(paymentApplications).values({
+      tenantId, companyId: companyId ?? inv.companyId ?? null, paymentId: sourceId, invoiceId: inv.id,
+      amount: x.toFixed(4), appliedDate: opts.withSource ? null : input.date,
+    });
+    Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, x));
+    left = left.minus(x);
+    applied.push({ invoiceId: inv.id, amount: money2(x) });
+  }
+  let drawId: string | undefined;
+  if (drawRows.length > 0) drawId = await postDraw(tx, tenantId, source, input.date, drawRows, null, userId, companyId);
+  await tx.update(transactions).set({ updatedAt: new Date() })
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, sourceId)));
+  if (applied.length > 0 || !opts.withSource) {
+    await auditLog(tenantId, 'update', 'payment_applications', sourceId,
+      { applications: [] }, {
+        applications: applied,
+        via: source.holdsDeposit ? 'apply_deposit' : opts.withSource ? 'apply_at_save' : 'apply_credit',
+        date: opts.withSource ? null : input.date, drawId: drawId ?? null,
+      }, userId, tx);
+  }
+  return { applied, remaining: money2(left), ...(drawId ? { drawId } : {}) };
+}
+
+// ─── Credit memos as credit sources (U-137) ─────────────────────────
+
+/**
+ * 409 APPLICATION_HAS_ADJUSTMENTS (U-137, B1a): a row that took a discount
+ * or write-off can't be unapplied; the payment keeps those GL lines, so
+ * editing or voiding the payment is the way to undo it.
+ */
+function assertNoAdjustments(app: Pick<AppRow, 'invoiceId' | 'discountAmount' | 'writeOffAmount'>): void {
+  if (dec(app.discountAmount ?? '0').greaterThan(0) || dec(app.writeOffAmount ?? '0').greaterThan(0)) {
+    throw AppError.conflict(
+      'This payment took a discount or write-off on that invoice. Edit or void the payment instead.',
+      'APPLICATION_HAS_ADJUSTMENTS',
+      { invoiceId: app.invoiceId },
+    );
+  }
+}
+
+function creditMemoNotFound(): AppError {
+  return AppError.notFound('Credit memo not found');
+}
+
+/** A credit memo of this company, locked with its scope (the receipts it was applied inside). */
+async function lockCreditMemo(tx: Tx, tenantId: string, memoId: string, companyId?: string): Promise<TxnRow> {
+  if (!UUID_RE.test(memoId)) throw creditMemoNotFound();
+  const { payment: memo } = await lockPaymentScope(tx, tenantId, memoId);
+  if (!memo || memo.txnType !== 'credit_memo' || memo.status === 'deleted' || ledger.inOtherCompany(memo, companyId)) {
+    throw creditMemoNotFound();
+  }
+  return memo;
+}
+
+/** POST /credit-memos/:id/apply (credit-memo-apply-v1): applies a memo's remaining credit later. */
+export async function applyCreditMemo(
+  tenantId: string, memoId: string, input: ApplyPaymentCreditInput, userId?: string, companyId?: string,
+): Promise<ApplyCreditResult> {
+  return db.transaction(async (tx) => {
+    const { claimAndRecord } = await import('./idempotency.service.js');
+    await claimAndRecord(tx, 'transaction', memoId);
+    const memo = await lockCreditMemo(tx, tenantId, memoId, companyId);
+    if (memo.status !== 'posted') throw AppError.badRequest('This credit memo is void.');
+    ledger.assertNotStale(memo, input.expectedUpdatedAt, 'This credit memo');
+    return applyCreditInTx(tx, tenantId, memo, input, userId, companyId);
   });
+}
+
+/**
+ * POST /credit-memos/:id/unapply (credit-memo-apply-v1): takes one invoice
+ * off a memo; the amount goes back to the memo's remaining credit. The memo
+ * and the receipts it was applied inside are locked first, then the
+ * invoice. Closing date on the row's applied date (the memo date for rows
+ * applied at save). Audited.
+ */
+export async function unapplyCreditMemo(
+  tenantId: string, memoId: string, invoiceId: string,
+  opts: { expectedUpdatedAt?: string; companyId?: string; userId?: string } = {},
+): Promise<{ remaining: string }> {
+  return db.transaction(async (tx) => {
+    const { claimAndRecord } = await import('./idempotency.service.js');
+    await claimAndRecord(tx, 'transaction', memoId);
+    const memo = await lockCreditMemo(tx, tenantId, memoId, opts.companyId);
+    if (memo.status !== 'posted') throw AppError.badRequest('This credit memo is void.');
+    ledger.assertNotStale(memo, opts.expectedUpdatedAt, 'This credit memo');
+    const app = (await liveApplications(tx, tenantId, memoId)).find((a) => a.invoiceId === invoiceId);
+    if (!app) throw AppError.notFound('Credit memo application not found');
+    const booked = app.appliedDate ?? memo.txnDate;
+    await ledger.checkLockDate(tx, tenantId, booked, memo.companyId, undefined, { txnId: memo.id, oldDate: booked, newDate: booked });
+    const inv = (await lockInvoices(tx, tenantId, [invoiceId])).get(invoiceId);
+    if (!await retireApplication(tx, tenantId, app.id, { voidedAt: new Date() })) throw scopeChanged(memoId);
+    if (inv) await moveInvoicePaid(tx, tenantId, inv, settledBy(app).negated());
+    await tx.update(transactions).set({ updatedAt: new Date() })
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, memoId)));
+    await auditLog(tenantId, 'update', 'payment_applications', memoId,
+      { applications: [{ invoiceId, amount: app.amount, appliedDate: app.appliedDate }] },
+      { applications: [], via: 'unapply_credit_memo', invoiceId }, opts.userId, tx);
+    return { remaining: money2(round2(await creditRemaining(tx, tenantId, memo))) };
+  });
+}
+
+/**
+ * The credit_memo branch of voidTransactionInTx (U-137, Q-P22j), after the
+ * closing, reconciliation and deposit guards, so every void path behaves
+ * the same: 409 CREDIT_REFUNDED {refundIds} while a refund drawn on it is
+ * live; each live application's applied date meets the closing date; the
+ * live applications are marked voided and their invoices restored.
+ * lockForVoidInTx locked the memo and the receipts it was applied inside.
+ */
+export async function releaseCreditMemoForVoidInTx(tx: Tx, tenantId: string, memo: TxnRow, userId?: string): Promise<void> {
+  const refunds = await tx.select({ id: transactions.id }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourcePaymentId, memo.id),
+      eq(transactions.txnType, 'customer_refund'), eq(transactions.status, 'posted')))
+    .orderBy(transactions.id);
+  if (refunds.length > 0) {
+    throw AppError.conflict('Part of this credit was refunded. Void the refund first.', 'CREDIT_REFUNDED',
+      { refundIds: refunds.map((r) => r.id) });
+  }
+  const apps = await liveApplications(tx, tenantId, memo.id);
+  if (apps.length === 0) return;
+  for (const d of [...new Set(apps.map((a) => a.appliedDate).filter((x): x is string => x !== null))].sort()) {
+    await ledger.checkLockDate(tx, tenantId, d, memo.companyId, undefined, { txnId: memo.id, oldDate: d, newDate: null });
+  }
+  const invoices = await lockInvoices(tx, tenantId, apps.map((a) => a.invoiceId));
+  const now = new Date();
+  for (const a of apps) {
+    if (!await retireApplication(tx, tenantId, a.id, { voidedAt: now })) continue;
+    const inv = invoices.get(a.invoiceId);
+    if (inv) Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, settledBy(a).negated()));
+  }
+  await auditLog(tenantId, 'update', 'payment_applications', memo.id,
+    { applications: apps.map((a) => ({ invoiceId: a.invoiceId, amount: a.amount, appliedDate: a.appliedDate })) },
+    { applications: [], via: 'void' }, userId, tx);
+}
+
+export interface CreditSourceSummary {
+  sourceId: string;
+  kind: 'payment' | 'credit_memo';
+  date: string;
+  number: string | null;
+  total: string;
+  remaining: string;
+  /** A legacy memo's appliedToInvoiceId, only while that invoice is open (Q-P22f). */
+  intendedInvoiceId?: string;
+}
+
+/**
+ * The client's open A/R credits (U-137): customer payments with unapplied
+ * credit (not bounced, not holds or draws) and posted credit memos with
+ * credit left, oldest first (date, created, id). Remaining = total - live
+ * applications - live refunds. `exceptId` leaves one source out (an edited
+ * payment); `usedInside` adds back what an edited payment uses of a source.
+ */
+export async function listCreditSources(
+  executor: DbOrTx, tenantId: string, customerId: string, companyId?: string,
+  opts: { exceptId?: string; usedInside?: Map<string, DecimalValue> } = {},
+): Promise<CreditSourceSummary[]> {
+  const scope = companyId ? sql`AND (t.company_id = ${companyId} OR t.company_id IS NULL)` : sql``;
+  const except = opts.exceptId ? sql`AND t.id <> ${opts.exceptId}` : sql``;
+  const rows = await executor.execute(sql`
+    SELECT t.id, t.txn_type, to_char(t.txn_date, 'YYYY-MM-DD') AS date, t.txn_number, t.reference_number, t.total::text AS total,
+      (t.total
+        - COALESCE((SELECT SUM(pa.amount) FROM payment_applications pa WHERE pa.tenant_id = t.tenant_id AND pa.payment_id = t.id
+                    AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL), 0)
+        - COALESCE((SELECT SUM(r.total) FROM transactions r WHERE r.tenant_id = t.tenant_id AND r.source_payment_id = t.id
+                    AND r.txn_type = 'customer_refund' AND r.status = 'posted'), 0))::text AS remaining,
+      CASE WHEN t.txn_type = 'credit_memo' AND t.applied_to_invoice_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM transactions inv WHERE inv.tenant_id = t.tenant_id AND inv.id = t.applied_to_invoice_id
+          AND inv.txn_type = 'invoice' AND inv.status = 'posted' AND inv.contact_id = t.contact_id
+          AND inv.invoice_status IS DISTINCT FROM 'paid' AND inv.invoice_status IS DISTINCT FROM 'void'
+          AND ROUND(COALESCE(inv.balance_due, 0), 2) > 0)
+      THEN t.applied_to_invoice_id END AS intended
+    FROM transactions t
+    WHERE t.tenant_id = ${tenantId} AND t.txn_type IN ('customer_payment', 'credit_memo') AND t.status = 'posted'
+      AND t.contact_id = ${customerId} ${scope} ${except}
+      AND t.holds_deposit = false AND t.from_deposit_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM transactions b WHERE b.tenant_id = t.tenant_id AND b.source_txn_id = t.id
+                      AND b.txn_type = 'returned_payment' AND b.status = 'posted')
+    ORDER BY t.txn_date, t.created_at, t.id
+  `);
+  return (rows.rows as Array<Record<string, unknown>>)
+    .map((r) => {
+      const id = String(r['id']);
+      const memo = r['txn_type'] === 'credit_memo';
+      const out: CreditSourceSummary = {
+        sourceId: id,
+        kind: memo ? 'credit_memo' : 'payment',
+        date: String(r['date']),
+        number: memo ? ((r['txn_number'] as string | null) ?? null)
+          : ((r['reference_number'] as string | null) ?? (r['txn_number'] as string | null) ?? null),
+        total: money2(round2(String(r['total'] ?? '0'))),
+        remaining: money2(round2(dec(String(r['remaining'])).plus(opts.usedInside?.get(id) ?? 0))),
+      };
+      if (r['intended']) out.intendedInvoiceId = String(r['intended']);
+      return out;
+    })
+    .filter((c) => dec(c.remaining).greaterThan(0));
+}
+
+/** GET /payments/credits?customerId= (credit-memo-apply-v1). */
+export async function getCreditSources(tenantId: string, customerId: string, companyId?: string) {
+  await assertCustomer(db, tenantId, customerId, companyId);
+  const data = await listCreditSources(db, tenantId, customerId, companyId);
+  return { data, total: data.length };
 }
 
 // ─── Pending deposits ───────────────────────────────────────────────

@@ -422,4 +422,35 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * transaction (400 FEED_ITEM_MISMATCH, 409 FEED_ITEM_NOT_PENDING). No migration.
    */
   'feed-customer-payments-v1',
+  /**
+   * Credit memos as A/R credit sources (U-137): a memo's remaining = total - live applications - live refunds drawn on it.
+   * GET /payments/credits?customerId= ({data: [{sourceId, kind: payment | credit_memo, date, number, total, remaining,
+   * intendedInvoiceId?}], total}); POST /credit-memos/:id/apply ({date, applications: [{invoiceId, amount?, expectedBalanceDue}],
+   * expectedUpdatedAt?} -> {applied, remaining}); POST /credit-memos/:id/unapply ({invoiceId, expectedUpdatedAt} -> {remaining});
+   * creditApplications[].sourcePaymentId (alias sourceId) accepts a memo on receive / PUT / preview; preview credits[] gain kind and
+   * number. Dates (B1b): an application is dated on or after its source (400 APPLY_DATE_BEFORE_SOURCE); a payment PUT may not move
+   * its date after its credit was used or refunded (400 SOURCE_DATE_AFTER_USE). POST /payments/unapply refuses a row with a
+   * discount or write-off (409 APPLICATION_HAS_ADJUSTMENTS {invoiceId}). Voiding a memo (every void path) unapplies it and reopens
+   * its invoices; 409 CREDIT_REFUNDED {refundIds} while a refund is live; closing date on the memo date and every applied date;
+   * the memo is locked with the receipts it was applied inside. Legacy appliedToInvoiceId on memos is an open credit (Q-P22f):
+   * invoice void, related transactions and averageDaysToPay ignore it; POST /transactions credit_memo with appliedToInvoiceId writes
+   * a real application. Cash basis: memo applications are not cash; a refund of a memo's credit books the memo's lines at the
+   * refund date (rule 3b). No migration.
+   */
+  'credit-memo-apply-v1',
+  /** Idempotency-Key on POST /credit-memos/:id/apply and /unapply (`x-idempotency: true` in openapi.json) (U-137). */
+  'idempotency-credit-memo-v1',
+  /**
+   * A/R open items as of any date (U-142, U-121 A/R half): items from each posted transaction's own A/R lines per client
+   * (Σ = the client's A/R balance), moved by the applications in effect on the date; later payments, unapplies and bounces
+   * dated after the date don't count. Customer statements and finance charges read the same helper. No migration.
+   */
+  'ar-open-items-asof-v1',
+  /**
+   * Exact A/R aging (U-142, Q-P22o): GET /reports/ar-aging-summary keeps its numeric fields and adds bucketsExact {current,
+   * days1to30, days31to60, days61to90, over90}, totalExact, difference, customers [{contactId | null, name, buckets, total}] (a
+   * "(no client)" row for A/R lines without a client) and details[].openExact / kind (invoice | credit | charge | other). Open
+   * credits are aged by their own date; the total equals the A/R account balance as of the date.
+   */
+  'ar-aging-exact-v1',
 ];

@@ -187,15 +187,18 @@ export function cashBasisLinesWith(
         (pa.amount + pa.discount_amount + pa.write_off_amount)::numeric AS amount, NULL::date AS rec_date, 'own' AS kind
       FROM payment_applications pa
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NULL
+        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
       UNION ALL
       SELECT COALESCE(pa.applied_in_txn_id, pa.payment_id), pa.invoice_id, pa.amount::numeric, pa.applied_date, 'credit'
       FROM payment_applications pa
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
       UNION ALL
       SELECT pa.reversed_by_txn_id, pa.invoice_id,
         -(pa.amount + pa.discount_amount + pa.write_off_amount)::numeric, NULL::date, 'mirror'
       FROM payment_applications pa
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
       UNION ALL
       SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric, NULL::date, 'own'
       FROM transactions tp
@@ -218,6 +221,10 @@ export function cashBasisLinesWith(
              -- A bounce's A/R debit less what it took back (its mirror rows are negative).
              WHEN t.txn_type = 'returned_payment' AND a.detail_type = 'accounts_receivable'
              THEN GREATEST(jl.debit::numeric + COALESCE(arp.applied, 0), 0)
+             -- U-137 rule 3b: a refund of a credit memo's credit drops its A/R
+             -- leg; rule 3b below books the memo's lines instead.
+             WHEN t.txn_type = 'customer_refund' AND a.detail_type = 'accounts_receivable' AND cmr.id IS NOT NULL
+             THEN 0::numeric
              ELSE jl.debit::numeric END AS debit,
         CASE WHEN t.txn_type = 'customer_payment' AND a.detail_type = 'accounts_receivable'
              THEN GREATEST(jl.credit::numeric - COALESCE(arp.applied, 0), 0)
@@ -233,10 +240,36 @@ export function cashBasisLinesWith(
         SELECT payment_id, SUM(amount::numeric) AS applied
         FROM bill_payment_applications WHERE tenant_id = ${tenantId} GROUP BY payment_id
       ) bp ON bp.payment_id = t.id
+      LEFT JOIN transactions cmr ON cmr.id = t.source_payment_id AND cmr.tenant_id = ${tenantId}
+        AND cmr.txn_type = 'credit_memo' AND t.txn_type = 'customer_refund'
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
         AND t.basis <> 'accrual'  -- basis: exclude accrual-only entries from cash-basis reports
         AND ${dateCondT} AND ${companyT} AND ${adjustingCond(adjusting, 't.is_adjusting')}
         AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit')
+
+      UNION ALL
+
+      -- Rule 3b (AR, U-137): a refund of a credit memo's credit is cash going
+      -- out for those returns: the memo's non-A/R lines (income, sales tax)
+      -- at the refund's date, scaled by refund / memo total. Credit memo
+      -- applications are not cash and are left out of ar_apps (as vendor
+      -- credits are on the AP side).
+      SELECT ml.account_id, ml.tag_id,
+        pay.id AS transaction_id, pay.txn_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.contact_id AS txn_contact_id, ml.contact_id AS line_contact_id,
+        ml.description, ml.item_id, ml.line_order,
+        ml.debit::numeric  * pay.total::numeric / NULLIF(m.total::numeric, 0) AS debit,
+        ml.credit::numeric * pay.total::numeric / NULLIF(m.total::numeric, 0) AS credit
+      FROM transactions pay
+      JOIN transactions m ON m.id = pay.source_payment_id AND m.tenant_id = ${tenantId}
+        AND m.txn_type = 'credit_memo' AND m.status = 'posted' AND NULLIF(m.total::numeric, 0) IS NOT NULL
+      JOIN journal_lines ml ON ml.transaction_id = m.id AND ml.tenant_id = ${tenantId}
+        AND ml.is_void_reversal = false
+      JOIN accounts ma ON ma.id = ml.account_id AND ma.tenant_id = ${tenantId}
+      WHERE pay.tenant_id = ${tenantId} AND pay.txn_type = 'customer_refund' AND pay.status = 'posted'
+        AND pay.basis <> 'accrual'
+        AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
+        AND ma.detail_type IS DISTINCT FROM 'accounts_receivable'
 
       UNION ALL
 
@@ -870,60 +903,102 @@ export async function buildCashFlowStatement(
 
 // ─── RECEIVABLES ─────────────────────────────────────────────────
 
+/**
+ * A/R aging summary (U-142, U-121 A/R half; ar-aging-exact-v1). Built on
+ * arOpenItemsAsOf, so it is exact as of any date (later payments don't
+ * count), includes open credits (unapplied payments, credit memos) and A/R
+ * lines without a client (a "(no client)" row), and its total equals the
+ * A/R account balance as of the date (Q-P22o).
+ *
+ * The response stays compatible: buckets, total and details[] (id,
+ * txn_number, txn_date, due_date, total, amount_paid, balance_due,
+ * contact_id, customer_name, balance, daysOverdue, bucket) keep their
+ * names and number types, derived from the exact values. Added string
+ * fields: bucketsExact, totalExact, customers[{contactId, name, buckets,
+ * total}], details[].openExact, details[].kind. Tag filter: header-level
+ * inclusion test on each item's transaction (ADR §5.2).
+ */
 export async function buildARAgingSummary(
   tenantId: string,
   asOfDate: string,
   companyId: string | null = null,
-  // ADR 0XX §5.2 — header-level report: keep the invoice when any of its
-  // journal_lines carries the tag. Balance stays the invoice total;
-  // filter is an inclusion test, not a line-level aggregation.
   tagId: string | null = null,
 ) {
-  const tagClause = tagId
-    ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id IN ${tagIn(tagId)})`
-    : sql``;
-  const rows = await db.execute(sql`
-    SELECT t.id, t.txn_number, t.txn_date, t.due_date, t.total, t.amount_paid, t.balance_due,
-      t.contact_id, c.display_name as customer_name
-    FROM transactions t
-    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
-    WHERE t.tenant_id = ${tenantId} AND t.txn_type = 'invoice' AND t.status = 'posted'
-      AND t.invoice_status NOT IN ('paid', 'void')
-      AND t.txn_date <= ${asOfDate}
-      AND ${companyFilter(companyId)}
-      ${tagClause}
-    ORDER BY t.due_date
-  `);
+  const { arOpenItemsAsOf, ageOpenItems } = await import('./ar-open-items.js');
+  const items = await arOpenItemsAsOf(db, {
+    tenantId, companyId, asOf: asOfDate,
+    tagIds: tagId ? tagId.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+  });
+  const aging = ageOpenItems(items, asOfDate);
 
-  const buckets = { current: 0, days1to30: 0, days31to60: 0, days61to90: 0, over90: 0 };
-  // Anchor both endpoints to UTC midnight so the aging-bucket math
-  // doesn't shift by ±a few hours depending on the container's local TZ.
-  // The DB stores due_date/txn_date as calendar dates (no TZ); appending
-  // 'T00:00:00Z' parses them at UTC midnight consistently.
-  const asOf = new Date(asOfDate + 'T00:00:00Z');
-  const details: any[] = [];
-
-  for (const row of rows.rows as any[]) {
-    const balance = num(row.balance_due || row.total || '0');
-    if (balance <= 0) continue;
-    const dueStr = row.due_date || row.txn_date;
-    const dueDate = new Date(typeof dueStr === 'string' ? dueStr + 'T00:00:00Z' : dueStr);
-    const daysOverdue = Math.floor((asOf.getTime() - dueDate.getTime()) / 86400000);
-
-    let bucket: string;
-    if (daysOverdue <= 0) { buckets.current += balance; bucket = 'current'; }
-    else if (daysOverdue <= 30) { buckets.days1to30 += balance; bucket = '1-30'; }
-    else if (daysOverdue <= 60) { buckets.days31to60 += balance; bucket = '31-60'; }
-    else if (daysOverdue <= 90) { buckets.days61to90 += balance; bucket = '61-90'; }
-    else { buckets.over90 += balance; bucket = '90+'; }
-
-    details.push({ ...row, balance, daysOverdue, bucket });
+  const contactIds = [...new Set(items.map((i) => i.contactId).filter((x): x is string => x !== null))];
+  const names = new Map<string, string>();
+  const docs = new Map<string, Record<string, unknown>>();
+  if (contactIds.length > 0) {
+    const res = await db.execute(sql`
+      SELECT id, display_name FROM contacts WHERE tenant_id = ${tenantId}
+        AND id IN (${sql.join(contactIds.map((id) => sql`${id}::uuid`), sql`, `)})
+    `);
+    for (const r of res.rows as Array<{ id: string; display_name: string }>) names.set(r.id, r.display_name);
+  }
+  const txnIds = items.map((i) => i.txnId);
+  if (txnIds.length > 0) {
+    const res = await db.execute(sql`
+      SELECT id, total, amount_paid, balance_due FROM transactions WHERE tenant_id = ${tenantId}
+        AND id IN (${sql.join(txnIds.map((id) => sql`${id}::uuid`), sql`, `)})
+    `);
+    for (const r of res.rows as Array<Record<string, unknown>>) docs.set(String(r['id']), r);
   }
 
+  const legacyBucket: Record<string, string> = {
+    current: 'current', days1to30: '1-30', days31to60: '31-60', days61to90: '61-90', over90: '90+',
+  };
+  const details = aging.items.map((it) => {
+    const doc = docs.get(it.txnId) ?? {};
+    return {
+      id: it.txnId,
+      txn_number: it.number,
+      txn_type: it.txnType,
+      txn_date: it.date,
+      due_date: it.dueDate,
+      total: doc['total'] ?? null,
+      amount_paid: doc['amount_paid'] ?? null,
+      balance_due: doc['balance_due'] ?? null,
+      contact_id: it.contactId,
+      customer_name: it.contactId ? (names.get(it.contactId) ?? null) : '(no client)',
+      balance: Number(it.open),
+      daysOverdue: it.days,
+      bucket: legacyBucket[it.bucket]!,
+      openExact: it.openExact,
+      kind: it.kind,
+    };
+  });
+
+  const perContact = new Map<string | null, typeof aging.items>();
+  for (const it of aging.items) perContact.set(it.contactId, [...(perContact.get(it.contactId) ?? []), it]);
+  const customers = [...perContact.entries()].map(([contactId, rows]) => {
+    const a = ageOpenItems(rows, asOfDate);
+    return {
+      contactId,
+      name: contactId ? (names.get(contactId) ?? '') : '(no client)',
+      buckets: a.buckets,
+      total: a.total,
+    };
+  }).sort((x, y) => (x.contactId === null ? 1 : y.contactId === null ? -1 : x.name.localeCompare(y.name)));
+
+  const n = (s: string) => Number(s);
   return {
     title: 'AR Aging Summary', asOfDate,
-    buckets, total: Object.values(buckets).reduce((a, b) => a + b, 0),
+    buckets: {
+      current: n(aging.buckets.current), days1to30: n(aging.buckets.days1to30), days31to60: n(aging.buckets.days31to60),
+      days61to90: n(aging.buckets.days61to90), over90: n(aging.buckets.over90),
+    },
+    total: n(aging.total),
     details,
+    bucketsExact: aging.buckets,
+    totalExact: aging.totalExact,
+    difference: aging.difference,
+    customers,
   };
 }
 

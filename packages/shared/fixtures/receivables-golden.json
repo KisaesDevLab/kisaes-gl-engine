@@ -1,0 +1,204 @@
+{
+  "description": "Credit memo, refund, statement, finance-charge and sales receipt money rules (P22, U-112, U-137 to U-143) shared by the engine (packages/shared/fixtures/receivables-golden.json) and the ClientLedger client (fixtures/receivables/golden.json, byte-identical; the --demo engine runs every case). Synthetic. Every amount is a 2-place decimal string; invoices and credit memos are keyed by name; accounts by role. Each case starts from an empty company with its seed; steps run in order. Keys marked engineOnly are not checked by the demo engine.",
+  "rules": {
+    "amounts": "Amounts in are decimal strings with at most 2 places (quantities and rates 4). Line = round2(quantity x rate) half away from zero; tax = round2(taxable base x rate) once per rate; never rounded on sums.",
+    "creditMemo": "Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total. Total <= 0 is 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE. Remaining = total - live applications - live refunds.",
+    "applyAtSave": "suggestedApplications fill open invoices oldest first (date, then number) up to the total; rows saved with the memo have appliedDate null.",
+    "refund": "Dr A/R, Cr the bank (bank-type accounts only). R <= remaining else 409 CREDIT_NOT_AVAILABLE {remaining}. A check defaults to printLater. Voiding a refund restores the credit; voiding a memo with a live refund is 409 CREDIT_REFUNDED; voiding a memo unapplies it.",
+    "openItems": "Items = each posted transaction's own A/R lines per client; each application in effect moves its settled amount from the source's item to the invoice's. Aging days = asOf - (dueDate ?? date); credits age by their own date; buckets current (<= 0), 1-30, 31-60, 61-90, over 90. Statement aging = the A/R aging row = the client's A/R balance.",
+    "financeCharge": "Period = the assessment date's month. Base = each open invoice's cent open as of d (finance-charge invoices only when compounding is on). t = the invoice's latest live charged-through date. Days = d - max(dueDate, t); <= 0 charges nothing; without t the invoice is chargeable only when d - dueDate > grace. amount = round2(open x rate / 100 x days / 365) half up. Client charge = sum; 0 < sum < minimum adds one adjustment line to the minimum. A client with open credits is shown unticked (hasOpenCredits). One live assessment per client and period; voiding the finance-charge invoice frees the period and its days.",
+    "salesReceipt": "Dr depositTo the total, Cr income lines, Cr Sales Tax Payable. A negative total to Payments Clearing is 400 NEGATIVE_RECEIPT_NEEDS_BANK."
+  },
+  "seeds": {
+    "bluestem": {
+      "client": "Bluestem Veterinary Clinic",
+      "taxRate": "0.0825",
+      "invoices": [
+        {"name": "A", "number": "1201", "date": "2026-09-15", "dueDate": "2026-10-15", "total": "250.00"},
+        {"name": "B", "number": "1202", "date": "2026-10-20", "dueDate": "2026-11-19", "total": "500.00"}
+      ],
+      "contactBalance": "750.00"
+    },
+    "financeCharges": {
+      "settings": {"annualRate": "18.00", "graceDays": 10, "minimum": "2.00", "onFinanceCharges": false},
+      "clients": [
+        {"client": "Prairie Fork Kennels", "invoices": [
+          {"name": "PF1", "number": "1301", "date": "2026-08-31", "dueDate": "2026-09-30", "total": "1000.00"},
+          {"name": "PF2", "number": "1302", "date": "2026-09-15", "dueDate": "2026-10-15", "total": "50.00"}
+        ]},
+        {"client": "Low Water Bait & Tackle", "invoices": [
+          {"name": "LW1", "number": "1311", "date": "2026-09-15", "dueDate": "2026-10-15", "total": "30.00"}
+        ]},
+        {"client": "Cedar Gap Outfitters", "invoices": [
+          {"name": "CG1", "number": "1321", "date": "2026-08-31", "dueDate": "2026-09-30", "total": "600.00"}
+        ], "creditMemos": [
+          {"name": "CGM", "date": "2026-10-01", "total": "400.00"}
+        ]}
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": 1,
+      "name": "credit memo with items and tax",
+      "seed": "bluestem",
+      "steps": [
+        {
+          "op": "creditMemoPreview",
+          "request": {"date": "2026-11-02", "lines": [
+            {"account": "income", "quantity": "2", "unitPrice": "150.00", "isTaxable": true},
+            {"account": "income", "quantity": "1", "unitPrice": "75.00", "isTaxable": false}
+          ]},
+          "expect": {
+            "lines": ["300.00", "75.00"], "subtotal": "375.00", "taxableBase": "300.00", "taxTotal": "24.75", "total": "399.75",
+            "suggestedApplications": {"A": "250.00", "B": "149.75"}, "remainingCredit": "0.00"
+          }
+        },
+        {
+          "op": "creditMemoCreate",
+          "request": {"name": "M", "date": "2026-11-02", "applications": "none"},
+          "expect": {
+            "lines": [{"account": "income", "debit": "300.00"}, {"account": "income", "debit": "75.00"}, {"account": "sales_tax_payable", "debit": "24.75"}, {"account": "accounts_receivable", "credit": "399.75"}],
+            "remaining": "399.75", "contactBalance": "350.25",
+            "engineOnly": {"salesTaxLiability": {"taxableSales": "-300.00", "tax": "-24.75"}}
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "apply at save, oldest first",
+      "seed": "bluestem",
+      "steps": [
+        {
+          "op": "creditMemoCreate",
+          "request": {"name": "M", "date": "2026-11-02", "lines": "case1", "applications": "suggested"},
+          "expect": {
+            "applications": [{"invoice": "A", "amount": "250.00", "appliedDate": null}, {"invoice": "B", "amount": "149.75", "appliedDate": null}],
+            "invoices": {"A": {"balanceDue": "0.00"}, "B": {"balanceDue": "350.25"}},
+            "remaining": "0.00", "contactBalance": "350.25"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "keep as credit, refund by check",
+      "seed": "bluestem",
+      "steps": [
+        {"op": "creditMemoCreate", "request": {"name": "M", "date": "2026-11-02", "lines": "case1", "applications": "none"}, "expect": {"remaining": "399.75", "contactBalance": "350.25"}},
+        {
+          "op": "refund",
+          "request": {"name": "R", "source": "M", "date": "2026-11-05", "amount": "399.75", "from": "checking", "method": "check", "printLater": true},
+          "expect": {
+            "lines": [{"account": "accounts_receivable", "debit": "399.75"}, {"account": "checking", "credit": "399.75"}],
+            "remaining": "0.00", "contactBalance": "750.00", "printQueue": {"refund": "R", "payee": "Bluestem Veterinary Clinic"}
+          }
+        },
+        {"op": "void", "request": {"txn": "R"}, "expect": {"remaining": "399.75", "contactBalance": "350.25", "printQueue": "empty"}}
+      ]
+    },
+    {
+      "id": 4,
+      "name": "partial refund, apply the rest, over-refund",
+      "seed": "bluestem",
+      "steps": [
+        {"op": "creditMemoCreate", "request": {"name": "M", "date": "2026-11-02", "lines": "case1", "applications": "none"}, "expect": {"remaining": "399.75"}},
+        {"op": "refund", "request": {"name": "R", "source": "M", "date": "2026-11-05", "amount": "100.00", "from": "checking", "method": "check", "printLater": true}, "expect": {"remaining": "299.75"}},
+        {"op": "creditMemoApply", "request": {"memo": "M", "date": "2026-11-10", "applications": [{"invoice": "B", "amount": null}]}, "expect": {"applied": {"B": "299.75"}, "remaining": "0.00", "invoices": {"B": {"balanceDue": "200.25"}}}},
+        {"op": "refund", "request": {"source": "M", "date": "2026-11-12", "amount": "0.01", "from": "checking", "method": "cash"}, "expect": {"error": {"status": 409, "code": "CREDIT_NOT_AVAILABLE", "remaining": "0.00"}}},
+        {"op": "void", "request": {"txn": "M"}, "expect": {"error": {"status": 409, "code": "CREDIT_REFUNDED"}}},
+        {"op": "void", "request": {"txn": "R"}, "expect": {"remaining": "100.00"}},
+        {"op": "void", "request": {"txn": "M"}, "expect": {"invoices": {"A": {"balanceDue": "250.00"}, "B": {"balanceDue": "500.00"}}, "contactBalance": "750.00"}}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "statement aging = A/R aging = GL",
+      "seed": "bluestem",
+      "steps": [
+        {"op": "creditMemoCreate", "request": {"name": "M", "date": "2026-11-02", "lines": "case1", "applications": "none"}, "expect": {"remaining": "399.75"}},
+        {"op": "receivePayment", "request": {"name": "P", "date": "2026-11-30", "amount": "50.00", "applications": []}, "expect": {"contactBalance": "300.25"}},
+        {
+          "op": "statement",
+          "request": {"asOf": "2026-11-30", "format": "open_item"},
+          "expect": {
+            "items": [
+              {"name": "A", "open": "250.00", "days": 46, "bucket": "days31to60"},
+              {"name": "B", "open": "500.00", "days": 11, "bucket": "days1to30"},
+              {"name": "M", "open": "-399.75", "days": 28, "bucket": "days1to30"},
+              {"name": "P", "open": "-50.00", "days": 0, "bucket": "current"}
+            ],
+            "aging": {"current": "-50.00", "days1to30": "100.25", "days31to60": "250.00", "days61to90": "0.00", "over90": "0.00", "total": "300.25"},
+            "amountDue": "300.25", "difference": "0.00", "arAgingRow": "equal", "contactBalance": "300.25"
+          }
+        },
+        {"op": "receivePayment", "request": {"date": "2026-12-03", "amount": "100.00", "applications": []}, "expect": {"contactBalance": "200.25"}},
+        {"op": "statement", "request": {"asOf": "2026-11-30", "format": "open_item"}, "expect": {"aging": {"current": "-50.00", "days1to30": "100.25", "days31to60": "250.00", "days61to90": "0.00", "over90": "0.00", "total": "300.25"}, "amountDue": "300.25"}},
+        {
+          "op": "statement",
+          "request": {"asOf": "2026-11-30", "format": "balance_forward", "start": "2026-11-01"},
+          "expect": {"openingBalance": "750.00", "lines": [{"date": "2026-11-02", "amount": "-399.75", "balance": "350.25"}, {"date": "2026-11-30", "amount": "-50.00", "balance": "300.25"}], "amountDue": "300.25"}
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "finance charges: formula, minimum, open credits, period guard, charged-through",
+      "seed": "financeCharges",
+      "steps": [
+        {
+          "op": "financeChargePreview",
+          "request": {"assessmentDate": "2026-10-31"},
+          "expect": {
+            "period": "2026-10",
+            "rows": [
+              {"client": "Prairie Fork Kennels", "charge": "15.68", "ticked": true, "sources": [{"invoice": "PF1", "open": "1000.00", "days": 31, "amount": "15.29"}, {"invoice": "PF2", "open": "50.00", "days": 16, "amount": "0.39"}]},
+              {"client": "Low Water Bait & Tackle", "charge": "2.00", "ticked": true, "sources": [{"invoice": "LW1", "open": "30.00", "days": 16, "amount": "0.24"}], "minimumAdjustment": "1.76"},
+              {"client": "Cedar Gap Outfitters", "charge": "9.17", "ticked": false, "hasOpenCredits": "400.00", "sources": [{"invoice": "CG1", "open": "600.00", "days": 31, "amount": "9.17"}]}
+            ]
+          }
+        },
+        {"op": "financeChargeAssess", "request": {"key": "k1", "assessmentDate": "2026-10-31", "contacts": [{"client": "Prairie Fork Kennels", "expectedCharge": "15.68"}]}, "expect": {"invoices": [{"name": "FC-OCT", "client": "Prairie Fork Kennels", "total": "15.68", "date": "2026-10-31", "dueDate": "2026-10-31"}]}},
+        {"op": "financeChargeAssess", "request": {"key": "k2", "assessmentDate": "2026-10-31", "contacts": [{"client": "Prairie Fork Kennels", "expectedCharge": "15.68"}]}, "expect": {"error": {"status": 409, "code": "FINANCE_CHARGE_ASSESSED"}}},
+        {"op": "financeChargeAssess", "request": {"key": "k1", "assessmentDate": "2026-10-31", "contacts": [{"client": "Prairie Fork Kennels", "expectedCharge": "15.68"}]}, "expect": {"invoices": [{"name": "FC-OCT", "client": "Prairie Fork Kennels", "total": "15.68"}], "replay": true}},
+        {"op": "financeChargePreview", "request": {"assessmentDate": "2026-11-30", "clients": ["Prairie Fork Kennels"]}, "expect": {"period": "2026-11", "rows": [{"client": "Prairie Fork Kennels", "charge": "15.53", "sources": [{"invoice": "PF1", "days": 30, "amount": "14.79"}, {"invoice": "PF2", "days": 30, "amount": "0.74"}]}]}},
+        {"op": "financeChargeAssess", "request": {"key": "k3", "assessmentDate": "2026-11-30", "contacts": [{"client": "Prairie Fork Kennels", "expectedCharge": "15.53"}]}, "expect": {"invoices": [{"name": "FC-NOV", "client": "Prairie Fork Kennels", "total": "15.53"}]}},
+        {"op": "void", "request": {"txn": "FC-OCT"}, "expect": {}},
+        {"op": "financeChargePreview", "request": {"assessmentDate": "2026-10-31", "clients": ["Prairie Fork Kennels"]}, "expect": {"rows": [{"client": "Prairie Fork Kennels", "charge": "0.00", "sources": []}]}},
+        {"op": "void", "request": {"txn": "FC-NOV"}, "expect": {}},
+        {"op": "financeChargePreview", "request": {"assessmentDate": "2026-11-30", "clients": ["Prairie Fork Kennels"]}, "expect": {"rows": [{"client": "Prairie Fork Kennels", "charge": "31.21", "sources": [{"invoice": "PF1", "days": 61, "amount": "30.08"}, {"invoice": "PF2", "days": 46, "amount": "1.13"}]}]}}
+      ],
+      "variants": [
+        {
+          "name": "compounding on: the October finance-charge invoice is charged in November",
+          "settings": {"onFinanceCharges": true},
+          "steps": [
+            {"op": "financeChargeAssess", "request": {"key": "k1", "assessmentDate": "2026-10-31", "contacts": [{"client": "Prairie Fork Kennels", "expectedCharge": "15.68"}]}, "expect": {"invoices": [{"name": "FC-OCT", "client": "Prairie Fork Kennels", "total": "15.68"}]}},
+            {"op": "financeChargePreview", "request": {"assessmentDate": "2026-11-30", "clients": ["Prairie Fork Kennels"]}, "expect": {"rows": [{"client": "Prairie Fork Kennels", "charge": "15.76", "sources": [{"invoice": "PF1", "days": 30, "amount": "14.79"}, {"invoice": "PF2", "days": 30, "amount": "0.74"}, {"invoice": "FC-OCT", "open": "15.68", "days": 30, "amount": "0.23"}]}]}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "sales receipt with an item and tax; a negative receipt needs a bank",
+      "seed": "bluestem",
+      "steps": [
+        {
+          "op": "salesReceiptCreate",
+          "request": {"date": "2026-11-03", "depositTo": "payments_clearing", "lines": [{"account": "income", "quantity": "2", "unitPrice": "49.99", "isTaxable": true}]},
+          "expect": {
+            "lines": ["99.98"], "subtotal": "99.98", "taxTotal": "8.25", "total": "108.23",
+            "postings": [{"account": "payments_clearing", "debit": "108.23"}, {"account": "income", "credit": "99.98"}, {"account": "sales_tax_payable", "credit": "8.25"}]
+          }
+        },
+        {
+          "op": "salesReceiptCreate",
+          "request": {"date": "2026-11-03", "depositTo": "payments_clearing", "lines": [{"account": "income", "quantity": "1", "unitPrice": "-20.00", "isTaxable": false}]},
+          "expect": {"previewProblems": ["NEGATIVE_RECEIPT_NEEDS_BANK"], "error": {"status": 400, "code": "NEGATIVE_RECEIPT_NEEDS_BANK"}}
+        }
+      ]
+    }
+  ]
+}

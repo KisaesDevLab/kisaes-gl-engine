@@ -26284,6 +26284,184 @@
         ]
       }
     },
+    "/api/v1/credit-memos/{id}/apply": {
+      "post": {
+        "description": "Response {applied: [{invoiceId, amount}], remaining}. Applies the remaining credit of the memo to open invoices of the same client on `date`, with no GL effect (the memo's A/R credit meets the invoice's A/R debit). Rows: {invoiceId, amount?, expectedBalanceDue} (amount omitted = min(remaining, cent balance)). The memo is locked, then the invoices in id order. Errors: 400 VALIDATION_ERROR (more than 2 places, an invoice twice), 400 INVOICE_NOT_FOR_CUSTOMER, 400 OVERAPPLIED {invoiceId, balanceDue}, 400 APPLY_DATE_BEFORE_SOURCE {sourceId, sourceDate} (date before the memo's date), 400 TOO_MANY_APPLICATIONS (over 1,000); 409 CREDIT_NOT_AVAILABLE {sourceId, remaining}, 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact}, 409 STALE (expectedUpdatedAt); 404 for a memo or invoice of another company. Closing date on `date`. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. Idempotency-Key: a replay answers {applied: [], remaining}.",
+        "operationId": "post_api_v1_credit_memos_by_id_apply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "applications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoiceId"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "date": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "date",
+                  "applications"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Apply a credit memo to invoices (credit-memo-apply-v1)",
+        "tags": [
+          "credit-memos"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/credit-memos/{id}/unapply": {
+      "post": {
+        "description": "Response {remaining}. The invoice reopens (status from its cent balance) and the amount is back in the memo's remaining credit; audited. 404 when the memo has no live application to the invoice; 409 STALE (expectedUpdatedAt, the memo's). Closing date on the row's applied date (the memo's date for rows applied when it was saved). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.",
+        "operationId": "post_api_v1_credit_memos_by_id_unapply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "invoiceId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "invoiceId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Take one invoice off a credit memo (credit-memo-apply-v1)",
+        "tags": [
+          "credit-memos"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/csp-report": {
       "post": {
         "operationId": "post_api_v1_csp_report",
@@ -35708,6 +35886,40 @@
         ]
       }
     },
+    "/api/v1/payments/credits": {
+      "get": {
+        "description": "Response {data: [{sourceId, kind: payment | credit_memo, date, number, total, remaining, intendedInvoiceId?}], total}: posted customer payments with unapplied credit and posted credit memos with credit left, oldest first (date, then created). remaining = total - live applications - live refunds (2 places). Held deposits and draws on them (GET /payments/deposits-on-hand), bounced payments and fully used sources are left out. number: the memo number, or the payment's reference (else its number). intendedInvoiceId: a legacy credit memo's appliedToInvoiceId, only while that invoice is open (Q-P22f); preselect it. Use sourceId as creditApplications[].sourcePaymentId (alias sourceId) or with POST /credit-memos/:id/apply. A customer of another company is 404.",
+        "operationId": "get_api_v1_payments_credits",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "customerId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Open A/R credits of a customer: payments and credit memos (credit-memo-apply-v1)",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
     "/api/v1/payments/deposits-on-hand": {
       "get": {
         "description": "Response {data: [{paymentId, date, refNo, amount, remaining}], total}: posted held deposits of the customer in this company, not bounced, remaining = amount - posted draws - live refunds above 0.00, oldest first. A customer of another company is 404.",
@@ -36185,7 +36397,7 @@
     },
     "/api/v1/payments/unapply": {
       "post": {
-        "description": "Response {message}. The invoice reopens (status from its cent balance: partial while anything is applied, else viewed / sent / draft); the money stays an A/R credit on the client. The application row is kept, marked set aside, and the change is audited. expectedUpdatedAt (the payment's): mismatch 409 STALE. 409 PAYMENT_BOUNCED for a bounced payment; 404 when the payment has no live application to the invoice. Closed period on the payment's date. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
+        "description": "Response {message}. The invoice reopens (status from its cent balance: partial while anything is applied, else viewed / sent / draft); the money stays an A/R credit on the client. The application row is kept, marked set aside, and the change is audited. expectedUpdatedAt (the payment's): mismatch 409 STALE. 409 PAYMENT_BOUNCED for a bounced payment; 404 when the payment has no live application to the invoice. 409 APPLICATION_HAS_ADJUSTMENTS {invoiceId} when the row took a discount or write-off (U-137: the payment keeps those GL lines; edit or void the payment instead). Closed period on the row's applied date. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
         "operationId": "post_api_v1_payments_unapply",
         "parameters": [
           {

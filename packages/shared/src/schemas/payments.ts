@@ -15,6 +15,19 @@ export const wholeCentsAmount = z.string().regex(WHOLE_CENTS_RE, 'an amount with
 const storedAmount = z.string().regex(/^-?\d{1,15}(\.\d{1,4})?$/, 'a decimal amount with at most 4 places');
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date YYYY-MM-DD');
 
+// U-137: creditApplications[].sourceId is an alias of sourcePaymentId (the
+// id of a customer payment or a credit memo).
+function aliasSourceId(v: unknown): unknown {
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const o = v as Record<string, unknown>;
+    if (o['sourcePaymentId'] === undefined && o['sourceId'] !== undefined) {
+      const { sourceId, ...rest } = o;
+      return { ...rest, sourcePaymentId: sourceId };
+    }
+  }
+  return v;
+}
+
 export const receivePaymentSchema = z.object({
   customerId: z.string().uuid(),
   date: z.string().min(1),
@@ -40,12 +53,12 @@ export const receivePaymentSchema = z.object({
   discountAccountId: z.string().uuid().optional(),
   // U-133: existing credits of the same client applied in this payment
   // (U-135: a held deposit as the source draws on it).
-  creditApplications: z.array(z.object({
+  creditApplications: z.array(z.preprocess(aliasSourceId, z.object({
     sourcePaymentId: z.string().uuid(),
     invoiceId: z.string().uuid(),
     amount: wholeCentsAmount,
     expectedBalanceDue: storedAmount.optional(),
-  })).optional(),
+  }))).optional(),
   // U-135: hold the whole amount as a customer deposit (no applications).
   holdAsDeposit: z.boolean().optional(),
   // U-136: the pending bank-feed line this payment is; matched in the same transaction.
@@ -69,11 +82,11 @@ export const previewPaymentSchema = z.object({
     discountAmount: wholeCentsAmount.nullable().optional(),
     writeOffAmount: wholeCentsAmount.nullable().optional(),
   })).optional(),
-  creditApplications: z.array(z.object({
+  creditApplications: z.array(z.preprocess(aliasSourceId, z.object({
     sourcePaymentId: z.string().uuid(),
     invoiceId: z.string().uuid(),
     amount: wholeCentsAmount.nullable(),
-  })).optional(),
+  }))).optional(),
   editingPaymentId: z.string().uuid().optional(),
   holdAsDeposit: z.boolean().optional(),
 });
@@ -92,6 +105,15 @@ export const applyPaymentCreditSchema = z.object({
 /** POST /payments/unapply (U-132: validated, expectedUpdatedAt optional). */
 export const unapplyPaymentSchema = z.object({
   paymentId: z.string().uuid(),
+  invoiceId: z.string().uuid(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+});
+
+/** POST /credit-memos/:id/apply (U-137, credit-memo-apply-v1): as /payments/:id/apply. */
+export const applyCreditMemoSchema = applyPaymentCreditSchema;
+
+/** POST /credit-memos/:id/unapply (U-137, credit-memo-apply-v1). */
+export const unapplyCreditMemoSchema = z.object({
   invoiceId: z.string().uuid(),
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });

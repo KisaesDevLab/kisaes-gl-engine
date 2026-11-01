@@ -102,6 +102,9 @@ export interface ComputeCredit {
   sourcePaymentId: string;
   date: string;
   refNo: string | null;
+  /** U-137: payment or credit_memo; the memo number or the payment reference. */
+  kind?: 'payment' | 'credit_memo';
+  number?: string | null;
   /** What is left of the credit, 2 places. */
   remaining: string;
 }
