@@ -98,7 +98,7 @@ export function companyScope(companyId: string | null | undefined): SQL | undefi
 // link to one checks the transaction exists in the tenant (and company).
 export const TXN_ATTACHABLE_TYPES = new Set([
   'invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry',
-  'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje',
+  'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje', 'returned_payment',
 ]);
 
 /**

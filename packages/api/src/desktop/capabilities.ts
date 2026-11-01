@@ -360,4 +360,31 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * prints with it. Migration 0246.
    */
   'invoice-layouts-v1',
+  /**
+   * Receive Payment (U-132, Q-P21g / Q-P21t): POST /payments/preview (posts nothing; the engine computes allocation oldest first or
+   * explicit rows with fill, totals, shortfalls, contact balance before/after, pendingDeposits, averageDaysToPay, problems[]);
+   * POST /payments/receive in one database transaction returning {payment: PaymentRecord}; GET /payments, GET /payments/:id,
+   * PUT /payments/:id (old applications set aside, closing date on both dates, deposited -> memo/refNo only), POST /payments/:id/void,
+   * POST /payments/unapply (validated, audited, closing date). Exact whole cents, no tolerance: an invoice takes at most its cent
+   * balance round2(balance_due); balanceDueExact echoed as applications[].expectedBalanceDue (409 INVOICE_BALANCE_CHANGED). Application
+   * rows are never deleted (voidedAt / reversedByTxnId); every void path reopens invoices; reopen status from the cent balance (paid /
+   * partial / viewed / sent / draft). Company-scoped (404). POST /invoices/:id/payment, bank-feed match, Stripe and MCP go through the
+   * same path (Stripe and the feed never refuse: the rest stays an A/R credit). Migration 0247.
+   */
+  'receive-payment-v1',
+  /**
+   * Idempotency-Key, with idempotency-v1's contract, on POST /payments/receive, PUT /payments/:id, POST /payments/:id/void,
+   * POST /payments/unapply and POST /payments/:id/bounce (`x-idempotency: true` in openapi.json) (U-132).
+   */
+  'idempotency-receive-payment-v1',
+  /**
+   * Bounced payments (U-132, Q-P21i/k/u): POST /payments/:id/bounce posts one dated returned_payment ('Bounced payment'): Cr the
+   * account holding the money (deposit bank, bank, or Payments Clearing), Dr A/R; reopens the invoices (applications reversedByTxnId);
+   * optional bank fee expense (source_txn_id = the bounce); response {returnId, feeId?, heldIn, reopened}. Only the bounce date meets
+   * the closing date. Afterwards the payment has no credit, leaves pending deposits, can't be deposited (409 PAYMENT_BOUNCED) and its
+   * deposit can't be voided, edited or deleted (409 PAYMENT_BOUNCED). Voiding the returned_payment re-applies (409 INVOICE_VOIDED /
+   * INVOICE_BALANCE_CHANGED). Company settings nsfBankFeeAccountId, nsfFeeIncomeAccountId, nsfCustomerFee (GET/PUT /company/settings,
+   * 400 NSF_ACCOUNT_INVALID). Cash basis reverses revenue at the bounce date. transactions.source_txn_id. Migration 0247.
+   */
+  'payment-bounce-v1',
 ];

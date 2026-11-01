@@ -98,6 +98,9 @@ export const transactions = pgTable('transactions', {
   // On an automatic reversing entry (U-61, migration 0224): the journal
   // entry it reverses. No FK (like applied_to_invoice_id).
   reversesTransactionId: uuid('reverses_transaction_id'),
+  // A transaction posted as part of another one (U-132, migration 0247): a
+  // returned_payment -> the payment it returns; its bank fee -> the bounce.
+  sourceTxnId: uuid('source_txn_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),
   stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),

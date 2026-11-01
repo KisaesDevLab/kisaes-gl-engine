@@ -457,7 +457,7 @@ apiV2Router.post('/payments/receive', async (req, res) => {
 });
 
 apiV2Router.get('/payments/open-invoices/:customerId', async (req, res) => {
-  const invoices = await paymentService.getOpenInvoicesForCustomer(req.tenantId, req.params['customerId']!);
+  const invoices = await paymentService.getOpenInvoicesForCustomer(req.tenantId, req.params['customerId']!, req.companyId);
   res.json({ invoices });
 });
 

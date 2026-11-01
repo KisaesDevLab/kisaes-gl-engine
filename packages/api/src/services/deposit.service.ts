@@ -50,6 +50,7 @@
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import type { CreateDepositInput, JournalLineInput } from '@kis-books/shared';
+import { assertDepositSourcesNotBounced, assertNoBouncedPayments } from './payment.service.js';
 import { db, type Tx } from '../db/index.js';
 import { accounts, depositLines, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -281,7 +282,8 @@ async function lockAndValidateSources(
       continue;
     }
 
-    // U-52 deposit grouping.
+    // U-52 deposit grouping. A bounced payment can't be deposited (U-132).
+    await assertNoBouncedPayments(tx, tenantId, [row.id]);
     if (!clearingId || line.accountId !== clearingId) {
       throw AppError.badRequest(
         'A line that deposits a payment must use the Payments Clearing account.',
@@ -455,6 +457,9 @@ export async function updateDepositWithWarnings(
     // A void deposit is refused by updateTransaction; its links were
     // released when it was voided.
     if (existing.status !== 'void') await assertLinksNotDropped(tx, tenantId, txnId, input, plan);
+    // A deposit holding a bounced payment can't be edited (U-132): the
+    // bounce already took the money back out of the bank.
+    if (existing.status !== 'void') await assertDepositSourcesNotBounced(tx, tenantId, txnId);
     const released = existing.status === 'void' ? [] : await releaseDepositLinks(tx, tenantId, txnId);
     await lockAndValidateSources(tx, tenantId, companyId, input, plan, txnId);
     const updated = await ledger.updateTransaction(tenantId, txnId, plan.payload, userId, companyId, tx);

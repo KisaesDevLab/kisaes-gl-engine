@@ -231,6 +231,9 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       chatSupportEnabled: company.chatSupportEnabled,
       billDiscountAccountId: company.billDiscountAccountId ?? null,
       billableMarkupAccountId: company.billableMarkupAccountId ?? null,
+      nsfBankFeeAccountId: company.nsfBankFeeAccountId ?? null,
+      nsfFeeIncomeAccountId: company.nsfFeeIncomeAccountId ?? null,
+      nsfCustomerFee: company.nsfCustomerFee == null ? null : String(company.nsfCustomerFee),
     },
   });
 });

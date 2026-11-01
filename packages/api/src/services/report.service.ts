@@ -169,9 +169,18 @@ export function cashBasisLinesWith(
 
   return sql`
     ar_apps AS (
+      -- U-132: rows an unapply or edit set aside (voided_at) are out; a
+      -- void payment's rows drop out with it (pay.status). A row a bounce
+      -- reversed stays on its payment and is mirrored as a negative row on
+      -- the returned_payment, so revenue reverses at the bounce date and
+      -- closed periods don't move.
       SELECT pa.payment_id, pa.invoice_id, pa.amount::numeric AS amount
       FROM payment_applications pa
-      WHERE pa.tenant_id = ${tenantId}
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL
+      UNION ALL
+      SELECT pa.reversed_by_txn_id, pa.invoice_id, -pa.amount::numeric
+      FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NOT NULL
       UNION ALL
       SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric
       FROM transactions tp
@@ -191,6 +200,9 @@ export function cashBasisLinesWith(
         jl.description, jl.item_id, jl.line_order,
         CASE WHEN t.txn_type = 'bill_payment' AND a.detail_type = 'accounts_payable'
              THEN GREATEST(jl.debit::numeric - COALESCE(bp.applied, 0), 0)
+             -- A bounce's A/R debit less what it took back (its mirror rows are negative).
+             WHEN t.txn_type = 'returned_payment' AND a.detail_type = 'accounts_receivable'
+             THEN GREATEST(jl.debit::numeric + COALESCE(arp.applied, 0), 0)
              ELSE jl.debit::numeric END AS debit,
         CASE WHEN t.txn_type = 'customer_payment' AND a.detail_type = 'accounts_receivable'
              THEN GREATEST(jl.credit::numeric - COALESCE(arp.applied, 0), 0)
@@ -1616,12 +1628,12 @@ export async function buildSalesByCustomer(
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND cb.credit > 0 ${cbTag}
+        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type = 'returned_payment') ${cbTag}
           -- Sale documents + the payments their revenue re-emits at
           -- (cb_lines rule 3 stamps the PAYMENT's txn_type). Without this,
           -- cash-basis "Sales" would count revenue credits from deposits and
           -- journal entries — semantically broader than the accrual report.
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment')
+          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment')
         GROUP BY c.id, c.display_name ORDER BY total DESC
       `)
     : await db.execute(sql`
@@ -1670,9 +1682,9 @@ export async function buildSalesByItem(
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN items i ON i.id = cb.item_id AND i.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND cb.credit > 0 ${cbTag}
+        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type = 'returned_payment') ${cbTag}
           -- Same sale-document restriction as Sales by Customer (see note there).
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment')
+          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment')
         GROUP BY cb.item_id, i.name, i.sku
         ORDER BY total DESC
       `)

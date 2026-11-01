@@ -15,7 +15,38 @@ export interface ReceivePaymentInput {
   applications: Array<{
     invoiceId: string;
     amount: string;
+    /** U-132: the invoice's balanceDueExact as read; a mismatch is 409 INVOICE_BALANCE_CHANGED. */
+    expectedBalanceDue?: string;
   }>;
+}
+
+/** POST /payments/preview (U-132, receive-payment-v1). */
+export interface PreviewPaymentInput {
+  customerId: string;
+  date: string;
+  amount?: string | null;
+  depositTo?: string;
+  /** Omitted: auto (oldest first). amount null: fill. */
+  applications?: Array<{ invoiceId: string; amount: string | null }>;
+  editingPaymentId?: string;
+}
+
+/** POST /payments/:id/bounce (U-132, payment-bounce-v1). */
+export interface BouncePaymentInput {
+  date: string;
+  bankFeeAmount?: string;
+  bankFeeAccountId?: string;
+  bankFeeBankAccountId?: string;
+  memo?: string;
+  expectedUpdatedAt?: string;
+}
+
+export interface ListPaymentsQuery {
+  contactId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
 }
 
 export interface PaymentApplication {

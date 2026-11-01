@@ -29,6 +29,7 @@ export const TXN_TYPE_LABELS: Record<TxnType, string> = {
   vendor_credit: 'Vendor Credit',
   bill_payment: 'Bill Payment',
   daily_sales: 'Daily Sales',
+  returned_payment: 'Bounced payment',
 };
 
 /** Any transaction-shaped object: only the type is required. */
@@ -59,6 +60,7 @@ export function contactRoleLabel(txnType: TxnType): string {
     case 'cash_sale':
     case 'credit_memo':
     case 'customer_refund':
+    case 'returned_payment':
       return 'Customer';
     case 'deposit':
       return 'Received from';

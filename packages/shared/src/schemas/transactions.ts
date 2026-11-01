@@ -13,6 +13,7 @@ import type { TxnType } from '../types/transactions.js';
 const txnTypes = [
   'invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry',
   'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje',
+  'returned_payment',
 ] as const satisfies readonly TxnType[];
 
 // Cap on any journal-line / line-item array. 500 is well beyond any realistic

@@ -192,7 +192,7 @@ describe('Payment Service', () => {
       expect(updated?.paidAt).toBeNull();
     });
 
-    it('rejects overapplication beyond 1¢ tolerance', async () => {
+    it('rejects overapplication (exact, U-132: no tolerance)', async () => {
       const invoice = await createTestInvoice('100.00');
 
       await expect(
@@ -203,28 +203,23 @@ describe('Payment Service', () => {
           depositTo: bankAccountId,
           applications: [{ invoiceId: invoice.id, amount: '150.00' }],
         }),
-      ).rejects.toThrow(/overapply/);
+      ).rejects.toMatchObject({ code: 'OVERAPPLIED' });
     });
 
-    it('accepts application within the 1¢ rounding tolerance', async () => {
+    it('refuses sub-cent amounts and anything over the cent balance (U-132, Q-P21g: the 1¢ tolerance is gone)', async () => {
       const invoice = await createTestInvoice('100.00');
-
-      // 100.005 > 100.00 by 0.5¢ — should land inside tolerance and
-      // mark invoice paid-in-full rather than raising.
-      await paymentService.receivePayment(tenantId, {
-        customerId,
-        date: '2026-04-15',
-        amount: '100.005',
-        depositTo: bankAccountId,
+      await expect(paymentService.receivePayment(tenantId, {
+        customerId, date: '2026-04-15', amount: '100.005', depositTo: bankAccountId,
         applications: [{ invoiceId: invoice.id, amount: '100.005' }],
-      });
-
+      })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      await expect(paymentService.receivePayment(tenantId, {
+        customerId, date: '2026-04-15', amount: '100.01', depositTo: bankAccountId,
+        applications: [{ invoiceId: invoice.id, amount: '100.01' }],
+      })).rejects.toMatchObject({ code: 'OVERAPPLIED' });
       const updated = await db.query.transactions.findFirst({
         where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoice.id)),
       });
-      expect(updated?.invoiceStatus).toBe('paid');
-      // balanceDue clamps at 0 per service logic (newBalance.isNegative() → '0')
-      expect(parseFloat(updated?.balanceDue || '0')).toBe(0);
+      expect(updated?.balanceDue).toBe('100.0000');
     });
 
     it('applies a single payment across multiple invoices', async () => {
@@ -294,7 +289,7 @@ describe('Payment Service', () => {
           depositTo: bankAccountId,
           applications: [{ invoiceId: invoice.id, amount: '50.00' }],
         }),
-      ).rejects.toThrow(/overapply/);
+      ).rejects.toMatchObject({ code: 'OVERAPPLIED' });
 
       // First payment still intact.
       const updated = await db.query.transactions.findFirst({
@@ -345,6 +340,8 @@ describe('Payment Service', () => {
   describe('unapplyPayment', () => {
     it('restores invoice balance and sets status back to sent when fully unapplied', async () => {
       const invoice = await createTestInvoice('500.00');
+      // U-132: a reopened invoice goes back to sent only if it was sent.
+      await db.update(transactions).set({ sentAt: new Date() }).where(eq(transactions.id, invoice.id));
       const payment = await paymentService.receivePayment(tenantId, {
         customerId, date: '2026-04-15', amount: '500.00',
         depositTo: bankAccountId,
@@ -361,14 +358,14 @@ describe('Payment Service', () => {
       expect(parseFloat(updated?.balanceDue || '0')).toBe(500);
       expect(updated?.paidAt).toBeNull();
 
-      // Application row is deleted.
+      // Application row is kept, set aside (U-132: rows are never deleted).
       const remaining = await db.query.paymentApplications.findFirst({
         where: and(
           eq(paymentApplications.paymentId, payment.id),
           eq(paymentApplications.invoiceId, invoice.id),
         ),
       });
-      expect(remaining).toBeUndefined();
+      expect(remaining?.voidedAt).not.toBeNull();
     });
 
     it('throws when the payment application does not exist', async () => {

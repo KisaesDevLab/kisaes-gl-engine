@@ -137,6 +137,12 @@ async function seedTenant(): Promise<Seed> {
   await line(deposit, c1!.id, ar, '0', '0.0001');
   await q(`INSERT INTO deposit_lines (deposit_id, source_transaction_id, amount) VALUES ($1, $2, '0.0001')`, [deposit, payment]);
   await q(`INSERT INTO payment_applications (tenant_id, company_id, payment_id, invoice_id, amount) VALUES ($1, $2, $3, $4, '0.0001')`, [tenantId, c1!.id, payment, invoice]);
+  // A bounced payment (U-132): the returned_payment points at the payment
+  // (source_txn_id) and the application it reversed points at the bounce
+  // (reversed_by_txn_id); both are remapped by the import.
+  const bounce = await txn(c1!.id, 'returned_payment', '2026-01-25', 'posted', null, customer!.id);
+  await q(`UPDATE transactions SET source_txn_id = $2 WHERE id = $1`, [bounce, payment]);
+  await q(`INSERT INTO payment_applications (tenant_id, company_id, payment_id, invoice_id, amount, reversed_by_txn_id) VALUES ($1, $2, $3, $4, '0.0001', $5)`, [tenantId, c1!.id, payment, invoice, bounce]);
   await q(`INSERT INTO recurring_schedules (tenant_id, company_id, template_transaction_id, frequency, start_date, next_occurrence) VALUES ($1, $2, $3, 'monthly', '2026-01-01', '2027-01-01')`, [tenantId, c1!.id, invoice]);
 
   const [tag] = await q<{ id: string }>(`INSERT INTO tags (tenant_id, company_id, name, tag_number) VALUES ($1, $2, 'rt-tag', 'RT-07') RETURNING id`, [tenantId, c1!.id]);

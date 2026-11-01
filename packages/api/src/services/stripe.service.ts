@@ -228,7 +228,13 @@ export async function handlePaymentSuccess(paymentIntentId: string, piMetadata?:
   const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
   const amountDollars = (pi.amount / 100).toFixed(2);
 
-  // Use the existing receivePayment() for atomic ledger posting
+  // receivePayment() posts atomically (U-132). The customer was charged
+  // already, so this path never refuses: the invoice takes min(charged,
+  // its cent balance) and anything above stays an A/R credit on the client.
+  const { round2, centBalance } = await import('./payment-compute.js');
+  const charged = round2(amountDollars);
+  const payable = invoice.invoiceStatus === 'paid' || invoice.status !== 'posted' ? round2('0') : centBalance(invoice.balanceDue ?? '0');
+  const appliedDec = charged.lessThan(payable) ? charged : payable;
   const paymentResult = await paymentService.receivePayment(
     tenantId,
     {
@@ -239,10 +245,11 @@ export async function handlePaymentSuccess(paymentIntentId: string, piMetadata?:
       paymentMethod: 'credit_card',
       refNo: paymentIntentId,
       memo: `Online payment via Stripe (${paymentIntentId})`,
-      applications: [{ invoiceId: invoice.id, amount: amountDollars }],
+      applications: appliedDec.greaterThan(0) ? [{ invoiceId: invoice.id, amount: appliedDec.toFixed(2) }] : [],
     },
     undefined, // no userId for webhook-initiated payments
     invoice.companyId || undefined,
+    { allowUnapplied: true },
   );
 
   // Stamp stripePaymentIntentId on the payment row. This is the stable,

@@ -78,6 +78,7 @@ const TXN_TYPE_LABELS: Record<string, string> = {
   journal_entry: 'JE',
   credit_memo: 'CM',
   customer_refund: 'REF',
+  returned_payment: 'NSF',
   bill: 'BILL',
   bill_payment: 'BP',
   vendor_credit: 'VC',
