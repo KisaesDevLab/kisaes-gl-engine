@@ -1810,7 +1810,7 @@ export async function buildSalesByItem(
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND jl.credit > 0
-      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
+      AND t.txn_type IN ('invoice', 'cash_sale')
       AND ${companyFilter(companyId)}
       ${tagClause}
     GROUP BY jl.item_id, i.name, i.sku
@@ -2290,11 +2290,12 @@ export async function buildCheckRegister(
 
 export async function buildSalesTaxLiability(tenantId: string, startDate: string, endDate: string, companyId: string | null = null) {
   const rows = await db.execute(sql`
-    SELECT COALESCE(SUM(CAST(t.tax_amount AS DECIMAL)), 0) as total_tax,
-      COALESCE(SUM(CAST(t.subtotal AS DECIMAL)), 0) as total_sales
+    -- U-138 (S5): credit memos give tax back, so they count negated.
+    SELECT COALESCE(SUM(CASE WHEN t.txn_type = 'credit_memo' THEN -CAST(t.tax_amount AS DECIMAL) ELSE CAST(t.tax_amount AS DECIMAL) END), 0) as total_tax,
+      COALESCE(SUM(CASE WHEN t.txn_type = 'credit_memo' THEN -CAST(t.subtotal AS DECIMAL) ELSE CAST(t.subtotal AS DECIMAL) END), 0) as total_sales
     FROM transactions t
     WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
-      AND t.txn_type IN ('invoice', 'cash_sale')
+      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
       AND ${companyFilter(companyId)}
   `);

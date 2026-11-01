@@ -278,8 +278,9 @@ function side(amount: string, positive: 'debit' | 'credit'): { debit: string; cr
  */
 async function buildInvoiceJournal(
   executor: DbOrTx, tenantId: string, lines: ResolvedInvoiceLine[], computed: InvoiceComputeResult,
+  opts: { headAccountId?: string; reverse?: boolean } = {},
 ) {
-  const arAccountId = await getSystemAccount(executor, tenantId, 'accounts_receivable');
+  const arAccountId = opts.headAccountId ?? await getSystemAccount(executor, tenantId, 'accounts_receivable');
   const journal: ledger.PostTransactionInput['lines'] = [
     { accountId: arAccountId, ...side(computed.total, 'debit') },
     ...lines.flatMap((l, i): ledger.PostTransactionInput['lines'] => {
@@ -332,6 +333,9 @@ async function buildInvoiceJournal(
     const taxAccountId = await getSystemAccount(executor, tenantId, 'sales_tax_payable');
     journal.push({ accountId: taxAccountId, ...side(computed.taxTotal, 'credit'), description: 'Sales Tax' });
   }
+  // U-138 / U-143: a credit memo posts the mirror image (Dr income, Dr tax,
+  // Cr A/R); a sales receipt debits its deposit account instead of A/R.
+  if (opts.reverse) return journal.map((l) => ({ ...l, debit: l.credit, credit: l.debit }));
   return journal;
 }
 
@@ -999,4 +1003,73 @@ export async function duplicateInvoiceWithWarnings(tenantId: string, invoiceId: 
     return { invoice: { ...invoice, layoutId: copyLayoutId }, warnings };
   }
   return { invoice, warnings };
+}
+
+// ─── Sales documents sharing the invoice compute (U-138, U-143) ─────
+
+export interface SalesDocumentInput {
+  contactId?: string | null;
+  lines: CreateInvoiceInput['lines'];
+  tagIds?: string[];
+}
+
+/**
+ * The figures of a credit memo or sales receipt (U-138, U-143): the same
+ * line resolution (items, accounts, taxable flags), price level and
+ * computeInvoice as an invoice, so a preview equals the post. Billable-cost
+ * fields are refused (400 VALIDATION_ERROR). `legacyTaxableDefault`: an
+ * omitted isTaxable on a line without an item is taxable (the old cash-sale
+ * rule) instead of not.
+ */
+export async function computeSalesDocument(
+  executor: DbOrTx, tenantId: string, input: SalesDocumentInput, companyId: string | null | undefined,
+  opts: { legacyTaxableDefault?: boolean } = {},
+) {
+  input.lines.forEach((l, i) => {
+    if (l.billableSourceLineId || l.markupPercent !== undefined) {
+      throw AppError.badRequest(`lines[${i}]: billable costs go on invoices only`, 'VALIDATION_ERROR', { line: i });
+    }
+  });
+  const company = await loadSalesCompany(executor, tenantId, companyId);
+  const customer = input.contactId ? await loadCustomer(executor, tenantId, input.contactId, companyId) : null;
+  const lines = await resolveInvoiceLines(executor, tenantId, companyId, input.lines);
+  if (opts.legacyTaxableDefault) {
+    lines.forEach((l, i) => { if (input.lines[i]!.isTaxable === undefined && !l.itemId) l.isTaxable = true; });
+  }
+  await assertTagsInScope(executor, tenantId, companyId, input.tagIds);
+  const priceLevel = customer ? await loadPricingLevel(executor, tenantId, customer.priceLevelId, companyId) : null;
+  const computed = computeInvoice(lines.map((l) => ({ ...l, billable: null })), {
+    defaultTaxRate: company?.defaultSalesTaxRate || '0', priceLevel,
+  });
+  return { company, customer, lines, priceLevel, computed };
+}
+
+/** The journal of a sales document: `reverse` for a credit memo (Dr income / tax, Cr A/R), `headAccountId` for a receipt. */
+export async function salesDocumentJournal(
+  executor: DbOrTx, tenantId: string, doc: Awaited<ReturnType<typeof computeSalesDocument>>,
+  opts: { headAccountId?: string; reverse?: boolean },
+) {
+  return buildInvoiceJournal(executor, tenantId, doc.lines, doc.computed, opts);
+}
+
+/** The preview lines of a sales document, in POST /invoices/preview's shape. */
+export function salesDocumentPreviewLines(doc: Awaited<ReturnType<typeof computeSalesDocument>>) {
+  return doc.computed.lines.map((c, i) => ({
+    itemId: doc.lines[i]!.itemId,
+    itemType: c.itemType,
+    quantity: c.quantity,
+    unitPrice: c.unitPrice,
+    unitPriceSource: c.unitPriceSource,
+    discountPercent: c.discountPercent,
+    amount: c.amount,
+    isTaxable: c.isTaxable,
+    taxRate: c.taxRate,
+    taxAmount: c.taxAmount,
+  }));
+}
+
+/** Header tags of a sales document (as an invoice writes them). */
+export async function writeSalesDocumentTags(tx: Tx, tenantId: string, txnId: string, companyId: string | null, tagIds: string[] | undefined) {
+  const keep = tagIds === undefined ? await headerOnlyTags(tx, tenantId, txnId) : [];
+  await writeHeaderTags(tx, tenantId, txnId, companyId, tagIds, keep);
 }
