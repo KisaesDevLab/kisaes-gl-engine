@@ -27,7 +27,7 @@
  * account, non-taxable. Voiding that invoice frees the period and its days.
  *
  * An assessment date in a later month than the current one is 400
- * VALIDATION_ERROR on preview and assess (it would charge days that have
+ * FINANCE_CHARGE_DATE_IN_FUTURE on preview and assess (it would charge days that have
  * not passed). A date later in the current month is allowed (month-end
  * assessments prepared a few days early). "Current" is the UTC month of
  * now + 1 day, so no time zone is refused its own today.
@@ -146,12 +146,12 @@ async function computeRows(
     });
 }
 
-/** 400 VALIDATION_ERROR when d falls in a month after the current one (see the module comment). */
+/** 400 FINANCE_CHARGE_DATE_IN_FUTURE when d falls in a month after the current one (see the module comment). */
 export function assertAssessmentDateNotFuture(d: string, now: Date = new Date()): void {
   const current = new Date(now.getTime() + 86_400_000).toISOString().slice(0, 7);
   if (d.slice(0, 7) > current) {
     throw AppError.badRequest('The assessment date is in a later month. Finance charges can be assessed up to the end of this month.',
-      'VALIDATION_ERROR', { field: 'assessmentDate', latestPeriod: current });
+      'FINANCE_CHARGE_DATE_IN_FUTURE', { field: 'assessmentDate', latestPeriod: current });
   }
 }
 

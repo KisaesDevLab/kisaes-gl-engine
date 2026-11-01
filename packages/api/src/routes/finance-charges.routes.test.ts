@@ -201,10 +201,10 @@ describe('P22 review fixes (E5)', () => {
     const now = new Date();
     const later = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 1)).toISOString().slice(0, 10);
     const p = await h.request('POST', '/api/v1/finance-charges/preview', c.token, { assessmentDate: later });
-    expect([p.status, p.json['error']?.code, p.json['error']?.details?.field]).toEqual([400, 'VALIDATION_ERROR', 'assessmentDate']);
+    expect([p.status, p.json['error']?.code, p.json['error']?.details?.field]).toEqual([400, 'FINANCE_CHARGE_DATE_IN_FUTURE', 'assessmentDate']);
     const a = await h.request('POST', '/api/v1/finance-charges/assess', c.token,
       { assessmentDate: later, contacts: [{ contactId: pfId(), expectedCharge: '15.68' }] }, { 'Idempotency-Key': key() });
-    expect([a.status, a.json['error']?.code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect([a.status, a.json['error']?.code]).toEqual([400, 'FINANCE_CHARGE_DATE_IN_FUTURE']);
     expect(() => assertAssessmentDateNotFuture('2026-11-30', new Date('2026-11-01T00:00:00Z'))).not.toThrow();
     expect(() => assertAssessmentDateNotFuture('2026-12-01', new Date('2026-11-30T12:00:00Z'))).not.toThrow();
     expect(() => assertAssessmentDateNotFuture('2026-12-01', new Date('2026-11-15T00:00:00Z'))).toThrow();
