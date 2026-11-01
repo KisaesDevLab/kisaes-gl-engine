@@ -856,6 +856,10 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       else if (txn.txnType === 'credit_memo') await payments.releaseCreditMemoForVoidInTx(tx, tenantId, txn, userId);
       else voidedBounceFeeId = (await payments.reapplyBounceForVoidInTx(tx, tenantId, txn, userId)).feeId;
     }
+    // U-141: voiding a finance-charge invoice frees its month and its charged-through days.
+    if (txn.txnType === 'invoice' && txn.isFinanceCharge) {
+      await (await import('./finance-charge.service.js')).releaseAssessmentForVoidInTx(tx, tenantId, txnId);
+    }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
 
     // Get original lines

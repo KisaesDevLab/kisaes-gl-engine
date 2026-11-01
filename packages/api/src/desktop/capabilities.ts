@@ -453,4 +453,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * credits are aged by their own date; the total equals the A/R account balance as of the date.
    */
   'ar-aging-exact-v1',
+  /**
+   * Finance charges (U-141, Q-P22a, Q-P22g, Q-P22p, Q-P22s): company settings financeChargeAnnualRate (null = off), financeChargeMinimum,
+   * financeChargeGraceDays, financeChargeOnFinanceCharges, financeChargeIncomeAccountId, financeChargePrintLater on GET/PUT
+   * /company/settings; POST /finance-charges/preview, POST /finance-charges/assess (all or nothing; expectedCharge; 409
+   * FINANCE_CHARGE_ASSESSED / FINANCE_CHARGE_CHANGED; 400 FINANCE_CHARGE_NOT_SET_UP; closing date), GET /finance-charges?period=.
+   * Charged-through dates never go backwards; voiding the finance-charge invoice frees its month and days. transactions.is_finance_charge;
+   * A/R open items mark finance-charge invoices. Migration 0250 (provisional number; E4 also takes 0250).
+   */
+  'finance-charges-v1',
+  /** Idempotency-Key on POST /finance-charges/assess; the run is the stored entity, a replay rebuilds the response (U-141). */
+  'idempotency-finance-charges-v1',
 ];

@@ -115,6 +115,13 @@ const COMPANY_UPDATABLE_FIELDS = [
   'writeOffAccountId',
   'writeOffThreshold',
   'salesDiscountAccountId',
+  // Finance charges (U-141); the income account is validated in updateCompany.
+  'financeChargeAnnualRate',
+  'financeChargeMinimum',
+  'financeChargeGraceDays',
+  'financeChargeOnFinanceCharges',
+  'financeChargeIncomeAccountId',
+  'financeChargePrintLater',
 ] as const;
 
 export async function updateCompany(
@@ -177,6 +184,9 @@ export async function updateCompany(
     }
     if (typeof updates['writeOffAccountId'] === 'string') {
       await assertWriteOffAccount(tx, tenantId, companyId, updates['writeOffAccountId'] as string);
+    }
+    if (typeof updates['financeChargeIncomeAccountId'] === 'string') {
+      await assertFinanceChargeAccount(tx, tenantId, companyId, updates['financeChargeIncomeAccountId'] as string);
     }
     if (typeof updates['salesDiscountAccountId'] === 'string') {
       await assertSalesDiscountAccount(tx, tenantId, companyId, updates['salesDiscountAccountId'] as string);
@@ -254,6 +264,12 @@ export async function getSettings(tenantId: string, companyId?: string) {
     writeOffAccountId: company.writeOffAccountId ?? null,
     writeOffThreshold: company.writeOffThreshold == null ? null : new Decimal(company.writeOffThreshold).toFixed(2),
     salesDiscountAccountId: company.salesDiscountAccountId ?? null,
+    financeChargeAnnualRate: company.financeChargeAnnualRate == null ? null : new Decimal(company.financeChargeAnnualRate).toFixed(2),
+    financeChargeMinimum: new Decimal(company.financeChargeMinimum ?? '0').toFixed(2),
+    financeChargeGraceDays: company.financeChargeGraceDays ?? 0,
+    financeChargeOnFinanceCharges: company.financeChargeOnFinanceCharges === true,
+    financeChargeIncomeAccountId: company.financeChargeIncomeAccountId ?? null,
+    financeChargePrintLater: company.financeChargePrintLater !== false,
   };
 }
 
@@ -487,4 +503,14 @@ export async function deleteCompany(tenantId: string, companyId: string, userId?
   await auditLog(tenantId, 'delete', 'company', companyId, { businessName: company.businessName }, null, userId);
 
   return { deleted: true, companyId };
+}
+
+/** The finance-charge income account (U-141): an active income or other-income account of this company; else 400 FINANCE_CHARGE_ACCOUNT_INVALID. */
+async function assertFinanceChargeAccount(executor: DbOrTx, tenantId: string, companyId: string, accountId: string): Promise<void> {
+  const [row] = await executor.select({ id: accounts.id, companyId: accounts.companyId, accountType: accounts.accountType, isActive: accounts.isActive })
+    .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId))).limit(1);
+  if (!row || (row.companyId && row.companyId !== companyId) || row.isActive === false
+    || !['revenue', 'other_revenue', 'income', 'other_income'].includes(row.accountType)) {
+    throw AppError.badRequest('Choose an income account for finance charges.', 'FINANCE_CHARGE_ACCOUNT_INVALID', { accountId });
+  }
 }

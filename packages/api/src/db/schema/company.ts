@@ -52,6 +52,14 @@ export const companies = pgTable('companies', {
   writeOffAccountId: uuid('write_off_account_id'),
   writeOffThreshold: decimal('write_off_threshold', { precision: 19, scale: 4 }).default('1.0000'),
   salesDiscountAccountId: uuid('sales_discount_account_id'),
+  // Finance charges (U-141, migration 0250): annual rate (percent; null = off),
+  // minimum charge, grace days, compounding, income account, print later.
+  financeChargeAnnualRate: decimal('finance_charge_annual_rate', { precision: 7, scale: 4 }),
+  financeChargeMinimum: decimal('finance_charge_minimum', { precision: 19, scale: 4 }).notNull().default('0'),
+  financeChargeGraceDays: integer('finance_charge_grace_days').notNull().default(0),
+  financeChargeOnFinanceCharges: boolean('finance_charge_on_finance_charges').notNull().default(false),
+  financeChargeIncomeAccountId: uuid('finance_charge_income_account_id'),
+  financeChargePrintLater: boolean('finance_charge_print_later').notNull().default(true),
   // Prefix and next number per document type other than invoices (U-111,
   // migration 0240): {cash_sale|credit_memo|statement: {prefix, next}}.
   documentNumbers: jsonb('document_numbers').$type<Record<string, { prefix?: string; next?: number }>>().notNull().default({}),
