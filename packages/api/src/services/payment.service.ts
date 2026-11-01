@@ -931,6 +931,8 @@ export interface PaymentPreview {
   credits: ComputeCredit[];
   depositsOnHand: DepositOnHand[];
   holdAsDepositOffered: boolean;
+  /** The credits this preview applied, amounts filled (the save plan copies them). */
+  creditApplications: ReturnType<typeof computePayment>['creditApplications'];
   pendingDeposits: { count: number; total: string };
   averageDaysToPay: number | null;
   problems: Array<ComputeProblem | { code: string; invoiceId?: string }>;
@@ -1118,6 +1120,7 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     depositsOnHand: onHand,
     holdAsDepositOffered: amount.greaterThan(0) && !dec(result.totals.applied).greaterThan(0)
       && result.creditApplications.length === 0 && !dec(result.totals.writeOffs).greaterThan(0),
+    creditApplications: result.creditApplications,
     pendingDeposits: {
       count: pending.count + (counts ? 1 : 0),
       total: money2(round2(pending.total.plus(counts ? amount : 0))),

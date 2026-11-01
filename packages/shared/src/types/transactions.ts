@@ -466,6 +466,8 @@ export interface CreateCustomerRefundInput {
   memo?: string;
   /** U-133: the customer payment whose unapplied credit this refunds. */
   sourcePaymentId?: string;
+  paymentMethod?: PaymentMethod;
+  refNo?: string;
 }
 
 export type TransactionSortKey = 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status' | 'dueDate' | 'balanceDue' | 'invoiceStatus';

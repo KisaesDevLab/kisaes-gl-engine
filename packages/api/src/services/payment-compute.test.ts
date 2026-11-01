@@ -2,10 +2,11 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 //
-// Receive Payment allocation golden cases (U-132, receive-payment-v1),
-// canonical in packages/shared/fixtures/payment-golden.json; the ClientLedger
-// client keeps a byte-identical copy (fixtures/payments/golden.json). Each
-// case runs through computePayment, the function preview and posting share.
+// Receive Payment allocation cases (U-132..U-134) for the pure compute,
+// packages/shared/fixtures/payment-compute-golden.json. The end-to-end
+// scenarios shared byte-for-byte with the ClientLedger client are
+// payment-golden.json (routes/payments.golden.routes.test.ts). Each case runs
+// through computePayment, the function preview and posting share.
 // Needs no database.
 
 import { describe, it, expect } from 'vitest';
@@ -35,7 +36,7 @@ interface GoldenCase {
   };
 }
 
-const golden = JSON.parse(readFileSync(path.resolve(here, '../../../shared/fixtures/payment-golden.json'), 'utf8')) as {
+const golden = JSON.parse(readFileSync(path.resolve(here, '../../../shared/fixtures/payment-compute-golden.json'), 'utf8')) as {
   cases: GoldenCase[];
   errors: Array<{ name: string; body: { amount: string } }>;
 };

@@ -145,7 +145,8 @@ export interface ComputedInvoice {
   payment: string;
   discount: string;
   writeOff: string;
-  credits: string;
+  /** Credits (and deposit draws) applied to this invoice. */
+  credit: string;
   remaining: string;
   discountPercent: string | null;
   discountDate: string | null;
@@ -299,7 +300,7 @@ export function computePayment(openInvoices: ComputeInvoice[], req: ComputeReque
       payment: money2(c),
       discount: money2(d),
       writeOff: money2(w),
-      credits: money2(x),
+      credit: money2(x),
       remaining: money2(remaining),
       discountPercent: inv.discountPercent ?? null,
       discountDate: inv.discountDate ?? null,

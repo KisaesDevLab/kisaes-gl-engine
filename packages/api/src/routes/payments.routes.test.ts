@@ -869,7 +869,8 @@ describe('customer-deposits-v1 (U-135)', () => {
     const inv1 = await invoice('1200.00', '2026-11-05');
     const p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ amount: '700.00',
       applications: [{ invoiceId: inv1, amount: null }], creditApplications: [{ sourcePaymentId: h.id, invoiceId: inv1, amount: null }] }));
-    expect(p.json.invoices[0].credits).toBe('500.00');
+    expect(p.json.invoices[0].credit).toBe('500.00');
+    expect(p.json.creditApplications).toEqual([{ sourcePaymentId: h.id, invoiceId: inv1, amount: '500.00', balanceDueExact: '1200.0000' }]);
     expect(p.json.invoices[0].payment).toBe('700.00');
     expect(p.json.contactBalanceAfter).toBe('0.00');
     const r = await request('POST', '/api/v1/payments/receive', c.token, {

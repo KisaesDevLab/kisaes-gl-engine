@@ -350,6 +350,9 @@ export const createCustomerRefundSchema = z.object({
   // U-133: the customer payment whose unapplied credit this refunds; the
   // refund must be within its remaining credit (409 CREDIT_NOT_AVAILABLE).
   sourcePaymentId: z.string().uuid().optional(),
+  // How the money went back, and the reference (a check number).
+  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  refNo: z.string().trim().max(100).optional(),
 });
 
 export const voidTransactionSchema = z.object({
