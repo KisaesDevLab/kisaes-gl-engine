@@ -905,6 +905,79 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect(r.status).toBe(423);
   });
 
+  it('company scope: /apply and a refund of a payment of another company are 404 and change nothing', async () => {
+    await mockup();
+    const { payment: p } = await previewThenReceive({ amount: '5700.00' });
+    const n1 = await invoice('300.00', '2026-11-10');
+    const [b] = await db.insert(companies).values({ tenantId: c.tenantId, businessName: 'Branch B', setupComplete: true }).returning();
+    const asB = { 'X-Company-Id': b!.id };
+    let r = await request('POST', `/api/v1/payments/${p.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: n1, amount: '20.00' }] }, asB);
+    expect(r.status).toBe(404);
+    r = await request('POST', '/api/v1/customer-refunds', c.token, {
+      txnDate: '2026-11-13', contactId: c.customer, refundFromAccountId: c.bank, amount: '20.00', sourcePaymentId: p.id,
+    }, asB);
+    expect(r.status).toBe(404);
+    expect((await inv(n1)).balanceDue).toBe('300.0000');
+    expect((await request('GET', `/api/v1/payments/${p.id}`, c.token)).json.payment.unappliedRemaining).toBe('55.00');
+    const refunds = await db.select().from(transactions).where(and(eq(transactions.tenantId, c.tenantId), eq(transactions.txnType, 'customer_refund')));
+    expect(refunds).toEqual([]);
+  });
+
+  it('voiding a refund gives the credit back exactly: remaining, A/R, the bank and the open credits', async () => {
+    await mockup();
+    const { payment: p } = await previewThenReceive({ amount: '5700.00' }, c.bank);
+    const arBefore = await contactAR();
+    const bankBefore = await balance(c.bank);
+    expect(arBefore).toBe('-55.0000');
+    const f = await request('POST', '/api/v1/customer-refunds', c.token, {
+      txnDate: '2026-11-13', contactId: c.customer, refundFromAccountId: c.bank, amount: '20.00', sourcePaymentId: p.id,
+    }, { 'Idempotency-Key': key() });
+    expect(f.status, JSON.stringify(f.json)).toBe(201);
+    expect([await contactAR(), (await request('GET', `/api/v1/payments/${p.id}`, c.token)).json.payment.unappliedRemaining]).toEqual(['-35.0000', '35.00']);
+    const v = await request('POST', `/api/v1/transactions/${f.json.transaction.id}/void`, c.token, { reason: 'sent twice' });
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    expect(await contactAR()).toBe(arBefore);
+    expect(await balance(c.bank)).toBe(bankBefore);
+    expect((await request('GET', `/api/v1/payments/${p.id}`, c.token)).json.payment.unappliedRemaining).toBe('55.00');
+    const pv = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-14' }));
+    expect(pv.json.credits).toEqual([{ sourcePaymentId: p.id, date: '2026-11-03', refNo: null, remaining: '55.00' }]);
+    // The whole 55.00 can be refunded again, and not a cent more.
+    let g = await request('POST', '/api/v1/customer-refunds', c.token, {
+      txnDate: '2026-11-14', contactId: c.customer, refundFromAccountId: c.bank, amount: '55.01', sourcePaymentId: p.id,
+    });
+    expect([g.status, g.json.error.code]).toEqual([409, 'CREDIT_NOT_AVAILABLE']);
+    g = await request('POST', '/api/v1/customer-refunds', c.token, {
+      txnDate: '2026-11-14', contactId: c.customer, refundFromAccountId: c.bank, amount: '55.00', sourcePaymentId: p.id,
+    });
+    expect(g.status, JSON.stringify(g.json)).toBe(201);
+    expect(await contactAR()).toBe('0.0000');
+  });
+
+  it('A/R aging and customer balances count only live applications through apply, unapply, bounce and its void', async () => {
+    const { buildARAgingSummary, buildCustomerBalanceSummary } = await import('../services/report.service.js');
+    const owed = async () => {
+      const aging = await buildARAgingSummary(c.tenantId, '2026-12-31', c.companyId) as any;
+      const mine = (aging.details as any[]).filter((d) => d.contact_id === c.customer).reduce((t, d) => t + d.balance, 0);
+      const bal = (await buildCustomerBalanceSummary(c.tenantId, c.companyId) as any).data.find((r: any) => r.id === c.customer);
+      return [mine.toFixed(2), bal ? Number(bal.balance).toFixed(2) : '0.00'];
+    };
+    await mockup();
+    const { payment: p } = await previewThenReceive({ amount: '5700.00' }, c.bank);
+    const n1 = await invoice('300.00', '2026-11-10');
+    expect(await owed()).toEqual(['300.00', '300.00']);
+    await request('POST', `/api/v1/payments/${p.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: n1, amount: '20.00' }] });
+    expect(await owed()).toEqual(['280.00', '280.00']);
+    await request('POST', '/api/v1/payments/unapply', c.token, { paymentId: p.id, invoiceId: n1 });
+    expect(await owed()).toEqual(['300.00', '300.00']);
+    await request('POST', `/api/v1/payments/${p.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: n1, amount: '20.00' }] });
+    const b = await request('POST', `/api/v1/payments/${p.id}/bounce`, c.token, { date: '2026-11-20' });
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    expect(await owed()).toEqual(['5945.00', '5945.00']);
+    const v = await request('POST', `/api/v1/transactions/${b.json.returnId}/void`, c.token, { reason: 'bank error' });
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    expect(await owed()).toEqual(['280.00', '280.00']);
+  });
+
   it('review SF5: a payment whose credit is in use elsewhere can\'t move to another client', async () => {
     const s = await creditInside();
     const r = await request('PUT', `/api/v1/payments/${s.p.id}`, c.token, {
