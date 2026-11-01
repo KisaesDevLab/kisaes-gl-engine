@@ -27277,6 +27277,439 @@
         ]
       }
     },
+    "/api/v1/customer-statement-runs": {
+      "post": {
+        "description": "Response 201 {runId, statements: [{statementId, contactId, number, amountDue}]}. One snapshot per client (1 to 500 clients; more is 400 TOO_MANY_CONTACTS), numbered from the company's statement counter, in one database transaction. The snapshot is display data only (no ids): GET /customer-statements/:id returns it for print, PDF, email and later Outbox sends. No GL effect, no closing-date check. Idempotency-Key: the run is the stored entity; a replay rebuilds the response from it.",
+        "operationId": "post_api_v1_customer_statement_runs",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "asOf": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "contactIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "format": {
+                    "enum": [
+                      "open_item",
+                      "balance_forward",
+                      "transaction"
+                    ],
+                    "type": "string"
+                  },
+                  "start": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "asOf",
+                  "contactIds"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Issue numbered customer statements (customer-statement-send-v1)",
+        "tags": [
+          "customer-statement-runs"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/customer-statements": {
+      "get": {
+        "description": "Response {data: [{id, runId, contactId, number, asOf, amountDue, createdAt, lastSentAt}]}, newest first; contactId filters one client.",
+        "operationId": "get_api_v1_customer_statements",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Issued customer statements (customer-statement-v1)",
+        "tags": [
+          "customer-statements"
+        ]
+      }
+    },
+    "/api/v1/customer-statements/{id}": {
+      "get": {
+        "description": "Response {statement: CustomerStatementRecord}. Another company's statement is 404. CustomerStatementRecord: {id, runId, contactId, number, asOf, amountDue, createdAt, snapshot: {number, contact: {name, address, email?}, asOf, format, start?, openingBalance?, lines: [{date, txnType, number, description, dueDate?, amount, open?, balance}], aging, amountDue, difference}, sendHistory: [{id, method, recipients, sentAt, userId}]}.",
+        "operationId": "get_api_v1_customer_statements_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "An issued customer statement (customer-statement-v1)",
+        "tags": [
+          "customer-statements"
+        ]
+      }
+    },
+    "/api/v1/customer-statements/{id}/email": {
+      "post": {
+        "description": "Response {statement: CustomerStatementRecord}. As POST /invoices/:id/email (U-127): the client-made PDF of the snapshot (pdfFileName such as Statement-1042.pdf, at most 10 MB; 400 ATTACHMENT_TOO_LARGE), the company mail server (400 SMTP_NOT_CONFIGURED, SMTP_SEND_FAILED {reason}); records an email send event; outboxId removes that Outbox row (404 OUTBOX_ITEM_NOT_FOUND). Recipients, subject and body are never logged.",
+        "operationId": "post_api_v1_customer_statements_by_id_email",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "maxLength": 20000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "outboxId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "pdfBase64": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "pdfFileName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "subject": {
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to",
+                  "subject",
+                  "body",
+                  "pdfFileName",
+                  "pdfBase64"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Email a customer statement (customer-statement-send-v1)",
+        "tags": [
+          "customer-statements"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/customer-statements/{id}/email-later": {
+      "post": {
+        "description": "Response 201 {item}: an Outbox row as GET /forms/email-queue lists it (kind customer_statement, customerStatementId, transactionId null). Nothing is sent until the client sends it with POST /customer-statements/:id/email and outboxId.",
+        "operationId": "post_api_v1_customer_statements_by_id_email_later",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "maxLength": 20000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "format": "email",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "subject": {
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "format": "email",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to",
+                  "subject",
+                  "body"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Put a customer statement email in the Outbox (customer-statement-send-v1)",
+        "tags": [
+          "customer-statements"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/customer-statements/{id}/sent": {
+      "post": {
+        "description": "Response {statement: CustomerStatementRecord}. Adds a send event (printing counts as sent). Recipients are stored, never logged. CustomerStatementRecord: {id, runId, contactId, number, asOf, amountDue, createdAt, snapshot: {number, contact: {name, address, email?}, asOf, format, start?, openingBalance?, lines: [{date, txnType, number, description, dueDate?, amount, open?, balance}], aging, amountDue, difference}, sendHistory: [{id, method, recipients, sentAt, userId}]}.",
+        "operationId": "post_api_v1_customer_statements_by_id_sent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "method": {
+                    "enum": [
+                      "printed",
+                      "email",
+                      "pdf"
+                    ],
+                    "type": "string"
+                  },
+                  "recipients": {
+                    "items": {
+                      "maxLength": 320,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "method"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Mark a customer statement as sent (customer-statement-send-v1)",
+        "tags": [
+          "customer-statements"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/daily-sales/entries": {
       "get": {
         "operationId": "get_api_v1_daily_sales_entries",
@@ -33131,8 +33564,26 @@
                           "createdAt": {
                             "type": "string"
                           },
+                          "customerStatementId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "id": {
                             "format": "uuid",
+                            "type": "string"
+                          },
+                          "kind": {
+                            "enum": [
+                              "transaction",
+                              "customer_statement"
+                            ],
                             "type": "string"
                           },
                           "subject": {
@@ -33145,8 +33596,15 @@
                             "type": "array"
                           },
                           "transactionId": {
-                            "format": "uuid",
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "txnNumber": {
                             "type": [
@@ -33181,6 +33639,8 @@
                         "required": [
                           "id",
                           "transactionId",
+                          "kind",
+                          "customerStatementId",
                           "txnNumber",
                           "txnType",
                           "txnStatus",
@@ -34842,8 +35302,26 @@
                         "createdAt": {
                           "type": "string"
                         },
+                        "customerStatementId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "id": {
                           "format": "uuid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "transaction",
+                            "customer_statement"
+                          ],
                           "type": "string"
                         },
                         "subject": {
@@ -34856,8 +35334,15 @@
                           "type": "array"
                         },
                         "transactionId": {
-                          "format": "uuid",
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "txnNumber": {
                           "type": [
@@ -34892,6 +35377,8 @@
                       "required": [
                         "id",
                         "transactionId",
+                        "kind",
+                        "customerStatementId",
                         "txnNumber",
                         "txnType",
                         "txnStatus",
@@ -51907,6 +52394,146 @@
             "ApiKeyAuth": []
           }
         ],
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/customer-statement": {
+      "get": {
+        "description": "Response {statement: CustomerStatement}. CustomerStatement: {contact: {id, name, address: string[], email?}, asOf, format, start?, openingBalance?, lines: [{date, txnId, txnType, number, description, dueDate?, amount, open?, balance}], aging: {current, days1to30, days31to60, days61to90, over90, total}, amountDue, difference}. open_item: the open items as of asOf (amount = the original A/R amount, open = what is open, running balance over open); balance_forward: openingBalance = the balance on the day before start (default the first of asOf's month), lines = each posted transaction dated start..asOf with its own A/R amount; transaction: the same lines, the opening is the previous balance. aging is the client's row of GET /reports/ar-aging-summary (same helper); amountDue = aging.total = the client's A/R balance as of asOf; difference = exact total - Σ cent figures (0.00 except legacy sub-cent residue; never printed). A client of another company is 404.",
+        "operationId": "get_api_v1_reports_customer_statement",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": true,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "open_item",
+                "balance_forward",
+                "transaction"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "A customer statement as of a date (customer-statement-v1)",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/customer-statements": {
+      "get": {
+        "description": "Response {data: [{contactId, name, amountDue, oldestDaysOverdue, hasEmail, lastStatement?: {date, number}}], total}: active customers of the company with their A/R as of asOf (the open-items helper), by name. openOnly (default true): amountDue <> 0.00; minDaysOverdue (default 0): the oldest open invoice is at least that many days past due. limit (default 200, max 1,000), offset.",
+        "operationId": "get_api_v1_reports_customer_statements",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": true,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "minDaysOverdue",
+            "required": false,
+            "schema": {
+              "maximum": 3650,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "openOnly",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Clients to send statements to (customer-statement-v1)",
         "tags": [
           "reports"
         ]
