@@ -1732,28 +1732,32 @@ export async function buildSalesByCustomer(
     ? await db.execute(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
-          SUM(cb.credit) as total
+          SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type = 'returned_payment') ${cbTag}
+        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
           -- Sale documents + the payments their revenue re-emits at
           -- (cb_lines rule 3 stamps the PAYMENT's txn_type). Without this,
           -- cash-basis "Sales" would count revenue credits from deposits and
           -- journal entries — semantically broader than the accrual report.
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment')
+          -- A refund of a credit memo re-emits the memo's income debits at the
+          -- refund date (cb_lines rule 3b): returns, counted negative.
+          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund')
         GROUP BY c.id, c.display_name ORDER BY total DESC
       `)
     : await db.execute(sql`
     SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
-      SUM(jl.credit) as total
+      SUM(CASE WHEN t.txn_type = 'credit_memo' THEN jl.credit - jl.debit ELSE jl.credit END) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('revenue', 'other_revenue')
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      AND jl.credit > 0
+      -- Credit memos debit income (returns): counted negative, net of any
+      -- negative memo line.
+      AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
       AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
       AND ${companyFilter(companyId)}
       ${tagClause}
@@ -1784,24 +1788,26 @@ export async function buildSalesByItem(
         SELECT
           cb.item_id,
           COALESCE(i.name, 'Uncategorized') as item_name,
-          COALESCE(i.sku, '') as item_sku,
-          SUM(cb.credit) as total,
+          '' as item_sku, -- items has no sku column; kept for the response shape
+          SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total,
           COUNT(DISTINCT cb.transaction_id)::int as txn_count
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
         LEFT JOIN items i ON i.id = cb.item_id AND i.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type = 'returned_payment') ${cbTag}
+        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
           -- Same sale-document restriction as Sales by Customer (see note there).
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment')
-        GROUP BY cb.item_id, i.name, i.sku
+          -- A refund of a credit memo re-emits the memo's income debits at the
+          -- refund date (cb_lines rule 3b): returns, counted negative.
+          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund')
+        GROUP BY cb.item_id, i.name
         ORDER BY total DESC
       `)
     : await db.execute(sql`
     SELECT
       jl.item_id,
       COALESCE(i.name, 'Uncategorized') as item_name,
-      COALESCE(i.sku, '') as item_sku,
-      SUM(jl.credit) as total,
+      '' as item_sku, -- items has no sku column; kept for the response shape
+      SUM(CASE WHEN t.txn_type = 'credit_memo' THEN jl.credit - jl.debit ELSE jl.credit END) as total,
       COUNT(DISTINCT jl.transaction_id)::int as txn_count
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
@@ -1809,11 +1815,13 @@ export async function buildSalesByItem(
     LEFT JOIN items i ON i.id = jl.item_id AND i.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      AND jl.credit > 0
-      AND t.txn_type IN ('invoice', 'cash_sale')
+      -- Credit memos debit income (returns): counted negative, net of any
+      -- negative memo line.
+      AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
+      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
       AND ${companyFilter(companyId)}
       ${tagClause}
-    GROUP BY jl.item_id, i.name, i.sku
+    GROUP BY jl.item_id, i.name
     ORDER BY total DESC
   `);
 
