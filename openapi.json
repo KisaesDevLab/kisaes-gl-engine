@@ -26284,6 +26284,664 @@
         ]
       }
     },
+    "/api/v1/credit-memos": {
+      "post": {
+        "description": "Response 201 {creditMemo: CreditMemoRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice (at most 4 places), discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Line = round2(qty x rate) half away from zero; tax once per rate (P20). Posting: Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total. Stores subtotal and tax_amount. Total 0.00 or less is 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE (record a return with money back as a sales receipt). applications: [{invoiceId, amount, expectedBalanceDue}] are applied in the same database transaction, dated with the memo (applied_date NULL); errors as POST /credit-memos/:id/apply (OVERAPPLIED, INVOICE_NOT_FOR_CUSTOMER, 409 INVOICE_BALANCE_CHANGED, CREDIT_NOT_AVAILABLE); any failure posts nothing. txnNumber: typed or the next from the credit_memo counter (409 DOCUMENT_NUMBER_IN_USE). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, date, amount, method, voided}], remaining}. applications[].appliedDate is null for rows applied when the memo was saved.",
+        "operationId": "post_api_v1_credit_memos",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "applications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoiceId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 1000,
+                    "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "lines",
+                  "contactId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a credit memo (credit-memo-edit-v1)",
+        "tags": [
+          "credit-memos"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/credit-memos/preview": {
+      "post": {
+        "description": "Response {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, taxAmount}], subtotal, taxableBase, taxRate, taxTotal, total, taxGroups, contactBalanceBefore, contactBalanceAfter, openInvoices: [{invoiceId, number, date, dueDate, balanceDue, balanceDueExact}], suggestedApplications: [{invoiceId, amount}] (oldest first up to the total), remainingCredit, problems: [{code: CREDIT_MEMO_TOTAL_NOT_POSITIVE}]}. The same compute as POST, so preview = post. editingId: the memo being edited (its own applications count as open again). Lines as invoice lines (itemId or accountId, quantity, unitPrice (at most 4 places), discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Line = round2(qty x rate) half away from zero; tax once per rate (P20). Posting: Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total.",
+        "operationId": "post_api_v1_credit_memos_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "applications": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        },
+                        "expectedBalanceDue": {
+                          "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "invoiceId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 1000,
+                    "type": "array"
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "editingId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "lines",
+                  "contactId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Preview a credit memo; posts nothing (credit-memo-edit-v1)",
+        "tags": [
+          "credit-memos"
+        ]
+      }
+    },
+    "/api/v1/credit-memos/{id}": {
+      "get": {
+        "description": "Response {creditMemo: CreditMemoRecord}. Another company's memo is 404. CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, date, amount, method, voided}], remaining}. applications[].appliedDate is null for rows applied when the memo was saved.",
+        "operationId": "get_api_v1_credit_memos_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a credit memo (credit-memo-edit-v1)",
+        "tags": [
+          "credit-memos"
+        ]
+      },
+      "put": {
+        "description": "Response {creditMemo: CreditMemoRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice (at most 4 places), discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Line = round2(qty x rate) half away from zero; tax once per rate (P20). Posting: Dr each income line, Dr Sales Tax Payable the tax, Cr A/R the total. expectedUpdatedAt: mismatch 409 STALE. The closing date meets the old date, the new date and every live refund's date. 409 CREDIT_IN_USE {inUse} when the new total is below what is applied and refunded, or the client changes while an application or refund is live; 400 SOURCE_DATE_AFTER_USE {firstUsed} when the new date is after its first later use; 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE. Live applications are kept; a non-empty applications list is 400 VALIDATION_ERROR on PUT (apply with /apply, take off with /unapply). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.",
+        "operationId": "put_api_v1_credit_memos_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "applications": {
+                    "items": {},
+                    "maxItems": 0,
+                    "type": "array"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "lines",
+                  "contactId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a credit memo (credit-memo-edit-v1)",
+        "tags": [
+          "credit-memos"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/credit-memos/{id}/apply": {
       "post": {
         "description": "Response {applied: [{invoiceId, amount}], remaining}. Applies the remaining credit of the memo to open invoices of the same client on `date`, with no GL effect (the memo's A/R credit meets the invoice's A/R debit). Rows: {invoiceId, amount?, expectedBalanceDue} (amount omitted = min(remaining, cent balance)). The memo is locked, then the invoices in id order. Errors: 400 VALIDATION_ERROR (more than 2 places, an invoice twice), 400 INVOICE_NOT_FOR_CUSTOMER, 400 OVERAPPLIED {invoiceId, balanceDue}, 400 APPLY_DATE_BEFORE_SOURCE {sourceId, sourceDate} (date before the memo's date), 400 TOO_MANY_APPLICATIONS (over 1,000); 409 CREDIT_NOT_AVAILABLE {sourceId, remaining}, 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact}, 409 STALE (expectedUpdatedAt); 404 for a memo or invoice of another company. Closing date on `date`. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. Idempotency-Key: a replay answers {applied: [], remaining}.",
@@ -26477,7 +27135,7 @@
     },
     "/api/v1/customer-refunds": {
       "post": {
-        "description": "Response 201 {transaction}: a customer_refund, Dr A/R / Cr refundFromAccountId. sourcePaymentId (optional): the customer payment whose unapplied credit this refunds, locked; the refund must be within its remaining credit (409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}); a bounced payment is 409 PAYMENT_BOUNCED; a payment of another client is 400 CREDIT_NOT_FOR_CUSTOMER. Voiding the refund gives the credit back; a payment with a live refund can't be voided or bounced (409 PAYMENT_REFUNDED, Q-P21j). Amounts whole cents (at most 2 places). A refund dated on or before the closing date needs closingPassword.",
+        "description": "Response 201 {transaction}: a customer_refund, Dr A/R / Cr refundFromAccountId. sourcePaymentId (optional): the customer payment whose unapplied credit this refunds, locked; the refund must be within its remaining credit (409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}); a bounced payment is 409 PAYMENT_BOUNCED; a payment of another client is 400 CREDIT_NOT_FOR_CUSTOMER. Voiding the refund gives the credit back; a payment with a live refund can't be voided or bounced (409 PAYMENT_REFUNDED, Q-P21j). Amounts whole cents (at most 2 places). A refund dated on or before the closing date needs closingPassword. U-139 (refund-credit-memo-v1, refund-checks-v1): sourcePaymentId (alias sourceId) may be a credit memo of the client; a refund dated before its source is 400 REFUND_DATE_BEFORE_SOURCE {sourceId, sourceDate}; refundFromAccountId must be a bank-type account of the company (not Payments Clearing, A/R or Customer Deposits): 400 REFUND_ACCOUNT_INVALID; printLater puts the refund in the check print queue (GET /checks/print-queue, payee address = the client billing address); paymentMethod check with no checkNumber defaults to printLater (Q-P22d); a typed checkNumber already used on the bank account is 409 CHECK_NUMBER_IN_USE; printLater true with a checkNumber is 400 CHECK_NUMBER_WITH_PRINT_LATER {field: checkNumber} (the print run numbers queued checks). Voiding the refund (POST /transactions/:id/void) takes it out of the queue and gives the credit back.",
         "operationId": "post_api_v1_customer_refunds",
         "parameters": [
           {
@@ -26500,6 +27158,11 @@
                   "amount": {
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "checkNumber": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647,
+                    "type": "integer"
                   },
                   "closingPassword": {
                     "type": "string"
@@ -26524,11 +27187,18 @@
                     ],
                     "type": "string"
                   },
+                  "printLater": {
+                    "type": "boolean"
+                  },
                   "refNo": {
                     "maxLength": 100,
                     "type": "string"
                   },
                   "refundFromAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "sourceId": {
                     "format": "uuid",
                     "type": "string"
                   },
@@ -26571,6 +27241,40 @@
           "customer-refunds"
         ],
         "x-idempotency": true
+      }
+    },
+    "/api/v1/customer-refunds/{id}": {
+      "get": {
+        "description": "Response {refund: RefundRecord}: {id, date, customerId, amount, method, refNo, checkNumber, printStatus (queue | printed | hand_written | null), refundFromAccountId, source: {id, kind: payment | credit_memo | deposit, number} | null, updatedAt, status}. Another company's refund is 404. Void it through POST /transactions/:id/void.",
+        "operationId": "get_api_v1_customer_refunds_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a customer refund (refund-credit-memo-v1)",
+        "tags": [
+          "customer-refunds"
+        ]
       }
     },
     "/api/v1/customer-statement-runs": {
@@ -53685,6 +54389,679 @@
         "tags": [
           "reports"
         ]
+      }
+    },
+    "/api/v1/sales-receipts": {
+      "post": {
+        "description": "Response 201 {salesReceipt: SalesReceiptRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice, discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Posting: Dr depositToAccountId (default Payments Clearing) the total, Cr each income line, Cr Sales Tax Payable the tax. A total below 0.00 (a return with money back) to Payments Clearing is 400 NEGATIVE_RECEIPT_NEEDS_BANK; a deposit account that is not an asset of this company (or is A/R / Customer Deposits) is 400 DEPOSIT_ACCOUNT_INVALID. txnNumber: typed or the next from the cash_sale counter. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. SalesReceiptRecord: {id, number, date, customerId, depositToAccountId, paymentMethod, refNo, lines, totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited}.",
+        "operationId": "post_api_v1_sales_receipts",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "depositToAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "paymentMethod": {
+                    "enum": [
+                      "check",
+                      "ach",
+                      "credit_card",
+                      "cash",
+                      "other"
+                    ],
+                    "type": "string"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "refNo": {
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a sales receipt (sales-receipt-lines-v1)",
+        "tags": [
+          "sales-receipts"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-receipts/preview": {
+      "post": {
+        "description": "Response {lines, subtotal, taxableBase, taxRate, taxTotal, total, taxGroups, depositToAccountId, contactBalanceBefore, contactBalanceAfter, problems: [{code: NEGATIVE_RECEIPT_NEEDS_BANK | DEPOSIT_ACCOUNT_INVALID}]}; never 4xx for those. Lines as invoice lines (itemId or accountId, quantity, unitPrice, discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Posting: Dr depositToAccountId (default Payments Clearing) the total, Cr each income line, Cr Sales Tax Payable the tax. A total below 0.00 (a return with money back) to Payments Clearing is 400 NEGATIVE_RECEIPT_NEEDS_BANK; a deposit account that is not an asset of this company (or is A/R / Customer Deposits) is 400 DEPOSIT_ACCOUNT_INVALID.",
+        "operationId": "post_api_v1_sales_receipts_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "contactId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "depositToAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "editingId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "paymentMethod": {
+                    "enum": [
+                      "check",
+                      "ach",
+                      "credit_card",
+                      "cash",
+                      "other"
+                    ],
+                    "type": "string"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "refNo": {
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Preview a sales receipt; posts nothing (sales-receipt-lines-v1)",
+        "tags": [
+          "sales-receipts"
+        ]
+      }
+    },
+    "/api/v1/sales-receipts/{id}": {
+      "get": {
+        "description": "Response {salesReceipt: SalesReceiptRecord}. Another company's receipt is 404. SalesReceiptRecord: {id, number, date, customerId, depositToAccountId, paymentMethod, refNo, lines, totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited}.",
+        "operationId": "get_api_v1_sales_receipts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a sales receipt (sales-receipt-lines-v1)",
+        "tags": [
+          "sales-receipts"
+        ]
+      },
+      "put": {
+        "description": "Response {salesReceipt: SalesReceiptRecord, warnings}. Lines as invoice lines (itemId or accountId, quantity, unitPrice, discountPercent, isTaxable, taxRate, tagId, serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Posting: Dr depositToAccountId (default Payments Clearing) the total, Cr each income line, Cr Sales Tax Payable the tax. A total below 0.00 (a return with money back) to Payments Clearing is 400 NEGATIVE_RECEIPT_NEEDS_BANK; a deposit account that is not an asset of this company (or is A/R / Customer Deposits) is 400 DEPOSIT_ACCOUNT_INVALID. expectedUpdatedAt: mismatch 409 STALE; the closing date meets the old and the new date; a receipt in a deposit can't change its deposit account or amount (409 TXN_DEPOSITED). depositToAccountId omitted keeps the current one. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.",
+        "operationId": "put_api_v1_sales_receipts_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "contactId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "customerMessage": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "depositToAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "hideZeroLines": {
+                    "type": "boolean"
+                  },
+                  "layoutId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "billableSourceLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "description": {
+                          "maxLength": 4000,
+                          "type": "string"
+                        },
+                        "discountPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "isTaxable": {
+                          "type": "boolean"
+                        },
+                        "itemId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "markupPercent": {
+                          "maxLength": 12,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "serviceDate": {
+                          "anyOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxRate": {
+                          "type": "string"
+                        },
+                        "unitPrice": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "paymentMethod": {
+                    "enum": [
+                      "check",
+                      "ach",
+                      "credit_card",
+                      "cash",
+                      "other"
+                    ],
+                    "type": "string"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "refNo": {
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "tagIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "txnNumber": {
+                    "maxLength": 50,
+                    "type": "string"
+                  },
+                  "warnOnly": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a sales receipt (sales-receipt-lines-v1)",
+        "tags": [
+          "sales-receipts"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/settings/storage": {

@@ -468,6 +468,12 @@ export interface CreateCustomerRefundInput {
   sourcePaymentId?: string;
   paymentMethod?: PaymentMethod;
   refNo?: string;
+  /** U-139: alias of sourcePaymentId (a payment, held deposit or credit memo). */
+  sourceId?: string;
+  /** U-139: wait in the check print queue. */
+  printLater?: boolean;
+  /** U-139: a typed check number. */
+  checkNumber?: number;
 }
 
 export type TransactionSortKey = 'date' | 'type' | 'number' | 'payee' | 'memo' | 'category' | 'amount' | 'status' | 'dueDate' | 'balanceDue' | 'invoiceStatus';
