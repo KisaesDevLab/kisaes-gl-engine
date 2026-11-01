@@ -5,6 +5,8 @@
 import type { PaymentMethod } from '../constants/payment-methods.js';
 
 export interface ReceivePaymentInput {
+  /** U-136: the pending bank-feed line this payment is (feed-customer-payments-v1). */
+  bankFeedItemId?: string;
   customerId: string;
   date: string;
   amount: string;
