@@ -171,7 +171,7 @@ export const REPORT_PACK_RENDERERS: Record<string, Renderer> = {
     const data = await reportService.buildARAgingSummary(
       tenantId, params['as_of_date']!, companyId, opts.tagId,
     );
-    return shapeArAgingForPdf(data as ArAgingSummaryData);
+    return shapeArAgingForPdf(data as unknown as ArAgingSummaryData);
   },
 
   'ap-aging-summary': async (tenantId, companyId, params, opts) => {

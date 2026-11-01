@@ -774,7 +774,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       .from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .limit(1);
-    if (peek && (peek.txnType === 'customer_payment' || peek.txnType === 'returned_payment')) {
+    if (peek && (peek.txnType === 'customer_payment' || peek.txnType === 'returned_payment' || peek.txnType === 'credit_memo')) {
       await (await import('./payment.service.js')).lockForVoidInTx(tx, tenantId, peek);
     }
     const [txn] = await tx.select().from(transactions)
@@ -848,10 +848,12 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     // payment reopens the invoices it paid (409 PAYMENT_BOUNCED while its
     // bounce is live); a bounce re-applies what it reversed.
     let voidedBounceFeeId: string | null = null;
-    if (txn.txnType === 'deposit' || txn.txnType === 'customer_payment' || txn.txnType === 'returned_payment') {
+    if (txn.txnType === 'deposit' || txn.txnType === 'customer_payment' || txn.txnType === 'returned_payment' || txn.txnType === 'credit_memo') {
       const payments = await import('./payment.service.js');
       if (txn.txnType === 'deposit') await payments.assertDepositSourcesNotBounced(tx, tenantId, txnId);
       else if (txn.txnType === 'customer_payment') await payments.releasePaymentForVoidInTx(tx, tenantId, txn, userId);
+      // U-137: a credit memo's applications reopen their invoices (409 CREDIT_REFUNDED while a refund is live).
+      else if (txn.txnType === 'credit_memo') await payments.releaseCreditMemoForVoidInTx(tx, tenantId, txn, userId);
       else voidedBounceFeeId = (await payments.reapplyBounceForVoidInTx(tx, tenantId, txn, userId)).feeId;
     }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
@@ -989,7 +991,10 @@ export async function assertInvoiceUnapplied(
               WHERE pa2.tenant_id = t.tenant_id AND pa2.payment_id = t.id))::int AS payments,
       (SELECT COUNT(*) FROM transactions t
         WHERE t.tenant_id = ${tenantId} AND t.applied_to_invoice_id = ${txn.id}
-          AND t.status = 'posted' AND t.txn_type <> 'customer_payment')::int AS credits
+          -- U-137 (Q-P22f, S3): a credit memo's legacy pointer never lowered the
+          -- invoice, so it is an open credit, not a credit applied; only Stripe
+          -- refund pointers (which raised the balance) still count.
+          AND t.status = 'posted' AND t.txn_type = 'customer_refund')::int AS credits
   `);
   const row = (res.rows as Array<{ payments: number; credits: number }>)[0];
   if ((row?.payments ?? 0) > 0 || (row?.credits ?? 0) > 0) {

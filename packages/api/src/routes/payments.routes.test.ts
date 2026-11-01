@@ -733,7 +733,7 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect(payment.unappliedRemaining).toBe('55.00');
     const n1 = await invoice('300.00', '2026-11-10');
     let p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-11' }));
-    expect(p.json.credits).toEqual([{ sourcePaymentId: payment.id, date: '2026-11-03', refNo: null, remaining: '55.00' }]);
+    expect(p.json.credits).toEqual([{ sourcePaymentId: payment.id, date: '2026-11-03', refNo: null, remaining: '55.00', kind: 'payment', number: null }]);
     // Apply 20.00 later: no GL lines.
     const glBefore = (await db.select().from(journalLines).where(eq(journalLines.tenantId, c.tenantId))).length;
     let a = await request('POST', `/api/v1/payments/${payment.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: n1, amount: '20.00' }] }, { 'Idempotency-Key': key() });
@@ -847,7 +847,7 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     const p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-12', editingPaymentId: s.x.id, amount: '250.00',
       applications: [{ invoiceId: s.n1, amount: '250.00' }], creditApplications: [{ sourcePaymentId: s.p.id, invoiceId: s.n1, amount: '30.00' }] }));
     expect(p.json.problems).toEqual([]);
-    expect(p.json.credits).toEqual([{ sourcePaymentId: s.p.id, date: '2026-11-03', refNo: null, remaining: '55.00' }]);
+    expect(p.json.credits).toEqual([{ sourcePaymentId: s.p.id, date: '2026-11-03', refNo: null, remaining: '55.00', kind: 'payment', number: null }]);
     // Memo only, everything else sent back as loaded: no row set aside, n1 untouched.
     const body = { customerId: c.customer, date: '2026-11-12', depositTo: c.clearing, amount: '250.00',
       applications: [{ invoiceId: s.n1, amount: '250.00' }],
@@ -940,7 +940,7 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect(await balance(c.bank)).toBe(bankBefore);
     expect((await request('GET', `/api/v1/payments/${p.id}`, c.token)).json.payment.unappliedRemaining).toBe('55.00');
     const pv = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-14' }));
-    expect(pv.json.credits).toEqual([{ sourcePaymentId: p.id, date: '2026-11-03', refNo: null, remaining: '55.00' }]);
+    expect(pv.json.credits).toEqual([{ sourcePaymentId: p.id, date: '2026-11-03', refNo: null, remaining: '55.00', kind: 'payment', number: null }]);
     // The whole 55.00 can be refunded again, and not a cent more.
     let g = await request('POST', '/api/v1/customer-refunds', c.token, {
       txnDate: '2026-11-14', contactId: c.customer, refundFromAccountId: c.bank, amount: '55.01', sourcePaymentId: p.id,

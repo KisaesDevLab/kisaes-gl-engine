@@ -1113,7 +1113,7 @@ reportsRouter.get('/ar-aging-summary', async (req, res) => {
     for (const d of (data.details || [])) {
       const key = d.contact_id || 'unknown';
       const entry = custMap.get(key) || { vendor_name: d.customer_name || 'Unknown', current: 0, bucket1to30: 0, bucket31to60: 0, bucket61to90: 0, bucketOver90: 0, total: 0 };
-      const bal = parseFloat(d.balance || d.balance_due || '0');
+      const bal = parseFloat(String(d.balance || d.balance_due || '0'));
       if (d.bucket === 'current') entry.current += bal;
       else if (d.bucket === '1-30') entry.bucket1to30 += bal;
       else if (d.bucket === '31-60') entry.bucket31to60 += bal;

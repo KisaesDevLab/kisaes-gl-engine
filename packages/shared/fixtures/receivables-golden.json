@@ -1,0 +1,228 @@
+{
+  "description": "Receivables money rules (ClientLedger P22: U-137 to U-143, U-112) shared by the engine (packages/shared/fixtures/receivables-golden.json, canonical) and the ClientLedger client (fixtures/receivables/golden.json, byte-identical; the --demo engine runs every case). Synthetic. Every amount is a 2-place decimal string (whole cents); rates are fractions (\"0.0825\" = 8.25 %) except the finance-charge annual rate, a percent (\"18.00\" = 18 % a year). Cases 1 to 5 and 7 start from the seed; case 6 has its own seed. Steps run in order. Invoices, memos, refunds and payments are keyed by name; accounts by role (accounts_receivable, sales, sales_tax_payable, payments_clearing, operating (a bank account), finance_charge_income). Keys under engineOnly are not checked by the demo engine.",
+  "rules": {
+    "creditMemo": "Lines and tax as an invoice (invoice-golden.json rules: line = round2(qty x rate) half away from zero; tax once per rate). Posting: Dr each income line, Dr Sales Tax Payable the tax (returns give tax back), Cr A/R the total. A total of 0.00 or less is 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE.",
+    "remaining": "A credit source's remaining = total - live applications - live refunds drawn on it, never below 0.00. A source is a customer payment's unapplied credit or a credit memo.",
+    "suggestedApplications": "Oldest open invoice first (date, then number, then id), each up to its cent balance, until the memo total is used.",
+    "applyAtSave": "Applications sent with the memo are written in the same database transaction with applied_date NULL (dated with the memo). Applying later dates the row; the date must be on or after the source's date (400 APPLY_DATE_BEFORE_SOURCE).",
+    "refund": "Refund of a credit: Dr A/R, Cr the bank account; within remaining (409 CREDIT_NOT_AVAILABLE {remaining}); dated on or after the source (400 REFUND_DATE_BEFORE_SOURCE). paymentMethod check with no number: printLater (in the check print queue, payee address = the client's billing address). Voiding the refund gives the credit back.",
+    "voids": "Voiding a credit memo unapplies it (invoices restored); refused while a refund drawn on it is live (409 CREDIT_REFUNDED {refundIds}).",
+    "openItems": "As of a date: each posted transaction's own A/R lines per client (Σ = the client's A/R balance), then every application in effect on that date moves its settled amount from the source's item to the invoice's item. Each item shows round2 of its exact open; zero items are dropped. A refund nets into the credit it was drawn on.",
+    "aging": "days = asOf - (dueDate, else date); credits age by their own date. Buckets: current (days <= 0), 1-30, 31-60, 61-90, over 90. Statement aging = the A/R aging summary row of the client = the client's A/R balance.",
+    "statement": "open_item: the open items; amountDue = aging total. balance_forward: opening = Σ items as of start - 1 day; lines = each posted transaction dated start..asOf with its own A/R amount for the client; running balance from the opening; closing = amountDue.",
+    "financeCharge": "Annual rate r (percent). For each open invoice of the client as of the assessment date d (its cent open as of d; finance-charge invoices only when compounding is on): t = the latest through date of a live assessment that charged it, whatever d is. days = d - max(dueDate, t); no t: chargeable only when d - dueDate > graceDays. amount = round2(open x r / 100 x days / 365) half away from zero. Client charge = Σ amounts; if 0 < Σ < minimum, one adjustment line brings it to the minimum. Charge 0.00: no assessment. Clients in credit or inactive are skipped; a client with open credits is shown unticked with hasOpenCredits. Period = d's calendar month; one live assessment per client and period (409 FINANCE_CHARGE_ASSESSED). The finance-charge invoice is dated d, due on receipt, one line per source invoice plus the minimum adjustment, non-taxable. Voiding it frees the period and the charged-through dates."
+  },
+  "seed": {
+    "company": { "defaultSalesTaxRate": "0.0825" },
+    "client": "Bluestem Veterinary Clinic",
+    "invoices": [
+      { "key": "A", "number": "1001", "date": "2026-09-15", "dueDate": "2026-10-15", "total": "250.00" },
+      { "key": "B", "number": "1002", "date": "2026-10-20", "dueDate": "2026-11-19", "total": "500.00" }
+    ],
+    "contactBalance": "750.00"
+  },
+  "memoLines": [
+    { "account": "sales", "description": "Boarding kennel (returned)", "quantity": "2", "unitPrice": "150.00", "isTaxable": true },
+    { "account": "sales", "description": "Grooming (not done)", "quantity": "1", "unitPrice": "75.00", "isTaxable": false }
+  ],
+  "cases": [
+    {
+      "id": 1,
+      "name": "Credit memo with items and tax",
+      "steps": [
+        {
+          "op": "creditMemoPreview",
+          "request": { "date": "2026-11-02", "lines": "memoLines" },
+          "expect": {
+            "subtotal": "375.00", "taxableBase": "300.00", "taxTotal": "24.75", "total": "399.75",
+            "suggestedApplications": [ { "invoice": "A", "amount": "250.00" }, { "invoice": "B", "amount": "149.75" } ],
+            "remainingCredit": "0.00"
+          }
+        },
+        {
+          "op": "creditMemo", "memo": "M1",
+          "request": { "date": "2026-11-02", "lines": "memoLines", "applications": [] },
+          "expect": {
+            "lines": [
+              { "account": "sales", "debit": "300.00" },
+              { "account": "sales", "debit": "75.00" },
+              { "account": "sales_tax_payable", "debit": "24.75" },
+              { "account": "accounts_receivable", "credit": "399.75" }
+            ],
+            "remaining": "399.75",
+            "contactBalance": "350.25",
+            "invoices": { "A": "250.00", "B": "500.00" },
+            "engineOnly": { "salesTaxLiability": { "taxableSales": "-300.00", "tax": "-24.75" } }
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Apply at save, oldest first",
+      "steps": [
+        {
+          "op": "creditMemo", "memo": "M1",
+          "request": {
+            "date": "2026-11-02", "lines": "memoLines",
+            "applications": [ { "invoice": "A", "amount": "250.00" }, { "invoice": "B", "amount": "149.75" } ]
+          },
+          "expect": {
+            "remaining": "0.00",
+            "contactBalance": "350.25",
+            "invoices": { "A": "0.00", "B": "350.25" },
+            "invoiceStatus": { "A": "paid", "B": "partial" },
+            "appliedDateNull": true
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Keep as credit, refund by check",
+      "steps": [
+        { "op": "creditMemo", "memo": "M1", "request": { "date": "2026-11-02", "lines": "memoLines", "applications": [] }, "expect": { "remaining": "399.75", "contactBalance": "350.25" } },
+        {
+          "op": "refund", "refund": "R1",
+          "request": { "source": "M1", "date": "2026-11-05", "amount": "399.75", "paymentMethod": "check", "printLater": true, "from": "operating" },
+          "expect": {
+            "lines": [ { "account": "accounts_receivable", "debit": "399.75" }, { "account": "operating", "credit": "399.75" } ],
+            "remaining": "0.00", "contactBalance": "750.00", "operatingChange": "-399.75", "inPrintQueue": true
+          }
+        },
+        { "op": "voidRefund", "refund": "R1", "expect": { "remaining": "399.75", "contactBalance": "350.25", "operatingChange": "0.00", "inPrintQueue": false } }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Partial refund, apply the rest, over-refund",
+      "steps": [
+        { "op": "creditMemo", "memo": "M1", "request": { "date": "2026-11-02", "lines": "memoLines", "applications": [] }, "expect": { "remaining": "399.75" } },
+        { "op": "refund", "refund": "R1", "request": { "source": "M1", "date": "2026-11-05", "amount": "100.00", "paymentMethod": "check", "printLater": true, "from": "operating" }, "expect": { "remaining": "299.75", "contactBalance": "450.25" } },
+        { "op": "applyMemo", "memo": "M1", "request": { "date": "2026-11-10", "applications": [ { "invoice": "B" } ] }, "expect": { "applied": { "B": "299.75" }, "remaining": "0.00", "invoices": { "A": "250.00", "B": "200.25" }, "contactBalance": "450.25" } },
+        { "op": "refund", "request": { "source": "M1", "date": "2026-11-12", "amount": "0.01", "paymentMethod": "check", "printLater": true, "from": "operating" }, "expect": { "error": "CREDIT_NOT_AVAILABLE", "status": 409, "details": { "remaining": "0.00" } } },
+        { "op": "voidMemo", "memo": "M1", "expect": { "error": "CREDIT_REFUNDED", "status": 409 } },
+        { "op": "voidRefund", "refund": "R1", "expect": { "remaining": "100.00", "contactBalance": "350.25" } },
+        { "op": "voidMemo", "memo": "M1", "expect": { "invoices": { "A": "250.00", "B": "500.00" }, "contactBalance": "750.00" } }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Statement aging = A/R aging = GL",
+      "steps": [
+        { "op": "creditMemo", "memo": "M1", "request": { "date": "2026-11-02", "lines": "memoLines", "applications": [] }, "expect": { "remaining": "399.75" } },
+        { "op": "payment", "payment": "P1", "request": { "date": "2026-11-30", "amount": "50.00", "depositTo": "payments_clearing", "applications": [] } },
+        {
+          "op": "statement",
+          "request": { "asOf": "2026-11-30", "format": "open_item" },
+          "expect": {
+            "openItems": [
+              { "ref": "A", "date": "2026-09-15", "dueDate": "2026-10-15", "amount": "250.00", "open": "250.00", "days": 46, "bucket": "days31to60" },
+              { "ref": "B", "date": "2026-10-20", "dueDate": "2026-11-19", "amount": "500.00", "open": "500.00", "days": 11, "bucket": "days1to30" },
+              { "ref": "M1", "date": "2026-11-02", "amount": "-399.75", "open": "-399.75", "days": 28, "bucket": "days1to30" },
+              { "ref": "P1", "date": "2026-11-30", "amount": "-50.00", "open": "-50.00", "days": 0, "bucket": "current" }
+            ],
+            "aging": { "current": "-50.00", "days1to30": "100.25", "days31to60": "250.00", "days61to90": "0.00", "over90": "0.00", "total": "300.25" },
+            "amountDue": "300.25",
+            "difference": "0.00",
+            "contactBalance": "300.25",
+            "agingSummaryRow": "300.25"
+          }
+        },
+        { "op": "payment", "payment": "P2", "request": { "date": "2026-12-03", "amount": "100.00", "depositTo": "payments_clearing", "applications": [] } },
+        {
+          "op": "statement",
+          "request": { "asOf": "2026-11-30", "format": "open_item" },
+          "expect": { "aging": { "current": "-50.00", "days1to30": "100.25", "days31to60": "250.00", "days61to90": "0.00", "over90": "0.00", "total": "300.25" }, "amountDue": "300.25" }
+        },
+        {
+          "op": "statement",
+          "request": { "asOf": "2026-11-30", "format": "balance_forward", "start": "2026-11-01" },
+          "expect": {
+            "openingBalance": "750.00",
+            "lines": [ { "ref": "M1", "date": "2026-11-02", "amount": "-399.75", "balance": "350.25" }, { "ref": "P1", "date": "2026-11-30", "amount": "-50.00", "balance": "300.25" } ],
+            "amountDue": "300.25"
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Finance charges",
+      "seed": {
+        "company": { "defaultSalesTaxRate": "0.0000" },
+        "settings": { "financeChargeAnnualRate": "18.00", "financeChargeGraceDays": 10, "financeChargeMinimum": "2.00", "financeChargeOnFinanceCharges": false },
+        "clients": [
+          { "key": "PF", "name": "Prairie Fork Kennels", "invoices": [ { "key": "PF1", "number": "2001", "date": "2026-08-31", "dueDate": "2026-09-30", "total": "1000.00" }, { "key": "PF2", "number": "2002", "date": "2026-09-15", "dueDate": "2026-10-15", "total": "50.00" } ] },
+          { "key": "LW", "name": "Low Water Bait & Tackle", "invoices": [ { "key": "LW1", "number": "2003", "date": "2026-09-15", "dueDate": "2026-10-15", "total": "30.00" } ] },
+          { "key": "CG", "name": "Cedar Gap Outfitters", "invoices": [ { "key": "CG1", "number": "2004", "date": "2026-08-31", "dueDate": "2026-09-30", "total": "600.00" } ], "creditMemos": [ { "key": "CGM", "date": "2026-10-01", "total": "400.00" } ] }
+        ]
+      },
+      "steps": [
+        {
+          "op": "financeChargePreview",
+          "request": { "assessmentDate": "2026-10-31" },
+          "expect": {
+            "period": "2026-10",
+            "rows": {
+              "PF": { "charge": "15.68", "ticked": true, "sources": [ { "invoice": "PF1", "open": "1000.00", "fromDate": "2026-09-30", "days": 31, "amount": "15.29" }, { "invoice": "PF2", "open": "50.00", "fromDate": "2026-10-15", "days": 16, "amount": "0.39" } ] },
+              "LW": { "charge": "2.00", "ticked": true, "sources": [ { "invoice": "LW1", "open": "30.00", "fromDate": "2026-10-15", "days": 16, "amount": "0.24" } ], "minimumAdjustment": "1.76" },
+              "CG": { "charge": "9.17", "ticked": false, "hasOpenCredits": "400.00", "sources": [ { "invoice": "CG1", "open": "600.00", "fromDate": "2026-09-30", "days": 31, "amount": "9.17" } ] }
+            }
+          }
+        },
+        {
+          "op": "financeChargeAssess", "key": "K1",
+          "request": { "assessmentDate": "2026-10-31", "contacts": [ { "contact": "PF", "expectedCharge": "15.68" }, { "contact": "LW", "expectedCharge": "2.00" } ] },
+          "expect": {
+            "period": "2026-10",
+            "invoices": { "PF": { "name": "FC-PF-OCT", "total": "15.68", "date": "2026-10-31", "dueDate": "2026-10-31" }, "LW": { "name": "FC-LW-OCT", "total": "2.00", "date": "2026-10-31", "dueDate": "2026-10-31" } },
+            "lines": { "PF": [ { "account": "accounts_receivable", "debit": "15.68" }, { "account": "finance_charge_income", "credit": "15.29" }, { "account": "finance_charge_income", "credit": "0.39" } ], "LW": [ { "account": "accounts_receivable", "debit": "2.00" }, { "account": "finance_charge_income", "credit": "0.24" }, { "account": "finance_charge_income", "credit": "1.76" } ] }
+          }
+        },
+        { "op": "financeChargeAssess", "key": "K2", "request": { "assessmentDate": "2026-10-31", "contacts": [ { "contact": "PF", "expectedCharge": "15.68" } ] }, "expect": { "error": "FINANCE_CHARGE_ASSESSED", "status": 409 } },
+        { "op": "financeChargeAssess", "key": "K1", "request": { "assessmentDate": "2026-10-31", "contacts": [ { "contact": "PF", "expectedCharge": "15.68" }, { "contact": "LW", "expectedCharge": "2.00" } ] }, "expect": { "sameAsKey": "K1" } },
+        {
+          "op": "financeChargePreview",
+          "request": { "assessmentDate": "2026-11-30", "contacts": [ "PF" ] },
+          "expect": { "period": "2026-11", "rows": { "PF": { "charge": "15.53", "sources": [ { "invoice": "PF1", "open": "1000.00", "fromDate": "2026-10-31", "days": 30, "amount": "14.79" }, { "invoice": "PF2", "open": "50.00", "fromDate": "2026-10-31", "days": 30, "amount": "0.74" } ] } } }
+        },
+        { "op": "financeChargeSettings", "settings": { "financeChargeOnFinanceCharges": true } },
+        {
+          "op": "financeChargePreview",
+          "request": { "assessmentDate": "2026-11-30", "contacts": [ "PF" ] },
+          "expect": { "rows": { "PF": { "charge": "15.76", "sources": [ { "invoice": "PF1", "open": "1000.00", "fromDate": "2026-10-31", "days": 30, "amount": "14.79" }, { "invoice": "PF2", "open": "50.00", "fromDate": "2026-10-31", "days": 30, "amount": "0.74" }, { "invoice": "FC-PF-OCT", "open": "15.68", "fromDate": "2026-10-31", "days": 30, "amount": "0.23" } ] } } }
+        },
+        { "op": "financeChargeSettings", "settings": { "financeChargeOnFinanceCharges": false } },
+        { "op": "financeChargeAssess", "key": "K3", "request": { "assessmentDate": "2026-11-30", "contacts": [ { "contact": "PF", "expectedCharge": "15.53" } ] }, "expect": { "period": "2026-11", "invoices": { "PF": { "name": "FC-PF-NOV", "total": "15.53" } } } },
+        { "op": "voidInvoice", "invoice": "FC-PF-OCT" },
+        { "op": "financeChargePreview", "request": { "assessmentDate": "2026-10-31", "contacts": [ "PF" ] }, "expect": { "rows": { "PF": { "charge": "0.00", "sources": [] } } } },
+        { "op": "voidInvoice", "invoice": "FC-PF-NOV" },
+        {
+          "op": "financeChargePreview",
+          "request": { "assessmentDate": "2026-11-30", "contacts": [ "PF" ] },
+          "expect": { "rows": { "PF": { "charge": "31.21", "sources": [ { "invoice": "PF1", "open": "1000.00", "fromDate": "2026-09-30", "days": 61, "amount": "30.08" }, { "invoice": "PF2", "open": "50.00", "fromDate": "2026-10-15", "days": 46, "amount": "1.13" } ] } } }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Sales receipt with an item and tax",
+      "steps": [
+        {
+          "op": "salesReceipt",
+          "request": { "date": "2026-11-04", "depositTo": "payments_clearing", "lines": [ { "account": "sales", "description": "Grooming kit", "quantity": "2", "unitPrice": "49.99", "isTaxable": true } ] },
+          "expect": {
+            "subtotal": "99.98", "taxTotal": "8.25", "total": "108.23",
+            "lines": [ { "account": "payments_clearing", "debit": "108.23" }, { "account": "sales", "credit": "99.98" }, { "account": "sales_tax_payable", "credit": "8.25" } ]
+          }
+        },
+        {
+          "op": "salesReceipt",
+          "request": { "date": "2026-11-04", "depositTo": "payments_clearing", "lines": [ { "account": "sales", "description": "Returned kit", "quantity": "1", "unitPrice": "-20.00", "isTaxable": false } ] },
+          "expect": { "error": "NEGATIVE_RECEIPT_NEEDS_BANK", "status": 400 }
+        }
+      ]
+    }
+  ]
+}

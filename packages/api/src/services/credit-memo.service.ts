@@ -7,7 +7,7 @@ import { eq, and } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
-import { accounts } from '../db/schema/index.js';
+import { accounts, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import * as documentNumbers from './document-number.service.js';
@@ -64,7 +64,8 @@ export async function createCreditMemoWithWarnings(
       contactId: input.contactId,
       memo: input.memo,
       total: subtotal.toFixed(4),
-      appliedToInvoiceId: input.appliedToInvoiceId,
+      // U-137 (Q-P22f): the legacy pointer is no longer stamped; the invoice
+      // is settled by a real application below instead.
       lines: [
         ...revenueLines,
         subtotal.isNegative()
@@ -72,6 +73,16 @@ export async function createCreditMemoWithWarnings(
           : { accountId: arAccount.id, debit: '0', credit: subtotal.toFixed(4) },
       ],
     }, userId, companyId, tx);
+    if (input.appliedToInvoiceId && subtotal.greaterThan(0)) {
+      // The old appliedToInvoiceId field: apply min(total, cent balance) to the
+      // invoice, dated with the memo (applied_date NULL), in this transaction.
+      const payments = await import('./payment.service.js');
+      const [memo] = await tx.select().from(transactions)
+        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transaction.id))).for('update').limit(1);
+      await payments.applyCreditInTx(tx, tenantId, memo!, {
+        date: input.txnDate, applications: [{ invoiceId: input.appliedToInvoiceId }],
+      }, userId, companyId, { withSource: true });
+    }
     return { transaction, warnings };
   });
 }

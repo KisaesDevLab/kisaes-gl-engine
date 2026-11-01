@@ -165,6 +165,25 @@ paymentsRouter.get('/deposits-on-hand', describe({
   res.json({ data, total: data.length });
 });
 
+paymentsRouter.get('/credits', describe({
+  summary: 'Open A/R credits of a customer: payments and credit memos (credit-memo-apply-v1)',
+  description: 'Response {data: [{sourceId, kind: payment | credit_memo, date, number, total, remaining, intendedInvoiceId?}], total}: ' +
+    'posted customer payments with unapplied credit and posted credit memos with credit left, oldest first (date, then created). ' +
+    'remaining = total - live applications - live refunds (2 places). Held deposits and draws on them (GET /payments/deposits-on-hand), ' +
+    'bounced payments and fully used sources are left out. number: the memo number, or the payment\'s reference (else its number). ' +
+    'intendedInvoiceId: a legacy credit memo\'s appliedToInvoiceId, only while that invoice is open (Q-P22f); preselect it. ' +
+    'Use sourceId as creditApplications[].sourcePaymentId (alias sourceId) or with POST /credit-memos/:id/apply. ' +
+    'A customer of another company is 404.',
+  query: z.object({ customerId: z.string().uuid() }),
+}), async (req, res) => {
+  const customerId = String(req.query['customerId'] ?? '');
+  if (!/^[0-9a-f-]{36}$/i.test(customerId)) {
+    res.status(400).json({ error: { message: 'customerId is required', code: 'VALIDATION_ERROR' } });
+    return;
+  }
+  res.json(await paymentService.getCreditSources(req.tenantId, customerId, req.companyId));
+});
+
 paymentsRouter.get('/open-invoices/:customerId', describe({
   summary: 'Open invoices of a customer',
   description: 'Response {invoices: [{id, invoiceNumber, txnDate, dueDate, total, amountPaid, balanceDue (cent balance, 2 places), ' +
@@ -208,7 +227,7 @@ paymentsRouter.post('/unapply', closingPasswordLimiter, lockContextMiddleware, i
   description: 'Response {message}. The invoice reopens (status from its cent balance: partial while anything is applied, else ' +
     'viewed / sent / draft); the money stays an A/R credit on the client. The application row is kept, marked set aside, and the ' +
     `change is audited. expectedUpdatedAt (the payment's): mismatch 409 STALE. 409 PAYMENT_BOUNCED for a bounced payment; 404 when ` +
-    `the payment has no live application to the invoice. Closed period on the payment's date. ${closedPeriodNote}`,
+    `the payment has no live application to the invoice. 409 APPLICATION_HAS_ADJUSTMENTS {invoiceId} when the row took a discount or write-off (U-137: the payment keeps those GL lines; edit or void the payment instead). Closed period on the row's applied date. ${closedPeriodNote}`,
   body: unapplyPaymentSchema.extend(closing),
 }), async (req, res) => {
   await paymentService.unapplyPayment(req.tenantId, req.body.paymentId, req.body.invoiceId, {

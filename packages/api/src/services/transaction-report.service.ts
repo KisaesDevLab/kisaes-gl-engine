@@ -86,7 +86,8 @@ export async function getTransactionDetail(tenantId: string, txnId: string, comp
       .innerJoin(tags, and(eq(tags.id, transactionTags.tagId), eq(tags.tenantId, tenantId)))
       .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, txnId)))
       .orderBy(asc(tags.name)),
-    txn.appliedToInvoiceId
+    // U-137 (Q-P22f): a credit memo's legacy pointer never settled the invoice; not shown.
+    txn.appliedToInvoiceId && txn.txnType !== 'credit_memo'
       ? db.select({ txnNumber: transactions.txnNumber }).from(transactions)
         .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txn.appliedToInvoiceId))).limit(1)
       : [],
@@ -178,13 +179,17 @@ function linksFor(tenantId: string, txnId: string, txnType: string, appliedToInv
       // memos and Stripe refunds only set applied_to_invoice_id. Same union
       // as the ar_apps CTE in report.service.ts.
       return sql`
-        SELECT pa.payment_id AS id, 'payment' AS relation, pa.amount::numeric AS amount
+        SELECT pa.payment_id AS id,
+          CASE WHEN EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id
+            AND cm.txn_type = 'credit_memo') THEN 'credit' ELSE 'payment' END AS relation, pa.amount::numeric AS amount
           FROM payment_applications pa WHERE pa.tenant_id = ${tenantId} AND pa.invoice_id = ${txnId}
             AND ${keptApplication}
         UNION ALL
         SELECT tp.id, CASE WHEN tp.txn_type = 'customer_payment' THEN 'payment' ELSE 'credit' END, tp.total::numeric
           FROM transactions tp
           WHERE tp.tenant_id = ${tenantId} AND tp.applied_to_invoice_id = ${txnId}
+            -- U-137 (Q-P22f): a credit memo's legacy pointer never lowered the invoice.
+            AND tp.txn_type <> 'credit_memo'
             AND NOT EXISTS (SELECT 1 FROM payment_applications pa2
               WHERE pa2.tenant_id = ${tenantId} AND pa2.payment_id = tp.id AND pa2.invoice_id = ${txnId})`;
     case 'customer_payment':
@@ -199,6 +204,12 @@ function linksFor(tenantId: string, txnId: string, txnType: string, appliedToInv
             AND NOT EXISTS (SELECT 1 FROM payment_applications pa2
               WHERE pa2.tenant_id = ${tenantId} AND pa2.payment_id = tp.id AND pa2.invoice_id = tp.applied_to_invoice_id)`;
     case 'credit_memo':
+      // U-137: a memo's live application rows (its legacy pointer never
+      // lowered the invoice, so it is not a link: Q-P22f).
+      return sql`
+        SELECT pa.invoice_id AS id, 'paid_invoice' AS relation, pa.amount::numeric AS amount
+          FROM payment_applications pa WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${txnId}
+            AND ${keptApplication}`;
     case 'customer_refund':
       if (!appliedToInvoiceId) return null;
       return sql`
