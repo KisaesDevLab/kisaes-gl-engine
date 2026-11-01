@@ -3,8 +3,7 @@
 -- Free for small businesses; see LICENSE for terms.
 --
 -- Customer statements (U-112, U-140; customer-statement-v1,
--- customer-statement-send-v1). Number provisional: renumbered at merge time
--- if another migration lands first.
+-- customer-statement-send-v1). Finance charges (U-141) follow as 0251.
 --
 -- 1. customer_statement_runs: one row per run (the Idempotency-Key entity).
 -- 2. customer_statements: one numbered snapshot per client and run, from the
