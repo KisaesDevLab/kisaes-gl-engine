@@ -957,7 +957,8 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     const { buildARAgingSummary, buildCustomerBalanceSummary } = await import('../services/report.service.js');
     const owed = async () => {
       const aging = await buildARAgingSummary(c.tenantId, '2026-12-31', c.companyId) as any;
-      const mine = (aging.details as any[]).filter((d) => d.contact_id === c.customer).reduce((t, d) => t + d.balance, 0);
+      // U-142: the aging also lists open credits; this test follows the invoices.
+      const mine = (aging.details as any[]).filter((d) => d.contact_id === c.customer && d.kind === 'invoice').reduce((t, d) => t + d.balance, 0);
       const bal = (await buildCustomerBalanceSummary(c.tenantId, c.companyId) as any).data.find((r: any) => r.id === c.customer);
       return [mine.toFixed(2), bal ? Number(bal.balance).toFixed(2) : '0.00'];
     };

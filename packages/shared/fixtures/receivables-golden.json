@@ -52,7 +52,7 @@
             "remaining": "399.75",
             "contactBalance": "350.25",
             "invoices": { "A": "250.00", "B": "500.00" },
-            "engineOnly": { "salesTaxLiability": { "taxableSales": "-300.00", "tax": "-24.75" } }
+            "engineOnly": { "salesTaxLiability": { "totalSales": "-375.00", "totalTax": "-24.75" } }
           }
         }
       ]
