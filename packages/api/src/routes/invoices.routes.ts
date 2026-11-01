@@ -176,7 +176,8 @@ invoicesRouter.post('/:id/sent', keyedInvoiceById(200), validate(recordDocumentS
 // invoiceEmailJson for this route ahead of the global parser.
 export const INVOICE_EMAIL_JSON_LIMIT = '15mb';
 const invoiceEmailJsonParser = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
-const INVOICE_EMAIL_PATH = /^\/api\/v1\/invoices\/[^/]+\/email\/?$/;
+// U-140: a customer statement email carries its PDF the same way.
+const INVOICE_EMAIL_PATH = /^\/api\/v1\/(invoices|customer-statements)\/[^/]+\/email\/?$/;
 const INVOICE_EMAIL_JSON_MAX_BYTES = 15 * 1024 * 1024;
 
 /**
@@ -239,7 +240,10 @@ invoicesRouter.post('/:id/email', idempotent({
 
 export const outboxItemDoc = z.object({
   id: z.string().uuid(),
-  transactionId: z.string().uuid(),
+  transactionId: z.string().uuid().nullable(),
+  // U-140: Outbox rows of customer statements (transactionId null).
+  kind: z.enum(['transaction', 'customer_statement']),
+  customerStatementId: z.string().uuid().nullable(),
   txnNumber: z.string().nullable(),
   txnType: z.string().nullable(),
   txnStatus: z.string().nullable(),

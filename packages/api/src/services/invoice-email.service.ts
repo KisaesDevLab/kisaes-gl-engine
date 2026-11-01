@@ -25,7 +25,7 @@
 
 import { and, asc, eq } from 'drizzle-orm';
 import { db, type Tx } from '../db/index.js';
-import { contacts, formEmailQueue, transactions } from '../db/schema/index.js';
+import { contacts, formEmailQueue, transactions, customerStatements, customerStatementEmailQueue } from '../db/schema/index.js';
 import { INVOICE_EMAIL_PDF_MAX_BYTES } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -262,16 +262,57 @@ function queueQuery(tenantId: string, companyId?: string, id?: string) {
     ));
 }
 
-/** GET /forms/email-queue: the company's Outbox, oldest first. */
-export async function listEmailQueue(tenantId: string, companyId?: string) {
-  return queueQuery(tenantId, companyId).orderBy(asc(formEmailQueue.createdAt), asc(formEmailQueue.id));
+/** Statement Outbox rows (U-140) in the forms Outbox shape. */
+function statementQueueQuery(tenantId: string, companyId?: string, id?: string) {
+  return db.select({
+    id: customerStatementEmailQueue.id,
+    customerStatementId: customerStatementEmailQueue.customerStatementId,
+    txnNumber: customerStatements.number,
+    contactName: contacts.displayName,
+    to: customerStatementEmailQueue.toAddresses,
+    cc: customerStatementEmailQueue.ccAddresses,
+    bcc: customerStatementEmailQueue.bccAddresses,
+    subject: customerStatementEmailQueue.subject,
+    body: customerStatementEmailQueue.body,
+    userId: customerStatementEmailQueue.userId,
+    createdAt: customerStatementEmailQueue.createdAt,
+  }).from(customerStatementEmailQueue)
+    .leftJoin(customerStatements, and(eq(customerStatements.tenantId, customerStatementEmailQueue.tenantId), eq(customerStatements.id, customerStatementEmailQueue.customerStatementId)))
+    .leftJoin(contacts, and(eq(contacts.tenantId, customerStatementEmailQueue.tenantId), eq(contacts.id, customerStatements.contactId)))
+    .where(and(
+      eq(customerStatementEmailQueue.tenantId, tenantId),
+      ...(companyId ? [eq(customerStatementEmailQueue.companyId, companyId)] : []),
+      ...(id ? [eq(customerStatementEmailQueue.id, id)] : []),
+    ));
+}
+
+type QueueRow = Awaited<ReturnType<typeof queueQuery>>[number];
+type StatementQueueRow = Awaited<ReturnType<typeof statementQueueQuery>>[number];
+/** An Outbox row (U-127; U-140 adds kind and customerStatementId). */
+export type OutboxItem = Omit<QueueRow, 'transactionId'> & {
+  transactionId: string | null; kind: 'transaction' | 'customer_statement'; customerStatementId: string | null;
+};
+const fromForm = (r: QueueRow): OutboxItem => ({ ...r, kind: 'transaction', customerStatementId: null });
+const fromStatement = (r: StatementQueueRow): OutboxItem => ({
+  id: r.id, transactionId: null, txnNumber: r.txnNumber ?? null, txnType: 'customer_statement', txnStatus: null,
+  contactName: r.contactName ?? null, to: r.to, cc: r.cc, bcc: r.bcc, subject: r.subject, body: r.body, userId: r.userId,
+  createdAt: r.createdAt, kind: 'customer_statement', customerStatementId: r.customerStatementId,
+});
+
+/** GET /forms/email-queue: the company's Outbox (forms and statements), oldest first. */
+export async function listEmailQueue(tenantId: string, companyId?: string): Promise<OutboxItem[]> {
+  const forms = (await queueQuery(tenantId, companyId)).map(fromForm);
+  const statements = (await statementQueueQuery(tenantId, companyId)).map(fromStatement);
+  return [...forms, ...statements].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
 }
 
 /** One Outbox message of the company (404 otherwise). */
-export async function getEmailQueueItem(tenantId: string, id: string, companyId?: string) {
+export async function getEmailQueueItem(tenantId: string, id: string, companyId?: string): Promise<OutboxItem> {
   const [item] = await queueQuery(tenantId, companyId, id).limit(1);
-  if (!item) throw outboxGone();
-  return item;
+  if (item) return fromForm(item);
+  const [st] = await statementQueueQuery(tenantId, companyId, id).limit(1);
+  if (!st) throw outboxGone();
+  return fromStatement(st);
 }
 
 /**
@@ -306,14 +347,61 @@ export async function queueInvoiceEmail(
   return getEmailQueueItem(tenantId, id, companyId);
 }
 
-/** DELETE /forms/email-queue/:id: removes one Outbox message of the company (404 otherwise). */
+/** DELETE /forms/email-queue/:id: removes one Outbox message (form or statement) of the company (404 otherwise). */
 export async function deleteEmailQueueItem(tenantId: string, id: string, userId?: string, companyId?: string) {
   await db.transaction(async (tx) => {
     const [gone] = await tx.delete(formEmailQueue).where(and(
       eq(formEmailQueue.tenantId, tenantId), eq(formEmailQueue.id, id),
       ...(companyId ? [eq(formEmailQueue.companyId, companyId)] : []),
     )).returning({ transactionId: formEmailQueue.transactionId });
-    if (!gone) throw outboxGone();
-    await auditLog(tenantId, 'delete', 'form_email_queue', id, null, { via: 'removed', transactionId: gone.transactionId }, userId, tx);
+    if (gone) {
+      await auditLog(tenantId, 'delete', 'form_email_queue', id, null, { via: 'removed', transactionId: gone.transactionId }, userId, tx);
+      return;
+    }
+    const [st] = await tx.delete(customerStatementEmailQueue).where(and(
+      eq(customerStatementEmailQueue.tenantId, tenantId), eq(customerStatementEmailQueue.id, id),
+      ...(companyId ? [eq(customerStatementEmailQueue.companyId, companyId)] : []),
+    )).returning({ customerStatementId: customerStatementEmailQueue.customerStatementId });
+    if (!st) throw outboxGone();
+    await auditLog(tenantId, 'delete', 'customer_statement_email_queue', id, null, { via: 'removed', customerStatementId: st.customerStatementId }, userId, tx);
+  });
+}
+
+/**
+ * Sends one email with a client-made PDF (U-127 rules) for a document that
+ * is not an invoice (U-140 statements): PDF and mail server checked first,
+ * then in one database transaction: the Idempotency-Key claim,  * (locks and checks the document, returns the recorder), the send, the
+ * record. Recipients, subject and body are never logged.
+ */
+export async function sendFormEmail(
+  tenantId: string, companyId: string | undefined, input: InvoiceEmailInput,
+  prepare: (tx: Tx) => Promise<(recipients: string[]) => Promise<void>>,
+) {
+  const pdf = decodePdf(input.pdfBase64);
+  const smtp = await resolveSmtp(tenantId, companyId);
+  let transport: ReturnType<typeof createMailTransport>;
+  try {
+    transport = createMailTransport(smtp.options);
+  } catch (err) {
+    throw mailError(err);
+  }
+  const recipients = [...new Set([...input.to, ...input.cc, ...input.bcc].map((a) => a.trim()))];
+  await db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const record = await prepare(tx);
+    try {
+      await transport.sendMail({
+        from: smtp.from,
+        to: input.to,
+        ...(input.cc.length ? { cc: input.cc } : {}),
+        ...(input.bcc.length ? { bcc: input.bcc } : {}),
+        subject: oneLine(input.subject),
+        text: input.body,
+        attachments: [{ filename: input.pdfFileName.trim(), content: pdf, contentType: 'application/pdf' }],
+      });
+    } catch (err) {
+      throw mailError(err);
+    }
+    await record(recipients);
   });
 }

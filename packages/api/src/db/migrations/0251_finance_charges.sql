@@ -3,9 +3,6 @@
 -- Free for small businesses; see LICENSE for terms.
 --
 -- Finance charges (U-141; finance-charges-v1, idempotency-finance-charges-v1).
--- Number provisional: renumbered at merge time if another migration (for
--- example 0250 customer statements) lands first.
---
 -- 1. companies: finance-charge settings. finance_charge_annual_rate NULL =
 --    finance charges off (Q-P22a); minimum, grace days, compounding,
 --    income account, print later.
@@ -15,8 +12,8 @@
 --    live assessment per client and month) and finance_charge_sources (the
 --    invoices charged, with the days charged through).
 --
--- Additive; idempotent. Ordering: after 0249 (renumbered after 0250 customer statements when both merge).
--- Rollback: 0250_finance_charges.rollback.sql. After a rollback and a
+-- Additive; idempotent. Ordering: after 0250 (customer statements, U-140).
+-- Rollback: 0251_finance_charges.rollback.sql. After a rollback and a
 -- re-upgrade, periods already charged can be charged again (the guard
 -- rows are gone); the posted finance-charge invoices stay.
 

@@ -173,7 +173,7 @@ describe('finance-charges-v1 (U-141)', () => {
     expect(a.status).not.toBe(201);
   });
 
-  it('0250 rolls back and applies again', async () => {
+  it('0251 rolls back and applies again', async () => {
     const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../db/migrations');
     const run = async (file: string) => {
       for (const stmt of readFileSync(path.join(dir, file), 'utf8').split('--> statement-breakpoint')) {
@@ -181,9 +181,9 @@ describe('finance-charges-v1 (U-141)', () => {
         if (body) await db.execute(sql.raw(body));
       }
     };
-    await run('0250_finance_charges.rollback.sql');
+    await run('0251_finance_charges.rollback.sql');
     expect(((await db.execute(sql`SELECT to_regclass('public.finance_charge_runs') AS t`)).rows[0] as { t: string | null }).t).toBeNull();
-    await run('0250_finance_charges.sql');
+    await run('0251_finance_charges.sql');
     expect(((await db.execute(sql`SELECT to_regclass('public.finance_charge_runs') AS t`)).rows[0] as { t: string | null }).t).not.toBeNull();
   });
 });

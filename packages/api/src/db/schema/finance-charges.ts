@@ -5,7 +5,7 @@
 import { pgTable, uuid, char, date, timestamp, integer, decimal, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
-// Finance charges (U-141, migration 0250). A run (the Idempotency-Key
+// Finance charges (U-141, migration 0251). A run (the Idempotency-Key
 // entity) assesses clients for a month; one live assessment per client and
 // month (partial unique index); its sources record the days charged through.
 

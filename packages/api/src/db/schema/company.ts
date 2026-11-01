@@ -52,7 +52,7 @@ export const companies = pgTable('companies', {
   writeOffAccountId: uuid('write_off_account_id'),
   writeOffThreshold: decimal('write_off_threshold', { precision: 19, scale: 4 }).default('1.0000'),
   salesDiscountAccountId: uuid('sales_discount_account_id'),
-  // Finance charges (U-141, migration 0250): annual rate (percent; null = off),
+  // Finance charges (U-141, migration 0251): annual rate (percent; null = off),
   // minimum charge, grace days, compounding, income account, print later.
   financeChargeAnnualRate: decimal('finance_charge_annual_rate', { precision: 7, scale: 4 }),
   financeChargeMinimum: decimal('finance_charge_minimum', { precision: 19, scale: 4 }).notNull().default('0'),

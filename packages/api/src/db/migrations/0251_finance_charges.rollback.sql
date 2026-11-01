@@ -2,7 +2,7 @@
 -- Licensed under the PolyForm Small Business License 1.0.0.
 -- Free for small businesses; see LICENSE for terms.
 --
--- Rollback for 0250 (finance charges, U-141). The code that reads these
+-- Rollback for 0251 (finance charges, U-141). The code that reads these
 -- must be rolled back with it. LOST: the finance-charge settings, which
 -- invoices are finance charges, and the run / assessment / charged-through
 -- rows that stop a client being charged twice for a month or a day. The

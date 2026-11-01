@@ -106,7 +106,7 @@ export const transactions = pgTable('transactions', {
   // Customer deposits (U-135, migration 0249): a payment held as a deposit,
   // and a payment that draws on one.
   holdsDeposit: boolean('holds_deposit').notNull().default(false),
-  // U-141 (migration 0250): an invoice posted by a finance-charge assessment.
+  // U-141 (migration 0251): an invoice posted by a finance-charge assessment.
   isFinanceCharge: boolean('is_finance_charge').notNull().default(false),
   fromDepositId: uuid('from_deposit_id'),
   // Public invoice link + Stripe payment

@@ -107,10 +107,19 @@ export const IDEMPOTENCY_CREDIT_MEMO_V1_ROUTES = [
 /** Keyed by idempotency-finance-charges-v1 (U-141). */
 export const IDEMPOTENCY_FINANCE_CHARGES_V1_ROUTES = ['post /api/v1/finance-charges/assess'];
 
+/** Keyed by idempotency-customer-statements-v1 (U-140). */
+export const IDEMPOTENCY_CUSTOMER_STATEMENTS_V1_ROUTES = [
+  'post /api/v1/customer-statement-runs',
+  'post /api/v1/customer-statements/{id}/sent',
+  'post /api/v1/customer-statements/{id}/email',
+  'post /api/v1/customer-statements/{id}/email-later',
+].sort();
+
 const ALL_KEYED_ROUTES = [
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
   ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES, ...IDEMPOTENCY_INVOICE_V1_ROUTES,
-  ...IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES, ...IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES, ...IDEMPOTENCY_CREDIT_MEMO_V1_ROUTES, ...IDEMPOTENCY_FINANCE_CHARGES_V1_ROUTES,
+  ...IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES, ...IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES, ...IDEMPOTENCY_CREDIT_MEMO_V1_ROUTES, ...IDEMPOTENCY_CUSTOMER_STATEMENTS_V1_ROUTES,
+  ...IDEMPOTENCY_FINANCE_CHARGES_V1_ROUTES,
 ].sort();
 
 let paths: Paths;

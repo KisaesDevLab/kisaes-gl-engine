@@ -449,7 +449,19 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'form_email_queue.company_id': 'tenant-ref:companies',
   'form_email_queue.transaction_id': 'tenant-ref:transactions',
   'form_email_queue.user_id': 'identity',
-  // Finance charges (U-141, migration 0250).
+  // Customer statements (U-112 / U-140, migration 0250): snapshots are display data with no ids.
+  'customer_statement_runs.company_id': 'tenant-ref:companies',
+  'customer_statement_runs.created_by': 'identity',
+  'customer_statements.run_id': 'tenant-ref:customer_statement_runs',
+  'customer_statements.company_id': 'tenant-ref:companies',
+  'customer_statements.contact_id': 'tenant-ref:contacts',
+  'customer_statement_send_events.company_id': 'tenant-ref:companies',
+  'customer_statement_send_events.customer_statement_id': 'tenant-ref:customer_statements',
+  'customer_statement_send_events.user_id': 'identity',
+  'customer_statement_email_queue.company_id': 'tenant-ref:companies',
+  'customer_statement_email_queue.customer_statement_id': 'tenant-ref:customer_statements',
+  'customer_statement_email_queue.user_id': 'identity',
+  // Finance charges (U-141, migration 0251).
   'companies.finance_charge_income_account_id': 'tenant-ref:accounts',
   'finance_charge_runs.company_id': 'tenant-ref:companies',
   'finance_charge_runs.created_by': 'identity',
