@@ -110,7 +110,7 @@ export async function arOpenItemsAsOf(executor: DbOrTx, q: OpenItemsQuery): Prom
 
   // 1. Items from the ledger.
   const itemRes = await executor.execute(sql`
-    SELECT COALESCE(jl.contact_id, t.contact_id) AS contact_id, t.id, t.txn_type, t.txn_number, t.reference_number,
+    SELECT COALESCE(jl.contact_id, t.contact_id) AS contact_id, t.contact_id AS txn_contact_id, t.id, t.txn_type, t.txn_number, t.reference_number,
       to_char(t.txn_date, 'YYYY-MM-DD') AS date, to_char(t.due_date, 'YYYY-MM-DD') AS due_date,
       t.source_txn_id, t.source_payment_id, t.applied_to_invoice_id, t.from_deposit_id,
       t.is_finance_charge AS is_finance_charge,
@@ -124,6 +124,7 @@ export async function arOpenItemsAsOf(executor: DbOrTx, q: OpenItemsQuery): Prom
   `);
   const items = new Map<string, Work>();
   const byTxn = new Map<string, Work>();
+  const allByTxn = new Map<string, Work[]>();
   const keyOf = (contactId: string | null, txnId: string) => `${contactId ?? ''}|${txnId}`;
   for (const r of itemRes.rows as Array<Record<string, unknown>>) {
     const contactId = (r['contact_id'] as string | null) ?? null;
@@ -145,9 +146,13 @@ export async function arOpenItemsAsOf(executor: DbOrTx, q: OpenItemsQuery): Prom
       isFinanceCharge: r['is_finance_charge'] === true,
     };
     items.set(keyOf(contactId, w.txnId), w);
-    // A transaction normally has one A/R client; with several (a journal
-    // entry), moves use the one of the transaction's own client.
-    if (!byTxn.has(w.txnId) || w.contactId === null) byTxn.set(w.txnId, w);
+    allByTxn.set(w.txnId, [...(allByTxn.get(w.txnId) ?? []), w]);
+    // A transaction normally has one A/R client. With several (a journal
+    // entry), its primary item is the one of the transaction's own client
+    // (t.contact_id), else the first seen; moves pair items by client first.
+    const txnContactId = (r['txn_contact_id'] as string | null) ?? null;
+    const prev = byTxn.get(w.txnId);
+    if (!prev || (w.contactId === txnContactId && prev.contactId !== txnContactId)) byTxn.set(w.txnId, w);
   }
   if (items.size === 0) return [];
 
@@ -173,12 +178,21 @@ export async function arOpenItemsAsOf(executor: DbOrTx, q: OpenItemsQuery): Prom
       AND NOT EXISTS (SELECT 1 FROM payment_applications pa2 WHERE pa2.tenant_id = tp.tenant_id AND pa2.payment_id = tp.id)
   `);
   for (const r of moveRes.rows as Array<Record<string, unknown>>) {
-    const src = byTxn.get(String(r['source_id']));
-    const inv = byTxn.get(String(r['invoice_id']));
-    // Both ends are in the item set unless one was filtered out by client
-    // (a move between two clients' items never happens: the source and the
-    // invoice belong to one client).
+    let src = byTxn.get(String(r['source_id']));
+    let inv = byTxn.get(String(r['invoice_id']));
+    // Both ends are in the item set unless one was filtered out by client.
+    // The source and the invoice belong to one client: when an end has
+    // items of several clients (a journal entry), use the pair of one client
+    // so each client's total stays its ledger balance.
     if (!src || !inv) continue;
+    if (src.contactId !== inv.contactId) {
+      const s0 = src;
+      const i0 = inv;
+      const pairInv = allByTxn.get(i0.txnId)!.find((x) => x.contactId === s0.contactId);
+      const pairSrc = allByTxn.get(s0.txnId)!.find((x) => x.contactId === i0.contactId);
+      if (pairInv) inv = pairInv;
+      else if (pairSrc) src = pairSrc;
+    }
     const settled = new Decimal(String(r['settled'] ?? '0'));
     inv.open = inv.open.minus(settled);
     src.open = src.open.plus(settled);
