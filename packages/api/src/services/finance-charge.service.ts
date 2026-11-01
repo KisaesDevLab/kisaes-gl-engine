@@ -25,6 +25,12 @@
  * and one finance-charge invoice posted per client: dated and due d, one
  * line per source invoice plus the minimum adjustment, all to the income
  * account, non-taxable. Voiding that invoice frees the period and its days.
+ *
+ * An assessment date in a later month than the current one is 400
+ * VALIDATION_ERROR on preview and assess (it would charge days that have
+ * not passed). A date later in the current month is allowed (month-end
+ * assessments prepared a few days early). "Current" is the UTC month of
+ * now + 1 day, so no time zone is refused its own today.
  */
 
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -140,8 +146,18 @@ async function computeRows(
     });
 }
 
-/** POST /finance-charges/preview: posts nothing; problems RATE_NOT_SET / INCOME_ACCOUNT_NOT_SET, never 4xx. */
+/** 400 VALIDATION_ERROR when d falls in a month after the current one (see the module comment). */
+export function assertAssessmentDateNotFuture(d: string, now: Date = new Date()): void {
+  const current = new Date(now.getTime() + 86_400_000).toISOString().slice(0, 7);
+  if (d.slice(0, 7) > current) {
+    throw AppError.badRequest('The assessment date is in a later month. Finance charges can be assessed up to the end of this month.',
+      'VALIDATION_ERROR', { field: 'assessmentDate', latestPeriod: current });
+  }
+}
+
+/** POST /finance-charges/preview: posts nothing; problems RATE_NOT_SET / INCOME_ACCOUNT_NOT_SET, never other 4xx. */
 export async function previewFinanceCharges(tenantId: string, companyId: string | undefined, input: { assessmentDate: string; contactIds?: string[] }) {
+  assertAssessmentDateNotFuture(input.assessmentDate);
   const settings = await loadSettings(db, tenantId, companyId);
   const problems: Array<{ code: 'RATE_NOT_SET' | 'INCOME_ACCOUNT_NOT_SET' }> = [];
   if (settings.annualRate === null) problems.push({ code: 'RATE_NOT_SET' });
@@ -170,6 +186,7 @@ export async function assessFinanceCharges(
     throw AppError.badRequest(`At most ${MAX_ASSESS_CONTACTS} clients per call.`, 'TOO_MANY_CONTACTS', { max: MAX_ASSESS_CONTACTS });
   }
   const d = input.assessmentDate;
+  assertAssessmentDateNotFuture(d);
   const period = d.slice(0, 7);
   try {
     const runId = await db.transaction(async (tx) => {
@@ -183,6 +200,7 @@ export async function assessFinanceCharges(
       // Lock the clients' invoices in id order (the lock order), then recompute under the locks.
       await tx.execute(sql`
         SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND txn_type = 'invoice' AND status = 'posted'
+          AND (company_id = ${companyId} OR company_id IS NULL)
           AND contact_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
         ORDER BY id FOR UPDATE`);
       const rows = await computeRows(tx, tenantId, companyId, d, settings, ids);
