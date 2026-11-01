@@ -467,4 +467,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * queue (U-115). No migration.
    */
   'refund-checks-v1',
+  /**
+   * Credit memos on the invoice line model (U-138): POST /credit-memos/preview (posts nothing; lines, subtotal, taxableBase, taxRate,
+   * taxTotal, total, contactBalanceAfter, openInvoices, suggestedApplications oldest first, remainingCredit, problems[]); POST
+   * /credit-memos (lines with items, quantities, rates, discount percents, taxable flags; customerMessage, tagIds, hideZeroLines,
+   * layoutId; applications at save in the same transaction, applied_date NULL; total <= 0.00 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE;
+   * stores subtotal and tax_amount); GET and PUT /credit-memos/:id (409 STALE, CREDIT_IN_USE; 400 SOURCE_DATE_AFTER_USE; closing date
+   * on old, new and live refund dates). Posting Dr income, Dr Sales Tax Payable, Cr A/R. The sales tax liability report counts
+   * credit memos negated. Idempotency-Key on POST and PUT. No migration.
+   */
+  'credit-memo-edit-v1',
+  /**
+   * Sales receipts on the invoice line model (U-143): POST /sales-receipts/preview, POST /sales-receipts, GET and PUT
+   * /sales-receipts/:id; depositToAccountId optional (Payments Clearing), paymentMethod, refNo; a total below 0.00 needs a bank
+   * account (400 NEGATIVE_RECEIPT_NEEDS_BANK); a deposited receipt can't change its account or amount (409 TXN_DEPOSITED).
+   * Idempotency-Key on POST and PUT. No migration.
+   */
+  'sales-receipt-lines-v1',
 ];
