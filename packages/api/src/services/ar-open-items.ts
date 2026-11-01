@@ -113,7 +113,7 @@ export async function arOpenItemsAsOf(executor: DbOrTx, q: OpenItemsQuery): Prom
     SELECT COALESCE(jl.contact_id, t.contact_id) AS contact_id, t.contact_id AS txn_contact_id, t.id, t.txn_type, t.txn_number, t.reference_number,
       to_char(t.txn_date, 'YYYY-MM-DD') AS date, to_char(t.due_date, 'YYYY-MM-DD') AS due_date,
       t.source_txn_id, t.source_payment_id, t.applied_to_invoice_id, t.from_deposit_id,
-      false AS is_finance_charge,
+      t.is_finance_charge AS is_finance_charge,
       SUM(jl.debit - jl.credit)::numeric(19,4)::text AS open
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = jl.tenant_id

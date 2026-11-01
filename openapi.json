@@ -24274,6 +24274,43 @@
                   "defaultSalesTaxRate": {
                     "type": "string"
                   },
+                  "financeChargeAnnualRate": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,3}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "financeChargeGraceDays": {
+                    "maximum": 365,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "financeChargeIncomeAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "financeChargeMinimum": {
+                    "pattern": "^\\d{1,15}(\\.\\d{1,2})?$",
+                    "type": "string"
+                  },
+                  "financeChargeOnFinanceCharges": {
+                    "type": "boolean"
+                  },
+                  "financeChargePrintLater": {
+                    "type": "boolean"
+                  },
                   "fiscalYearStartMonth": {
                     "maximum": 12,
                     "minimum": 1,
@@ -31842,6 +31879,176 @@
         ],
         "tags": [
           "feature-flags"
+        ]
+      }
+    },
+    "/api/v1/finance-charges": {
+      "get": {
+        "description": "Response {data: [{assessmentId, runId, contactId, period, date, invoiceId, number, total, voided}]}, newest first; period=YYYY-MM filters.",
+        "operationId": "get_api_v1_finance_charges",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Finance-charge assessments (finance-charges-v1)",
+        "tags": [
+          "finance-charges"
+        ]
+      }
+    },
+    "/api/v1/finance-charges/assess": {
+      "post": {
+        "description": "Response 201 {runId, period, invoices: [{contactId, invoiceId, number, total}]}. All or nothing in one database transaction: the clients' invoices are locked, the charges recomputed and compared with expectedCharge exactly (409 FINANCE_CHARGE_CHANGED {contactId, charge}); one live assessment per client and month (409 FINANCE_CHARGE_ASSESSED {contactIds}); one finance-charge invoice per client with a charge (dated and due on the assessment date, numbered from the invoice counter, one line per source invoice plus the minimum adjustment, non-taxable, printLater from settings). 400 FINANCE_CHARGE_NOT_SET_UP (no rate or income account); 400 TOO_MANY_CONTACTS (over 500); an assessmentDate in a month after the current one is 400 FINANCE_CHARGE_DATE_IN_FUTURE {field: assessmentDate, latestPeriod}; a later day of the current month is allowed. The closing date meets the assessment date (423 / 403 / 429; closingPassword). Idempotency-Key: the run is the stored entity; a replay rebuilds the response. Voiding a finance-charge invoice frees its month and days. Formula (Q-P22g): period = the assessment date d's month; base = each open invoice's cent open as of d (finance-charge invoices only with financeChargeOnFinanceCharges); t = its latest live charged-through date; days = d - max(dueDate, t), <= 0 charges nothing; with no t the invoice is chargeable only when d - dueDate > graceDays; amount = round2(open x rate / 100 x days / 365) half up; client charge = Σ, raised to the minimum by one adjustment line when 0 < Σ < minimum. Clients in credit (skippedReason in_credit) or inactive are skipped; a client with open credits is unticked with hasOpenCredits (Q-P22s).",
+        "operationId": "post_api_v1_finance_charges_assess",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "assessmentDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "contacts": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "contactId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "expectedCharge": {
+                          "pattern": "^\\d{1,15}(\\.\\d{1,2}0{0,2})?$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "contactId",
+                        "expectedCharge"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "assessmentDate",
+                  "contacts"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Assess finance charges (finance-charges-v1)",
+        "tags": [
+          "finance-charges"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/finance-charges/preview": {
+      "post": {
+        "description": "Response {period, settings, rows: [{contactId, name, overdueBalance, charge, sources: [{invoiceId, number, dueDate, open, fromDate, days, amount}], minimumAdjustment?, alreadyAssessed?: {invoiceId, number}, skippedReason?, hasOpenCredits?, ticked}], totals: {count, charge} (ticked rows), problems: [{code: RATE_NOT_SET | INCOME_ACCOUNT_NOT_SET}]}. Formula (Q-P22g): period = the assessment date d's month; base = each open invoice's cent open as of d (finance-charge invoices only with financeChargeOnFinanceCharges); t = its latest live charged-through date; days = d - max(dueDate, t), <= 0 charges nothing; with no t the invoice is chargeable only when d - dueDate > graceDays; amount = round2(open x rate / 100 x days / 365) half up; client charge = Σ, raised to the minimum by one adjustment line when 0 < Σ < minimum. Clients in credit (skippedReason in_credit) or inactive are skipped; a client with open credits is unticked with hasOpenCredits (Q-P22s). 400 VALIDATION_ERROR only, and an assessmentDate in a month after the current one is 400 FINANCE_CHARGE_DATE_IN_FUTURE {field: assessmentDate, latestPeriod}; a later day of the current month is allowed.",
+        "operationId": "post_api_v1_finance_charges_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "assessmentDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "contactIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 5000,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "assessmentDate"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Preview finance charges; posts nothing (finance-charges-v1)",
+        "tags": [
+          "finance-charges"
         ]
       }
     },

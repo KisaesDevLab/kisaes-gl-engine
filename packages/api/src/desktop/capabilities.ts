@@ -471,6 +471,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   /** Idempotency-Key on POST /customer-statement-runs and the /customer-statements/:id send routes (U-140). */
   'idempotency-customer-statements-v1',
   /**
+   * Finance charges (U-141, Q-P22a, Q-P22g, Q-P22p, Q-P22s): company settings financeChargeAnnualRate (null = off), financeChargeMinimum,
+   * financeChargeGraceDays, financeChargeOnFinanceCharges, financeChargeIncomeAccountId, financeChargePrintLater on GET/PUT
+   * /company/settings; POST /finance-charges/preview, POST /finance-charges/assess (all or nothing; expectedCharge; 409
+   * FINANCE_CHARGE_ASSESSED / FINANCE_CHARGE_CHANGED; 400 FINANCE_CHARGE_NOT_SET_UP; closing date), GET /finance-charges?period=.
+   * Charged-through dates never go backwards; voiding the finance-charge invoice frees its month and days. transactions.is_finance_charge;
+   * A/R open items mark finance-charge invoices. Migration 0251.
+   */
+  'finance-charges-v1',
+  /** Idempotency-Key on POST /finance-charges/assess; the run is the stored entity, a replay rebuilds the response (U-141). */
+  'idempotency-finance-charges-v1',
+  /**
    * Refunds of credit-memo credit (U-139): POST /customer-refunds sourcePaymentId (alias sourceId) accepts a credit memo of the client,
    * locked; within its remaining (409 CREDIT_NOT_AVAILABLE {remaining}); dated on or after the source (400 REFUND_DATE_BEFORE_SOURCE);
    * refundFromAccountId a bank-type account of the company (400 REFUND_ACCOUNT_INVALID). GET /customer-refunds/:id -> {refund:

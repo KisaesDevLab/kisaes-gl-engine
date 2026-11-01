@@ -75,6 +75,17 @@ export const updateCompanySettingsSchema = z.object({
   writeOffThreshold: z.string().regex(/^\d{1,15}(\.\d{1,2})?$/, 'an amount with at most 2 decimal places').nullable().optional(),
   salesDiscountAccountId: z.string().uuid().nullable().optional(),
   nsfCustomerFee: z.string().regex(/^\d{1,15}(\.\d{1,2})?$/, 'an amount with at most 2 decimal places').nullable().optional(),
+  // Finance charges (U-141): annual percent 0 < r <= 100 with at most 4
+  // places (null = off, Q-P22a), minimum (whole cents), grace days 0..365,
+  // compounding, the income account (income or other income of this company;
+  // 400 FINANCE_CHARGE_ACCOUNT_INVALID), print later (default true).
+  financeChargeAnnualRate: z.string().regex(/^\d{1,3}(\.\d{1,4})?$/, 'a percent with at most 4 decimal places')
+    .refine((v) => Number(v) > 0 && Number(v) <= 100, 'a percent above 0 and at most 100').nullable().optional(),
+  financeChargeMinimum: z.string().regex(/^\d{1,15}(\.\d{1,2})?$/, 'an amount with at most 2 decimal places').optional(),
+  financeChargeGraceDays: z.number().int().min(0).max(365).optional(),
+  financeChargeOnFinanceCharges: z.boolean().optional(),
+  financeChargeIncomeAccountId: z.string().uuid().nullable().optional(),
+  financeChargePrintLater: z.boolean().optional(),
 });
 
 // Additional company under the same tenant. Used by `/company/create`.

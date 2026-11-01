@@ -237,6 +237,12 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       writeOffAccountId: company.writeOffAccountId ?? null,
       writeOffThreshold: company.writeOffThreshold == null ? null : String(company.writeOffThreshold),
       salesDiscountAccountId: company.salesDiscountAccountId ?? null,
+      financeChargeAnnualRate: company.financeChargeAnnualRate == null ? null : String(company.financeChargeAnnualRate),
+      financeChargeMinimum: String(company.financeChargeMinimum ?? '0'),
+      financeChargeGraceDays: company.financeChargeGraceDays ?? 0,
+      financeChargeOnFinanceCharges: company.financeChargeOnFinanceCharges === true,
+      financeChargeIncomeAccountId: company.financeChargeIncomeAccountId ?? null,
+      financeChargePrintLater: company.financeChargePrintLater !== false,
     },
   });
 });
