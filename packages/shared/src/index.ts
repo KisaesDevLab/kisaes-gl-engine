@@ -66,6 +66,7 @@ export * from './schemas/preferences.js';
 export * from './schemas/items.js';
 export * from './schemas/price-levels.js';
 export * from './schemas/payments.js';
+export * from './schemas/sales-docs.js';
 export * from './schemas/checks.js';
 export * from './schemas/templates.js';
 export * from './schemas/tfa.js';

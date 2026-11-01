@@ -102,6 +102,11 @@ export const IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES = [
 export const IDEMPOTENCY_CREDIT_MEMO_V1_ROUTES = [
   'post /api/v1/credit-memos/{id}/apply',
   'post /api/v1/credit-memos/{id}/unapply',
+  // U-138 / U-143.
+  'post /api/v1/credit-memos',
+  'put /api/v1/credit-memos/{id}',
+  'post /api/v1/sales-receipts',
+  'put /api/v1/sales-receipts/{id}',
 ].sort();
 
 /** Keyed by idempotency-finance-charges-v1 (U-141). */

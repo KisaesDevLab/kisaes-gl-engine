@@ -481,4 +481,35 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'finance-charges-v1',
   /** Idempotency-Key on POST /finance-charges/assess; the run is the stored entity, a replay rebuilds the response (U-141). */
   'idempotency-finance-charges-v1',
+  /**
+   * Refunds of credit-memo credit (U-139): POST /customer-refunds sourcePaymentId (alias sourceId) accepts a credit memo of the client,
+   * locked; within its remaining (409 CREDIT_NOT_AVAILABLE {remaining}); dated on or after the source (400 REFUND_DATE_BEFORE_SOURCE);
+   * refundFromAccountId a bank-type account of the company (400 REFUND_ACCOUNT_INVALID). GET /customer-refunds/:id -> {refund:
+   * RefundRecord}. Voiding a memo with a live refund is 409 CREDIT_REFUNDED. Cash basis books the memo's lines at the refund date.
+   */
+  'refund-credit-memo-v1',
+  /**
+   * Refunds by check (U-139, Q-P22d): printLater (default for paymentMethod check without checkNumber) puts the refund in the check
+   * print queue with the client's billing address (GET /checks/print-queue, POST /checks/print assigns numbers); a typed checkNumber
+   * is checked on the bank account (409 CHECK_NUMBER_IN_USE); GET /checks lists refund checks; voiding a queued refund leaves the
+   * queue (U-115). No migration.
+   */
+  'refund-checks-v1',
+  /**
+   * Credit memos on the invoice line model (U-138): POST /credit-memos/preview (posts nothing; lines, subtotal, taxableBase, taxRate,
+   * taxTotal, total, contactBalanceAfter, openInvoices, suggestedApplications oldest first, remainingCredit, problems[]); POST
+   * /credit-memos (lines with items, quantities, rates, discount percents, taxable flags; customerMessage, tagIds, hideZeroLines,
+   * layoutId; applications at save in the same transaction, applied_date NULL; total <= 0.00 400 CREDIT_MEMO_TOTAL_NOT_POSITIVE;
+   * stores subtotal and tax_amount); GET and PUT /credit-memos/:id (409 STALE, CREDIT_IN_USE; 400 SOURCE_DATE_AFTER_USE; closing date
+   * on old, new and live refund dates). Posting Dr income, Dr Sales Tax Payable, Cr A/R. The sales tax liability report counts
+   * credit memos negated. Idempotency-Key on POST and PUT. No migration.
+   */
+  'credit-memo-edit-v1',
+  /**
+   * Sales receipts on the invoice line model (U-143): POST /sales-receipts/preview, POST /sales-receipts, GET and PUT
+   * /sales-receipts/:id; depositToAccountId optional (Payments Clearing), paymentMethod, refNo; a total below 0.00 needs a bank
+   * account (400 NEGATIVE_RECEIPT_NEEDS_BANK); a deposited receipt can't change its account or amount (409 TXN_DEPOSITED).
+   * Idempotency-Key on POST and PUT. No migration.
+   */
+  'sales-receipt-lines-v1',
 ];
