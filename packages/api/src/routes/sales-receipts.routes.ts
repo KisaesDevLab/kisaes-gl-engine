@@ -15,6 +15,7 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import { idempotent } from '../middleware/idempotent.js';
 import { db } from '../db/index.js';
 import * as salesDocs from '../services/sales-docs.service.js';
+import { mountSalesDocEmail } from './sales-doc-email.js';
 
 /**
  * Sales receipts (U-143, sales-receipt-lines-v1): a cash sale on the invoice
@@ -39,7 +40,8 @@ const rules = 'Lines as invoice lines (itemId or accountId, quantity, unitPrice,
   'NEGATIVE_RECEIPT_NEEDS_BANK; a deposit account that is not an asset of this company (or is A/R / Customer Deposits) is 400 ' +
   'DEPOSIT_ACCOUNT_INVALID.';
 const recordNote = 'SalesReceiptRecord: {id, number, date, customerId, depositToAccountId, paymentMethod, refNo, lines, totals: ' +
-  '{subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited}.';
+  '{subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, layoutId, printLater, updatedAt, status, deposited, sendHistory: ' +
+  '[{id, method: printed|email|pdf, recipients, sentAt, userId}] (oldest first; sales-doc-email-v1)}.';
 
 salesReceiptsRouter.post('/preview', validate(salesReceiptPreviewSchema), describe({
   summary: 'Preview a sales receipt; posts nothing (sales-receipt-lines-v1)',
@@ -70,7 +72,14 @@ salesReceiptsRouter.get('/:id', describe({
   res.json({ salesReceipt: await salesDocs.getSalesReceiptRecord(db, req.tenantId, req.params['id']!, req.companyId) });
 });
 
-salesReceiptsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, idempotent({
+// U-144 (sales-doc-email-v1): POST /sales-receipts/:id/email and /email-later.
+mountSalesDocEmail(salesReceiptsRouter, {
+  txnType: 'cash_sale', path: 'sales-receipts', key: 'salesReceipt', name: 'sales receipt', recordName: 'SalesReceiptRecord',
+  fileExample: 'SalesReceipt-1042.pdf',
+  read: (req) => salesDocs.getSalesReceiptRecord(db, req.tenantId, req.params['id']!, req.companyId),
+});
+
+salesReceiptsRouter.put('/:id',closingPasswordLimiter, lockContextMiddleware, idempotent({
   successStatus: 200,
   replay: async (req) => ({ salesReceipt: await salesDocs.getSalesReceiptRecord(db, req.tenantId, req.params['id']!, req.companyId), warnings: [] }),
 }), validate(salesReceiptSchema), describe({

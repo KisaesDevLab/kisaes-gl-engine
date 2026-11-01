@@ -17,6 +17,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import * as paymentService from '../services/payment.service.js';
 import * as salesDocs from '../services/sales-docs.service.js';
+import { mountSalesDocEmail } from './sales-doc-email.js';
 
 /**
  * Credit memos as A/R credit sources (U-137, credit-memo-apply-v1). A memo's
@@ -98,7 +99,8 @@ const lineRules = 'Lines as invoice lines (itemId or accountId, quantity, unitPr
 const memoRecordNote = 'CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, ' +
   'amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, ' +
   'layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, ' +
-  'date, amount, method, voided}], remaining}. applications[].appliedDate is null for rows applied when the memo was saved.';
+  'date, amount, method, voided}], remaining, sendHistory: [{id, method: printed|email|pdf, recipients, sentAt, userId}] (oldest first; ' +
+  'sales-doc-email-v1)}. applications[].appliedDate is null for rows applied when the memo was saved.';
 
 creditMemosRouter.post('/preview', validate(creditMemoPreviewSchema), describe({
   summary: 'Preview a credit memo; posts nothing (credit-memo-edit-v1)',
@@ -134,6 +136,13 @@ creditMemosRouter.get('/:id', describe({
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
   res.json({ creditMemo: await salesDocs.getCreditMemoRecord(db, req.tenantId, req.params['id']!, req.companyId) });
+});
+
+// U-144 (sales-doc-email-v1): POST /credit-memos/:id/email and /email-later.
+mountSalesDocEmail(creditMemosRouter, {
+  txnType: 'credit_memo', path: 'credit-memos', key: 'creditMemo', name: 'credit memo', recordName: 'CreditMemoRecord',
+  fileExample: 'CreditMemo-1042.pdf',
+  read: (req) => salesDocs.getCreditMemoRecord(db, req.tenantId, req.params['id']!, req.companyId),
 });
 
 creditMemosRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, idempotent({

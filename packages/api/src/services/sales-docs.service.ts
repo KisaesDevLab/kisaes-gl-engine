@@ -34,6 +34,10 @@ import { auditLog } from '../middleware/audit.js';
 import { computeSalesDocument, salesDocumentJournal, salesDocumentPreviewLines, writeSalesDocumentTags } from './invoice.service.js';
 import { getBalances } from './contacts.service.js';
 import { liveDepositsForSource } from './deposit-links.service.js';
+import { listSendHistory } from './document-send.service.js';
+
+/** A form's send history (U-126), as GET /invoices/:id returns it; on both records since U-144 (sales-doc-email-v1). */
+export type SendHistory = Awaited<ReturnType<typeof listSendHistory>>;
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -122,6 +126,7 @@ export interface CreditMemoRecord {
   applications: Array<{ invoiceId: string; invoiceNumber: string | null; amount: string; appliedDate: string | null; voided: boolean }>;
   refunds: Array<{ refundId: string; date: string; amount: string; method: string | null; voided: boolean }>;
   remaining: string;
+  sendHistory: SendHistory;
 }
 
 export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id: string, companyId?: string): Promise<CreditMemoRecord> {
@@ -164,6 +169,7 @@ export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id
     updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null, status: row.status,
     applications: appRows, refunds: refundRows,
     remaining: row.status === 'posted' ? m2(Decimal.max(total.minus(used), 0)) : '0.00',
+    sendHistory: await listSendHistory(executor, tenantId, id),
   };
 }
 
@@ -174,6 +180,7 @@ export interface SalesReceiptRecord {
   totals: { subtotal: string; taxTotal: string; total: string };
   memo: string | null; customerMessage: string | null; hideZeroLines: boolean; layoutId: string | null; printLater: boolean;
   updatedAt: string | null; status: string; deposited: boolean;
+  sendHistory: SendHistory;
 }
 
 async function headAccount(executor: DbOrTx, tenantId: string, id: string): Promise<string | null> {
@@ -200,6 +207,7 @@ export async function getSalesReceiptRecord(executor: DbOrTx, tenantId: string, 
     layoutId: row.layoutId ?? null, printLater: row.printStatus === 'queue',
     updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null, status: row.status,
     deposited: (await liveDepositsForSource(executor, tenantId, id)).length > 0,
+    sendHistory: await listSendHistory(executor, tenantId, id),
   };
 }
 

@@ -476,7 +476,9 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * /company/settings; POST /finance-charges/preview, POST /finance-charges/assess (all or nothing; expectedCharge; 409
    * FINANCE_CHARGE_ASSESSED / FINANCE_CHARGE_CHANGED; 400 FINANCE_CHARGE_NOT_SET_UP; closing date), GET /finance-charges?period=.
    * Charged-through dates never go backwards; voiding the finance-charge invoice frees its month and days. transactions.is_finance_charge;
-   * A/R open items mark finance-charge invoices. Migration 0251.
+   * A/R open items mark finance-charge invoices. Migration 0251. A finance-charge invoice keeps its client (U-145, Q-P22v): an
+   * edit (PUT /invoices/:id or PUT /transactions/:id) that changes its contactId is 409 FINANCE_CHARGE_CLIENT_CHANGE ("Void it and
+   * assess again for the right client"); amount and date edits are allowed.
    */
   'finance-charges-v1',
   /** Idempotency-Key on POST /finance-charges/assess; the run is the stored entity, a replay rebuilds the response (U-141). */
@@ -512,4 +514,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Idempotency-Key on POST and PUT. No migration.
    */
   'sales-receipt-lines-v1',
+  /**
+   * Emailing credit memos and sales receipts (U-144, Q-P22u): POST /credit-memos/:id/email and /sales-receipts/:id/email (the
+   * POST /invoices/:id/email body and errors, U-127: client-made PDF, company mail server, outboxId; response {creditMemo} /
+   * {salesReceipt} with sendHistory), POST /credit-memos/:id/email-later and /sales-receipts/:id/email-later (201 {item}). A void
+   * document is 400 DOCUMENT_VOID; an unknown id, another type or another company 404. GET /credit-memos/:id and
+   * GET /sales-receipts/:id gain sendHistory. GET /forms/email-queue rows gain kind credit_memo and sales_receipt (txnType
+   * credit_memo / cash_sale; invoices stay kind transaction). Permissions as each document's routes (invoices / transactions).
+   * Idempotency-Key on the four routes (x-idempotency). Email templates stay with the client. No migration.
+   */
+  'sales-doc-email-v1',
 ];
