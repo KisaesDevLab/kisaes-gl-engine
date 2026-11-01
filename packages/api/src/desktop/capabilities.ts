@@ -453,4 +453,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * credits are aged by their own date; the total equals the A/R account balance as of the date.
    */
   'ar-aging-exact-v1',
+  /**
+   * Customer statements (U-112, Q-175, Q-177, Q-P22h): GET /reports/customer-statement?contactId=&asOf=&format=open_item|balance_forward|
+   * transaction&start= -> {statement: CustomerStatement} (aging = the client's A/R aging row; amountDue = the client's A/R balance as of
+   * asOf; difference); GET /reports/customer-statements?asOf=&minDaysOverdue=&openOnly=&limit=&offset= (the batch picker). Built on the
+   * open-items helper. No GL effect.
+   */
+  'customer-statement-v1',
+  /**
+   * Statement runs and sending (U-140, Q-P22c, Q-P22n): POST /customer-statement-runs {asOf, format, start?, contactIds (1..500)} ->
+   * numbered snapshots (statement counter; display data only, no ids); GET /customer-statements(?contactId=), GET /customer-statements/:id
+   * (snapshot + sendHistory); POST /customer-statements/:id/sent, /email (client-made PDF, U-127 errors), /email-later (Outbox). GET
+   * /forms/email-queue rows gain kind (transaction | customer_statement) and customerStatementId (transactionId null for statements);
+   * DELETE /forms/email-queue/:id removes either kind. Migration 0250 (provisional number).
+   */
+  'customer-statement-send-v1',
+  /** Idempotency-Key on POST /customer-statement-runs and the /customer-statements/:id send routes (U-140). */
+  'idempotency-customer-statements-v1',
 ];

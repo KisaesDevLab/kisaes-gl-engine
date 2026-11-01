@@ -30,6 +30,7 @@ import { paymentTermsRouter } from './routes/payment-terms.routes.js';
 import { estimatesRouter } from './routes/estimates.routes.js';
 import { tagsRouter } from './routes/tags.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
+import { customerStatementReportsRouter, customerStatementRunsRouter, customerStatementsRouter } from './routes/customer-statements.routes.js';
 import { reportPacksRouter } from './routes/report-packs.routes.js';
 import { bankingRouter } from './routes/banking.routes.js';
 import { dashboardRouter } from './routes/dashboard.routes.js';
@@ -576,6 +577,7 @@ app.use('/api/v1/tags', tagsRouter);
 // Report Packs share the /reports base; mount BEFORE reportsRouter so the
 // pack sub-paths (/catalog, /packs*) resolve via their own middleware chain.
 app.use('/api/v1/reports', reportPacksRouter);
+app.use('/api/v1/reports', customerStatementReportsRouter);
 app.use('/api/v1/reports', reportsRouter);
 app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
@@ -593,6 +595,8 @@ app.use('/api/v1/billable-costs', billableCostsRouter);
 app.use('/api/v1/payments', paymentsRouter);
 app.use('/api/v1/customer-refunds', customerRefundsRouter);
 app.use('/api/v1/credit-memos', creditMemosRouter);
+app.use('/api/v1/customer-statement-runs', customerStatementRunsRouter);
+app.use('/api/v1/customer-statements', customerStatementsRouter);
 app.use('/api/v1/checks', checksRouter);
 app.use('/api/v1/check-signatures', checkSignaturesRouter);
 app.use('/api/v1/duplicates', duplicatesRouter);

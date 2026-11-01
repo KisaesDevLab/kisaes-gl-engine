@@ -84,4 +84,5 @@ export * from './spoiled-check-numbers.js';
 export * from './document-send-events.js';
 export * from './price-levels.js';
 export * from './form-email-queue.js';
+export * from './customer-statements.js';
 export * from './billable-cost-links.js';
