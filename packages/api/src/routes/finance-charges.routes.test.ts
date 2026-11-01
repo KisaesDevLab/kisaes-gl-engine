@@ -19,6 +19,8 @@ import { companies, contacts, financeChargeRuns, financeChargeAssessments, finan
 import { paymentsRouter } from './payments.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { financeChargesRouter } from './finance-charges.routes.js';
+import { invoicesRouter } from './invoices.routes.js';
+import { assertAssessmentDateNotFuture } from '../services/finance-charge.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { Harness, type Co, golden, key, txn, m2 } from './receivables.test-support.js';
 
@@ -36,7 +38,8 @@ beforeEach(async () => {
     await db.delete(financeChargeAssessments).where(eq(financeChargeAssessments.tenantId, tid));
     await db.delete(financeChargeRuns).where(eq(financeChargeRuns.tenantId, tid));
   }];
-  await h.start([['/api/v1/payments', paymentsRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/finance-charges', financeChargesRouter]]);
+  await h.start([['/api/v1/payments', paymentsRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/finance-charges', financeChargesRouter],
+    ['/api/v1/invoices', invoicesRouter]]);
   c = await h.company();
   for (const cl of seed.clients as Step[]) {
     const [row] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'customer', displayName: cl['client'] }).returning();
@@ -185,5 +188,67 @@ describe('finance-charges-v1 (U-141)', () => {
     expect(((await db.execute(sql`SELECT to_regclass('public.finance_charge_runs') AS t`)).rows[0] as { t: string | null }).t).toBeNull();
     await run('0251_finance_charges.sql');
     expect(((await db.execute(sql`SELECT to_regclass('public.finance_charge_runs') AS t`)).rows[0] as { t: string | null }).t).not.toBeNull();
+  });
+});
+
+describe('P22 review fixes (E5)', () => {
+  const pfId = () => clientIds.get('Prairie Fork Kennels')!;
+  const assess = (headers: Record<string, string> = {}, token = c.token) => h.request('POST', '/api/v1/finance-charges/assess', token,
+    { assessmentDate: '2026-10-31', contacts: [{ contactId: pfId(), expectedCharge: '15.68' }] }, { 'Idempotency-Key': key(), ...headers });
+
+  it('an assessment date in a later month is 400 on preview and assess; a later day of this month is allowed', async () => {
+    await settings();
+    const now = new Date();
+    const later = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 1)).toISOString().slice(0, 10);
+    const p = await h.request('POST', '/api/v1/finance-charges/preview', c.token, { assessmentDate: later });
+    expect([p.status, p.json['error']?.code, p.json['error']?.details?.field]).toEqual([400, 'VALIDATION_ERROR', 'assessmentDate']);
+    const a = await h.request('POST', '/api/v1/finance-charges/assess', c.token,
+      { assessmentDate: later, contacts: [{ contactId: pfId(), expectedCharge: '15.68' }] }, { 'Idempotency-Key': key() });
+    expect([a.status, a.json['error']?.code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect(() => assertAssessmentDateNotFuture('2026-11-30', new Date('2026-11-01T00:00:00Z'))).not.toThrow();
+    expect(() => assertAssessmentDateNotFuture('2026-12-01', new Date('2026-11-30T12:00:00Z'))).not.toThrow();
+    expect(() => assertAssessmentDateNotFuture('2026-12-01', new Date('2026-11-15T00:00:00Z'))).toThrow();
+  });
+
+  it("another company's client is 404 on assess and absent from preview; a role without invoices is 403", async () => {
+    await settings();
+    const b = await h.secondCompany(c);
+    await db.update(companies).set({ financeChargeAnnualRate: '18.00', financeChargeIncomeAccountId: c.roles['income'] })
+      .where(eq(companies.id, b['X-Company-Id']!));
+    const a = await assess(b);
+    expect(a.status, JSON.stringify(a.json)).toBe(404);
+    const p = await h.request('POST', '/api/v1/finance-charges/preview', c.token, { assessmentDate: '2026-10-31', contactIds: [pfId()] }, b);
+    expect([p.status, p.json['rows']]).toEqual([200, []]);
+    expect((await h.request('GET', '/api/v1/finance-charges?period=2026-10', c.token)).json['data']).toEqual([]);
+    const bankingOnly = await h.staffToken(c, { banking: 'full' });
+    for (const [method, path, body] of [['POST', '/api/v1/finance-charges/preview', { assessmentDate: '2026-10-31' }],
+      ['POST', '/api/v1/finance-charges/assess', { assessmentDate: '2026-10-31', contacts: [{ contactId: pfId(), expectedCharge: '15.68' }] }],
+      ['GET', '/api/v1/finance-charges', undefined]] as const) {
+      const x = await h.request(method, path, bankingOnly, body);
+      expect([x.status, x.json['error']?.code], `${method} ${path}`).toEqual([403, 'PERMISSION_DENIED']);
+    }
+  });
+
+  it('editing a finance-charge invoice is allowed (plan 2.7): the flag, the assessment and its sources stay; the month stays charged', async () => {
+    await settings();
+    const a = await assess();
+    expect(a.status, JSON.stringify(a.json)).toBe(201);
+    const id = a.json['invoices'][0].invoiceId as string;
+    const sources = async () => (await db.select().from(financeChargeSources).where(eq(financeChargeSources.tenantId, c.tenantId)))
+      .map((x) => [x.invoiceId, x.open, x.fromDate, x.throughDate, x.days, x.amount].join('|')).sort();
+    const before = await sources();
+    const inv = await txn(id);
+    const put = await h.request('PUT', `/api/v1/invoices/${id}`, c.token, {
+      contactId: pfId(), txnDate: '2026-10-31', expectedUpdatedAt: inv.updatedAt!.toISOString(),
+      lines: [{ accountId: c.roles['income'], description: 'Finance charge', quantity: '1', unitPrice: '10.00', isTaxable: false }],
+    });
+    expect(put.status, JSON.stringify(put.json)).toBe(200);
+    const after = await txn(id);
+    expect([after.isFinanceCharge, m2(after.total)]).toEqual([true, '10.00']);
+    expect(await sources()).toEqual(before);
+    const live = await db.select().from(financeChargeAssessments).where(eq(financeChargeAssessments.invoiceId, id));
+    expect(live.map((x) => x.voidedAt)).toEqual([null]);
+    const again = await assess();
+    expect([again.status, again.json['error']?.code]).toEqual([409, 'FINANCE_CHARGE_ASSESSED']);
   });
 });
