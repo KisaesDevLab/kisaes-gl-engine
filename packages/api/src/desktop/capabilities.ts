@@ -465,7 +465,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * numbered snapshots (statement counter; display data only, no ids); GET /customer-statements(?contactId=), GET /customer-statements/:id
    * (snapshot + sendHistory); POST /customer-statements/:id/sent, /email (client-made PDF, U-127 errors), /email-later (Outbox). GET
    * /forms/email-queue rows gain kind (transaction | customer_statement) and customerStatementId (transactionId null for statements);
-   * DELETE /forms/email-queue/:id removes either kind. Migration 0250 (provisional number).
+   * DELETE /forms/email-queue/:id removes either kind. Migration 0250.
    */
   'customer-statement-send-v1',
   /** Idempotency-Key on POST /customer-statement-runs and the /customer-statements/:id send routes (U-140). */
