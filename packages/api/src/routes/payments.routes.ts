@@ -101,10 +101,11 @@ paymentsRouter.post('/preview', validate(previewPaymentSchema), describe({
     'codes: AMOUNT_REQUIRED, APPLICATIONS_EXCEED_AMOUNT, OVERAPPLIED, INVOICE_NOT_OPEN, DUPLICATE_INVOICE, DEPOSIT_ACCOUNT_INVALID, ' +
     'TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment), CREDIT_NOT_AVAILABLE. payment-settle-v1 / payment-discounts-v1: ' +
     'applications[].writeOffAmount / discountAmount and creditApplications [{sourcePaymentId, invoiceId, amount | null (fill)}] as on ' +
-    'receive; invoices[] add discount, writeOff, credits, discountPercent, discountDate, discountAvailable (round2(total x percent / 100) ' +
+    'receive; invoices[] add discount, writeOff, credit, discountPercent, discountDate, discountAvailable (round2(total x percent / 100) ' +
     'half away from zero, capped at the cent balance, on or before the discount date, once per invoice) and suggestDiscount (none typed and ' +
     'payment = cent balance - discountAvailable exactly); totals.writeOffs; overpayment (= unapplied); shortfalls[].withinWriteOffLimit ' +
-    '(shortfall <= the company writeOffThreshold; false without one); credits [{sourcePaymentId, date, refNo, remaining}] (the open ' +
+    '(shortfall <= the company writeOffThreshold; false without one); creditApplications [{sourcePaymentId, invoiceId, amount, ' +
+    'balanceDueExact}] (the credits applied, fill rows filled); credits [{sourcePaymentId, date, refNo, remaining}] (the open ' +
     'credits of the client, bounced payments left out); contactBalanceAfter = before - amount - discounts - write-offs (credits are in A/R ' +
     'already). Order per invoice: typed cash, discount and write-off, then credits, then cash fill / auto. editingPaymentId: that payment\'s own live share is added ' +
     'back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it ' +

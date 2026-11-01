@@ -30,6 +30,8 @@ export async function createCustomerRefund(tenantId: string, input: CreateCustom
     contactId: input.contactId,
     memo: input.memo,
     total: input.amount,
+    paymentMethod: input.paymentMethod,
+    referenceNumber: input.refNo,
     ...(input.sourcePaymentId ? { sourcePaymentId: input.sourcePaymentId } : {}),
     lines: [
       // DR: AR (reduce what customer owes — they overpaid or we owe them)

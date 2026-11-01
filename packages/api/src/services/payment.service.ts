@@ -815,6 +815,8 @@ export interface PaymentPreview {
   shortfalls: ReturnType<typeof computePayment>['shortfalls'];
   overpayment: string;
   credits: ComputeCredit[];
+  /** The credits this preview applied, amounts filled (the save plan copies them). */
+  creditApplications: ReturnType<typeof computePayment>['creditApplications'];
   pendingDeposits: { count: number; total: string };
   averageDaysToPay: number | null;
   problems: Array<ComputeProblem | { code: string; invoiceId?: string }>;
@@ -956,6 +958,7 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     shortfalls: result.shortfalls,
     overpayment: result.overpayment,
     credits,
+    creditApplications: result.creditApplications,
     pendingDeposits: {
       count: pending.count + (counts ? 1 : 0),
       total: money2(round2(pending.total.plus(counts ? amount : 0))),
