@@ -10,13 +10,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { paymentApplications, companies, transactions } from '../db/schema/index.js';
+import { paymentApplications, companies, transactions, items } from '../db/schema/index.js';
 import { paymentsRouter } from './payments.routes.js';
 import { creditMemosRouter } from './credit-memos.routes.js';
 import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
-import { buildSalesTaxLiability } from '../services/report.service.js';
+import { buildSalesTaxLiability, buildSalesByItem, buildSalesByCustomer } from '../services/report.service.js';
 import { getOrCreateSystemAccount } from '../services/system-accounts.service.js';
 import { Harness, type Co, golden, key, txn, contactAR, lineSet, expectedLines, accountBalance, m2 } from './receivables.test-support.js';
 
@@ -174,5 +174,77 @@ describe('sales-receipt-lines-v1 (U-143)', () => {
       depositToAccountId: c.roles['payments_clearing'], lines: [{ accountId: c.roles['sales'], quantity: '1', unitPrice: '10.00' }] });
     expect(old.status).toBe(201);
     expect(m2((await db.select().from(transactions).where(eq(transactions.id, old.json['transaction'].id)))[0]!.total)).toBe('10.00');
+  });
+});
+
+describe('P22 review fixes (E2)', () => {
+  const memoBody = (over: Step = {}) => ({ txnDate: '2026-11-02', contactId: c.customer,
+    lines: [{ accountId: c.roles['sales'], quantity: '1', unitPrice: '100.00', isTaxable: false }], ...over });
+  const receiptBody = (over: Step = {}) => ({ txnDate: '2026-11-03', contactId: c.customer, depositToAccountId: c.roles['payments_clearing'],
+    lines: [{ accountId: c.roles['sales'], quantity: '1', unitPrice: '100.00', isTaxable: false }], ...over });
+
+  it('PUT /credit-memos/:id with applications is 400 VALIDATION_ERROR and applies nothing', async () => {
+    const r = await h.request('POST', '/api/v1/credit-memos', c.token, memoBody());
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const memo = r.json['creditMemo'];
+    const p = await h.request('PUT', `/api/v1/credit-memos/${memo.id}`, c.token, memoBody({ expectedUpdatedAt: memo.updatedAt,
+      applications: [{ invoiceId: c.invoices.get('A'), amount: '10.00' }] }));
+    expect([p.status, p.json['error'].code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect(await bal('A')).toBe('250.00');
+    const ok = await h.request('PUT', `/api/v1/credit-memos/${memo.id}`, c.token, memoBody({ expectedUpdatedAt: memo.updatedAt, memo: 'edited' }));
+    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    expect([ok.json['creditMemo'].memo, ok.json['creditMemo'].remaining, ok.json['creditMemo'].applications]).toEqual(['edited', '100.00', []]);
+  });
+
+  it('Sales by Item and Sales by Customer count a credit memo as negative sales', async () => {
+    const [item] = await db.insert(items).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Boarding', incomeAccountId: c.roles['sales'] } as never).returning();
+    const line = (amount: string) => [{ accountId: c.roles['sales'], itemId: item!.id, quantity: '1', unitPrice: amount, isTaxable: false }];
+    const sale = await h.request('POST', '/api/v1/sales-receipts', c.token, receiptBody({ lines: line('100.00') }));
+    expect(sale.status, JSON.stringify(sale.json)).toBe(201);
+    const memo = await h.request('POST', '/api/v1/credit-memos', c.token, memoBody({ txnDate: '2026-11-04', lines: line('40.00') }));
+    expect(memo.status, JSON.stringify(memo.json)).toBe(201);
+    const byItem = await buildSalesByItem(c.tenantId, '2026-11-01', '2026-11-30', c.companyId);
+    const row = (byItem.data as Array<Record<string, unknown>>).find((x) => x['item_id'] === item!.id)!;
+    expect([m2(row['total'] as string), row['txn_count']]).toEqual(['60.00', 2]);
+    const byCustomer = await buildSalesByCustomer(c.tenantId, '2026-11-01', '2026-11-30', c.companyId);
+    const crow = (byCustomer.data as Array<Record<string, unknown>>).find((x) => x['contact_id'] === c.customer)!;
+    expect(m2(crow['total'] as string)).toBe('60.00');
+  });
+
+  it("another company's credit memo and sales receipt are 404 on GET and PUT; roles without the resource are 403", async () => {
+    const memo = (await h.request('POST', '/api/v1/credit-memos', c.token, memoBody())).json['creditMemo'];
+    const receipt = (await h.request('POST', '/api/v1/sales-receipts', c.token, receiptBody())).json['salesReceipt'];
+    const b = await h.secondCompany(c);
+    for (const [path, body] of [[`/api/v1/credit-memos/${memo.id}`, memoBody()], [`/api/v1/sales-receipts/${receipt.id}`, receiptBody()]] as const) {
+      expect((await h.request('GET', path, c.token, undefined, b)).status, path).toBe(404);
+      const p = await h.request('PUT', path, c.token, body, b);
+      expect(p.status, `${path} ${JSON.stringify(p.json)}`).toBe(404);
+    }
+    const bankingOnly = await h.staffToken(c, { banking: 'full' });
+    for (const [method, path] of [['GET', `/api/v1/credit-memos/${memo.id}`], ['POST', '/api/v1/credit-memos'],
+      ['GET', `/api/v1/sales-receipts/${receipt.id}`], ['POST', '/api/v1/sales-receipts']] as const) {
+      const r = await h.request(method, path, bankingOnly, method === 'POST' ? memoBody() : undefined);
+      expect([r.status, r.json['error']?.code], `${method} ${path}`).toEqual([403, 'PERMISSION_DENIED']);
+    }
+  });
+
+  it('PUT on a deposited sales receipt: a new amount or account is 409 TXN_DEPOSITED; a memo edit goes through', async () => {
+    const r = await h.request('POST', '/api/v1/sales-receipts', c.token, receiptBody());
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const rec = r.json['salesReceipt'];
+    const d = await h.request('POST', '/api/v1/transactions', c.token, {
+      txnType: 'deposit', txnDate: '2026-11-05', depositToAccountId: c.roles['operating'],
+      lines: [{ accountId: c.roles['payments_clearing'], amount: '100.00', sourceTransactionId: rec.id }],
+    });
+    expect(d.status, JSON.stringify(d.json)).toBe(201);
+    let p = await h.request('PUT', `/api/v1/sales-receipts/${rec.id}`, c.token, receiptBody({ expectedUpdatedAt: rec.updatedAt,
+      lines: [{ accountId: c.roles['sales'], quantity: '1', unitPrice: '90.00', isTaxable: false }] }));
+    expect([p.status, p.json['error']?.code, p.json['error']?.details?.depositIds]).toEqual([409, 'TXN_DEPOSITED', [d.json['transaction'].id]]);
+    p = await h.request('PUT', `/api/v1/sales-receipts/${rec.id}`, c.token, receiptBody({ expectedUpdatedAt: rec.updatedAt,
+      depositToAccountId: c.roles['operating'] }));
+    expect([p.status, p.json['error']?.code]).toEqual([409, 'TXN_DEPOSITED']);
+    expect(m2((await txn(rec.id)).total)).toBe('100.00');
+    p = await h.request('PUT', `/api/v1/sales-receipts/${rec.id}`, c.token, receiptBody({ expectedUpdatedAt: rec.updatedAt, memo: 'deposited memo' }));
+    expect([p.status, p.json['salesReceipt']?.memo]).toEqual([200, 'deposited memo']);
   });
 });
