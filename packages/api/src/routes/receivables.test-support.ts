@@ -139,6 +139,8 @@ export class Harness {
       payments_clearing: (await tag('payments_clearing'))!,
       operating: bank,
       sales: revenue,
+      income: revenue,
+      checking: bank,
       expense,
     };
     const stp = await tag('sales_tax_payable');
@@ -149,19 +151,19 @@ export class Harness {
     };
   }
 
-  async invoice(co: Co, inv: { key?: string; number?: string; date: string; dueDate?: string; total: string }, customer = co.customer) {
+  async invoice(co: Co, inv: { name?: string; number?: string; date: string; dueDate?: string; total: string }, customer = co.customer) {
     const created = await invoiceService.createInvoice(co.tenantId, {
       contactId: customer, txnDate: inv.date, ...(inv.dueDate ? { dueDate: inv.dueDate } : {}), ...(inv.number ? { txnNumber: inv.number } : {}),
       lines: [{ accountId: co.roles['sales'], description: 'Work', quantity: '1', unitPrice: inv.total, isTaxable: false }],
     } as never, co.userId, co.companyId);
     await db.update(transactions).set({ invoiceStatus: 'sent', sentAt: new Date() }).where(eq(transactions.id, created.id));
-    if (inv.key) { co.invoices.set(inv.key, created.id); co.docs.set(inv.key, created.id); }
+    if (inv.name) { co.invoices.set(inv.name, created.id); co.docs.set(inv.name, created.id); }
     return created.id;
   }
 
-  /** The seed of golden cases 1-5: invoices A and B for the client. */
+  /** The bluestem seed of golden cases 1-5 and 7: invoices A and B for the client. */
   async seed(co: Co) {
-    for (const inv of golden['seed'].invoices as Array<{ key: string; number: string; date: string; dueDate: string; total: string }>) {
+    for (const inv of golden['seeds'].bluestem.invoices as Array<{ name: string; number: string; date: string; dueDate: string; total: string }>) {
       await this.invoice(co, inv);
     }
   }

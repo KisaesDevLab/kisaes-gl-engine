@@ -227,13 +227,14 @@ describe('A/R open items and the exact aging (U-142)', () => {
     const check = async () => {
       const items = await arOpenItemsAsOf(db, { tenantId: c.tenantId, companyId: c.companyId, asOf: '2026-11-30', contactIds: [c.customer] });
       const aging = ageOpenItems(items, '2026-11-30');
-      expect(aging.items.map((i) => [i.date, i.open, i.days, i.bucket])).toEqual(
-        (want.openItems as Array<Record<string, unknown>>).map((i) => [i['date'], i['open'], i['days'], i['bucket']]));
+      expect(aging.items.map((i) => [i.open, i.days, i.bucket])).toEqual(
+        (want.items as Array<Record<string, unknown>>).map((i) => [i['open'], i['days'], i['bucket']]));
       expect({ ...aging.buckets, total: aging.total }).toEqual(want.aging);
       expect(aging.difference).toBe('0.00');
       const summary = await buildARAgingSummary(c.tenantId, '2026-11-30', c.companyId);
       const row = summary.customers.find((x) => x.contactId === c.customer)!;
-      expect(row.total).toBe(want.agingSummaryRow);
+      expect(want.arAgingRow).toBe('equal');
+      expect(row.total).toBe(want.aging.total);
       expect({ ...row.buckets, total: row.total }).toEqual(want.aging);
       expect(await contactAR(c, c.customer, '2026-11-30')).toBe(want.contactBalance);
       expect(summary.totalExact).toBe(await accountBalance(c, c.roles['accounts_receivable']!, '2026-11-30'));
