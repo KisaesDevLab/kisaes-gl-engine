@@ -625,7 +625,7 @@ async function validateSources(
       throw AppError.conflict(
         `Only ${money2(remaining)} of that ${src.holdsDeposit ? 'deposit' : 'credit'} is left.`,
         src.holdsDeposit ? 'DEPOSIT_NOT_AVAILABLE' : 'CREDIT_NOT_AVAILABLE',
-        { sourcePaymentId: id, remaining: money2(remaining) },
+        { sourcePaymentId: id, sourceId: id, remaining: money2(remaining) },
       );
     }
   }
