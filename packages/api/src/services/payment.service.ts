@@ -391,7 +391,10 @@ export interface PaymentRecord {
   depositRemaining: string;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function loadPayment(executor: DbOrTx, tenantId: string, paymentId: string, companyId?: string): Promise<TxnRow> {
+  if (!UUID_RE.test(paymentId)) throw AppError.notFound('Payment not found');
   const [row] = await executor.select().from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId))).limit(1);
   if (!row || row.txnType !== 'customer_payment' || row.status === 'deleted' || ledger.inOtherCompany(row, companyId)) {
@@ -419,7 +422,7 @@ export async function getPaymentRecord(executor: DbOrTx, tenantId: string, payme
     FROM payment_applications pa
     LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
     WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${paymentId}
-    ORDER BY pa.created_at, pa.id
+    ORDER BY pa.created_at, inv.txn_date, inv.txn_number, pa.id
   `);
   const apps = (appsRes.rows as Array<Record<string, unknown>>).map((r) => ({
     invoiceId: String(r['invoice_id']),

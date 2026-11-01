@@ -965,7 +965,10 @@ export async function assertInvoiceUnapplied(
           AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL)::int
       + (SELECT COUNT(*) FROM transactions t
           WHERE t.tenant_id = ${tenantId} AND t.applied_to_invoice_id = ${txn.id}
-            AND t.status = 'posted' AND t.txn_type = 'customer_payment')::int AS payments,
+            AND t.status = 'posted' AND t.txn_type = 'customer_payment'
+            -- U-132: a payment with application rows is counted (live) above.
+            AND NOT EXISTS (SELECT 1 FROM payment_applications pa2
+              WHERE pa2.tenant_id = t.tenant_id AND pa2.payment_id = t.id))::int AS payments,
       (SELECT COUNT(*) FROM transactions t
         WHERE t.tenant_id = ${tenantId} AND t.applied_to_invoice_id = ${txn.id}
           AND t.status = 'posted' AND t.txn_type <> 'customer_payment')::int AS credits
