@@ -134,13 +134,14 @@ export class Harness {
     const [other] = await db.insert(contacts).values({
       tenantId, companyId: company!.id, contactType: 'customer', displayName: 'Prairie Fork Kennels',
     }).returning();
+    // The golden file's role names (income, checking) come first, so lineSet names lines by them.
     const roles: Record<string, string> = {
+      income: revenue,
+      checking: bank,
       accounts_receivable: (await tag('accounts_receivable'))!,
       payments_clearing: (await tag('payments_clearing'))!,
       operating: bank,
       sales: revenue,
-      income: revenue,
-      checking: bank,
       expense,
     };
     const stp = await tag('sales_tax_payable');

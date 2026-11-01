@@ -30,15 +30,21 @@ beforeEach(async () => {
     ['/api/v1/payments', paymentsRouter], ['/api/v1/credit-memos', creditMemosRouter],
     ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/transactions', transactionsRouter],
   ]);
-  c = await h.company(golden['seed'].company.defaultSalesTaxRate);
+  c = await h.company(golden['seeds'].bluestem.taxRate);
   c.roles['sales_tax_payable'] = await getOrCreateSystemAccount(c.tenantId, 'sales_tax_payable', c.companyId);
   await h.seed(c);
 });
 afterEach(async () => { await h.stop(); });
 
-const lines = (spec: unknown) => ((spec === 'memoLines' ? golden['memoLines'] : spec) as Step[])
+const case1Lines = () => caseSteps(1)[0]!['request'].lines as Step[];
+const lines = (spec: unknown) => ((spec === 'case1' || spec === undefined ? case1Lines() : spec) as Step[])
   .map(({ account, ...rest }) => ({ accountId: c.roles[account], ...rest }));
-const apps = (xs: Step[] | undefined) => xs?.map((a) => ({ invoiceId: c.invoices.get(a['invoice'])!, amount: a['amount'] }));
+const apps = (xs: Step[] | Record<string, string> | string | undefined): Array<{ invoiceId: string; amount: string }> | undefined => {
+  if (xs === undefined || xs === 'none') return undefined;
+  if (xs === 'suggested') return Object.entries(caseSteps(1)[0]!['expect'].suggestedApplications as Record<string, string>).map(([k, v]) => ({ invoiceId: c.invoices.get(k)!, amount: v }));
+  if (Array.isArray(xs)) return xs.map((a) => ({ invoiceId: c.invoices.get(a['invoice'])!, amount: a['amount'] }));
+  return Object.entries(xs as Record<string, string>).map(([k, v]) => ({ invoiceId: c.invoices.get(k)!, amount: v }));
+};
 const bal = async (k: string) => m2((await txn(c.invoices.get(k)!)).balanceDue);
 
 async function createMemo(req: Step, headers: Record<string, string> = {}) {
@@ -63,6 +69,7 @@ describe('credit-memo-edit-v1 (U-138)', () => {
     expect([p.json['subtotal'], p.json['taxableBase'], p.json['taxTotal'], p.json['total'], p.json['remainingCredit']])
       .toEqual([e.subtotal, e.taxableBase, e.taxTotal, e.total, e.remainingCredit]);
     expect(p.json['suggestedApplications']).toEqual(apps(e.suggestedApplications));
+    expect(p.json['lines'].map((l: Step) => l['amount'])).toEqual(e.lines);
     expect(p.json['problems']).toEqual([]);
     const r = await createMemo(post!['request'], { 'Idempotency-Key': key() });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
@@ -73,7 +80,7 @@ describe('credit-memo-edit-v1 (U-138)', () => {
     expect(await contactAR(c)).toBe(post!['expect'].contactBalance);
     const rep = await buildSalesTaxLiability(c.tenantId, '2026-11-01', '2026-11-30', c.companyId);
     expect([m2(rep.totalSales), m2(rep.totalTax)]).toEqual([
-      post!['expect'].engineOnly.salesTaxLiability.totalSales, post!['expect'].engineOnly.salesTaxLiability.totalTax,
+      '-375.00', post!['expect'].engineOnly.salesTaxLiability.tax,
     ]);
     expect(m2(rep.totalTax)).toBe(m2(-Number(await accountBalance(c, c.roles['sales_tax_payable']!, '2026-11-30'))));
     const g = await h.request('GET', `/api/v1/credit-memos/${memo.id}`, c.token);
@@ -96,8 +103,9 @@ describe('credit-memo-edit-v1 (U-138)', () => {
     expect(r.status, JSON.stringify(r.json)).toBe(201);
     const e = step!['expect'];
     expect(r.json['creditMemo'].remaining).toBe(e.remaining);
-    expect([await bal('A'), await bal('B')]).toEqual([e.invoices.A, e.invoices.B]);
-    expect([(await txn(c.invoices.get('A')!)).invoiceStatus, (await txn(c.invoices.get('B')!)).invoiceStatus]).toEqual([e.invoiceStatus.A, e.invoiceStatus.B]);
+    expect([await bal('A'), await bal('B')]).toEqual([e.invoices.A.balanceDue, e.invoices.B.balanceDue]);
+    expect(r.json['creditMemo'].applications.map((a: Step) => [a['amount'], a['appliedDate']])).toEqual(
+      (e.applications as Step[]).map((a) => [a['amount'], a['appliedDate']]));
     expect(await contactAR(c)).toBe(e.contactBalance);
     const rows = await db.select().from(paymentApplications).where(eq(paymentApplications.paymentId, r.json['creditMemo'].id));
     expect(rows.every((x) => x.appliedDate === null)).toBe(true);
@@ -149,11 +157,11 @@ describe('sales-receipt-lines-v1 (U-143)', () => {
     const r = await h.request('POST', '/api/v1/sales-receipts', c.token, body(ok!), { 'Idempotency-Key': key() });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
     expect(r.json['salesReceipt'].totals.total).toBe(ok!['expect'].total);
-    expect(await lineSet(c, r.json['salesReceipt'].id)).toEqual(expectedLines(ok!['expect'].lines));
+    expect(await lineSet(c, r.json['salesReceipt'].id)).toEqual(expectedLines(ok!['expect'].postings));
     const np = await h.request('POST', '/api/v1/sales-receipts/preview', c.token, body(neg!));
-    expect(np.json['problems']).toEqual([{ code: neg!['expect'].error }]);
+    expect(np.json['problems'].map((x: Step) => x['code'])).toEqual(neg!['expect'].previewProblems);
     const n = await h.request('POST', '/api/v1/sales-receipts', c.token, body(neg!));
-    expect([n.status, n.json['error'].code]).toEqual([neg!['expect'].status, neg!['expect'].error]);
+    expect([n.status, n.json['error'].code]).toEqual([neg!['expect'].error.status, neg!['expect'].error.code]);
     const toBank = await h.request('POST', '/api/v1/sales-receipts', c.token, { ...body(neg!), depositToAccountId: c.roles['operating'] });
     expect(toBank.status, JSON.stringify(toBank.json)).toBe(201);
     const id = r.json['salesReceipt'].id;

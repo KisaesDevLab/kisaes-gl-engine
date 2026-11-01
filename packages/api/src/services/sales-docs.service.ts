@@ -118,7 +118,8 @@ export interface CreditMemoRecord {
   totals: { subtotal: string; taxTotal: string; total: string };
   memo: string | null; customerMessage: string | null; hideZeroLines: boolean; layoutId: string | null; printLater: boolean;
   updatedAt: string | null; status: string;
-  applications: Array<{ invoiceId: string; invoiceNumber: string | null; amount: string; appliedDate: string; voided: boolean }>;
+  /** appliedDate null: applied when the memo was saved (dated with the memo). */
+  applications: Array<{ invoiceId: string; invoiceNumber: string | null; amount: string; appliedDate: string | null; voided: boolean }>;
   refunds: Array<{ refundId: string; date: string; amount: string; method: string | null; voided: boolean }>;
   remaining: string;
 }
@@ -126,7 +127,7 @@ export interface CreditMemoRecord {
 export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id: string, companyId?: string): Promise<CreditMemoRecord> {
   const row = await loadDoc(executor, tenantId, id, 'credit_memo', companyId);
   const apps = await executor.execute(sql`
-    SELECT pa.invoice_id, inv.txn_number, pa.amount::text AS amount, to_char(COALESCE(pa.applied_date, ${row.txnDate}::date), 'YYYY-MM-DD') AS d,
+    SELECT pa.invoice_id, inv.txn_number, pa.amount::text AS amount, to_char(pa.applied_date, 'YYYY-MM-DD') AS d,
       (pa.voided_at IS NOT NULL OR pa.reversed_by_txn_id IS NOT NULL) AS voided
     FROM payment_applications pa LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
     WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${id}
@@ -140,7 +141,7 @@ export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id
   `);
   const appRows = (apps.rows as Array<Record<string, unknown>>).map((r) => ({
     invoiceId: String(r['invoice_id']), invoiceNumber: (r['txn_number'] as string | null) ?? null,
-    amount: m2(String(r['amount'])), appliedDate: String(r['d']), voided: r['voided'] === true,
+    amount: m2(String(r['amount'])), appliedDate: (r['d'] as string | null) ?? null, voided: r['voided'] === true,
   }));
   const refundRows = (refunds.rows as Array<Record<string, unknown>>).map((r) => ({
     refundId: String(r['id']), date: String(r['d']), amount: m2(String(r['total'])),

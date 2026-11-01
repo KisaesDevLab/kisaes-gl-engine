@@ -97,7 +97,7 @@ const lineRules = 'Lines as invoice lines (itemId or accountId, quantity, unitPr
 const memoRecordNote = 'CreditMemoRecord: {id, number, date, customerId, lines: [{accountId, itemId, description, quantity, unitPrice, ' +
   'amount, isTaxable, taxRate, taxAmount, tagId, serviceDate}], totals: {subtotal, taxTotal, total}, memo, customerMessage, hideZeroLines, ' +
   'layoutId, printLater, updatedAt, status, applications: [{invoiceId, invoiceNumber, amount, appliedDate, voided}], refunds: [{refundId, ' +
-  'date, amount, method, voided}], remaining}.';
+  'date, amount, method, voided}], remaining}. applications[].appliedDate is null for rows applied when the memo was saved.';
 
 creditMemosRouter.post('/preview', validate(creditMemoPreviewSchema), describe({
   summary: 'Preview a credit memo; posts nothing (credit-memo-edit-v1)',
