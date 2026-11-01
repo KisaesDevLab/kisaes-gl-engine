@@ -796,7 +796,8 @@ async function matchFeedItem(tx: Tx, tenantId: string, input: ReceivePaymentInpu
   `);
   const item = (res.rows as Array<{ id: string; amount: string; status: string; company_id: string | null; account_id: string }>)[0];
   if (!item || (companyId && item.company_id && item.company_id !== companyId)) throw AppError.notFound('Bank feed item not found');
-  if (item.account_id !== input.depositTo || !dec(item.amount).abs().equals(dec(input.amount))) {
+  // Money in only (review SF10): a positive feed amount, exactly the payment's.
+  if (item.account_id !== input.depositTo || !dec(item.amount).greaterThan(0) || !dec(item.amount).equals(dec(input.amount))) {
     throw AppError.badRequest(
       'The payment must go to the bank account of the feed line, for exactly its amount.',
       'FEED_ITEM_MISMATCH',

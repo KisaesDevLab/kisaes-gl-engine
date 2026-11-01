@@ -115,4 +115,18 @@ describe('feed-customer-payments-v1 (U-136)', () => {
     expect(pays).toHaveLength(1);
     expect((await db.select().from(transactions).where(eq(transactions.id, inv2)))[0]!.balanceDue).toBe('100.0000');
   });
+
+  it('review SF10: a money-out feed line is never a payment; a held deposit received with bankFeedItemId matches its line', async () => {
+    const inv = await invoice('100.00');
+    const out = await feed('-100.0000');
+    await expect(receive(inv, { bankFeedItemId: out })).rejects.toMatchObject({ code: 'FEED_ITEM_MISMATCH' });
+    expect((await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, out)))[0]!.status).toBe('pending');
+    const item = await feed('250.0000');
+    const held = await paymentService.receivePayment(tenantId, {
+      customerId, date: '2026-11-04', amount: '250.00', depositTo: bankId, applications: [], holdAsDeposit: true, bankFeedItemId: item,
+    } as never, undefined, companyId);
+    const [row] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, item));
+    expect([row!.status, row!.matchedTransactionId]).toEqual(['matched', held.id]);
+    expect(held.holdsDeposit).toBe(true);
+  });
 });
