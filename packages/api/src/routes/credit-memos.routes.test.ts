@@ -237,7 +237,9 @@ describe('A/R open items and the exact aging (U-142)', () => {
       expect(row.total).toBe(want.aging.total);
       expect({ ...row.buckets, total: row.total }).toEqual(want.aging);
       expect(await contactAR(c, c.customer, '2026-11-30')).toBe(want.contactBalance);
-      expect(summary.totalExact).toBe(await accountBalance(c, c.roles['accounts_receivable']!, '2026-11-30'));
+      // totalExact is the exact A/R balance (4 places), not the cent sum.
+      expect(summary.totalExact).toMatch(/^-?\d+\.\d{4}$/);
+      expect(m2(summary.totalExact)).toBe(await accountBalance(c, c.roles['accounts_receivable']!, '2026-11-30'));
       expect(summary.total).toBe(Number(summary.totalExact));
     };
     await check();
@@ -280,7 +282,7 @@ describe('A/R open items and the exact aging (U-142)', () => {
       const all = items.reduce((s, i) => s + Number(i.openExact), 0);
       expect(m2(all), asOf).toBe(await accountBalance(c, c.roles['accounts_receivable']!, asOf));
       const summary = await buildARAgingSummary(c.tenantId, asOf, c.companyId);
-      expect(summary.totalExact, asOf).toBe(await accountBalance(c, c.roles['accounts_receivable']!, asOf));
+      expect(m2(summary.totalExact), asOf).toBe(await accountBalance(c, c.roles['accounts_receivable']!, asOf));
       if (asOf >= '2026-11-10') expect(summary.customers.some((x) => x.contactId === null && x.name === '(no client)')).toBe(true);
     }
     // Subledger property, today: each invoice's item = its cent balance, except the pre-E1 unapplied write-off (A).
@@ -300,5 +302,68 @@ describe('A/R open items and the exact aging (U-142)', () => {
     expect(await pl()).toBe(0);
     await h.receive(c, { date: '2026-11-05', amount: '150.00', applications: [{ invoiceId: A(), amount: '150.00' }] });
     expect(await pl()).toBe(150);
+  });
+});
+
+describe('P22 review fixes (E1)', () => {
+  it('a move into a journal entry with several A/R clients lands on the client of the source, not on "(no client)"', async () => {
+    const ar = c.roles['accounts_receivable']!;
+    const je = await ledger.postTransaction(c.tenantId, {
+      txnType: 'journal_entry', txnDate: '2026-11-10', lines: [
+        { accountId: ar, debit: '30.00', credit: '0', contactId: c.customer },
+        { accountId: ar, debit: '5.00', credit: '0' },
+        { accountId: c.roles['sales']!, debit: '0', credit: '35.00' },
+      ],
+    } as never, c.userId, c.companyId) as { id: string };
+    const p = await h.receive(c, { date: '2026-11-12', amount: '30.00' });
+    expect(p.status, JSON.stringify(p.json)).toBe(201);
+    await db.insert(paymentApplications).values({
+      tenantId: c.tenantId, companyId: c.companyId, paymentId: p.json['payment'].id, invoiceId: je.id, amount: '30.0000',
+    });
+    const items = await arOpenItemsAsOf(db, { tenantId: c.tenantId, companyId: c.companyId, asOf: '2026-11-30' });
+    const sumFor = (id: string | null) => m2(items.filter((i) => i.contactId === id).reduce((s, i) => s + Number(i.openExact), 0));
+    expect(sumFor(c.customer)).toBe(await contactAR(c, c.customer, '2026-11-30'));
+    expect(sumFor(null)).toBe('5.00');
+    expect(items.some((i) => i.txnId === je.id && i.contactId === c.customer)).toBe(false);
+  });
+
+  it('aging totalExact is the exact A/R balance; total stays the cent sum and difference is their gap', async () => {
+    const ar = c.roles['accounts_receivable']!;
+    const je = await ledger.postTransaction(c.tenantId, {
+      txnType: 'journal_entry', txnDate: '2026-11-10', lines: [
+        { accountId: ar, debit: '7.00', credit: '0' },
+        { accountId: c.roles['sales']!, debit: '0', credit: '7.00' },
+      ],
+    } as never, c.userId, c.companyId) as { id: string };
+    // Legacy sub-cent residue (pre-U-122 data).
+    await db.execute(sql`UPDATE journal_lines SET debit = 7.0049 WHERE transaction_id = ${je.id} AND debit > 0`);
+    await db.execute(sql`UPDATE journal_lines SET credit = 7.0049 WHERE transaction_id = ${je.id} AND credit > 0`);
+    const gl = (await db.execute(sql`
+      SELECT SUM(jl.debit - jl.credit)::numeric(19,4)::text AS b FROM journal_lines jl
+      JOIN transactions t ON t.id = jl.transaction_id WHERE jl.tenant_id = ${c.tenantId} AND jl.account_id = ${ar}
+        AND t.status = 'posted' AND t.txn_date <= '2026-11-30'`)).rows[0] as { b: string };
+    const s = await buildARAgingSummary(c.tenantId, '2026-11-30', c.companyId);
+    expect(s.totalExact).toBe(gl.b);
+    expect(m2(Number(s.totalExact) - s.total)).toBe(s.difference);
+    expect(s.total).toBe(Number(m2(Number(gl.b) - 0.0049)));
+  });
+
+  it("another company's memo is 404 on /apply and /unapply; a role without invoices is 403 PERMISSION_DENIED", async () => {
+    const memo = await h.legacyMemo(c, '2026-11-02', '100.00');
+    const b = await h.secondCompany(c);
+    let r = await h.request('POST', `/api/v1/credit-memos/${memo}/apply`, c.token,
+      { date: '2026-11-03', applications: [{ invoiceId: A(), amount: '10.00' }] }, b);
+    expect(r.status, JSON.stringify(r.json)).toBe(404);
+    r = await h.request('POST', `/api/v1/credit-memos/${memo}/unapply`, c.token,
+      { invoiceId: A(), expectedUpdatedAt: (await txn(memo)).updatedAt!.toISOString() }, b);
+    expect(r.status, JSON.stringify(r.json)).toBe(404);
+    r = await h.request('GET', `/api/v1/payments/credits?customerId=${c.customer}`, c.token, undefined, b);
+    expect(r.status).toBe(404);
+
+    const bankingOnly = await h.staffToken(c, { banking: 'full' });
+    r = await h.request('POST', `/api/v1/credit-memos/${memo}/apply`, bankingOnly,
+      { date: '2026-11-03', applications: [{ invoiceId: A(), amount: '10.00' }] });
+    expect([r.status, r.json['error']?.code]).toEqual([403, 'PERMISSION_DENIED']);
+    expect(m2((await txn(A())).balanceDue)).toBe(m2(golden['seeds'].bluestem.invoices[0].total));
   });
 });
