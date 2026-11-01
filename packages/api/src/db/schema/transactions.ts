@@ -101,6 +101,8 @@ export const transactions = pgTable('transactions', {
   // A transaction posted as part of another one (U-132, migration 0247): a
   // returned_payment -> the payment it returns; its bank fee -> the bounce.
   sourceTxnId: uuid('source_txn_id'),
+  // A customer refund of a payment's credit (U-133, migration 0248).
+  sourcePaymentId: uuid('source_payment_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),
   stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),

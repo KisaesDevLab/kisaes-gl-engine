@@ -1737,6 +1737,13 @@
       "when": 1786300014380,
       "tag": "0247_receive_payment",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1786400014380,
+      "tag": "0248_receive_payment_settle",
+      "breakpoints": true
     }
   ]
 }

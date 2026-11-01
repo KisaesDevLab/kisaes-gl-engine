@@ -3,30 +3,44 @@
 // Free for small businesses; see LICENSE for terms.
 
 /**
- * Receive Payment allocation (U-132, receive-payment-v1): every figure of a
- * customer payment from what the owner chose. Pure: the service reads the
- * client's open invoices and passes them in, so POST /payments/preview and
- * the posting routes run exactly this. Golden cases:
+ * Receive Payment allocation (U-132 receive-payment-v1, U-133
+ * payment-settle-v1, U-134 payment-discounts-v1): every figure of a customer
+ * payment from what the owner chose. Pure: the service reads the client's
+ * open invoices and credits and passes them in, so POST /payments/preview
+ * and the posting routes run exactly this. Golden cases:
  * packages/shared/fixtures/payment-golden.json.
  *
  *   cent balance  round2(stored balance_due), half away from zero. Invoices
  *                 written since sales-cents-v1 are whole cents already; only
  *                 a legacy invoice can carry a sub-cent residue, which is
  *                 never shown and never posted (Q-P21t).
- *   amounts       decimal strings with at most 2 places; no tolerance: a
- *                 payment over the cent balance is OVERAPPLIED (Q-P21g).
+ *   amounts       decimal strings with at most 2 places; no tolerance: cash
+ *                 + discount + write-off + credits over the cent balance is
+ *                 OVERAPPLIED (Q-P21g).
+ *   order         per invoice: typed cash, discount and write-off first;
+ *                 then credits (typed, then fill: min(credit left, invoice
+ *                 left)); then cash fill rows / auto take what is left of the
+ *                 payment, oldest first (txnDate, number, id).
  *   auto          no applications: the amount fills the open invoices oldest
- *                 first (txnDate, number, id), each up to its cent balance.
+ *                 first, each up to what is left of its cent balance.
  *   explicit      the rows sent: a typed amount is that amount; amount null
  *                 ("fill") takes what is left of the payment after the typed
- *                 rows, up to the row's cent balance, in date order. Rows not
- *                 sent get 0.00. With no payment amount, a fill row takes its
- *                 whole cent balance and the amount is the sum
- *                 (amountSource from_applications).
- *   totals        amountDue = the open invoices' cent balances; applied = the
- *                 cash applied; unapplied = amount - applied (a credit that
- *                 stays on the client's A/R).
- *   shortfalls    invoices partly paid by this payment: cent balance - payment.
+ *                 rows, in date order. Rows not sent get 0.00. With no
+ *                 payment amount, a fill row takes all that is left of its
+ *                 invoice and the amount is the sum (from_applications).
+ *   discount      discountAvailable = round2(total x discountPercent / 100)
+ *                 half away from zero, capped at the cent balance, while the
+ *                 payment date is on or before the invoice's discount date and
+ *                 no discount was taken on it before; else 0.00.
+ *                 suggestDiscount: available > 0, none typed, and the row's
+ *                 cash equals cent balance - available exactly (Q-P21c).
+ *   totals        amountDue = the open invoices' cent balances; applied =
+ *                 the cash applied; discountsAndCredits = discounts + credits
+ *                 applied; writeOffs; unapplied = amount - applied (an A/R
+ *                 credit on the client); overpayment = unapplied when above 0.
+ *   shortfalls    invoices this payment settles in part: what is left, with
+ *                 withinWriteOffLimit = left <= the company's limit (false
+ *                 without one).
  */
 
 import DecimalLib from 'decimal.js';
@@ -57,6 +71,19 @@ export function centBalance(balanceDueExact: string | null | undefined): Decimal
 
 export const money2 = (d: DecimalValue): string => d.toFixed(2);
 
+/** The early-payment discount an invoice offers on `date` (U-134), 2 places. */
+export function discountAvailable(
+  inv: { total: string; balanceDueExact: string; discountPercent?: string | null; discountDate?: string | null; discountTaken?: boolean },
+  date: string | null | undefined,
+): DecimalValue {
+  if (!inv.discountPercent || !inv.discountDate || !date || inv.discountTaken) return new Decimal(0);
+  if (date > inv.discountDate) return new Decimal(0);
+  const pct = dec(inv.discountPercent);
+  if (!pct.greaterThan(0)) return new Decimal(0);
+  const amount = dec(inv.total).times(pct).dividedBy(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  return Decimal.max(Decimal.min(amount, centBalance(inv.balanceDueExact)), 0);
+}
+
 export interface ComputeInvoice {
   invoiceId: string;
   invoiceNumber: string;
@@ -65,13 +92,36 @@ export interface ComputeInvoice {
   total: string;
   /** Stored balance_due, 4 places, echoed as balanceDueExact. */
   balanceDueExact: string;
+  discountPercent?: string | null;
+  discountDate?: string | null;
+  /** A discount was taken on this invoice already (U-134: one per invoice). */
+  discountTaken?: boolean;
+}
+
+export interface ComputeCredit {
+  sourcePaymentId: string;
+  date: string;
+  refNo: string | null;
+  /** What is left of the credit, 2 places. */
+  remaining: string;
 }
 
 export interface ComputeRequest {
+  /** The payment date (discount window). */
+  date?: string | null;
   /** The payment amount typed, or omitted. */
   amount?: string | null;
   /** Omitted: auto (oldest first). Present: explicit rows. */
-  applications?: Array<{ invoiceId: string; amount: string | null }> | null;
+  applications?: Array<{
+    invoiceId: string;
+    amount: string | null;
+    discountAmount?: string | null;
+    writeOffAmount?: string | null;
+  }> | null;
+  /** Credits of the same client applied to invoices; amount null fills. */
+  creditApplications?: Array<{ sourcePaymentId: string; invoiceId: string; amount: string | null }> | null;
+  /** The company's write-off limit (2-place string) or null. */
+  writeOffThreshold?: string | null;
 }
 
 export type ProblemCode =
@@ -79,9 +129,10 @@ export type ProblemCode =
   | 'APPLICATIONS_EXCEED_AMOUNT'
   | 'OVERAPPLIED'
   | 'INVOICE_NOT_OPEN'
-  | 'DUPLICATE_INVOICE';
+  | 'DUPLICATE_INVOICE'
+  | 'CREDIT_NOT_AVAILABLE';
 
-export interface ComputeProblem { code: ProblemCode; invoiceId?: string }
+export interface ComputeProblem { code: ProblemCode; invoiceId?: string; sourcePaymentId?: string }
 
 export interface ComputedInvoice {
   invoiceId: string;
@@ -92,18 +143,28 @@ export interface ComputedInvoice {
   balanceDue: string;
   balanceDueExact: string;
   payment: string;
+  discount: string;
+  writeOff: string;
+  credits: string;
   remaining: string;
+  discountPercent: string | null;
+  discountDate: string | null;
+  discountAvailable: string;
+  suggestDiscount: boolean;
 }
 
 export interface ComputeResult {
   amount: string;
   amountSource: 'typed' | 'from_applications';
   invoices: ComputedInvoice[];
-  totals: { amountDue: string; applied: string; discountsAndCredits: string; unapplied: string };
-  shortfalls: Array<{ invoiceId: string; amount: string }>;
+  totals: { amountDue: string; applied: string; discountsAndCredits: string; writeOffs: string; unapplied: string };
+  overpayment: string;
+  shortfalls: Array<{ invoiceId: string; amount: string; withinWriteOffLimit: boolean }>;
   problems: ComputeProblem[];
-  /** The applications to post: invoices with a payment above 0.00, oldest first. */
-  applications: Array<{ invoiceId: string; amount: string; balanceDueExact: string }>;
+  /** Invoices with anything applied by this payment, oldest first. */
+  applications: Array<{ invoiceId: string; amount: string; discountAmount: string; writeOffAmount: string; balanceDueExact: string }>;
+  /** Credits applied, in the order sent. */
+  creditApplications: Array<{ sourcePaymentId: string; invoiceId: string; amount: string; balanceDueExact: string }>;
 }
 
 /** Oldest first: txnDate, then number, then id. */
@@ -114,82 +175,119 @@ export function sortOpenInvoices<T extends { txnDate: string; invoiceNumber: str
         : a.invoiceId < b.invoiceId ? -1 : a.invoiceId > b.invoiceId ? 1 : 0);
 }
 
-export function computePayment(openInvoices: ComputeInvoice[], req: ComputeRequest): ComputeResult {
+const ZERO = () => new Decimal(0);
+
+export function computePayment(openInvoices: ComputeInvoice[], req: ComputeRequest, credits: ComputeCredit[] = []): ComputeResult {
   const invoices = sortOpenInvoices(openInvoices.filter((i) => centBalance(i.balanceDueExact).greaterThan(0)));
   const byId = new Map(invoices.map((i) => [i.invoiceId, i]));
   const problems: ComputeProblem[] = [];
-  const pay = new Map<string, DecimalValue>(invoices.map((i) => [i.invoiceId, new Decimal(0)]));
+  const cash = new Map<string, DecimalValue>(invoices.map((i) => [i.invoiceId, ZERO()]));
+  const disc = new Map<string, DecimalValue>(invoices.map((i) => [i.invoiceId, ZERO()]));
+  const wo = new Map<string, DecimalValue>(invoices.map((i) => [i.invoiceId, ZERO()]));
+  const cred = new Map<string, DecimalValue>(invoices.map((i) => [i.invoiceId, ZERO()]));
+  const left = (id: string) => centBalance(byId.get(id)!.balanceDueExact)
+    .minus(cash.get(id)!).minus(disc.get(id)!).minus(wo.get(id)!).minus(cred.get(id)!);
   const typedAmount = req.amount !== undefined && req.amount !== null && req.amount !== '' ? dec(req.amount) : null;
-  let amount: DecimalValue;
-  let amountSource: ComputeResult['amountSource'] = 'typed';
+  const auto = req.applications === undefined || req.applications === null;
 
-  if (req.applications === undefined || req.applications === null) {
-    // Auto: oldest first.
-    amount = typedAmount ?? new Decimal(0);
-    let left = amount;
-    for (const inv of invoices) {
-      if (!left.greaterThan(0)) break;
-      const take = Decimal.min(left, centBalance(inv.balanceDueExact));
-      pay.set(inv.invoiceId, take);
-      left = left.minus(take);
-    }
-  } else {
+  // 1. Typed cash, discounts and write-offs; fill rows remembered.
+  const fills: ComputeInvoice[] = [];
+  let typedCash = ZERO();
+  if (!auto) {
     const seen = new Set<string>();
-    const fills: ComputeInvoice[] = [];
-    let typedSum = new Decimal(0);
-    for (const row of req.applications) {
-      if (seen.has(row.invoiceId)) {
-        problems.push({ code: 'DUPLICATE_INVOICE', invoiceId: row.invoiceId });
-        continue;
-      }
+    for (const row of req.applications!) {
+      if (seen.has(row.invoiceId)) { problems.push({ code: 'DUPLICATE_INVOICE', invoiceId: row.invoiceId }); continue; }
       seen.add(row.invoiceId);
       const inv = byId.get(row.invoiceId);
-      if (!inv) {
-        problems.push({ code: 'INVOICE_NOT_OPEN', invoiceId: row.invoiceId });
-        continue;
-      }
-      if (row.amount === null) {
-        fills.push(inv);
-        continue;
-      }
+      if (!inv) { problems.push({ code: 'INVOICE_NOT_OPEN', invoiceId: row.invoiceId }); continue; }
+      disc.set(inv.invoiceId, dec(row.discountAmount ?? '0'));
+      wo.set(inv.invoiceId, dec(row.writeOffAmount ?? '0'));
+      if (row.amount === null) { fills.push(inv); continue; }
       const c = dec(row.amount);
-      pay.set(inv.invoiceId, c);
-      typedSum = typedSum.plus(c);
-      if (c.greaterThan(centBalance(inv.balanceDueExact))) problems.push({ code: 'OVERAPPLIED', invoiceId: inv.invoiceId });
-    }
-    const orderedFills = sortOpenInvoices(fills);
-    if (typedAmount === null) {
-      amountSource = 'from_applications';
-      let sum = typedSum;
-      for (const inv of orderedFills) {
-        const take = centBalance(inv.balanceDueExact);
-        pay.set(inv.invoiceId, take);
-        sum = sum.plus(take);
-      }
-      amount = sum;
-    } else {
-      amount = typedAmount;
-      let left = Decimal.max(amount.minus(typedSum), 0);
-      for (const inv of orderedFills) {
-        const take = Decimal.min(left, centBalance(inv.balanceDueExact));
-        pay.set(inv.invoiceId, take);
-        left = left.minus(take);
-      }
+      cash.set(inv.invoiceId, c);
+      typedCash = typedCash.plus(c);
     }
   }
 
-  let amountDue = new Decimal(0);
-  let applied = new Decimal(0);
+  // 2. Credits: typed, then fill, each within the credit's remaining.
+  const creditLeft = new Map(credits.map((c) => [c.sourcePaymentId, dec(c.remaining)]));
+  const creditRows: Array<{ sourcePaymentId: string; invoiceId: string; amount: DecimalValue }> = [];
+  const creditInput = req.creditApplications ?? [];
+  for (const pass of ['typed', 'fill'] as const) {
+    for (const row of creditInput) {
+      if ((row.amount === null) !== (pass === 'fill')) continue;
+      const inv = byId.get(row.invoiceId);
+      if (!inv) { problems.push({ code: 'INVOICE_NOT_OPEN', invoiceId: row.invoiceId }); continue; }
+      const avail = creditLeft.get(row.sourcePaymentId);
+      if (avail === undefined) { problems.push({ code: 'CREDIT_NOT_AVAILABLE', sourcePaymentId: row.sourcePaymentId }); continue; }
+      const x = pass === 'typed' ? dec(row.amount) : Decimal.max(Decimal.min(avail, left(inv.invoiceId)), 0);
+      if (x.greaterThan(avail)) problems.push({ code: 'CREDIT_NOT_AVAILABLE', sourcePaymentId: row.sourcePaymentId });
+      creditLeft.set(row.sourcePaymentId, avail.minus(x));
+      cred.set(inv.invoiceId, cred.get(inv.invoiceId)!.plus(x));
+      if (x.greaterThan(0)) creditRows.push({ sourcePaymentId: row.sourcePaymentId, invoiceId: inv.invoiceId, amount: x });
+    }
+  }
+
+  // 3. Cash: auto oldest first, or fill rows in date order.
+  let amount: DecimalValue;
+  let amountSource: ComputeResult['amountSource'] = 'typed';
+  if (auto) {
+    amount = typedAmount ?? ZERO();
+    let rest = amount;
+    for (const inv of invoices) {
+      if (!rest.greaterThan(0)) break;
+      const take = Decimal.max(Decimal.min(rest, left(inv.invoiceId)), 0);
+      cash.set(inv.invoiceId, take);
+      rest = rest.minus(take);
+    }
+  } else if (typedAmount === null) {
+    amountSource = 'from_applications';
+    let sum = typedCash;
+    for (const inv of sortOpenInvoices(fills)) {
+      const take = Decimal.max(left(inv.invoiceId), 0);
+      cash.set(inv.invoiceId, take);
+      sum = sum.plus(take);
+    }
+    amount = sum;
+  } else {
+    amount = typedAmount;
+    let rest = Decimal.max(amount.minus(typedCash), 0);
+    for (const inv of sortOpenInvoices(fills)) {
+      const take = Decimal.max(Decimal.min(rest, left(inv.invoiceId)), 0);
+      cash.set(inv.invoiceId, take);
+      rest = rest.minus(take);
+    }
+  }
+
+  const threshold = req.writeOffThreshold === null || req.writeOffThreshold === undefined ? null : dec(req.writeOffThreshold);
+  let amountDue = ZERO();
+  let applied = ZERO();
+  let discounts = ZERO();
+  let writeOffs = ZERO();
+  let creditsApplied = ZERO();
   const shortfalls: ComputeResult['shortfalls'] = [];
   const applications: ComputeResult['applications'] = [];
   const rows: ComputedInvoice[] = invoices.map((inv) => {
     const cents = centBalance(inv.balanceDueExact);
-    const p = pay.get(inv.invoiceId) ?? new Decimal(0);
+    const c = cash.get(inv.invoiceId)!;
+    const d = disc.get(inv.invoiceId)!;
+    const w = wo.get(inv.invoiceId)!;
+    const x = cred.get(inv.invoiceId)!;
     amountDue = amountDue.plus(cents);
-    applied = applied.plus(p);
-    const remaining = cents.minus(p);
-    if (p.greaterThan(0) && remaining.greaterThan(0)) shortfalls.push({ invoiceId: inv.invoiceId, amount: money2(remaining) });
-    if (p.greaterThan(0)) applications.push({ invoiceId: inv.invoiceId, amount: money2(p), balanceDueExact: inv.balanceDueExact });
+    applied = applied.plus(c);
+    discounts = discounts.plus(d);
+    writeOffs = writeOffs.plus(w);
+    creditsApplied = creditsApplied.plus(x);
+    const settled = c.plus(d).plus(w).plus(x);
+    const remaining = cents.minus(settled);
+    if (remaining.isNegative()) problems.push({ code: 'OVERAPPLIED', invoiceId: inv.invoiceId });
+    if (settled.greaterThan(0) && remaining.greaterThan(0)) {
+      shortfalls.push({ invoiceId: inv.invoiceId, amount: money2(remaining), withinWriteOffLimit: threshold !== null && !remaining.greaterThan(threshold) });
+    }
+    if (c.plus(d).plus(w).greaterThan(0)) {
+      applications.push({ invoiceId: inv.invoiceId, amount: money2(c), discountAmount: money2(d), writeOffAmount: money2(w), balanceDueExact: inv.balanceDueExact });
+    }
+    const avail = discountAvailable(inv, req.date);
     return {
       invoiceId: inv.invoiceId,
       invoiceNumber: inv.invoiceNumber,
@@ -198,22 +296,42 @@ export function computePayment(openInvoices: ComputeInvoice[], req: ComputeReque
       total: money2(round2(inv.total)),
       balanceDue: money2(cents),
       balanceDueExact: inv.balanceDueExact,
-      payment: money2(p),
+      payment: money2(c),
+      discount: money2(d),
+      writeOff: money2(w),
+      credits: money2(x),
       remaining: money2(remaining),
+      discountPercent: inv.discountPercent ?? null,
+      discountDate: inv.discountDate ?? null,
+      discountAvailable: money2(avail),
+      suggestDiscount: avail.greaterThan(0) && d.isZero() && c.equals(cents.minus(avail)),
     };
   });
 
   if (applied.greaterThan(amount)) problems.push({ code: 'APPLICATIONS_EXCEED_AMOUNT' });
-  if (!amount.greaterThan(0) && !applied.greaterThan(0)) problems.push({ code: 'AMOUNT_REQUIRED' });
+  if (!amount.greaterThan(0) && !applied.greaterThan(0) && !discounts.greaterThan(0) && !writeOffs.greaterThan(0) && !creditsApplied.greaterThan(0)) {
+    problems.push({ code: 'AMOUNT_REQUIRED' });
+  }
   const unapplied = Decimal.max(amount.minus(applied), 0);
 
   return {
     amount: money2(amount),
     amountSource,
     invoices: rows,
-    totals: { amountDue: money2(amountDue), applied: money2(applied), discountsAndCredits: '0.00', unapplied: money2(unapplied) },
+    totals: {
+      amountDue: money2(amountDue),
+      applied: money2(applied),
+      discountsAndCredits: money2(discounts.plus(creditsApplied)),
+      writeOffs: money2(writeOffs),
+      unapplied: money2(unapplied),
+    },
+    overpayment: money2(unapplied),
     shortfalls,
     problems,
     applications,
+    creditApplications: creditRows.map((r) => ({
+      sourcePaymentId: r.sourcePaymentId, invoiceId: r.invoiceId, amount: money2(r.amount),
+      balanceDueExact: byId.get(r.invoiceId)!.balanceDueExact,
+    })),
   };
 }

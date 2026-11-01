@@ -164,6 +164,10 @@ export function cashBasisLinesWith(
   const dateCondPay = startDate
     ? sql`pay.txn_date >= ${startDate} AND pay.txn_date <= ${endDate}`
     : sql`pay.txn_date <= ${endDate}`;
+  // U-133: a credit applied after its payment is recognised on the day it was applied.
+  const dateCondApp = startDate
+    ? sql`COALESCE(app.rec_date, pay.txn_date) >= ${startDate} AND COALESCE(app.rec_date, pay.txn_date) <= ${endDate}`
+    : sql`COALESCE(app.rec_date, pay.txn_date) <= ${endDate}`;
   const companyT = companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`;
   const companyPay = companyId ? sql`pay.company_id = ${companyId}` : sql`TRUE`;
 
@@ -174,15 +178,26 @@ export function cashBasisLinesWith(
       -- reversed stays on its payment and is mirrored as a negative row on
       -- the returned_payment, so revenue reverses at the bounce date and
       -- closed periods don't move.
-      SELECT pa.payment_id, pa.invoice_id, pa.amount::numeric AS amount
+      -- U-133 / U-134: a row settles cash + discount + write-off. A credit
+      -- applied later (applied_date) is recognised on that date, stamped on
+      -- the payment it was applied inside (else its own payment), and
+      -- moves A/R by a virtual line of its own (rule 2b) instead of
+      -- reducing its payment's A/R leg.
+      SELECT pa.payment_id, pa.invoice_id,
+        (pa.amount + pa.discount_amount + pa.write_off_amount)::numeric AS amount, NULL::date AS rec_date, 'own' AS kind
       FROM payment_applications pa
-      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NULL
       UNION ALL
-      SELECT pa.reversed_by_txn_id, pa.invoice_id, -pa.amount::numeric
+      SELECT COALESCE(pa.applied_in_txn_id, pa.payment_id), pa.invoice_id, pa.amount::numeric, pa.applied_date, 'credit'
+      FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NOT NULL
+      UNION ALL
+      SELECT pa.reversed_by_txn_id, pa.invoice_id,
+        -(pa.amount + pa.discount_amount + pa.write_off_amount)::numeric, NULL::date, 'mirror'
       FROM payment_applications pa
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NOT NULL
       UNION ALL
-      SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric
+      SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric, NULL::date, 'own'
       FROM transactions tp
       WHERE tp.tenant_id = ${tenantId} AND tp.txn_type = 'customer_payment'
         AND tp.applied_to_invoice_id IS NOT NULL AND tp.total IS NOT NULL
@@ -212,7 +227,7 @@ export function cashBasisLinesWith(
         AND jl.is_void_reversal = false
       JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
       LEFT JOIN (
-        SELECT payment_id, SUM(amount) AS applied FROM ar_apps GROUP BY payment_id
+        SELECT payment_id, SUM(amount) AS applied FROM ar_apps WHERE kind <> 'credit' GROUP BY payment_id
       ) arp ON arp.payment_id = t.id
       LEFT JOIN (
         SELECT payment_id, SUM(amount::numeric) AS applied
@@ -225,16 +240,34 @@ export function cashBasisLinesWith(
 
       UNION ALL
 
-      -- Rule 3 (AR): scaled invoice distributions at the payment date.
+      -- Rule 2b (AR, U-133): a credit applied later takes its amount out of
+      -- the A/R credit on the day it is applied.
+      SELECT ara.id, NULL::uuid,
+        pay.id, app.rec_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.contact_id, pay.contact_id,
+        NULL::text, NULL::uuid, 0,
+        app.amount, 0::numeric
+      FROM ar_apps app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
+        AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
+      JOIN LATERAL (
+        SELECT a2.id FROM accounts a2 WHERE a2.tenant_id = ${tenantId} AND a2.system_tag = 'accounts_receivable' LIMIT 1
+      ) ara ON TRUE
+      WHERE app.kind = 'credit'
+
+      UNION ALL
+
+      -- Rule 3 (AR): scaled invoice distributions at the payment date (a
+      -- credit applied later: at its date).
       SELECT il.account_id, il.tag_id,
-        pay.id AS transaction_id, pay.txn_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.id AS transaction_id, COALESCE(app.rec_date, pay.txn_date), pay.txn_type, pay.txn_number, pay.memo,
         pay.contact_id AS txn_contact_id, il.contact_id AS line_contact_id,
         il.description, il.item_id, il.line_order,
         il.debit::numeric  * app.amount / NULLIF(inv.total::numeric, 0) AS debit,
         il.credit::numeric * app.amount / NULLIF(inv.total::numeric, 0) AS credit
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
-        AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
+        AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
       JOIN transactions inv ON inv.id = app.invoice_id AND inv.tenant_id = ${tenantId}
         AND inv.status = 'posted' AND NULLIF(inv.total::numeric, 0) IS NOT NULL
       JOIN journal_lines il ON il.transaction_id = inv.id AND il.tenant_id = ${tenantId}

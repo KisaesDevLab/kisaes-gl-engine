@@ -29,7 +29,22 @@ export const receivePaymentSchema = z.object({
     // U-132: the invoice's balanceDueExact as read (optional for older
     // clients); a mismatch is 409 INVOICE_BALANCE_CHANGED.
     expectedBalanceDue: storedAmount.optional(),
-  })).min(1),
+    // U-134: an early-payment discount taken on top of amount.
+    discountAmount: wholeCentsAmount.optional(),
+    // U-133: the part of the balance written off.
+    writeOffAmount: wholeCentsAmount.optional(),
+  })),
+  // U-133: the write-off account; default the company setting writeOffAccountId.
+  writeOffAccountId: z.string().uuid().optional(),
+  // U-134: the sales discount account; default the company setting salesDiscountAccountId.
+  discountAccountId: z.string().uuid().optional(),
+  // U-133: existing credits of the same client applied in this payment.
+  creditApplications: z.array(z.object({
+    sourcePaymentId: z.string().uuid(),
+    invoiceId: z.string().uuid(),
+    amount: wholeCentsAmount,
+    expectedBalanceDue: storedAmount.optional(),
+  })).optional(),
 });
 
 /** PUT /payments/:id (U-132): the receive body + the payment's updatedAt as read. */
@@ -46,8 +61,26 @@ export const previewPaymentSchema = z.object({
   applications: z.array(z.object({
     invoiceId: z.string().uuid(),
     amount: wholeCentsAmount.nullable(),
+    discountAmount: wholeCentsAmount.nullable().optional(),
+    writeOffAmount: wholeCentsAmount.nullable().optional(),
+  })).optional(),
+  creditApplications: z.array(z.object({
+    sourcePaymentId: z.string().uuid(),
+    invoiceId: z.string().uuid(),
+    amount: wholeCentsAmount.nullable(),
   })).optional(),
   editingPaymentId: z.string().uuid().optional(),
+});
+
+/** POST /payments/:id/apply (U-133): apply a payment's credit to invoices later; amount omitted fills. */
+export const applyPaymentCreditSchema = z.object({
+  date: isoDate,
+  applications: z.array(z.object({
+    invoiceId: z.string().uuid(),
+    amount: wholeCentsAmount.optional(),
+    expectedBalanceDue: storedAmount.optional(),
+  })).min(1),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
 /** POST /payments/unapply (U-132: validated, expectedUpdatedAt optional). */

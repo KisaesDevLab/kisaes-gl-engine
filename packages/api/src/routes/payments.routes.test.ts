@@ -633,3 +633,176 @@ describe('payment-bounce-v1 (U-132)', () => {
     expect(await linesOf(b.json.feeId)).toEqual([[c.fee, '35.0000', '0.0000'], [c.bank, '0.0000', '35.0000']]);
   });
 });
+
+describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
+  async function settings() {
+    await db.update(companies).set({ writeOffAccountId: c.fee, salesDiscountAccountId: c.revenue }).where(eq(companies.id, c.companyId));
+  }
+
+  it('advertises the settle and discount capabilities', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('payment-settle-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('payment-discounts-v1');
+  });
+
+  it('golden 2: a 0.75 shortfall is within the limit; writing it off closes 1091; a void restores it exactly', async () => {
+    const { i1091 } = await mockup();
+    let p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ amount: '4384.25', applications: [{ invoiceId: i1091, amount: '4384.25' }] }));
+    expect(p.json.shortfalls).toEqual([{ invoiceId: i1091, amount: '0.75', withinWriteOffLimit: true }]);
+    const body = { amount: '4384.25', applications: [{ invoiceId: i1091, amount: '4384.25', writeOffAmount: '0.75' }] };
+    let r = await receive(body);
+    expect([r.status, r.json.error?.code]).toEqual([400, 'WRITE_OFF_ACCOUNT_REQUIRED']);
+    await settings();
+    p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ amount: '4384.25', applications: [{ invoiceId: i1091, amount: '4384.25', writeOffAmount: '0.75' }] }));
+    expect([p.json.totals.writeOffs, p.json.contactBalanceAfter, p.json.shortfalls]).toEqual(['0.75', '1260.00', []]);
+    r = await receive(body);
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect(await linesOf(r.json.payment.id)).toEqual([
+      [c.clearing, '4384.2500', '0.0000'], [c.fee, '0.7500', '0.0000'], [c.ar, '0.0000', '4385.0000'],
+    ]);
+    expect([(await inv(i1091)).balanceDue, (await inv(i1091)).invoiceStatus]).toEqual(['0.0000', 'paid']);
+    expect(r.json.payment.applications[0].writeOff).toBe('0.75');
+    expect(await contactAR()).toBe('1260.0000');
+    // Cash basis: revenue 4,385.00 less the 0.75 write-off = the cash.
+    const pl = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
+    expect(Number(pl.netIncome).toFixed(2)).toBe('4384.25');
+    const v = await request('POST', `/api/v1/payments/${r.json.payment.id}/void`, c.token, {});
+    expect(v.status).toBe(200);
+    expect((await inv(i1091)).balanceDue).toBe('4385.0000');
+  });
+
+  it('golden 3: the discount is suggested on day 8, posts to the discount account, and a bounce (golden 8) reverses it and the write-off exactly', async () => {
+    await settings();
+    const d = await invoice('1000.00', '2026-10-01');
+    const w = await invoice('100.00', '2026-10-01');
+    await db.update(transactions).set({ discountPercent: '2.0000', discountDate: '2026-10-11' }).where(eq(transactions.id, d));
+    const p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-10-09', amount: '1079.50',
+      applications: [{ invoiceId: d, amount: '980.00' }, { invoiceId: w, amount: '99.50' }] }));
+    const row = p.json.invoices.find((i: any) => i.invoiceId === d);
+    expect([row.discountAvailable, row.suggestDiscount]).toEqual(['20.00', true]);
+    let late = await request('GET', `/api/v1/payments/open-invoices/${c.customer}?date=2026-10-12`, c.token);
+    expect(late.json.invoices.find((i: any) => i.id === d).discountAvailable).toBe('0.00');
+    const r = await receive({ date: '2026-10-09', amount: '1079.50', depositTo: c.bank, applications: [
+      { invoiceId: d, amount: '980.00', discountAmount: '20.00' }, { invoiceId: w, amount: '99.50', writeOffAmount: '0.50' },
+    ] });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect(await linesOf(r.json.payment.id)).toEqual([
+      [c.bank, '1079.5000', '0.0000'], [c.fee, '0.5000', '0.0000'], [c.revenue, '20.0000', '0.0000'], [c.ar, '0.0000', '1100.0000'],
+    ]);
+    expect([(await inv(d)).invoiceStatus, (await inv(w)).invoiceStatus]).toEqual(['paid', 'paid']);
+    // The discount is taken once per invoice.
+    late = await request('GET', `/api/v1/payments/open-invoices/${c.customer}?date=2026-10-09`, c.token);
+    expect(late.json.invoices).toEqual([]);
+    const pl = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
+    expect(Number(pl.netIncome).toFixed(2)).toBe('1079.50');
+
+    const b = await request('POST', `/api/v1/payments/${r.json.payment.id}/bounce`, c.token, { date: '2026-10-20' });
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    const lines = await linesOf(b.json.returnId);
+    expect(lines).toContainEqual([c.ar, '1100.0000', '0.0000']);
+    expect(lines).toContainEqual([c.bank, '0.0000', '1079.5000']);
+    expect(lines).toContainEqual([c.fee, '0.0000', '0.5000']);
+    expect(lines).toContainEqual([c.revenue, '0.0000', '20.0000']);
+    expect([(await inv(d)).balanceDue, (await inv(w)).balanceDue]).toEqual(['1000.0000', '100.0000']);
+    const after = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
+    expect(Number(after.netIncome).toFixed(2)).toBe('0.00');
+  });
+
+  it('golden 4: overpayment credit, apply later, apply inside a receipt, void gives it back, refunds, CREDIT_IN_USE', async () => {
+    const { i1091, i1095 } = await mockup();
+    const { preview, payment } = await previewThenReceive({ amount: '5700.00' });
+    expect([preview.overpayment, preview.contactBalanceAfter]).toEqual(['55.00', '-55.00']);
+    expect(payment.unappliedRemaining).toBe('55.00');
+    const n1 = await invoice('300.00', '2026-11-10');
+    let p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({ date: '2026-11-11' }));
+    expect(p.json.credits).toEqual([{ sourcePaymentId: payment.id, date: '2026-11-03', refNo: null, remaining: '55.00' }]);
+    // Apply 20.00 later: no GL lines.
+    const glBefore = (await db.select().from(journalLines).where(eq(journalLines.tenantId, c.tenantId))).length;
+    let a = await request('POST', `/api/v1/payments/${payment.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: n1, amount: '20.00' }] }, { 'Idempotency-Key': key() });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    expect(a.json).toEqual({ applied: [{ invoiceId: n1, amount: '20.00' }], remaining: '35.00' });
+    expect((await db.select().from(journalLines).where(eq(journalLines.tenantId, c.tenantId))).length).toBe(glBefore);
+    expect((await inv(n1)).balanceDue).toBe('280.0000');
+    a = await request('POST', `/api/v1/payments/${payment.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: n1, amount: '36.00' }] });
+    expect([a.status, a.json.error.code, a.json.error.details.remaining]).toEqual([409, 'CREDIT_NOT_AVAILABLE', '35.00']);
+    // Apply 30.00 inside a new receipt; voiding the receipt gives it back.
+    const r2 = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date: '2026-11-12', depositTo: c.bank, amount: '250.00',
+      applications: [{ invoiceId: n1, amount: '250.00' }], creditApplications: [{ sourcePaymentId: payment.id, invoiceId: n1, amount: '30.00' }],
+    });
+    expect(r2.status, JSON.stringify(r2.json)).toBe(201);
+    expect([(await inv(n1)).balanceDue, (await inv(n1)).invoiceStatus]).toEqual(['0.0000', 'paid']);
+    let rec = await request('GET', `/api/v1/payments/${payment.id}`, c.token);
+    expect(rec.json.payment.unappliedRemaining).toBe('5.00');
+    expect(rec.json.payment.applications.map((x: any) => x.appliedDate)).toEqual(['2026-11-03', '2026-11-03', '2026-11-11', '2026-11-12']);
+    // Cash basis recognises the credits on their dates; the period nets to the cash.
+    const pl = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
+    expect(Number(pl.totalRevenue).toFixed(2)).toBe('5945.00'); // 5,645.00 + 20.00 + 30.00 + 250.00
+    // CREDIT_IN_USE: the payment can't drop below what others drew (50.00).
+    const put = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, {
+      customerId: c.customer, date: '2026-11-03', depositTo: c.clearing, amount: '5680.00',
+      applications: [{ invoiceId: i1091, amount: '4385.00' }, { invoiceId: i1095, amount: '1260.00' }],
+    });
+    expect([put.status, put.json.error.code]).toEqual([409, 'CREDIT_IN_USE']);
+    let v = await request('POST', `/api/v1/payments/${r2.json.payment.id}/void`, c.token, {});
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    rec = await request('GET', `/api/v1/payments/${payment.id}`, c.token);
+    expect(rec.json.payment.unappliedRemaining).toBe('35.00');
+    expect((await inv(n1)).balanceDue).toBe('280.0000');
+
+    // Refund 20.00 of the credit: 15.00 left; more is refused; the payment can't be voided while it lives.
+    const refundBody = { txnDate: '2026-11-13', contactId: c.customer, refundFromAccountId: c.bank, amount: '20.00', sourcePaymentId: payment.id };
+    let f = await request('POST', '/api/v1/customer-refunds', c.token, refundBody, { 'Idempotency-Key': key() });
+    expect(f.status, JSON.stringify(f.json)).toBe(201);
+    expect(await linesOf(f.json.transaction.id)).toEqual([[c.ar, '20.0000', '0.0000'], [c.bank, '0.0000', '20.0000']]);
+    f = await request('POST', '/api/v1/customer-refunds', c.token, { ...refundBody, amount: '15.01' });
+    expect([f.status, f.json.error.code]).toEqual([409, 'CREDIT_NOT_AVAILABLE']);
+    v = await request('POST', `/api/v1/payments/${payment.id}/void`, c.token, {});
+    expect([v.status, v.json.error.code]).toEqual([409, 'PAYMENT_REFUNDED']);
+    const refunds = await db.select().from(transactions).where(and(eq(transactions.tenantId, c.tenantId), eq(transactions.txnType, 'customer_refund')));
+    v = await request('POST', `/api/v1/transactions/${refunds[0]!.id}/void`, c.token, { reason: 'x' });
+    expect(v.status).toBe(200);
+    rec = await request('GET', `/api/v1/payments/${payment.id}`, c.token);
+    expect(rec.json.payment.unappliedRemaining).toBe('35.00');
+  });
+
+  it('two concurrent applies of the same credit: one wins, the other is CREDIT_NOT_AVAILABLE', async () => {
+    await mockup();
+    const { payment } = await previewThenReceive({ amount: '5700.00' });
+    const a = await invoice('55.00', '2026-11-10');
+    const b = await invoice('55.00', '2026-11-10');
+    const [x, y] = await Promise.all([
+      request('POST', `/api/v1/payments/${payment.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: a, amount: '55.00' }] }),
+      request('POST', `/api/v1/payments/${payment.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: b, amount: '55.00' }] }),
+    ]);
+    expect([x.status, y.status].sort()).toEqual([200, 409]);
+    expect((x.status === 409 ? x : y).json.error.code).toBe('CREDIT_NOT_AVAILABLE');
+  });
+
+  it('bounce versus credit: a bounce takes back the credit applied later; the credit can no longer be used', async () => {
+    const { i1091, i1095 } = await mockup();
+    const { payment } = await previewThenReceive({ amount: '5700.00' }, c.bank);
+    const n1 = await invoice('300.00', '2026-11-10');
+    await request('POST', `/api/v1/payments/${payment.id}/apply`, c.token, { date: '2026-11-11', applications: [{ invoiceId: n1 }] });
+    expect((await inv(n1)).balanceDue).toBe('245.0000');
+    const b = await request('POST', `/api/v1/payments/${payment.id}/bounce`, c.token, { date: '2026-11-15' });
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    expect([(await inv(i1091)).balanceDue, (await inv(i1095)).balanceDue, (await inv(n1)).balanceDue])
+      .toEqual(['4385.0000', '1260.0000', '300.0000']);
+    const a = await request('POST', `/api/v1/payments/${payment.id}/apply`, c.token, { date: '2026-11-16', applications: [{ invoiceId: n1 }] });
+    expect([a.status, a.json.error.code]).toEqual([409, 'PAYMENT_BOUNCED']);
+    const p = await request('POST', '/api/v1/payments/preview', c.token, previewBody({}));
+    expect(p.json.credits).toEqual([]);
+    expect(await contactAR()).toBe('5945.0000');
+    const pl = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
+    expect(Number(pl.totalRevenue).toFixed(2)).toBe('0.00');
+  });
+
+  it('company settings carry the write-off and discount preferences; the limit defaults to 1.00', async () => {
+    let r = await request('GET', '/api/v1/company/settings', c.token);
+    expect(r.json.settings.writeOffThreshold).toMatch(/^1\.00(00)?$/);
+    r = await request('PUT', '/api/v1/company/settings', c.token, { writeOffAccountId: c.fee, writeOffThreshold: '2.50', salesDiscountAccountId: c.revenue });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    r = await request('PUT', '/api/v1/company/settings', c.token, { writeOffAccountId: c.ar });
+    expect([r.status, r.json.error.code]).toEqual([400, 'WRITE_OFF_ACCOUNT_INVALID']);
+  });
+});

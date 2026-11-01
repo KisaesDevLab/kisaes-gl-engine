@@ -46,6 +46,12 @@ export const companies = pgTable('companies', {
   nsfBankFeeAccountId: uuid('nsf_bank_fee_account_id'),
   nsfFeeIncomeAccountId: uuid('nsf_fee_income_account_id'),
   nsfCustomerFee: decimal('nsf_customer_fee', { precision: 19, scale: 4 }),
+  // Receive Payment (U-133 / U-134, migration 0248): the write-off account,
+  // the shortfall at or under which a write-off is suggested (1.00 for new
+  // and existing companies, Q-P21h; NULL = never), the sales discount account.
+  writeOffAccountId: uuid('write_off_account_id'),
+  writeOffThreshold: decimal('write_off_threshold', { precision: 19, scale: 4 }).default('1.0000'),
+  salesDiscountAccountId: uuid('sales_discount_account_id'),
   // Prefix and next number per document type other than invoices (U-111,
   // migration 0240): {cash_sale|credit_memo|statement: {prefix, next}}.
   documentNumbers: jsonb('document_numbers').$type<Record<string, { prefix?: string; next?: number }>>().notNull().default({}),

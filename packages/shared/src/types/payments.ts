@@ -17,7 +17,24 @@ export interface ReceivePaymentInput {
     amount: string;
     /** U-132: the invoice's balanceDueExact as read; a mismatch is 409 INVOICE_BALANCE_CHANGED. */
     expectedBalanceDue?: string;
+    /** U-134: early-payment discount, on top of amount. */
+    discountAmount?: string;
+    /** U-133: the part of the balance written off. */
+    writeOffAmount?: string;
   }>;
+  /** U-133: default the company setting writeOffAccountId. */
+  writeOffAccountId?: string;
+  /** U-134: default the company setting salesDiscountAccountId. */
+  discountAccountId?: string;
+  /** U-133: existing credits of the same client applied in this payment. */
+  creditApplications?: Array<{ sourcePaymentId: string; invoiceId: string; amount: string; expectedBalanceDue?: string }>;
+}
+
+/** POST /payments/:id/apply (U-133). */
+export interface ApplyPaymentCreditInput {
+  date: string;
+  applications: Array<{ invoiceId: string; amount?: string; expectedBalanceDue?: string }>;
+  expectedUpdatedAt?: string;
 }
 
 /** POST /payments/preview (U-132, receive-payment-v1). */
@@ -27,7 +44,8 @@ export interface PreviewPaymentInput {
   amount?: string | null;
   depositTo?: string;
   /** Omitted: auto (oldest first). amount null: fill. */
-  applications?: Array<{ invoiceId: string; amount: string | null }>;
+  applications?: Array<{ invoiceId: string; amount: string | null; discountAmount?: string | null; writeOffAmount?: string | null }>;
+  creditApplications?: Array<{ sourcePaymentId: string; invoiceId: string; amount: string | null }>;
   editingPaymentId?: string;
 }
 

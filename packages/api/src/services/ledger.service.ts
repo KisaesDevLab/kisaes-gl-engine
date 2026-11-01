@@ -529,6 +529,8 @@ interface PostTransactionInput {
   // Posted as part of another transaction (U-132): a returned_payment -> the
   // payment it returns; a bounce's bank fee -> the bounce. Create only.
   sourceTxnId?: string;
+  // A customer refund of a payment's credit (U-133). Create only.
+  sourcePaymentId?: string;
   // The recurring schedule that posted this transaction (U-64). Create only.
   recurringScheduleId?: string;
   lines: JournalLineInput[];
@@ -657,6 +659,7 @@ export async function postTransaction(
       isAdjusting: input.isAdjusting ?? input.txnType === 'aje',
       reversesTransactionId: input.reversesTransactionId || null,
       sourceTxnId: input.sourceTxnId || null,
+      sourcePaymentId: input.sourcePaymentId || null,
       recurringScheduleId: input.recurringScheduleId || null,
     }).returning();
 

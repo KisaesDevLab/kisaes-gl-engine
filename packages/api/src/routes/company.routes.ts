@@ -234,6 +234,9 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       nsfBankFeeAccountId: company.nsfBankFeeAccountId ?? null,
       nsfFeeIncomeAccountId: company.nsfFeeIncomeAccountId ?? null,
       nsfCustomerFee: company.nsfCustomerFee == null ? null : String(company.nsfCustomerFee),
+      writeOffAccountId: company.writeOffAccountId ?? null,
+      writeOffThreshold: company.writeOffThreshold == null ? null : String(company.writeOffThreshold),
+      salesDiscountAccountId: company.salesDiscountAccountId ?? null,
     },
   });
 });
