@@ -123,6 +123,104 @@ async function lockPayments(tx: Tx, tenantId: string, ids: string[]): Promise<Ma
   return new Map(rows.map((r) => [r.id, r]));
 }
 
+/** 409 STALE: a payment's links changed while the request waited for its locks (E-B1). */
+function scopeChanged(paymentId: string): AppError {
+  return AppError.conflict(
+    'This payment changed while it was being saved (it was deposited, applied or voided elsewhere). Reload it and try again.',
+    'STALE',
+    { paymentId },
+  );
+}
+
+/** What a write on a payment must hold: the posted deposits holding it, then the payment rows it touches. */
+interface PaymentScope { depositIds: string[]; paymentIds: string[] }
+
+/** Read on the caller's executor: before the locks to know what to lock, and again under them. */
+async function paymentScope(executor: DbOrTx, tenantId: string, paymentId: string): Promise<PaymentScope> {
+  const deposits = await liveDepositsForSource(executor, tenantId, paymentId);
+  // U-133: the payments its credit was applied inside (their void restores
+  // those rows) and the sources of the credits applied inside it.
+  const links = await executor.execute(sql`
+    SELECT pa.applied_in_txn_id AS id FROM payment_applications pa
+    WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${paymentId} AND pa.applied_in_txn_id IS NOT NULL
+      AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+    UNION
+    SELECT pa.payment_id FROM payment_applications pa
+    WHERE pa.tenant_id = ${tenantId} AND pa.applied_in_txn_id = ${paymentId}
+      AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+  `);
+  const ids = new Set([paymentId, ...(links.rows as Array<{ id: string }>).map((r) => String(r.id))]);
+  return { depositIds: [...new Set(deposits.map((d) => d.depositId))].sort(), paymentIds: [...ids].sort() };
+}
+
+interface LockedScope {
+  /** The payment, locked; undefined when it doesn't exist in the tenant (the caller answers 404). */
+  payment: TxnRow | undefined;
+  /** The posted deposit holding it now, locked. */
+  deposit: TxnRow | undefined;
+  /** Every payment row locked (the payment and its scope). */
+  locked: Map<string, TxnRow>;
+}
+
+/**
+ * Locks a payment and what it is linked to in the one lock order (E-B1):
+ * the deposits holding it (id order), then every payment row of its scope
+ * plus `extra` in one id-ordered batch; invoices come after, from the
+ * caller. The scope is read again under the locks: a deposit or payment row
+ * that appeared meanwhile and isn't locked is 409 STALE; one that went away
+ * (a deposit voided while this waited) is simply no longer in the scope.
+ */
+async function lockPaymentScope(tx: Tx, tenantId: string, paymentId: string, extra: string[] = []): Promise<LockedScope> {
+  const before = await paymentScope(tx, tenantId, paymentId);
+  const deposits = await lockPayments(tx, tenantId, before.depositIds);
+  const locked = await lockPayments(tx, tenantId, [...before.paymentIds, ...extra]);
+  const payment = locked.get(paymentId);
+  if (!payment) return { payment: undefined, deposit: undefined, locked };
+  const after = await paymentScope(tx, tenantId, paymentId);
+  if (after.depositIds.some((id) => !deposits.has(id)) || after.paymentIds.some((id) => !locked.has(id))) {
+    throw scopeChanged(paymentId);
+  }
+  const deposit = after.depositIds.map((id) => deposits.get(id)).find((d) => d?.status === 'posted');
+  return { payment, deposit, locked };
+}
+
+/**
+ * Locks the scope of a payment (or of the payment a bounce took back)
+ * before voidTransactionInTx locks the row itself, so a void takes its
+ * locks in the same order as bounce, unapply and edit (E-B1).
+ */
+export async function lockForVoidInTx(tx: Tx, tenantId: string, txn: { id: string; txnType: string; sourceTxnId: string | null }): Promise<void> {
+  if (txn.txnType === 'customer_payment') await lockPaymentScope(tx, tenantId, txn.id);
+  else if (txn.txnType === 'returned_payment' && txn.sourceTxnId) {
+    // The rows the bounce reversed come back live: lock the payments they
+    // belong to and were applied inside (U-133) with the bounced payment.
+    const res = await tx.execute(sql`
+      SELECT pa.payment_id AS id FROM payment_applications pa WHERE pa.tenant_id = ${tenantId} AND pa.reversed_by_txn_id = ${txn.id}
+      UNION
+      SELECT pa.applied_in_txn_id FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.reversed_by_txn_id = ${txn.id} AND pa.applied_in_txn_id IS NOT NULL
+    `);
+    await lockPaymentScope(tx, tenantId, txn.sourceTxnId, (res.rows as Array<{ id: string }>).map((r) => String(r.id)));
+  }
+}
+
+/**
+ * Retires a live application row: voided_at (void, unapply, edit) or
+ * reversed_by_txn_id (bounce), only while it is live. False when another
+ * writer retired it first; its invoice must not move then (E-B1).
+ */
+async function retireApplication(
+  tx: Tx, tenantId: string, id: string, set: { voidedAt: Date } | { reversedByTxnId: string },
+): Promise<boolean> {
+  const rows = await tx.update(paymentApplications).set(set)
+    .where(and(
+      eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.id, id),
+      sql`${paymentApplications.voidedAt} IS NULL AND ${paymentApplications.reversedByTxnId} IS NULL`,
+    ))
+    .returning({ id: paymentApplications.id });
+  return rows.length > 0;
+}
+
 /** The cent balance a payment may still take: 0.00 for a paid or void invoice. */
 function payableCents(inv: TxnRow): DecimalValue {
   if (inv.status !== 'posted' || inv.invoiceStatus === 'void' || inv.invoiceStatus === 'paid') return new Decimal(0);
@@ -678,8 +776,22 @@ export interface PaymentApplicationRecord {
   discount: string;
   writeOff: string;
   appliedDate: string;
+  /** review E-B2 / D-SF1: true for its credit applied after it was saved (/apply or inside another payment). */
+  appliedLater: boolean;
+  /** The payment this credit row was applied inside; null for its own rows and /apply. */
+  appliedInTxnId: string | null;
   voided: boolean;
   reversed: boolean;
+}
+
+/** A live credit applied inside this payment (review E-B2): send it back on PUT to keep it. */
+export interface PaymentCreditRecord {
+  sourcePaymentId: string;
+  invoiceId: string;
+  invoiceNumber: string | null;
+  amount: string;
+  /** True when the source is a held customer deposit (U-135). */
+  fromDeposit: boolean;
 }
 
 export interface PaymentRecord {
@@ -698,6 +810,11 @@ export interface PaymentRecord {
   depositedIn?: { depositId: string; date: string };
   bounce?: { returnId: string; date: string };
   applications: PaymentApplicationRecord[];
+  /** review E-B2: the live credits applied inside it. */
+  creditApplications: PaymentCreditRecord[];
+  /** The write-off and discount accounts its live rows use (null when none). */
+  writeOffAccountId: string | null;
+  discountAccountId: string | null;
   unappliedRemaining: string;
   holdsDeposit: boolean;
   depositRemaining: string;
@@ -717,38 +834,58 @@ async function loadPayment(executor: DbOrTx, tenantId: string, paymentId: string
   return row;
 }
 
-/** The account a payment was deposited to: its debit line that is not A/R. */
+/**
+ * The account a payment was deposited to: its asset debit line that is not
+ * A/R. Null when it received no money (a payment of 0.00 that only settles
+ * a discount or write-off has no asset debit; review SF6).
+ */
 async function depositToOf(executor: DbOrTx, tenantId: string, paymentId: string): Promise<string | null> {
   const res = await executor.execute(sql`
     SELECT jl.account_id FROM journal_lines jl
     JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
     WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id = ${paymentId} AND jl.is_void_reversal = false
-      AND jl.debit > 0 AND a.system_tag IS DISTINCT FROM 'accounts_receivable'
+      AND jl.debit > 0 AND a.account_type = 'asset' AND a.system_tag IS DISTINCT FROM 'accounts_receivable'
     ORDER BY jl.line_order LIMIT 1
   `);
   return (res.rows as Array<{ account_id: string }>)[0]?.account_id ?? null;
+}
+
+/** 400 NO_MONEY_RECEIVED: a payment that took in no money can't be bounced or edited (review SF6). */
+function noMoneyReceived(paymentId: string): AppError {
+  return AppError.badRequest(
+    'This payment received no money (it only settles a discount or write-off), so it can’t be bounced or edited. Void it and enter it again.',
+    'NO_MONEY_RECEIVED',
+    { paymentId },
+  );
 }
 
 export async function getPaymentRecord(executor: DbOrTx, tenantId: string, paymentId: string, companyId?: string): Promise<PaymentRecord> {
   const p = await loadPayment(executor, tenantId, paymentId, companyId);
   const appsRes = await executor.execute(sql`
     SELECT pa.invoice_id, inv.txn_number, pa.amount, pa.discount_amount, pa.write_off_amount,
-      to_char(pa.applied_date, 'YYYY-MM-DD') AS applied_date, pa.voided_at, pa.reversed_by_txn_id
+      to_char(pa.applied_date, 'YYYY-MM-DD') AS applied_date, pa.applied_in_txn_id, pa.voided_at, pa.reversed_by_txn_id,
+      pa.write_off_account_id, pa.discount_account_id
     FROM payment_applications pa
     LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
     WHERE pa.tenant_id = ${tenantId} AND pa.payment_id = ${paymentId}
     ORDER BY pa.created_at, inv.txn_date, inv.txn_number, pa.id
   `);
-  const apps = (appsRes.rows as Array<Record<string, unknown>>).map((r) => ({
+  const appRows = appsRes.rows as Array<Record<string, unknown>>;
+  const apps = appRows.map((r) => ({
     invoiceId: String(r['invoice_id']),
     invoiceNumber: (r['txn_number'] as string | null) ?? null,
     amount: money2(round2(String(r['amount']))),
     discount: money2(round2(String(r['discount_amount'] ?? '0'))),
     writeOff: money2(round2(String(r['write_off_amount'] ?? '0'))),
     appliedDate: (r['applied_date'] as string | null) ?? p.txnDate,
+    appliedLater: r['applied_date'] != null,
+    appliedInTxnId: (r['applied_in_txn_id'] as string | null) ?? null,
     voided: r['voided_at'] != null,
     reversed: r['reversed_by_txn_id'] != null,
   }));
+  const liveOwn = appRows.filter((r) => r['applied_date'] == null && r['voided_at'] == null && r['reversed_by_txn_id'] == null);
+  const accountOf = (col: string) => (liveOwn.map((r) => r[col] as string | null).find((x) => x != null) ?? null);
+  const creditApplications = await creditsInsideRecord(executor, tenantId, paymentId);
   const deposits = await liveDepositsForSource(executor, tenantId, paymentId);
   let depositedIn: PaymentRecord['depositedIn'];
   if (deposits[0]) {
@@ -774,11 +911,36 @@ export async function getPaymentRecord(executor: DbOrTx, tenantId: string, payme
     ...(depositedIn ? { depositedIn } : {}),
     ...(bounce ? { bounce: { returnId: bounce.id, date: bounce.txnDate } } : {}),
     applications: apps,
+    creditApplications,
+    writeOffAccountId: accountOf('write_off_account_id'),
+    discountAccountId: accountOf('discount_account_id'),
     unappliedRemaining: money2(round2(remaining)),
     holdsDeposit: p.holdsDeposit,
     depositRemaining: money2(round2(await depositRemaining(executor, tenantId, p))),
     ...(p.fromDepositId ? { fromDepositId: p.fromDepositId } : {}),
   };
+}
+
+/**
+ * The live credits applied inside a payment (review E-B2), in the shape PUT
+ * takes back as creditApplications: other payments' rows applied inside it.
+ */
+async function creditsInsideRecord(executor: DbOrTx, tenantId: string, paymentId: string): Promise<PaymentCreditRecord[]> {
+  const res = await executor.execute(sql`
+    SELECT pa.payment_id AS source_id, pa.invoice_id, inv.txn_number, pa.amount, false AS from_deposit
+    FROM payment_applications pa
+    LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
+    WHERE pa.tenant_id = ${tenantId} AND pa.applied_in_txn_id = ${paymentId}
+      AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+    ORDER BY pa.created_at, pa.id
+  `);
+  return (res.rows as Array<Record<string, unknown>>).map((r) => ({
+    sourcePaymentId: String(r['source_id']),
+    invoiceId: String(r['invoice_id']),
+    invoiceNumber: (r['txn_number'] as string | null) ?? null,
+    amount: money2(round2(String(r['amount']))),
+    fromDeposit: r['from_deposit'] === true,
+  }));
 }
 
 export async function getPayment(tenantId: string, paymentId: string, companyId?: string) {
@@ -973,7 +1135,11 @@ function creditsUsed(result: ReturnType<typeof computePayment>): DecimalValue {
  * The client's open credits (U-133): posted customer payments with credit
  * left, not bounced, oldest first; the payment being edited is left out.
  */
-async function openCredits(tenantId: string, customerId: string, companyId: string | undefined, exceptId?: string): Promise<ComputeCredit[]> {
+async function openCredits(
+  tenantId: string, customerId: string, companyId: string | undefined, exceptId?: string,
+  /** Edit preview (review E-B2): what the edited payment uses of each source counts as left, as PUT sets it aside first. */
+  usedInside: Map<string, DecimalValue> = new Map(),
+): Promise<ComputeCredit[]> {
   const scope = companyId ? sql`AND (t.company_id = ${companyId} OR t.company_id IS NULL)` : sql``;
   const except = exceptId ? sql`AND t.id <> ${exceptId}` : sql``;
   const rows = await db.execute(sql`
@@ -994,7 +1160,7 @@ async function openCredits(tenantId: string, customerId: string, companyId: stri
   return (rows.rows as Array<Record<string, unknown>>)
     .map((r) => ({
       sourcePaymentId: String(r['id']), date: String(r['date']), refNo: (r['reference_number'] as string | null) ?? null,
-      remaining: money2(round2(String(r['remaining']))),
+      remaining: money2(round2(dec(String(r['remaining'])).plus(usedInside.get(String(r['id'])) ?? 0))),
     }))
     .filter((c) => dec(c.remaining).greaterThan(0));
 }
@@ -1047,6 +1213,7 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
   const own = new Map<string, DecimalValue>();
   const addOwn = (id: string, x: DecimalValue) => own.set(id, (own.get(id) ?? new Decimal(0)).plus(x));
   let ownAmount = new Decimal(0);
+  const usedInside = new Map<string, DecimalValue>();
   if (input.editingPaymentId) {
     const p = await loadPayment(db, tenantId, input.editingPaymentId, companyId);
     if (p.status === 'posted') {
@@ -1055,7 +1222,10 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
       for (const a of await liveApplications(db, tenantId, p.id)) {
         if (a.appliedDate === null) { addOwn(a.invoiceId, settledBy(a)); ownAmount = ownAmount.plus(a.discountAmount).plus(a.writeOffAmount); }
       }
-      for (const a of await creditsAppliedIn(db, tenantId, p.id)) addOwn(a.invoiceId, dec(a.amount));
+      for (const a of await creditsAppliedIn(db, tenantId, p.id)) {
+        addOwn(a.invoiceId, dec(a.amount));
+        usedInside.set(a.paymentId, (usedInside.get(a.paymentId) ?? new Decimal(0)).plus(a.amount));
+      }
       if (await liveBounce(db, tenantId, p.id)) problems.push({ code: 'PAYMENT_BOUNCED' });
     }
   }
@@ -1064,7 +1234,7 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     const share = own.get(r.invoiceId);
     return share ? { ...r, balanceDueExact: dec(r.balanceDueExact).plus(share).toFixed(4) } : r;
   });
-  const credits = await openCredits(tenantId, input.customerId, companyId, input.editingPaymentId);
+  const credits = await openCredits(tenantId, input.customerId, companyId, input.editingPaymentId, usedInside);
   const onHand = (await depositsOnHand(tenantId, input.customerId, companyId)).filter((d) => d.paymentId !== input.editingPaymentId);
   const sourcesForCompute: ComputeCredit[] = [
     ...credits,
@@ -1079,6 +1249,14 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     writeOffThreshold: settings.writeOffThreshold === null ? null : money2(round2(settings.writeOffThreshold)),
   }, sourcesForCompute);
   problems.unshift(...result.problems);
+  // Receive and PUT refuse 0.00 without a discount or write-off, credits or
+  // not (400 AMOUNT_REQUIRED); the preview says so too (review SF1). Credits
+  // alone are applied with POST /payments/:id/apply.
+  const discountsOnly = dec(result.totals.discountsAndCredits).minus(creditsUsed(result));
+  if (!dec(result.amount).greaterThan(0) && !discountsOnly.greaterThan(0) && !dec(result.totals.writeOffs).greaterThan(0)
+    && !problems.some((x) => x.code === 'AMOUNT_REQUIRED')) {
+    problems.push({ code: 'AMOUNT_REQUIRED' });
+  }
   if (input.holdAsDeposit && ((input.applications?.length ?? 0) > 0 || (input.creditApplications?.length ?? 0) > 0)) {
     problems.push({ code: 'DEPOSIT_WITH_APPLICATIONS' });
   }
@@ -1152,17 +1330,17 @@ export async function releasePaymentForVoidInTx(tx: Tx, tenantId: string, paymen
   for (const d of inner) await ledger.voidTransactionInTx(tx, tenantId, d.id, 'Voided with the payment it was applied in', userId);
   // A refund drew on its credit (Q-P21j): void the refund first.
   if ((await liveRefundTotal(tx, tenantId, payment.id)).greaterThan(0)) throw paymentRefunded(payment.id);
-  // Its own rows and credit applied later, plus other credits applied inside it (U-133).
+  // Its own rows and credit applied later, plus other credits applied inside
+  // it (U-133). voidTransactionInTx locked the credit sources with the
+  // payment (lockForVoidInTx) before any invoice (E-B1, review SF8).
   const apps = [...await liveApplications(tx, tenantId, payment.id), ...await creditsAppliedIn(tx, tenantId, payment.id)];
   if (apps.length === 0) return;
-  await lockPayments(tx, tenantId, apps.filter((a) => a.paymentId !== payment.id).map((a) => a.paymentId));
   const invoices = await lockInvoices(tx, tenantId, apps.map((a) => a.invoiceId));
   const now = new Date();
   for (const a of apps) {
+    if (!await retireApplication(tx, tenantId, a.id, { voidedAt: now })) continue;
     const inv = invoices.get(a.invoiceId);
     if (inv) Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, settledBy(a).negated()));
-    await tx.update(paymentApplications).set({ voidedAt: now })
-      .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.id, a.id)));
   }
   await auditLog(tenantId, 'update', 'payment_applications', payment.id,
     { applications: apps.map((a) => ({ paymentId: a.paymentId, invoiceId: a.invoiceId, amount: a.amount, discount: a.discountAmount, writeOff: a.writeOffAmount })) },
@@ -1193,9 +1371,7 @@ export async function unapplyPayment(
   await db.transaction(async (tx) => {
     const { claimAndRecord } = await import('./idempotency.service.js');
     await claimAndRecord(tx, 'transaction', paymentId);
-    const deposits = await liveDepositsForSource(tx, tenantId, paymentId);
-    if (deposits[0]) await lockPayments(tx, tenantId, [deposits[0].depositId]);
-    const payment = (await lockPayments(tx, tenantId, [paymentId])).get(paymentId);
+    const { payment } = await lockPaymentScope(tx, tenantId, paymentId);
     if (!payment || payment.txnType !== 'customer_payment' || payment.status === 'deleted' || ledger.inOtherCompany(payment, opts.companyId)) {
       throw AppError.notFound('Payment not found');
     }
@@ -1204,17 +1380,20 @@ export async function unapplyPayment(
     if (await liveBounce(tx, tenantId, paymentId)) throw paymentBounced(paymentId);
     const app = (await liveApplications(tx, tenantId, paymentId)).find((a) => a.invoiceId === invoiceId);
     if (!app) throw AppError.notFound('Payment application not found');
-    await ledger.checkLockDate(tx, tenantId, payment.txnDate, payment.companyId, undefined, {
-      txnId: payment.id, oldDate: payment.txnDate, newDate: payment.txnDate,
+    // Cash basis books a credit applied later on its applied date, so that is
+    // the date the closing date meets (review SF3).
+    const booked = app.appliedDate ?? payment.txnDate;
+    await ledger.checkLockDate(tx, tenantId, booked, payment.companyId, undefined, {
+      txnId: payment.id, oldDate: booked, newDate: booked,
     });
     const inv = (await lockInvoices(tx, tenantId, [invoiceId])).get(invoiceId);
+    if (!await retireApplication(tx, tenantId, app.id, { voidedAt: new Date() })) throw scopeChanged(paymentId);
     if (inv) await moveInvoicePaid(tx, tenantId, inv, settledBy(app).negated());
-    await tx.update(paymentApplications).set({ voidedAt: new Date() })
-      .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.id, app.id)));
     await tx.update(transactions).set({ updatedAt: new Date() })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
     await auditLog(tenantId, 'update', 'payment_applications', paymentId,
-      { applications: [{ invoiceId, amount: app.amount }] }, { applications: [], via: 'unapply', invoiceId }, opts.userId, tx);
+      { applications: [{ invoiceId, amount: app.amount, discount: app.discountAmount, writeOff: app.writeOffAmount, appliedDate: app.appliedDate }] },
+      { applications: [], via: 'unapply', invoiceId }, opts.userId, tx);
   });
 }
 
@@ -1240,7 +1419,7 @@ async function heldIn(
     if (bank) return { accountId: bank.accountId, kind: 'bank' };
   }
   const to = await depositToOf(executor, tenantId, paymentId);
-  if (!to) throw AppError.internal('Payment has no deposit line');
+  if (!to) throw noMoneyReceived(paymentId);
   return { accountId: to, kind: to === pc ? 'payments_clearing' : 'bank' };
 }
 
@@ -1268,12 +1447,19 @@ async function assertFeeAccount(
 export async function bouncePayment(
   tenantId: string, paymentId: string, input: BouncePaymentInput, userId?: string, companyId?: string,
 ): Promise<BounceResult> {
-  return db.transaction(async (tx) => {
-    // Lock order: the deposit holding the payment, the payment, its invoices.
-    const deposits = await liveDepositsForSource(tx, tenantId, paymentId);
-    const depositId = deposits[0]?.depositId ?? null;
-    const depositRow = depositId ? (await lockPayments(tx, tenantId, [depositId])).get(depositId) : undefined;
-    const payment = (await lockPayments(tx, tenantId, [paymentId])).get(paymentId);
+  return db.transaction((tx) => bouncePaymentInTx(tx, tenantId, paymentId, input, userId, companyId));
+}
+
+/** bouncePayment inside the caller's database transaction. */
+export async function bouncePaymentInTx(
+  tx: Tx, tenantId: string, paymentId: string, input: BouncePaymentInput, userId?: string, companyId?: string,
+): Promise<BounceResult> {
+  {
+    // Lock order: the deposit holding the payment, the payment and the
+    // payments its credit was applied inside, its invoices; the links are
+    // read again under the locks (E-B1).
+    const { payment, deposit: depositRow } = await lockPaymentScope(tx, tenantId, paymentId);
+    const depositId = depositRow?.id ?? null;
     if (!payment || payment.txnType !== 'customer_payment' || payment.status === 'deleted' || ledger.inOtherCompany(payment, companyId)) {
       throw AppError.notFound('Payment not found');
     }
@@ -1289,7 +1475,7 @@ export async function bouncePayment(
       );
     }
 
-    const held = await heldIn(tx, tenantId, paymentId, depositRow ? depositId : null);
+    const held = await heldIn(tx, tenantId, paymentId, depositId);
     const fee = input.bankFeeAmount ? wholeCents(input.bankFeeAmount, 'bankFeeAmount') : new Decimal(0);
     let feeAccount: string | null = null;
     let feeBank: string | null = null;
@@ -1302,7 +1488,6 @@ export async function bouncePayment(
       if (!feeAccount) {
         throw AppError.badRequest('Choose the account for the bank fee, or set one in Preferences.', 'FEE_ACCOUNT_REQUIRED');
       }
-      await assertFeeAccount(tx, tenantId, feeAccount, companyId ?? payment.companyId, [held.accountId]);
       if (held.kind === 'bank') feeBank = held.accountId;
       else {
         if (!input.bankFeeBankAccountId) {
@@ -1311,6 +1496,8 @@ export async function bouncePayment(
         await assertDepositAccount(tx, tenantId, input.bankFeeBankAccountId, companyId ?? payment.companyId ?? undefined);
         feeBank = input.bankFeeBankAccountId;
       }
+      // Never the account the fee is paid from (Dr X / Cr X).
+      await assertFeeAccount(tx, tenantId, feeAccount, companyId ?? payment.companyId, [held.accountId, feeBank]);
     }
 
     if (payment.fromDepositId) {
@@ -1367,14 +1554,15 @@ export async function bouncePayment(
 
     const reopened: BounceResult['reopened'] = [];
     for (const a of apps) {
+      // Read under the payment's lock; a row retired meanwhile would mean the
+      // posted amounts are wrong, so the whole bounce rolls back (E-B1).
+      if (!await retireApplication(tx, tenantId, a.id, { reversedByTxnId: ret.id })) throw scopeChanged(paymentId);
       const inv = invoices.get(a.invoiceId);
       if (inv) {
         const updated = await moveInvoicePaid(tx, tenantId, inv, settledBy(a).negated());
         Object.assign(inv, updated);
         reopened.push({ invoiceId: inv.id, balanceDue: money2(centBalance(updated.balanceDue ?? '0')) });
       }
-      await tx.update(paymentApplications).set({ reversedByTxnId: ret.id })
-        .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.id, a.id)));
     }
     await tx.update(transactions).set({ updatedAt: new Date() })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
@@ -1401,7 +1589,7 @@ export async function bouncePayment(
       { applications: [], via: 'bounce', returnId: ret.id, feeId: feeId ?? null }, userId, tx);
 
     return { returnId: ret.id, ...(feeId ? { feeId } : {}), heldIn: held, reopened };
-  });
+  }
 }
 
 /** Rebuilds a bounce's response from its returned_payment (Idempotency-Key replay). */
@@ -1411,9 +1599,12 @@ export async function bounceResult(tenantId: string, returnId: string, companyId
   if (!ret || ret.txnType !== 'returned_payment' || ledger.inOtherCompany(ret, companyId)) throw AppError.notFound('Bounce not found');
   const [fee] = await db.select({ id: transactions.id }).from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourceTxnId, returnId))).limit(1);
+  // The bounce posts the held account as its first credit line; discounts and
+  // write-offs it reverses come after it (review SF7).
   const [credit] = await db.select({ accountId: journalLines.accountId }).from(journalLines)
     .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, returnId),
-      eq(journalLines.isVoidReversal, false), sql`${journalLines.credit} > 0`)).limit(1);
+      eq(journalLines.isVoidReversal, false), sql`${journalLines.credit} > 0`))
+    .orderBy(journalLines.lineOrder).limit(1);
   const pc = await systemAccountId(db, tenantId, 'payments_clearing');
   const res = await db.execute(sql`
     SELECT pa.invoice_id, inv.balance_due FROM payment_applications pa
@@ -1462,9 +1653,12 @@ export async function reapplyBounceForVoidInTx(tx: Tx, tenantId: string, ret: Tx
       }
     }
     if (settledBy(a).greaterThan(payableCents(inv))) throw balanceChanged(inv);
-    Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, settledBy(a)));
-    await tx.update(paymentApplications).set({ reversedByTxnId: null })
-      .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.id, a.id)));
+    // Only a row this bounce still holds comes back (E-B1).
+    const back = await tx.update(paymentApplications).set({ reversedByTxnId: null })
+      .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.id, a.id),
+        eq(paymentApplications.reversedByTxnId, ret.id), sql`${paymentApplications.voidedAt} IS NULL`))
+      .returning({ id: paymentApplications.id });
+    if (back.length > 0) Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, settledBy(a)));
   }
   if (ret.sourceTxnId) {
     await tx.update(transactions).set({ updatedAt: new Date() })
@@ -1499,13 +1693,13 @@ export async function updatePayment(
 ): Promise<PaymentRecord> {
   return db.transaction(async (tx) => {
     const parsed = parseSettlement(input);
-    const deposits = await liveDepositsForSource(tx, tenantId, paymentId);
-    if (deposits[0]) await lockPayments(tx, tenantId, [deposits[0].depositId]);
-    const locked = await lockPayments(tx, tenantId, [paymentId, ...parsed.credits.map((c) => c.sourcePaymentId)]);
-    const payment = locked.get(paymentId);
+    // The deposit holding it, then the payment, its credit links and the new
+    // credit sources in one batch, read again under the locks (E-B1).
+    const { payment, deposit, locked } = await lockPaymentScope(tx, tenantId, paymentId, parsed.credits.map((c) => c.sourcePaymentId));
     if (!payment || payment.txnType !== 'customer_payment' || payment.status === 'deleted' || ledger.inOtherCompany(payment, companyId)) {
       throw AppError.notFound('Payment not found');
     }
+    const deposits = deposit ? [{ depositId: deposit.id }] : [];
     if (payment.status !== 'posted') throw AppError.badRequest('Cannot update a void transaction');
     ledger.assertNotStale(payment, input.expectedUpdatedAt, 'This payment');
     if (await liveBounce(tx, tenantId, paymentId)) throw paymentBounced(paymentId);
@@ -1525,23 +1719,35 @@ export async function updatePayment(
     const later = all.filter((a) => a.appliedDate !== null);
     const inside = await creditsAppliedIn(tx, tenantId, paymentId);
     const oldDepositTo = await depositToOf(tx, tenantId, paymentId);
+    // A payment that took in no money has nothing to edit against (review SF6).
+    if (oldDepositTo === null) throw noMoneyReceived(paymentId);
     const header = { memo: input.memo ?? null, referenceNumber: input.refNo?.trim() || null };
-    if (deposits.length > 0) {
-      const newApps = parsed.apps.filter((a) => a.amount.plus(a.discount).plus(a.writeOff).greaterThan(0));
-      const sameApps = own.length === newApps.length && newApps.every((a) => own.some((o) => o.invoiceId === a.invoiceId
-        && dec(o.amount).equals(a.amount) && dec(o.discountAmount).equals(a.discount) && dec(o.writeOffAmount).equals(a.writeOff)));
-      const newCredits = parsed.credits.filter((c) => c.amount.greaterThan(0));
-      const sameCredits = inside.length === newCredits.length && newCredits.every((c) => inside.some((o) =>
-        o.paymentId === c.sourcePaymentId && o.invoiceId === c.invoiceId && dec(o.amount).equals(c.amount)));
-      const unchanged = dec(payment.total).equals(parsed.amount) && oldDepositTo === input.depositTo && sameApps && sameCredits
-        && payment.txnDate === input.date && payment.contactId === input.customerId
-        && (input.paymentMethod ?? payment.paymentMethod) === payment.paymentMethod;
-      if (!unchanged) {
-        throw AppError.conflict(
-          'This payment is in a deposit. Remove it from the deposit first, or record a bounced check.',
-          'TXN_DEPOSITED', { depositIds: [...new Set(deposits.map((d) => d.depositId))] },
-        );
-      }
+    // Everything but memo and refNo as saved (review E-B2): its own rows with
+    // their discount and write-off accounts, the credits applied inside it.
+    const newApps = parsed.apps.filter((a) => a.amount.plus(a.discount).plus(a.writeOff).greaterThan(0));
+    const sameApps = own.length === newApps.length && newApps.every((a) => own.some((o) => o.invoiceId === a.invoiceId
+      && dec(o.amount).equals(a.amount) && dec(o.discountAmount).equals(a.discount) && dec(o.writeOffAmount).equals(a.writeOff)
+      && (!a.writeOff.greaterThan(0) || (input.writeOffAccountId ?? o.writeOffAccountId) === o.writeOffAccountId)
+      && (!a.discount.greaterThan(0) || (input.discountAccountId ?? o.discountAccountId) === o.discountAccountId)));
+    const newCredits = parsed.credits.filter((c) => c.amount.greaterThan(0));
+    const sameCredits = inside.length === newCredits.length && newCredits.every((c) => inside.some((o) =>
+      o.paymentId === c.sourcePaymentId && o.invoiceId === c.invoiceId && dec(o.amount).equals(c.amount)));
+    const unchanged = dec(payment.total).equals(parsed.amount) && oldDepositTo === input.depositTo && sameApps && sameCredits
+      && payment.txnDate === input.date && payment.contactId === input.customerId
+      && (input.paymentMethod ?? payment.paymentMethod) === payment.paymentMethod;
+    if (deposits.length > 0 && !unchanged) {
+      throw AppError.conflict(
+        'This payment is in a deposit. Remove it from the deposit first, or record a bounced check.',
+        'TXN_DEPOSITED', { depositIds: [...new Set(deposits.map((d) => d.depositId))] },
+      );
+    }
+    if (unchanged) {
+      // Memo and refNo only: nothing is set aside, no invoice reopens (review
+      // E-B2). It still changes the payment, so its date meets the closing
+      // date (review SF4).
+      await ledger.checkLockDate(tx, tenantId, payment.txnDate, payment.companyId, undefined, {
+        txnId: paymentId, oldDate: payment.txnDate, newDate: payment.txnDate,
+      });
       await tx.update(transactions).set({ ...header, updatedAt: new Date() })
         .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
       await auditLog(tenantId, 'update', 'transaction', paymentId,
@@ -1551,6 +1757,13 @@ export async function updatePayment(
 
     // Its credit used elsewhere and refunded stays covered (U-133).
     const drawn = later.reduce((t, a) => t.plus(a.amount), new Decimal(0)).plus(await liveRefundTotal(tx, tenantId, paymentId));
+    // ...and stays this client's: no other client while any of it is in use (review SF5).
+    if (input.customerId !== payment.contactId && drawn.greaterThan(0)) {
+      throw AppError.conflict(
+        `${money2(drawn)} of this payment's credit is in use, so it can't move to another client. Unapply or void those first.`,
+        'CREDIT_IN_USE', { inUse: money2(drawn) },
+      );
+    }
     if (parsed.amount.minus(parsed.cash).lessThan(drawn)) {
       throw AppError.conflict(
         `${money2(drawn)} of this payment's credit is in use elsewhere, so the amount can't leave less than that unapplied.`,
@@ -1571,10 +1784,9 @@ export async function updatePayment(
     for (const d of innerDraws) await ledger.voidTransactionInTx(tx, tenantId, d.id, 'Re-made with the edited payment', userId);
     const now = new Date();
     for (const a of [...own, ...inside]) {
+      if (!await retireApplication(tx, tenantId, a.id, { voidedAt: now })) throw scopeChanged(paymentId);
       const inv = invoices.get(a.invoiceId);
       if (inv) Object.assign(inv, await moveInvoicePaid(tx, tenantId, inv, settledBy(a).negated()));
-      await tx.update(paymentApplications).set({ voidedAt: now })
-        .where(and(eq(paymentApplications.tenantId, tenantId), eq(paymentApplications.id, a.id)));
     }
     await validateSources(tx, tenantId, locked, parsed.credits, input.customerId, companyId);
     const valid = validateInvoices(parsed, invoices, input.customerId, companyId);
