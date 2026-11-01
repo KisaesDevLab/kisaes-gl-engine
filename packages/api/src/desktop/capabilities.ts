@@ -405,4 +405,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * DISCOUNT_ACCOUNT_REQUIRED / INVALID). A bounce or void reverses discounts and write-offs exactly. Migration 0248.
    */
   'payment-discounts-v1',
+  /**
+   * Customer deposits (U-135, Q-P21e/f): receive / PUT / preview holdAsDeposit (Dr depositTo, Cr the lazy customer_deposits liability;
+   * 400 DEPOSIT_WITH_APPLICATIONS); POST /payments/:id/apply on a hold posts a draw (customer_payment, fromDepositId, Dr Customer
+   * Deposits / Cr A/R) with drawId; a hold as a creditApplications source draws inside the receipt (source_txn_id, voided with it);
+   * 409 DEPOSIT_NOT_AVAILABLE; GET /payments/deposits-on-hand?customerId=; preview depositsOnHand[] and holdAsDepositOffered; refund of a
+   * hold debits Customer Deposits; void of a hold with draws 409 DEPOSIT_APPLIED; bounce of a hold: Cr the bank, Dr A/R the draws, Dr
+   * Customer Deposits the rest, draws' applications reversed, no draw voided; a draw of a bounced deposit 409 PAYMENT_BOUNCED. Holds and
+   * draws never appear in credits[] or pending deposits. PaymentRecord holdsDeposit, depositRemaining, fromDepositId. Migration 0249.
+   */
+  'customer-deposits-v1',
 ];

@@ -38,13 +38,16 @@ export const receivePaymentSchema = z.object({
   writeOffAccountId: z.string().uuid().optional(),
   // U-134: the sales discount account; default the company setting salesDiscountAccountId.
   discountAccountId: z.string().uuid().optional(),
-  // U-133: existing credits of the same client applied in this payment.
+  // U-133: existing credits of the same client applied in this payment
+  // (U-135: a held deposit as the source draws on it).
   creditApplications: z.array(z.object({
     sourcePaymentId: z.string().uuid(),
     invoiceId: z.string().uuid(),
     amount: wholeCentsAmount,
     expectedBalanceDue: storedAmount.optional(),
   })).optional(),
+  // U-135: hold the whole amount as a customer deposit (no applications).
+  holdAsDeposit: z.boolean().optional(),
 });
 
 /** PUT /payments/:id (U-132): the receive body + the payment's updatedAt as read. */
@@ -70,6 +73,7 @@ export const previewPaymentSchema = z.object({
     amount: wholeCentsAmount.nullable(),
   })).optional(),
   editingPaymentId: z.string().uuid().optional(),
+  holdAsDeposit: z.boolean().optional(),
 });
 
 /** POST /payments/:id/apply (U-133): apply a payment's credit to invoices later; amount omitted fills. */

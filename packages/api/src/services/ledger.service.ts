@@ -531,6 +531,9 @@ interface PostTransactionInput {
   sourceTxnId?: string;
   // A customer refund of a payment's credit (U-133). Create only.
   sourcePaymentId?: string;
+  // Customer deposits (U-135). Create only.
+  holdsDeposit?: boolean;
+  fromDepositId?: string;
   // The recurring schedule that posted this transaction (U-64). Create only.
   recurringScheduleId?: string;
   lines: JournalLineInput[];
@@ -660,6 +663,8 @@ export async function postTransaction(
       reversesTransactionId: input.reversesTransactionId || null,
       sourceTxnId: input.sourceTxnId || null,
       sourcePaymentId: input.sourcePaymentId || null,
+      holdsDeposit: input.holdsDeposit ?? false,
+      fromDepositId: input.fromDepositId || null,
       recurringScheduleId: input.recurringScheduleId || null,
     }).returning();
 

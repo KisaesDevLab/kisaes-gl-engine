@@ -149,6 +149,11 @@ async function seedTenant(): Promise<Seed> {
   await q(`INSERT INTO payment_applications (tenant_id, company_id, payment_id, invoice_id, amount, applied_date, applied_in_txn_id) VALUES ($1, $2, $3, $4, '0.0001', '2026-01-26', $5)`, [tenantId, c1!.id, payment, invoice, inside]);
   const refund = await txn(c1!.id, 'customer_refund', '2026-01-27', 'posted', null, customer!.id);
   await q(`UPDATE transactions SET source_payment_id = $2 WHERE id = $1`, [refund, payment]);
+  // A held deposit and a draw on it (from_deposit_id) made inside a payment (U-135, migration 0249).
+  const held = await txn(c1!.id, 'customer_payment', '2026-01-28', 'posted', null, customer!.id);
+  await q(`UPDATE transactions SET holds_deposit = true WHERE id = $1`, [held]);
+  const draw = await txn(c1!.id, 'customer_payment', '2026-01-29', 'posted', null, customer!.id);
+  await q(`UPDATE transactions SET from_deposit_id = $2, source_txn_id = $3 WHERE id = $1`, [draw, held, inside]);
   await q(`INSERT INTO recurring_schedules (tenant_id, company_id, template_transaction_id, frequency, start_date, next_occurrence) VALUES ($1, $2, $3, 'monthly', '2026-01-01', '2027-01-01')`, [tenantId, c1!.id, invoice]);
 
   const [tag] = await q<{ id: string }>(`INSERT INTO tags (tenant_id, company_id, name, tag_number) VALUES ($1, $2, 'rt-tag', 'RT-07') RETURNING id`, [tenantId, c1!.id]);

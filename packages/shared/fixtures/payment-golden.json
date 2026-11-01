@@ -1,834 +1,329 @@
 {
+  "description": "Customer payment money rules (P21, U-132 to U-135) shared by the engine (packages/api/src/services/payment-compute.ts, packages/shared/fixtures/payment-golden.json) and the ClientLedger client (fixtures/payments/golden.json, byte-identical; the --demo engine runs every case). Synthetic. Every amount is a 2-place decimal string (whole cents, Q-P21t); invoices are keyed by number; accounts by role. Each case starts from an empty company with one client and the invoices listed; steps run in order. Keys marked engineOnly are not checked by the demo engine (its Payments Clearing also holds the sample company's payments).",
   "rules": {
-    "centBalance": "round2(stored balance_due), half away from zero; a legacy sub-cent residue is never shown or posted (Q-P21t)",
-    "amounts": "decimal strings, at most 2 places; more is 400 VALIDATION_ERROR",
-    "overapply": "payment > cent balance is OVERAPPLIED, compared exactly, no tolerance (Q-P21g)",
-    "auto": "no applications: the amount fills open invoices oldest first (txnDate, number, id), each up to its cent balance",
-    "explicit": "rows sent: typed amounts as typed; amount null fills what is left of the payment in date order; rows not sent 0.00; no payment amount: fill rows take their cent balance and amount is the sum (from_applications)",
-    "unapplied": "amount - applied; stays an A/R credit on the client",
-    "shortfalls": "invoices this payment pays in part: cent balance - payment",
-    "order": "per invoice: typed cash, discount and write-off first; then credits (typed, then fill); then cash fill / auto",
-    "discount": "discountAvailable = round2(total x discountPercent / 100) half away from zero, capped at the cent balance, on or before discountDate, once per invoice; suggestDiscount when none typed and payment = cent balance - discountAvailable exactly",
-    "writeOff": "shortfalls[].withinWriteOffLimit = shortfall <= the company writeOffThreshold (false without one)"
+    "amounts": "Every amount sent in is a decimal string with at most 2 places; more is 400 VALIDATION_ERROR. Overapply checks are exact: cash + discount + write-off on an invoice is at most its cent balance, no tolerance (Q-P21g).",
+    "auto": "No applications sent: the amount fills open invoices oldest first (txnDate, then number, then id), each up to its balance; what is left is unapplied (a client credit).",
+    "explicit": "Applications sent: rows not sent get 0.00; a row with amount null takes what is left of the amount, up to its balance, in date order; with no amount typed, null rows take their full balance and the amount is their sum (amountSource from_applications).",
+    "discount": "discountAvailable = round2(total x percent / 100), half away from zero, capped at the cent balance, on or before discountDate (invoice date + discountDays); 0.00 after it or once a discount was taken. suggestDiscount: within the window and the row's payment is exactly the balance less discountAvailable (Q-P21c).",
+    "shortfall": "A row paid more than 0.00 but less than its balance (cash + discount + write-off) is a shortfall of the rest; withinWriteOffLimit when the shortfall is at most the company's writeOffThreshold (false when none is set).",
+    "balances": "contactBalanceAfter = before - amount - discounts - write-offs - deposit draws. Credits applied don't change it (already in A/R); a held deposit leaves it as before.",
+    "bounce": "One dated returned_payment (Bounced payment): Cr the account holding the money (the deposit's bank, else depositTo, else Payments Clearing), Dr A/R amount + discounts + write-offs, Cr the discount and write-off accounts; every live application restored and marked reversed; remaining credit 0. A held deposit with draws: Dr A/R drawn + Dr Customer Deposits the rest. The bank fee is an expense in the same step."
   },
   "cases": [
     {
-      "id": "1",
-      "name": "mockup: auto 4,000.00 over 1091 and 1095 leaves 385.00 open on 1091",
+      "id": 1,
+      "name": "mockup: 4,000.00 from Neosho Dental Group leaves 385.00 open on 1091",
+      "company": {"writeOffThreshold": "1.00"},
       "invoices": [
-        {
-          "invoiceId": "1091",
-          "invoiceNumber": "1091",
-          "txnDate": "2026-09-15",
-          "dueDate": "2026-10-15",
-          "total": "4385.00",
-          "balanceDueExact": "4385.0000"
-        },
-        {
-          "invoiceId": "1095",
-          "invoiceNumber": "1095",
-          "txnDate": "2026-10-02",
-          "dueDate": "2026-11-01",
-          "total": "1260.00",
-          "balanceDueExact": "1260.0000"
-        }
+        {"number": "1091", "date": "2026-10-05", "dueDate": "2026-11-04", "total": "4385.00"},
+        {"number": "1095", "date": "2026-10-28", "dueDate": "2026-11-27", "total": "1260.00"}
       ],
-      "request": {
-        "amount": "4000.00",
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "4000.00",
-        "amountSource": "typed",
-        "payments": {
-          "1091": "4000.00",
-          "1095": "0.00"
-        },
-        "remaining": {
-          "1091": "385.00",
-          "1095": "1260.00"
-        },
-        "totals": {
-          "amountDue": "5645.00",
-          "applied": "4000.00",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [
-          {
-            "invoiceId": "1091",
-            "amount": "385.00",
-            "withinWriteOffLimit": false
+      "otherPending": "6210.00",
+      "steps": [
+        {
+          "op": "preview",
+          "request": {"date": "2026-11-04", "amount": "4000.00"},
+          "expect": {
+            "amount": "4000.00", "amountSource": "typed",
+            "payments": {"1091": "4000.00", "1095": "0.00"},
+            "remaining": {"1091": "385.00", "1095": "1260.00"},
+            "totals": {"amountDue": "5645.00", "applied": "4000.00", "discountsAndCredits": "0.00", "unapplied": "0.00"},
+            "shortfalls": [{"invoice": "1091", "amount": "385.00", "withinWriteOffLimit": false}],
+            "contactBalanceBefore": "5645.00", "contactBalanceAfter": "1645.00",
+            "engineOnly": {"pendingDeposits": {"count": 2, "total": "10210.00"}}
           }
-        ],
-        "problems": []
-      }
+        },
+        {
+          "op": "receive",
+          "request": {"date": "2026-11-04", "amount": "4000.00", "depositTo": "undeposited_funds", "applications": [{"invoice": "1091", "amount": "4000.00"}]},
+          "expect": {
+            "lines": [{"account": "undeposited_funds", "debit": "4000.00"}, {"account": "accounts_receivable", "credit": "4000.00"}],
+            "invoices": {"1091": {"balanceDue": "385.00", "status": "partial"}, "1095": {"balanceDue": "1260.00", "status": "sent"}},
+            "contactBalance": "1645.00"
+          }
+        }
+      ]
     },
     {
-      "id": "2",
-      "name": "write-off: 4,384.25 on 1091 leaves 0.75, within the 1.00 limit",
+      "id": 2,
+      "name": "write-off: 4,384.25 on 1091 leaves 0.75, under the 1.00 limit, written off",
+      "company": {"writeOffThreshold": "1.00"},
       "invoices": [
-        {
-          "invoiceId": "1091",
-          "invoiceNumber": "1091",
-          "txnDate": "2026-09-15",
-          "dueDate": "2026-10-15",
-          "total": "4385.00",
-          "balanceDueExact": "4385.0000"
-        },
-        {
-          "invoiceId": "1095",
-          "invoiceNumber": "1095",
-          "txnDate": "2026-10-02",
-          "dueDate": "2026-11-01",
-          "total": "1260.00",
-          "balanceDueExact": "1260.0000"
-        }
+        {"number": "1091", "date": "2026-10-05", "dueDate": "2026-11-04", "total": "4385.00"},
+        {"number": "1095", "date": "2026-10-28", "dueDate": "2026-11-27", "total": "1260.00"}
       ],
-      "request": {
-        "amount": "4384.25",
-        "applications": [
-          {
-            "invoiceId": "1091",
-            "amount": "4384.25"
+      "steps": [
+        {
+          "op": "preview",
+          "request": {"date": "2026-11-04", "amount": "4384.25"},
+          "expect": {
+            "amount": "4384.25", "amountSource": "typed",
+            "payments": {"1091": "4384.25", "1095": "0.00"},
+            "totals": {"amountDue": "5645.00", "applied": "4384.25", "discountsAndCredits": "0.00", "unapplied": "0.00"},
+            "shortfalls": [{"invoice": "1091", "amount": "0.75", "withinWriteOffLimit": true}],
+            "contactBalanceBefore": "5645.00", "contactBalanceAfter": "1260.75"
           }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "4384.25",
-        "amountSource": "typed",
-        "payments": {
-          "1091": "4384.25",
-          "1095": "0.00"
         },
-        "remaining": {
-          "1091": "0.75",
-          "1095": "1260.00"
-        },
-        "totals": {
-          "amountDue": "5645.00",
-          "applied": "4384.25",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [
-          {
-            "invoiceId": "1091",
-            "amount": "0.75",
-            "withinWriteOffLimit": true
+        {
+          "op": "receive",
+          "request": {"date": "2026-11-04", "amount": "4384.25", "depositTo": "undeposited_funds", "applications": [{"invoice": "1091", "amount": "4384.25", "writeOffAmount": "0.75"}]},
+          "expect": {
+            "lines": [{"account": "undeposited_funds", "debit": "4384.25"}, {"account": "write_off", "debit": "0.75"}, {"account": "accounts_receivable", "credit": "4385.00"}],
+            "invoices": {"1091": {"balanceDue": "0.00", "status": "paid"}},
+            "contactBalance": "1260.00"
           }
-        ],
-        "problems": []
-      }
+        },
+        {
+          "op": "void",
+          "expect": {"invoices": {"1091": {"balanceDue": "4385.00", "status": "sent"}}, "contactBalance": "5645.00"}
+        }
+      ]
     },
     {
-      "id": "2b",
-      "name": "write-off: writing the 0.75 off closes 1091",
+      "id": 3,
+      "name": "early discount: 2% 10 net 30, paid on day 8 with 980.00; the HALF_UP traps; no discount on day 11",
+      "company": {},
       "invoices": [
-        {
-          "invoiceId": "1091",
-          "invoiceNumber": "1091",
-          "txnDate": "2026-09-15",
-          "dueDate": "2026-10-15",
-          "total": "4385.00",
-          "balanceDueExact": "4385.0000"
-        },
-        {
-          "invoiceId": "1095",
-          "invoiceNumber": "1095",
-          "txnDate": "2026-10-02",
-          "dueDate": "2026-11-01",
-          "total": "1260.00",
-          "balanceDueExact": "1260.0000"
-        }
+        {"number": "2001", "date": "2026-11-01", "dueDate": "2026-12-01", "total": "1000.00", "discountPercent": "2", "discountDays": 10},
+        {"number": "2002", "date": "2026-11-02", "dueDate": "2026-12-02", "total": "1234.57", "discountPercent": "2", "discountDays": 10},
+        {"number": "2003", "date": "2026-11-03", "dueDate": "2026-12-03", "total": "1234.75", "discountPercent": "2", "discountDays": 10}
       ],
-      "request": {
-        "amount": "4384.25",
-        "applications": [
-          {
-            "invoiceId": "1091",
-            "amount": "4384.25",
-            "writeOffAmount": "0.75"
+      "steps": [
+        {
+          "op": "preview",
+          "request": {"date": "2026-11-09", "amount": "980.00"},
+          "expect": {
+            "payments": {"2001": "980.00", "2002": "0.00", "2003": "0.00"},
+            "discountAvailable": {"2001": "20.00", "2002": "24.69", "2003": "24.70"},
+            "suggestDiscount": {"2001": true, "2002": false, "2003": false},
+            "shortfalls": [{"invoice": "2001", "amount": "20.00", "withinWriteOffLimit": false}]
           }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "4384.25",
-        "amountSource": "typed",
-        "payments": {
-          "1091": "4384.25",
-          "1095": "0.00"
         },
-        "remaining": {
-          "1091": "0.00",
-          "1095": "1260.00"
+        {
+          "op": "preview",
+          "request": {"date": "2026-11-12", "amount": "980.00"},
+          "expect": {
+            "discountAvailable": {"2001": "0.00", "2002": "24.69", "2003": "24.70"},
+            "suggestDiscount": {"2001": false, "2002": false, "2003": false}
+          }
         },
-        "totals": {
-          "amountDue": "5645.00",
-          "applied": "4384.25",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.75",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [],
-        "problems": []
-      }
+        {
+          "op": "receive",
+          "request": {"date": "2026-11-09", "amount": "980.00", "depositTo": "undeposited_funds", "applications": [{"invoice": "2001", "amount": "980.00", "discountAmount": "20.00"}]},
+          "expect": {
+            "lines": [{"account": "undeposited_funds", "debit": "980.00"}, {"account": "sales_discount", "debit": "20.00"}, {"account": "accounts_receivable", "credit": "1000.00"}],
+            "invoices": {"2001": {"balanceDue": "0.00", "status": "paid"}},
+            "contactBalance": "2469.32"
+          }
+        }
+      ]
     },
     {
-      "id": "3",
-      "name": "discount: 1,000.00 at 2% 10 net 30 paid on day 8 with 980.00 suggests 20.00",
+      "id": 4,
+      "name": "overpayment: 5,700.00 pays both, 55.00 stays a credit, later applied to a new 300.00 invoice",
+      "company": {},
       "invoices": [
-        {
-          "invoiceId": "D",
-          "invoiceNumber": "D",
-          "txnDate": "2026-10-01",
-          "dueDate": null,
-          "total": "1000.00",
-          "balanceDueExact": "1000.0000",
-          "discountPercent": "2.0000",
-          "discountDate": "2026-10-11"
-        }
+        {"number": "1091", "date": "2026-10-05", "dueDate": "2026-11-04", "total": "4385.00"},
+        {"number": "1095", "date": "2026-10-28", "dueDate": "2026-11-27", "total": "1260.00"}
       ],
-      "request": {
-        "date": "2026-10-09",
-        "amount": "980.00",
-        "applications": [
-          {
-            "invoiceId": "D",
-            "amount": "980.00"
+      "steps": [
+        {
+          "op": "preview",
+          "request": {"date": "2026-11-04", "amount": "5700.00"},
+          "expect": {
+            "payments": {"1091": "4385.00", "1095": "1260.00"},
+            "totals": {"amountDue": "5645.00", "applied": "5645.00", "discountsAndCredits": "0.00", "unapplied": "55.00"},
+            "overpayment": "55.00", "shortfalls": [],
+            "contactBalanceBefore": "5645.00", "contactBalanceAfter": "-55.00"
           }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "980.00",
-        "amountSource": "typed",
-        "payments": {
-          "D": "980.00"
         },
-        "remaining": {
-          "D": "20.00"
-        },
-        "totals": {
-          "amountDue": "1000.00",
-          "applied": "980.00",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [
-          {
-            "invoiceId": "D",
-            "amount": "20.00",
-            "withinWriteOffLimit": false
+        {
+          "op": "receive",
+          "request": {"date": "2026-11-04", "amount": "5700.00", "depositTo": "undeposited_funds", "applications": [{"invoice": "1091", "amount": "4385.00"}, {"invoice": "1095", "amount": "1260.00"}]},
+          "expect": {
+            "lines": [{"account": "undeposited_funds", "debit": "5700.00"}, {"account": "accounts_receivable", "credit": "5700.00"}],
+            "invoices": {"1091": {"balanceDue": "0.00", "status": "paid"}, "1095": {"balanceDue": "0.00", "status": "paid"}},
+            "contactBalance": "-55.00", "unappliedRemaining": "55.00"
           }
-        ],
-        "problems": [],
-        "discountAvailable": {
-          "D": "20.00"
         },
-        "suggestDiscount": {
-          "D": true
+        {"op": "invoice", "invoice": {"number": "1102", "date": "2026-11-06", "dueDate": "2026-12-06", "total": "300.00"}},
+        {
+          "op": "apply",
+          "request": {"date": "2026-11-06", "applications": [{"invoice": "1102"}]},
+          "expect": {"applied": {"1102": "55.00"}, "remaining": "0.00", "lines": [], "invoices": {"1102": {"balanceDue": "245.00", "status": "partial"}}, "contactBalance": "245.00"}
         }
-      }
+      ]
     },
     {
-      "id": "3b",
-      "name": "discount: taking the 20.00 closes the invoice",
+      "id": 5,
+      "name": "explicit fill with no amount: tick 1095 only",
+      "company": {},
       "invoices": [
-        {
-          "invoiceId": "D",
-          "invoiceNumber": "D",
-          "txnDate": "2026-10-01",
-          "dueDate": null,
-          "total": "1000.00",
-          "balanceDueExact": "1000.0000",
-          "discountPercent": "2.0000",
-          "discountDate": "2026-10-11"
-        }
+        {"number": "1091", "date": "2026-10-05", "dueDate": "2026-11-04", "total": "4385.00"},
+        {"number": "1095", "date": "2026-10-28", "dueDate": "2026-11-27", "total": "1260.00"}
       ],
-      "request": {
-        "date": "2026-10-09",
-        "amount": "980.00",
-        "applications": [
-          {
-            "invoiceId": "D",
-            "amount": "980.00",
-            "discountAmount": "20.00"
+      "steps": [
+        {
+          "op": "preview",
+          "request": {"date": "2026-11-04", "applications": [{"invoice": "1095", "amount": null}]},
+          "expect": {
+            "amount": "1260.00", "amountSource": "from_applications",
+            "payments": {"1091": "0.00", "1095": "1260.00"},
+            "totals": {"amountDue": "5645.00", "applied": "1260.00", "discountsAndCredits": "0.00", "unapplied": "0.00"},
+            "shortfalls": [], "contactBalanceAfter": "4385.00"
           }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "980.00",
-        "amountSource": "typed",
-        "payments": {
-          "D": "980.00"
-        },
-        "remaining": {
-          "D": "0.00"
-        },
-        "totals": {
-          "amountDue": "1000.00",
-          "applied": "980.00",
-          "discountsAndCredits": "20.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [],
-        "problems": [],
-        "discountAvailable": {
-          "D": "20.00"
-        },
-        "suggestDiscount": {
-          "D": false
         }
-      }
+      ]
     },
     {
-      "id": "3c",
-      "name": "discount half-up traps: 1,234.57 x 2% = 24.69; 1,234.75 x 2% = 24.70; after the date 0.00",
-      "invoices": [
+      "id": 6,
+      "name": "customer deposit: 500.00 held, then applied to a 1,200.00 invoice",
+      "company": {},
+      "invoices": [],
+      "steps": [
         {
-          "invoiceId": "T1",
-          "invoiceNumber": "T1",
-          "txnDate": "2026-10-01",
-          "dueDate": null,
-          "total": "1234.57",
-          "balanceDueExact": "1234.5700",
-          "discountPercent": "2.0000",
-          "discountDate": "2026-10-11"
+          "op": "preview",
+          "request": {"date": "2026-11-04", "amount": "500.00"},
+          "expect": {"holdAsDepositOffered": true, "totals": {"amountDue": "0.00", "applied": "0.00", "discountsAndCredits": "0.00", "unapplied": "500.00"}, "contactBalanceBefore": "0.00", "contactBalanceAfter": "-500.00"}
         },
         {
-          "invoiceId": "T2",
-          "invoiceNumber": "T2",
-          "txnDate": "2026-10-02",
-          "dueDate": null,
-          "total": "1234.75",
-          "balanceDueExact": "1234.7500",
-          "discountPercent": "2.0000",
-          "discountDate": "2026-10-11"
+          "op": "preview",
+          "request": {"date": "2026-11-04", "amount": "500.00", "holdAsDeposit": true},
+          "expect": {"holdAsDepositOffered": true, "contactBalanceAfter": "0.00"}
+        },
+        {
+          "op": "receive",
+          "request": {"date": "2026-11-04", "amount": "500.00", "depositTo": "undeposited_funds", "holdAsDeposit": true, "applications": []},
+          "expect": {"lines": [{"account": "undeposited_funds", "debit": "500.00"}, {"account": "customer_deposits", "credit": "500.00"}], "contactBalance": "0.00", "depositRemaining": "500.00", "customerDeposits": "500.00"}
+        },
+        {"op": "invoice", "invoice": {"number": "1110", "date": "2026-11-05", "dueDate": "2026-12-05", "total": "1200.00"}},
+        {
+          "op": "apply",
+          "request": {"date": "2026-11-05", "applications": [{"invoice": "1110"}]},
+          "expect": {"applied": {"1110": "500.00"}, "remaining": "0.00", "lines": [{"account": "customer_deposits", "debit": "500.00"}, {"account": "accounts_receivable", "credit": "500.00"}], "invoices": {"1110": {"balanceDue": "700.00", "status": "partial"}}, "contactBalance": "700.00", "customerDeposits": "0.00"}
         }
-      ],
-      "request": {
-        "date": "2026-10-11",
-        "amount": "0.00",
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "0.00",
-        "amountSource": "typed",
-        "payments": {
-          "T1": "0.00",
-          "T2": "0.00"
-        },
-        "remaining": {
-          "T1": "1234.57",
-          "T2": "1234.75"
-        },
-        "totals": {
-          "amountDue": "2469.32",
-          "applied": "0.00",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [],
-        "problems": [
-          {
-            "code": "AMOUNT_REQUIRED"
-          }
-        ],
-        "discountAvailable": {
-          "T1": "24.69",
-          "T2": "24.70"
-        },
-        "suggestDiscount": {
-          "T1": false,
-          "T2": false
-        }
-      }
+      ]
     },
     {
-      "id": "3d",
-      "name": "discount: day 11 (after the discount date) offers 0.00",
+      "id": 7,
+      "name": "bounce: case 1 deposited with the 6,210.00 payment to Operating, bounced on 11/12 with a 35.00 bank fee",
+      "company": {},
       "invoices": [
-        {
-          "invoiceId": "D",
-          "invoiceNumber": "D",
-          "txnDate": "2026-10-01",
-          "dueDate": null,
-          "total": "1000.00",
-          "balanceDueExact": "1000.0000",
-          "discountPercent": "2.0000",
-          "discountDate": "2026-10-11"
-        }
+        {"number": "1091", "date": "2026-10-05", "dueDate": "2026-11-04", "total": "4385.00"},
+        {"number": "1095", "date": "2026-10-28", "dueDate": "2026-11-27", "total": "1260.00"}
       ],
-      "request": {
-        "date": "2026-10-12",
-        "amount": "980.00",
-        "applications": [
-          {
-            "invoiceId": "D",
-            "amount": "980.00"
+      "otherPending": "6210.00",
+      "steps": [
+        {
+          "op": "receive",
+          "request": {"date": "2026-11-04", "amount": "4000.00", "depositTo": "undeposited_funds", "applications": [{"invoice": "1091", "amount": "4000.00"}]},
+          "expect": {"invoices": {"1091": {"balanceDue": "385.00", "status": "partial"}}, "contactBalance": "1645.00"}
+        },
+        {"op": "deposit", "date": "2026-11-05", "account": "operating", "payments": ["this", "other"], "expect": {"total": "10210.00"}},
+        {
+          "op": "bounce",
+          "request": {"date": "2026-11-12", "bankFeeAmount": "35.00"},
+          "expect": {
+            "heldIn": "operating",
+            "lines": [{"account": "operating", "credit": "4000.00"}, {"account": "accounts_receivable", "debit": "4000.00"}],
+            "feeLines": [{"account": "bank_fee", "debit": "35.00"}, {"account": "operating", "credit": "35.00"}],
+            "invoices": {"1091": {"balanceDue": "4385.00", "status": "sent"}},
+            "contactBalance": "5645.00", "operatingChange": "6175.00", "otherStillDeposited": true,
+            "unappliedRemaining": "0.00", "credits": 0
           }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "980.00",
-        "amountSource": "typed",
-        "payments": {
-          "D": "980.00"
         },
-        "remaining": {
-          "D": "20.00"
-        },
-        "totals": {
-          "amountDue": "1000.00",
-          "applied": "980.00",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [
-          {
-            "invoiceId": "D",
-            "amount": "20.00",
-            "withinWriteOffLimit": false
-          }
-        ],
-        "problems": [],
-        "discountAvailable": {
-          "D": "0.00"
-        },
-        "suggestDiscount": {
-          "D": false
-        }
-      }
+        {"op": "bounceAgain", "request": {"date": "2026-11-13"}, "expect": {"error": "PAYMENT_BOUNCED"}},
+        {"op": "voidDeposit", "expect": {"error": "PAYMENT_BOUNCED"}}
+      ]
     },
     {
-      "id": "4",
-      "name": "overpayment: auto 5,700.00 pays both, 55.00 unapplied",
+      "id": 8,
+      "name": "bounce with a discount and a write-off: both reversed exactly",
+      "company": {"writeOffThreshold": "1.00"},
       "invoices": [
-        {
-          "invoiceId": "1091",
-          "invoiceNumber": "1091",
-          "txnDate": "2026-09-15",
-          "dueDate": "2026-10-15",
-          "total": "4385.00",
-          "balanceDueExact": "4385.0000"
-        },
-        {
-          "invoiceId": "1095",
-          "invoiceNumber": "1095",
-          "txnDate": "2026-10-02",
-          "dueDate": "2026-11-01",
-          "total": "1260.00",
-          "balanceDueExact": "1260.0000"
-        }
+        {"number": "2001", "date": "2026-11-01", "dueDate": "2026-12-01", "total": "1000.00", "discountPercent": "2", "discountDays": 10},
+        {"number": "2004", "date": "2026-11-02", "dueDate": "2026-12-02", "total": "250.00"}
       ],
-      "request": {
-        "amount": "5700.00",
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "5700.00",
-        "amountSource": "typed",
-        "payments": {
-          "1091": "4385.00",
-          "1095": "1260.00"
+      "steps": [
+        {
+          "op": "receive",
+          "request": {"date": "2026-11-09", "amount": "1229.50", "depositTo": "undeposited_funds", "applications": [{"invoice": "2001", "amount": "980.00", "discountAmount": "20.00"}, {"invoice": "2004", "amount": "249.50", "writeOffAmount": "0.50"}]},
+          "expect": {
+            "lines": [{"account": "undeposited_funds", "debit": "1229.50"}, {"account": "sales_discount", "debit": "20.00"}, {"account": "write_off", "debit": "0.50"}, {"account": "accounts_receivable", "credit": "1250.00"}],
+            "invoices": {"2001": {"balanceDue": "0.00", "status": "paid"}, "2004": {"balanceDue": "0.00", "status": "paid"}},
+            "contactBalance": "0.00"
+          }
         },
-        "remaining": {
-          "1091": "0.00",
-          "1095": "0.00"
-        },
-        "totals": {
-          "amountDue": "5645.00",
-          "applied": "5645.00",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "55.00"
-        },
-        "shortfalls": [],
-        "problems": []
-      }
+        {
+          "op": "bounce",
+          "request": {"date": "2026-11-12"},
+          "expect": {
+            "heldIn": "undeposited_funds",
+            "lines": [{"account": "undeposited_funds", "credit": "1229.50"}, {"account": "accounts_receivable", "debit": "1250.00"}, {"account": "sales_discount", "credit": "20.00"}, {"account": "write_off", "credit": "0.50"}],
+            "invoices": {"2001": {"balanceDue": "1000.00", "status": "sent"}, "2004": {"balanceDue": "250.00", "status": "sent"}},
+            "contactBalance": "1250.00", "pendingIncludesPayment": false
+          }
+        }
+      ]
     },
     {
-      "id": "4b",
-      "name": "overpayment credit: the 55.00 left of case 4 applied to a new 300.00 invoice leaves 245.00",
+      "id": 9,
+      "name": "exactness traps: 3 places refused, 0.01 over the balance refused, oldest first over 0.01 / 999,999.99 / 1.00",
+      "company": {},
       "invoices": [
-        {
-          "invoiceId": "N",
-          "invoiceNumber": "1102",
-          "txnDate": "2026-11-10",
-          "dueDate": null,
-          "total": "300.00",
-          "balanceDueExact": "300.0000"
-        }
+        {"number": "3001", "date": "2026-10-01", "dueDate": "2026-10-31", "total": "0.01"},
+        {"number": "3002", "date": "2026-10-02", "dueDate": "2026-11-01", "total": "999999.99"},
+        {"number": "3003", "date": "2026-10-03", "dueDate": "2026-11-02", "total": "1.00"}
       ],
-      "credits": [
+      "steps": [
+        {"op": "preview", "request": {"date": "2026-11-04", "amount": "10.005"}, "expect": {"error": "VALIDATION_ERROR"}},
         {
-          "sourcePaymentId": "P4",
-          "date": "2026-11-03",
-          "refNo": null,
-          "remaining": "55.00"
+          "op": "receive",
+          "request": {"date": "2026-11-04", "amount": "1.01", "depositTo": "undeposited_funds", "applications": [{"invoice": "3003", "amount": "1.01"}]},
+          "expect": {"error": "OVERAPPLIED"}
+        },
+        {
+          "op": "preview",
+          "request": {"date": "2026-11-04", "amount": "1000000.50"},
+          "expect": {
+            "payments": {"3001": "0.01", "3002": "999999.99", "3003": "0.50"},
+            "totals": {"amountDue": "1000001.00", "applied": "1000000.50", "discountsAndCredits": "0.00", "unapplied": "0.00"},
+            "shortfalls": [{"invoice": "3003", "amount": "0.50", "withinWriteOffLimit": false}],
+            "contactBalanceAfter": "0.50"
+          }
         }
-      ],
-      "request": {
-        "creditApplications": [
-          {
-            "sourcePaymentId": "P4",
-            "invoiceId": "N",
-            "amount": null
-          }
-        ],
-        "applications": [],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "0.00",
-        "amountSource": "from_applications",
-        "payments": {
-          "N": "0.00"
-        },
-        "remaining": {
-          "N": "245.00"
-        },
-        "totals": {
-          "amountDue": "300.00",
-          "applied": "0.00",
-          "discountsAndCredits": "55.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [
-          {
-            "invoiceId": "N",
-            "amount": "245.00",
-            "withinWriteOffLimit": false
-          }
-        ],
-        "problems": []
-      }
+      ]
     },
     {
-      "id": "5",
-      "name": "explicit fill without an amount: tick 1095 only",
+      "id": 11,
+      "name": "bounce of a held deposit with a draw: 500.00 held and deposited, 300.00 drawn to a 1,200.00 invoice",
+      "company": {},
       "invoices": [
-        {
-          "invoiceId": "1091",
-          "invoiceNumber": "1091",
-          "txnDate": "2026-09-15",
-          "dueDate": "2026-10-15",
-          "total": "4385.00",
-          "balanceDueExact": "4385.0000"
-        },
-        {
-          "invoiceId": "1095",
-          "invoiceNumber": "1095",
-          "txnDate": "2026-10-02",
-          "dueDate": "2026-11-01",
-          "total": "1260.00",
-          "balanceDueExact": "1260.0000"
-        }
+        {"number": "1120", "date": "2026-11-02", "dueDate": "2026-12-02", "total": "1200.00"}
       ],
-      "request": {
-        "applications": [
-          {
-            "invoiceId": "1095",
-            "amount": null
-          }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "1260.00",
-        "amountSource": "from_applications",
-        "payments": {
-          "1091": "0.00",
-          "1095": "1260.00"
-        },
-        "remaining": {
-          "1091": "4385.00",
-          "1095": "0.00"
-        },
-        "totals": {
-          "amountDue": "5645.00",
-          "applied": "1260.00",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [],
-        "problems": []
-      }
-    },
-    {
-      "id": "9",
-      "name": "exactness: 0.01 over the cent balance is OVERAPPLIED (the old 0.01 tolerance passed it)",
-      "invoices": [
+      "steps": [
         {
-          "invoiceId": "A",
-          "invoiceNumber": "A",
-          "txnDate": "2026-10-01",
-          "dueDate": null,
-          "total": "100.00",
-          "balanceDueExact": "100.0000"
+          "op": "receive",
+          "request": {"date": "2026-11-04", "amount": "500.00", "depositTo": "undeposited_funds", "holdAsDeposit": true, "applications": []},
+          "expect": {"customerDeposits": "500.00", "contactBalance": "1200.00"}
+        },
+        {"op": "deposit", "date": "2026-11-05", "account": "operating", "payments": ["this"], "expect": {"total": "500.00"}},
+        {
+          "op": "apply",
+          "request": {"date": "2026-11-06", "applications": [{"invoice": "1120", "amount": "300.00"}]},
+          "expect": {"applied": {"1120": "300.00"}, "remaining": "200.00", "invoices": {"1120": {"balanceDue": "900.00", "status": "partial"}}, "customerDeposits": "200.00"}
+        },
+        {
+          "op": "bounce",
+          "request": {"date": "2026-11-12"},
+          "expect": {
+            "heldIn": "operating",
+            "lines": [{"account": "operating", "credit": "500.00"}, {"account": "accounts_receivable", "debit": "300.00"}, {"account": "customer_deposits", "debit": "200.00"}],
+            "invoices": {"1120": {"balanceDue": "1200.00", "status": "sent"}},
+            "contactBalance": "1200.00", "customerDeposits": "0.00", "operatingChange": "0.00", "depositRemaining": "0.00"
+          }
         }
-      ],
-      "request": {
-        "amount": "100.01",
-        "applications": [
-          {
-            "invoiceId": "A",
-            "amount": "100.01"
-          }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "100.01",
-        "amountSource": "typed",
-        "payments": {
-          "A": "100.01"
-        },
-        "remaining": {
-          "A": "-0.01"
-        },
-        "totals": {
-          "amountDue": "100.00",
-          "applied": "100.01",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [],
-        "problems": [
-          {
-            "code": "OVERAPPLIED",
-            "invoiceId": "A"
-          }
-        ]
-      }
-    },
-    {
-      "id": "9b",
-      "name": "exactness: allocation over 0.01 / 999,999.99 / 1.00",
-      "invoices": [
-        {
-          "invoiceId": "A",
-          "invoiceNumber": "A",
-          "txnDate": "2026-10-01",
-          "dueDate": null,
-          "total": "0.01",
-          "balanceDueExact": "0.0100"
-        },
-        {
-          "invoiceId": "B",
-          "invoiceNumber": "B",
-          "txnDate": "2026-10-02",
-          "dueDate": null,
-          "total": "999999.99",
-          "balanceDueExact": "999999.9900"
-        },
-        {
-          "invoiceId": "C",
-          "invoiceNumber": "C",
-          "txnDate": "2026-10-03",
-          "dueDate": null,
-          "total": "1.00",
-          "balanceDueExact": "1.0000"
-        }
-      ],
-      "request": {
-        "amount": "1000000.50",
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "1000000.50",
-        "amountSource": "typed",
-        "payments": {
-          "A": "0.01",
-          "B": "999999.99",
-          "C": "0.50"
-        },
-        "remaining": {
-          "A": "0.00",
-          "B": "0.00",
-          "C": "0.50"
-        },
-        "totals": {
-          "amountDue": "1000001.00",
-          "applied": "1000000.50",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [
-          {
-            "invoiceId": "C",
-            "amount": "0.50",
-            "withinWriteOffLimit": true
-          }
-        ],
-        "problems": []
-      }
-    },
-    {
-      "id": "9c",
-      "name": "explicit: a typed row first, then fill rows take what is left in date order",
-      "invoices": [
-        {
-          "invoiceId": "A",
-          "invoiceNumber": "A",
-          "txnDate": "2026-10-01",
-          "dueDate": null,
-          "total": "300.00",
-          "balanceDueExact": "300.0000"
-        },
-        {
-          "invoiceId": "B",
-          "invoiceNumber": "B",
-          "txnDate": "2026-10-02",
-          "dueDate": null,
-          "total": "200.00",
-          "balanceDueExact": "200.0000"
-        },
-        {
-          "invoiceId": "C",
-          "invoiceNumber": "C",
-          "txnDate": "2026-10-03",
-          "dueDate": null,
-          "total": "100.00",
-          "balanceDueExact": "100.0000"
-        }
-      ],
-      "request": {
-        "amount": "350.00",
-        "applications": [
-          {
-            "invoiceId": "C",
-            "amount": "100.00"
-          },
-          {
-            "invoiceId": "B",
-            "amount": null
-          },
-          {
-            "invoiceId": "A",
-            "amount": null
-          }
-        ],
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "350.00",
-        "amountSource": "typed",
-        "payments": {
-          "A": "250.00",
-          "B": "0.00",
-          "C": "100.00"
-        },
-        "remaining": {
-          "A": "50.00",
-          "B": "200.00",
-          "C": "0.00"
-        },
-        "totals": {
-          "amountDue": "600.00",
-          "applied": "350.00",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [
-          {
-            "invoiceId": "A",
-            "amount": "50.00",
-            "withinWriteOffLimit": false
-          }
-        ],
-        "problems": []
-      }
-    },
-    {
-      "id": "10",
-      "name": "legacy residue (Q-P21t): stored 100.0049 shows and pays 100.00; stored 100.005 shows and pays 100.01; a stored 0.0049 is not open; nothing sub-cent is posted",
-      "invoices": [
-        {
-          "invoiceId": "L1",
-          "invoiceNumber": "L1",
-          "txnDate": "2025-01-10",
-          "dueDate": null,
-          "total": "100.0049",
-          "balanceDueExact": "100.0049"
-        },
-        {
-          "invoiceId": "L2",
-          "invoiceNumber": "L2",
-          "txnDate": "2025-01-11",
-          "dueDate": null,
-          "total": "100.0050",
-          "balanceDueExact": "100.0050"
-        },
-        {
-          "invoiceId": "L3",
-          "invoiceNumber": "L3",
-          "txnDate": "2025-01-12",
-          "dueDate": null,
-          "total": "50.0000",
-          "balanceDueExact": "0.0049"
-        }
-      ],
-      "request": {
-        "amount": "200.01",
-        "writeOffThreshold": "1.00"
-      },
-      "expect": {
-        "amount": "200.01",
-        "amountSource": "typed",
-        "payments": {
-          "L1": "100.00",
-          "L2": "100.01"
-        },
-        "remaining": {
-          "L1": "0.00",
-          "L2": "0.00"
-        },
-        "totals": {
-          "amountDue": "200.01",
-          "applied": "200.01",
-          "discountsAndCredits": "0.00",
-          "writeOffs": "0.00",
-          "unapplied": "0.00"
-        },
-        "shortfalls": [],
-        "problems": []
-      }
-    }
-  ],
-  "postings": {
-    "1": "Dr Payments Clearing 4000.00 / Cr A/R 4000.00; 1091 balanceDue 385.00 partial; client 5645.00 -> 1645.00; pendingDeposits {count 2, total 10210.00} with another 6210.00 pending",
-    "7": "case 1 deposited with a 6210.00 payment (10210.00 to the bank); bounce with bank fee 35.00: returned_payment Cr bank 4000.00 / Dr A/R 4000.00; fee Dr fee account 35.00 / Cr bank 35.00; 1091 balanceDue 4385.00; client 5645.00; bank = before + 6210.00 - 35.00; the 6210.00 payment stays deposited",
-    "10": "paying L1 100.00 and L2 100.01 posts Dr Payments Clearing 200.01 / Cr A/R 200.01; L1 stored balance 0.0049 and L2 -0.0050, both paid and no longer open; a void or bounce restores 100.0049 and 100.0050 exactly",
-    "2": "with writeOff 0.75: Dr Payments Clearing 4384.25, Dr write-off 0.75, Cr A/R 4385.00; 1091 paid; client after 1260.00",
-    "3": "with discount 20.00: Dr Payments Clearing 980.00, Dr sales discount 20.00, Cr A/R 1000.00",
-    "4": "auto 5700.00: Dr Payments Clearing 5700.00 / Cr A/R 5700.00; client after -55.00; POST /payments/:id/apply of 55.00 to a new 300.00 invoice: balance 245.00, no GL lines",
-    "8": "a bounce of a payment with discount and write-off: returned_payment Dr A/R amount + discounts + write-offs, Cr the bank amount, Cr the discount and write-off accounts; invoices back to their pre-payment balances"
-  },
-  "errors": [
-    {
-      "name": "3-place amount",
-      "body": {
-        "amount": "100.001"
-      },
-      "status": 400,
-      "code": "VALIDATION_ERROR"
+      ]
     }
   ]
 }

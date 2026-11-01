@@ -28,6 +28,8 @@ export interface ReceivePaymentInput {
   discountAccountId?: string;
   /** U-133: existing credits of the same client applied in this payment. */
   creditApplications?: Array<{ sourcePaymentId: string; invoiceId: string; amount: string; expectedBalanceDue?: string }>;
+  /** U-135: hold the amount as a customer deposit. */
+  holdAsDeposit?: boolean;
 }
 
 /** POST /payments/:id/apply (U-133). */
@@ -47,6 +49,7 @@ export interface PreviewPaymentInput {
   applications?: Array<{ invoiceId: string; amount: string | null; discountAmount?: string | null; writeOffAmount?: string | null }>;
   creditApplications?: Array<{ sourcePaymentId: string; invoiceId: string; amount: string | null }>;
   editingPaymentId?: string;
+  holdAsDeposit?: boolean;
 }
 
 /** POST /payments/:id/bounce (U-132, payment-bounce-v1). */

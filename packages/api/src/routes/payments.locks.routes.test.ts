@@ -289,6 +289,49 @@ describe('lock order and re-read under lock (U-132, E-B1)', () => {
     expect((await row(s.i1)).balanceDue).toBe('4385.0000');
   });
 
+  /** A 500.00 deposit held in the bank, 300.00 of it drawn to a 1,200.00 invoice (U-135). */
+  async function heldAndDrawn() {
+    const h = await request('POST', '/api/v1/payments/receive', c.token, {
+      customerId: c.customer, date: '2026-11-01', depositTo: c.bank, amount: '500.00', applications: [], holdAsDeposit: true,
+    });
+    expect(h.status, JSON.stringify(h.json)).toBe(201);
+    const inv1 = await invoice('1200.00', '2026-11-05');
+    const a = await request('POST', `/api/v1/payments/${h.json.payment.id}/apply`, c.token, { date: '2026-11-06', applications: [{ invoiceId: inv1, amount: '300.00' }] });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    return { hold: h.json.payment.id as string, draw: a.json.drawId as string, inv1, cd: await bySystemTag(c.tenantId, 'customer_deposits') };
+  }
+
+  it('bounce of a held deposit versus a void of its draw: the draw goes first, the bounce takes back the whole 500.00 from Customer Deposits', async () => {
+    const bankBefore = await balance(c.bank);
+    const s = await heldAndDrawn();
+    const r = await interleave(
+      (tx) => ledger.voidTransactionInTx(tx, c.tenantId, s.draw, 'applied to the wrong invoice', c.userId),
+      () => request('POST', `/api/v1/payments/${s.hold}/bounce`, c.token, { date: '2026-11-10' }),
+    );
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const lines = await db.select().from(journalLines)
+      .where(and(eq(journalLines.transactionId, r.json.returnId), eq(journalLines.isVoidReversal, false))).orderBy(journalLines.lineOrder);
+    expect(lines.map((l) => [l.accountId, l.debit, l.credit])).toEqual([[s.cd, '500.0000', '0.0000'], [c.bank, '0.0000', '500.0000']]);
+    const inv1 = await row(s.inv1);
+    expect([inv1.balanceDue, inv1.amountPaid]).toEqual(['1200.0000', '0.0000']);
+    expect(await balance(s.cd)).toBe('0.0000');
+    expect(await balance(c.bank)).toBe(bankBefore);
+  });
+
+  it('a draw void waiting on the bounce of its held deposit is refused with 409 PAYMENT_BOUNCED', async () => {
+    const s = await heldAndDrawn();
+    const { bouncePaymentInTx } = await import('../services/payment.service.js');
+    const r = await interleave(
+      (tx) => bouncePaymentInTx(tx, c.tenantId, s.hold, { date: '2026-11-10' } as never, c.userId, c.companyId),
+      () => request('POST', `/api/v1/payments/${s.draw}/void`, c.token, {}),
+    );
+    expect([r.status, r.json.error?.code]).toEqual([409, 'PAYMENT_BOUNCED']);
+    expect((await row(s.draw)).status).toBe('posted');
+    const inv1 = await row(s.inv1);
+    expect([inv1.balanceDue, inv1.amountPaid]).toEqual(['1200.0000', '0.0000']);
+    expect(await balance(s.cd)).toBe('0.0000');
+  });
+
   it('two unapplies of the same row: the invoice moves once', async () => {
     const i1 = await invoice('500.00', '2026-09-15');
     const p = await receive(i1, '200.00', c.bank);
