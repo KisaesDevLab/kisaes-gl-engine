@@ -479,16 +479,29 @@ async function loadPayment(executor: DbOrTx, tenantId: string, paymentId: string
   return row;
 }
 
-/** The account a payment was deposited to: its debit line that is not A/R. */
+/**
+ * The account a payment was deposited to: its asset debit line that is not
+ * A/R. Null when it received no money (a payment of 0.00 that only settles
+ * a discount or write-off has no asset debit; review SF6).
+ */
 async function depositToOf(executor: DbOrTx, tenantId: string, paymentId: string): Promise<string | null> {
   const res = await executor.execute(sql`
     SELECT jl.account_id FROM journal_lines jl
     JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
     WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id = ${paymentId} AND jl.is_void_reversal = false
-      AND jl.debit > 0 AND a.system_tag IS DISTINCT FROM 'accounts_receivable'
+      AND jl.debit > 0 AND a.account_type = 'asset' AND a.system_tag IS DISTINCT FROM 'accounts_receivable'
     ORDER BY jl.line_order LIMIT 1
   `);
   return (res.rows as Array<{ account_id: string }>)[0]?.account_id ?? null;
+}
+
+/** 400 NO_MONEY_RECEIVED: a payment that took in no money can't be bounced or edited (review SF6). */
+function noMoneyReceived(paymentId: string): AppError {
+  return AppError.badRequest(
+    'This payment received no money (it only settles a discount or write-off), so it can’t be bounced or edited. Void it and enter it again.',
+    'NO_MONEY_RECEIVED',
+    { paymentId },
+  );
 }
 
 export async function getPaymentRecord(executor: DbOrTx, tenantId: string, paymentId: string, companyId?: string): Promise<PaymentRecord> {
@@ -871,7 +884,7 @@ async function heldIn(
     if (bank) return { accountId: bank.accountId, kind: 'bank' };
   }
   const to = await depositToOf(executor, tenantId, paymentId);
-  if (!to) throw AppError.internal('Payment has no deposit line');
+  if (!to) throw noMoneyReceived(paymentId);
   return { accountId: to, kind: to === pc ? 'payments_clearing' : 'bank' };
 }
 
