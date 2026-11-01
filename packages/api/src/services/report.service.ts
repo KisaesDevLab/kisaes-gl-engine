@@ -996,7 +996,7 @@ export async function buildARAgingSummary(
     total: n(aging.total),
     details,
     bucketsExact: aging.buckets,
-    totalExact: aging.total,
+    totalExact: aging.totalExact,
     difference: aging.difference,
     customers,
   };
