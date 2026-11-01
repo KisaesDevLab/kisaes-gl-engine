@@ -102,7 +102,7 @@ async function assertDepositAccount(executor: DbOrTx, tenantId: string, accountI
 }
 
 /** Invoices locked FOR UPDATE in id order (the lock order). */
-async function lockInvoices(tx: Tx, tenantId: string, ids: string[]): Promise<Map<string, TxnRow>> {
+export async function lockInvoices(tx: Tx, tenantId: string, ids: string[]): Promise<Map<string, TxnRow>> {
   const unique = [...new Set(ids)].sort();
   if (unique.length === 0) return new Map();
   const rows = await tx.select().from(transactions)
@@ -255,6 +255,16 @@ async function hasSendEvent(executor: DbOrTx, tenantId: string, invoiceId: strin
  * else partial while anything is applied; else viewed / sent when it was
  * viewed or sent; else draft. balance_due = total - amount_paid, exactly.
  */
+/** An application row as an audit entry carries it (U-146 S3): amounts, discount and write-off with their accounts, applied date. */
+function auditedApplication(a: { paymentId: string; invoiceId: string; amount: string; discountAmount: string; discountAccountId: string | null; writeOffAmount: string; writeOffAccountId: string | null; appliedDate: string | null }) {
+  return {
+    paymentId: a.paymentId, invoiceId: a.invoiceId, amount: a.amount,
+    discount: a.discountAmount, discountAccountId: a.discountAccountId,
+    writeOff: a.writeOffAmount, writeOffAccountId: a.writeOffAccountId,
+    appliedDate: a.appliedDate,
+  };
+}
+
 async function moveInvoicePaid(tx: Tx, tenantId: string, inv: TxnRow, delta: DecimalValue): Promise<TxnRow> {
   const newPaid = dec(inv.amountPaid).plus(delta);
   const newBalance = dec(inv.total).minus(newPaid);
@@ -1751,7 +1761,8 @@ export async function bouncePaymentInTx(
     }
 
     await auditLog(tenantId, 'update', 'payment_applications', paymentId,
-      { applications: apps.map((a) => ({ invoiceId: a.invoiceId, amount: a.amount })) },
+      // U-146 S3: what the bounce took back, discounts and write-offs included.
+      { applications: apps.map(auditedApplication) },
       { applications: [], via: 'bounce', returnId: ret.id, feeId: feeId ?? null }, userId, tx);
 
     return { returnId: ret.id, ...(feeId ? { feeId } : {}), heldIn: held, reopened };
@@ -1833,7 +1844,7 @@ export async function reapplyBounceForVoidInTx(tx: Tx, tenantId: string, ret: Tx
   const [fee] = await tx.select({ id: transactions.id }).from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourceTxnId, ret.id), eq(transactions.status, 'posted'))).limit(1);
   await auditLog(tenantId, 'update', 'payment_applications', ret.sourceTxnId,
-    { applications: [], returnId: ret.id }, { applications: res.map((a) => ({ invoiceId: a.invoiceId, amount: a.amount })), via: 'void_bounce' },
+    { applications: [], returnId: ret.id }, { applications: res.map(auditedApplication), via: 'void_bounce' },
     userId, tx);
   return { feeId: fee?.id ?? null };
 }

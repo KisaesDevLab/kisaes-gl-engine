@@ -281,6 +281,14 @@ export async function createCreditMemoDocument(tenantId: string, input: CreditMe
     await claimIdempotency(tx);
     const doc = await computeSalesDocument(tx, tenantId, input, companyId);
     if (!new Decimal(doc.computed.total).greaterThan(0)) throw notPositive(doc.computed.total);
+    // Lock order (U-146 S1): payments -> invoices -> the number counter ->
+    // account rows, as Receive Payment and finance charges take them. The
+    // memo is new (no one else can hold it), so its invoices come first,
+    // before numberForNew locks the counter and the posting the accounts.
+    if (input.applications && input.applications.length > 0) {
+      const payments = await import('./payment.service.js');
+      await payments.lockInvoices(tx, tenantId, input.applications.map((a) => a.invoiceId));
+    }
     const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'credit_memo', input.txnNumber, {
       companyId, warnOnly: input.warnOnly === true, executor: tx,
     });

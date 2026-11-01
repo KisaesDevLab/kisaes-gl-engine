@@ -15,6 +15,7 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import { idempotent } from '../middleware/idempotent.js';
 import * as ledger from '../services/ledger.service.js';
 import * as customerRefundService from '../services/customer-refund.service.js';
+import { deadlockAsRetry } from '../utils/deadlock.js';
 
 /**
  * Customer refunds (U-133 payment-settle-v1). The same posting as POST
@@ -59,3 +60,6 @@ customerRefundsRouter.get('/:id', describe({
 }), async (req, res) => {
   res.json({ refund: await customerRefundService.getRefundRecord(req.tenantId, req.params['id']!, req.companyId) });
 });
+
+// U-146 S1: a deadlock between two of these writes is 409 RETRY (last, after every route).
+customerRefundsRouter.use(deadlockAsRetry);

@@ -151,6 +151,8 @@ invoicesRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedI
     + 'is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and '
     + 'printLater keep their values. A finance-charge invoice (finance-charges-v1) keeps its client: a contactId change is 409 '
     + 'FINANCE_CHARGE_CLIENT_CHANGE ("Void it and assess again for the right client"); amount and date edits are allowed. '
+    + 'Any other invoice with a live payment or credit applied keeps its client too: 409 INVOICE_HAS_PAYMENTS {payments, credits} '
+    + '(invoice-client-guard-v1); unapply first. An edit down to exactly the amount paid makes the invoice paid. '
     + `${closedPeriodNote} ${moneyRules} ${fieldRules} ${pricingRules} ${billableRules}`,
   body: bodyDoc,
   params: idParams,

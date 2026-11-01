@@ -524,4 +524,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Idempotency-Key on the four routes (x-idempotency). Email templates stay with the client. No migration.
    */
   'sales-doc-email-v1',
+  /**
+   * An invoice keeps its client while anything points at it (U-146 B1): PUT /invoices/:id or PUT /transactions/:id that changes
+   * contactId is 409 FINANCE_CHARGE_CLIENT_CHANGE on a finance-charge invoice (whatever is applied), else 409 INVOICE_HAS_PAYMENTS
+   * {payments, credits} while a live payment or credit (memo) application or a legacy payment pointer is on it. Same-client edits
+   * are unchanged. An edit down to exactly the amount paid makes the invoice paid (N2).
+   */
+  'invoice-client-guard-v1',
+  /**
+   * A deadlock on the receivables routers (/payments, /credit-memos, /customer-refunds, /finance-charges) is 409 RETRY: nothing
+   * was saved, resend with the same Idempotency-Key (U-146 S1). Lock order payments -> invoices -> counter -> accounts; account
+   * balances are updated in account-id order.
+   */
+  'receivables-retry-v1',
 ];

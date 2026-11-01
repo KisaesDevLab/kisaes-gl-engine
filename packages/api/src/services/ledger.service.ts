@@ -979,6 +979,7 @@ export async function assertInvoiceUnapplied(
   executor: DbOrTx,
   tenantId: string,
   txn: { id: string; txnType: string },
+  message = 'This invoice has payments or credits applied. Void or remove those first.',
 ): Promise<void> {
   if (txn.txnType !== 'invoice') return;
   const res = await executor.execute(sql`
@@ -1003,11 +1004,41 @@ export async function assertInvoiceUnapplied(
   const row = (res.rows as Array<{ payments: number; credits: number }>)[0];
   if ((row?.payments ?? 0) > 0 || (row?.credits ?? 0) > 0) {
     throw AppError.conflict(
-      'This invoice has payments or credits applied. Void or remove those first.',
+      message,
       'INVOICE_HAS_PAYMENTS',
       { payments: row?.payments ?? 0, credits: row?.credits ?? 0 },
     );
   }
+}
+
+/**
+ * An invoice's client may change only while nothing points at it (U-145,
+ * U-146 B1): the invoice's A/R line follows the header, but a payment's or
+ * credit's A/R line keeps the old client, so a move would split each
+ * client's A/R from the ledger. Read on the caller's transaction after the
+ * invoice row is locked FOR UPDATE.
+ *   finance-charge invoice (its assessment stays on the client it was
+ *     assessed for): 409 FINANCE_CHARGE_CLIENT_CHANGE, whatever is applied;
+ *   any other invoice with a live payment or credit applied (as for a void):
+ *     409 INVOICE_HAS_PAYMENTS {payments, credits}.
+ * No client change, or not an invoice: no-op.
+ */
+export async function assertInvoiceClientChangeAllowed(
+  executor: DbOrTx,
+  tenantId: string,
+  existing: { id: string; txnType: string; contactId: string | null; isFinanceCharge: boolean | null },
+  newContactId: string | null | undefined,
+): Promise<void> {
+  if (existing.txnType !== 'invoice') return;
+  if ((newContactId || null) === (existing.contactId ?? null)) return;
+  if (existing.isFinanceCharge) {
+    throw AppError.conflict(
+      'A finance charge stays with the client it was assessed for. Void it and assess again for the right client.',
+      'FINANCE_CHARGE_CLIENT_CHANGE',
+    );
+  }
+  await assertInvoiceUnapplied(executor, tenantId, existing,
+    'This invoice has payments or credits applied, so its client can’t change. Unapply them first.');
 }
 
 /** A/P documents with a sub-ledger kept by their own services. */
@@ -1366,16 +1397,10 @@ export async function updateTransaction(
     }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
 
-    // A finance-charge invoice keeps its client (U-145, Q-P22v): the charge
-    // was assessed on that client's overdue balance and its assessment rows
-    // point at it. Amount and date edits stay allowed. Every edit path (PUT
-    // /invoices/:id, PUT /transactions/:id) comes through here.
-    if (existing.isFinanceCharge && (input.contactId || null) !== (existing.contactId ?? null)) {
-      throw AppError.conflict(
-        'A finance charge stays with the client it was assessed for. Void it and assess again for the right client.',
-        'FINANCE_CHARGE_CLIENT_CHANGE',
-      );
-    }
+    // An invoice keeps its client while anything points at it (U-145, U-146
+    // B1). Every edit path (PUT /invoices/:id, PUT /transactions/:id) comes
+    // through here, under this row lock.
+    await assertInvoiceClientChangeAllowed(tx, tenantId, existing, input.contactId);
 
     // A bill, vendor credit or bill payment is edited only through its own
     // service (review B1): a generic edit (PUT /transactions/:id sent as an
@@ -1690,14 +1715,23 @@ async function updateAccountBalances(
   // The transaction wrapper around this helper exists to keep the balance
   // update atomic *with the journal_lines insert*, not to protect the
   // increment itself.
+  //
+  // U-146 S1: one net delta per account, applied in account-id order, so two
+  // postings that touch the same accounts (a refund: A/R then bank; a
+  // payment: bank then A/R) lock the rows in the same order and can't
+  // deadlock. The sum is the same in any order, so balances are unchanged.
+  const deltas = new Map<string, InstanceType<typeof Decimal>>();
   for (const line of lines) {
     const delta = new Decimal(line.debit || '0').minus(line.credit || '0');
-
+    deltas.set(line.accountId, (deltas.get(line.accountId) ?? new Decimal(0)).plus(delta));
+  }
+  for (const accountId of [...deltas.keys()].sort()) {
+    const delta = deltas.get(accountId)!;
     if (!delta.isZero()) {
       await executor.update(accounts).set({
         balance: sql`${accounts.balance} + ${delta.toFixed(4)}::decimal`,
         updatedAt: new Date(),
-      }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, line.accountId)));
+      }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)));
     }
   }
 }
