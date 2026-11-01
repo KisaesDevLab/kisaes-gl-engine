@@ -324,6 +324,9 @@ export interface StatementEmailInput {
  * Outbox row when outboxId is given.
  */
 export async function emailStatement(tenantId: string, id: string, input: StatementEmailInput, userId?: string, companyId?: string) {
+  // Another company's (or a missing) statement is 404 before the mail
+  // server settings are looked at.
+  await loadStatement(db, tenantId, id, companyId, false);
   const mail = await import('./invoice-email.service.js');
   await mail.sendFormEmail(tenantId, companyId, input, async (tx) => {
     const row = await loadStatement(tx, tenantId, id, companyId, true);
