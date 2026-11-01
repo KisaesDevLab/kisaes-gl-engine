@@ -620,7 +620,8 @@ export async function listChecks(tenantId: string, filters?: {
     sql`t.tenant_id = ${tenantId}`,
     // bill_payment checks print through the same queue — without it here
     // they'd vanish from the Checks list the moment they printed.
-    sql`t.txn_type IN ('expense', 'bill_payment')`,
+    // U-139: refunds paid by check print through the same queue.
+    sql`t.txn_type IN ('expense', 'bill_payment', 'customer_refund')`,
     // Created as checks only, voided or not (U-117, Q-PR2e): a void check
     // whose queue status the void cleared (U-115) stays listed; a plain
     // Expense paid "by check" is not a check.
