@@ -350,6 +350,12 @@ export const createCustomerRefundSchema = z.object({
   // U-133: the customer payment whose unapplied credit this refunds; the
   // refund must be within its remaining credit (409 CREDIT_NOT_AVAILABLE).
   sourcePaymentId: z.string().uuid().optional(),
+  // U-139: alias of sourcePaymentId; a customer payment, a held deposit or a credit memo.
+  sourceId: z.string().uuid().optional(),
+  // U-139 (refund-checks-v1): a refund paid by check waits in the check print
+  // queue (printLater), or carries a typed check number (409 CHECK_NUMBER_IN_USE).
+  printLater: z.boolean().optional(),
+  checkNumber: z.number().int().positive().max(2147483647).optional(),
   // How the money went back, and the reference (a check number).
   paymentMethod: z.enum(PAYMENT_METHODS).optional(),
   refNo: z.string().trim().max(100).optional(),

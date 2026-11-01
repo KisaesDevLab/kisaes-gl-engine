@@ -454,6 +454,20 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'ar-aging-exact-v1',
   /**
+   * Refunds of credit-memo credit (U-139): POST /customer-refunds sourcePaymentId (alias sourceId) accepts a credit memo of the client,
+   * locked; within its remaining (409 CREDIT_NOT_AVAILABLE {remaining}); dated on or after the source (400 REFUND_DATE_BEFORE_SOURCE);
+   * refundFromAccountId a bank-type account of the company (400 REFUND_ACCOUNT_INVALID). GET /customer-refunds/:id -> {refund:
+   * RefundRecord}. Voiding a memo with a live refund is 409 CREDIT_REFUNDED. Cash basis books the memo's lines at the refund date.
+   */
+  'refund-credit-memo-v1',
+  /**
+   * Refunds by check (U-139, Q-P22d): printLater (default for paymentMethod check without checkNumber) puts the refund in the check
+   * print queue with the client's billing address (GET /checks/print-queue, POST /checks/print assigns numbers); a typed checkNumber
+   * is checked on the bank account (409 CHECK_NUMBER_IN_USE); GET /checks lists refund checks; voiding a queued refund leaves the
+   * queue (U-115). No migration.
+   */
+  'refund-checks-v1',
+  /**
    * Credit memos on the invoice line model (U-138): POST /credit-memos/preview (posts nothing; lines, subtotal, taxableBase, taxRate,
    * taxTotal, total, contactBalanceAfter, openInvoices, suggestedApplications oldest first, remainingCredit, problems[]); POST
    * /credit-memos (lines with items, quantities, rates, discount percents, taxable flags; customerMessage, tagIds, hideZeroLines,
