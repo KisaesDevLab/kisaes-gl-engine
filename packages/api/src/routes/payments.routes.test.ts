@@ -32,6 +32,7 @@ import { paymentsRouter } from './payments.routes.js';
 import { invoicesRouter } from './invoices.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { companyRouter } from './company.routes.js';
+import { customerRefundsRouter } from './customer-refunds.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import * as ledger from '../services/ledger.service.js';
@@ -142,6 +143,7 @@ beforeEach(async () => {
   app.use('/api/v1/invoices', invoicesRouter);
   app.use('/api/v1/transactions', transactionsRouter);
   app.use('/api/v1/company', companyRouter);
+  app.use('/api/v1/customer-refunds', customerRefundsRouter);
   app.use(errorHandler);
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => { port = (server!.address() as AddressInfo).port; resolve(); });
@@ -233,8 +235,8 @@ describe('receive-payment-v1 (U-132)', () => {
     const { preview, payment } = await previewThenReceive({ amount: '4000.00' });
     expect(preview.invoices.map((i: any) => [i.invoiceNumber, i.payment, i.balanceDue, i.balanceDueExact]))
       .toEqual([['1091', '4000.00', '4385.00', '4385.0000'], ['1095', '0.00', '1260.00', '1260.0000']]);
-    expect(preview.totals).toEqual({ amountDue: '5645.00', applied: '4000.00', discountsAndCredits: '0.00', unapplied: '0.00' });
-    expect(preview.shortfalls).toEqual([{ invoiceId: i1091, amount: '385.00' }]);
+    expect(preview.totals).toEqual({ amountDue: '5645.00', applied: '4000.00', discountsAndCredits: '0.00', writeOffs: '0.00', unapplied: '0.00' });
+    expect(preview.shortfalls).toEqual([{ invoiceId: i1091, amount: '385.00', withinWriteOffLimit: false }]);
     expect([preview.contactBalanceBefore, preview.contactBalanceAfter]).toEqual(['5645.00', '1645.00']);
     expect(preview.pendingDeposits).toEqual({ count: 2, total: '10210.00' });
     expect(preview.problems).toEqual([]);
