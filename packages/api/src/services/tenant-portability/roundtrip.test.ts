@@ -143,6 +143,12 @@ async function seedTenant(): Promise<Seed> {
   const bounce = await txn(c1!.id, 'returned_payment', '2026-01-25', 'posted', null, customer!.id);
   await q(`UPDATE transactions SET source_txn_id = $2 WHERE id = $1`, [bounce, payment]);
   await q(`INSERT INTO payment_applications (tenant_id, company_id, payment_id, invoice_id, amount, reversed_by_txn_id) VALUES ($1, $2, $3, $4, '0.0001', $5)`, [tenantId, c1!.id, payment, invoice, bounce]);
+  // Its credit applied inside a second payment (applied_in_txn_id) and a
+  // refund of its credit (source_payment_id) (U-133, migration 0248).
+  const inside = await txn(c1!.id, 'customer_payment', '2026-01-26', 'posted', null, customer!.id);
+  await q(`INSERT INTO payment_applications (tenant_id, company_id, payment_id, invoice_id, amount, applied_date, applied_in_txn_id) VALUES ($1, $2, $3, $4, '0.0001', '2026-01-26', $5)`, [tenantId, c1!.id, payment, invoice, inside]);
+  const refund = await txn(c1!.id, 'customer_refund', '2026-01-27', 'posted', null, customer!.id);
+  await q(`UPDATE transactions SET source_payment_id = $2 WHERE id = $1`, [refund, payment]);
   await q(`INSERT INTO recurring_schedules (tenant_id, company_id, template_transaction_id, frequency, start_date, next_occurrence) VALUES ($1, $2, $3, 'monthly', '2026-01-01', '2027-01-01')`, [tenantId, c1!.id, invoice]);
 
   const [tag] = await q<{ id: string }>(`INSERT INTO tags (tenant_id, company_id, name, tag_number) VALUES ($1, $2, 'rt-tag', 'RT-07') RETURNING id`, [tenantId, c1!.id]);

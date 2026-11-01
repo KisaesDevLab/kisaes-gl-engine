@@ -92,4 +92,10 @@ export interface CompanySettings {
   nsfFeeIncomeAccountId?: string | null;
   /** Bounced payments: the fee charged to the client, 2-place string; null = not set. */
   nsfCustomerFee?: string | null;
+  /** Receive Payment write-off account (payment-settle-v1); null = none. */
+  writeOffAccountId?: string | null;
+  /** Shortfall at or under which a write-off is suggested, 2-place string; null = never. */
+  writeOffThreshold?: string | null;
+  /** Receive Payment early-discount account (payment-discounts-v1); null = none. */
+  salesDiscountAccountId?: string | null;
 }

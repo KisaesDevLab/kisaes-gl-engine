@@ -66,6 +66,14 @@ export const updateCompanySettingsSchema = z.object({
   // NSF_ACCOUNT_INVALID); null clears.
   nsfBankFeeAccountId: z.string().uuid().nullable().optional(),
   nsfFeeIncomeAccountId: z.string().uuid().nullable().optional(),
+  // Receive Payment (U-133, U-134): the write-off account, the shortfall
+  // under which a write-off is suggested (null = never), and the sales
+  // discount account. Accounts: of this company, active, not A/R, A/P,
+  // Payments Clearing or Customer Deposits (400 WRITE_OFF_ACCOUNT_INVALID /
+  // DISCOUNT_ACCOUNT_INVALID); null clears.
+  writeOffAccountId: z.string().uuid().nullable().optional(),
+  writeOffThreshold: z.string().regex(/^\d{1,15}(\.\d{1,2})?$/, 'an amount with at most 2 decimal places').nullable().optional(),
+  salesDiscountAccountId: z.string().uuid().nullable().optional(),
   nsfCustomerFee: z.string().regex(/^\d{1,15}(\.\d{1,2})?$/, 'an amount with at most 2 decimal places').nullable().optional(),
 });
 

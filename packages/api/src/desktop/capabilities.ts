@@ -387,4 +387,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * 400 NSF_ACCOUNT_INVALID). Cash basis reverses revenue at the bounce date. transactions.source_txn_id. Migration 0247.
    */
   'payment-bounce-v1',
+  /**
+   * Under- and overpayment (U-133): applications[].writeOffAmount with writeOffAccountId (default company writeOffAccountId; 400
+   * WRITE_OFF_ACCOUNT_REQUIRED / INVALID); amount 0.00 with a write-off; applications may be empty (credit); creditApplications on
+   * receive / PUT / preview (409 CREDIT_NOT_AVAILABLE, PAYMENT_BOUNCED); POST /payments/:id/apply; POST /customer-refunds (and
+   * POST /transactions customer_refund) with sourcePaymentId within the remaining credit; void / bounce of a payment with a live refund
+   * 409 PAYMENT_REFUNDED; PUT leaving less than the credit in use 409 CREDIT_IN_USE; void bounce 409 CREDIT_SOURCE_CHANGED. Preview
+   * credits[], overpayment, totals.writeOffs, shortfalls[].withinWriteOffLimit (company writeOffThreshold, 1.00 by default). Company
+   * settings writeOffAccountId, writeOffThreshold. Cash basis: c + discount + write-off; credits applied later recognised on their date.
+   * Migration 0248.
+   */
+  'payment-settle-v1',
+  /**
+   * Early-payment discounts (U-134, Q-P21c): open invoices and preview rows carry discountPercent, discountDate, discountAvailable
+   * (round2(total x percent / 100) half away from zero, capped at the cent balance, on or before the discount date, once per invoice)
+   * and suggestDiscount; applications[].discountAmount with discountAccountId (default company salesDiscountAccountId; 400
+   * DISCOUNT_ACCOUNT_REQUIRED / INVALID). A bounce or void reverses discounts and write-offs exactly. Migration 0248.
+   */
+  'payment-discounts-v1',
 ];

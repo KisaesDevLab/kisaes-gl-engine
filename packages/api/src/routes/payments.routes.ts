@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import {
   receivePaymentSchema, previewPaymentSchema, updateCustomerPaymentSchema, unapplyPaymentSchema,
-  voidPaymentSchema, bouncePaymentSchema, listPaymentsQuerySchema,
+  voidPaymentSchema, bouncePaymentSchema, listPaymentsQuerySchema, applyPaymentCreditSchema,
 } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
@@ -18,6 +18,8 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import { idempotent } from '../middleware/idempotent.js';
 import { db } from '../db/index.js';
 import * as paymentService from '../services/payment.service.js';
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const paymentsRouter = Router();
 paymentsRouter.use(authenticate);
@@ -39,11 +41,24 @@ const exactRules = 'Amounts are decimal strings in whole cents (at most 2 places
 const receiveErrors = '400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; ' +
   'less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void ' +
   'invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or ' +
-  'Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company.';
+  'Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. ' +
+  'payment-settle-v1 / payment-discounts-v1: applications may be empty (the whole amount stays a credit); applications[].writeOffAmount and ' +
+  '.discountAmount settle more of the invoice (cash + discount + write-off + credits <= the cent balance, else OVERAPPLIED); amount may be ' +
+  '0.00 only with a write-off or discount (then no deposit line). Posting: Dr depositTo amount, Dr writeOffAccountId (default the company ' +
+  'setting writeOffAccountId) the write-offs, Dr discountAccountId (default salesDiscountAccountId) the discounts, Cr A/R the sum. ' +
+  '400 WRITE_OFF_ACCOUNT_REQUIRED / WRITE_OFF_ACCOUNT_INVALID, DISCOUNT_ACCOUNT_REQUIRED / DISCOUNT_ACCOUNT_INVALID (A/R, A/P, Payments ' +
+  'Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, ' +
+  'expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its ' +
+  'remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 ' +
+  'CREDIT_NOT_FOR_CUSTOMER.';
 
 const paymentRecordNote = 'PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, ' +
   'status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, ' +
-  'discount, writeOff, appliedDate, voided, reversed}] (every row, live and set aside), unappliedRemaining (0.00 when void or bounced), ' +
+  'discount, writeOff, appliedDate, appliedLater, appliedInTxnId, voided, reversed}] (every row, live and set aside; its credit applied ' +
+  'later carries that date, appliedLater true and, when applied inside another payment, that payment\'s id), creditApplications: ' +
+  '[{sourcePaymentId, invoiceId, invoiceNumber, amount, fromDeposit}] (the live credits applied inside this payment; send them back on PUT ' +
+  'to keep them), writeOffAccountId, discountAccountId (the accounts its live write-offs and discounts went to, or null), depositTo (null ' +
+  'when it received no money), unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), ' +
   'holdsDeposit, depositRemaining}; money as 2-place strings.';
 
 // ─── Literal routes first: GET /:id is registered last so it can't shadow them.
@@ -87,7 +102,15 @@ paymentsRouter.post('/preview', validate(previewPaymentSchema), describe({
     '(after saving: this payment counts when depositTo is Payments Clearing), averageDaysToPay (integer days from invoice date to the ' +
     'payment that cleared it, over invoices paid in the 12 months to date; null below 3), problems [{code, invoiceId?}]}. Problem ' +
     'codes: AMOUNT_REQUIRED, APPLICATIONS_EXCEED_AMOUNT, OVERAPPLIED, INVOICE_NOT_OPEN, DUPLICATE_INVOICE, DEPOSIT_ACCOUNT_INVALID, ' +
-    'TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment). editingPaymentId: that payment\'s own live share is added ' +
+    'TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment), CREDIT_NOT_AVAILABLE. payment-settle-v1 / payment-discounts-v1: ' +
+    'applications[].writeOffAmount / discountAmount and creditApplications [{sourcePaymentId, invoiceId, amount | null (fill)}] as on ' +
+    'receive; invoices[] add discount, writeOff, credit, discountPercent, discountDate, discountAvailable (round2(total x percent / 100) ' +
+    'half away from zero, capped at the cent balance, on or before the discount date, once per invoice) and suggestDiscount (none typed and ' +
+    'payment = cent balance - discountAvailable exactly); totals.writeOffs; overpayment (= unapplied); shortfalls[].withinWriteOffLimit ' +
+    '(shortfall <= the company writeOffThreshold; false without one); creditApplications [{sourcePaymentId, invoiceId, amount, ' +
+    'balanceDueExact}] (the credits applied, fill rows filled); credits [{sourcePaymentId, date, refNo, remaining}] (the open ' +
+    'credits of the client, bounced payments left out); contactBalanceAfter = before - amount - discounts - write-offs (credits are in A/R ' +
+    'already). Order per invoice: typed cash, discount and write-off, then credits, then cash fill / auto. editingPaymentId: that payment\'s own live share is added ' +
     'back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it ' +
     'out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in ' +
     'problems[], never 4xx. Money as 2-place strings.',
@@ -97,14 +120,36 @@ paymentsRouter.post('/preview', validate(previewPaymentSchema), describe({
   res.json(preview);
 });
 
+paymentsRouter.post('/:id/apply', closingPasswordLimiter, lockContextMiddleware, idempotent({
+  successStatus: 200,
+  replay: async (req) => {
+    const p = await paymentService.getPayment(req.tenantId, req.params['id']!, req.companyId);
+    return { applied: [], remaining: p.unappliedRemaining };
+  },
+}), validate(applyPaymentCreditSchema), describe({
+  summary: 'Apply the credit of a payment to invoices (payment-settle-v1)',
+  description: 'Response {applied: [{invoiceId, amount}], remaining}. Applies the unapplied credit of the payment to invoices of the same ' +
+    'client on `date`; no GL effect (rows dated appliedDate). A row without amount fills min(credit left, cent balance). The payment is ' +
+    'locked, then the invoices. 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; 400 OVERAPPLIED; 409 INVOICE_BALANCE_CHANGED ' +
+    '(expectedBalanceDue); 409 PAYMENT_BOUNCED; 409 STALE (expectedUpdatedAt); closing date on `date`. Audited. ' + closedPeriodNote,
+  body: applyPaymentCreditSchema.extend(closing),
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
+  const result = await paymentService.applyCredit(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
+  res.json(result);
+});
+
 paymentsRouter.get('/open-invoices/:customerId', describe({
   summary: 'Open invoices of a customer',
   description: 'Response {invoices: [{id, invoiceNumber, txnDate, dueDate, total, amountPaid, balanceDue (cent balance, 2 places), ' +
-    'balanceDueExact (stored, 4 places), invoiceStatus}]}: posted, not paid or void, cent balance above 0.00, oldest first. ' +
-    'A customer of another company is 404.',
+    'balanceDueExact (stored, 4 places), invoiceStatus, discountPercent, discountDate, discountAvailable (on ?date=, default today; ' +
+    'payment-discounts-v1)}]}: posted, not paid or void, cent balance above 0.00, oldest first. A customer of another company is 404.',
   params: z.object({ customerId: z.string().uuid() }),
+  query: z.object({ date: z.string().regex(ISO_DATE).optional() }),
 }), async (req, res) => {
-  const invoices = await paymentService.getOpenInvoicesForCustomer(req.tenantId, req.params['customerId']!, req.companyId);
+  const q = req.query['date'];
+  const date = typeof q === 'string' && ISO_DATE.test(q) ? q : undefined;
+  const invoices = await paymentService.getOpenInvoicesForCustomer(req.tenantId, req.params['customerId']!, req.companyId, date);
   res.json({ invoices });
 });
 
@@ -157,6 +202,10 @@ paymentsRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, idempo
     '/payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and ' +
     'refNo only (still checked against the closing date): any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is ' +
     '409 PAYMENT_BOUNCED. 409 STALE also when the payment was deposited or changed while this waited for its locks. ' +
+    'A body equal to the saved payment but for memo and refNo (applications with their amounts, discounts, write-offs and accounts, ' +
+    'and creditApplications as PaymentRecord.creditApplications lists them) changes only the header: nothing is set aside and no ' +
+    'invoice reopens. Leaving out a credit applied inside it gives it back to its source. 409 CREDIT_IN_USE also for another ' +
+    'customerId while any of its credit is applied elsewhere or refunded. 400 NO_MONEY_RECEIVED for a 0.00 payment. ' +
     `${exactRules} ${receiveErrors} ${closedPeriodNote}`,
   body: updateCustomerPaymentSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),
@@ -172,7 +221,8 @@ paymentsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddleware, 
   summary: 'Void a customer payment',
   description: 'Response {voided: true}. The invoices it paid reopen (every void path does this, /transactions/:id/void too); its ' +
     'applications are kept, marked set aside. expectedUpdatedAt: mismatch 409 STALE. 409 TXN_DEPOSITED {depositIds} while a posted ' +
-    'deposit holds it; 409 PAYMENT_BOUNCED while its bounce is live; 400 when the reconciliation it is cleared in is complete. ' +
+    'deposit holds it; 409 PAYMENT_BOUNCED while its bounce is live; 409 PAYMENT_REFUNDED while a refund of its credit is live (Q-P21j); ' +
+    'credits applied inside it are set aside too; 400 when the reconciliation it is cleared in is complete. ' +
     `Closed period on the payment's date. ${closedPeriodNote}`,
   body: voidPaymentSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),

@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { pgTable, uuid, varchar, text, decimal, boolean, integer, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, decimal, boolean, integer, timestamp, date, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const items = pgTable('items', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -43,6 +43,16 @@ export const paymentApplications = pgTable('payment_applications', {
   // application has both NULL.
   voidedAt: timestamp('voided_at', { withTimezone: true }),
   reversedByTxnId: uuid('reversed_by_txn_id'),
+  // U-133 / U-134 (migration 0248): the write-off and the early-payment
+  // discount settled with the cash (each Dr its account, Cr A/R).
+  writeOffAmount: decimal('write_off_amount', { precision: 19, scale: 4 }).notNull().default('0'),
+  writeOffAccountId: uuid('write_off_account_id'),
+  discountAmount: decimal('discount_amount', { precision: 19, scale: 4 }).notNull().default('0'),
+  discountAccountId: uuid('discount_account_id'),
+  // A credit applied after its payment: when, and inside which payment
+  // (NULL for POST /payments/:id/apply). NULL appliedDate = with the payment.
+  appliedDate: date('applied_date'),
+  appliedInTxnId: uuid('applied_in_txn_id'),
 }, (table) => ({
   paymentIdx: index('idx_pa_payment').on(table.paymentId),
   invoiceIdx: index('idx_pa_invoice').on(table.invoiceId),

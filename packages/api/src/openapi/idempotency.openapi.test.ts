@@ -93,6 +93,9 @@ export const IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES = [
   'post /api/v1/payments/{id}/void',
   'post /api/v1/payments/unapply',
   'post /api/v1/payments/{id}/bounce',
+  // payment-settle-v1 (U-133).
+  'post /api/v1/payments/{id}/apply',
+  'post /api/v1/customer-refunds',
 ].sort();
 
 const ALL_KEYED_ROUTES = [

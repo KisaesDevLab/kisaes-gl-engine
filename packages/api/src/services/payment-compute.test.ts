@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computePayment, centBalance, MONEY_INPUT_RE, type ComputeInvoice, type ComputeRequest } from './payment-compute.js';
+import { computePayment, centBalance, MONEY_INPUT_RE, type ComputeInvoice, type ComputeRequest, type ComputeCredit } from './payment-compute.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +20,7 @@ interface GoldenCase {
   id: string;
   name: string;
   invoices: ComputeInvoice[];
+  credits?: ComputeCredit[];
   request: ComputeRequest;
   expect: {
     amount: string;
@@ -27,8 +28,10 @@ interface GoldenCase {
     payments: Record<string, string>;
     remaining: Record<string, string>;
     totals: Record<string, string>;
-    shortfalls: Array<{ invoiceId: string; amount: string }>;
+    shortfalls: Array<{ invoiceId: string; amount: string; withinWriteOffLimit: boolean }>;
     problems: Array<{ code: string; invoiceId?: string }>;
+    discountAvailable?: Record<string, string>;
+    suggestDiscount?: Record<string, boolean>;
   };
 }
 
@@ -40,7 +43,7 @@ const golden = JSON.parse(readFileSync(path.resolve(here, '../../../shared/fixtu
 describe('payment-golden.json', () => {
   for (const c of golden.cases) {
     it(`case ${c.id}: ${c.name}`, () => {
-      const r = computePayment(c.invoices, c.request);
+      const r = computePayment(c.invoices, c.request, c.credits ?? []);
       expect(r.amount).toBe(c.expect.amount);
       expect(r.amountSource).toBe(c.expect.amountSource);
       expect(Object.fromEntries(r.invoices.map((i) => [i.invoiceId, i.payment]))).toEqual(c.expect.payments);
@@ -48,9 +51,15 @@ describe('payment-golden.json', () => {
       expect(r.totals).toEqual(c.expect.totals);
       expect(r.shortfalls).toEqual(c.expect.shortfalls);
       expect(r.problems).toEqual(c.expect.problems);
+      if (c.expect.discountAvailable) {
+        expect(Object.fromEntries(r.invoices.map((i) => [i.invoiceId, i.discountAvailable]))).toEqual(c.expect.discountAvailable);
+      }
+      if (c.expect.suggestDiscount) {
+        expect(Object.fromEntries(r.invoices.map((i) => [i.invoiceId, i.suggestDiscount]))).toEqual(c.expect.suggestDiscount);
+      }
       // The posted applications are exactly the rows with a payment, as strings.
       expect(r.applications.map((a) => [a.invoiceId, a.amount]))
-        .toEqual(r.invoices.filter((i) => i.payment !== '0.00').map((i) => [i.invoiceId, i.payment]));
+        .toEqual(r.invoices.filter((i) => i.payment !== '0.00' || i.discount !== '0.00' || i.writeOff !== '0.00').map((i) => [i.invoiceId, i.payment]));
     });
   }
 

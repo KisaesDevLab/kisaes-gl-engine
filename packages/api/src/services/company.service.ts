@@ -15,6 +15,7 @@ import { isDesktop } from '../desktop/profile.js';
 import { hasSessionSecret } from '../desktop/session-secrets.js';
 import { assertBillDiscountAccount } from './bill-discount-account.js';
 import { assertMarkupAccount } from './billable-links.js';
+import { assertWriteOffAccount, assertSalesDiscountAccount } from './write-off-account.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -110,6 +111,10 @@ const COMPANY_UPDATABLE_FIELDS = [
   'nsfBankFeeAccountId',
   'nsfFeeIncomeAccountId',
   'nsfCustomerFee',
+  // Receive Payment write-offs and discounts (U-133, U-134); validated in updateCompany.
+  'writeOffAccountId',
+  'writeOffThreshold',
+  'salesDiscountAccountId',
 ] as const;
 
 export async function updateCompany(
@@ -169,6 +174,12 @@ export async function updateCompany(
     for (const field of ['nsfBankFeeAccountId', 'nsfFeeIncomeAccountId'] as const) {
       const id = updates[field];
       if (typeof id === 'string') await assertNsfAccount(tx, tenantId, companyId, id);
+    }
+    if (typeof updates['writeOffAccountId'] === 'string') {
+      await assertWriteOffAccount(tx, tenantId, companyId, updates['writeOffAccountId'] as string);
+    }
+    if (typeof updates['salesDiscountAccountId'] === 'string') {
+      await assertSalesDiscountAccount(tx, tenantId, companyId, updates['salesDiscountAccountId'] as string);
     }
     // Billable-cost markup account (U-128): an active income account of this company.
     const markupAccountId = updates['billableMarkupAccountId'];
@@ -240,6 +251,9 @@ export async function getSettings(tenantId: string, companyId?: string) {
     nsfBankFeeAccountId: company.nsfBankFeeAccountId ?? null,
     nsfFeeIncomeAccountId: company.nsfFeeIncomeAccountId ?? null,
     nsfCustomerFee: company.nsfCustomerFee == null ? null : new Decimal(company.nsfCustomerFee).toFixed(2),
+    writeOffAccountId: company.writeOffAccountId ?? null,
+    writeOffThreshold: company.writeOffThreshold == null ? null : new Decimal(company.writeOffThreshold).toFixed(2),
+    salesDiscountAccountId: company.salesDiscountAccountId ?? null,
   };
 }
 
