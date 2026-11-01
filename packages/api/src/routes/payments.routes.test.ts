@@ -471,6 +471,13 @@ describe('receive-payment-v1 (U-132)', () => {
     r = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, { ...same, amount: '5600.00',
       applications: [{ invoiceId: i1091, amount: '4340.00' }, { invoiceId: i1095, amount: '1260.00' }] });
     expect([r.status, r.json.error.code]).toEqual([409, 'TXN_DEPOSITED']);
+    // A memo edit of a deposited payment in a closed period needs the closing password (review SF4).
+    await db.update(companies).set({ lockDate: '2026-11-30', closingPasswordHash: await bcrypt.hash(CLOSING_PHRASE, 4) }).where(eq(companies.id, c.companyId));
+    r = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, { ...same, memo: 'closed' });
+    expect(r.status).toBe(423);
+    r = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, { ...same, memo: 'closed', closingPassword: CLOSING_PHRASE });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.payment.memo).toBe('closed');
   });
 
   it('averageDaysToPay: null below 3 cleared invoices, then the mean days to the payment that cleared each', async () => {

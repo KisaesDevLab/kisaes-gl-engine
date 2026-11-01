@@ -1124,6 +1124,10 @@ export async function updatePayment(
           'TXN_DEPOSITED', { depositIds: [...new Set(deposits.map((d) => d.depositId))] },
         );
       }
+      // A memo or reference edit still changes a closed-period payment (review SF4).
+      await ledger.checkLockDate(tx, tenantId, payment.txnDate, payment.companyId, undefined, {
+        txnId: paymentId, oldDate: payment.txnDate, newDate: payment.txnDate,
+      });
       await tx.update(transactions).set({ ...header, updatedAt: new Date() })
         .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
       await auditLog(tenantId, 'update', 'transaction', paymentId,
