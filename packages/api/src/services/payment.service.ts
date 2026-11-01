@@ -148,6 +148,19 @@ async function paymentScope(executor: DbOrTx, tenantId: string, paymentId: strin
     SELECT pa.payment_id FROM payment_applications pa
     WHERE pa.tenant_id = ${tenantId} AND pa.applied_in_txn_id = ${paymentId}
       AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+    -- U-135: the held deposit a draw is made on; the draws made inside it
+    -- and their held deposits; the draws on it when it is a held deposit.
+    UNION
+    SELECT p.from_deposit_id FROM transactions p
+    WHERE p.tenant_id = ${tenantId} AND p.id = ${paymentId} AND p.from_deposit_id IS NOT NULL
+    UNION
+    SELECT d.id FROM transactions d
+    WHERE d.tenant_id = ${tenantId} AND d.txn_type = 'customer_payment' AND d.status = 'posted'
+      AND (d.source_txn_id = ${paymentId} OR d.from_deposit_id = ${paymentId})
+    UNION
+    SELECT d.from_deposit_id FROM transactions d
+    WHERE d.tenant_id = ${tenantId} AND d.txn_type = 'customer_payment' AND d.status = 'posted'
+      AND d.source_txn_id = ${paymentId} AND d.from_deposit_id IS NOT NULL
   `);
   const ids = new Set([paymentId, ...(links.rows as Array<{ id: string }>).map((r) => String(r.id))]);
   return { depositIds: [...new Set(deposits.map((d) => d.depositId))].sort(), paymentIds: [...ids].sort() };
@@ -350,8 +363,9 @@ export async function depositRemaining(executor: DbOrTx, tenantId: string, p: Tx
   return Decimal.max(dec(p.total).minus(drawn).minus(await liveRefundTotal(executor, tenantId, p.id)), 0);
 }
 
-async function customerDepositsAccount(tenantId: string, companyId?: string | null): Promise<string> {
-  return getOrCreateSystemAccount(tenantId, 'customer_deposits', companyId ?? undefined);
+/** Customer Deposits, created in the caller's transaction when missing (review nit: a rollback creates nothing). */
+async function customerDepositsAccount(tx: Tx, tenantId: string, companyId?: string | null): Promise<string> {
+  return getOrCreateSystemAccount(tenantId, 'customer_deposits', companyId ?? undefined, undefined, tx);
 }
 
 function depositApplied(paymentId: string): AppError {
@@ -665,7 +679,7 @@ async function postDraw(
   tx: Tx, tenantId: string, deposit: TxnRow, date: string, rows: Array<{ inv: TxnRow; amount: DecimalValue }>,
   insideOf: string | null, userId?: string, companyId?: string,
 ): Promise<string> {
-  const cd = await customerDepositsAccount(tenantId, companyId ?? deposit.companyId);
+  const cd = await customerDepositsAccount(tx, tenantId, companyId ?? deposit.companyId);
   const ar = await arAccountId(tx, tenantId);
   const total = rows.reduce((t, r) => t.plus(r.amount), new Decimal(0)).toFixed(4);
   const draw = await ledger.postTransaction(tenantId, {
@@ -742,7 +756,7 @@ async function receiveDepositInTx(
     throw AppError.badRequest('A deposit holds the whole amount: leave the invoices and credits out.', 'DEPOSIT_WITH_APPLICATIONS');
   }
   if (!parsed.amount.greaterThan(0)) throw AppError.badRequest('Enter the amount received.', 'AMOUNT_REQUIRED');
-  const cd = await customerDepositsAccount(tenantId, companyId);
+  const cd = await customerDepositsAccount(tx, tenantId, companyId);
   const amount = parsed.amount.toFixed(4);
   return ledger.postTransaction(tenantId, {
     txnType: 'customer_payment',
@@ -927,12 +941,23 @@ export async function getPaymentRecord(executor: DbOrTx, tenantId: string, payme
  */
 async function creditsInsideRecord(executor: DbOrTx, tenantId: string, paymentId: string): Promise<PaymentCreditRecord[]> {
   const res = await executor.execute(sql`
-    SELECT pa.payment_id AS source_id, pa.invoice_id, inv.txn_number, pa.amount, false AS from_deposit
-    FROM payment_applications pa
-    LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
-    WHERE pa.tenant_id = ${tenantId} AND pa.applied_in_txn_id = ${paymentId}
-      AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
-    ORDER BY pa.created_at, pa.id
+    SELECT * FROM (
+      SELECT pa.payment_id AS source_id, pa.invoice_id, inv.txn_number, pa.amount, false AS from_deposit, pa.created_at, pa.id
+      FROM payment_applications pa
+      LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
+      WHERE pa.tenant_id = ${tenantId} AND pa.applied_in_txn_id = ${paymentId}
+        AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+      UNION ALL
+      -- U-135: a draw on a held deposit made inside it lists as that deposit's credit.
+      SELECT d.from_deposit_id, pa.invoice_id, inv.txn_number, pa.amount, true, pa.created_at, pa.id
+      FROM transactions d
+      JOIN payment_applications pa ON pa.payment_id = d.id AND pa.tenant_id = d.tenant_id
+      LEFT JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = pa.tenant_id
+      WHERE d.tenant_id = ${tenantId} AND d.source_txn_id = ${paymentId} AND d.txn_type = 'customer_payment'
+        AND d.status = 'posted' AND d.from_deposit_id IS NOT NULL
+        AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL
+    ) x
+    ORDER BY x.created_at, x.id
   `);
   return (res.rows as Array<Record<string, unknown>>).map((r) => ({
     sourcePaymentId: String(r['source_id']),
@@ -966,7 +991,10 @@ export async function listPayments(tenantId: string, q: ListPaymentsQuery, compa
       COALESCE((SELECT SUM(pa.amount) FROM payment_applications pa WHERE pa.tenant_id = t.tenant_id AND pa.payment_id = t.id
                 AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NULL), 0)::text AS applied,
       COALESCE((SELECT SUM(r.total) FROM transactions r WHERE r.tenant_id = t.tenant_id AND r.source_payment_id = t.id
-                AND r.txn_type = 'customer_refund' AND r.status = 'posted'), 0)::text AS refunded
+                AND r.txn_type = 'customer_refund' AND r.status = 'posted'), 0)::text AS refunded,
+      t.holds_deposit,
+      COALESCE((SELECT SUM(d.total) FROM transactions d WHERE d.tenant_id = t.tenant_id AND d.from_deposit_id = t.id
+                AND d.status = 'posted'), 0)::text AS drawn
     FROM transactions t
     LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = t.tenant_id
     WHERE ${where}
@@ -977,7 +1005,13 @@ export async function listPayments(tenantId: string, q: ListPaymentsQuery, compa
   const data = (rows.rows as Array<Record<string, unknown>>).map((r) => {
     const bounced = r['bounced'] === true;
     const posted = r['status'] === 'posted';
-    const remaining = posted && !bounced ? Decimal.max(dec(String(r['total'] ?? '0')).minus(String(r['applied'])).minus(String(r['refunded'])), 0) : new Decimal(0);
+    // A held deposit (U-135, review SF9) has no A/R credit; what is left of it
+    // is depositRemaining (amount - posted draws - live refunds), as on the record.
+    const holds = r['holds_deposit'] === true;
+    const left = posted && !bounced
+      ? Decimal.max(dec(String(r['total'] ?? '0')).minus(String(holds ? r['drawn'] : r['applied'])).minus(String(r['refunded'])), 0)
+      : new Decimal(0);
+    const remaining = holds ? new Decimal(0) : left;
     return {
       id: String(r['id']),
       customerId: (r['contact_id'] as string | null) ?? null,
@@ -991,6 +1025,8 @@ export async function listPayments(tenantId: string, q: ListPaymentsQuery, compa
       bounced,
       deposited: r['deposited'] === true,
       unappliedRemaining: money2(round2(remaining)),
+      holdsDeposit: holds,
+      depositRemaining: money2(round2(holds ? left : new Decimal(0))),
       updatedAt: r['updated_at'] ? new Date(r['updated_at'] as string).toISOString() : null,
     };
   });
@@ -1171,7 +1207,11 @@ export interface DepositOnHand { paymentId: string; date: string; refNo: string 
  * Held customer deposits with money left (U-135): posted, not bounced,
  * amount - posted draws - live refunds above 0.00; oldest first.
  */
-export async function depositsOnHand(tenantId: string, customerId: string, companyId?: string): Promise<DepositOnHand[]> {
+export async function depositsOnHand(
+  tenantId: string, customerId: string, companyId?: string,
+  /** Edit preview: what the edited payment draws on each deposit counts as left (PUT re-makes those draws). */
+  usedInside: Map<string, DecimalValue> = new Map(),
+): Promise<DepositOnHand[]> {
   const scope = companyId ? sql`AND (t.company_id = ${companyId} OR t.company_id IS NULL)` : sql``;
   const rows = await db.execute(sql`
     SELECT t.id, to_char(t.txn_date, 'YYYY-MM-DD') AS date, t.reference_number, t.total::text AS total,
@@ -1190,7 +1230,8 @@ export async function depositsOnHand(tenantId: string, customerId: string, compa
   return (rows.rows as Array<Record<string, unknown>>)
     .map((r) => ({
       paymentId: String(r['id']), date: String(r['date']), refNo: (r['reference_number'] as string | null) ?? null,
-      amount: money2(round2(String(r['total']))), remaining: money2(round2(String(r['remaining']))),
+      amount: money2(round2(String(r['total']))),
+      remaining: money2(round2(dec(String(r['remaining'])).plus(usedInside.get(String(r['id'])) ?? 0))),
     }))
     .filter((d) => dec(d.remaining).greaterThan(0));
 }
@@ -1226,6 +1267,14 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
         addOwn(a.invoiceId, dec(a.amount));
         usedInside.set(a.paymentId, (usedInside.get(a.paymentId) ?? new Decimal(0)).plus(a.amount));
       }
+      // Draws on held deposits made inside it (U-135): PUT voids and re-makes
+      // them, so their share is back on the invoices and the deposits, and
+      // their A/R credit is out of the balance before (review nit).
+      for (const d of (await creditsInsideRecord(db, tenantId, p.id)).filter((x) => x.fromDeposit)) {
+        addOwn(d.invoiceId, dec(d.amount));
+        usedInside.set(d.sourcePaymentId, (usedInside.get(d.sourcePaymentId) ?? new Decimal(0)).plus(d.amount));
+        ownAmount = ownAmount.plus(d.amount);
+      }
       if (await liveBounce(db, tenantId, p.id)) problems.push({ code: 'PAYMENT_BOUNCED' });
     }
   }
@@ -1235,7 +1284,7 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     return share ? { ...r, balanceDueExact: dec(r.balanceDueExact).plus(share).toFixed(4) } : r;
   });
   const credits = await openCredits(tenantId, input.customerId, companyId, input.editingPaymentId, usedInside);
-  const onHand = (await depositsOnHand(tenantId, input.customerId, companyId)).filter((d) => d.paymentId !== input.editingPaymentId);
+  const onHand = (await depositsOnHand(tenantId, input.customerId, companyId, usedInside)).filter((d) => d.paymentId !== input.editingPaymentId);
   const sourcesForCompute: ComputeCredit[] = [
     ...credits,
     ...onHand.map((d) => ({ sourcePaymentId: d.paymentId, date: d.date, refNo: d.refNo, remaining: d.remaining })),
@@ -1378,6 +1427,14 @@ export async function unapplyPayment(
     if (payment.status !== 'posted') throw AppError.badRequest('This payment is void.');
     ledger.assertNotStale(payment, opts.expectedUpdatedAt, 'This payment');
     if (await liveBounce(tx, tenantId, paymentId)) throw paymentBounced(paymentId);
+    // A draw's money is the deposit's: taken off the invoice it would be an
+    // A/R credit nobody can use (review SF2). Voiding the draw gives it back.
+    if (payment.fromDepositId) {
+      throw AppError.badRequest(
+        'This was applied from a customer deposit. Void it to give the money back to the deposit.',
+        'APPLIED_FROM_DEPOSIT', { paymentId, depositId: payment.fromDepositId },
+      );
+    }
     const app = (await liveApplications(tx, tenantId, paymentId)).find((a) => a.invoiceId === invoiceId);
     if (!app) throw AppError.notFound('Payment application not found');
     // Cash basis books a credit applied later on its applied date, so that is
@@ -1506,8 +1563,8 @@ export async function bouncePaymentInTx(
     // A held deposit (U-135): its draws' applications are reversed, A/R
     // debited for what was drawn, Customer Deposits for the rest; no draw is
     // voided, so nothing dated earlier changes.
+    // Read under the hold's lock; its draws were locked with it (E-B1).
     const draws = payment.holdsDeposit ? await liveDraws(tx, tenantId, paymentId) : [];
-    if (draws.length > 0) await lockPayments(tx, tenantId, draws.map((d) => d.id));
     const drawn = draws.reduce((t, d) => t.plus(d.total ?? '0'), new Decimal(0));
     const apps = payment.holdsDeposit
       ? (await Promise.all(draws.map((d) => liveApplications(tx, tenantId, d.id)))).flat()
@@ -1519,7 +1576,7 @@ export async function bouncePaymentInTx(
       ? [
         ...(drawn.greaterThan(0) ? [{ accountId: ar, debit: drawn.toFixed(4), credit: '0', contactId: payment.contactId ?? undefined }] : []),
         ...(dec(payment.total).minus(drawn).greaterThan(0)
-          ? [{ accountId: await customerDepositsAccount(tenantId, payment.companyId), debit: dec(payment.total).minus(drawn).toFixed(4), credit: '0' }]
+          ? [{ accountId: await customerDepositsAccount(tx, tenantId, payment.companyId), debit: dec(payment.total).minus(drawn).toFixed(4), credit: '0' }]
           : []),
         { accountId: held.accountId, debit: '0', credit: amount },
       ]
@@ -1729,9 +1786,15 @@ export async function updatePayment(
       && dec(o.amount).equals(a.amount) && dec(o.discountAmount).equals(a.discount) && dec(o.writeOffAmount).equals(a.writeOff)
       && (!a.writeOff.greaterThan(0) || (input.writeOffAccountId ?? o.writeOffAccountId) === o.writeOffAccountId)
       && (!a.discount.greaterThan(0) || (input.discountAccountId ?? o.discountAccountId) === o.discountAccountId)));
+    // The credits and the draws on held deposits made inside it, as the record lists them (U-135).
+    const insideNow = await creditsInsideRecord(tx, tenantId, paymentId);
+    const innerDraws = await tx.select({ id: transactions.id }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourceTxnId, paymentId),
+        eq(transactions.txnType, 'customer_payment'), eq(transactions.status, 'posted')))
+      .orderBy(transactions.id);
     const newCredits = parsed.credits.filter((c) => c.amount.greaterThan(0));
-    const sameCredits = inside.length === newCredits.length && newCredits.every((c) => inside.some((o) =>
-      o.paymentId === c.sourcePaymentId && o.invoiceId === c.invoiceId && dec(o.amount).equals(c.amount)));
+    const sameCredits = insideNow.length === newCredits.length && newCredits.every((c) => insideNow.some((o) =>
+      o.sourcePaymentId === c.sourcePaymentId && o.invoiceId === c.invoiceId && dec(o.amount).equals(c.amount)));
     const unchanged = dec(payment.total).equals(parsed.amount) && oldDepositTo === input.depositTo && sameApps && sameCredits
       && payment.txnDate === input.date && payment.contactId === input.customerId
       && (input.paymentMethod ?? payment.paymentMethod) === payment.paymentMethod;
@@ -1774,14 +1837,13 @@ export async function updatePayment(
     await assertCustomer(tx, tenantId, input.customerId, companyId);
     await assertDepositAccount(tx, tenantId, input.depositTo, companyId);
     const accounts = await resolveSettleAccounts(tx, tenantId, companyId, input, parsed);
+    // The draws made inside it (locked with it, review SF8) are voided before
+    // the invoices are read, so the rows below see what the voids restored.
+    for (const d of innerDraws) await ledger.voidTransactionInTx(tx, tenantId, d.id, 'Re-made with the edited payment', userId);
     const invoices = await lockInvoices(tx, tenantId, [
       ...own.map((a) => a.invoiceId), ...inside.map((a) => a.invoiceId),
       ...parsed.apps.map((a) => a.invoiceId), ...parsed.credits.map((c) => c.invoiceId),
     ]);
-    const innerDraws = await tx.select({ id: transactions.id }).from(transactions)
-      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.sourceTxnId, paymentId),
-        eq(transactions.txnType, 'customer_payment'), eq(transactions.status, 'posted')));
-    for (const d of innerDraws) await ledger.voidTransactionInTx(tx, tenantId, d.id, 'Re-made with the edited payment', userId);
     const now = new Date();
     for (const a of [...own, ...inside]) {
       if (!await retireApplication(tx, tenantId, a.id, { voidedAt: now })) throw scopeChanged(paymentId);
@@ -1806,7 +1868,7 @@ export async function updatePayment(
       lines: payment.holdsDeposit
         ? [
           { accountId: input.depositTo, debit: parsed.amount.toFixed(4), credit: '0' },
-          { accountId: await customerDepositsAccount(tenantId, companyId), debit: '0', credit: parsed.amount.toFixed(4), contactId: input.customerId },
+          { accountId: await customerDepositsAccount(tx, tenantId, companyId), debit: '0', credit: parsed.amount.toFixed(4), contactId: input.customerId },
         ]
         : paymentLines(input.depositTo, ar, input.customerId, parsed, accounts),
     }, userId, companyId, tx);

@@ -69,7 +69,7 @@ export async function createCustomerRefund(tenantId: string, input: CreateCustom
     }
     // A held deposit's refund comes out of Customer Deposits, not A/R (U-135).
     const { getOrCreateSystemAccount } = await import('./system-accounts.service.js');
-    const debit = src.holdsDeposit ? await getOrCreateSystemAccount(tenantId, 'customer_deposits', companyId) : arAccount.id;
+    const debit = src.holdsDeposit ? await getOrCreateSystemAccount(tenantId, 'customer_deposits', companyId, userId, tx) : arAccount.id;
     const refund = await post(tx, debit);
     await tx.update(transactions).set({ updatedAt: new Date() })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, sourceId)));

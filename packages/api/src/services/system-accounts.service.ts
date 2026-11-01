@@ -14,7 +14,7 @@
 
 import { and, eq, isNull, or, sql, inArray } from 'drizzle-orm';
 import { DAILY_SALES_SYSTEM_ACCOUNTS, type AccountType } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { accounts, journalLines } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -78,8 +78,8 @@ export const SYSTEM_ACCOUNT_SPECS: SystemAccountSpec[] = [
 const SPEC_BY_TAG = new Map(SYSTEM_ACCOUNT_SPECS.map((s) => [s.systemTag, s]));
 
 /** Read-only lookup. Returns null when the role is unassigned for this tenant. */
-export async function findSystemAccountId(tenantId: string, systemTag: string): Promise<string | null> {
-  const existing = await db.query.accounts.findFirst({
+export async function findSystemAccountId(tenantId: string, systemTag: string, executor: DbOrTx = db): Promise<string | null> {
+  const existing = await executor.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, systemTag)),
   });
   return existing?.id ?? null;
@@ -101,8 +101,10 @@ export async function getOrCreateSystemAccount(
   systemTag: string,
   companyId?: string,
   actingUserId?: string,
+  /** The caller's transaction (U-135 review nit): a rolled-back write creates nothing. Default: its own statements. */
+  executor: DbOrTx = db,
 ): Promise<string> {
-  const tagged = await findSystemAccountId(tenantId, systemTag);
+  const tagged = await findSystemAccountId(tenantId, systemTag, executor);
   if (tagged) return tagged;
 
   const spec = SPEC_BY_TAG.get(systemTag);
@@ -119,7 +121,7 @@ export async function getOrCreateSystemAccount(
       ...(numbers.length > 0 ? [inArray(accounts.accountNumber, numbers)] : []),
       ...(names.length > 0 ? [inArray(sql`lower(${accounts.name})`, names)] : []),
     ];
-    const candidate = await db.query.accounts.findFirst({
+    const candidate = await executor.query.accounts.findFirst({
       where: and(
         eq(accounts.tenantId, tenantId),
         isNull(accounts.systemTag),
@@ -129,7 +131,7 @@ export async function getOrCreateSystemAccount(
       orderBy: (a, { asc }) => [asc(a.accountNumber), asc(a.createdAt)],
     });
     if (candidate) {
-      await db.update(accounts)
+      await executor.update(accounts)
         .set({ systemTag: spec.systemTag, isSystem: true, updatedAt: new Date() })
         .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, candidate.id)));
       await auditLog(
@@ -137,16 +139,17 @@ export async function getOrCreateSystemAccount(
         { systemTag: null, isSystem: candidate.isSystem },
         { systemTag: spec.systemTag, isSystem: true, adopted: true },
         actingUserId,
+        executor === db ? undefined : executor as Tx,
       );
       return candidate.id;
     }
   }
 
   // ── 3. Create ─────────────────────────────────────────────────
-  const numTaken = await db.query.accounts.findFirst({
+  const numTaken = await executor.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.accountNumber, spec.accountNumber)),
   });
-  const [created] = await db.insert(accounts).values({
+  const [created] = await executor.insert(accounts).values({
     tenantId,
     companyId: companyId ?? null,
     accountNumber: numTaken ? null : spec.accountNumber,
@@ -159,7 +162,7 @@ export async function getOrCreateSystemAccount(
   }).returning();
   if (!created) throw AppError.internal(`Could not create the '${systemTag}' system account.`);
   await auditLog(tenantId, 'create', 'system_account_role', created.id, null,
-    { systemTag: spec.systemTag, accountNumber: created.accountNumber }, actingUserId);
+    { systemTag: spec.systemTag, accountNumber: created.accountNumber }, actingUserId, executor === db ? undefined : executor as Tx);
   return created.id;
 }
 
