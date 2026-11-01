@@ -1730,6 +1730,13 @@
       "when": 1786200014380,
       "tag": "0246_invoice_layouts",
       "breakpoints": true
+    },
+    {
+      "idx": 247,
+      "version": "7",
+      "when": 1786300014380,
+      "tag": "0247_receive_payment",
+      "breakpoints": true
     }
   ]
 }

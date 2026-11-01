@@ -40,6 +40,12 @@ export const companies = pgTable('companies', {
   // Income account billable-cost markups post to (U-128, billable-costs-v1;
   // migration 0245). NULL = none: a markup then is 400 MARKUP_ACCOUNT_REQUIRED.
   billableMarkupAccountId: uuid('billable_markup_account_id'),
+  // Bounced payments (U-132, payment-bounce-v1; migration 0247): the expense
+  // account of the bank's fee, the income account of the fee charged to the
+  // client, and that fee (NULL until the owner sets it).
+  nsfBankFeeAccountId: uuid('nsf_bank_fee_account_id'),
+  nsfFeeIncomeAccountId: uuid('nsf_fee_income_account_id'),
+  nsfCustomerFee: decimal('nsf_customer_fee', { precision: 19, scale: 4 }),
   // Prefix and next number per document type other than invoices (U-111,
   // migration 0240): {cash_sale|credit_memo|statement: {prefix, next}}.
   documentNumbers: jsonb('document_numbers').$type<Record<string, { prefix?: string; next?: number }>>().notNull().default({}),

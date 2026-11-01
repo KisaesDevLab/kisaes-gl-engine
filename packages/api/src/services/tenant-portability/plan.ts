@@ -390,6 +390,9 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'closes.reviewed_by': 'identity',
   'companies.bill_discount_account_id': 'tenant-ref:accounts',
   'companies.billable_markup_account_id': 'tenant-ref:accounts',
+  // Bounced-payment preferences (U-132, migration 0247).
+  'companies.nsf_bank_fee_account_id': 'tenant-ref:accounts',
+  'companies.nsf_fee_income_account_id': 'tenant-ref:accounts',
   'companies.lock_date_set_by': 'identity',
   'company_tax_profiles.company_id': 'tenant-ref:companies',
   'conditional_rule_audit.bank_feed_item_id': 'tenant-ref:bank_feed_items',
@@ -506,6 +509,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'payment_applications.payment_id': 'tenant-ref:transactions',
   'payment_applications.invoice_id': 'tenant-ref:transactions',
   'payment_applications.company_id': 'tenant-ref:companies',
+  // The bounce that took the application back (U-132, migration 0247).
+  'payment_applications.reversed_by_txn_id': 'tenant-ref:transactions',
   'payroll_account_mapping.company_id': 'tenant-ref:companies',
   'payroll_account_mapping.account_id': 'tenant-ref:accounts',
   'payroll_check_register_rows.session_id': 'tenant-ref:payroll_import_sessions',
@@ -631,6 +636,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'transactions.source_estimate_id': 'tenant-ref:transactions',
   'transactions.applied_to_invoice_id': 'tenant-ref:transactions',
   'transactions.reverses_transaction_id': 'tenant-ref:transactions',
+  // Posted as part of another transaction (U-132, migration 0247).
+  'transactions.source_txn_id': 'tenant-ref:transactions',
   'transactions.print_batch_id': 'tenant-ref:check_runs',
   'transactions.company_id': 'tenant-ref:companies',
   'transactions.print_signature_id': 'tenant-ref:check_signatures',

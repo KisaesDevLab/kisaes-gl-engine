@@ -38,6 +38,11 @@ export const paymentApplications = pgTable('payment_applications', {
   invoiceId: uuid('invoice_id').notNull(),
   amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // U-132 (migration 0247): rows are never deleted. A void, unapply or edit
+  // sets voidedAt; a bounce (returned_payment) sets reversedByTxnId. A live
+  // application has both NULL.
+  voidedAt: timestamp('voided_at', { withTimezone: true }),
+  reversedByTxnId: uuid('reversed_by_txn_id'),
 }, (table) => ({
   paymentIdx: index('idx_pa_payment').on(table.paymentId),
   invoiceIdx: index('idx_pa_invoice').on(table.invoiceId),

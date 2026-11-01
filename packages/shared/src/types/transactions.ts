@@ -20,7 +20,10 @@ export type TxnType =
   | 'daily_sales'
   // Adjusting journal entry (TB module, rule TB3): a real GL journal
   // entry, firm-only CRUD, numbered AJE-001 per company per fiscal year.
-  | 'aje';
+  | 'aje'
+  // A bounced customer payment (U-132, payment-bounce-v1): dated the bounce
+  // date, Cr the account that held the money, Dr A/R; source_txn_id = the payment.
+  | 'returned_payment';
 
 export type TxnStatus = 'draft' | 'posted' | 'void' | 'deleted';
 
