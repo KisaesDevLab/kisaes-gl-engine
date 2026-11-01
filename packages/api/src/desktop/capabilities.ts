@@ -415,4 +415,11 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * draws never appear in credits[] or pending deposits. PaymentRecord holdsDeposit, depositRemaining, fromDepositId. Migration 0249.
    */
   'customer-deposits-v1',
+  /**
+   * Bank feed and customer payments (U-136): match candidates include customer payments deposited straight to the feed's bank
+   * (money in; not in a deposit, not bounced) and bounced-payment entries (money out); amounts compared exactly (no parseFloat, no
+   * 0.01 tolerance), also in the list's matchCandidateCount. POST /payments/receive bankFeedItemId matches the line in the payment's
+   * transaction (400 FEED_ITEM_MISMATCH, 409 FEED_ITEM_NOT_PENDING). No migration.
+   */
+  'feed-customer-payments-v1',
 ];

@@ -6,7 +6,8 @@ import { resolveCompanyForConnection } from './feed-item-company.service.js';
 import { eq, and, sql, count, gte, lte, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import DecimalLib from 'decimal.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, tags, transactionTags as transactionTagsTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -19,6 +20,8 @@ import { updateLearning } from './categorization-ai.service.js';
 import { assertTagsInTenant } from './tags.service.js';
 import type { StatementCheckImage } from './ai-statement-parser.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
 
 /**
  * Verify a client-supplied `bankConnectionId` belongs to the caller's
@@ -193,8 +196,16 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
             AND mt.status = 'posted'
             AND mt.txn_date >= (${bankFeedItems.feedDate}::date - INTERVAL '15 days')
             AND mt.txn_date <= (${bankFeedItems.feedDate}::date + INTERVAL '15 days')
-            AND ABS(CAST(mt.total AS DECIMAL) - ABS(CAST(${bankFeedItems.amount} AS DECIMAL))) < 0.01
-            AND mt.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
+            AND CAST(mt.total AS DECIMAL) = ABS(CAST(${bankFeedItems.amount} AS DECIMAL))
+            AND (mt.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
+              -- U-136: a customer payment deposited straight to this bank (money in, not
+              -- in a deposit, not bounced); a bounced-payment entry (money out).
+              OR (mt.txn_type = 'customer_payment' AND CAST(${bankFeedItems.amount} AS DECIMAL) > 0
+                AND NOT EXISTS (SELECT 1 FROM deposit_lines dl3 JOIN transactions d3 ON d3.id = dl3.deposit_id
+                                WHERE dl3.source_transaction_id = mt.id AND d3.tenant_id = ${tenantId} AND d3.status = 'posted')
+                AND NOT EXISTS (SELECT 1 FROM transactions r3 WHERE r3.tenant_id = ${tenantId} AND r3.source_txn_id = mt.id
+                                AND r3.txn_type = 'returned_payment' AND r3.status = 'posted'))
+              OR (mt.txn_type = 'returned_payment' AND CAST(${bankFeedItems.amount} AS DECIMAL) < 0))
             AND EXISTS (
               SELECT 1 FROM journal_lines jl2
               WHERE jl2.transaction_id = mt.id
@@ -729,10 +740,22 @@ export async function approve(tenantId: string, feedItemId: string, userId?: str
 }
 
 export async function match(tenantId: string, feedItemId: string, transactionId: string) {
+  return matchInTx(db, tenantId, feedItemId, transactionId);
+}
+
+/**
+ * match() on the caller's executor (U-136): POST /payments/receive with
+ * bankFeedItemId matches the feed line in the payment's own database
+ * transaction, so both commit or neither. Not pending is 409
+ * FEED_ITEM_NOT_PENDING there (400 on the old match route).
+ */
+export async function matchInTx(
+  executor: DbOrTx, tenantId: string, feedItemId: string, transactionId: string, opts: { conflictCode?: boolean } = {},
+) {
   // Claim atomically in the same style as categorize: only transition
   // from 'pending' → 'matched'. Prevents double-matching the same feed
   // item if the user clicks "Match" twice or two users race.
-  const [matched] = await db.update(bankFeedItems)
+  const [matched] = await executor.update(bankFeedItems)
     .set({
       status: 'matched',
       matchedTransactionId: transactionId,
@@ -745,10 +768,13 @@ export async function match(tenantId: string, feedItemId: string, transactionId:
     ))
     .returning();
   if (!matched) {
-    const existing = await db.query.bankFeedItems.findFirst({
-      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
-    });
+    const [existing] = await executor.select({ status: bankFeedItems.status }).from(bankFeedItems)
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId))).limit(1);
     if (!existing) throw AppError.notFound('Bank feed item not found');
+    if (opts.conflictCode) {
+      throw AppError.conflict(`Bank feed item is not pending (current status: ${existing.status}).`, 'FEED_ITEM_NOT_PENDING',
+        { status: existing.status });
+    }
     throw AppError.badRequest(`Bank feed item is not pending (current status: ${existing.status}).`);
   }
 }
@@ -781,8 +807,9 @@ export async function findMatchCandidates(tenantId: string, feedItemId: string) 
   });
   if (!conn) return [];
 
-  const feedAmount = parseFloat(String(item.amount || '0'));
-  if (feedAmount === 0) return [];
+  // Exact decimals (U-136): no parseFloat, no tolerance.
+  const feedAmount = new Decimal(String(item.amount || '0'));
+  if (feedAmount.isZero()) return [];
 
   // ±15-day window
   const feedDate = new Date(item.feedDate);
@@ -796,7 +823,8 @@ export async function findMatchCandidates(tenantId: string, feedItemId: string) 
   // Bank feed amounts are signed: negative = money leaving (expense, check,
   // bill payment), positive = money in (deposit). For matching we compare
   // absolute value against the txn total.
-  const absAmount = Math.abs(feedAmount).toFixed(4);
+  const absAmount = feedAmount.abs().toFixed(4);
+  const moneyIn = feedAmount.greaterThan(0) ? sql`TRUE` : sql`FALSE`;
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo,
@@ -807,8 +835,16 @@ export async function findMatchCandidates(tenantId: string, feedItemId: string) 
     WHERE t.tenant_id = ${tenantId}
       AND t.status = 'posted'
       AND t.txn_date >= ${startStr} AND t.txn_date <= ${endStr}
-      AND ABS(CAST(t.total AS DECIMAL) - ${absAmount}) < 0.01
-      AND t.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
+      AND CAST(t.total AS DECIMAL) = CAST(${absAmount} AS DECIMAL)
+      AND (t.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
+        -- U-136: money in may be a customer payment deposited straight to this
+        -- bank (not in a deposit, not bounced); money out a bounced-payment entry.
+        OR (t.txn_type = 'customer_payment' AND ${moneyIn}
+          AND NOT EXISTS (SELECT 1 FROM deposit_lines dl JOIN transactions d ON d.id = dl.deposit_id
+                          WHERE dl.source_transaction_id = t.id AND d.tenant_id = ${tenantId} AND d.status = 'posted')
+          AND NOT EXISTS (SELECT 1 FROM transactions r WHERE r.tenant_id = ${tenantId} AND r.source_txn_id = t.id
+                          AND r.txn_type = 'returned_payment' AND r.status = 'posted'))
+        OR (t.txn_type = 'returned_payment' AND NOT ${moneyIn}))
       AND t.id IN (
         SELECT transaction_id FROM journal_lines
         WHERE tenant_id = ${tenantId}

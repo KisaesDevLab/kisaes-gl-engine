@@ -53,7 +53,9 @@ const receiveErrors = '400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_A
   'CREDIT_NOT_FOR_CUSTOMER. customer-deposits-v1: holdAsDeposit true holds the whole amount as a customer deposit (Dr depositTo, Cr the ' +
   'Customer Deposits liability, created on first use); applications or credits with it are 400 DEPOSIT_WITH_APPLICATIONS. A held ' +
   'deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr ' +
-  'A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE.';
+  'A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE. ' +
+  'bankFeedItemId (feed-customer-payments-v1): the pending bank-feed line this payment is, matched in the same transaction; depositTo ' +
+  'must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING.';
 
 const paymentRecordNote = 'PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, ' +
   'status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, ' +

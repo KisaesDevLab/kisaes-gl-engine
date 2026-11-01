@@ -723,7 +723,12 @@ export async function receivePaymentInTx(
   const parsed = parseSettlement(input);
   await assertCustomer(tx, tenantId, input.customerId, companyId);
   await assertDepositAccount(tx, tenantId, input.depositTo, companyId);
-  if (input.holdAsDeposit) return receiveDepositInTx(tx, tenantId, input, parsed, userId, companyId);
+  if (input.holdAsDeposit) {
+    // A deposit held straight from the bank feed is matched too (U-136 on U-135).
+    const held = await receiveDepositInTx(tx, tenantId, input, parsed, userId, companyId);
+    if (input.bankFeedItemId) await matchFeedItem(tx, tenantId, input, held.id, companyId);
+    return held;
+  }
   const accounts = await resolveSettleAccounts(tx, tenantId, companyId, input, parsed);
   const ar = await arAccountId(tx, tenantId);
 
@@ -744,6 +749,7 @@ export async function receivePaymentInTx(
     lines: paymentLines(input.depositTo, ar, input.customerId, parsed, accounts),
   }, userId, companyId, tx);
 
+  if (input.bankFeedItemId) await matchFeedItem(tx, tenantId, input, payment.id, companyId);
   await writeSettlement(tx, tenantId, companyId, payment.id, input.date, valid, accounts, sources, userId);
   return payment;
 }
@@ -772,6 +778,33 @@ async function receiveDepositInTx(
       { accountId: cd, debit: '0', credit: amount, contactId: input.customerId },
     ],
   }, userId, companyId, tx);
+}
+
+/**
+ * The bank-feed line a payment is (U-136, feed-customer-payments-v1): a line
+ * of this company whose connection deposits to depositTo, for exactly the
+ * amount (400 FEED_ITEM_MISMATCH), still pending (409
+ * FEED_ITEM_NOT_PENDING); matched in the payment's database transaction.
+ */
+async function matchFeedItem(tx: Tx, tenantId: string, input: ReceivePaymentInput, paymentId: string, companyId?: string) {
+  const res = await tx.execute(sql`
+    SELECT bfi.id, bfi.amount, bfi.status, bfi.company_id, bc.account_id
+    FROM bank_feed_items bfi
+    JOIN bank_connections bc ON bc.id = bfi.bank_connection_id
+    WHERE bfi.tenant_id = ${tenantId} AND bfi.id = ${input.bankFeedItemId!}
+    FOR UPDATE OF bfi
+  `);
+  const item = (res.rows as Array<{ id: string; amount: string; status: string; company_id: string | null; account_id: string }>)[0];
+  if (!item || (companyId && item.company_id && item.company_id !== companyId)) throw AppError.notFound('Bank feed item not found');
+  if (item.account_id !== input.depositTo || !dec(item.amount).abs().equals(dec(input.amount))) {
+    throw AppError.badRequest(
+      'The payment must go to the bank account of the feed line, for exactly its amount.',
+      'FEED_ITEM_MISMATCH',
+      { bankFeedItemId: item.id, accountId: item.account_id, amount: money2(round2(dec(item.amount).abs())) },
+    );
+  }
+  const { matchInTx } = await import('./bank-feed.service.js');
+  await matchInTx(tx, tenantId, item.id, paymentId, { conflictCode: true });
 }
 
 /** Receives a payment in its own database transaction (routes, api-v2, MCP, Stripe, bank feed). */

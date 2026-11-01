@@ -48,6 +48,8 @@ export const receivePaymentSchema = z.object({
   })).optional(),
   // U-135: hold the whole amount as a customer deposit (no applications).
   holdAsDeposit: z.boolean().optional(),
+  // U-136: the pending bank-feed line this payment is; matched in the same transaction.
+  bankFeedItemId: z.string().uuid().optional(),
 });
 
 /** PUT /payments/:id (U-132): the receive body + the payment's updatedAt as read. */
