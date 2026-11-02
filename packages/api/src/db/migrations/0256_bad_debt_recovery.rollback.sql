@@ -15,3 +15,5 @@ BEGIN
 END $$;
 --> statement-breakpoint
 DROP TABLE IF EXISTS write_off_recoveries;
+--> statement-breakpoint
+ALTER TABLE transactions DROP COLUMN IF EXISTS sales_tax_ssuta;

@@ -11,7 +11,10 @@
 -- transaction_tax_lines kind 'recovery' (0252) on the recovery.
 --
 -- The SSUTA switch (companies.sales_tax_ssuta) was added off by 0252
--- (Q-SPF6); this migration does not change it.
+-- (Q-SPF6); this migration does not change it. transactions.sales_tax_ssuta
+-- records the switch when a customer payment was first posted (NULL before
+-- this migration, when no SSUTA rows were written: off), so an edit applies
+-- the original posting's state (Q-P23w, forward only).
 --
 -- Additive. Ordering: after 0255 (exemption certificates).
 -- Rollback: 0256_bad_debt_recovery.rollback.sql (refused while any exist).
@@ -34,3 +37,5 @@ CREATE INDEX IF NOT EXISTS idx_write_off_recoveries_invoice ON write_off_recover
 CREATE INDEX IF NOT EXISTS idx_write_off_recoveries_txn ON write_off_recoveries (recovery_txn_id);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_write_off_recoveries_tenant ON write_off_recoveries (tenant_id);
+--> statement-breakpoint
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sales_tax_ssuta boolean;

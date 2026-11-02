@@ -206,10 +206,34 @@ describe('golden 12 (SSUTA on): an early-payment discount lowers the tax owed', 
     expect(await lines(p['id'])).toEqual(['accounts_receivable:credit:430.79', 'operating_checking:debit:426.79',
       'sales_discounts:debit:3.67', 'sales_tax_payable:debit:0.33']);
     await expectTies('2026-11-01', '2026-11-30');
-    // A void drops the rows.
+    // A void keeps the rows (audit trail) and they count for nothing.
     ok(await req('POST', `/api/v1/payments/${p['id']}/void`, { reason: 'test' }), 200);
-    expect((await db.select().from(transactionTaxLines).where(eq(transactionTaxLines.transactionId, p['id']))).length).toBe(0);
+    expect((await db.select().from(transactionTaxLines).where(eq(transactionTaxLines.transactionId, p['id']))).map((r) => r.kind)).toEqual(['discount']);
     expectLiability(await liability(s[2]!['request']), { items: [{ item: 'Springfield', collected: '35.50', discounts: '0.00', owedAtEnd: '35.50' }] });
+  });
+
+  it('an edit keeps the switch of the payment\'s first posting (Q-P23w, forward only), both directions', async () => {
+    const s = steps(12);
+    const editBody = { ...paymentBody(s[1]!['request']), applications: [{ invoiceId: '', amount: '426.79', discountAmount: '4.00' }] };
+    // Posted while off, edited while on: no SSUTA rows, no Sales Tax Payable line.
+    await seed(false);
+    await invoice(s[0]!['request']);
+    const off = await receive(s[1]!['request']);
+    await db.update(companies).set({ salesTaxSsuta: true }).where(eq(companies.id, c.companyId));
+    editBody.applications[0]!.invoiceId = ids.docs.get('INV-H')!;
+    const pvOff = await preview({ ...s[1]!['request'], applications: [{ invoice: 'INV-H', amount: '426.79', discount: '4.00' }] }, off['id']);
+    expect((pvOff['invoices'] as Body[]).find((i) => i['invoiceId'] === ids.docs.get('INV-H'))!['discountTax']).toBe('0.00');
+    ok(await req('PUT', `/api/v1/payments/${off['id']}`, editBody), 200);
+    expect(await lines(off['id'])).toEqual(['accounts_receivable:credit:430.79', 'operating_checking:debit:426.79', 'sales_discounts:debit:4.00']);
+    expect(await db.select().from(transactionTaxLines).where(and(eq(transactionTaxLines.transactionId, off['id']), eq(transactionTaxLines.kind, 'discount')))).toEqual([]);
+    // Posted while on, edited while off: the share is recomputed as before.
+    ok(await req('POST', `/api/v1/payments/${off['id']}/void`, { reason: 'again' }), 200);
+    const on = await receive(s[1]!['request']);
+    await db.update(companies).set({ salesTaxSsuta: false }).where(eq(companies.id, c.companyId));
+    ok(await req('PUT', `/api/v1/payments/${on['id']}`, editBody), 200);
+    expect(await lines(on['id'])).toEqual(['accounts_receivable:credit:430.79', 'operating_checking:debit:426.79',
+      'sales_discounts:debit:3.67', 'sales_tax_payable:debit:0.33']);
+    expect((await db.select().from(transactionTaxLines).where(and(eq(transactionTaxLines.transactionId, on['id']), eq(transactionTaxLines.kind, 'discount')))).length).toBeGreaterThan(0);
   });
 
   it('SSUTA off posts as before (no tax share, preview 0.00)', async () => {
@@ -292,7 +316,9 @@ describe('golden 13 (SSUTA on): a bad debt, its recovery and the payment after i
     expect((await db.select().from(transactionTaxLines).where(eq(transactionTaxLines.transactionId, rec['id']))).map((r) => [r.kind, m2(r.tax)]))
       .toEqual([['recovery', '4.08']]);
     ok(await req('POST', `/api/v1/transactions/${rec['id']}/void`, { reason: 'entered twice' }), 200);
-    expect((await db.select().from(transactionTaxLines).where(eq(transactionTaxLines.transactionId, rec['id']))).length).toBe(0);
+    // Kept for the audit trail; the report and the next recovery's running total leave a void recovery out.
+    expect((await db.select().from(transactionTaxLines).where(eq(transactionTaxLines.transactionId, rec['id']))).map((r) => [r.kind, m2(r.tax)]))
+      .toEqual([['recovery', '4.08']]);
     expect(m2((await db.select().from(transactionsT).where(eq(transactionsT.id, ids.docs.get('INV-J')!)))[0]!.balanceDue)).toBe('0.00');
     expectLiability(await liability({ basis: 'accrual', startDate: '2026-11-01', endDate: '2026-12-31' }),
       { items: [{ item: 'Springfield', recoveries: '0.00', owedAtEnd: '8.15' }] });
@@ -324,7 +350,7 @@ describe('golden 13 (SSUTA on): a bad debt, its recovery and the payment after i
     const other = await h.secondCompany(c);
     expect((await recover(recoveryBody(s[5]!['request']), other)).status).toBe(404);
     expect((await req('GET', `/api/v1/payments/write-offs?customerId=${ids.clients.get('Ozark Outfitters')}`, undefined, other)).status).toBe(404);
-    // Closed period: needs the closing password.
+    // Closed period: needs the closing password (a recovery and its void).
     await db.update(companies).set({ lockDate: '2026-12-31' }).where(eq(companies.id, c.companyId));
     const closed = await recover(recoveryBody(s[5]!['request']));
     expect(closed.status).toBeGreaterThanOrEqual(400);
@@ -342,6 +368,14 @@ describe('golden 13 (SSUTA on): a bad debt, its recovery and the payment after i
     // Cash basis ignores the recovery.
     const led = await cashLedger('2026-12-01', '2026-12-31');
     expect([led['accounts_receivable'] ?? '0.00', led['bad_debts'] ?? '0.00']).toEqual(['0.00', '0.00']);
+    // Another company's recovery is 404; its void in a closed period needs the closing password.
+    expect((await req('GET', `/api/v1/payments/write-off-recoveries/${rec['id']}`, undefined, other)).status).toBe(404);
+    await db.update(companies).set({ lockDate: '2026-12-31' }).where(eq(companies.id, c.companyId));
+    const lockedVoid = await req('POST', `/api/v1/transactions/${rec['id']}/void`, { reason: 'x' });
+    expect(lockedVoid.status).toBeGreaterThanOrEqual(400);
+    expect(lockedVoid.status).toBeLessThan(500);
+    expect((await db.select().from(transactionsT).where(eq(transactionsT.id, rec['id'])))[0]!.status).toBe('posted');
+    await db.update(companies).set({ lockDate: null }).where(eq(companies.id, c.companyId));
   });
 });
 

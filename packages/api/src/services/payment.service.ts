@@ -701,15 +701,17 @@ const NO_SETTLEMENT_TAX: SettlementTax = { discountTax: new Decimal(0), writeOff
 /**
  * U-153 (SSUTA): the tax shares of each application's discount and
  * write-off, on the locked invoices before this payment touches them (the
- * running total starts at what each invoice settled before). None while the
- * company's switch is off (Q-P23w: postings made while it is on).
+ * running total starts at what each invoice settled before). None when `on`
+ * is false: the company's switch when the payment was first posted
+ * (Q-P23w: postings made while it is on; an edit keeps the original
+ * posting's state, transactions.sales_tax_ssuta).
  */
 async function attachShares(
-  tx: Tx, tenantId: string, companyId: string | undefined, apps: ValidatedApplication[],
+  tx: Tx, tenantId: string, on: boolean, apps: ValidatedApplication[],
 ): Promise<SettlementTax> {
   const used = apps.filter((a) => a.discount.greaterThan(0) || a.writeOff.greaterThan(0));
   if (used.length === 0) return NO_SETTLEMENT_TAX;
-  if (!await ssuta.ssutaOn(tx, tenantId, companyId ?? used[0]!.inv.companyId)) return NO_SETTLEMENT_TAX;
+  if (!on) return NO_SETTLEMENT_TAX;
   const items = await ssuta.invoiceTaxItems(tx, tenantId, used.map((a) => a.inv.id));
   let discountTax = new Decimal(0);
   let writeOffTax = new Decimal(0);
@@ -872,7 +874,9 @@ export async function receivePaymentInTx(
   await validateSources(tx, tenantId, sources, parsed.credits, input.customerId, companyId, input.date);
   const invoices = await lockInvoices(tx, tenantId, [...parsed.apps.map((a) => a.invoiceId), ...parsed.credits.map((c) => c.invoiceId)]);
   const valid = validateInvoices(parsed, invoices, input.customerId, companyId);
-  const tax = await attachShares(tx, tenantId, companyId, valid.apps);
+  // U-153: the switch as it is at this posting, kept on the payment (an edit uses it, Q-P23w).
+  const ssutaAtPosting = await ssuta.ssutaOn(tx, tenantId, companyId ?? valid.apps[0]?.inv.companyId);
+  const tax = await attachShares(tx, tenantId, ssutaAtPosting, valid.apps);
 
   const payment = await ledger.postTransaction(tenantId, {
     txnType: 'customer_payment',
@@ -886,6 +890,8 @@ export async function receivePaymentInTx(
     lines: paymentLines(input.depositTo, ar, input.customerId, parsed, accounts, tax),
   }, userId, companyId, tx);
 
+  await tx.update(transactions).set({ salesTaxSsuta: ssutaAtPosting })
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, payment.id)));
   if (input.bankFeedItemId) await matchFeedItem(tx, tenantId, input, payment.id, companyId);
   await writeSettlement(tx, tenantId, companyId, payment.id, input.date, valid, accounts, sources, userId);
   return payment;
@@ -1436,10 +1442,12 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
   const own = new Map<string, DecimalValue>();
   const addOwn = (id: string, x: DecimalValue) => own.set(id, (own.get(id) ?? new Decimal(0)).plus(x));
   let ownAmount = new Decimal(0);
+  let editingSsuta: boolean | null = null;
   const usedInside = new Map<string, DecimalValue>();
   if (input.editingPaymentId) {
     const p = await loadPayment(db, tenantId, input.editingPaymentId, companyId);
     if (p.status === 'posted') {
+      editingSsuta = p.salesTaxSsuta === true;
       ownAmount = dec(p.total);
       // Its own rows (not its credit applied later elsewhere) and the credits applied inside it.
       for (const a of await liveApplications(db, tenantId, p.id)) {
@@ -1482,7 +1490,8 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
   problems.unshift(...result.problems);
   // U-153 (SSUTA): the tax share of each row's discount and write-off, on the
   // balance before this payment (what receive and PUT post).
-  const ssutaSwitch = await ssuta.ssutaOn(db, tenantId, companyId);
+  // An edit keeps the switch of the payment's first posting (Q-P23w).
+  const ssutaSwitch = editingSsuta ?? await ssuta.ssutaOn(db, tenantId, companyId);
   const taxed = ssutaSwitch
     ? result.invoices.filter((i) => dec(i.discount).greaterThan(0) || dec(i.writeOff).greaterThan(0)).map((i) => i.invoiceId)
     : [];
@@ -2101,9 +2110,12 @@ export async function updatePayment(
       throw AppError.badRequest('A deposit holds the whole amount: leave the invoices and credits out.', 'DEPOSIT_WITH_APPLICATIONS');
     }
     // U-153: the old SSUTA rows go with the old applications; the new ones are
-    // computed on the restored invoices (the switch as it is now, Q-P23w).
+    // computed on the restored invoices with the switch as it was when the
+    // payment was first posted (Q-P23w, forward only: a payment made while it
+    // was off gets no rows on an edit; one made while on keeps getting them).
+    // NULL (posted before 0256, when nothing posted SSUTA rows) is off.
     await ssuta.deleteShareRows(tx, tenantId, paymentId);
-    const tax = await attachShares(tx, tenantId, companyId, valid.apps);
+    const tax = await attachShares(tx, tenantId, payment.salesTaxSsuta === true, valid.apps);
     await ledger.updateTransaction(tenantId, paymentId, {
       txnType: 'customer_payment',
       txnDate: input.date,
