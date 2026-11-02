@@ -58,6 +58,8 @@ export const paymentApplications = pgTable('payment_applications', {
 }, (table) => ({
   paymentIdx: index('idx_pa_payment').on(table.paymentId),
   invoiceIdx: index('idx_pa_invoice').on(table.invoiceId),
+  // U-155 (migration 0257): tenant-scoped reads of the cash-basis ledger.
+  tenantIdx: index('idx_pa_tenant').on(table.tenantId),
 }));
 
 export const depositLines = pgTable('deposit_lines', {

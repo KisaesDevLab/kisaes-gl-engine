@@ -473,10 +473,17 @@ export function cashBasisLinesWith(
  * the estimates, so nested loops are switched off for this one query
  * (set_config(..., true) is SET LOCAL: this transaction only). Results are
  * identical; only the plan changes.
+ *
+ * JIT is switched off with it: the few nested loops that stay (the CROSS
+ * JOINs on cb_ur) carry the planner's disable cost, which lifts the plan
+ * cost far above jit_above_cost, and on a server built with LLVM every
+ * cash report then paid seconds of JIT compilation. Tenant-scoped reads of
+ * payment_applications use idx_pa_tenant (migration 0257) instead of the
+ * nested loop through idx_pa_invoice.
  */
 export async function executeCashBasis(query: SQL) {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT set_config('enable_nestloop', 'off', true)`);
+    await tx.execute(sql`SELECT set_config('enable_nestloop', 'off', true), set_config('jit', 'off', true)`);
     return tx.execute(query);
   });
 }
