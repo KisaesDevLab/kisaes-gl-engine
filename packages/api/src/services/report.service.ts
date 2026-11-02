@@ -159,7 +159,10 @@ export async function getFiscalYearStart(tenantId: string, companyId: string | n
 // bill_payment_applications: the cash plus the early-payment discount
 // per bill (Q-SPF7), so A/P clears and the expense nets to the cash paid
 // once the discount income line passes through — vendor-credit-settled
-// portions are correctly never recognized (no cash moved).
+// portions are correctly never recognized (no cash moved). A vendor refund of
+// a vendor credit (a deposit's A/P line linked to the credit, U-54) is cash
+// back for those expenses: rule 3b (AP) books the credit's lines at the
+// refund date and drops the A/P line, as rule 3b (AR) does for credit memos.
 
 /**
  * The live A/R settlements of posted invoices (U-132 to U-134, U-152), one
@@ -280,7 +283,7 @@ export function cashBasisLinesWith(
         t.contact_id AS txn_contact_id, jl.contact_id AS line_contact_id,
         jl.description, jl.item_id, jl.line_order,
         jl.debit::numeric AS debit, jl.credit::numeric AS credit,
-        cmr.id AS refund_memo_id, arp.applied AS ar_applied, bp.applied AS ap_applied,
+        cmr.id AS refund_memo_id, vcr.id AS refund_credit_id, arp.applied AS ar_applied, bp.applied AS ap_applied,
         -- Q-SPF3: how much of this (payment or bounce) line is write-off
         -- (or its bad-debt tax) and leaves the cash ledger.
         CASE WHEN t.txn_type NOT IN ('customer_payment', 'returned_payment') THEN 0::numeric
@@ -305,6 +308,9 @@ export function cashBasisLinesWith(
       ) bp ON bp.payment_id = t.id
       LEFT JOIN transactions cmr ON cmr.id = t.source_payment_id AND cmr.tenant_id = ${tenantId}
         AND cmr.txn_type = 'credit_memo' AND t.txn_type = 'customer_refund'
+      -- Rule 3b (AP, U-152): an A/P line refunding a vendor credit (U-54).
+      LEFT JOIN transactions vcr ON vcr.id = jl.source_transaction_id AND vcr.tenant_id = ${tenantId}
+        AND vcr.txn_type = 'vendor_credit' AND a.detail_type = 'accounts_payable'
       LEFT JOIN cb_wo wo ON wo.txn_id = t.id AND wo.account_id = jl.account_id
       LEFT JOIN cb_bd bd ON bd.txn_id = t.id
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
@@ -324,7 +330,8 @@ export function cashBasisLinesWith(
              THEN ur.id ELSE r.account_id END AS account_id,
         r.tag_id, r.transaction_id, r.txn_date, r.txn_type, r.txn_number, r.memo,
         r.txn_contact_id, r.line_contact_id, r.description, r.item_id, r.line_order,
-        CASE WHEN r.txn_type = 'bill_payment' AND r.detail_type = 'accounts_payable'
+        CASE WHEN r.refund_credit_id IS NOT NULL THEN 0::numeric
+             WHEN r.txn_type = 'bill_payment' AND r.detail_type = 'accounts_payable'
              THEN GREATEST(r.debit - COALESCE(r.ap_applied, 0), 0)
              -- A bounce's A/R debit less what it took back (its mirror rows are negative).
              WHEN r.txn_type = 'returned_payment' AND r.detail_type = 'accounts_receivable'
@@ -336,7 +343,8 @@ export function cashBasisLinesWith(
              WHEN r.txn_type = 'customer_payment'
              THEN r.debit - LEAST(r.debit, GREATEST(r.reduce_by - r.before_amount, 0))
              ELSE r.debit END AS debit,
-        CASE WHEN r.txn_type = 'customer_payment' AND r.detail_type = 'accounts_receivable'
+        CASE WHEN r.refund_credit_id IS NOT NULL THEN 0::numeric
+             WHEN r.txn_type = 'customer_payment' AND r.detail_type = 'accounts_receivable'
              THEN GREATEST(r.credit - COALESCE(r.ar_applied, 0), 0)
              WHEN r.txn_type = 'returned_payment'
              THEN r.credit - LEAST(r.credit, GREATEST(r.reduce_by - r.before_amount, 0))
@@ -366,6 +374,30 @@ export function cashBasisLinesWith(
         AND pay.basis <> 'accrual'
         AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
         AND ma.detail_type IS DISTINCT FROM 'accounts_receivable'
+
+      UNION ALL
+
+      -- Rule 3b (AP, U-152, Q-SPF7): a vendor refund of a vendor credit (a
+      -- deposit line on A/P linked to the credit) is cash coming back for
+      -- those expenses: the credit's non-A/P lines at the refund's date,
+      -- scaled by the refunded amount / credit total; its A/P line is dropped
+      -- in rule 2, so A/P carries no residue.
+      SELECT vl.account_id, vl.tag_id,
+        dep.id, dep.txn_date, dep.txn_type, dep.txn_number, dep.memo,
+        dep.contact_id, vl.contact_id, vl.description, vl.item_id, vl.line_order,
+        vl.debit::numeric  * (rl.credit::numeric - rl.debit::numeric) / NULLIF(vc.total::numeric, 0),
+        vl.credit::numeric * (rl.credit::numeric - rl.debit::numeric) / NULLIF(vc.total::numeric, 0)
+      FROM journal_lines rl
+      JOIN accounts ra ON ra.id = rl.account_id AND ra.tenant_id = ${tenantId} AND ra.detail_type = 'accounts_payable'
+      JOIN transactions dep ON dep.id = rl.transaction_id AND dep.tenant_id = ${tenantId} AND dep.status = 'posted'
+        AND dep.basis <> 'accrual' AND dep.txn_date >= ${startDate ?? '0001-01-01'} AND dep.txn_date <= ${endDate}
+        AND ${companyId ? sql`dep.company_id = ${companyId}` : sql`TRUE`} AND ${adjustingCond(adjusting, 'dep.is_adjusting')}
+      JOIN transactions vc ON vc.id = rl.source_transaction_id AND vc.tenant_id = ${tenantId}
+        AND vc.txn_type = 'vendor_credit' AND vc.status = 'posted' AND NULLIF(vc.total::numeric, 0) IS NOT NULL
+      JOIN journal_lines vl ON vl.transaction_id = vc.id AND vl.tenant_id = ${tenantId} AND vl.is_void_reversal = false
+      JOIN accounts va ON va.id = vl.account_id AND va.tenant_id = ${tenantId}
+      WHERE rl.tenant_id = ${tenantId} AND rl.is_void_reversal = false
+        AND va.detail_type IS DISTINCT FROM 'accounts_payable'
 
       UNION ALL
 
