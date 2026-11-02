@@ -420,6 +420,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'daily_sales_template_lines.template_id': 'tenant-ref:daily_sales_templates',
   'daily_sales_template_lines.account_id': 'tenant-ref:accounts',
   'daily_sales_template_lines.tag_id': 'tenant-ref:tags',
+  'daily_sales_template_lines.sales_tax_id': 'tenant-ref:sales_tax_items',
+  'daily_sales_template_lines.tax_code_id': 'tenant-ref:sales_tax_codes',
   'daily_sales_templates.company_id': 'tenant-ref:companies',
   'daily_sales_templates.default_tag_id': 'tenant-ref:tags',
   'deposit_lines.deposit_id': 'tenant-ref:transactions',

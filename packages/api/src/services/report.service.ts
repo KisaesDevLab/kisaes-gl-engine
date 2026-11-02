@@ -125,26 +125,106 @@ export async function getFiscalYearStart(tenantId: string, companyId: string | n
 // group below is internally balanced, so any report built from it
 // balances by construction:
 //
-//   1. AR/AP DOCUMENTS (invoice, bill, credit_memo, vendor_credit) are
-//      excluded entirely — accrual-only constructs.
+//   1. AR/AP DOCUMENTS (invoice, bill, credit_memo, vendor_credit,
+//      bad_debt_recovery) are excluded entirely — accrual-only constructs.
 //   2. All other transactions pass through as-is (cash sales, direct
 //      expenses, card charges, transfers, deposits, JEs …), EXCEPT that
 //      a payment's AR leg (customer_payment) / AP leg (bill_payment) is
 //      reduced to its UNAPPLIED remainder. The applied portion is
-//      replaced by rule 3; the unapplied remainder stays on AR/AP so
-//      customer pre-payments remain visible and the sheet still ties.
+//      replaced by rule 3.
+//      Pure cash for receipts (U-152, Q-SPF1, cash-basis-spf-v1): money
+//      received and not applied to an invoice is income in the system
+//      account "Unapplied receipts" until it is applied — a payment's
+//      unapplied remainder, a payment-sourced refund or a bounce of it,
+//      and every Customer Deposits line of a payment, bounce or refund
+//      (held deposits, draws, deposit refunds). Only the account changes,
+//      so each group still balances; a credit applied later (rule 2b)
+//      takes it back out of Unapplied receipts on its apply date. Journal
+//      entries on A/R keep A/R (P28 residue warning).
+//      Write-offs never show on cash (Q-SPF3): a payment's write-off line
+//      is reduced by the write-off it settled (less the SSUTA bad-debt
+//      tax, which sits on Sales Tax Payable instead), its STP line by that
+//      bad-debt tax, and a bounce's matching credits likewise.
 //   3. For each payment APPLICATION (payment → document, amount), the
 //      paid document's non-AR/AP lines are emitted at the PAYMENT's
 //      date, scaled by amount / document total. A $1,000 invoice
 //      (Cr revenue 900 / Cr tax 100) paid $500 in December recognizes
-//      Cr revenue 450 + Cr tax 50 in December.
+//      Cr revenue 450 + Cr tax 50 in December. The amount is the cash
+//      plus the early-payment discount (c + D), never the write-off
+//      (Q-SPF3); the A/R reduction of rule 2 uses c + D + W.
 //
 // AR applications come from payment_applications plus the legacy
 // single-invoice link (transactions.applied_to_invoice_id, used by
 // invoice.recordPayment and Stripe). AP applications come from
-// bill_payment_applications, whose amounts are the CASH portion per
-// bill — vendor-credit-settled portions are correctly never recognized
-// (no cash moved).
+// bill_payment_applications: the cash plus the early-payment discount
+// per bill (Q-SPF7), so A/P clears and the expense nets to the cash paid
+// once the discount income line passes through — vendor-credit-settled
+// portions are correctly never recognized (no cash moved).
+
+/**
+ * The live A/R settlements of posted invoices (U-132 to U-134, U-152), one
+ * row per settlement: `amount` settles A/R (c + D + W), `cash_amount` is
+ * what cash basis recognises (c + D), `write_off` / `write_off_account_id`
+ * the write-off part. Effective date: `COALESCE(rec_date, payment date)`.
+ * Shared by the cash virtual ledger and the cash sales tax report so the
+ * GL and the report move on the same dates (Q-P23y).
+ */
+export function arAppsCte(tenantId: string) {
+  return sql`
+    ar_apps AS (
+      -- U-132: rows an unapply or edit set aside (voided_at) are out; a
+      -- void payment's rows drop out with it (pay.status). A row a bounce
+      -- reversed stays on its payment and is mirrored as a negative row on
+      -- the returned_payment, so revenue reverses at the bounce date and
+      -- closed periods don't move.
+      -- U-133 / U-134: a row settles cash + discount + write-off. A credit
+      -- applied later (applied_date) is recognised on that date, stamped on
+      -- the payment it was applied inside (else its own payment), and
+      -- moves A/R by a virtual line of its own (rule 2b) instead of
+      -- reducing its payment's A/R leg.
+      -- U-146 B2: every branch keeps only rows of a posted invoice, as
+      -- rule 3 and the open items do: an invoice voided after its payment
+      -- bounced must not clear the payment's or the bounce's A/R leg.
+      SELECT pa.payment_id, pa.invoice_id,
+        (pa.amount + pa.discount_amount + pa.write_off_amount)::numeric AS amount,
+        (pa.amount + pa.discount_amount)::numeric AS cash_amount,
+        pa.write_off_amount::numeric AS write_off, pa.write_off_account_id,
+        NULL::date AS rec_date, 'own' AS kind, pa.id AS app_id, pa.created_at AS app_created
+      FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NULL
+        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
+      UNION ALL
+      SELECT COALESCE(pa.applied_in_txn_id, pa.payment_id), pa.invoice_id, pa.amount::numeric, pa.amount::numeric,
+        0::numeric, NULL::uuid, pa.applied_date, 'credit', pa.id, pa.created_at
+      FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
+      UNION ALL
+      SELECT pa.reversed_by_txn_id, pa.invoice_id,
+        -(pa.amount + pa.discount_amount + pa.write_off_amount)::numeric,
+        -(pa.amount + pa.discount_amount)::numeric,
+        -pa.write_off_amount::numeric, pa.write_off_account_id, NULL::date, 'mirror', pa.id,
+        COALESCE((SELECT rp.created_at FROM transactions rp WHERE rp.id = pa.reversed_by_txn_id), pa.created_at)
+      FROM payment_applications pa
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
+      UNION ALL
+      SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric, tp.total::numeric, 0::numeric, NULL::uuid,
+        NULL::date, 'own', tp.id, tp.created_at
+      FROM transactions tp
+      WHERE tp.tenant_id = ${tenantId} AND tp.txn_type = 'customer_payment'
+        AND tp.applied_to_invoice_id IS NOT NULL AND tp.total IS NOT NULL
+        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = tp.applied_to_invoice_id AND iv.tenant_id = tp.tenant_id AND iv.status = 'posted')
+        AND NOT EXISTS (
+          SELECT 1 FROM payment_applications pa2
+          WHERE pa2.tenant_id = ${tenantId} AND pa2.payment_id = tp.id
+        )
+    )`;
+}
+
 // Exported for the TB module's five-column workpaper engine
 // (services/tb/balance-engine.service.ts), which must compute cash-basis
 // columns on the SAME virtual ledger as every other report (D12) —
@@ -172,70 +252,45 @@ export function cashBasisLinesWith(
   const companyPay = companyId ? sql`pay.company_id = ${companyId}` : sql`TRUE`;
 
   return sql`
-    ar_apps AS (
-      -- U-132: rows an unapply or edit set aside (voided_at) are out; a
-      -- void payment's rows drop out with it (pay.status). A row a bounce
-      -- reversed stays on its payment and is mirrored as a negative row on
-      -- the returned_payment, so revenue reverses at the bounce date and
-      -- closed periods don't move.
-      -- U-133 / U-134: a row settles cash + discount + write-off. A credit
-      -- applied later (applied_date) is recognised on that date, stamped on
-      -- the payment it was applied inside (else its own payment), and
-      -- moves A/R by a virtual line of its own (rule 2b) instead of
-      -- reducing its payment's A/R leg.
-      -- U-146 B2: every branch keeps only rows of a posted invoice, as
-      -- rule 3 and the open items do: an invoice voided after its payment
-      -- bounced must not clear the payment's or the bounce's A/R leg.
-      SELECT pa.payment_id, pa.invoice_id,
-        (pa.amount + pa.discount_amount + pa.write_off_amount)::numeric AS amount, NULL::date AS rec_date, 'own' AS kind
-      FROM payment_applications pa
-      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NULL
-        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
-        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
-      UNION ALL
-      SELECT COALESCE(pa.applied_in_txn_id, pa.payment_id), pa.invoice_id, pa.amount::numeric, pa.applied_date, 'credit'
-      FROM payment_applications pa
-      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.applied_date IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
-        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
-      UNION ALL
-      SELECT pa.reversed_by_txn_id, pa.invoice_id,
-        -(pa.amount + pa.discount_amount + pa.write_off_amount)::numeric, NULL::date, 'mirror'
-      FROM payment_applications pa
-      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL AND pa.reversed_by_txn_id IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM transactions cm WHERE cm.id = pa.payment_id AND cm.tenant_id = pa.tenant_id AND cm.txn_type = 'credit_memo')
-        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = pa.invoice_id AND iv.tenant_id = pa.tenant_id AND iv.status = 'posted')
-      UNION ALL
-      SELECT tp.id, tp.applied_to_invoice_id, tp.total::numeric, NULL::date, 'own'
-      FROM transactions tp
-      WHERE tp.tenant_id = ${tenantId} AND tp.txn_type = 'customer_payment'
-        AND tp.applied_to_invoice_id IS NOT NULL AND tp.total IS NOT NULL
-        AND EXISTS (SELECT 1 FROM transactions iv WHERE iv.id = tp.applied_to_invoice_id AND iv.tenant_id = tp.tenant_id AND iv.status = 'posted')
-        AND NOT EXISTS (
-          SELECT 1 FROM payment_applications pa2
-          WHERE pa2.tenant_id = ${tenantId} AND pa2.payment_id = tp.id
-        )
+    cb_ur AS (
+      -- U-152: the Unapplied receipts account (one per tenant, like every
+      -- system role). NULL (a tenant 0253 could not reach) keeps the old
+      -- A/R and Customer Deposits lines.
+      SELECT (SELECT a.id FROM accounts a WHERE a.tenant_id = ${tenantId} AND a.system_tag = 'unapplied_receipts'
+              ORDER BY a.created_at, a.id LIMIT 1) AS id
     ),
-    cb_lines AS (
-      -- Rule 2: pass-through, with payment AR/AP legs reduced to the
-      -- unapplied remainder.
-      SELECT jl.account_id, jl.tag_id,
+    ${arAppsCte(tenantId)},
+    cb_wo AS (
+      -- Q-SPF3: the write-off each payment (or the bounce mirroring it)
+      -- settled, per write-off account.
+      SELECT payment_id AS txn_id, write_off_account_id AS account_id, SUM(ABS(write_off)) AS amount
+      FROM ar_apps WHERE kind IN ('own', 'mirror') AND write_off <> 0 AND write_off_account_id IS NOT NULL
+      GROUP BY payment_id, write_off_account_id
+    ),
+    cb_bd AS (
+      -- U-153 (SSUTA): the bad-debt tax a payment (or its bounce) moved to
+      -- Sales Tax Payable instead of the write-off account.
+      SELECT transaction_id AS txn_id, ABS(SUM(tax)) AS tax
+      FROM transaction_tax_lines WHERE tenant_id = ${tenantId} AND kind = 'bad_debt'
+      GROUP BY transaction_id
+    ),
+    cb_r2 AS (
+      SELECT jl.account_id, a.detail_type, a.system_tag, jl.tag_id,
         t.id AS transaction_id, t.txn_date, t.txn_type, t.txn_number, t.memo,
         t.contact_id AS txn_contact_id, jl.contact_id AS line_contact_id,
         jl.description, jl.item_id, jl.line_order,
-        CASE WHEN t.txn_type = 'bill_payment' AND a.detail_type = 'accounts_payable'
-             THEN GREATEST(jl.debit::numeric - COALESCE(bp.applied, 0), 0)
-             -- A bounce's A/R debit less what it took back (its mirror rows are negative).
-             WHEN t.txn_type = 'returned_payment' AND a.detail_type = 'accounts_receivable'
-             THEN GREATEST(jl.debit::numeric + COALESCE(arp.applied, 0), 0)
-             -- U-137 rule 3b: a refund of a credit memo's credit drops its A/R
-             -- leg; rule 3b below books the memo's lines instead.
-             WHEN t.txn_type = 'customer_refund' AND a.detail_type = 'accounts_receivable' AND cmr.id IS NOT NULL
-             THEN 0::numeric
-             ELSE jl.debit::numeric END AS debit,
-        CASE WHEN t.txn_type = 'customer_payment' AND a.detail_type = 'accounts_receivable'
-             THEN GREATEST(jl.credit::numeric - COALESCE(arp.applied, 0), 0)
-             ELSE jl.credit::numeric END AS credit
+        jl.debit::numeric AS debit, jl.credit::numeric AS credit,
+        cmr.id AS refund_memo_id, arp.applied AS ar_applied, bp.applied AS ap_applied,
+        -- Q-SPF3: how much of this (payment or bounce) line is write-off
+        -- (or its bad-debt tax) and leaves the cash ledger.
+        CASE WHEN t.txn_type NOT IN ('customer_payment', 'returned_payment') THEN 0::numeric
+             WHEN wo.account_id IS NOT NULL THEN GREATEST(wo.amount - COALESCE(bd.tax, 0), 0)
+             WHEN a.system_tag = 'sales_tax_payable' THEN COALESCE(bd.tax, 0)
+             ELSE 0::numeric END AS reduce_by,
+        -- What earlier lines of the same transaction and account already
+        -- gave up (the discount and write-off may share an account).
+        COALESCE(SUM(CASE WHEN t.txn_type = 'returned_payment' THEN jl.credit ELSE jl.debit END::numeric)
+          OVER (PARTITION BY t.id, jl.account_id ORDER BY jl.line_order, jl.id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS before_amount
       FROM transactions t
       JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = ${tenantId}
         AND jl.is_void_reversal = false
@@ -244,15 +299,49 @@ export function cashBasisLinesWith(
         SELECT payment_id, SUM(amount) AS applied FROM ar_apps WHERE kind <> 'credit' GROUP BY payment_id
       ) arp ON arp.payment_id = t.id
       LEFT JOIN (
-        SELECT payment_id, SUM(amount::numeric) AS applied
+        -- Q-SPF7: a bill payment clears A/P by its cash plus its discount.
+        SELECT payment_id, SUM(amount::numeric + discount_amount::numeric) AS applied
         FROM bill_payment_applications WHERE tenant_id = ${tenantId} GROUP BY payment_id
       ) bp ON bp.payment_id = t.id
       LEFT JOIN transactions cmr ON cmr.id = t.source_payment_id AND cmr.tenant_id = ${tenantId}
         AND cmr.txn_type = 'credit_memo' AND t.txn_type = 'customer_refund'
+      LEFT JOIN cb_wo wo ON wo.txn_id = t.id AND wo.account_id = jl.account_id
+      LEFT JOIN cb_bd bd ON bd.txn_id = t.id
       WHERE t.tenant_id = ${tenantId} AND t.status = 'posted'
         AND t.basis <> 'accrual'  -- basis: exclude accrual-only entries from cash-basis reports
         AND ${dateCondT} AND ${companyT} AND ${adjustingCond(adjusting, 't.is_adjusting')}
-        AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit')
+        AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit', 'bad_debt_recovery')
+    ),
+    cb_lines AS (
+      -- Rule 2: pass-through, with payment AR/AP legs reduced to the
+      -- unapplied remainder (on Unapplied receipts, U-152) and write-offs
+      -- taken out (Q-SPF3).
+      SELECT
+        CASE WHEN ur.id IS NOT NULL AND (
+               (r.system_tag = 'customer_deposits' AND r.txn_type IN ('customer_payment', 'returned_payment', 'customer_refund'))
+               OR (r.detail_type = 'accounts_receivable' AND r.txn_type IN ('customer_payment', 'returned_payment'))
+               OR (r.detail_type = 'accounts_receivable' AND r.txn_type = 'customer_refund' AND r.refund_memo_id IS NULL))
+             THEN ur.id ELSE r.account_id END AS account_id,
+        r.tag_id, r.transaction_id, r.txn_date, r.txn_type, r.txn_number, r.memo,
+        r.txn_contact_id, r.line_contact_id, r.description, r.item_id, r.line_order,
+        CASE WHEN r.txn_type = 'bill_payment' AND r.detail_type = 'accounts_payable'
+             THEN GREATEST(r.debit - COALESCE(r.ap_applied, 0), 0)
+             -- A bounce's A/R debit less what it took back (its mirror rows are negative).
+             WHEN r.txn_type = 'returned_payment' AND r.detail_type = 'accounts_receivable'
+             THEN GREATEST(r.debit + COALESCE(r.ar_applied, 0), 0)
+             -- U-137 rule 3b: a refund of a credit memo's credit drops its A/R
+             -- leg; rule 3b below books the memo's lines instead.
+             WHEN r.txn_type = 'customer_refund' AND r.detail_type = 'accounts_receivable' AND r.refund_memo_id IS NOT NULL
+             THEN 0::numeric
+             WHEN r.txn_type = 'customer_payment'
+             THEN r.debit - LEAST(r.debit, GREATEST(r.reduce_by - r.before_amount, 0))
+             ELSE r.debit END AS debit,
+        CASE WHEN r.txn_type = 'customer_payment' AND r.detail_type = 'accounts_receivable'
+             THEN GREATEST(r.credit - COALESCE(r.ar_applied, 0), 0)
+             WHEN r.txn_type = 'returned_payment'
+             THEN r.credit - LEAST(r.credit, GREATEST(r.reduce_by - r.before_amount, 0))
+             ELSE r.credit END AS credit
+      FROM cb_r2 r CROSS JOIN cb_ur ur
 
       UNION ALL
 
@@ -280,9 +369,9 @@ export function cashBasisLinesWith(
 
       UNION ALL
 
-      -- Rule 2b (AR, U-133): a credit applied later takes its amount out of
-      -- the A/R credit on the day it is applied.
-      SELECT ara.id, NULL::uuid,
+      -- Rule 2b (AR, U-133, U-152): a credit applied later takes its amount
+      -- out of Unapplied receipts (A/R before U-152) on the day it is applied.
+      SELECT COALESCE(ur.id, ara.id), NULL::uuid,
         pay.id, app.rec_date, pay.txn_type, pay.txn_number, pay.memo,
         pay.contact_id, pay.contact_id,
         NULL::text, NULL::uuid, 0,
@@ -293,18 +382,19 @@ export function cashBasisLinesWith(
       JOIN LATERAL (
         SELECT a2.id FROM accounts a2 WHERE a2.tenant_id = ${tenantId} AND a2.system_tag = 'accounts_receivable' LIMIT 1
       ) ara ON TRUE
+      CROSS JOIN cb_ur ur
       WHERE app.kind = 'credit'
 
       UNION ALL
 
       -- Rule 3 (AR): scaled invoice distributions at the payment date (a
-      -- credit applied later: at its date).
+      -- credit applied later: at its date), by cash + discount (Q-SPF3).
       SELECT il.account_id, il.tag_id,
         pay.id AS transaction_id, COALESCE(app.rec_date, pay.txn_date), pay.txn_type, pay.txn_number, pay.memo,
         pay.contact_id AS txn_contact_id, il.contact_id AS line_contact_id,
         il.description, il.item_id, il.line_order,
-        il.debit::numeric  * app.amount / NULLIF(inv.total::numeric, 0) AS debit,
-        il.credit::numeric * app.amount / NULLIF(inv.total::numeric, 0) AS credit
+        il.debit::numeric  * app.cash_amount / NULLIF(inv.total::numeric, 0) AS debit,
+        il.credit::numeric * app.cash_amount / NULLIF(inv.total::numeric, 0) AS credit
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
@@ -317,13 +407,14 @@ export function cashBasisLinesWith(
 
       UNION ALL
 
-      -- Rule 3 (AP): scaled bill distributions at the payment date.
+      -- Rule 3 (AP): scaled bill distributions at the payment date, by cash
+      -- plus the early-payment discount (Q-SPF7).
       SELECT bl.account_id, bl.tag_id,
         pay.id AS transaction_id, pay.txn_date, pay.txn_type, pay.txn_number, pay.memo,
         pay.contact_id AS txn_contact_id, bl.contact_id AS line_contact_id,
         bl.description, bl.item_id, bl.line_order,
-        bl.debit::numeric  * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS debit,
-        bl.credit::numeric * app.amount::numeric / NULLIF(bill.total::numeric, 0) AS credit
+        bl.debit::numeric  * (app.amount::numeric + app.discount_amount::numeric) / NULLIF(bill.total::numeric, 0) AS debit,
+        bl.credit::numeric * (app.amount::numeric + app.discount_amount::numeric) / NULLIF(bill.total::numeric, 0) AS credit
       FROM bill_payment_applications app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}

@@ -20,6 +20,8 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 
 export const SUSPENSE_TAG = 'suspense';
+/** U-152 (cash-basis-spf-v1): the cash-basis income line for money not yet applied to an invoice. */
+export const UNAPPLIED_RECEIPTS_TAG = 'unapplied_receipts';
 
 /**
  * The ONE system role a bank feed may legitimately post into.
@@ -63,6 +65,14 @@ export const SYSTEM_ACCOUNT_SPECS: SystemAccountSpec[] = [
     detailType: 'other_current_liability',
     accountNumber: '21500',
     adoptNames: ['customer deposits'],
+  },
+  {
+    // U-152 (0253): cash-basis reports re-point unapplied money onto it; nothing posts to it.
+    systemTag: UNAPPLIED_RECEIPTS_TAG,
+    name: 'Unapplied receipts',
+    accountType: 'revenue',
+    detailType: 'service',
+    accountNumber: '49900',
   },
   {
     systemTag: SUSPENSE_TAG,
@@ -164,6 +174,20 @@ export async function getOrCreateSystemAccount(
   await auditLog(tenantId, 'create', 'system_account_role', created.id, null,
     { systemTag: spec.systemTag, accountNumber: created.accountNumber }, actingUserId, executor === db ? undefined : executor as Tx);
   return created.id;
+}
+
+/**
+ * Sign-up and company-creation hook (U-152): the Unapplied receipts account
+ * the cash-basis reports need. Never fails the caller; until it exists the
+ * cash ledger keeps the old A/R and Customer Deposits lines.
+ */
+export async function seedUnappliedReceiptsBestEffort(tenantId: string, companyId?: string, actingUserId?: string): Promise<void> {
+  try {
+    await getOrCreateSystemAccount(tenantId, UNAPPLIED_RECEIPTS_TAG, companyId, actingUserId);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[unapplied-receipts] seed failed:', err instanceof Error ? err.message : err);
+  }
 }
 
 /** Convenience wrapper. Every suspense consumer goes through this. */

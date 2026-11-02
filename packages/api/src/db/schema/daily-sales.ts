@@ -36,6 +36,11 @@ export const dailySalesTemplateLines = pgTable('daily_sales_template_lines', {
   isRequired: boolean('is_required').notNull().default(false),
   allowTag: boolean('allow_tag').notNull().default(false),
   isActive: boolean('is_active').notNull().default(true),
+  // U-149 (0253, daily-sales-tax-v1): the template's one tax line linked to a
+  // sales tax (posted to Sales Tax Payable), and a sales line's tax code
+  // (NULL = taxable).
+  salesTaxId: uuid('sales_tax_id'),
+  taxCodeId: uuid('tax_code_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (t) => ({
   templateIdx: index('idx_dstl_template').on(t.tenantId, t.templateId),
