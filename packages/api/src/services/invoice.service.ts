@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { exemptionWarnings } from './tax-exemptions.service.js';
 import { eq, and, inArray } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
@@ -553,6 +554,8 @@ export async function previewInvoice(
     taxGroups: computed.taxGroups,
     salesTax: await previewSalesTax(db, tenantId, scope, tax, computed),
     problems: tax.problems,
+    // U-151: exemption certificate warnings for a non-taxable client.
+    warnings: await exemptionWarnings(db, tenantId, scope ?? customer.companyId ?? null, customer, input.txnDate),
     paymentTerms: terms.paymentTerms ?? null,
     dueDate: terms.dueDate ?? null,
     priceLevel: priceLevel ? { id: priceLevel.id, name: priceLevel.name, percent: priceLevel.percent } : null,

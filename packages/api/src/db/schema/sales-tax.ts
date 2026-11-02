@@ -145,3 +145,25 @@ export const salesTaxPayments = pgTable('sales_tax_payments', {
   companyIdx: index('idx_st_payments_company').on(t.companyId, t.agencyId, t.throughDate),
   tenantIdx: index('idx_st_payments_tenant').on(t.tenantId),
 }));
+
+/** Exemption certificates (U-151, migration 0255): a client's resale or exemption certificate. */
+export const contactTaxExemptions = pgTable('contact_tax_exemptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  contactId: uuid('contact_id').notNull(),
+  number: varchar('number', { length: 50 }).notNull(),
+  state: varchar('state', { length: 20 }),
+  /** NULL: does not expire. */
+  expiresOn: date('expires_on'),
+  /** A file of the same company filed on the same client. */
+  attachmentId: uuid('attachment_id'),
+  note: text('note'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  contactIdx: index('idx_tax_exemptions_contact').on(t.companyId, t.contactId),
+  expiryIdx: index('idx_tax_exemptions_expiry').on(t.companyId, t.expiresOn),
+  tenantIdx: index('idx_tax_exemptions_tenant').on(t.tenantId),
+}));

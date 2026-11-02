@@ -13,6 +13,7 @@ import { idempotent } from '../middleware/idempotent.js';
 import * as st from '../services/sales-tax.service.js';
 import * as report from '../services/sales-tax-report.service.js';
 import * as pay from '../services/sales-tax-pay.service.js';
+import * as exemptions from '../services/tax-exemptions.service.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
 
@@ -343,6 +344,57 @@ salesTaxRouter.get('/payments/:id', describe({
 }), async (req, res) => {
   res.json(await pay.getPayment(req.tenantId, req.companyId, id(req)));
 });
+// ── Exemption certificates (U-151, tax-exemptions-v1) ─────────────────
+
+const exemptionShape = '{id, contactId, number, state, expiresOn, attachmentId, note, isActive, updatedAt}';
+const exemptionCreate = z.object({
+  contactId: z.string().uuid(), number: z.string().trim().min(1).max(50), state: z.string().trim().max(20).nullable().optional(),
+  expiresOn: isoDate.nullable().optional(), attachmentId: z.string().uuid().nullable().optional(), note: z.string().max(2000).nullable().optional(),
+});
+const exemptionUpdate = exemptionCreate.partial().extend({ expectedUpdatedAt });
+const exemptionRules = 'A client (customer) of this company; number 1-50 characters; expiresOn null = does not expire; attachmentId: a file ' +
+  'of this company filed on the same client (attachable_type contact), else 400 VALIDATION_ERROR. Audit rows carry ids, never numbers.';
+const exemptionList = z.object({ contactId: z.string().uuid().optional(), includeInactive: z.enum(['true', 'false']).optional() });
+
+salesTaxRouter.get('/exemptions', describe({
+  summary: 'List exemption certificates (tax-exemptions-v1)',
+  description: `Response {data: [${exemptionShape}]} by expiry; contactId filters; active only unless includeInactive=true.`,
+  query: exemptionList,
+}), async (req, res) => {
+  const q = exemptionList.parse(req.query);
+  res.json(await exemptions.listExemptions(req.tenantId, req.companyId, { contactId: q.contactId, includeInactive: q.includeInactive === 'true' }));
+});
+
+salesTaxRouter.get('/exemptions/:id', describe({ summary: 'Get an exemption certificate', description: `Response ${exemptionShape}; 404 for another company's.`, params: idParams }),
+  async (req, res) => { res.json(await exemptions.getExemption(req.tenantId, req.companyId, id(req))); });
+
+salesTaxRouter.post('/exemptions', idempotent({ successStatus: 201, replay: async (req, e) => exemptions.getExemption(req.tenantId, req.companyId, e!.id) }),
+  validate(exemptionCreate), describe({
+    summary: 'Add an exemption certificate',
+    description: `Response 201 ${exemptionShape}. ${exemptionRules} Idempotency-Key.`,
+    body: exemptionCreate,
+  }), async (req, res) => {
+    res.status(201).json(await exemptions.createExemption(req.tenantId, req.companyId, req.body, req.userId));
+  });
+
+salesTaxRouter.put('/exemptions/:id', idempotent({ successStatus: 200, replay: async (req) => exemptions.getExemption(req.tenantId, req.companyId, id(req)) }),
+  validate(exemptionUpdate), describe({
+    summary: 'Edit an exemption certificate',
+    description: `Response ${exemptionShape}. ${exemptionRules} 404; 409 STALE (expectedUpdatedAt differs). Idempotency-Key.`,
+    body: exemptionUpdate, params: idParams,
+  }), async (req, res) => {
+    res.json(await exemptions.updateExemption(req.tenantId, req.companyId, id(req), req.body, req.userId));
+  });
+
+for (const [path, active] of [['deactivate', false], ['reactivate', true]] as const) {
+  salesTaxRouter.post(`/exemptions/:id/${path}`, idempotent({ successStatus: 200, replay: async (req) => exemptions.getExemption(req.tenantId, req.companyId, id(req)) }), describe({
+    summary: `${active ? 'Reactivate' : 'Deactivate'} an exemption certificate`,
+    description: `Response ${exemptionShape}. 404. Idempotency-Key.`,
+    params: idParams,
+  }), async (req, res) => {
+    res.json(await exemptions.setExemptionActive(req.tenantId, req.companyId, id(req), active, req.userId));
+  });
+}
 // ── Reports (mounted under /api/v1/reports before the reports router) ─
 
 /**
@@ -399,4 +451,17 @@ salesTaxReportsRouter.get('/sales-tax-payments', describe({
   const today = new Date().toISOString().split('T')[0]!;
   res.json(await report.buildSalesTaxPaymentsV2(req.tenantId, q.data.start_date ?? `${today.slice(0, 4)}-01-01`, q.data.end_date ?? today,
     req.companyId, q.data.agency_id ?? null));
+});
+
+const expiringQuery = z.object({ asOf: isoDate.optional(), within: z.coerce.number().int().min(0).max(3650).optional() });
+salesTaxReportsRouter.get('/exemptions-expiring', describe({
+  summary: 'Exemption certificates expired or expiring (tax-exemptions-v1)',
+  description: 'Response {title, asOf, within, data: [{exemptionId, contactId, contactName, number, state, expiresOn, status: expired|expiring, ' +
+    'daysLeft}]}: active certificates that expired by asOf or expire within `within` days (default 60) of it, by expiry; a client with a ' +
+    'certificate that stays current past that is left out. asOf default today.',
+  query: expiringQuery,
+}), async (req, res) => {
+  const q = expiringQuery.safeParse(req.query);
+  if (!q.success) { res.status(400).json({ error: { message: q.error.issues[0]?.message ?? 'invalid query', code: 'VALIDATION_ERROR' } }); return; }
+  res.json(await exemptions.exemptionsExpiring(req.tenantId, req.companyId, q.data.asOf ?? new Date().toISOString().split('T')[0]!, q.data.within ?? 60));
 });

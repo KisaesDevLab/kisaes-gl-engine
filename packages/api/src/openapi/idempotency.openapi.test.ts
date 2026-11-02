@@ -129,7 +129,7 @@ export const IDEMPOTENCY_SALES_DOC_EMAIL_V1_ROUTES = [
 ].sort();
 
 /** Keyed by idempotency-sales-tax-v1 (U-147): the /sales-tax setup writes. */
-export const IDEMPOTENCY_SALES_TAX_V1_ROUTES = ['agencies', 'items', 'codes'].flatMap((r) => [
+export const IDEMPOTENCY_SALES_TAX_V1_ROUTES = ['agencies', 'items', 'codes', 'exemptions'].flatMap((r) => [
   `post /api/v1/sales-tax/${r}`,
   `put /api/v1/sales-tax/${r}/{id}`,
   `post /api/v1/sales-tax/${r}/{id}/deactivate`,

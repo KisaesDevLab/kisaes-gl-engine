@@ -19,11 +19,12 @@
  * The old POST /transactions paths are unchanged.
  */
 
+import { exemptionWarnings } from './tax-exemptions.service.js';
 import { and, eq, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import type { CreditMemoInput, CreditMemoPreviewInput, SalesReceiptInput, SalesReceiptPreviewInput } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
-import { accounts, transactions } from '../db/schema/index.js';
+import { accounts, contacts, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
 import * as documentNumbers from './document-number.service.js';
@@ -451,6 +452,9 @@ export async function previewSalesReceipt(tenantId: string, input: SalesReceiptP
     contactBalanceBefore: before.toFixed(2),
     contactBalanceAfter: before.toFixed(2),
     problems: [...(dep.problem ? [{ code: dep.problem }] : []), ...doc.tax.problems],
+    // U-151: exemption certificate warnings for a non-taxable client.
+    warnings: input.contactId ? await exemptionWarnings(db, tenantId, companyId ?? null,
+      (await db.select({ id: contacts.id, taxCodeId: contacts.taxCodeId }).from(contacts).where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, input.contactId))).limit(1))[0], input.txnDate) : [],
   };
 }
 

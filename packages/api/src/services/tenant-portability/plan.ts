@@ -506,6 +506,10 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'sales_tax_payments.transaction_id': 'tenant-ref:transactions',
   'sales_tax_payments.company_id': 'tenant-ref:companies',
   'sales_tax_payments.agency_id': 'tenant-ref:sales_tax_agencies',
+  // Exemption certificates (U-151, migration 0255).
+  'contact_tax_exemptions.company_id': 'tenant-ref:companies',
+  'contact_tax_exemptions.contact_id': 'tenant-ref:contacts',
+  'contact_tax_exemptions.attachment_id': 'tenant-ref:attachments',
   'findings.company_id': 'tenant-ref:companies',
   'findings.transaction_id': 'tenant-ref:transactions',
   'findings.vendor_id': 'tenant-ref:contacts',
