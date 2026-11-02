@@ -14,6 +14,7 @@ import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
 import * as invoiceService from './invoice.service.js';
+import * as salesTaxSvc from './sales-tax.service.js';
 import { incCounter, recordSchedulerTick } from '../utils/metrics.js';
 import { log } from '../utils/logger.js';
 import { withSchedulerLock } from '../utils/scheduler-lock.js';
@@ -233,9 +234,12 @@ function isBillableLine(l: StoredInvoiceLine): boolean {
  * discountPercent}) or its amount ({itemId, unitPrice}); a subtotal is
  * {itemId}; other lines keep their item, quantity and stored price, or
  * 1 x the signed amount when the price doesn't give it to the cent.
+ * A template with a sales tax (U-147, `salesTax`) keeps each line's tax
+ * code instead of its rate: the copy is computed with the template's sales
+ * tax (rows on its items), not on a legacy item per rate.
  * Exported for the tests.
  */
-export function recurringInvoiceLines(lines: readonly StoredInvoiceLine[], arAccountId?: string, taxAccountId?: string) {
+export function recurringInvoiceLines(lines: readonly StoredInvoiceLine[], arAccountId?: string, taxAccountId?: string, salesTax = false) {
   return lines
     .filter((l) => l.accountId !== arAccountId && l.accountId !== taxAccountId && !isBillableLine(l))
     .flatMap((l) => {
@@ -245,7 +249,7 @@ export function recurringInvoiceLines(lines: readonly StoredInvoiceLine[], arAcc
         ...(l.itemId ? { itemId: l.itemId } : {}),
         description: l.description || undefined,
         isTaxable: l.isTaxable ?? false,
-        taxRate: l.taxRate ?? '0',
+        ...(salesTax ? { taxCodeId: l.taxCodeId ?? null } : { taxRate: l.taxRate ?? '0' }),
         tagId: l.tagId ?? null,
       };
       if (l.itemId && l.discountPercent) return [{ ...base, discountPercent: l.discountPercent }];
@@ -328,7 +332,10 @@ export async function postLegacyClone(
       db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')) }),
       db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'sales_tax_payable')) }),
     ]);
-    const revenueLines = recurringInvoiceLines(template.lines, arAccount?.id, taxAccount?.id);
+    // The template's sales tax (U-147) when it is still active; else the
+    // client's or company default, as a new invoice would get.
+    const salesTaxId = template.salesTaxId ? await activeSalesTax(tenantId, template.companyId, template.salesTaxId) : null;
+    const revenueLines = recurringInvoiceLines(template.lines, arAccount?.id, taxAccount?.id, !!template.salesTaxId);
 
     if (revenueLines.length === 0) {
       // A schedule from before Q-P20ah whose invoice only billed costs: a
@@ -347,15 +354,22 @@ export async function postLegacyClone(
       txnDate: sched.nextOccurrence,
       paymentTerms: template.paymentTerms || undefined,
       memo: template.memo || undefined,
+      ...(salesTaxId ? { salesTaxId } : {}),
       lines: revenueLines,
-    }, undefined, template.companyId || undefined);
+    } as Parameters<typeof invoiceService.createInvoice>[1], undefined, template.companyId || undefined);
   } else {
-    // Generic clone path for other transaction types.
+    // Generic clone path for other transaction types. A sales receipt keeps
+    // its sales tax and line tax fields, so its tax rows are written on the
+    // same items as the template's (U-147), not as unassigned tax.
     const lines = template.lines.map((l) => ({
       accountId: l.accountId,
       debit: l.debit,
       credit: l.credit,
       description: l.description || undefined,
+      isTaxable: l.isTaxable ?? false,
+      taxRate: l.taxRate ?? undefined,
+      taxAmount: l.taxAmount ?? undefined,
+      taxCodeId: l.taxCodeId ?? null,
       // ADR 0XX §7.2 — preserve per-line tag on every recurring instance.
       tagId: l.tagId ?? null,
       // U-64: the line's name, and its billable mark — a new occurrence's
@@ -377,11 +391,19 @@ export async function postLegacyClone(
       recurringScheduleId: sched.id,
       source: 'recurring',
       sourceId: sched.id,
+      salesTaxId: template.salesTaxId ?? null,
       lines,
     }, undefined, template.companyId || undefined);
   }
 
   return txn;
+}
+
+/** The sales tax item or group when it and all its members are still active (else null). */
+async function activeSalesTax(tenantId: string, companyId: string | null, id: string): Promise<string | null> {
+  const co = await salesTaxSvc.rowCompanyId(db, tenantId, companyId);
+  const unit = co ? await salesTaxSvc.loadUnit(db, tenantId, co, id) : null;
+  return unit && unit.isActive && unit.members.every((m) => m.isActive) ? unit.id : null;
 }
 
 /**
