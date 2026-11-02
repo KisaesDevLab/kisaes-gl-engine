@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { eq, and, sql, lte, gte, between, count, or, ne } from 'drizzle-orm';
+import { eq, and, sql, lte, gte, between, count, or, ne, type SQL } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import {
@@ -318,7 +318,10 @@ export function cashBasisLinesWith(
         AND ${dateCondT} AND ${companyT} AND ${adjustingCond(adjusting, 't.is_adjusting')}
         AND t.txn_type NOT IN ('invoice', 'bill', 'credit_memo', 'vendor_credit', 'bad_debt_recovery')
     ),
-    cb_lines AS (
+    cb_lines AS MATERIALIZED (
+      -- U-155: MATERIALIZED, so the virtual ledger is built once per query.
+      -- Inlined, a nested-loop consumer (accounts LEFT JOIN cb_lines) re-ran
+      -- every branch below once per account.
       -- Rule 2: pass-through, with payment AR/AP legs reduced to the
       -- unapplied remainder (on Unapplied receipts, U-152) and write-offs
       -- taken out (Q-SPF3).
@@ -458,6 +461,31 @@ export function cashBasisLinesWith(
       WHERE app.tenant_id = ${tenantId}
         AND ba.detail_type IS DISTINCT FROM 'accounts_payable'
     )`;
+}
+
+/**
+ * Run a query built on `cashBasisLinesWith` (U-155). The virtual ledger
+ * joins the tenant's transactions, lines and applications several times.
+ * Without fresh statistics (a new company, or right after an import or a
+ * restore, before autoanalyze runs) the planner estimates one row per
+ * table and nests loops whose inner sides re-read every line of the tenant:
+ * a few hundred transactions took minutes. Hash joins are linear whatever
+ * the estimates, so nested loops are switched off for this one query
+ * (set_config(..., true) is SET LOCAL: this transaction only). Results are
+ * identical; only the plan changes.
+ *
+ * JIT is switched off with it: the few nested loops that stay (the CROSS
+ * JOINs on cb_ur) carry the planner's disable cost, which lifts the plan
+ * cost far above jit_above_cost, and on a server built with LLVM every
+ * cash report then paid seconds of JIT compilation. Tenant-scoped reads of
+ * payment_applications use idx_pa_tenant (migration 0257) instead of the
+ * nested loop through idx_pa_invoice.
+ */
+export async function executeCashBasis(query: SQL) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('enable_nestloop', 'off', true), set_config('jit', 'off', true)`);
+    return tx.execute(query);
+  });
 }
 
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
@@ -616,7 +644,7 @@ export async function buildProfitAndLoss(
   const grouped = groupBy !== null;
 
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type,
           COALESCE(SUM(jl.debit), 0) as total_debit,
@@ -771,7 +799,7 @@ export async function buildBalanceSheet(
   const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
 
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, null, asOfDate, companyId, adjusting)}
         SELECT a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag,
           COALESCE(SUM(jl.debit), 0) as total_debit,
@@ -1235,7 +1263,7 @@ export async function buildExpenseByVendor(
   // Cash basis groups by the PAYMENT's contact (cb.txn_contact_id); the
   // check-image payee fallback is accrual-only.
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT c.id as contact_id,
           COALESCE(c.display_name, 'Uncategorized') as vendor_name,
@@ -1278,7 +1306,7 @@ export async function buildExpenseByVendor(
   // Detail — one row per (vendor, account). Vendors ordered by their total
   // (matches the summary); accounts within a vendor by descending total.
   const detailRows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT
           COALESCE(c.id::text, 'uncategorized') AS vendor_key,
@@ -1405,7 +1433,7 @@ export async function buildExpenseByCategory(
     : sql``;
 
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
           SUM(cb.debit) - SUM(cb.credit) as total
@@ -1457,7 +1485,7 @@ export async function buildExpenseByCategory(
   // the summary, credits are included so refunds show and the subtotal
   // nets them out.
   const linesResult = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT
           (row_number() OVER (ORDER BY cb.account_id, cb.txn_date, cb.line_order))::text AS line_id,
@@ -1642,7 +1670,7 @@ export async function buildAccountDetailReport(
     : sql``;
 
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
           SUM(${cbSideCol}) as total
@@ -1683,7 +1711,7 @@ export async function buildAccountDetailReport(
   `);
 
   const linesResult = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT
           (row_number() OVER (ORDER BY cb.account_id, cb.txn_date, cb.line_order))::text AS line_id,
@@ -1747,7 +1775,7 @@ export async function buildAccountDetailReport(
     // inclusive, so this gives all recognition strictly before the period.
     const dayBefore = new Date(new Date(startDate + 'T00:00:00Z').getTime() - 86400000).toISOString().split('T')[0]!;
     const beginRows = basis === 'cash'
-      ? await db.execute(sql`
+      ? await executeCashBasis(sql`
           WITH ${cashBasisLinesWith(tenantId, null, dayBefore, companyId)}
           SELECT cb.account_id,
             COALESCE(SUM(cb.debit), 0) AS begin_debit,
@@ -1859,7 +1887,7 @@ export async function buildSalesByCustomer(
   // invoices at payment; cash sales pass through) grouped by the payment's
   // contact. Accrual counts sale-document revenue by the document's contact.
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
           SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total
@@ -1919,7 +1947,7 @@ export async function buildSalesByItem(
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT
           cb.item_id,
@@ -2580,7 +2608,7 @@ export async function buildGeneralLedger(
   //    of all activity strictly before the report startDate. For income
   //    statement accounts, only count activity from the fiscal year start.
   const beginResult = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, null, dayBeforeStart, companyId, adjusting)}
         SELECT a.id,
           COALESCE(SUM(
@@ -2630,7 +2658,7 @@ export async function buildGeneralLedger(
 
   // 3. Period activity (all journal lines in [startDate, endDate])
   const linesResult = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT
           (row_number() OVER (ORDER BY cb.account_id, cb.txn_date, cb.line_order))::text AS line_id,
@@ -2859,7 +2887,7 @@ export async function buildTrialBalance(
   // recognition date (cb.txn_date). Accrual reads the posted journal.
   const cashTagClause = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const rows = basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, null, endDate, companyId, adjusting)}
         SELECT a.id, a.account_number, a.name, a.account_type,
           COALESCE(SUM(
@@ -3088,7 +3116,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
     const typeCond = filters?.txnType ? sql`AND cb.txn_type = ${filters.txnType}` : sql``;
     const acctCond = filters?.accountId ? sql`AND cb.account_id = ${filters.accountId}` : sql``;
     const tagCond = filters?.tagId ? sql`AND cb.tag_id IN ${tagIn(filters.tagId)}` : sql``;
-    const cashRows = await db.execute(sql`
+    const cashRows = await executeCashBasis(sql`
       WITH ${cashBasisLinesWith(tenantId, start, end, companyId, filters?.adjusting ?? null)}
       SELECT cb.transaction_id AS id, cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
         c.display_name AS contact_name,
