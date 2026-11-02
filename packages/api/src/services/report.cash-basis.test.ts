@@ -25,7 +25,7 @@ import * as ledger from './ledger.service.js';
 import * as reportService from './report.service.js';
 
 let tenantId: string;
-let cash: any, ar: any, ap: any, rev: any, tax: any, exp: any, cc: any;
+let cash: any, ar: any, ap: any, rev: any, tax: any, exp: any, cc: any, ur: any;
 
 // Tenant-scoped cleanup — unscoped deletes would nuke concurrently
 // running suites' rows on the shared test DB. Only touch our tenant.
@@ -75,6 +75,7 @@ beforeEach(async () => {
   tax = await mk('Sales Tax Payable', 'liability', '20900', 'other_current_liability', 'sales_tax_payable');
   exp = await mk('Supplies', 'expense', '6000', 'office_expenses');
   cc = await mk('Visa', 'liability', '20200', 'credit_card');
+  ur = await mk('Unapplied receipts', 'revenue', '49900', 'service', 'unapplied_receipts');
 });
 
 afterEach(async () => {
@@ -166,15 +167,20 @@ describe('cash-basis Balance Sheet', () => {
     expect(bs.totalAssets).toBeCloseTo(bs.totalLiabilities + bs.totalEquity, 2);
   });
 
-  it('unapplied customer payment stays balanced (remainder on AR)', async () => {
+  it('unapplied customer payment is Unapplied receipts income, not A/R (U-152, Q-SPF1)', async () => {
     await post('customer_payment', '2026-12-10', [
       { accountId: cash.id, debit: '200', credit: '0' },
       { accountId: ar.id, debit: '0', credit: '200' },
     ], { total: '200' });
     const bs = await reportService.buildBalanceSheet(tenantId, '2026-12-31', 'cash');
-    // Cash +200, AR −200 (customer pre-payment) → net assets 0 = L + E.
-    expect(bs.totalAssets).toBeCloseTo(0, 2);
+    // Cash +200 and no A/R; the 200 is income (equity) until it is applied.
+    // (Before U-152: A/R −200, net assets 0.)
+    expect(bs.totalAssets).toBeCloseTo(200, 2);
+    expect(bs.assets.find((a: any) => a.accountId === ar.id)).toBeUndefined();
+    expect(bs.totalEquity).toBeCloseTo(200, 2);
     expect(bs.totalAssets).toBeCloseTo(bs.totalLiabilities + bs.totalEquity, 2);
+    const pl = await reportService.buildProfitAndLoss(tenantId, '2026-12-01', '2026-12-31', 'cash');
+    expect(pl.revenue.find((r: any) => r.accountId === ur.id)?.amount).toBeCloseTo(200, 2);
   });
 });
 

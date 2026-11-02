@@ -568,4 +568,27 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * defaultSalesTaxId and taxCodeId, items taxCodeId. Every posted sales document writes transaction_tax_lines (sum = STP lines).
    */
   'sales-tax-setup-v1',
+  /**
+   * Sales tax liability v2 (U-149): GET /reports/sales-tax-liability adds basis (start_date, end_date, basis accrual|cash, default the
+   * company's; agency_id) and agencies [{agencyId, name, items [{taxItemId, name, rate, taxableSales, nonTaxable [{codeId, code, amount}],
+   * collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}], totals}], totals, total, unassigned, openingPaid,
+   * otherEntries, glMovement, roundingDifference (6 places) and balanceCheck, all decimal strings (totalSales / totalTax stay numbers).
+   * GET /sales-tax/owed?asOf&basis&agencyId: owed per agency and item (S1: every live payment and adjustment counts whatever its date).
+   * GET /reports/sales-tax-payments lists payments and linked payments. Cash collected is the running-total share per settlement (Q-P23e).
+   */
+  'sales-tax-liability-v2',
+  /**
+   * Pure-cash receipts on every cash-basis report (U-152, Q-SPF1, Q-SPF3, Q-SPF7): money received and not applied to an invoice
+   * (unapplied payment remainders, held deposits, their refunds and bounces) is income in the system account "Unapplied receipts"
+   * (system_tag unapplied_receipts) until applied, then moves to the invoice's income and tax at the apply date; no A/R or Customer
+   * Deposits from payments on the cash Balance Sheet. Write-offs never appear on cash; invoices are recognised by cash + discount. Bill
+   * payments clear A/P by cash + discount. GET /sales-tax/diagnostics/cash-basis counts what moves in closed periods (Q-P23z).
+   */
+  'cash-basis-spf-v1',
+  /**
+   * Daily sales tax (U-149, Q-P23g): daily sales template lines take salesTaxId (one active tax line, credit side, forced to Sales Tax
+   * Payable) and taxCodeId (a sales line's code; none = taxable). POST /daily-sales/entries/preview adds salesTaxId, expectedTax
+   * (round2(taxable sales x the rate)) and problems [TAX_DIFFERS] (a warning); posting writes tax rows for the typed tax by item.
+   */
+  'daily-sales-tax-v1',
 ];

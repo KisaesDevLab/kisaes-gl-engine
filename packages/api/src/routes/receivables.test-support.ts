@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db } from '../db/index.js';
 import {
@@ -126,7 +126,8 @@ export class Harness {
     await db.update(companies).set({ defaultSalesTaxRate: taxRate, defaultPaymentTerms: 'net_30' }).where(eq(companies.id, company!.id));
     const tag = async (t: string) => (await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, t)) }))?.id;
     const bank = (await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.detailType, 'bank')) }))!.id;
-    const revenue = (await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.accountType, 'revenue')) }))!.id;
+    // Not a system account (U-152: Unapplied receipts is a revenue system account).
+    const revenue = (await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.accountType, 'revenue'), isNull(accounts.systemTag)) }))!.id;
     const expense = (await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.accountType, 'expense')) }))!.id;
     const [customer] = await db.insert(contacts).values({
       tenantId, companyId: company!.id, contactType: 'customer', displayName: 'Bluestem Veterinary Clinic',

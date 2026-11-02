@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { seedEquityRolesBestEffort } from './equity-roles.service.js';
+import { seedUnappliedReceiptsBestEffort } from './system-accounts.service.js';
 import { eq, and, notInArray, count } from 'drizzle-orm';
 import type { UpdateCompanyInput } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
@@ -461,6 +462,8 @@ export async function createAdditionalCompany(tenantId: string, input: { busines
 
   // Equity roles for the new company's entity type (U-55).
   await seedEquityRolesBestEffort(tenantId);
+  // The cash-basis Unapplied receipts line (U-152); best effort.
+  await seedUnappliedReceiptsBestEffort(tenantId, company.id);
 
   return publicCompanyRow(company);
 }

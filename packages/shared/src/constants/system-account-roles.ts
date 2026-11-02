@@ -160,6 +160,18 @@ export const SYSTEM_ACCOUNT_ROLES: SystemAccountRole[] = [
     accountType: 'liability',
     required: false,
   },
+  // Unapplied receipts (U-152, cash-basis-spf-v1, migration 0253) — nothing
+  // posts to it. The cash-basis reports re-point money received and not yet
+  // applied to an invoice (a payment's unapplied remainder, held deposits,
+  // their refunds and bounces) onto it, so cash basis shows it as income
+  // until it is applied (Q-SPF1). Created by 0253 and at sign-up.
+  {
+    tag: 'unapplied_receipts',
+    label: 'Unapplied receipts',
+    description: 'Cash-basis reports only: money received from clients and not yet applied to an invoice, shown as income until applied.',
+    accountType: 'revenue',
+    required: false,
+  },
   // Suspense — the holding account for amounts that must post now but are
   // not yet classified. Created/adopted lazily by
   // getOrCreateSystemAccount() in system-accounts.service.ts, which prefers

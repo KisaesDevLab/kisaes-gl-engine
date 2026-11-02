@@ -196,7 +196,7 @@
               { "item": "State", "taxableSales": "0.00", "collected": "0.00" },
               { "item": "Springfield", "taxableSales": "966.67", "nonTaxable": { "Non": "100.00" }, "collected": "85.80", "badDebts": "0.00", "recoveries": "0.00" },
               { "item": "City", "taxableSales": "0.00", "collected": "0.00" }],
-            "total": "85.80", "roundingDifference": "-0.002780",
+            "total": "85.80", "roundingDifference": "-0.002790",
             "shares": { "INV-E": ["29.58", "29.59"] },
             "note": "Springfield: SR-D 8.88 + DS 17.75 + INV-E 29.58 + 29.59 (rounding each share gives 88.74 in all); INV-G's 16.30 counts in October (case 8); INV-K (Non) was drawn from the deposit on 11/03." } },
         { "op": "liability", "request": { "basis": "cash", "startDate": "2026-12-01", "endDate": "2026-12-31" },

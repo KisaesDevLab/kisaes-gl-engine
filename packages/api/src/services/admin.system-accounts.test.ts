@@ -62,6 +62,9 @@ describe('admin getSystemAccountsInfo', () => {
         expect(role.assigned, `required role ${role.tag} should be seeded`).not.toBeNull();
         expect(role.typeMismatch).toBe(false);
         expect(role.duplicates).toEqual([]);
+      } else if (role.tag === 'unapplied_receipts') {
+        // U-152: created at sign-up for the cash-basis reports.
+        expect(role.assigned, 'unapplied_receipts should be seeded').not.toBeNull();
       } else if (role.tag === 'owner_draw' || role.tag === 'owner_contribution') {
         // Equity roles for the company's entity type (sole_prop) are seeded
         // with the company (U-55); the template's Owner Withdraw/Contribution
@@ -189,7 +192,8 @@ describe('admin assignSystemAccount', () => {
     const next = await accountsService.create(tenantId, { name: 'RE Two', accountType: 'equity', accountNumber: '39998' });
     await admin.assignSystemAccount(tenantId, 'retained_earnings', next.id, userId);
     const logs = await db.select().from(auditLog)
-      .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'system_account_role')));
+      .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'system_account_role'), eq(auditLog.entityId, next.id)));
+    // (Sign-up also logs the Unapplied receipts role it creates, U-152.)
     expect(logs.length).toBe(1);
     expect(logs[0]!.entityId).toBe(next.id);
     expect(logs[0]!.userId).toBe(userId);

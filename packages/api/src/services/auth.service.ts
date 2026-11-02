@@ -16,6 +16,7 @@ import { auditLog } from '../middleware/audit.js';
 import { createCompanyForTenant } from './company.service.js';
 import { seedFromTemplate } from './accounts.service.js';
 import { seedEquityRolesBestEffort } from './equity-roles.service.js';
+import { seedUnappliedReceiptsBestEffort } from './system-accounts.service.js';
 import * as systemEmail from './system-email.service.js';
 import { recordStaffEmail } from './staff-email-audit.service.js';
 import { checkPasswordBreached } from '../utils/hibp.js';
@@ -157,6 +158,8 @@ async function provisionTenant(input: { companyName: string; businessType?: stri
   await seedFromTemplate(tenant.id, input.businessType || 'default', undefined, { systemOnly: !!input.systemAccountsOnly });
   // Owner-money accounts for the entity type (U-55); best effort.
   await seedEquityRolesBestEffort(tenant.id);
+  // The cash-basis Unapplied receipts line (U-152); best effort.
+  await seedUnappliedReceiptsBestEffort(tenant.id);
 
   // New-tenant default: Practice flags turned ON. The build plan
   // distinguishes pre-Phase-1 tenants (migration seeds disabled)
@@ -412,6 +415,8 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   const company = await createCompanyForTenant(tenant.id, input.companyName);
   await seedFromTemplate(tenant.id, input.businessType || 'default');
   await seedEquityRolesBestEffort(tenant.id);
+  // The cash-basis Unapplied receipts line (U-152); best effort.
+  await seedUnappliedReceiptsBestEffort(tenant.id);
 
   // New-tenant Practice flag seed (see createClientTenant above).
   await seedFeatureFlags(tenant.id);

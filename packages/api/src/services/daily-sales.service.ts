@@ -39,6 +39,7 @@ import { getOrCreateSystemAccount } from './system-accounts.service.js';
 import { assertTagsInTenant } from './tags.service.js';
 import { reassignDraftAttachments } from './attachment.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
+import * as st from './sales-tax.service.js';
 
 const TOLERANCE = new Decimal(BALANCE_TOLERANCE);
 
@@ -156,7 +157,7 @@ export async function duplicateTemplate(tenantId: string, id: string, input: Dup
       await tx.insert(dailySalesTemplateLines).values(lines.map((l, i) => ({
         tenantId, templateId: tpl!.id, section: l.section, label: l.label, accountId: l.accountId,
         tagId: l.tagId, normalSide: l.normalSide, sortOrder: i, isRequired: l.isRequired,
-        allowTag: l.allowTag, isActive: true,
+        allowTag: l.allowTag, isActive: true, salesTaxId: l.salesTaxId, taxCodeId: l.taxCodeId,
       })));
     }
     return tpl!.id;
@@ -169,8 +170,9 @@ export async function duplicateTemplate(tenantId: string, id: string, input: Dup
 // (is_active=false) any existing line not present — preserves provenance for
 // entry values that referenced a removed line.
 export async function replaceTemplateLines(tenantId: string, templateId: string, lines: DailySalesTemplateLineInput[], userId?: string, companyId?: string) {
-  await getTemplate(tenantId, templateId, companyId); // tenant/company scope check
+  const tpl = await getTemplate(tenantId, templateId, companyId); // tenant/company scope check
   await assertTagsInTenant(tenantId, lines.flatMap((l) => (l.tagId ? [l.tagId] : [])));
+  const stpAccountId = await assertTemplateTax(tenantId, tpl.companyId ?? companyId ?? null, lines);
   const existing = await db.select({ id: dailySalesTemplateLines.id }).from(dailySalesTemplateLines)
     .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.templateId, templateId)));
   const incomingIds = new Set(lines.filter((l) => l.id).map((l) => l.id as string));
@@ -179,8 +181,10 @@ export async function replaceTemplateLines(tenantId: string, templateId: string,
     const l = lines[i]!;
     const row = {
       tenantId, templateId, section: l.section, label: l.label,
-      accountId: l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
+      // U-149: a tax line linked to a sales tax always posts to Sales Tax Payable.
+      accountId: l.salesTaxId ? stpAccountId : l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
       isRequired: l.isRequired ?? false, allowTag: l.allowTag ?? false, isActive: l.isActive ?? true,
+      salesTaxId: l.salesTaxId ?? null, taxCodeId: l.taxCodeId ?? null,
     };
     if (l.id) {
       await db.update(dailySalesTemplateLines).set(row)
@@ -197,6 +201,93 @@ export async function replaceTemplateLines(tenantId: string, templateId: string,
   }
   await auditLog(tenantId, 'update', 'daily_sales_template_lines', templateId, null, { count: lines.length }, userId);
   return getTemplate(tenantId, templateId);
+}
+
+// ── Sales tax (U-149, daily-sales-tax-v1) ───────────────────────
+
+/**
+ * A template's sales tax links (Q-P23g): at most one active line carries a
+ * sales tax, and it is a `tax` section line, credit side; its sales tax is an
+ * active item or group of the company; a line's tax code is an active code
+ * of the company. Returns the Sales Tax Payable account a linked line is
+ * forced onto (null when no line is linked). 400 VALIDATION_ERROR otherwise.
+ */
+async function assertTemplateTax(tenantId: string, companyId: string | null, lines: DailySalesTemplateLineInput[]): Promise<string | null> {
+  const linked = lines.filter((l) => l.salesTaxId && (l.isActive ?? true));
+  if (linked.length > 1) throw AppError.badRequest('Only one tax line can be linked to a sales tax.', 'VALIDATION_ERROR', { field: 'salesTaxId' });
+  const co = await st.rowCompanyId(db, tenantId, companyId);
+  for (const l of lines) {
+    if (l.salesTaxId) {
+      if (l.section !== 'tax' || l.normalSide !== 'credit') {
+        throw AppError.badRequest('Only a tax line (credit side) can be linked to a sales tax.', 'VALIDATION_ERROR', { field: 'salesTaxId' });
+      }
+      await st.assertTaxRefs(db, tenantId, co, { defaultSalesTaxId: l.salesTaxId });
+    }
+    if (l.taxCodeId) await st.assertTaxRefs(db, tenantId, co, { taxCodeId: l.taxCodeId });
+  }
+  return linked.length ? getOrCreateSystemAccount(tenantId, 'sales_tax_payable', companyId ?? undefined) : null;
+}
+
+type TaxedTemplateLine = { id: string; section: string; normalSide: string; isActive: boolean; salesTaxId?: string | null; taxCodeId?: string | null };
+
+export interface EntryTax {
+  salesTaxId: string;
+  /** round2(taxable sales x the sales tax's rate), 2 places. */
+  expectedTax: string;
+  /** The tax typed on the linked line, 2 places. */
+  typedTax: string;
+  /** TAX_DIFFERS when the typed tax is not the expected tax (a warning; the typed tax posts). */
+  problems: string[];
+  rows: st.TaxRowInput[];
+}
+
+/**
+ * The sales tax of a daily sale (Q-P23g): taxable sales = the sales lines
+ * with no code or a taxable code (a debit-side sales line counts negative);
+ * the typed tax is what posts, split over the sales tax's items by largest
+ * remainder; non-taxable sales add rows of tax 0 by code. null when the
+ * template has no linked tax line.
+ */
+export async function entryTax(
+  executor: DbOrTx, tenantId: string, companyId: string | null,
+  lines: readonly TaxedTemplateLine[], values: ReadonlyArray<{ templateLineId: string; amount: string }>,
+): Promise<EntryTax | null> {
+  const linked = lines.find((l) => l.isActive && l.salesTaxId);
+  if (!linked) return null;
+  const co = await st.rowCompanyId(executor, tenantId, companyId);
+  const unit = co ? await st.loadUnit(executor, tenantId, co, linked.salesTaxId!) : null;
+  if (!co || !unit) return null;
+  const byLine = new Map(values.map((v) => [v.templateLineId, new Decimal(v.amount || '0')]));
+  const signed = (l: TaxedTemplateLine) => {
+    const a = byLine.get(l.id) ?? new Decimal(0);
+    return l.normalSide === 'credit' ? a : a.negated();
+  };
+  const codes = await st.codesById(executor, tenantId, lines.map((l) => l.taxCodeId));
+  let base = new Decimal(0);
+  const nonTaxable = new Map<string, InstanceType<typeof Decimal>>();
+  for (const l of lines) {
+    if (!l.isActive || l.section !== 'sales') continue;
+    const code = l.taxCodeId ? codes.get(l.taxCodeId) : undefined;
+    if (code && !code.taxable) nonTaxable.set(code.id, (nonTaxable.get(code.id) ?? new Decimal(0)).plus(signed(l)));
+    else base = base.plus(signed(l));
+  }
+  const typed = signed(linked).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  const rate = unit.members.reduce((s, m) => s.plus(m.rate), new Decimal(0));
+  const expected = base.times(rate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  const shares = st.splitTax(unit.members.map((m) => base.times(m.rate)), unit.members.map((m) => new Decimal(m.rate)), typed);
+  const rows: st.TaxRowInput[] = unit.members.map((m, k) => ({
+    salesTaxId: unit.id, taxItemId: m.itemId, agencyId: m.agencyId, rate: m.rate, base: base.toFixed(4), tax: shares[k]!.toFixed(4),
+  }));
+  for (const [codeId, amount] of nonTaxable) {
+    if (amount.isZero()) continue;
+    for (const m of unit.members) {
+      rows.push({ salesTaxId: unit.id, taxItemId: m.itemId, agencyId: m.agencyId, taxCodeId: codeId, rate: m.rate, base: amount.toFixed(4), tax: '0' });
+    }
+  }
+  return {
+    salesTaxId: unit.id, expectedTax: expected.toFixed(2), typedTax: typed.toFixed(2),
+    problems: typed.equals(expected) ? [] : ['TAX_DIFFERS'], rows,
+  };
 }
 
 // ── Compute (shared by preview + post) ──────────────────────────
@@ -427,6 +518,7 @@ export async function previewEntry(tenantId: string, input: PreviewDailySalesEnt
   const values = input.values.map((v) => ({ templateLineId: v.templateLineId, amount: new Decimal(String(v.amount ?? 0)).toFixed(4), tagId: v.tagId ?? null }));
   const c = computeEntry(tpl.lines, values, null, tpl.defaultTagId ?? null);
   const overShort = new Decimal(c.overShort);
+  const tax = await entryTax(db, tenantId, tpl.companyId ?? companyId ?? null, tpl.lines, values);
   return {
     totalDebits: c.totalDebits,
     totalCredits: c.totalCredits,
@@ -436,6 +528,10 @@ export async function previewEntry(tenantId: string, input: PreviewDailySalesEnt
     totalTax: c.totalTax,
     totalPayments: c.totalPayments,
     unmappedLabels: c.unmappedLabels,
+    // U-149 (daily-sales-tax-v1): with a tax line linked to a sales tax.
+    salesTaxId: tax?.salesTaxId ?? null,
+    expectedTax: tax?.expectedTax ?? null,
+    problems: tax?.problems ?? [],
   };
 }
 
@@ -473,12 +569,17 @@ export async function postEntry(tenantId: string, id: string, userId?: string, c
   }
 
   const result = await db.transaction(async (tx) => {
+    // U-149: the linked tax line's rows (the typed tax by item); tax on other
+    // Sales Tax Payable lines stays an unassigned row.
+    const tax = await entryTax(tx, tenantId, entry.companyId ?? tpl.companyId ?? companyId ?? null, tpl.lines,
+      values.map((v) => ({ templateLineId: v.templateLineId, amount: v.amount })));
     const posted = await ledger.postTransaction(tenantId, {
       txnType: 'daily_sales',
       txnDate: String(entry.businessDate),
       status: 'posted',
       memo: `Daily sales — ${tpl.name} — ${String(entry.businessDate)}`,
       lines,
+      ...(tax ? { taxRows: tax.rows } : {}),
     }, userId, companyId, tx);
 
     await tx.update(dailySalesEntries).set({

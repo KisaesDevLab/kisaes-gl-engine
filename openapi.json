@@ -29063,6 +29063,17 @@
                           ],
                           "type": "string"
                         },
+                        "salesTaxId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "section": {
                           "enum": [
                             "sales",
@@ -29081,6 +29092,17 @@
                           "type": "integer"
                         },
                         "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taxCodeId": {
                           "anyOf": [
                             {
                               "format": "uuid",
@@ -54675,7 +54697,57 @@
     },
     "/api/v1/reports/sales-tax-liability": {
       "get": {
+        "description": "Response {title, startDate, endDate, totalSales, totalTax (v1 numbers, accrual document totals), basis, agencyId, agencies: [{agencyId|null, name, items: [{taxItemId, name, rate (6 places), taxableSales, nonTaxable: [{codeId, code, amount}], collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}], totals: {taxableSales, collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}}], totals, total, unassigned, openingPaid, otherEntries, glMovement, roundingDifference, balanceCheck: {stpBalance, owedAtEnd, unassigned, otherEntriesCumulative, openingPaid, roundingDifferenceCumulative}}. New amounts are 2-place strings; roundingDifference 6 places. Query start_date, end_date (default this year to today), basis accrual|cash (default the company's sales tax basis), agency_id (another company's is 404; the GL fields are null when filtered). Columns are for the range, owedAtEnd cumulative to end_date. collected: accrual = sale rows by date; cash = the running-total share of each payment, credit applied or deposit drawn (cash + discount, never write-offs) on the dates the cash ledger uses, credit memo refunds, and sales receipts and daily sales on their date. discounts on both bases; badDebts and recoveries accrual only (0.00 on cash). total = collected + discounts + badDebts + recoveries. glMovement = the Sales Tax Payable movement on the basis = Σ columns + unassigned + otherEntries + roundingDifference (cash: exact shares - rounded shares). stpBalance = owedAtEnd + openingPaid + unassigned + otherEntriesCumulative + roundingDifferenceCumulative.",
         "operationId": "get_api_v1_reports_sales_tax_liability",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agency_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -54689,6 +54761,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Sales tax liability by agency and tax item (sales-tax-liability-v2, cash-basis-spf-v1)",
         "tags": [
           "reports"
         ]
@@ -54696,7 +54769,45 @@
     },
     "/api/v1/reports/sales-tax-payments": {
       "get": {
+        "description": "Response {title, startDate, endDate, data: [{transactionId, date, txn_date, txnType, number, agencyId, agencyName, total, paid, adjustments, linked}]}: Pay Sales Tax payments and payments linked to an agency (linked = true), by date; amounts are 2-place strings. Query start_date, end_date, agency_id.",
         "operationId": "get_api_v1_reports_sales_tax_payments",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agency_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -54710,6 +54821,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Sales tax payments (sales-tax-liability-v2)",
         "tags": [
           "reports"
         ]
@@ -56910,6 +57022,29 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/sales-tax/diagnostics/cash-basis": {
+      "get": {
+        "description": "Response {companyId, closingDate, unappliedReceipts, customerDeposits, writeOffs, billDiscounts}, each {count, amount} (2-place string), dated on or before the company's closing date (all zero without one). Cash-basis reports (U-152) now show unapplied payments and Customer Deposits lines as Unapplied receipts income, leave write-offs out and net bill discounts; posted transactions do not change, but cash-basis reports of those closed periods do. Read only.",
+        "operationId": "get_api_v1_sales_tax_diagnostics_cash_basis",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "What the cash-basis corrections move in closed periods (cash-basis-spf-v1, Q-P23z)",
+        "tags": [
+          "sales-tax"
+        ]
+      }
+    },
     "/api/v1/sales-tax/items": {
       "get": {
         "description": "Response {data: [{id, kind: item|group, name, description, rate (6 places; a group: the sum of its members), agencyId, agencyName, members? [{id, name, rate, agencyId, isActive}] (groups), legacyRate (a legacy item: the stored line rate it stands for, else null), isActive, inUse, updatedAt}]}, items then groups by name; active only unless includeInactive=true. One sales tax per document (Q-P23d): an item, or a group of 1-10 items charged together; tax = round2(taxable base x combined rate) once, allocated to the members by largest remainder. A legacy item (made for a rate saved on documents before sales tax setup, or sent by a line taxRate) has no agency until one is set; its rate can't change. A changed rate or agency applies to documents saved from now on (Q-P23v).",
@@ -57261,6 +57396,79 @@
           "sales-tax"
         ],
         "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/owed": {
+      "get": {
+        "description": "Response {asOf, basis, agencyId, agencies: [{agencyId, name, items: [{taxItemId, name, owed}], total}], unassigned, total}; amounts are 2-place strings. Per agency and tax item: the tax rows counted on the basis (default the company's sales tax basis) dated on or before asOf (collected, SSUTA discounts; bad debts and recoveries on accrual only) + every live adjustment - every live paid and opening payment line, whatever their date (a payment made after asOf still counts, so tax is never paid twice). Rows written before their item had an agency count under the item's agency. Unassigned: tax on Sales Tax Payable with no tax item. asOf (or as_of) is required; agencyId (or agency_id) filters; another company's agency is 404.",
+        "operationId": "get_api_v1_sales_tax_owed",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agencyId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agency_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Sales tax owed as of a date (sales-tax-liability-v2)",
+        "tags": [
+          "sales-tax"
+        ]
       }
     },
     "/api/v1/settings/storage": {
