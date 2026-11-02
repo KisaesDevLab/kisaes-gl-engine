@@ -34,7 +34,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db, type DbOrTx } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
-import { arAppsCte, cashBasisLinesWith, buildSalesTaxLiability } from './report.service.js';
+import { arAppsCte, cashBasisLinesWith, buildSalesTaxLiability, executeCashBasis } from './report.service.js';
 
 const BaseDecimal = DecimalLib.default || DecimalLib;
 const Decimal = BaseDecimal.clone({ precision: 40, rounding: BaseDecimal.ROUND_HALF_UP });
@@ -182,7 +182,7 @@ function paymentLinesSql(tenantId: string, companyId: string | null, startDate: 
 /** Sales Tax Payable movement on a basis: [start, end] (start null = cumulative). */
 async function stpMovement(tenantId: string, companyId: string | null, basis: SalesTaxBasis, startDate: string | null, endDate: string): Promise<DecimalValue> {
   if (basis === 'cash') {
-    const r = await db.execute(sql`
+    const r = await executeCashBasis(sql`
       WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
       SELECT COALESCE(SUM(cb.credit - cb.debit), 0)::text AS m
       FROM cb_lines cb JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}

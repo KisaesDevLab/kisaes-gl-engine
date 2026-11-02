@@ -38,7 +38,7 @@ import {
   accountTaxAssignments, activityUnits, companies, glVersionStamps,
   tagActivityMap, tbTaxEntries, tbTaxEntryLines,
 } from '../../db/schema/index.js';
-import { cashBasisLinesWith } from '../report.service.js';
+import { cashBasisLinesWith, executeCashBasis } from '../report.service.js';
 import { taxYearOf } from './tax-profile.service.js';
 import { AppError } from '../../utils/errors.js';
 import { log } from '../../utils/logger.js';
@@ -181,7 +181,7 @@ export async function computeWorkpaper(tenantId: string, companyId: string, opts
   // buildTrialBalance — the Adjusted ≡ published-TB identity depends
   // on all three agreeing.
   const raw = opts.basis === 'cash'
-    ? await db.execute(sql`
+    ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, null, opts.periodEnd, companyId)}
         SELECT a.id AS account_id, a.account_number, a.name, a.account_type, a.detail_type,
           COALESCE(tam.activity_unit_id, du.id, ${ZERO_UUID}::uuid) AS unit_id,

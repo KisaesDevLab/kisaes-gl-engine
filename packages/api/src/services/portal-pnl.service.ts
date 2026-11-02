@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { accounts, companies, portalContactCompanies } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -150,9 +150,11 @@ export async function getPortalAccountTransactions(
 
   const amountExpr = isIncome ? sql`(s.credit - s.debit)` : sql`(s.debit - s.credit)`;
 
+  // U-155: the cash source runs with the cash-basis planner settings.
+  const run = basis === 'cash' ? reportSvc.executeCashBasis : (q: SQL) => db.execute(q);
   const [countRes, rowsRes] = await Promise.all([
-    db.execute(sql`${source} SELECT COUNT(*)::int AS total, COALESCE(SUM(${amountExpr}), 0) AS sum FROM src s`),
-    db.execute(sql`${source}
+    run(sql`${source} SELECT COUNT(*)::int AS total, COALESCE(SUM(${amountExpr}), 0) AS sum FROM src s`),
+    run(sql`${source}
       SELECT s.transaction_id, s.txn_date, s.txn_type, s.txn_number, s.memo,
         c.display_name AS payee, ${amountExpr} AS amount
       FROM src s

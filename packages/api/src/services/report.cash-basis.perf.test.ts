@@ -8,10 +8,12 @@
 // credit memos applied and refunded, credits applied later, customer
 // deposits, bounced payments, bills paid with an early-payment discount,
 // sales tax payments, cash sales) must run the cash Balance Sheet and P&L
-// in well under the bound below. Before the fix these took tens of seconds.
+// in well under the bound below. Before the fix these took minutes: the
+// test runs right after seeding, with no planner statistics, as a new
+// company or a fresh import does.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, sessions, accounts, companies, auditLog, contacts,
@@ -22,8 +24,8 @@ import * as reportService from './report.service.js';
 
 let tenantId = '';
 const CYCLES = 40;
-// Generous: the fixed queries take well under 1 s on a laptop at this size.
-const BOUND_MS = 5000;
+// Generous: about 50 ms each on a laptop at this size after the fix.
+const BOUND_MS = 2000;
 
 async function cleanDb() {
   if (!tenantId) return;
@@ -175,7 +177,6 @@ beforeAll(async () => {
         .where(eq(paymentApplications.paymentId, p1.id));
     }
   }
-  if (process.env.PERF_ANALYZE) await db.execute(sql`ANALYZE transactions, journal_lines, accounts, payment_applications, bill_payment_applications, transaction_tax_lines`);
 }, 600_000);
 
 afterAll(async () => {
