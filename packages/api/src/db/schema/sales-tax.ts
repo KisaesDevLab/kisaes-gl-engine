@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { pgTable, uuid, varchar, text, boolean, integer, date, timestamp, decimal, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, boolean, integer, date, timestamp, decimal, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 // Sales tax (U-147, migration 0252). An agency is a vendor the tax is paid
@@ -120,6 +120,8 @@ export const salesTaxPaymentLines = pgTable('sales_tax_payment_lines', {
   amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
   accountId: uuid('account_id'),
   reason: varchar('reason', { length: 255 }),
+  /** The mark-paid-through run that wrote this opening line (0254); NULL otherwise. */
+  runId: uuid('run_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   companyIdx: index('idx_st_payment_lines_company').on(t.companyId, t.taxItemId),
@@ -144,6 +146,29 @@ export const salesTaxPayments = pgTable('sales_tax_payments', {
 }, (t) => ({
   companyIdx: index('idx_st_payments_company').on(t.companyId, t.agencyId, t.throughDate),
   tenantIdx: index('idx_st_payments_tenant').on(t.tenantId),
+}));
+
+/**
+ * Mark paid through (U-150, migration 0254): one row per run, with the 201
+ * body's lines and total; its opening lines carry run_id. Undo deletes those
+ * lines and sets undone_at.
+ */
+export const salesTaxMarkPaidRuns = pgTable('sales_tax_mark_paid_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  agencyId: uuid('agency_id').notNull(),
+  throughDate: date('through_date').notNull(),
+  reason: varchar('reason', { length: 255 }).notNull(),
+  total: decimal('total', { precision: 19, scale: 4 }).notNull(),
+  lines: jsonb('lines').$type<Array<{ taxItemId: string; name: string; amount: string }>>().notNull().default(sql`'[]'::jsonb`),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  undoneBy: uuid('undone_by'),
+  undoneAt: timestamp('undone_at', { withTimezone: true }),
+}, (t) => ({
+  companyIdx: index('idx_st_mark_paid_runs_company').on(t.companyId, t.agencyId, t.throughDate),
+  tenantIdx: index('idx_st_mark_paid_runs_tenant').on(t.tenantId),
 }));
 
 /** Exemption certificates (U-151, migration 0255): a client's resale or exemption certificate. */

@@ -16,13 +16,14 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   companies, contacts, items, accounts, transactionTaxLines, salesTaxPaymentLines, salesTaxGroupMembers, salesTaxItems, salesTaxCodes,
-  salesTaxAgencies, salesTaxPayments,
+  salesTaxAgencies, salesTaxPayments, salesTaxMarkPaidRuns, auditLog,
 } from '../db/schema/index.js';
 import { salesTaxRouter, salesTaxReportsRouter } from './sales-tax.routes.js';
 import { invoicesRouter } from './invoices.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { Harness, type Co, key, m2, lineSet, expectedLines } from './receivables.test-support.js';
 import * as checks from '../services/check.service.js';
+import * as ledger from '../services/ledger.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 
 type Body = Record<string, any>;
@@ -32,7 +33,7 @@ const monett = golden['seeds'].monett as Body;
 const g9 = (golden['cases'] as Body[]).find((c) => c['id'] === 9)!['steps'] as Body[];
 
 async function clean(tid: string) {
-  for (const t of [salesTaxPayments, transactionTaxLines, salesTaxPaymentLines, salesTaxGroupMembers, salesTaxItems, salesTaxCodes, salesTaxAgencies]) {
+  for (const t of [salesTaxMarkPaidRuns, salesTaxPayments, transactionTaxLines, salesTaxPaymentLines, salesTaxGroupMembers, salesTaxItems, salesTaxCodes, salesTaxAgencies]) {
     await db.delete(t).where(eq(t.tenantId, tid));
   }
 }
@@ -224,5 +225,119 @@ describe('Pay Sales Tax rules', () => {
 
   it('advertises sales-tax-pay-v1 and idempotency-sales-tax-pay-v1', () => {
     expect(DESKTOP_CAPABILITIES).toEqual(expect.arrayContaining(['sales-tax-pay-v1', 'idempotency-sales-tax-pay-v1']));
+  });
+});
+
+describe('review fixes (U-150)', () => {
+  const state = () => ids.agencies.get('Sample State Revenue Dept.')!;
+  const base = () => ({ agencyId: state(), throughDate: '2026-11-30', date: '2026-12-10', bankAccountId: c.roles['checking']!, method: 'electronic' });
+
+  it('lines[].amount null = owed + adjustments, computed by the engine; preview and pay agree', async () => {
+    const b = {
+      ...base(),
+      lines: [{ taxItemId: ids.taxes.get('State'), amount: null }, { taxItemId: ids.taxes.get('Springfield'), amount: '100.00' }],
+      adjustments: [{ taxItemId: ids.taxes.get('State'), accountId: ids.accts.get('sales_tax_discounts'), amount: '-1.00', reason: 'Timely filing discount' }],
+    };
+    const pv = ok(await req('POST', '/api/v1/sales-tax/payments/preview', b), 200);
+    expect(pv['lines'].map((l: Body) => [l['name'], l['owed'], l['adjustment'], l['amount']]))
+      .toEqual([['State', '80.70', '-1.00', '79.70'], ['Springfield', '131.68', '0.00', '100.00']]);
+    expect([pv['total'], pv['problems']]).toEqual(['179.70', []]);
+    // Absent is the same as null.
+    const pv2 = ok(await req('POST', '/api/v1/sales-tax/payments/preview', { ...b, lines: [{ taxItemId: ids.taxes.get('State') }, b.lines[1]] }), 200);
+    expect(pv2['total']).toBe('179.70');
+    const paid = ok(await req('POST', '/api/v1/sales-tax/payments', { ...b, expectedOwed: pv['owed'] }));
+    expect(paid['total']).toBe(pv['total']);
+    const after = await owed('2026-11-30', 'Sample State Revenue Dept.');
+    expect(after['agencies'][0]['items'].map((i: Body) => [i['name'], i['owed']])).toEqual([['State', '0.00'], ['Springfield', '31.68']]);
+  });
+
+  it('owed is read on the pay transaction\'s connection: more concurrent pays than pool connections all finish; one wins', async () => {
+    const b = { ...base(), expectedOwed: '212.38' };
+    const results = await Promise.all(Array.from({ length: 25 }, () => req('POST', '/api/v1/sales-tax/payments', b)));
+    const codes = results.map((r) => (r.status === 201 ? 201 : `${r.status}:${r.json['error']?.code}`));
+    expect(codes.filter((x) => x === 201).length).toBe(1);
+    expect(codes.filter((x) => x !== 201).every((x) => x === '409:SALES_TAX_OWED_CHANGED' || x === '409:RETRY')).toBe(true);
+    expect((await owed('2026-11-30', 'Sample State Revenue Dept.'))['total']).toBe('0.00');
+  }, 60_000);
+
+  it('mark paid through: the 201 shape on replay, closing date, list, undo (owed comes back, audited), ALREADY_UNDONE, scope', async () => {
+    const k = key();
+    const m = ok(await req('POST', '/api/v1/sales-tax/payments/mark-paid-through', { agencyId: state(), throughDate: '2026-11-30' }, { 'Idempotency-Key': k }));
+    expect(m).toMatchObject({ agencyId: state(), throughDate: '2026-11-30', total: '212.38', undoneAt: null });
+    expect(m['lines'].map((l: Body) => [l['name'], l['amount']])).toEqual([['State', '80.70'], ['Springfield', '131.68']]);
+    const replay = ok(await req('POST', '/api/v1/sales-tax/payments/mark-paid-through', { agencyId: state(), throughDate: '2026-11-30' }, { 'Idempotency-Key': k }));
+    expect(replay).toEqual(m);
+    expect(ok(await req('GET', '/api/v1/sales-tax/payments/mark-paid-through'), 200)['data'].map((r: Body) => r['runId'])).toEqual([m['runId']]);
+    // Another company's run is 404.
+    const other = await h.secondCompany(c);
+    const foreign = await h.request('POST', `/api/v1/sales-tax/payments/mark-paid-through/${m['runId']}/undo`, c.token, {}, { 'Idempotency-Key': key(), ...other });
+    expect(foreign.status).toBe(404);
+    // A closed period: undo and a new run need the closing password.
+    await db.update(companies).set({ lockDate: '2026-12-31' }).where(eq(companies.id, c.companyId));
+    const lockedUndo = await req('POST', `/api/v1/sales-tax/payments/mark-paid-through/${m['runId']}/undo`, {});
+    expect(lockedUndo.status).toBeGreaterThanOrEqual(400);
+    expect(lockedUndo.status).toBeLessThan(500);
+    const lockedRun = await req('POST', '/api/v1/sales-tax/payments/mark-paid-through', { agencyId: ids.agencies.get('Sample City Revenue Office'), throughDate: '2026-11-30' });
+    expect(lockedRun.status).toBeGreaterThanOrEqual(400);
+    expect(lockedRun.status).toBeLessThan(500);
+    expect((await db.select().from(salesTaxMarkPaidRuns).where(eq(salesTaxMarkPaidRuns.tenantId, c.tenantId))).length).toBe(1);
+    await db.update(companies).set({ lockDate: null }).where(eq(companies.id, c.companyId));
+    // Undo: owed comes back; replay returns the same body; a second undo is 409.
+    const uk = key();
+    const u = ok(await req('POST', `/api/v1/sales-tax/payments/mark-paid-through/${m['runId']}/undo`, {}, { 'Idempotency-Key': uk }), 200);
+    expect([u['runId'], u['total'], typeof u['undoneAt']]).toEqual([m['runId'], '212.38', 'string']);
+    expect((await owed('2026-11-30', 'Sample State Revenue Dept.'))['total']).toBe('212.38');
+    expect(ok(await req('POST', `/api/v1/sales-tax/payments/mark-paid-through/${m['runId']}/undo`, {}, { 'Idempotency-Key': uk }), 200)).toEqual(u);
+    const again = await req('POST', `/api/v1/sales-tax/payments/mark-paid-through/${m['runId']}/undo`, {});
+    expect([again.status, again.json['error']?.code]).toEqual([409, 'ALREADY_UNDONE']);
+    expect(ok(await req('GET', '/api/v1/sales-tax/payments/mark-paid-through'), 200)['data']).toEqual([]);
+    expect(ok(await req('GET', '/api/v1/sales-tax/payments/mark-paid-through?include_undone=true'), 200)['data'].length).toBe(1);
+    const audit = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'sales_tax_mark_paid')));
+    expect(audit.map((a) => a.action).sort()).toEqual(['create', 'delete']);
+  });
+
+  it('an over-paid item keeps its credit: mark paid writes lines only for items with tax owed', async () => {
+    const spr = ids.taxes.get('Springfield')!;
+    await db.insert(salesTaxPaymentLines).values({ tenantId: c.tenantId, companyId: c.companyId, transactionId: null, taxItemId: spr, agencyId: state(),
+      kind: 'opening', lineDate: '2026-11-01', amount: '140.0000' });
+    const m = ok(await req('POST', '/api/v1/sales-tax/payments/mark-paid-through', { agencyId: state(), throughDate: '2026-11-30' }));
+    expect(m['lines'].map((l: Body) => [l['name'], l['amount']])).toEqual([['State', '80.70']]);
+    expect((await owed('2026-11-30', 'Sample State Revenue Dept.'))['agencies'][0]['items'].map((i: Body) => [i['name'], i['owed']]))
+      .toEqual([['State', '0.00'], ['Springfield', '-8.32']]);
+  });
+
+  it('a linked check: an edit of its amount or date is 409 SALES_TAX_LINKED; a memo edit goes through; after unlink it edits', async () => {
+    const chk = await checks.createCheck(c.tenantId, {
+      bankAccountId: c.roles['checking']!, txnDate: '2026-12-12', amount: '24.02', printLater: true,
+      lines: [{ accountId: c.roles['sales_tax_payable']!, amount: '24.02' }],
+    } as never, c.userId, c.companyId);
+    const city = ids.agencies.get('Sample City Revenue Office')!;
+    ok(await req('POST', '/api/v1/sales-tax/payments/link', { transactionId: chk.id, agencyId: city, lines: [{ taxItemId: ids.taxes.get('City'), amount: '24.02' }] }));
+    const edit = (over: Body) => checks.updateCheck(c.tenantId, chk.id, {
+      bankAccountId: c.roles['checking']!, txnDate: '2026-12-12', amount: '24.02', lines: [{ accountId: c.roles['sales_tax_payable']!, amount: '24.02' }], ...over,
+    } as never, c.userId, c.companyId);
+    await expect(edit({ amount: '20.00', lines: [{ accountId: c.roles['sales_tax_payable']!, amount: '20.00' }] })).rejects.toMatchObject({ code: 'SALES_TAX_LINKED', statusCode: 409 });
+    await expect(edit({ txnDate: '2026-12-20' })).rejects.toMatchObject({ code: 'SALES_TAX_LINKED' });
+    await edit({ memo: 'City sales tax, November' });
+    // A linked journal entry, edited through the ledger (PUT /transactions/:id).
+    const jeLines = (amt: string) => [{ accountId: c.roles['sales_tax_payable']!, debit: amt, credit: '0' }, { accountId: c.roles['checking']!, debit: '0', credit: amt }];
+    const je = await ledger.postTransaction(c.tenantId, { txnType: 'journal_entry', txnDate: '2026-12-14', lines: jeLines('10.00') } as never, c.userId, c.companyId);
+    ok(await req('POST', '/api/v1/sales-tax/payments/link', { transactionId: je.id, agencyId: state(), lines: [{ taxItemId: ids.taxes.get('State'), amount: '10.00' }] }));
+    await expect(ledger.updateTransaction(c.tenantId, je.id, { txnType: 'journal_entry', txnDate: '2026-12-21', lines: jeLines('10.00') } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'SALES_TAX_LINKED' });
+    await expect(ledger.updateTransaction(c.tenantId, je.id, { txnType: 'journal_entry', txnDate: '2026-12-14', lines: jeLines('12.00') } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'SALES_TAX_LINKED' });
+    await ledger.updateTransaction(c.tenantId, je.id, { txnType: 'journal_entry', txnDate: '2026-12-14', memo: 'State', lines: jeLines('10.00') } as never, c.userId, c.companyId);
+    expect((await owed('2026-11-30', 'Sample City Revenue Office'))['total']).toBe('50.00');
+    ok(await req('POST', `/api/v1/sales-tax/payments/${chk.id}/unlink`, {}), 200);
+    await edit({ amount: '20.00', lines: [{ accountId: c.roles['sales_tax_payable']!, amount: '20.00' }] });
+  });
+
+  it('a void keeps a payment\'s lines for GET; owed comes back', async () => {
+    const p = ok(await req('POST', '/api/v1/sales-tax/payments', { ...base(), expectedOwed: '212.38' }));
+    ok(await req('POST', `/api/v1/transactions/${p['id']}/void`, { reason: 'test' }), 200);
+    const got = ok(await req('GET', `/api/v1/sales-tax/payments/${p['id']}`), 200);
+    expect([got['status'], got['lines'].length]).toEqual(['void', 2]);
+    expect((await owed('2026-11-30', 'Sample State Revenue Dept.'))['total']).toBe('212.38');
   });
 });

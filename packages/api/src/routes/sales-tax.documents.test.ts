@@ -24,6 +24,8 @@ import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { Harness, type Co, key, m2, lineSet, expectedLines } from './receivables.test-support.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
+import { randomUUID } from 'node:crypto';
+import * as recurring from '../services/recurring.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type Body = Record<string, any>;
@@ -203,7 +205,7 @@ describe('resolution, codes and errors', () => {
     expect([bad.status, bad.json['error']?.code]).toEqual([400, 'VALIDATION_ERROR']);
   });
 
-  it('an edit keeps saved rates (RATE_CHANGED) unless useCurrentRates; PUT rewrites rows; duplicate keeps the sales tax; void drops rows', async () => {
+  it('an edit keeps saved rates (RATE_CHANGED) unless useCurrentRates; PUT rewrites rows; duplicate keeps the sales tax; void keeps rows', async () => {
     const s = gstep(1);
     const r = await req('POST', '/api/v1/invoices', docBody(s['request']));
     const id = r.json['invoice']?.['id'] ?? r.json['id'];
@@ -224,10 +226,41 @@ describe('resolution, codes and errors', () => {
       expect([d.sum, d.stp, d.rows[0]!.taxItemId]).toEqual(['90.00', '90.00', ids.taxes.get('Springfield')]);
     }
     expect((await req('POST', `/api/v1/transactions/${id}/void`, { reason: 'test' })).status).toBe(200);
-    expect((await invariant(id)).rows).toEqual([]);
+    // The rows stay for the audit trail (readers count posted transactions only); the STP lines net to 0.00.
+    const voided = await invariant(id);
+    expect([voided.sum, voided.stp]).toEqual(['90.00', '0.00']);
   });
 
   it('advertises sales-tax-setup-v1', () => {
     expect(DESKTOP_CAPABILITIES).toContain('sales-tax-setup-v1');
+  });
+});
+
+describe('other posting paths keep the sales tax (recurring)', () => {
+  it('a recurring invoice of a sales tax invoice is computed with that sales tax: rows on its items, not a legacy rate', async () => {
+    const s = gstep(1);
+    const r = await req('POST', '/api/v1/invoices', { ...docBody(s['request']), salesTaxId: ids.taxes.get('Monett') });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const id = r.json['invoice']?.['id'] ?? r.json['id'];
+    const tmpl = await invariant(id);
+    const copy = await recurring.postLegacyClone(c.tenantId, { id: randomUUID(), templateTransactionId: id, nextOccurrence: '2026-12-01' });
+    const got = await invariant(copy!.id);
+    expect([got.sum, got.stp]).toEqual([tmpl.sum, tmpl.stp]);
+    expect(got.rows.map((x) => [x.salesTaxId, x.taxItemId, m2(x.tax)]).sort()).toEqual(tmpl.rows.map((x) => [x.salesTaxId, x.taxItemId, m2(x.tax)]).sort());
+    const legacy = await db.select().from(salesTaxItems).where(eq(salesTaxItems.companyId, c.companyId));
+    expect(legacy.filter((i) => i.legacyRate !== null)).toEqual([]);
+  });
+
+  it('a recurring sales receipt keeps its sales tax: rows on its items, no unassigned row', async () => {
+    const s = gstep(5);
+    const r = await req('POST', '/api/v1/sales-receipts', { ...docBody(s['request']), depositToAccountId: c.roles['payments_clearing'] });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const id = r.json['salesReceipt']['id'];
+    const tmpl = await invariant(id);
+    const copy = await recurring.postLegacyClone(c.tenantId, { id: randomUUID(), templateTransactionId: id, nextOccurrence: '2026-12-01' });
+    const got = await invariant(copy!.id);
+    expect([got.sum, got.stp]).toEqual([tmpl.sum, tmpl.stp]);
+    expect(got.rows.filter((x) => !x.taxItemId)).toEqual([]);
+    expect(got.rows.map((x) => [x.taxItemId, m2(x.tax)]).sort()).toEqual(tmpl.rows.map((x) => [x.taxItemId, m2(x.tax)]).sort());
   });
 });

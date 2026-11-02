@@ -273,13 +273,15 @@ registerTool('create_invoice', 'Create an invoice', {
   company_id: 'string?', customer_id: 'string', date: 'string', due_date: 'string', lines: 'string', memo: 'string?',
 }, async (p, auth) => {
   checkScope(auth, 'invoicing');
-  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  // The invoice belongs to the company (its sales tax rows and reports, U-147).
+  const companyId = await resolveCompany(auth, p);
+  const tenantId = await getTenantId(companyId);
   const { createInvoice } = await import('../services/invoice.service.js');
   const raw = typeof p.lines === 'string' ? JSON.parse(p.lines) : p.lines;
   // A line without isTaxable stays taxable here, as before (U-122 made the
   // service default an omitted flag to the item's, else false).
   const lines = Array.isArray(raw) ? raw.map((l: Record<string, unknown>) => ({ ...l, isTaxable: l['isTaxable'] ?? true })) : raw;
-  return createInvoice(tenantId, { txnDate: p.date, dueDate: p.due_date, contactId: p.customer_id, lines, memo: p.memo || '' }, auth.userId);
+  return createInvoice(tenantId, { txnDate: p.date, dueDate: p.due_date, contactId: p.customer_id, lines, memo: p.memo || '' }, auth.userId, companyId);
 });
 
 registerTool('send_invoice', 'Send an invoice via email', { company_id: 'string?', invoice_id: 'string', email: 'string?' }, async (p, auth) => {
@@ -340,10 +342,11 @@ registerTool('create_cash_sale', 'Create a cash sale', {
   company_id: 'string?', customer_id: 'string', date: 'string', lines: 'string', payment_account_id: 'string?', memo: 'string?',
 }, async (p, auth) => {
   checkScope(auth, 'write');
-  const tenantId = await getTenantId(await resolveCompany(auth, p));
+  const companyId = await resolveCompany(auth, p);
+  const tenantId = await getTenantId(companyId);
   const { createCashSale } = await import('../services/cash-sale.service.js');
   const lines = typeof p.lines === 'string' ? JSON.parse(p.lines) : p.lines;
-  return createCashSale(tenantId, { txnDate: p.date, contactId: p.customer_id, lines, memo: p.memo || '' } as any, auth.userId);
+  return createCashSale(tenantId, { txnDate: p.date, contactId: p.customer_id, lines, memo: p.memo || '' } as any, auth.userId, companyId);
 });
 
 registerTool('get_transaction', 'Get transaction detail with journal lines', { company_id: 'string?', transaction_id: 'string' }, async (p, auth) => {
