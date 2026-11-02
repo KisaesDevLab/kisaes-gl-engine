@@ -190,6 +190,8 @@ export async function previewPayment(tenantId: string, companyId: string, input:
     agencyId: input.agencyId, throughDate: input.throughDate, basis: await companyBasis(tenantId, companyId),
     lines: p.lines.map(lineOut),
     owed: m2(p.lines.reduce((s, l) => s.plus(l.owed), D0())),
+    // What POST /sales-tax/payments takes as expectedOwed, byte for byte (the UI never adds it up).
+    expectedOwed: m2(p.lines.reduce((s, l) => s.plus(l.owed), D0())),
     total: m2(p.lines.reduce((s, l) => s.plus(l.amount), D0())),
     problems: p.problems,
   };

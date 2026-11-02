@@ -18,6 +18,7 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import { idempotent } from '../middleware/idempotent.js';
 import { db } from '../db/index.js';
 import * as paymentService from '../services/payment.service.js';
+import { listWriteOffs, recordRecovery, recoveryRecord } from '../services/bad-debt-recovery.service.js';
 import { deadlockAsRetry } from '../utils/deadlock.js';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -56,7 +57,12 @@ const receiveErrors = '400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_A
   'deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr ' +
   'A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE. ' +
   'bankFeedItemId (feed-customer-payments-v1): the pending bank-feed line this payment is, matched in the same transaction; depositTo ' +
-  'must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING.';
+  'must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING. ' +
+  'sales-tax-ssuta-v1 (U-153): while the company setting salesTaxSsuta is on, a discount D and a write-off W carry their share of the ' +
+  'invoice\'s sales tax (d, w: the running total over cash + discount + write-off, split by largest remainder): Dr Sales Tax Payable ' +
+  'd + w, the discount line D - d, the write-off line W - w; the shares are stored with the application (discount and bad-debt tax ' +
+  'rows) and a bounce gives back exactly those. Off (the default): as before. 409 WRITE_OFF_RECOVERED on PUT, void and bounce ' +
+  'while a write-off of the payment is recovered (U-154).';
 
 const paymentRecordNote = 'PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, ' +
   'status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, ' +
@@ -122,7 +128,9 @@ paymentsRouter.post('/preview', validate(previewPaymentSchema), describe({
     'problem DEPOSIT_WITH_APPLICATIONS); draws on deposits lower contactBalanceAfter. editingPaymentId: that payment\'s own live share is added ' +
     'back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it ' +
     'out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in ' +
-    'problems[], never 4xx. Money as 2-place strings.',
+    'problems[], never 4xx. Money as 2-place strings. sales-tax-ssuta-v1: invoices[] add discountTax and writeOffTax (the SSUTA tax share ' +
+    'of the row\'s discount and write-off that receive / PUT would post; 0.00 while the switch is off), totals add discountTax and ' +
+    'writeOffTax, salesTaxSsuta is the company switch; editing a payment with a recovered write-off adds the problem WRITE_OFF_RECOVERED.',
   body: previewPaymentSchema,
 }), async (req, res) => {
   const preview = await paymentService.previewPayment(req.tenantId, req.body, req.companyId);
@@ -298,12 +306,77 @@ paymentsRouter.post('/:id/bounce', closingPasswordLimiter, lockContextMiddleware
     'applied or voided while this waited for its locks; reload and retry), 400 NO_MONEY_RECEIVED (a 0.00 payment), 400 BOUNCE_DATE_INVALID (before ' +
     'the payment\'s or its deposit\'s date), 400 FEE_ACCOUNT_REQUIRED, 400 FEE_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer ' +
     `Deposits, the account holding the money or paying the fee, inactive or another company's), 400 FEE_BANK_REQUIRED. ${closedPeriodNote} ` +
-    'Replay (Idempotency-Key) rebuilds the response from the returned_payment.',
+    'Replay (Idempotency-Key) rebuilds the response from the returned_payment. sales-tax-ssuta-v1: the SSUTA discount and bad-debt tax ' +
+    'stored with the payment goes back to Sales Tax Payable (Cr d + w; the discount and write-off accounts get D - d and W - w) and its ' +
+    'rows are mirrored at the bounce date; 409 WRITE_OFF_RECOVERED when a write-off of the payment was recovered (Q-P23x).',
   body: bouncePaymentSchema.extend(closing),
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
   const result = await paymentService.bouncePayment(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.status(201).json(result);
+});
+
+// ─── Recovered bad debts (U-154, bad-debt-recovery-v1) ──────────────
+
+const recoveryRecordNote = 'RecoveryRecord: {id, txnType: bad_debt_recovery, status (posted | void), date, customerId, invoiceId, ' +
+  'invoiceNumber, amount, recoveredTax, taxLines: [{taxItemId, agencyId, rate (6 places), base, tax}], invoiceBalanceDue, memo, ' +
+  'updatedAt}; money as 2-place strings.';
+
+paymentsRouter.get('/write-offs', describe({
+  summary: 'Written-off invoices that can be recovered (bad-debt-recovery-v1)',
+  description: 'Response {data: [{invoiceId, invoiceNumber, invoiceDate, customerId, customerName, writeOffDate (the latest payment that ' +
+    'wrote it off), firstWriteOffDate, writtenOff, writeOffTax (the SSUTA bad-debt tax stored with those write-offs; 0.00 when the switch ' +
+    'was off), recovered, recoveredTax, recoverable (writtenOff - recovered), balanceDue}]}, oldest invoice first. Write-offs count ' +
+    'from live rows of posted, unbounced payments; recoveries while posted. customerId or invoiceId narrow the list; includeRecovered=true ' +
+    'also lists invoices with nothing left to recover. This company only: a customer of another company is 404.',
+  query: z.object({
+    customerId: z.string().uuid().optional(), invoiceId: z.string().uuid().optional(), includeRecovered: z.enum(['true', 'false']).optional(),
+  }),
+}), async (req, res) => {
+  const q = req.query as Record<string, string | undefined>;
+  res.json(await listWriteOffs(req.tenantId, req.companyId, {
+    customerId: q['customerId'], invoiceId: q['invoiceId'], includeRecovered: q['includeRecovered'] === 'true',
+  }));
+});
+
+const recoverySchema = z.object({
+  invoiceId: z.string().uuid(),
+  date: z.string().regex(ISO_DATE),
+  amount: z.string().regex(/^\d+(\.\d{1,2})?$/, 'an amount with at most 2 decimal places'),
+  memo: z.string().max(1000).optional(),
+});
+
+// Idempotency-Key (idempotency-recovery-v1), in the P21 middleware order.
+paymentsRouter.post('/write-off-recoveries', closingPasswordLimiter, lockContextMiddleware, idempotent({
+  successStatus: 201,
+  replay: async (req, entity) => {
+    return recoveryRecord(db, req.tenantId, entity!.id, req.companyId);
+  },
+}), validate(recoverySchema), describe({
+  summary: 'Record a recovered bad debt (bad-debt-recovery-v1)',
+  description: 'Response 201 RecoveryRecord. One database transaction posts a bad_debt_recovery ("Recovered bad debt") dated `date`: ' +
+    'Dr A/R `amount` for the invoice\'s client, Cr the write-off account(s) the amount less its tax, Cr Sales Tax Payable the recovered ' +
+    'tax; the invoice reopens by `amount` (receive the payment normally afterwards, Q-P23q). Recovered tax per tax item (U-154): ' +
+    'round2(w_i x X / W) - what earlier recoveries took, w_i = the SSUTA bad-debt tax stored with the write-offs, W = the invoice\'s ' +
+    'live write-offs, X = the recovered amount so far including this one (rows kind recovery; accrual only, cash basis ignores ' +
+    'recoveries). The amount is taken from the write-offs oldest first. Errors: 404 for an invoice of another company; 409 ' +
+    'RECOVERY_EXCEEDS_WRITE_OFF {invoiceId, available}; 400 RECOVERY_DATE_INVALID {earliestDate} (before the invoice or a write-off it ' +
+    'takes back); 400 VALIDATION_ERROR; 409 STALE (the invoice changed while this waited). Void with POST /transactions/:id/void: the ' +
+    'invoice takes the write-off back; 409 RECOVERY_IN_USE {invoiceId, balanceDue, amount} once the reopened balance was paid. While a ' +
+    'recovery is live, the payment that wrote the amount off is 409 WRITE_OFF_RECOVERED on bounce, void and edit. No edit (void and ' +
+    `record again). ${closedPeriodNote} ${recoveryRecordNote}`,
+  body: recoverySchema.extend(closing),
+}), async (req, res) => {
+  const record = await recordRecovery(req.tenantId, req.body, req.userId, req.companyId);
+  res.status(201).json(record);
+});
+
+paymentsRouter.get('/write-off-recoveries/:id', describe({
+  summary: 'Get a recovered bad debt (bad-debt-recovery-v1)',
+  description: `Response RecoveryRecord. Another company's recovery is 404. ${recoveryRecordNote}`,
+  params: z.object({ id: z.string().uuid() }),
+}), async (req, res) => {
+  res.json(await recoveryRecord(db, req.tenantId, req.params['id']!, req.companyId));
 });
 
 paymentsRouter.get('/:id', describe({

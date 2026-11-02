@@ -510,6 +510,11 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'contact_tax_exemptions.company_id': 'tenant-ref:companies',
   'contact_tax_exemptions.contact_id': 'tenant-ref:contacts',
   'contact_tax_exemptions.attachment_id': 'tenant-ref:attachments',
+  // Bad-debt recoveries (U-154, migration 0256).
+  'write_off_recoveries.company_id': 'tenant-ref:companies',
+  'write_off_recoveries.application_id': 'tenant-ref:payment_applications',
+  'write_off_recoveries.invoice_id': 'tenant-ref:transactions',
+  'write_off_recoveries.recovery_txn_id': 'tenant-ref:transactions',
   'findings.company_id': 'tenant-ref:companies',
   'findings.transaction_id': 'tenant-ref:transactions',
   'findings.vendor_id': 'tenant-ref:contacts',

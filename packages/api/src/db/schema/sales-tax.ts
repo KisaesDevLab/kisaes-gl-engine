@@ -167,3 +167,24 @@ export const contactTaxExemptions = pgTable('contact_tax_exemptions', {
   expiryIdx: index('idx_tax_exemptions_expiry').on(t.companyId, t.expiresOn),
   tenantIdx: index('idx_tax_exemptions_tenant').on(t.tenantId),
 }));
+
+/**
+ * Bad-debt recoveries (U-154, migration 0256): the write-off application a
+ * bad_debt_recovery transaction takes back, and how much. Counts while the
+ * recovery is posted.
+ */
+export const writeOffRecoveries = pgTable('write_off_recoveries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  applicationId: uuid('application_id').notNull(),
+  invoiceId: uuid('invoice_id').notNull(),
+  recoveryTxnId: uuid('recovery_txn_id').notNull(),
+  amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  appIdx: index('idx_write_off_recoveries_app').on(t.applicationId),
+  invoiceIdx: index('idx_write_off_recoveries_invoice').on(t.companyId, t.invoiceId),
+  txnIdx: index('idx_write_off_recoveries_txn').on(t.recoveryTxnId),
+  tenantIdx: index('idx_write_off_recoveries_tenant').on(t.tenantId),
+}));

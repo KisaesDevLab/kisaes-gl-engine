@@ -144,8 +144,11 @@ export const IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES = [
   'post /api/v1/sales-tax/payments/mark-paid-through',
 ].sort();
 
+/** Keyed by idempotency-recovery-v1 (U-154): record a recovered bad debt. */
+export const IDEMPOTENCY_RECOVERY_V1_ROUTES = ['post /api/v1/payments/write-off-recoveries'];
+
 const ALL_KEYED_ROUTES = [
-  ...IDEMPOTENCY_SALES_TAX_V1_ROUTES, ...IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES,
+  ...IDEMPOTENCY_SALES_TAX_V1_ROUTES, ...IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES, ...IDEMPOTENCY_RECOVERY_V1_ROUTES,
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
   ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES, ...IDEMPOTENCY_INVOICE_V1_ROUTES,
   ...IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES, ...IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES, ...IDEMPOTENCY_CREDIT_MEMO_V1_ROUTES, ...IDEMPOTENCY_CUSTOMER_STATEMENTS_V1_ROUTES,
@@ -190,6 +193,7 @@ describe('idempotency-v1 in openapi.json', () => {
 
   it('the capability is advertised', () => {
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('idempotency-recovery-v1');
     expect(DESKTOP_CAPABILITIES).toContain('batch-idempotent-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-ap-v1');
     expect(DESKTOP_CAPABILITIES).toContain('idempotency-docs-v1');

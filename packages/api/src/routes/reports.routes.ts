@@ -79,6 +79,7 @@ const TXN_TYPE_LABELS: Record<string, string> = {
   credit_memo: 'CM',
   customer_refund: 'REF',
   returned_payment: 'NSF',
+  bad_debt_recovery: 'BDR',
   bill: 'BILL',
   bill_payment: 'BP',
   vendor_credit: 'VC',

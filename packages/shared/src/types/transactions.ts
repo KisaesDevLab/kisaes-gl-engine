@@ -26,7 +26,10 @@ export type TxnType =
   | 'returned_payment'
   // Pay Sales Tax (U-150, sales-tax-pay-v1): Dr Sales Tax Payable per tax item,
   // the adjustments, Cr the bank; contact = the agency's vendor.
-  | 'sales_tax_payment';
+  | 'sales_tax_payment'
+  // A recovered bad debt (U-154, bad-debt-recovery-v1): Dr A/R, Cr the write-off
+  // account, Cr Sales Tax Payable for the recovered SSUTA tax; reopens the invoice.
+  | 'bad_debt_recovery';
 
 export type TxnStatus = 'draft' | 'posted' | 'void' | 'deleted';
 

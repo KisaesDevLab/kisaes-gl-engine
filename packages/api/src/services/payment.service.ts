@@ -41,6 +41,7 @@ import {
 } from './payment-compute.js';
 import { assertWriteOffAccount, assertSalesDiscountAccount, companySettleSettings } from './write-off-account.js';
 import { getOrCreateSystemAccount } from './system-accounts.service.js';
+import * as ssuta from './sales-tax-ssuta.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -113,7 +114,7 @@ export async function lockInvoices(tx: Tx, tenantId: string, ids: string[]): Pro
 }
 
 /** Payments locked FOR UPDATE in id order. */
-async function lockPayments(tx: Tx, tenantId: string, ids: string[]): Promise<Map<string, TxnRow>> {
+export async function lockPayments(tx: Tx, tenantId: string, ids: string[]): Promise<Map<string, TxnRow>> {
   const unique = [...new Set(ids)].sort();
   if (unique.length === 0) return new Map();
   const rows = await tx.select().from(transactions)
@@ -265,7 +266,7 @@ function auditedApplication(a: { paymentId: string; invoiceId: string; amount: s
   };
 }
 
-async function moveInvoicePaid(tx: Tx, tenantId: string, inv: TxnRow, delta: DecimalValue): Promise<TxnRow> {
+export async function moveInvoicePaid(tx: Tx, tenantId: string, inv: TxnRow, delta: DecimalValue): Promise<TxnRow> {
   const newPaid = dec(inv.amountPaid).plus(delta);
   const newBalance = dec(inv.total).minus(newPaid);
   let status: string;
@@ -641,7 +642,11 @@ async function validateSources(
   }
 }
 
-interface ValidatedApplication { inv: TxnRow; amount: DecimalValue; discount: DecimalValue; writeOff: DecimalValue }
+interface ValidatedApplication {
+  inv: TxnRow; amount: DecimalValue; discount: DecimalValue; writeOff: DecimalValue;
+  /** U-153: the SSUTA tax shares of its discount and write-off (none while the switch is off). */
+  shares?: ssuta.SettlementShares;
+}
 interface ValidatedCredit { sourcePaymentId: string; inv: TxnRow; amount: DecimalValue }
 
 /** One locked invoice of this client and company, its stored balance as expected. */
@@ -689,17 +694,77 @@ function validateInvoices(
   return { apps, credits };
 }
 
-/** Dr depositTo amount (none at 0.00), Dr write-off, Dr discount, Cr A/R the sum. */
+/** U-153: the SSUTA tax of a settlement's applications: Σ discount tax d, Σ write-off tax w, and Sales Tax Payable when either is used. */
+interface SettlementTax { discountTax: DecimalValue; writeOffTax: DecimalValue; stp: string | null }
+const NO_SETTLEMENT_TAX: SettlementTax = { discountTax: new Decimal(0), writeOffTax: new Decimal(0), stp: null };
+
+/**
+ * U-153 (SSUTA): the tax shares of each application's discount and
+ * write-off, on the locked invoices before this payment touches them (the
+ * running total starts at what each invoice settled before). None while the
+ * company's switch is off (Q-P23w: postings made while it is on).
+ */
+async function attachShares(
+  tx: Tx, tenantId: string, companyId: string | undefined, apps: ValidatedApplication[],
+): Promise<SettlementTax> {
+  const used = apps.filter((a) => a.discount.greaterThan(0) || a.writeOff.greaterThan(0));
+  if (used.length === 0) return NO_SETTLEMENT_TAX;
+  if (!await ssuta.ssutaOn(tx, tenantId, companyId ?? used[0]!.inv.companyId)) return NO_SETTLEMENT_TAX;
+  const items = await ssuta.invoiceTaxItems(tx, tenantId, used.map((a) => a.inv.id));
+  let discountTax = new Decimal(0);
+  let writeOffTax = new Decimal(0);
+  for (const a of used) {
+    a.shares = await ssuta.sharesFor(tx, tenantId, true, a.inv, a.amount, a.discount, a.writeOff, items);
+    discountTax = discountTax.plus(a.shares.discountTax);
+    writeOffTax = writeOffTax.plus(a.shares.writeOffTax);
+  }
+  if (discountTax.isZero() && writeOffTax.isZero()) return NO_SETTLEMENT_TAX;
+  const stp = await systemAccountId(tx, tenantId, 'sales_tax_payable');
+  if (!stp) throw AppError.internal('Sales Tax Payable account not found');
+  return { discountTax, writeOffTax, stp };
+}
+
+/**
+ * Dr depositTo amount (none at 0.00), Dr write-off, Dr discount, Cr A/R the
+ * sum. U-153 (SSUTA on): the write-off and discount lines less their tax
+ * shares, which Dr Sales Tax Payable.
+ */
 function paymentLines(
-  depositTo: string, ar: string, customerId: string, parsed: Parsed, accounts: SettleAccounts,
+  depositTo: string, ar: string, customerId: string, parsed: Parsed, accounts: SettleAccounts, tax: SettlementTax = NO_SETTLEMENT_TAX,
 ): JournalLineInput[] {
   const lines: JournalLineInput[] = [];
+  const writeOffs = parsed.writeOffs.minus(tax.writeOffTax);
+  const discounts = parsed.discounts.minus(tax.discountTax);
+  const stpDebit = tax.writeOffTax.plus(tax.discountTax);
   if (parsed.amount.greaterThan(0)) lines.push({ accountId: depositTo, debit: parsed.amount.toFixed(4), credit: '0' });
-  if (parsed.writeOffs.greaterThan(0)) lines.push({ accountId: accounts.writeOffAccountId!, debit: parsed.writeOffs.toFixed(4), credit: '0' });
-  if (parsed.discounts.greaterThan(0)) lines.push({ accountId: accounts.discountAccountId!, debit: parsed.discounts.toFixed(4), credit: '0' });
+  if (writeOffs.greaterThan(0)) lines.push({ accountId: accounts.writeOffAccountId!, debit: writeOffs.toFixed(4), credit: '0' });
+  if (discounts.greaterThan(0)) lines.push({ accountId: accounts.discountAccountId!, debit: discounts.toFixed(4), credit: '0' });
+  if (tax.stp && !stpDebit.isZero()) {
+    lines.push(stpDebit.greaterThan(0)
+      ? { accountId: tax.stp, debit: stpDebit.toFixed(4), credit: '0' }
+      : { accountId: tax.stp, debit: '0', credit: stpDebit.negated().toFixed(4) });
+  }
   const arCredit = parsed.amount.plus(parsed.writeOffs).plus(parsed.discounts);
   lines.push({ accountId: ar, debit: '0', credit: arCredit.toFixed(4), contactId: customerId });
   return lines;
+}
+
+/** 409 WRITE_OFF_RECOVERED (U-154, Q-P23x): a write-off of these rows was recovered; the payment can't be bounced, voided or edited. */
+async function assertNotRecovered(executor: DbOrTx, tenantId: string, paymentId: string, apps: Array<{ id: string; invoiceId: string }>): Promise<void> {
+  if (apps.length === 0) return;
+  const res = await executor.execute(sql`
+    SELECT r.invoice_id FROM write_off_recoveries r
+    JOIN transactions t ON t.id = r.recovery_txn_id AND t.tenant_id = r.tenant_id AND t.status = 'posted'
+    WHERE r.tenant_id = ${tenantId} AND r.application_id IN (${sql.join(apps.map((a) => sql`${a.id}::uuid`), sql`, `)})
+    LIMIT 1`);
+  const hit = (res.rows as Array<{ invoice_id: string }>)[0];
+  if (hit) {
+    throw AppError.conflict(
+      'Part of a write-off on this payment was recovered later. Void the recovery first, then change this payment.',
+      'WRITE_OFF_RECOVERED',
+      { paymentId, invoiceId: hit.invoice_id },
+    );
+  }
 }
 
 async function writeSettlement(
@@ -719,11 +784,13 @@ async function writeSettlement(
   }
   v = { apps: v.apps, credits: v.credits.filter((c) => !byDeposit.has(c.sourcePaymentId)) };
   for (const a of v.apps) {
-    await tx.insert(paymentApplications).values({
+    const [row] = await tx.insert(paymentApplications).values({
       tenantId, companyId: companyId ?? a.inv.companyId ?? null, paymentId, invoiceId: a.inv.id, amount: a.amount.toFixed(4),
       writeOffAmount: a.writeOff.toFixed(4), writeOffAccountId: a.writeOff.greaterThan(0) ? accounts.writeOffAccountId : null,
       discountAmount: a.discount.toFixed(4), discountAccountId: a.discount.greaterThan(0) ? accounts.discountAccountId : null,
-    });
+    }).returning({ id: paymentApplications.id });
+    // U-153: its SSUTA discount and bad-debt rows (the shares the lines posted).
+    if (a.shares) await ssuta.writeShareRows(tx, tenantId, companyId ?? a.inv.companyId, paymentId, row!.id, a.inv.id, date, a.shares);
     Object.assign(a.inv, await moveInvoicePaid(tx, tenantId, a.inv, a.amount.plus(a.discount).plus(a.writeOff)));
   }
   const touched = new Set<string>();
@@ -805,6 +872,7 @@ export async function receivePaymentInTx(
   await validateSources(tx, tenantId, sources, parsed.credits, input.customerId, companyId, input.date);
   const invoices = await lockInvoices(tx, tenantId, [...parsed.apps.map((a) => a.invoiceId), ...parsed.credits.map((c) => c.invoiceId)]);
   const valid = validateInvoices(parsed, invoices, input.customerId, companyId);
+  const tax = await attachShares(tx, tenantId, companyId, valid.apps);
 
   const payment = await ledger.postTransaction(tenantId, {
     txnType: 'customer_payment',
@@ -815,7 +883,7 @@ export async function receivePaymentInTx(
     paymentMethod: input.paymentMethod,
     referenceNumber: input.refNo,
     appliedToInvoiceId: opts.appliedToInvoiceId && valid.apps.length > 0 ? opts.appliedToInvoiceId : undefined,
-    lines: paymentLines(input.depositTo, ar, input.customerId, parsed, accounts),
+    lines: paymentLines(input.depositTo, ar, input.customerId, parsed, accounts, tax),
   }, userId, companyId, tx);
 
   if (input.bankFeedItemId) await matchFeedItem(tx, tenantId, input, payment.id, companyId);
@@ -1225,8 +1293,11 @@ export interface PaymentPreview {
   contactBalanceAfter: string;
   amount: string;
   amountSource: 'typed' | 'from_applications';
-  invoices: Array<ReturnType<typeof computePayment>['invoices'][number]>;
-  totals: ReturnType<typeof computePayment>['totals'];
+  /** U-153: discountTax / writeOffTax, the SSUTA tax share of the row's discount and write-off (0.00 while the switch is off). */
+  invoices: Array<ReturnType<typeof computePayment>['invoices'][number] & { discountTax: string; writeOffTax: string }>;
+  totals: ReturnType<typeof computePayment>['totals'] & { discountTax: string; writeOffTax: string };
+  /** U-153: the company's SSUTA switch. */
+  salesTaxSsuta: boolean;
   shortfalls: ReturnType<typeof computePayment>['shortfalls'];
   overpayment: string;
   credits: ComputeCredit[];
@@ -1409,6 +1480,33 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
     writeOffThreshold: settings.writeOffThreshold === null ? null : money2(round2(settings.writeOffThreshold)),
   }, sourcesForCompute);
   problems.unshift(...result.problems);
+  // U-153 (SSUTA): the tax share of each row's discount and write-off, on the
+  // balance before this payment (what receive and PUT post).
+  const ssutaSwitch = await ssuta.ssutaOn(db, tenantId, companyId);
+  const taxed = ssutaSwitch
+    ? result.invoices.filter((i) => dec(i.discount).greaterThan(0) || dec(i.writeOff).greaterThan(0)).map((i) => i.invoiceId)
+    : [];
+  const taxItems = await ssuta.invoiceTaxItems(db, tenantId, taxed);
+  const byId = new Map(compute.map((r) => [r.invoiceId, r]));
+  let discountTaxTotal = new Decimal(0);
+  let writeOffTaxTotal = new Decimal(0);
+  const invoicesOut = await Promise.all(result.invoices.map(async (i) => {
+    const r = byId.get(i.invoiceId);
+    const s = r && taxed.includes(i.invoiceId)
+      ? ssuta.settlementShares(taxItems.get(i.invoiceId) ?? [], dec(r.total), dec(r.total).minus(r.balanceDueExact),
+        dec(i.payment), dec(i.discount), dec(i.writeOff))
+      : ssuta.NO_SHARES;
+    discountTaxTotal = discountTaxTotal.plus(s.discountTax);
+    writeOffTaxTotal = writeOffTaxTotal.plus(s.writeOffTax);
+    return { ...i, discountTax: money2(s.discountTax), writeOffTax: money2(s.writeOffTax) };
+  }));
+  if (input.editingPaymentId) {
+    const own = (await liveApplications(db, tenantId, input.editingPaymentId)).filter((a) => a.appliedDate === null);
+    try { await assertNotRecovered(db, tenantId, input.editingPaymentId, own); } catch (e) {
+      if (e instanceof AppError && e.code === 'WRITE_OFF_RECOVERED') problems.push({ code: 'WRITE_OFF_RECOVERED' });
+      else throw e;
+    }
+  }
   // U-137 (B1b): a credit used before its own date is refused on save.
   for (const c of result.creditApplications) {
     const src = sourcesForCompute.find((s) => s.sourcePaymentId === c.sourcePaymentId);
@@ -1455,8 +1553,9 @@ export async function previewPayment(tenantId: string, input: PreviewPaymentInpu
       .minus(dec(result.totals.discountsAndCredits).minus(creditsUsed(result))).minus(result.totals.writeOffs).minus(drawsUsed))),
     amount: result.amount,
     amountSource: result.amountSource,
-    invoices: result.invoices,
-    totals: result.totals,
+    invoices: invoicesOut,
+    totals: { ...result.totals, discountTax: money2(discountTaxTotal), writeOffTax: money2(writeOffTaxTotal) },
+    salesTaxSsuta: ssutaSwitch,
     shortfalls: result.shortfalls,
     overpayment: result.overpayment,
     credits,
@@ -1500,6 +1599,8 @@ export async function releasePaymentForVoidInTx(tx: Tx, tenantId: string, paymen
   // payment (lockForVoidInTx) before any invoice (E-B1, review SF8).
   const apps = [...await liveApplications(tx, tenantId, payment.id), ...await creditsAppliedIn(tx, tenantId, payment.id)];
   if (apps.length === 0) return;
+  // U-154: a recovered write-off pins the payment (its SSUTA rows go with the void otherwise).
+  await assertNotRecovered(tx, tenantId, payment.id, apps);
   const invoices = await lockInvoices(tx, tenantId, apps.map((a) => a.invoiceId));
   const now = new Date();
   for (const a of apps) {
@@ -1702,13 +1803,29 @@ export async function bouncePaymentInTx(
       : null;
     const scope = companyId ?? payment.companyId ?? undefined;
 
-    // Discounts and write-offs it settled come back too (U-133, U-134).
+    // U-154 (Q-P23x): a write-off recovered later can't be taken back.
+    await assertNotRecovered(tx, tenantId, paymentId, apps);
+    // Discounts and write-offs it settled come back too (U-133, U-134); U-153:
+    // their SSUTA tax shares as stored (never recomputed) go back to Sales
+    // Tax Payable, and the rows are mirrored on the bounce.
+    const stored = await ssuta.storedShares(tx, tenantId, apps.map((a) => a.id), [...new Set(apps.map((a) => a.paymentId))]);
     const back = new Map<string, DecimalValue>();
-    const addBack = (acct: string | null, x: string) => {
-      if (!acct || !dec(x).greaterThan(0)) return;
+    const addBack = (acct: string | null, x: DecimalValue) => {
+      if (!acct || x.isZero()) return;
       back.set(acct, (back.get(acct) ?? new Decimal(0)).plus(x));
     };
-    for (const a of apps) { addBack(a.discountAccountId, a.discountAmount); addBack(a.writeOffAccountId, a.writeOffAmount); }
+    let stpBack = new Decimal(0);
+    for (const a of apps) {
+      const s = stored.get(a.id);
+      if (dec(a.discountAmount).greaterThan(0)) addBack(a.discountAccountId, dec(a.discountAmount).minus(s?.discountTax ?? 0));
+      if (dec(a.writeOffAmount).greaterThan(0)) addBack(a.writeOffAccountId, dec(a.writeOffAmount).minus(s?.writeOffTax ?? 0));
+      if (s) stpBack = stpBack.plus(s.discountTax).plus(s.writeOffTax);
+    }
+    const stpAccount = stpBack.isZero() ? null : await systemAccountId(tx, tenantId, 'sales_tax_payable');
+    if (!stpBack.isZero()) {
+      if (!stpAccount) throw AppError.internal('Sales Tax Payable account not found');
+      back.set(stpAccount, (back.get(stpAccount) ?? new Decimal(0)).plus(stpBack));
+    }
     const backTotal = [...back.values()].reduce((t, x) => t.plus(x), new Decimal(0));
     const arDebit = dec(payment.total).plus(backTotal).toFixed(4);
     const ret = await ledger.postTransaction(tenantId, {
@@ -1742,6 +1859,8 @@ export async function bouncePaymentInTx(
     }
     await tx.update(transactions).set({ updatedAt: new Date() })
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, paymentId)));
+    // U-153: the bounce gives the discount and bad-debt tax back (+d, +w at the bounce date).
+    await ssuta.writeMirrorRows(tx, tenantId, ret.id, input.date, [...stored.values()].flatMap((s) => s.rows));
 
     let feeId: string | undefined;
     if (fee.greaterThan(0) && feeAccount && feeBank) {
@@ -1938,6 +2057,8 @@ export async function updatePayment(
       return getPaymentRecord(tx, tenantId, paymentId, companyId);
     }
 
+    // U-154: a recovered write-off pins its rows (Q-P23x).
+    await assertNotRecovered(tx, tenantId, paymentId, own);
     // Its credit used elsewhere and refunded stays covered (U-133).
     // U-137 (B1b): its date may not move after its credit was used or refunded.
     if (input.date !== payment.txnDate) await assertSourceDate(tx, tenantId, paymentId, input.date);
@@ -1979,6 +2100,10 @@ export async function updatePayment(
     if (payment.holdsDeposit && (parsed.apps.length > 0 || parsed.credits.length > 0)) {
       throw AppError.badRequest('A deposit holds the whole amount: leave the invoices and credits out.', 'DEPOSIT_WITH_APPLICATIONS');
     }
+    // U-153: the old SSUTA rows go with the old applications; the new ones are
+    // computed on the restored invoices (the switch as it is now, Q-P23w).
+    await ssuta.deleteShareRows(tx, tenantId, paymentId);
+    const tax = await attachShares(tx, tenantId, companyId, valid.apps);
     await ledger.updateTransaction(tenantId, paymentId, {
       txnType: 'customer_payment',
       txnDate: input.date,
@@ -1992,7 +2117,7 @@ export async function updatePayment(
           { accountId: input.depositTo, debit: parsed.amount.toFixed(4), credit: '0' },
           { accountId: await customerDepositsAccount(tx, tenantId, companyId), debit: '0', credit: parsed.amount.toFixed(4), contactId: input.customerId },
         ]
-        : paymentLines(input.depositTo, ar, input.customerId, parsed, accounts),
+        : paymentLines(input.depositTo, ar, input.customerId, parsed, accounts, tax),
     }, userId, companyId, tx);
     await writeSettlement(tx, tenantId, companyId, paymentId, input.date, valid, accounts, locked, userId);
     await auditLog(tenantId, 'update', 'payment_applications', paymentId,

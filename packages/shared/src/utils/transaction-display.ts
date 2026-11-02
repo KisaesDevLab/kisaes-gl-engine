@@ -31,6 +31,7 @@ export const TXN_TYPE_LABELS: Record<TxnType, string> = {
   daily_sales: 'Daily Sales',
   returned_payment: 'Bounced payment',
   sales_tax_payment: 'Sales tax payment',
+  bad_debt_recovery: 'Recovered bad debt',
 };
 
 /** Any transaction-shaped object: only the type is required. */
@@ -63,6 +64,7 @@ export function contactRoleLabel(txnType: TxnType): string {
     case 'credit_memo':
     case 'customer_refund':
     case 'returned_payment':
+    case 'bad_debt_recovery':
       return 'Customer';
     case 'deposit':
       return 'Received from';
