@@ -34862,7 +34862,8 @@
                 "daily_sales",
                 "aje",
                 "returned_payment",
-                "sales_tax_payment"
+                "sales_tax_payment",
+                "bad_debt_recovery"
               ],
               "type": "string"
             }
@@ -38112,7 +38113,7 @@
     },
     "/api/v1/payments/preview": {
       "post": {
-        "description": "Every figure of the Receive Payment form, from the engine (the same compute the posting routes use). Auto: no applications, the amount fills open invoices oldest first (txnDate, number, id). Explicit: the rows sent; amount null fills what is left of the payment in date order; rows not sent get 0.00; with no amount, fill rows take their cent balance and amount is their sum (amountSource from_applications). Response PaymentPreview: {contactBalanceBefore, contactBalanceAfter, amount, amountSource: typed | from_applications, invoices: [{invoiceId, invoiceNumber, txnDate, dueDate, total, balanceDue (cent balance), balanceDueExact (stored, 4 places: send it back as expectedBalanceDue), payment, remaining}] (all open invoices, oldest first), totals {amountDue, applied, discountsAndCredits, unapplied}, shortfalls [{invoiceId, amount}], pendingDeposits {count, total} (after saving: this payment counts when depositTo is Payments Clearing), averageDaysToPay (integer days from invoice date to the payment that cleared it, over invoices paid in the 12 months to date; null below 3), problems [{code, invoiceId?}]}. Problem codes: AMOUNT_REQUIRED, APPLICATIONS_EXCEED_AMOUNT, OVERAPPLIED, INVOICE_NOT_OPEN, DUPLICATE_INVOICE, DEPOSIT_ACCOUNT_INVALID, TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment), CREDIT_NOT_AVAILABLE. payment-settle-v1 / payment-discounts-v1: applications[].writeOffAmount / discountAmount and creditApplications [{sourcePaymentId, invoiceId, amount | null (fill)}] as on receive; invoices[] add discount, writeOff, credit, discountPercent, discountDate, discountAvailable (round2(total x percent / 100) half away from zero, capped at the cent balance, on or before the discount date, once per invoice) and suggestDiscount (none typed and payment = cent balance - discountAvailable exactly); totals.writeOffs; overpayment (= unapplied); shortfalls[].withinWriteOffLimit (shortfall <= the company writeOffThreshold; false without one); creditApplications [{sourcePaymentId, invoiceId, amount, balanceDueExact}] (the credits applied, fill rows filled); credits [{sourcePaymentId, date, refNo, remaining}] (the open credits of the client, bounced payments left out); contactBalanceAfter = before - amount - discounts - write-offs (credits are in A/R already). Order per invoice: typed cash, discount and write-off, then credits, then cash fill / auto. customer-deposits-v1: depositsOnHand [{paymentId, date, refNo, amount, remaining}] (usable as creditApplications sources: draws), holdAsDepositOffered (an amount with nothing applied, no credits, no write-off), holdAsDeposit (contactBalanceAfter = before; with applications the problem DEPOSIT_WITH_APPLICATIONS); draws on deposits lower contactBalanceAfter. editingPaymentId: that payment's own live share is added back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in problems[], never 4xx. Money as 2-place strings.",
+        "description": "Every figure of the Receive Payment form, from the engine (the same compute the posting routes use). Auto: no applications, the amount fills open invoices oldest first (txnDate, number, id). Explicit: the rows sent; amount null fills what is left of the payment in date order; rows not sent get 0.00; with no amount, fill rows take their cent balance and amount is their sum (amountSource from_applications). Response PaymentPreview: {contactBalanceBefore, contactBalanceAfter, amount, amountSource: typed | from_applications, invoices: [{invoiceId, invoiceNumber, txnDate, dueDate, total, balanceDue (cent balance), balanceDueExact (stored, 4 places: send it back as expectedBalanceDue), payment, remaining}] (all open invoices, oldest first), totals {amountDue, applied, discountsAndCredits, unapplied}, shortfalls [{invoiceId, amount}], pendingDeposits {count, total} (after saving: this payment counts when depositTo is Payments Clearing), averageDaysToPay (integer days from invoice date to the payment that cleared it, over invoices paid in the 12 months to date; null below 3), problems [{code, invoiceId?}]}. Problem codes: AMOUNT_REQUIRED, APPLICATIONS_EXCEED_AMOUNT, OVERAPPLIED, INVOICE_NOT_OPEN, DUPLICATE_INVOICE, DEPOSIT_ACCOUNT_INVALID, TOO_MANY_APPLICATIONS, PAYMENT_BOUNCED (editing a bounced payment), CREDIT_NOT_AVAILABLE. payment-settle-v1 / payment-discounts-v1: applications[].writeOffAmount / discountAmount and creditApplications [{sourcePaymentId, invoiceId, amount | null (fill)}] as on receive; invoices[] add discount, writeOff, credit, discountPercent, discountDate, discountAvailable (round2(total x percent / 100) half away from zero, capped at the cent balance, on or before the discount date, once per invoice) and suggestDiscount (none typed and payment = cent balance - discountAvailable exactly); totals.writeOffs; overpayment (= unapplied); shortfalls[].withinWriteOffLimit (shortfall <= the company writeOffThreshold; false without one); creditApplications [{sourcePaymentId, invoiceId, amount, balanceDueExact}] (the credits applied, fill rows filled); credits [{sourcePaymentId, date, refNo, remaining}] (the open credits of the client, bounced payments left out); contactBalanceAfter = before - amount - discounts - write-offs (credits are in A/R already). Order per invoice: typed cash, discount and write-off, then credits, then cash fill / auto. customer-deposits-v1: depositsOnHand [{paymentId, date, refNo, amount, remaining}] (usable as creditApplications sources: draws), holdAsDepositOffered (an amount with nothing applied, no credits, no write-off), holdAsDeposit (contactBalanceAfter = before; with applications the problem DEPOSIT_WITH_APPLICATIONS); draws on deposits lower contactBalanceAfter. editingPaymentId: that payment's own live share is added back to its invoices (balanceDueExact = what PUT expects) and invoices it paid in full are listed; contactBalanceBefore leaves it out. Only 400 VALIDATION_ERROR for a malformed body, and 404 for a customer of another company; business problems are in problems[], never 4xx. Money as 2-place strings. sales-tax-ssuta-v1: invoices[] add discountTax and writeOffTax (the SSUTA tax share of the row's discount and write-off that receive / PUT would post; 0.00 while the switch is off), totals add discountTax and writeOffTax, salesTaxSsuta is the company switch; editing a payment with a recovered write-off adds the problem WRITE_OFF_RECOVERED.",
         "operationId": "post_api_v1_payments_preview",
         "requestBody": {
           "content": {
@@ -38265,7 +38266,7 @@
     },
     "/api/v1/payments/receive": {
       "post": {
-        "description": "Response 201 {payment: PaymentRecord}. Posts Dr depositTo / Cr A/R for the amount and writes the applications in one database transaction. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. payment-settle-v1 / payment-discounts-v1: applications may be empty (the whole amount stays a credit); applications[].writeOffAmount and .discountAmount settle more of the invoice (cash + discount + write-off + credits <= the cent balance, else OVERAPPLIED); amount may be 0.00 only with a write-off or discount (then no deposit line). Posting: Dr depositTo amount, Dr writeOffAccountId (default the company setting writeOffAccountId) the write-offs, Dr discountAccountId (default salesDiscountAccountId) the discounts, Cr A/R the sum. 400 WRITE_OFF_ACCOUNT_REQUIRED / WRITE_OFF_ACCOUNT_INVALID, DISCOUNT_ACCOUNT_REQUIRED / DISCOUNT_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 CREDIT_NOT_FOR_CUSTOMER. customer-deposits-v1: holdAsDeposit true holds the whole amount as a customer deposit (Dr depositTo, Cr the Customer Deposits liability, created on first use); applications or credits with it are 400 DEPOSIT_WITH_APPLICATIONS. A held deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE. bankFeedItemId (feed-customer-payments-v1): the pending bank-feed line this payment is, matched in the same transaction; depositTo must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, appliedLater, appliedInTxnId, voided, reversed}] (every row, live and set aside; its credit applied later carries that date, appliedLater true and, when applied inside another payment, that payment's id), creditApplications: [{sourcePaymentId, invoiceId, invoiceNumber, amount, fromDeposit}] (the live credits applied inside this payment; send them back on PUT to keep them), writeOffAccountId, discountAccountId (the accounts its live write-offs and discounts went to, or null), depositTo (null when it received no money), unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
+        "description": "Response 201 {payment: PaymentRecord}. Posts Dr depositTo / Cr A/R for the amount and writes the applications in one database transaction. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. payment-settle-v1 / payment-discounts-v1: applications may be empty (the whole amount stays a credit); applications[].writeOffAmount and .discountAmount settle more of the invoice (cash + discount + write-off + credits <= the cent balance, else OVERAPPLIED); amount may be 0.00 only with a write-off or discount (then no deposit line). Posting: Dr depositTo amount, Dr writeOffAccountId (default the company setting writeOffAccountId) the write-offs, Dr discountAccountId (default salesDiscountAccountId) the discounts, Cr A/R the sum. 400 WRITE_OFF_ACCOUNT_REQUIRED / WRITE_OFF_ACCOUNT_INVALID, DISCOUNT_ACCOUNT_REQUIRED / DISCOUNT_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 CREDIT_NOT_FOR_CUSTOMER. customer-deposits-v1: holdAsDeposit true holds the whole amount as a customer deposit (Dr depositTo, Cr the Customer Deposits liability, created on first use); applications or credits with it are 400 DEPOSIT_WITH_APPLICATIONS. A held deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE. bankFeedItemId (feed-customer-payments-v1): the pending bank-feed line this payment is, matched in the same transaction; depositTo must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING. sales-tax-ssuta-v1 (U-153): while the company setting salesTaxSsuta is on, a discount D and a write-off W carry their share of the invoice's sales tax (d, w: the running total over cash + discount + write-off, split by largest remainder): Dr Sales Tax Payable d + w, the discount line D - d, the write-off line W - w; the shares are stored with the application (discount and bad-debt tax rows) and a bounce gives back exactly those. Off (the default): as before. 409 WRITE_OFF_RECOVERED on PUT, void and bounce while a write-off of the payment is recovered (U-154). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, appliedLater, appliedInTxnId, voided, reversed}] (every row, live and set aside; its credit applied later carries that date, appliedLater true and, when applied inside another payment, that payment's id), creditApplications: [{sourcePaymentId, invoiceId, invoiceNumber, amount, fromDeposit}] (the live credits applied inside this payment; send them back on PUT to keep them), writeOffAccountId, discountAccountId (the accounts its live write-offs and discounts went to, or null), depositTo (null when it received no money), unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
         "operationId": "post_api_v1_payments_receive",
         "parameters": [
           {
@@ -38509,6 +38510,172 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/payments/write-off-recoveries": {
+      "post": {
+        "description": "Response 201 RecoveryRecord. One database transaction posts a bad_debt_recovery (\"Recovered bad debt\") dated `date`: Dr A/R `amount` for the invoice's client, Cr the write-off account(s) the amount less its tax, Cr Sales Tax Payable the recovered tax; the invoice reopens by `amount` (receive the payment normally afterwards, Q-P23q). Recovered tax per tax item (U-154): round2(w_i x X / W) - what earlier recoveries took, w_i = the SSUTA bad-debt tax stored with the write-offs, W = the invoice's live write-offs, X = the recovered amount so far including this one (rows kind recovery; accrual only, cash basis ignores recoveries). The amount is taken from the write-offs oldest first. Errors: 404 for an invoice of another company; 409 RECOVERY_EXCEEDS_WRITE_OFF {invoiceId, available}; 400 RECOVERY_DATE_INVALID {earliestDate} (before the invoice or a write-off it takes back); 400 VALIDATION_ERROR; 409 STALE (the invoice changed while this waited). Void with POST /transactions/:id/void: the invoice takes the write-off back; 409 RECOVERY_IN_USE {invoiceId, balanceDue, amount} once the reopened balance was paid. While a recovery is live, the payment that wrote the amount off is 409 WRITE_OFF_RECOVERED on bounce, void and edit. No edit (void and record again). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. RecoveryRecord: {id, txnType: bad_debt_recovery, status (posted | void), date, customerId, invoiceId, invoiceNumber, amount, recoveredTax, taxLines: [{taxItemId, agencyId, rate (6 places), base, tax}], invoiceBalanceDue, memo, updatedAt}; money as 2-place strings.",
+        "operationId": "post_api_v1_payments_write_off_recoveries",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "amount": {
+                    "pattern": "^\\d+(\\.\\d{1,2})?$",
+                    "type": "string"
+                  },
+                  "closingPassword": {
+                    "description": "closing-date password (closing-password-v1); never stored or echoed",
+                    "type": "string"
+                  },
+                  "date": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "invoiceId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "memo": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "invoiceId",
+                  "date",
+                  "amount"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Record a recovered bad debt (bad-debt-recovery-v1)",
+        "tags": [
+          "payments"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/payments/write-off-recoveries/{id}": {
+      "get": {
+        "description": "Response RecoveryRecord. Another company's recovery is 404. RecoveryRecord: {id, txnType: bad_debt_recovery, status (posted | void), date, customerId, invoiceId, invoiceNumber, amount, recoveredTax, taxLines: [{taxItemId, agencyId, rate (6 places), base, tax}], invoiceBalanceDue, memo, updatedAt}; money as 2-place strings.",
+        "operationId": "get_api_v1_payments_write_off_recoveries_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a recovered bad debt (bad-debt-recovery-v1)",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/api/v1/payments/write-offs": {
+      "get": {
+        "description": "Response {data: [{invoiceId, invoiceNumber, invoiceDate, customerId, customerName, writeOffDate (the latest payment that wrote it off), firstWriteOffDate, writtenOff, writeOffTax (the SSUTA bad-debt tax stored with those write-offs; 0.00 when the switch was off), recovered, recoveredTax, recoverable (writtenOff - recovered), balanceDue}]}, oldest invoice first. Write-offs count from live rows of posted, unbounced payments; recoveries while posted. customerId or invoiceId narrow the list; includeRecovered=true also lists invoices with nothing left to recover. This company only: a customer of another company is 404.",
+        "operationId": "get_api_v1_payments_write_offs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "customerId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "invoiceId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeRecovered",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Written-off invoices that can be recovered (bad-debt-recovery-v1)",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
     "/api/v1/payments/{id}": {
       "get": {
         "description": "Response {payment: PaymentRecord}. A payment of another company is 404. PaymentRecord: {id, txnType, txnNumber, customerId, date, amount, depositTo, paymentMethod, refNo, memo, updatedAt, status (posted | void), depositedIn? {depositId, date}, bounce? {returnId, date}, applications: [{invoiceId, invoiceNumber, amount, discount, writeOff, appliedDate, appliedLater, appliedInTxnId, voided, reversed}] (every row, live and set aside; its credit applied later carries that date, appliedLater true and, when applied inside another payment, that payment's id), creditApplications: [{sourcePaymentId, invoiceId, invoiceNumber, amount, fromDeposit}] (the live credits applied inside this payment; send them back on PUT to keep them), writeOffAccountId, discountAccountId (the accounts its live write-offs and discounts went to, or null), depositTo (null when it received no money), unappliedRemaining (amount - live applications - live refunds; 0.00 when void or bounced), holdsDeposit, depositRemaining}; money as 2-place strings.",
@@ -38543,7 +38710,7 @@
         ]
       },
       "put": {
-        "description": "Response {payment: PaymentRecord}. One database transaction: the closing date is checked for the old and the new date, the old applications are set aside and their invoices restored, the header and lines rewritten, the new applications validated and written. expectedBalanceDue is the invoice's balance with this payment's own share added back (POST /payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and refNo only (still checked against the closing date): any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is 409 PAYMENT_BOUNCED. 409 STALE also when the payment was deposited or changed while this waited for its locks. A body equal to the saved payment but for memo and refNo (applications with their amounts, discounts, write-offs and accounts, and creditApplications as PaymentRecord.creditApplications lists them) changes only the header: nothing is set aside and no invoice reopens. Leaving out a credit applied inside it gives it back to its source. 409 CREDIT_IN_USE also for another customerId while any of its credit is applied elsewhere or refunded. 400 NO_MONEY_RECEIVED for a 0.00 payment. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. payment-settle-v1 / payment-discounts-v1: applications may be empty (the whole amount stays a credit); applications[].writeOffAmount and .discountAmount settle more of the invoice (cash + discount + write-off + credits <= the cent balance, else OVERAPPLIED); amount may be 0.00 only with a write-off or discount (then no deposit line). Posting: Dr depositTo amount, Dr writeOffAccountId (default the company setting writeOffAccountId) the write-offs, Dr discountAccountId (default salesDiscountAccountId) the discounts, Cr A/R the sum. 400 WRITE_OFF_ACCOUNT_REQUIRED / WRITE_OFF_ACCOUNT_INVALID, DISCOUNT_ACCOUNT_REQUIRED / DISCOUNT_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 CREDIT_NOT_FOR_CUSTOMER. customer-deposits-v1: holdAsDeposit true holds the whole amount as a customer deposit (Dr depositTo, Cr the Customer Deposits liability, created on first use); applications or credits with it are 400 DEPOSIT_WITH_APPLICATIONS. A held deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE. bankFeedItemId (feed-customer-payments-v1): the pending bank-feed line this payment is, matched in the same transaction; depositTo must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
+        "description": "Response {payment: PaymentRecord}. One database transaction: the closing date is checked for the old and the new date, the old applications are set aside and their invoices restored, the header and lines rewritten, the new applications validated and written. expectedBalanceDue is the invoice's balance with this payment's own share added back (POST /payments/preview with editingPaymentId returns it). expectedUpdatedAt: mismatch 409 STALE. A deposited payment takes memo and refNo only (still checked against the closing date): any other change is 409 TXN_DEPOSITED {depositIds}. A bounced payment is 409 PAYMENT_BOUNCED. 409 STALE also when the payment was deposited or changed while this waited for its locks. A body equal to the saved payment but for memo and refNo (applications with their amounts, discounts, write-offs and accounts, and creditApplications as PaymentRecord.creditApplications lists them) changes only the header: nothing is set aside and no invoice reopens. Leaving out a credit applied inside it gives it back to its source. 409 CREDIT_IN_USE also for another customerId while any of its credit is applied elsewhere or refunded. 400 NO_MONEY_RECEIVED for a 0.00 payment. Amounts are decimal strings in whole cents (at most 2 places; trailing zeros to 4 places accepted), compared exactly with no tolerance (Q-P21g): more places is 400 VALIDATION_ERROR. An invoice takes at most its cent balance, round2(balance_due) half away from zero; a legacy sub-cent residue is never posted (Q-P21t). applications[].expectedBalanceDue (optional) is the invoice's balanceDueExact as read, echoed unchanged: a different stored balance is 409 INVOICE_BALANCE_CHANGED {invoiceId, balanceDue, balanceDueExact} and nothing posts. 400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_AMOUNT (the applications add up to more than the amount; less is fine, the rest stays an A/R credit); 400 OVERAPPLIED {invoiceId, balanceDue} (more than the cent balance; a paid or void invoice takes 0.00); 400 INVOICE_NOT_FOR_CUSTOMER {invoiceId}; 400 DEPOSIT_ACCOUNT_INVALID (not an asset of this company, or A/R or Customer Deposits); 400 TOO_MANY_APPLICATIONS (more than 1,000); 404 for a customer or invoice of another company. payment-settle-v1 / payment-discounts-v1: applications may be empty (the whole amount stays a credit); applications[].writeOffAmount and .discountAmount settle more of the invoice (cash + discount + write-off + credits <= the cent balance, else OVERAPPLIED); amount may be 0.00 only with a write-off or discount (then no deposit line). Posting: Dr depositTo amount, Dr writeOffAccountId (default the company setting writeOffAccountId) the write-offs, Dr discountAccountId (default salesDiscountAccountId) the discounts, Cr A/R the sum. 400 WRITE_OFF_ACCOUNT_REQUIRED / WRITE_OFF_ACCOUNT_INVALID, DISCOUNT_ACCOUNT_REQUIRED / DISCOUNT_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, depositTo, inactive, another company). creditApplications [{sourcePaymentId, invoiceId, amount, expectedBalanceDue?}] apply existing credits of the same client in the same transaction (no GL effect; the source is locked): over its remaining 409 CREDIT_NOT_AVAILABLE {sourcePaymentId, remaining}; a bounced source 409 PAYMENT_BOUNCED; another client 400 CREDIT_NOT_FOR_CUSTOMER. customer-deposits-v1: holdAsDeposit true holds the whole amount as a customer deposit (Dr depositTo, Cr the Customer Deposits liability, created on first use); applications or credits with it are 400 DEPOSIT_WITH_APPLICATIONS. A held deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE. bankFeedItemId (feed-customer-payments-v1): the pending bank-feed line this payment is, matched in the same transaction; depositTo must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING. sales-tax-ssuta-v1 (U-153): while the company setting salesTaxSsuta is on, a discount D and a write-off W carry their share of the invoice's sales tax (d, w: the running total over cash + discount + write-off, split by largest remainder): Dr Sales Tax Payable d + w, the discount line D - d, the write-off line W - w; the shares are stored with the application (discount and bad-debt tax rows) and a bounce gives back exactly those. Off (the default): as before. 409 WRITE_OFF_RECOVERED on PUT, void and bounce while a write-off of the payment is recovered (U-154). A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT.",
         "operationId": "put_api_v1_payments_by_id",
         "parameters": [
           {
@@ -38832,7 +38999,7 @@
     },
     "/api/v1/payments/{id}/bounce": {
       "post": {
-        "description": "Response 201 {returnId, feeId?, heldIn: {accountId, kind: bank | payments_clearing}, reopened: [{invoiceId, balanceDue}]}. One database transaction posts a returned_payment (\"Bounced payment\") dated `date`: Cr the account holding the money (its live deposit's bank, else the bank it went to, else Payments Clearing, which takes it off the pending deposits), Dr A/R for the customer; every live application is restored onto its invoice and marked reversed; the payment has no credit left and can't be deposited, applied, edited or bounced again. No deposit is voided and nothing dated earlier changes, so only `date` meets the closing date. bankFeeAmount posts an expense (Dr bankFeeAccountId, default the company setting nsfBankFeeAccountId; Cr the bank holding the money, or bankFeeBankAccountId when that is Payments Clearing) in the same transaction, source_txn_id = the bounce. A fee charged to the customer is a separate POST /invoices. Voiding the returned_payment (POST /transactions/:id/void) re-applies what it reversed: 409 INVOICE_VOIDED / INVOICE_BALANCE_CHANGED when it no longer can; the fee is left to void separately. Errors: 409 PAYMENT_BOUNCED (a live bounce exists), 409 STALE (expectedUpdatedAt, or the payment was deposited, applied or voided while this waited for its locks; reload and retry), 400 NO_MONEY_RECEIVED (a 0.00 payment), 400 BOUNCE_DATE_INVALID (before the payment's or its deposit's date), 400 FEE_ACCOUNT_REQUIRED, 400 FEE_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, the account holding the money or paying the fee, inactive or another company's), 400 FEE_BANK_REQUIRED. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. Replay (Idempotency-Key) rebuilds the response from the returned_payment.",
+        "description": "Response 201 {returnId, feeId?, heldIn: {accountId, kind: bank | payments_clearing}, reopened: [{invoiceId, balanceDue}]}. One database transaction posts a returned_payment (\"Bounced payment\") dated `date`: Cr the account holding the money (its live deposit's bank, else the bank it went to, else Payments Clearing, which takes it off the pending deposits), Dr A/R for the customer; every live application is restored onto its invoice and marked reversed; the payment has no credit left and can't be deposited, applied, edited or bounced again. No deposit is voided and nothing dated earlier changes, so only `date` meets the closing date. bankFeeAmount posts an expense (Dr bankFeeAccountId, default the company setting nsfBankFeeAccountId; Cr the bank holding the money, or bankFeeBankAccountId when that is Payments Clearing) in the same transaction, source_txn_id = the bounce. A fee charged to the customer is a separate POST /invoices. Voiding the returned_payment (POST /transactions/:id/void) re-applies what it reversed: 409 INVOICE_VOIDED / INVOICE_BALANCE_CHANGED when it no longer can; the fee is left to void separately. Errors: 409 PAYMENT_BOUNCED (a live bounce exists), 409 STALE (expectedUpdatedAt, or the payment was deposited, applied or voided while this waited for its locks; reload and retry), 400 NO_MONEY_RECEIVED (a 0.00 payment), 400 BOUNCE_DATE_INVALID (before the payment's or its deposit's date), 400 FEE_ACCOUNT_REQUIRED, 400 FEE_ACCOUNT_INVALID (A/R, A/P, Payments Clearing, Customer Deposits, the account holding the money or paying the fee, inactive or another company's), 400 FEE_BANK_REQUIRED. A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): 423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT. Replay (Idempotency-Key) rebuilds the response from the returned_payment. sales-tax-ssuta-v1: the SSUTA discount and bad-debt tax stored with the payment goes back to Sales Tax Payable (Cr d + w; the discount and write-off accounts get D - d and W - w) and its rows are mirrored at the bounce date; 409 WRITE_OFF_RECOVERED when a write-off of the payment was recovered (Q-P23x).",
         "operationId": "post_api_v1_payments_by_id_bounce",
         "parameters": [
           {
@@ -58391,7 +58558,7 @@
     },
     "/api/v1/sales-tax/payments/preview": {
       "post": {
-        "description": "Response {agencyId, throughDate, basis, lines: [{taxItemId, name, owed, adjustment, amount, expectedOwed}], owed, total, problems: [{code, message, details?}]}; posts nothing. Owed per tax item of the agency = its tax rows counted on the company basis dated on or before throughDate + every live adjustment - every live paid and opening line, whatever their date (S1). lines omitted: every item at owed + its adjustments; sent: those items at those amounts, a line with amount null or absent at owed + its adjustments (computed by the engine; when paying, under the agency lock), so preview and pay agree on untyped lines. adjustments: amount signed (negative lowers what is paid, e.g. a timely-filing discount), on an income or expense account (400 ADJUSTMENT_ACCOUNT_INVALID), with a reason. A tax item not paid to the agency is 400 TAX_ITEM_NOT_FOR_AGENCY. Problems (warnings): AMOUNT_MORE_THAN_OWED, LEGACY_UNASSIGNED (tax with no agency yet), NO_VENDOR_ADDRESS (method check and the agency vendor has no billing address).",
+        "description": "Response {agencyId, throughDate, basis, lines: [{taxItemId, name, owed, adjustment, amount, expectedOwed}], owed, expectedOwed (= owed: send it back unchanged as the POST body expectedOwed), total, problems: [{code, message, details?}]}; posts nothing. Owed per tax item of the agency = its tax rows counted on the company basis dated on or before throughDate + every live adjustment - every live paid and opening line, whatever their date (S1). lines omitted: every item at owed + its adjustments; sent: those items at those amounts, a line with amount null or absent at owed + its adjustments (computed by the engine; when paying, under the agency lock), so preview and pay agree on untyped lines. adjustments: amount signed (negative lowers what is paid, e.g. a timely-filing discount), on an income or expense account (400 ADJUSTMENT_ACCOUNT_INVALID), with a reason. A tax item not paid to the agency is 400 TAX_ITEM_NOT_FOR_AGENCY. Problems (warnings): AMOUNT_MORE_THAN_OWED, LEGACY_UNASSIGNED (tax with no agency yet), NO_VENDOR_ADDRESS (method check and the agency vendor has no billing address).",
         "operationId": "post_api_v1_sales_tax_payments_preview",
         "requestBody": {
           "content": {
@@ -81514,7 +81681,8 @@
                 "daily_sales",
                 "aje",
                 "returned_payment",
-                "sales_tax_payment"
+                "sales_tax_payment",
+                "bad_debt_recovery"
               ],
               "type": "string"
             }

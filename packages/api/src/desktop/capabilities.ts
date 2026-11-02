@@ -610,4 +610,24 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * client whose tax code is not taxable.
    */
   'tax-exemptions-v1',
-];
+  /**
+   * SSUTA early-payment discounts and bad debts (U-153, Q-P23m / Q-SPF3 / Q-SPF6): while the company setting salesTaxSsuta is on
+   * (default off; a new ClientLedger company turns it on), a payment's discount D and write-off W carry their share of the invoice's
+   * sales tax (running total over cash + discount + write-off, split by largest remainder): Dr Sales Tax Payable d + w, discount D - d,
+   * write-off W - w; rows kind discount / bad_debt with the application id. POST /payments/preview adds invoices[].discountTax,
+   * .writeOffTax, totals.discountTax, .writeOffTax and salesTaxSsuta. A bounce gives back the stored shares and mirrors the rows. The
+   * switch applies to postings made while it is on. Bad-debt rows count on accrual only (the liability report), discount rows on both.
+   */
+  'sales-tax-ssuta-v1',
+  /**
+   * Recovered bad debts (U-154): POST /payments/write-off-recoveries {invoiceId, date, amount, memo?} -> 201 RecoveryRecord {id,
+   * txnType bad_debt_recovery, status, date, customerId, invoiceId, invoiceNumber, amount, recoveredTax, taxLines, invoiceBalanceDue,
+   * memo, updatedAt}: Dr A/R, Cr the write-off account, Cr Sales Tax Payable the recovered tax; the invoice reopens. GET
+   * /payments/write-off-recoveries/:id; GET /payments/write-offs?customerId&invoiceId&includeRecovered (what can be recovered). 409
+   * RECOVERY_EXCEEDS_WRITE_OFF {available}, 400 RECOVERY_DATE_INVALID; void via /transactions/:id/void (409 RECOVERY_IN_USE once the
+   * reopened balance was paid); 409 WRITE_OFF_RECOVERED on bounce, void and edit of the payment that wrote it off. Transaction type
+   * bad_debt_recovery ("Recovered bad debt"); cash basis ignores it.
+   */
+  'bad-debt-recovery-v1',
+  /** Idempotency-Key on POST /payments/write-off-recoveries (U-154). */
+  'idempotency-recovery-v1',];

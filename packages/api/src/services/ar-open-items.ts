@@ -18,7 +18,8 @@
  *      source's date, the source's date, the invoice's date) <= asOf; not
  *      reversed, or reversed by a bounce dated after asOf. Legacy payments
  *      that only carry applied_to_invoice_id (no application rows) move
- *      their total the same way. Moves net to zero per client.
+ *      their total the same way. A recovered bad debt (U-154) moves its A/R
+ *      debit onto the invoice it reopened. Moves net to zero per client.
  *   3. Display netting (never changes a client's total): a live refund drawn
  *      on a payment or credit memo nets into that source; a Stripe refund
  *      pointing at an invoice nets onto the invoice; a bounced payment, its
@@ -93,7 +94,7 @@ interface Work {
 function kindOf(txnType: string, open: DecimalValue): OpenItemKind {
   if (txnType === 'invoice') return 'invoice';
   if (txnType === 'credit_memo' || txnType === 'customer_payment') return 'credit';
-  if (txnType === 'returned_payment' || txnType === 'customer_refund') return 'charge';
+  if (txnType === 'returned_payment' || txnType === 'customer_refund' || txnType === 'bad_debt_recovery') return 'charge';
   return open.isNegative() ? 'credit' : 'other';
 }
 
@@ -176,6 +177,14 @@ export async function arOpenItemsAsOf(executor: DbOrTx, q: OpenItemsQuery): Prom
       AND tp.applied_to_invoice_id IS NOT NULL AND tp.total IS NOT NULL
       AND GREATEST(tp.txn_date, i.txn_date) <= ${asOf}::date
       AND NOT EXISTS (SELECT 1 FROM payment_applications pa2 WHERE pa2.tenant_id = tp.tenant_id AND pa2.payment_id = tp.id)
+    UNION ALL
+    -- U-154: a recovered bad debt's A/R debit reopens its invoice (a negative move, as a bounce).
+    SELECT r.recovery_txn_id, r.invoice_id, (-SUM(r.amount))::text
+    FROM write_off_recoveries r
+    JOIN transactions s ON s.id = r.recovery_txn_id AND s.tenant_id = r.tenant_id AND s.status = 'posted'
+    JOIN transactions i ON i.id = r.invoice_id AND i.tenant_id = r.tenant_id AND i.status = 'posted'
+    WHERE r.tenant_id = ${tenantId} AND GREATEST(s.txn_date, i.txn_date) <= ${asOf}::date
+    GROUP BY r.recovery_txn_id, r.invoice_id
   `);
   for (const r of moveRes.rows as Array<Record<string, unknown>>) {
     let src = byTxn.get(String(r['source_id']));

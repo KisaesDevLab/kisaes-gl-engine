@@ -805,6 +805,10 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     if (peek && (peek.txnType === 'customer_payment' || peek.txnType === 'returned_payment' || peek.txnType === 'credit_memo')) {
       await (await import('./payment.service.js')).lockForVoidInTx(tx, tenantId, peek);
     }
+    // U-154: a recovery locks the payments it took write-offs from first.
+    if (peek?.txnType === 'bad_debt_recovery') {
+      await (await import('./bad-debt-recovery.service.js')).lockForRecoveryVoidInTx(tx, tenantId, peek.id);
+    }
     const [txn] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .for('update')
@@ -883,6 +887,10 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       // U-137: a credit memo's applications reopen their invoices (409 CREDIT_REFUNDED while a refund is live).
       else if (txn.txnType === 'credit_memo') await payments.releaseCreditMemoForVoidInTx(tx, tenantId, txn, userId);
       else voidedBounceFeeId = (await payments.reapplyBounceForVoidInTx(tx, tenantId, txn, userId)).feeId;
+    }
+    // U-154: voiding a recovery gives the invoice its write-off back (409 RECOVERY_IN_USE once the reopened balance was paid).
+    if (txn.txnType === 'bad_debt_recovery') {
+      await (await import('./bad-debt-recovery.service.js')).releaseRecoveryForVoidInTx(tx, tenantId, txn, userId);
     }
     // U-141: voiding a finance-charge invoice frees its month and its charged-through days.
     if (txn.txnType === 'invoice' && txn.isFinanceCharge) {
@@ -1484,6 +1492,10 @@ export async function updateTransaction(
     // Pay Sales Tax has no edit (U-150, Q-P23h): void it and pay again.
     if (existing.txnType === 'sales_tax_payment' || input.txnType === 'sales_tax_payment') {
       throw AppError.badRequest('A sales tax payment cannot be edited; void it and pay again.', 'TXN_EDIT_UNSUPPORTED', { txnType: 'sales_tax_payment' });
+    }
+    // A recovered bad debt has no edit (U-154): void it and record it again.
+    if (existing.txnType === 'bad_debt_recovery' || input.txnType === 'bad_debt_recovery') {
+      throw AppError.badRequest('A recovered bad debt cannot be edited; void it and record it again.', 'TXN_EDIT_UNSUPPORTED', { txnType: 'bad_debt_recovery' });
     }
 
     // A check or journal entry linked to a sales tax agency (U-150): its paid

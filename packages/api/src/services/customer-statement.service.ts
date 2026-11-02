@@ -61,7 +61,7 @@ export interface CustomerStatement {
 
 const TYPE_LABEL: Record<string, string> = {
   invoice: 'Invoice', credit_memo: 'Credit memo', customer_payment: 'Payment', customer_refund: 'Refund',
-  returned_payment: 'Bounced payment', journal_entry: 'Journal entry', cash_sale: 'Sales receipt',
+  returned_payment: 'Bounced payment', bad_debt_recovery: 'Recovered bad debt', journal_entry: 'Journal entry', cash_sale: 'Sales receipt',
 };
 const describeTxn = (type: string, number: string | null) => `${TYPE_LABEL[type] ?? 'Adjustment'}${number ? ` ${number}` : ''}`;
 

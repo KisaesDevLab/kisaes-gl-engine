@@ -99,7 +99,7 @@ export function companyScope(companyId: string | null | undefined): SQL | undefi
 export const TXN_ATTACHABLE_TYPES = new Set([
   'invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry',
   'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje', 'returned_payment',
-  'sales_tax_payment',
+  'sales_tax_payment', 'bad_debt_recovery',
 ]);
 
 /**

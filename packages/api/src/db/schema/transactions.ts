@@ -110,6 +110,8 @@ export const transactions = pgTable('transactions', {
   isFinanceCharge: boolean('is_finance_charge').notNull().default(false),
   // U-147 (migration 0252): the document's sales tax item or group.
   salesTaxId: uuid('sales_tax_id'),
+  // U-153 (migration 0256): a customer payment's SSUTA switch when first posted (NULL = before 0256: off).
+  salesTaxSsuta: boolean('sales_tax_ssuta'),
   fromDepositId: uuid('from_deposit_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),

@@ -246,7 +246,8 @@ const payBody = z.object({
   printLater: z.boolean().optional(), checkNumber: z.number().int().positive().max(2147483647).optional(), memo: z.string().max(1000).optional(),
   expectedOwed: cents.optional(),
 });
-const payPreviewShape = '{agencyId, throughDate, basis, lines: [{taxItemId, name, owed, adjustment, amount, expectedOwed}], owed, total, problems: [{code, message, details?}]}';
+const payPreviewShape = '{agencyId, throughDate, basis, lines: [{taxItemId, name, owed, adjustment, amount, expectedOwed}], owed, expectedOwed (= owed: send it ' +
+  'back unchanged as the POST body expectedOwed), total, problems: [{code, message, details?}]}';
 const payRules = 'Owed per tax item of the agency = its tax rows counted on the company basis dated on or before throughDate + every live ' +
   'adjustment - every live paid and opening line, whatever their date (S1). lines omitted: every item at owed + its adjustments; sent: ' +
   'those items at those amounts, a line with amount null or absent at owed + its adjustments (computed by the engine; when paying, under ' +

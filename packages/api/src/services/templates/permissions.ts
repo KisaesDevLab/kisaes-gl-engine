@@ -51,6 +51,7 @@ export function txnResource(txnType: string, printStatus: string | null | undefi
     case 'customer_payment':
     case 'customer_refund':
     case 'returned_payment': return 'receive_payment';
+    case 'bad_debt_recovery': return 'receive_payment';
     case 'bill': return 'bills';
     case 'vendor_credit': return 'vendor_credits';
     case 'bill_payment': return 'pay_bills';
