@@ -214,23 +214,22 @@ describe('golden 12 (SSUTA on): an early-payment discount lowers the tax owed', 
 
   it('an edit keeps the switch of the payment\'s first posting (Q-P23w, forward only), both directions', async () => {
     const s = steps(12);
-    const editBody = { ...paymentBody(s[1]!['request']), applications: [{ invoiceId: '', amount: '426.79', discountAmount: '4.00' }] };
+    const editBody = () => ({ ...paymentBody(s[1]!['request']), applications: [{ invoiceId: ids.docs.get('INV-H')!, amount: '426.79', discountAmount: '4.00' }] });
     // Posted while off, edited while on: no SSUTA rows, no Sales Tax Payable line.
     await seed(false);
     await invoice(s[0]!['request']);
     const off = await receive(s[1]!['request']);
     await db.update(companies).set({ salesTaxSsuta: true }).where(eq(companies.id, c.companyId));
-    editBody.applications[0]!.invoiceId = ids.docs.get('INV-H')!;
     const pvOff = await preview({ ...s[1]!['request'], applications: [{ invoice: 'INV-H', amount: '426.79', discount: '4.00' }] }, off['id']);
     expect((pvOff['invoices'] as Body[]).find((i) => i['invoiceId'] === ids.docs.get('INV-H'))!['discountTax']).toBe('0.00');
-    ok(await req('PUT', `/api/v1/payments/${off['id']}`, editBody), 200);
+    ok(await req('PUT', `/api/v1/payments/${off['id']}`, editBody()), 200);
     expect(await lines(off['id'])).toEqual(['accounts_receivable:credit:430.79', 'operating_checking:debit:426.79', 'sales_discounts:debit:4.00']);
     expect(await db.select().from(transactionTaxLines).where(and(eq(transactionTaxLines.transactionId, off['id']), eq(transactionTaxLines.kind, 'discount')))).toEqual([]);
     // Posted while on, edited while off: the share is recomputed as before.
     ok(await req('POST', `/api/v1/payments/${off['id']}/void`, { reason: 'again' }), 200);
     const on = await receive(s[1]!['request']);
     await db.update(companies).set({ salesTaxSsuta: false }).where(eq(companies.id, c.companyId));
-    ok(await req('PUT', `/api/v1/payments/${on['id']}`, editBody), 200);
+    ok(await req('PUT', `/api/v1/payments/${on['id']}`, editBody()), 200);
     expect(await lines(on['id'])).toEqual(['accounts_receivable:credit:430.79', 'operating_checking:debit:426.79',
       'sales_discounts:debit:3.67', 'sales_tax_payable:debit:0.33']);
     expect((await db.select().from(transactionTaxLines).where(and(eq(transactionTaxLines.transactionId, on['id']), eq(transactionTaxLines.kind, 'discount')))).length).toBeGreaterThan(0);
