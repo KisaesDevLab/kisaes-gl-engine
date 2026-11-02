@@ -235,7 +235,8 @@ describe('receive-payment-v1 (U-132)', () => {
     const { preview, payment } = await previewThenReceive({ amount: '4000.00' });
     expect(preview.invoices.map((i: any) => [i.invoiceNumber, i.payment, i.balanceDue, i.balanceDueExact]))
       .toEqual([['1091', '4000.00', '4385.00', '4385.0000'], ['1095', '0.00', '1260.00', '1260.0000']]);
-    expect(preview.totals).toEqual({ amountDue: '5645.00', applied: '4000.00', discountsAndCredits: '0.00', writeOffs: '0.00', unapplied: '0.00' });
+    // sales-tax-ssuta-v1 (U-153) adds the SSUTA tax of discounts and write-offs (0.00 with the switch off).
+    expect(preview.totals).toEqual({ amountDue: '5645.00', applied: '4000.00', discountsAndCredits: '0.00', writeOffs: '0.00', unapplied: '0.00', discountTax: '0.00', writeOffTax: '0.00' });
     expect(preview.shortfalls).toEqual([{ invoiceId: i1091, amount: '385.00', withinWriteOffLimit: false }]);
     expect([preview.contactBalanceBefore, preview.contactBalanceAfter]).toEqual(['5645.00', '1645.00']);
     expect(preview.pendingDeposits).toEqual({ count: 2, total: '10210.00' });
