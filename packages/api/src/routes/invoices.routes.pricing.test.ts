@@ -410,6 +410,6 @@ describe('invoice-pricing-v1 (U-129)', () => {
     const first = await request('POST', '/api/v1/invoices', c.token, { contactId: c.customer, txnDate: '2026-11-01', lines: [{ accountId: c.revenue, quantity: '1', unitPrice: '100.00', isTaxable: false }] });
     expect(first.status).toBe(201);
     const p = (await request('POST', '/api/v1/invoices/preview', c.token, { contactId: c.customer, txnDate: '2026-11-03', lines: [{ accountId: c.revenue, quantity: '2', unitPrice: '10.00', isTaxable: true }] })).json;
-    expect([p.total, p.contactBalanceBefore, p.contactBalanceAfter, p.taxRate]).toEqual(['21.62', '100.00', '121.62', '0.0810']);
+    expect([p.total, p.contactBalanceBefore, p.contactBalanceAfter, p.taxRate]).toEqual(['21.62', '100.00', '121.62', '0.081000']);
   });
 });
