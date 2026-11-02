@@ -53432,6 +53432,50 @@
         ]
       }
     },
+    "/api/v1/reports/exemptions-expiring": {
+      "get": {
+        "description": "Response {title, asOf, within, data: [{exemptionId, contactId, contactName, number, state, expiresOn, status: expired|expiring, daysLeft}]}: active certificates that expired by asOf or expire within `within` days (default 60) of it, by expiry; a client with a certificate that stays current past that is left out. asOf default today.",
+        "operationId": "get_api_v1_reports_exemptions_expiring",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "within",
+            "required": false,
+            "schema": {
+              "maximum": 3650,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Exemption certificates expired or expiring (tax-exemptions-v1)",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/api/v1/reports/expense-by-category": {
       "get": {
         "operationId": "get_api_v1_reports_expense_by_category",
@@ -57044,6 +57088,393 @@
         "tags": [
           "sales-tax"
         ]
+      }
+    },
+    "/api/v1/sales-tax/exemptions": {
+      "get": {
+        "description": "Response {data: [{id, contactId, number, state, expiresOn, attachmentId, note, isActive, updatedAt}]} by expiry; contactId filters; active only unless includeInactive=true.",
+        "operationId": "get_api_v1_sales_tax_exemptions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contactId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeInactive",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List exemption certificates (tax-exemptions-v1)",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "post": {
+        "description": "Response 201 {id, contactId, number, state, expiresOn, attachmentId, note, isActive, updatedAt}. A client (customer) of this company; number 1-50 characters; expiresOn null = does not expire; attachmentId: a file of this company filed on the same client (attachable_type contact), else 400 VALIDATION_ERROR. Audit rows carry ids, never numbers. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_exemptions",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "attachmentId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expiresOn": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "note": {
+                    "anyOf": [
+                      {
+                        "maxLength": 2000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "number": {
+                    "maxLength": 50,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "state": {
+                    "anyOf": [
+                      {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "contactId",
+                  "number"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Add an exemption certificate",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/exemptions/{id}": {
+      "get": {
+        "description": "Response {id, contactId, number, state, expiresOn, attachmentId, note, isActive, updatedAt}; 404 for another company's.",
+        "operationId": "get_api_v1_sales_tax_exemptions_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get an exemption certificate",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "put": {
+        "description": "Response {id, contactId, number, state, expiresOn, attachmentId, note, isActive, updatedAt}. A client (customer) of this company; number 1-50 characters; expiresOn null = does not expire; attachmentId: a file of this company filed on the same client (attachable_type contact), else 400 VALIDATION_ERROR. Audit rows carry ids, never numbers. 404; 409 STALE (expectedUpdatedAt differs). Idempotency-Key.",
+        "operationId": "put_api_v1_sales_tax_exemptions_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "attachmentId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "contactId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "expiresOn": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "note": {
+                    "anyOf": [
+                      {
+                        "maxLength": 2000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "number": {
+                    "maxLength": 50,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "state": {
+                    "anyOf": [
+                      {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit an exemption certificate",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/exemptions/{id}/deactivate": {
+      "post": {
+        "description": "Response {id, contactId, number, state, expiresOn, attachmentId, note, isActive, updatedAt}. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_exemptions_by_id_deactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Deactivate an exemption certificate",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/exemptions/{id}/reactivate": {
+      "post": {
+        "description": "Response {id, contactId, number, state, expiresOn, attachmentId, note, isActive, updatedAt}. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_exemptions_by_id_reactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Reactivate an exemption certificate",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/sales-tax/items": {

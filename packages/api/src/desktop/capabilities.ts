@@ -603,4 +603,11 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'sales-tax-pay-v1',
   /** Idempotency-Key on POST /sales-tax/payments, /payments/link, /payments/:id/unlink, /payments/mark-paid-through and its /:runId/undo (U-150). */
   'idempotency-sales-tax-pay-v1',
+  /**
+   * Exemption certificates (U-151): GET/POST /sales-tax/exemptions (?contactId), GET/PUT /:id, POST /:id/deactivate|reactivate (keyed
+   * like the other setup writes, idempotency-sales-tax-v1); GET /reports/exemptions-expiring?asOf&within=60 (status expired | expiring).
+   * Invoice and sales receipt previews add warnings [{code: EXEMPTION_MISSING | EXEMPTION_EXPIRED | EXEMPTION_EXPIRING (30 days)}] for a
+   * client whose tax code is not taxable.
+   */
+  'tax-exemptions-v1',
 ];

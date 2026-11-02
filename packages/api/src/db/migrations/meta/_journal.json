@@ -1786,6 +1786,13 @@
       "when": 1787000014380,
       "tag": "0254_sales_tax_pay",
       "breakpoints": true
+    },
+    {
+      "idx": 255,
+      "version": "7",
+      "when": 1787100014380,
+      "tag": "0255_tax_exemptions",
+      "breakpoints": true
     }
   ]
 }
