@@ -1,0 +1,319 @@
+{
+  "description": "Sales tax money rules (P23, U-147 to U-154) shared by the engine (packages/shared/fixtures/sales-tax-golden.json) and the ClientLedger client (fixtures/sales_tax/golden.json, byte-identical; the --demo engine runs every case not marked engineOnly). Synthetic. Amounts are 2-place decimal strings, rates 6-place fractions. Accounts are keyed by role, documents by name, sales taxes, codes and clients by name.",
+  "rules": [
+    "One sales tax (an item or a group) per document: the document's, else the client's default, else the company's (Q-P23d). Tax = round2(taxable base x combined rate), half away from zero, once per document.",
+    "Line tax and group member tax: the document tax allocated by largest remainder (allocateCents) over line amount x rate and base x member rate. A negative base on a document with a positive subtotal taxes 0.00.",
+    "Line tax code: the line's, else the client's non-taxable code, else the item's code, else the item's taxable flag (Tax / Non). Non-taxable lines add to the nonTaxable column by code under every item of the document's sales tax.",
+    "Accrual collected = sale rows by document date. Cash collected (Q-P23e): settlement k of invoice i, ordered by (effective date, created, id), takes share_k = round2(T_i x P_k / total_i) - round2(T_i x P_(k-1) / total_i), P = cumulative cash + discounts (never write-offs, Q-SPF3); sales receipts and daily sales count on their date.",
+    "Cash basis is pure cash (Q-SPF1): money received and not applied is income in the Unapplied receipts account; its tax is recognised when it is applied, at the apply date (Q-P23y). No A/R and no Customer Deposits on the cash Balance Sheet.",
+    "SSUTA (Q-P23m, Q-SPF3, Q-SPF6): when the company switch is on, an early-payment discount D and a write-off W of an invoice carry tax shares d and w (the accrual running total over c + D + W split by allocateCents); discount rows count on both bases, bad-debt and recovery rows on accrual only. Off: as before (no tax share).",
+    "owedAtEnd = cumulative collected + discounts + badDebts + recoveries + adjustments - paid - openingPaid. Pay Sales Tax owed through a date = rows on the company basis dated on or before it + all live adjustments - all live paid and opening lines (S1).",
+    "Cases 1-10 share the monett seed and run in one company in the order of seeds.monett.chain; every other case starts from an empty company with its own seed. Keys and steps marked engineOnly are not checked by the demo engine."
+  ],
+  "seeds": {
+    "monett": {
+      "chain": [1, 2, 3, 4, 5, 6, 8, 7, 9, 10],
+      "ssuta": true,
+      "basis": "accrual",
+      "accounts": {
+        "operating_checking": { "name": "Operating checking", "type": "bank" },
+        "income": { "name": "Sales", "type": "revenue" },
+        "sales_tax_discounts": { "name": "Sales tax discounts", "type": "other_revenue" },
+        "sales_discounts": { "name": "Sales discounts", "type": "revenue" },
+        "bad_debts": { "name": "Bad debts", "type": "expense" },
+        "supplies": { "name": "Supplies", "type": "expense" },
+        "bill_discounts": { "name": "Bill discounts", "type": "other_revenue" }
+      },
+      "settings": { "writeOffAccount": "bad_debts", "writeOffThreshold": "200.00", "salesDiscountAccount": "sales_discounts" },
+      "agencies": [
+        { "name": "Sample State Revenue Dept." },
+        { "name": "Sample City Revenue Office" }
+      ],
+      "salesTaxes": [
+        { "kind": "item", "name": "State", "rate": "0.042250", "agency": "Sample State Revenue Dept." },
+        { "kind": "item", "name": "Springfield", "rate": "0.088750", "agency": "Sample State Revenue Dept." },
+        { "kind": "item", "name": "City", "rate": "0.038750", "agency": "Sample City Revenue Office" },
+        { "kind": "group", "name": "Monett", "members": ["State", "City"] }
+      ],
+      "companyDefault": "Monett",
+      "codes": [
+        { "code": "Tax", "name": "Taxable", "taxable": true, "system": true },
+        { "code": "Non", "name": "Non-taxable", "taxable": false, "system": true },
+        { "code": "Res", "name": "Resale", "taxable": false }
+      ],
+      "items": [
+        { "name": "Install labor", "account": "income", "taxCode": "Non" },
+        { "name": "Shrubs 3 gal", "account": "income", "taxCode": "Tax" },
+        { "name": "Mulch yard", "account": "income", "taxCode": "Tax" },
+        { "name": "Perennials", "account": "income", "taxCode": "Tax" },
+        { "name": "Plants", "account": "income", "taxCode": "Tax" }
+      ],
+      "clients": [
+        { "name": "Hollister Family" },
+        { "name": "Ozark Outfitters", "salesTax": "Springfield" },
+        { "name": "Cedar Hollow Supply", "salesTax": "Springfield", "taxCode": "Res" },
+        { "name": "Briar Creek Co-op", "salesTax": "Springfield", "taxCode": "Res" },
+        { "name": "Pine Bluff Nursery", "salesTax": "Springfield", "taxCode": "Res" }
+      ]
+    },
+    "ssuta": {
+      "extends": "monett",
+      "ssuta": true,
+      "note": "The monett setup with no documents; cases 12-14."
+    },
+    "billDiscount": {
+      "extends": "monett",
+      "basis": "cash",
+      "vendors": [{ "name": "Ozark Feed & Seed" }],
+      "note": "Case 15 (engineOnly)."
+    },
+    "legacy": {
+      "note": "Case 11 (engineOnly): a company migrated from before 0252; default rate 0.0825, documents carry a line taxRate and no sales tax.",
+      "defaultSalesTaxRate": "0.0825"
+    }
+  },
+  "cases": [
+    {
+      "id": 1, "name": "rate precision (8.875 %)", "seed": "monett",
+      "steps": [
+        { "op": "invoice", "request": { "name": "INV-E", "client": "Ozark Outfitters", "date": "2026-11-02", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "1000.00" }] },
+          "expect": { "salesTax": { "name": "Springfield", "rate": "0.088750", "members": [{ "name": "Springfield", "rate": "0.088750", "tax": "88.75" }] },
+            "lines": [{ "amount": "1000.00", "taxCode": "Tax", "taxAmount": "88.75" }], "taxableBase": "1000.00", "taxTotal": "88.75", "total": "1088.75" } }
+      ]
+    },
+    {
+      "id": 2, "name": "group rounded once", "seed": "monett",
+      "steps": [
+        { "op": "invoice", "request": { "name": "INV-B", "client": "Hollister Family", "date": "2026-11-03", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "6.00" }] },
+          "expect": { "salesTax": { "name": "Monett", "rate": "0.081000", "members": [{ "name": "State", "rate": "0.042250", "tax": "0.26" }, { "name": "City", "rate": "0.038750", "tax": "0.23" }] },
+            "lines": [{ "amount": "6.00", "taxCode": "Tax", "taxAmount": "0.49" }], "taxableBase": "6.00", "taxTotal": "0.49", "total": "6.49",
+            "note": "Rounding each member gives 0.25 + 0.23 = 0.48." } }
+      ]
+    },
+    {
+      "id": 3, "name": "mockup invoice", "seed": "monett",
+      "steps": [
+        { "op": "invoice", "request": { "name": "INV-A", "client": "Hollister Family", "date": "2026-11-04", "lines": [
+            { "item": "Install labor", "quantity": "18", "unitPrice": "65.00" },
+            { "item": "Shrubs 3 gal", "quantity": "24", "unitPrice": "32.50" },
+            { "item": "Mulch yard", "quantity": "6", "unitPrice": "48.00" },
+            { "item": "Perennials", "quantity": "1", "unitPrice": "842.15" }] },
+          "expect": { "salesTax": { "name": "Monett", "rate": "0.081000", "members": [{ "name": "State", "rate": "0.042250", "tax": "80.70" }, { "name": "City", "rate": "0.038750", "tax": "74.02" }] },
+            "lines": [
+              { "amount": "1170.00", "taxCode": "Non", "taxAmount": "0.00" },
+              { "amount": "780.00", "taxCode": "Tax", "taxAmount": "63.18" },
+              { "amount": "288.00", "taxCode": "Tax", "taxAmount": "23.33" },
+              { "amount": "842.15", "taxCode": "Tax", "taxAmount": "68.21" }],
+            "subtotal": "3080.15", "taxableBase": "1910.15", "taxTotal": "154.72", "total": "3234.87" } }
+      ]
+    },
+    {
+      "id": 4, "name": "credit memo", "seed": "monett",
+      "steps": [
+        { "op": "creditMemo", "request": { "name": "CM-C", "client": "Hollister Family", "date": "2026-11-10", "applications": "none", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "6.00" }] },
+          "expect": { "salesTax": { "name": "Monett", "rate": "0.081000", "members": [{ "name": "State", "rate": "0.042250", "tax": "-0.26" }, { "name": "City", "rate": "0.038750", "tax": "-0.23" }] },
+            "taxTotal": "0.49", "total": "6.49",
+            "journal": [{ "account": "income", "debit": "6.00" }, { "account": "sales_tax_payable", "debit": "0.49" }, { "account": "accounts_receivable", "credit": "6.49" }] } }
+      ]
+    },
+    {
+      "id": 5, "name": "sales receipt", "seed": "monett",
+      "steps": [
+        { "op": "salesReceipt", "request": { "name": "SR-D", "client": "Ozark Outfitters", "date": "2026-11-12", "depositTo": "payments_clearing", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "100.00" }] },
+          "expect": { "salesTax": { "name": "Springfield", "rate": "0.088750", "members": [{ "name": "Springfield", "rate": "0.088750", "tax": "8.88" }] },
+            "taxTotal": "8.88", "total": "108.88",
+            "journal": [{ "account": "payments_clearing", "debit": "108.88" }, { "account": "income", "credit": "100.00" }, { "account": "sales_tax_payable", "credit": "8.88" }] } }
+      ]
+    },
+    {
+      "id": 6, "name": "accrual liability, November", "seed": "monett",
+      "steps": [
+        { "op": "invoice", "request": { "name": "INV-F", "client": "Cedar Hollow Supply", "date": "2026-11-14", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "500.00" }] },
+          "expect": { "lines": [{ "amount": "500.00", "taxCode": "Res", "taxAmount": "0.00" }], "taxTotal": "0.00", "total": "500.00" } },
+        { "op": "dailySalesPreview", "request": { "date": "2026-11-15", "sales": "200.00", "tax": "17.80", "salesTax": "Springfield" },
+          "expect": { "expectedTax": "17.75", "problems": ["TAX_DIFFERS"] } },
+        { "op": "dailySales", "request": { "name": "DS", "date": "2026-11-15", "sales": "200.00", "tax": "17.75", "salesTax": "Springfield" },
+          "expect": { "expectedTax": "17.75", "problems": [] } },
+        { "op": "invoice", "request": { "name": "INV-G", "client": "Ozark Outfitters", "date": "2026-11-18", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "183.70" }] },
+          "expect": { "taxTotal": "16.30", "total": "200.00" } },
+        { "op": "liability", "request": { "basis": "accrual", "startDate": "2026-11-01", "endDate": "2026-11-30" },
+          "expect": {
+            "items": [
+              { "agency": "Sample State Revenue Dept.", "item": "State", "taxableSales": "1910.15", "nonTaxable": { "Non": "1170.00" }, "collected": "80.70", "discounts": "0.00", "badDebts": "0.00", "recoveries": "0.00", "adjustments": "0.00", "paid": "0.00", "owedAtEnd": "80.70" },
+              { "agency": "Sample State Revenue Dept.", "item": "Springfield", "taxableSales": "1483.70", "nonTaxable": { "Res": "500.00" }, "collected": "131.68", "discounts": "0.00", "badDebts": "0.00", "recoveries": "0.00", "adjustments": "0.00", "paid": "0.00", "owedAtEnd": "131.68" },
+              { "agency": "Sample City Revenue Office", "item": "City", "taxableSales": "1910.15", "nonTaxable": { "Non": "1170.00" }, "collected": "74.02", "discounts": "0.00", "badDebts": "0.00", "recoveries": "0.00", "adjustments": "0.00", "paid": "0.00", "owedAtEnd": "74.02" }],
+            "total": "286.40", "glMovement": "286.40", "otherEntries": "0.00", "unassigned": "0.00",
+            "note": "INV-B (+6.00 / +0.26 / +0.23) and CM-C (-6.00 / -0.26 / -0.23) cancel." } }
+      ]
+    },
+    {
+      "id": 8, "name": "pure-cash receipts (Q-SPF1, Q-P23y)", "seed": "monett",
+      "steps": [
+        { "op": "receivePayment", "request": { "name": "PMT-O", "client": "Ozark Outfitters", "date": "2026-10-20", "amount": "200.00", "depositTo": "operating_checking", "applications": [] },
+          "expect": { "unapplied": "200.00" } },
+        { "op": "cashBalanceSheet", "request": { "asOf": "2026-10-27" }, "engineOnly": true,
+          "expect": { "operating_checking": "200.00", "accounts_receivable": "0.00", "customer_deposits": "0.00", "unapplied_receipts_income": "200.00" } },
+        { "op": "applyCredit", "request": { "payment": "PMT-O", "invoice": "INV-G", "date": "2026-10-28", "amount": "200.00" }, "expect": {} },
+        { "op": "receiveDeposit", "request": { "name": "DEP-K", "client": "Ozark Outfitters", "date": "2026-10-05", "amount": "100.00", "depositTo": "operating_checking" },
+          "expect": { "journal": [{ "account": "operating_checking", "debit": "100.00" }, { "account": "customer_deposits", "credit": "100.00" }] } },
+        { "op": "invoice", "request": { "name": "INV-K", "client": "Ozark Outfitters", "date": "2026-11-03", "lines": [{ "item": "Install labor", "quantity": "1", "unitPrice": "100.00" }] },
+          "expect": { "taxTotal": "0.00", "total": "100.00" } },
+        { "op": "drawDeposit", "request": { "deposit": "DEP-K", "invoice": "INV-K", "date": "2026-11-03", "amount": "100.00" }, "expect": {} },
+        { "op": "liability", "request": { "basis": "cash", "startDate": "2026-10-01", "endDate": "2026-10-31" },
+          "expect": { "items": [{ "item": "Springfield", "taxableSales": "183.70", "collected": "16.30" }], "total": "16.30" } },
+        { "op": "cashLedger", "request": { "startDate": "2026-10-01", "endDate": "2026-10-31" }, "engineOnly": true,
+          "expect": { "unapplied_receipts_income": "100.00", "income": "183.70", "sales_tax_payable": "16.30", "customer_deposits": "0.00", "accounts_receivable": "0.00",
+            "note": "Unapplied receipts: +200.00 (10/20) - 200.00 (applied 10/28) + 100.00 (held deposit 10/05)." } },
+        { "op": "cashBalanceSheet", "request": { "asOf": "2026-10-31" }, "engineOnly": true,
+          "expect": { "operating_checking": "300.00", "sales_tax_payable": "16.30", "equity": "283.70", "accounts_receivable": "0.00", "customer_deposits": "0.00" } },
+        { "op": "cashLedger", "request": { "startDate": "2026-11-03", "endDate": "2026-11-03" }, "engineOnly": true,
+          "expect": { "unapplied_receipts_income": "-100.00", "income": "100.00" } },
+        { "op": "receivePayment", "request": { "name": "PMT-R", "client": "Ozark Outfitters", "date": "2026-11-09", "amount": "50.00", "depositTo": "operating_checking", "applications": [] },
+          "expect": { "unapplied": "50.00" } },
+        { "op": "refund", "request": { "source": "PMT-R", "client": "Ozark Outfitters", "date": "2026-11-10", "amount": "50.00", "from": "operating_checking" }, "expect": {} },
+        { "op": "cashLedger", "request": { "startDate": "2026-11-10", "endDate": "2026-11-10" }, "engineOnly": true,
+          "expect": { "unapplied_receipts_income": "-50.00" } }
+      ],
+      "variants": [
+        { "name": "8b applied at save", "seed": "monett", "engineOnly": false,
+          "steps": [
+            { "op": "invoice", "request": { "name": "INV-G", "client": "Ozark Outfitters", "date": "2026-10-15", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "183.70" }] }, "expect": { "total": "200.00" } },
+            { "op": "receivePayment", "request": { "name": "PMT-O", "client": "Ozark Outfitters", "date": "2026-10-20", "amount": "200.00", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-G", "amount": "200.00" }] }, "expect": { "unapplied": "0.00" } },
+            { "op": "liability", "request": { "basis": "cash", "startDate": "2026-10-20", "endDate": "2026-10-20" },
+              "expect": { "items": [{ "item": "Springfield", "taxableSales": "183.70", "collected": "16.30" }], "total": "16.30" } }
+          ] }
+      ]
+    },
+    {
+      "id": 7, "name": "cash basis running total", "seed": "monett",
+      "steps": [
+        { "op": "receivePayment", "request": { "name": "PMT-E1", "client": "Ozark Outfitters", "date": "2026-11-20", "amount": "362.92", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-E", "amount": "362.92" }] }, "expect": {} },
+        { "op": "receivePayment", "request": { "name": "PMT-E2", "client": "Ozark Outfitters", "date": "2026-11-25", "amount": "362.92", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-E", "amount": "362.92" }] }, "expect": {} },
+        { "op": "receivePayment", "request": { "name": "PMT-E3", "client": "Ozark Outfitters", "date": "2026-12-02", "amount": "362.91", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-E", "amount": "362.91" }] }, "expect": {} },
+        { "op": "liability", "request": { "basis": "cash", "startDate": "2026-11-01", "endDate": "2026-11-30" },
+          "expect": {
+            "items": [
+              { "item": "State", "taxableSales": "0.00", "collected": "0.00" },
+              { "item": "Springfield", "taxableSales": "966.67", "nonTaxable": { "Non": "100.00" }, "collected": "85.80", "badDebts": "0.00", "recoveries": "0.00" },
+              { "item": "City", "taxableSales": "0.00", "collected": "0.00" }],
+            "total": "85.80", "roundingDifference": "-0.002780",
+            "shares": { "INV-E": ["29.58", "29.59"] },
+            "note": "Springfield: SR-D 8.88 + DS 17.75 + INV-E 29.58 + 29.59 (rounding each share gives 88.74 in all); INV-G's 16.30 counts in October (case 8); INV-K (Non) was drawn from the deposit on 11/03." } },
+        { "op": "liability", "request": { "basis": "cash", "startDate": "2026-12-01", "endDate": "2026-12-31" },
+          "expect": { "items": [{ "item": "Springfield", "collected": "29.58" }], "total": "29.58" } }
+      ]
+    },
+    {
+      "id": 9, "name": "Pay Sales Tax", "seed": "monett",
+      "steps": [
+        { "op": "payPreview", "request": { "agency": "Sample State Revenue Dept.", "throughDate": "2026-11-30", "date": "2026-12-10", "bankAccount": "operating_checking", "method": "check",
+            "adjustments": [{ "item": "Springfield", "account": "sales_tax_discounts", "amount": "-1.96", "reason": "Timely filing discount" }] },
+          "expect": { "lines": [{ "item": "State", "owed": "80.70", "adjustment": "0.00", "amount": "80.70" }, { "item": "Springfield", "owed": "131.68", "adjustment": "-1.96", "amount": "129.72" }], "total": "210.42", "problems": [] } },
+        { "op": "pay", "request": { "name": "PAY-1", "key": "pay-1", "agency": "Sample State Revenue Dept.", "throughDate": "2026-11-30", "date": "2026-12-10", "bankAccount": "operating_checking", "method": "check", "printLater": true,
+            "adjustments": [{ "item": "Springfield", "account": "sales_tax_discounts", "amount": "-1.96", "reason": "Timely filing discount" }], "expectedOwed": "212.38" },
+          "expect": { "journal": [{ "account": "sales_tax_payable", "debit": "80.70" }, { "account": "sales_tax_payable", "debit": "131.68" }, { "account": "sales_tax_discounts", "credit": "1.96" }, { "account": "operating_checking", "credit": "210.42" }] } },
+        { "op": "pay", "request": { "name": "PAY-1", "key": "pay-1", "replay": true }, "expect": { "sameId": "PAY-1" } },
+        { "op": "owed", "request": { "asOf": "2026-11-30", "agency": "Sample State Revenue Dept." }, "expect": { "total": "0.00" } },
+        { "op": "payPreview", "request": { "agency": "Sample State Revenue Dept.", "throughDate": "2026-11-30", "date": "2026-12-11", "bankAccount": "operating_checking", "method": "check" },
+          "expect": { "total": "0.00", "note": "S1: the 12/10 payment is subtracted whatever its date." } },
+        { "op": "pay", "request": { "name": "PAY-STALE", "key": "pay-stale", "agency": "Sample City Revenue Office", "throughDate": "2026-11-30", "date": "2026-12-10", "bankAccount": "operating_checking", "method": "check", "lines": [{ "item": "City", "amount": "74.02" }], "expectedOwed": "70.00" },
+          "expect": { "error": { "status": 409, "code": "SALES_TAX_OWED_CHANGED" } } },
+        { "op": "pay", "request": { "name": "PAY-2", "key": "pay-2", "agency": "Sample City Revenue Office", "throughDate": "2026-11-30", "date": "2026-12-10", "bankAccount": "operating_checking", "method": "electronic", "lines": [{ "item": "City", "amount": "50.00" }], "expectedOwed": "74.02" },
+          "expect": {} },
+        { "op": "owed", "request": { "asOf": "2026-11-30", "agency": "Sample City Revenue Office" }, "expect": { "items": [{ "item": "City", "owed": "24.02" }], "total": "24.02" } },
+        { "op": "check", "request": { "name": "CHK-CITY", "date": "2026-12-12", "bankAccount": "operating_checking", "lines": [{ "account": "sales_tax_payable", "amount": "24.02" }] }, "expect": {} },
+        { "op": "link", "request": { "key": "link-1", "transaction": "CHK-CITY", "agency": "Sample City Revenue Office", "lines": [{ "item": "City", "amount": "24.02" }] }, "expect": {} },
+        { "op": "owed", "request": { "asOf": "2026-11-30", "agency": "Sample City Revenue Office" }, "expect": { "total": "0.00" } },
+        { "op": "liability", "request": { "basis": "accrual", "startDate": "2026-12-01", "endDate": "2026-12-31" }, "expect": { "otherEntries": "0.00" } },
+        { "op": "void", "request": { "txn": "PAY-1" }, "expect": {} },
+        { "op": "owed", "request": { "asOf": "2026-11-30", "agency": "Sample State Revenue Dept." }, "expect": { "items": [{ "item": "State", "owed": "80.70" }, { "item": "Springfield", "owed": "131.68" }], "total": "212.38" } },
+        { "op": "checkQueue", "request": {}, "expect": { "contains": [] } }
+      ]
+    },
+    {
+      "id": 10, "name": "exemption certificates", "seed": "monett",
+      "steps": [
+        { "op": "exemption", "request": { "client": "Cedar Hollow Supply", "number": "RS-1001", "state": "MO", "expiresOn": "2026-10-31" }, "expect": {} },
+        { "op": "exemption", "request": { "client": "Pine Bluff Nursery", "number": "RS-1003", "state": "MO", "expiresOn": "2026-12-15" }, "expect": {} },
+        { "op": "invoicePreview", "request": { "client": "Cedar Hollow Supply", "date": "2026-11-20", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "10.00" }] }, "expect": { "warnings": ["EXEMPTION_EXPIRED"] } },
+        { "op": "invoicePreview", "request": { "client": "Briar Creek Co-op", "date": "2026-11-20", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "10.00" }] }, "expect": { "warnings": ["EXEMPTION_MISSING"] } },
+        { "op": "invoicePreview", "request": { "client": "Pine Bluff Nursery", "date": "2026-11-20", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "10.00" }] }, "expect": { "warnings": ["EXEMPTION_EXPIRING"] } },
+        { "op": "invoicePreview", "request": { "client": "Ozark Outfitters", "date": "2026-11-20", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "10.00" }] }, "expect": { "warnings": [] } },
+        { "op": "exemptionsExpiring", "request": { "asOf": "2026-11-04", "within": 60 }, "expect": { "clients": ["Cedar Hollow Supply", "Pine Bluff Nursery"] } }
+      ]
+    },
+    {
+      "id": 11, "name": "backfill and legacy rates", "seed": "legacy", "engineOnly": true,
+      "steps": [
+        { "op": "legacyInvoice", "request": { "name": "L-1", "date": "2026-09-10", "lines": [{ "amount": "300.00", "taxRate": "0.0825" }] }, "expect": { "taxTotal": "24.75" } },
+        { "op": "legacyCheck", "request": { "name": "L-CHK", "date": "2026-10-15", "lines": [{ "account": "sales_tax_payable", "amount": "24.75" }] }, "expect": {} },
+        { "op": "backfill", "request": {},
+          "expect": { "legacyItems": [{ "name": "Sales tax 8.25%", "rate": "0.082500" }], "rows": [{ "document": "L-1", "item": "Sales tax 8.25%", "base": "300.00", "tax": "24.75" }],
+            "openingPaid": "24.75", "owed": "0.00", "companyDefault": "Sales tax 8.25%", "salesTaxEnabled": true } },
+        { "op": "legacyInvoice", "request": { "name": "L-2", "date": "2026-11-05", "lines": [{ "amount": "100.00", "taxRateNumber": 0.011000000000000001 }] },
+          "expect": { "lineTaxRate": "0.011000", "taxTotal": "1.10", "item": "Sales tax 1.1%" } },
+        { "op": "concurrentLegacy", "request": { "rate": "0.0725", "count": 2 }, "expect": { "items": 1 } },
+        { "op": "editKeepsRates", "request": { "document": "L-1", "defaultSalesTaxRate": "0.0900" }, "expect": { "taxTotal": "24.75" } }
+      ]
+    },
+    {
+      "id": 12, "name": "SSUTA early-payment discount", "seed": "ssuta",
+      "steps": [
+        { "op": "invoice", "request": { "name": "INV-H", "client": "Ozark Outfitters", "date": "2026-11-03", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "400.00" }] }, "expect": { "taxTotal": "35.50", "total": "435.50" } },
+        { "op": "receivePayment", "request": { "name": "PMT-H", "client": "Ozark Outfitters", "date": "2026-11-08", "amount": "426.79", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-H", "amount": "426.79", "discount": "8.71" }] },
+          "expect": { "discountTax": { "INV-H": "0.71" }, "journal": [{ "account": "operating_checking", "debit": "426.79" }, { "account": "sales_tax_payable", "debit": "0.71" }, { "account": "sales_discounts", "debit": "8.00" }, { "account": "accounts_receivable", "credit": "435.50" }] } },
+        { "op": "liability", "request": { "basis": "accrual", "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "items": [{ "item": "Springfield", "collected": "35.50", "discounts": "-0.71", "owedAtEnd": "34.79" }] } },
+        { "op": "liability", "request": { "basis": "cash", "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "items": [{ "item": "Springfield", "collected": "35.50", "discounts": "-0.71", "owedAtEnd": "34.79" }] } }
+      ],
+      "variants": [
+        { "name": "SSUTA off", "seed": "ssuta", "ssuta": false,
+          "steps": [
+            { "op": "invoice", "request": { "name": "INV-H", "client": "Ozark Outfitters", "date": "2026-11-03", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "400.00" }] }, "expect": { "total": "435.50" } },
+            { "op": "receivePayment", "request": { "name": "PMT-H", "client": "Ozark Outfitters", "date": "2026-11-08", "amount": "426.79", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-H", "amount": "426.79", "discount": "8.71" }] },
+              "expect": { "discountTax": { "INV-H": "0.00" }, "journal": [{ "account": "operating_checking", "debit": "426.79" }, { "account": "sales_discounts", "debit": "8.71" }, { "account": "accounts_receivable", "credit": "435.50" }] } },
+            { "op": "liability", "request": { "basis": "accrual", "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "items": [{ "item": "Springfield", "collected": "35.50", "discounts": "0.00", "owedAtEnd": "35.50" }] } }
+          ] }
+      ]
+    },
+    {
+      "id": 13, "name": "SSUTA bad debt and recovery", "seed": "ssuta",
+      "steps": [
+        { "op": "invoice", "request": { "name": "INV-J", "client": "Ozark Outfitters", "date": "2026-11-04", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "200.00" }] }, "expect": { "taxTotal": "17.75", "total": "217.75" } },
+        { "op": "receivePayment", "request": { "name": "PMT-J", "client": "Ozark Outfitters", "date": "2026-11-20", "amount": "100.00", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-J", "amount": "100.00", "writeOff": "117.75" }] },
+          "expect": { "writeOffTax": { "INV-J": "9.60" }, "journal": [{ "account": "operating_checking", "debit": "100.00" }, { "account": "sales_tax_payable", "debit": "9.60" }, { "account": "bad_debts", "debit": "108.15" }, { "account": "accounts_receivable", "credit": "217.75" }] } },
+        { "op": "liability", "request": { "basis": "accrual", "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "items": [{ "item": "Springfield", "collected": "17.75", "badDebts": "-9.60", "owedAtEnd": "8.15" }] } },
+        { "op": "liability", "request": { "basis": "cash", "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "items": [{ "item": "Springfield", "taxableSales": "91.85", "collected": "8.15", "badDebts": "0.00", "recoveries": "0.00" }] } },
+        { "op": "cashLedger", "request": { "startDate": "2026-11-01", "endDate": "2026-11-30" }, "engineOnly": true, "expect": { "income": "91.85", "bad_debts": "0.00" } },
+        { "op": "recovery", "request": { "name": "REC-J", "key": "rec-1", "invoice": "INV-J", "date": "2026-12-15", "amount": "50.00" },
+          "expect": { "recoveredTax": "4.08", "invoiceBalanceDue": "50.00", "journal": [{ "account": "accounts_receivable", "debit": "50.00" }, { "account": "bad_debts", "credit": "45.92" }, { "account": "sales_tax_payable", "credit": "4.08" }] } },
+        { "op": "liability", "request": { "basis": "accrual", "startDate": "2026-12-01", "endDate": "2026-12-31" }, "expect": { "items": [{ "item": "Springfield", "recoveries": "4.08", "owedAtEnd": "12.23" }] } },
+        { "op": "receivePayment", "request": { "name": "PMT-J2", "client": "Ozark Outfitters", "date": "2026-12-20", "amount": "50.00", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-J", "amount": "50.00" }] }, "expect": {} },
+        { "op": "liability", "request": { "basis": "cash", "startDate": "2026-12-01", "endDate": "2026-12-31" }, "expect": { "items": [{ "item": "Springfield", "collected": "4.08", "recoveries": "0.00", "owedAtEnd": "12.23" }] } },
+        { "op": "bounce", "request": { "payment": "PMT-J", "date": "2026-12-21" }, "expect": { "error": { "status": 409, "code": "WRITE_OFF_RECOVERED" } } }
+      ]
+    },
+    {
+      "id": 14, "name": "SSUTA bounce", "seed": "ssuta",
+      "steps": [
+        { "op": "invoice", "request": { "name": "INV-H", "client": "Ozark Outfitters", "date": "2026-11-03", "lines": [{ "item": "Plants", "quantity": "1", "unitPrice": "400.00" }] }, "expect": { "total": "435.50" } },
+        { "op": "receivePayment", "request": { "name": "PMT-H", "client": "Ozark Outfitters", "date": "2026-11-08", "amount": "426.79", "depositTo": "operating_checking", "applications": [{ "invoice": "INV-H", "amount": "426.79", "discount": "8.71" }] }, "expect": { "discountTax": { "INV-H": "0.71" } } },
+        { "op": "bounce", "request": { "payment": "PMT-H", "date": "2026-11-25" },
+          "expect": { "journal": [{ "account": "accounts_receivable", "debit": "435.50" }, { "account": "operating_checking", "credit": "426.79" }, { "account": "sales_tax_payable", "credit": "0.71" }, { "account": "sales_discounts", "credit": "8.00" }] } },
+        { "op": "liability", "request": { "basis": "accrual", "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "items": [{ "item": "Springfield", "collected": "35.50", "discounts": "0.00", "owedAtEnd": "35.50" }] } },
+        { "op": "liability", "request": { "basis": "cash", "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "items": [{ "item": "Springfield", "collected": "0.00", "discounts": "0.00", "owedAtEnd": "0.00" }] } }
+      ]
+    },
+    {
+      "id": 15, "name": "bill discount on cash (Q-SPF7)", "seed": "billDiscount", "engineOnly": true,
+      "steps": [
+        { "op": "bill", "request": { "name": "BILL-1", "vendor": "Ozark Feed & Seed", "date": "2026-11-02", "lines": [{ "account": "supplies", "amount": "100.00" }] }, "expect": {} },
+        { "op": "payBill", "request": { "bill": "BILL-1", "date": "2026-11-05", "bankAccount": "operating_checking", "amount": "98.00", "discount": "2.00", "discountAccount": "bill_discounts" }, "expect": {} },
+        { "op": "cashLedger", "request": { "startDate": "2026-11-01", "endDate": "2026-11-30" },
+          "expect": { "accounts_payable": "0.00", "supplies": "100.00", "bill_discounts": "2.00", "net": "-98.00", "note": "Before Q-SPF7: A/P debit 2.00 and net -96.00." } },
+        { "op": "vendorCredit", "request": { "name": "VC-1", "vendor": "Ozark Feed & Seed", "date": "2026-11-10", "lines": [{ "account": "supplies", "amount": "30.00" }] }, "expect": {} },
+        { "op": "vendorRefund", "request": { "credit": "VC-1", "date": "2026-11-12", "bankAccount": "operating_checking", "amount": "30.00" }, "expect": {} },
+        { "op": "cashLedger", "request": { "startDate": "2026-11-01", "endDate": "2026-11-30" }, "expect": { "accounts_payable": "0.00", "supplies": "70.00" } }
+      ]
+    }
+  ]
+}
