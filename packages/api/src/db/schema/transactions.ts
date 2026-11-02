@@ -108,6 +108,8 @@ export const transactions = pgTable('transactions', {
   holdsDeposit: boolean('holds_deposit').notNull().default(false),
   // U-141 (migration 0251): an invoice posted by a finance-charge assessment.
   isFinanceCharge: boolean('is_finance_charge').notNull().default(false),
+  // U-147 (migration 0252): the document's sales tax item or group.
+  salesTaxId: uuid('sales_tax_id'),
   fromDepositId: uuid('from_deposit_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),
@@ -173,7 +175,10 @@ export const journalLines = pgTable('journal_lines', {
   quantity: decimal('quantity', { precision: 12, scale: 4 }),
   unitPrice: decimal('unit_price', { precision: 19, scale: 4 }),
   isTaxable: boolean('is_taxable').default(false),
-  taxRate: decimal('tax_rate', { precision: 5, scale: 4 }).default('0'),
+  // A fraction with at most 6 places (U-148, migration 0252).
+  taxRate: decimal('tax_rate').default('0'),
+  // The line's sales tax code (U-147, migration 0252).
+  taxCodeId: uuid('tax_code_id'),
   taxAmount: decimal('tax_amount', { precision: 19, scale: 4 }).default('0'),
   lineOrder: integer('line_order').default(0),
   // ADR 0XX: split-level tag. FK declared in migration 0059 (ON DELETE RESTRICT).

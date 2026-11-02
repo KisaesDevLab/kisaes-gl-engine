@@ -61,18 +61,42 @@ export function parseSalesUnitPrice(value: unknown, field: string): DecimalValue
   return new Decimal(s);
 }
 
+/** Places a sales tax rate (a fraction) keeps: 8.875 % is 0.088750 (U-148). */
+export const TAX_RATE_PLACES = 6;
+
 /**
- * A tax rate as a fraction, at the 4 places journal_lines.tax_rate stores
- * (half away from zero), so the rate used is the rate stored. A browser that
- * divides a percent by 100 sends 0.011000000000000001 for 1.1 %; that is
- * 0.0110 here. Below 0 or 1 (100 %) and up: 400 VALIDATION_ERROR.
+ * A document line's tax rate as a fraction, rounded half away from zero to
+ * the 6 places journal_lines.tax_rate stores (U-148), so the rate used is
+ * the rate stored. Lenient on purpose (review B3): a browser that divides a
+ * percent by 100 sends the JSON number 0.011000000000000001 for 1.1 %; that
+ * is 0.011000 here, never a 400. Below 0 or 1 (100 %) and up: 400
+ * VALIDATION_ERROR.
  */
 export function parseSalesTaxRate(value: unknown, field: string): DecimalValue {
   const s = typeof value === 'string' ? value.trim() : typeof value === 'number' ? String(value) : '';
   if (!RATE_RE.test(s)) throw invalid(`${field} must be a tax rate written as a fraction, such as 0.0825`);
-  const rate = new Decimal(s).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+  const rate = new Decimal(s).toDecimalPlaces(TAX_RATE_PLACES, Decimal.ROUND_HALF_UP);
   if (rate.greaterThanOrEqualTo(1)) throw invalid(`${field} must be below 1 (100 %)`);
   return rate;
+}
+
+const SETUP_RATE_RE = /^0?\.\d{1,6}$|^0$/;
+
+/**
+ * A sales tax item's rate (setup routes, U-148): a decimal string fraction
+ * with at most 6 places, 0 <= rate < 1. Strict: no numbers, no rounding.
+ */
+export function parseSetupTaxRate(value: unknown, field: string): DecimalValue {
+  const s = typeof value === 'string' ? value.trim() : '';
+  if (!SETUP_RATE_RE.test(s)) {
+    throw invalid(`${field} must be a fraction written as a string with at most 6 decimal places, such as "0.088750" for 8.875 %`, { field });
+  }
+  return new Decimal(s);
+}
+
+/** A stored rate (any scale) as the 6-place wire string. */
+export function formatTaxRate(value: unknown): string {
+  return new Decimal(value === null || value === undefined || value === '' ? '0' : String(value)).toFixed(TAX_RATE_PLACES);
 }
 
 /** round2(quantity x unitPrice), half away from zero, as a 2-place string. */
@@ -96,7 +120,7 @@ export interface SalesLineInput {
 export interface SalesLineResult {
   /** 2-place amount. */
   amount: string;
-  /** The rate applied, 4 places ("0.0000" when not taxable). */
+  /** The rate applied, 6 places ("0.000000" when not taxable; U-148). */
   taxRate: string;
   /** 2-place share of the document tax ("0.00" when not taxable). */
   taxAmount: string;
@@ -112,6 +136,65 @@ export interface SalesDocumentResult {
   total: string;
   /** One entry per distinct rate with taxable lines, in first-seen order; a negative base shows as 0.00 with tax 0.00. */
   taxGroups: Array<{ rate: string; base: string; tax: string }>;
+  /**
+   * With a sales tax (U-147): one entry per item (a group's members in
+   * order), the document tax allocated by base x item rate. Absent on the
+   * legacy per-rate path.
+   */
+  salesTaxMembers?: Array<{ itemId: string; rate: string; base: string; tax: string }>;
+}
+
+/** A document's one sales tax (Q-P23d): an item, or a group whose members are charged together. */
+export interface SalesTaxUnit {
+  id: string;
+  /** Each item with its rate (a 6-place fraction string); one entry for an item, 1-10 for a group. */
+  members: ReadonlyArray<{ itemId: string; rate: string }>;
+}
+
+/**
+ * The document tax with one sales tax (Q-P23d, U-147): unit rate = the sum
+ * of the members' rates; base = the signed sum of the taxable lines (floored
+ * at 0.00 on a document with a positive subtotal, Q-P20ag); tax =
+ * round2(base x unit rate) once; lines get allocateCents(line x unit rate)
+ * and members allocateCents(base x member rate). A floored base gives every
+ * line and member 0.00 without allocating (S3).
+ */
+function computeWithSalesTax(lines: readonly SalesAmountInput[], unit: SalesTaxUnit): SalesDocumentResult {
+  const memberRates = unit.members.map((m) => new Decimal(m.rate));
+  const rate = memberRates.reduce<DecimalValue>((s, r) => s.plus(r), new Decimal(0));
+  const amounts = lines.map((l) => new Decimal(l.amount));
+  const subtotal = amounts.reduce<DecimalValue>((s, a) => s.plus(a), new Decimal(0));
+  const taxableIdx = lines.flatMap((l, i) => (l.isTaxable ? [i] : []));
+  const rawBase = taxableIdx.reduce<DecimalValue>((s, i) => s.plus(amounts[i]!), new Decimal(0));
+  const floored = subtotal.greaterThan(0) && rawBase.isNegative();
+  const base = floored ? new Decimal(0) : rawBase;
+  const tax = base.times(rate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  const taxes = lines.map(() => new Decimal(0));
+  let memberTax = memberRates.map(() => new Decimal(0));
+  if (!tax.isZero()) {
+    const shares = allocateCents(taxableIdx.map((i) => amounts[i]!.times(rate)), tax);
+    taxableIdx.forEach((i, k) => { taxes[i] = shares[k]!; });
+    memberTax = allocateCents(memberRates.map((r) => base.times(r)), tax);
+  }
+  const total = subtotal.plus(tax);
+  if (total.abs().greaterThanOrEqualTo(MONEY_LIMIT)) throw invalid('The total is too large');
+  const rateText = rate.toFixed(TAX_RATE_PLACES);
+  return {
+    lines: lines.map((l, i) => ({
+      amount: amounts[i]!.toFixed(2),
+      taxRate: l.isTaxable ? rateText : new Decimal(0).toFixed(TAX_RATE_PLACES),
+      taxAmount: taxes[i]!.toFixed(2),
+      isTaxable: l.isTaxable,
+    })),
+    subtotal: subtotal.toFixed(2),
+    taxableBase: base.toFixed(2),
+    taxTotal: tax.toFixed(2),
+    total: total.toFixed(2),
+    taxGroups: taxableIdx.length === 0 || rate.isZero() ? [] : [{ rate: rateText, base: base.toFixed(2), tax: tax.toFixed(2) }],
+    salesTaxMembers: unit.members.map((m, k) => ({
+      itemId: m.itemId, rate: memberRates[k]!.toFixed(TAX_RATE_PLACES), base: base.toFixed(2), tax: memberTax[k]!.toFixed(2),
+    })),
+  };
 }
 
 /**
@@ -161,7 +244,8 @@ export interface SalesAmountInput {
  * cent (U-122 tax rule; invoice-compute.ts uses it for discount and
  * subtotal lines, U-129). computeSalesDocument is this after the line rule.
  */
-export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTaxRate: unknown): SalesDocumentResult {
+export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTaxRate: unknown, salesTax?: SalesTaxUnit | null): SalesDocumentResult {
+  if (salesTax) return computeWithSalesTax(lines, salesTax);
   const fallbackRate = parseSalesTaxRate(defaultTaxRate ?? '0', 'defaultTaxRate');
   const amounts = lines.map((l) => new Decimal(l.amount));
   const rates = lines.map((l, i) => (
@@ -173,7 +257,7 @@ export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTa
   const groups = new Map<string, number[]>();
   lines.forEach((l, i) => {
     if (!l.isTaxable || rates[i]!.isZero()) return;
-    const key = rates[i]!.toFixed(4);
+    const key = rates[i]!.toFixed(TAX_RATE_PLACES);
     const g = groups.get(key) ?? [];
     g.push(i);
     groups.set(key, g);
@@ -211,7 +295,7 @@ export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTa
   const baseByRate = new Map<string, DecimalValue>();
   lines.forEach((l, i) => {
     if (!l.isTaxable) return;
-    const key = rates[i]!.toFixed(4);
+    const key = rates[i]!.toFixed(TAX_RATE_PLACES);
     baseByRate.set(key, (baseByRate.get(key) ?? new Decimal(0)).plus(amounts[i]!));
   });
   const taxableBase = [...baseByRate.values()].reduce<DecimalValue>((s, b) => (floorBases && b.isNegative() ? s : s.plus(b)), new Decimal(0));
@@ -221,7 +305,7 @@ export function computeSalesTotals(lines: readonly SalesAmountInput[], defaultTa
   return {
     lines: lines.map((l, i) => ({
       amount: amounts[i]!.toFixed(2),
-      taxRate: rates[i]!.toFixed(4),
+      taxRate: rates[i]!.toFixed(TAX_RATE_PLACES),
       taxAmount: taxes[i]!.toFixed(2),
       isTaxable: l.isTaxable,
     })),

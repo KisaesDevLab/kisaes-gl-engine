@@ -128,7 +128,16 @@ export const IDEMPOTENCY_SALES_DOC_EMAIL_V1_ROUTES = [
   'post /api/v1/sales-receipts/{id}/email-later',
 ].sort();
 
+/** Keyed by idempotency-sales-tax-v1 (U-147): the /sales-tax setup writes. */
+export const IDEMPOTENCY_SALES_TAX_V1_ROUTES = ['agencies', 'items', 'codes'].flatMap((r) => [
+  `post /api/v1/sales-tax/${r}`,
+  `put /api/v1/sales-tax/${r}/{id}`,
+  `post /api/v1/sales-tax/${r}/{id}/deactivate`,
+  `post /api/v1/sales-tax/${r}/{id}/reactivate`,
+]).sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_SALES_TAX_V1_ROUTES,
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
   ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES, ...IDEMPOTENCY_INVOICE_V1_ROUTES,
   ...IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES, ...IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES, ...IDEMPOTENCY_CREDIT_MEMO_V1_ROUTES, ...IDEMPOTENCY_CUSTOMER_STATEMENTS_V1_ROUTES,

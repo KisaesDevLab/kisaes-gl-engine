@@ -537,4 +537,24 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * balances are updated in account-id order.
    */
   'receivables-retry-v1',
+  /**
+   * Sales tax rates to 6 places (U-148, migration 0252): journal_lines.tax_rate and companies.default_sales_tax_rate keep up to 6
+   * places (8.875 % = "0.088750"); document responses and /company/settings defaultSalesTaxRate send 6-place strings. Document routes
+   * accept a line taxRate as a JSON number or a long decimal and round it half up to 6 places (0.011000000000000001 -> "0.011000",
+   * review B3); setup rates are strict (a string, at most 6 places, 0 <= r < 1).
+   */
+  'sales-tax-rate6-v1',
+  /**
+   * Company sales tax flags (U-25 sales-tax half, U-147): GET/PUT /company/settings salesTaxEnabled (boolean; stored NULL = on),
+   * salesTaxBasis ('accrual' default | 'cash', Q-P23a), defaultSalesTaxId (an active sales tax item or group of the company, or null;
+   * 400 VALIDATION_ERROR), salesTaxSsuta (boolean, default false: Q-SPF6; ClientLedger sets it true for new companies). A PUT of
+   * defaultSalesTaxRate alone (MyBooks Online) moves defaultSalesTaxId to the legacy item for that rate (null for 0); a PUT of
+   * defaultSalesTaxId alone sets defaultSalesTaxRate to its combined rate.
+   */
+  'company-sales-tax-flags-v1',
+  /**
+   * Idempotency-Key on the /sales-tax setup writes (U-147): POST /sales-tax/agencies, /items, /codes; PUT /:id of each; POST
+   * /:id/deactivate and /:id/reactivate of each. A replay rebuilds the record.
+   */
+  'idempotency-sales-tax-v1',
 ];

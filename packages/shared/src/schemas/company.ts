@@ -86,6 +86,14 @@ export const updateCompanySettingsSchema = z.object({
   financeChargeOnFinanceCharges: z.boolean().optional(),
   financeChargeIncomeAccountId: z.string().uuid().nullable().optional(),
   financeChargePrintLater: z.boolean().optional(),
+  // Sales tax (U-25, U-147; company-sales-tax-flags-v1): tax on or off; the
+  // liability basis (Q-P23a); the default sales tax item or group (an active
+  // one of this company, else 400 VALIDATION_ERROR; null clears); SSUTA
+  // discount and bad-debt rules (Q-P23m, default off, Q-SPF6).
+  salesTaxEnabled: z.boolean().optional(),
+  salesTaxBasis: z.enum(['accrual', 'cash']).optional(),
+  defaultSalesTaxId: z.string().uuid().nullable().optional(),
+  salesTaxSsuta: z.boolean().optional(),
 });
 
 // Additional company under the same tenant. Used by `/company/create`.

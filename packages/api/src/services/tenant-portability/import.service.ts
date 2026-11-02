@@ -30,7 +30,7 @@ import { AppError } from '../../utils/errors.js';
 import { ArchiveReader } from './archive-reader.js';
 import { withScrubbedPassphrase } from './archive-crypto.js';
 import { sha256File } from './archive-container.js';
-import { checkSchemaCompatibility, type CompatResult } from './compat.js';
+import { checkSchemaCompatibility, SALES_TAX_BACKFILL_SCHEMA_VERSION, type CompatResult } from './compat.js';
 import { ArchiveError } from './errors.js';
 import { resolveForImport } from './files.js';
 import { computeTenantFingerprint } from './fingerprint.js';
@@ -340,6 +340,20 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       if (resetDocumentDrafts) {
         await client.query("DELETE FROM document_drafts WHERE tenant_id = $1 AND status <> 'converted'", [newTenantId]);
         await client.query('DELETE FROM vendor_layout_templates WHERE tenant_id = $1', [newTenantId]);
+      }
+
+      // An archive made before 0252 (U-147) has no sales tax rows: the
+      // migration's backfill runs for each of its companies, after
+      // verification (which compares the rows as archived) and before the fingerprint.
+      if (manifest.schema.version < SALES_TAX_BACKFILL_SCHEMA_VERSION) {
+        const cos = await client.query('SELECT id FROM companies WHERE tenant_id = $1 ORDER BY created_at NULLS LAST, id', [newTenantId]);
+        for (const co of cos.rows as Array<{ id: string }>) {
+          await client.query(
+            `INSERT INTO audit_log (tenant_id, company_id, action, entity_type, entity_id, after_data)
+             SELECT $1, $2, 'create', 'sales_tax_backfill', $2, sales_tax_backfill_company($1::uuid, $2::uuid)`,
+            [newTenantId, co.id],
+          );
+        }
       }
 
       // After verification: audit row, fingerprint, provenance.

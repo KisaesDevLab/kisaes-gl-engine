@@ -175,6 +175,8 @@ export interface JournalLineInput {
   isTaxable?: boolean;
   taxRate?: string;
   taxAmount?: string;
+  // The line's sales tax code (U-147). Persisted on journal_lines.tax_code_id.
+  taxCodeId?: string | null;
   // ADR 0XX: optional per-line tag. Undefined means "caller did not specify";
   // null means "explicitly untagged." The ledger service persists whichever
   // the caller passes; if neither is set the column is stored as NULL.

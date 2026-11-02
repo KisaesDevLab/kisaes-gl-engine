@@ -472,6 +472,34 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'finance_charge_sources.assessment_id': 'tenant-ref:finance_charge_assessments',
   'finance_charge_sources.company_id': 'tenant-ref:companies',
   'finance_charge_sources.invoice_id': 'tenant-ref:transactions',
+  // Sales tax (U-147 / U-148, migration 0252).
+  'companies.default_sales_tax_id': 'tenant-ref:sales_tax_items',
+  'contacts.default_sales_tax_id': 'tenant-ref:sales_tax_items',
+  'contacts.tax_code_id': 'tenant-ref:sales_tax_codes',
+  'items.tax_code_id': 'tenant-ref:sales_tax_codes',
+  'transactions.sales_tax_id': 'tenant-ref:sales_tax_items',
+  'journal_lines.tax_code_id': 'tenant-ref:sales_tax_codes',
+  'sales_tax_agencies.company_id': 'tenant-ref:companies',
+  'sales_tax_agencies.vendor_id': 'tenant-ref:contacts',
+  'sales_tax_items.company_id': 'tenant-ref:companies',
+  'sales_tax_items.agency_id': 'tenant-ref:sales_tax_agencies',
+  'sales_tax_group_members.company_id': 'tenant-ref:companies',
+  'sales_tax_group_members.group_id': 'tenant-ref:sales_tax_items',
+  'sales_tax_group_members.item_id': 'tenant-ref:sales_tax_items',
+  'sales_tax_codes.company_id': 'tenant-ref:companies',
+  'transaction_tax_lines.company_id': 'tenant-ref:companies',
+  'transaction_tax_lines.transaction_id': 'tenant-ref:transactions',
+  'transaction_tax_lines.sales_tax_id': 'tenant-ref:sales_tax_items',
+  'transaction_tax_lines.tax_item_id': 'tenant-ref:sales_tax_items',
+  'transaction_tax_lines.agency_id': 'tenant-ref:sales_tax_agencies',
+  'transaction_tax_lines.tax_code_id': 'tenant-ref:sales_tax_codes',
+  'transaction_tax_lines.invoice_id': 'tenant-ref:transactions',
+  'transaction_tax_lines.application_id': 'tenant-ref:payment_applications',
+  'sales_tax_payment_lines.company_id': 'tenant-ref:companies',
+  'sales_tax_payment_lines.transaction_id': 'tenant-ref:transactions',
+  'sales_tax_payment_lines.tax_item_id': 'tenant-ref:sales_tax_items',
+  'sales_tax_payment_lines.agency_id': 'tenant-ref:sales_tax_agencies',
+  'sales_tax_payment_lines.account_id': 'tenant-ref:accounts',
   'findings.company_id': 'tenant-ref:companies',
   'findings.transaction_id': 'tenant-ref:transactions',
   'findings.vendor_id': 'tenant-ref:contacts',
@@ -934,7 +962,11 @@ export const CROSS_TENANT_COLUMNS: Record<string, CrossTenantAction> = {
  * entry is `table.column: { from, to }`; the plan test rejects any pair
  * that `isAllowedWidening` refuses. Empty until a migration widens a column.
  */
-export const TYPE_CHANGES: Record<string, { from: string; to: string }> = {};
+export const TYPE_CHANGES: Record<string, { from: string; to: string }> = {
+  // 0252 (U-148): sales tax rates keep 6 places; unconstrained numeric with a scale CHECK (no table rewrite).
+  'journal_lines.tax_rate': { from: 'numeric(5,4)', to: 'numeric' },
+  'companies.default_sales_tax_rate': { from: 'numeric(5,4)', to: 'numeric' },
+};
 
 /** The audit entity type only the tenant-portability code writes. */
 export const ARCHIVE_AUDIT_ENTITY_TYPE = 'tenant_archive';
@@ -964,6 +996,8 @@ export function isAllowedWidening(from: string, to: string): boolean {
   const nf = parseNumeric(f);
   const nt = parseNumeric(t);
   if (nf && nt) return nt.p >= nf.p && nt.s >= nf.s && nt.p - nt.s >= nf.p - nf.s;
+  // numeric(p,s) -> unconstrained numeric keeps every value (0252, U-148).
+  if (nf && t === 'numeric') return true;
   const vf = parseVarchar(f);
   if (vf !== null) {
     if (t === 'text') return true;

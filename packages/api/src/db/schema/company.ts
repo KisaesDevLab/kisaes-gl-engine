@@ -28,7 +28,8 @@ export const companies = pgTable('companies', {
   defaultPaymentTerms: varchar('default_payment_terms', { length: 50 }).default('net_30'),
   invoicePrefix: varchar('invoice_prefix', { length: 20 }).default('INV-'),
   invoiceNextNumber: integer('invoice_next_number').default(1001),
-  defaultSalesTaxRate: decimal('default_sales_tax_rate', { precision: 5, scale: 4 }).default('0'),
+  // A fraction with at most 6 places (U-148, migration 0252: numeric with a scale CHECK).
+  defaultSalesTaxRate: decimal('default_sales_tax_rate').default('0'),
   currency: varchar('currency', { length: 3 }).default('USD'),
   dateFormat: varchar('date_format', { length: 20 }).default('MM/DD/YYYY'),
   categoryFilterMode: varchar('category_filter_mode', { length: 10 }).default('by_type'),
@@ -60,6 +61,13 @@ export const companies = pgTable('companies', {
   financeChargeOnFinanceCharges: boolean('finance_charge_on_finance_charges').notNull().default(false),
   financeChargeIncomeAccountId: uuid('finance_charge_income_account_id'),
   financeChargePrintLater: boolean('finance_charge_print_later').notNull().default(true),
+  // Sales tax (U-147 / U-25, migration 0252): the default sales tax item or
+  // group; tax on (NULL = on); the liability basis; SSUTA discount and
+  // bad-debt rules (default off, Q-SPF6; ClientLedger turns it on for new companies).
+  defaultSalesTaxId: uuid('default_sales_tax_id'),
+  salesTaxEnabled: boolean('sales_tax_enabled'),
+  salesTaxBasis: varchar('sales_tax_basis', { length: 10 }).notNull().default('accrual'),
+  salesTaxSsuta: boolean('sales_tax_ssuta').notNull().default(false),
   // Prefix and next number per document type other than invoices (U-111,
   // migration 0240): {cash_sale|credit_memo|statement: {prefix, next}}.
   documentNumbers: jsonb('document_numbers').$type<Record<string, { prefix?: string; next?: number }>>().notNull().default({}),

@@ -23996,6 +23996,7 @@
                         "receive_payment",
                         "estimates",
                         "items",
+                        "sales_tax",
                         "bills",
                         "pay_bills",
                         "vendor_credits",
@@ -24125,6 +24126,7 @@
                         "receive_payment",
                         "estimates",
                         "items",
+                        "sales_tax",
                         "bills",
                         "pay_bills",
                         "vendor_credits",
@@ -24271,6 +24273,17 @@
                     ],
                     "type": "string"
                   },
+                  "defaultSalesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultSalesTaxRate": {
                     "type": "string"
                   },
@@ -24373,6 +24386,19 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "salesTaxBasis": {
+                    "enum": [
+                      "accrual",
+                      "cash"
+                    ],
+                    "type": "string"
+                  },
+                  "salesTaxEnabled": {
+                    "type": "boolean"
+                  },
+                  "salesTaxSsuta": {
+                    "type": "boolean"
                   },
                   "writeOffAccountId": {
                     "anyOf": [
@@ -24850,6 +24876,7 @@
                         "receive_payment",
                         "estimates",
                         "items",
+                        "sales_tax",
                         "bills",
                         "pay_bills",
                         "vendor_credits",
@@ -26466,7 +26493,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -26672,7 +26702,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -26906,7 +26939,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -31911,7 +31947,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -35039,7 +35078,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -35248,7 +35290,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -35506,7 +35551,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -55085,7 +55133,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -55289,7 +55340,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -55542,7 +55596,10 @@
                           ]
                         },
                         "taxRate": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "minLength": 1,
@@ -55977,6 +56034,940 @@
         "summary": "Put a sales receipt email in the Outbox (sales-doc-email-v1)",
         "tags": [
           "sales-receipts"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/agencies": {
+      "get": {
+        "description": "Response {data: [{id, vendorId, vendorName, isActive, updatedAt}]} by vendor name; active only unless includeInactive=true. An agency is a vendor of the company that sales tax is paid to.",
+        "operationId": "get_api_v1_sales_tax_agencies",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "includeInactive",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List sales tax agencies (sales-tax-setup-v1)",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "post": {
+        "description": "Response 201 {id, vendorId, vendorName, isActive, updatedAt}. vendorId: a vendor (or both) contact of this company, else 400 VALIDATION_ERROR; one agency per vendor (409 AGENCY_EXISTS). Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_agencies",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "vendorId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vendorId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a sales tax agency",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/agencies/{id}": {
+      "get": {
+        "description": "Response {id, vendorId, vendorName, isActive, updatedAt}; 404 for another company's.",
+        "operationId": "get_api_v1_sales_tax_agencies_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a sales tax agency",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "put": {
+        "description": "Response {id, vendorId, vendorName, isActive, updatedAt}. 404; 409 AGENCY_EXISTS, STALE (expectedUpdatedAt differs). Idempotency-Key.",
+        "operationId": "put_api_v1_sales_tax_agencies_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "vendorId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vendorId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Change a sales tax agency's vendor",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/agencies/{id}/deactivate": {
+      "post": {
+        "description": "Response {id, vendorId, vendorName, isActive, updatedAt}. 409 AGENCY_IN_USE while an active sales tax item is paid to it. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_agencies_by_id_deactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Deactivate a sales tax agency",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/agencies/{id}/reactivate": {
+      "post": {
+        "description": "Response {id, vendorId, vendorName, isActive, updatedAt}. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_agencies_by_id_reactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Reactivate a sales tax agency",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/codes": {
+      "get": {
+        "description": "Response {data: [{id, code (at most 8 characters), name, taxable, isSystem, isActive, updatedAt}]}, system codes first; active only unless includeInactive=true. Every company has the system codes Tax (taxable) and Non (non-taxable). A line's code (Q-P23k): the line's, else the client's non-taxable code, else the item's code, else the item's taxable flag. Non-taxable lines are reported by code.",
+        "operationId": "get_api_v1_sales_tax_codes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "includeInactive",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List sales tax codes (sales-tax-setup-v1)",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "post": {
+        "description": "Response 201 {id, code (at most 8 characters), name, taxable, isSystem, isActive, updatedAt}. Codes are unique, case-insensitive (409 CODE_IN_USE). Idempotency-Key. Every company has the system codes Tax (taxable) and Non (non-taxable). A line's code (Q-P23k): the line's, else the client's non-taxable code, else the item's code, else the item's taxable flag. Non-taxable lines are reported by code.",
+        "operationId": "post_api_v1_sales_tax_codes",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "code": {
+                    "maxLength": 8,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "taxable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "code",
+                  "name",
+                  "taxable"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a sales tax code",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/codes/{id}": {
+      "get": {
+        "description": "Response {id, code (at most 8 characters), name, taxable, isSystem, isActive, updatedAt}; 404 for another company's.",
+        "operationId": "get_api_v1_sales_tax_codes_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a sales tax code",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "put": {
+        "description": "Response {id, code (at most 8 characters), name, taxable, isSystem, isActive, updatedAt}. A system code's code and taxable flag can't change (409 SYSTEM_CODE); its name can. 404; 409 CODE_IN_USE, STALE. Idempotency-Key.",
+        "operationId": "put_api_v1_sales_tax_codes_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "code": {
+                    "maxLength": 8,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "taxable": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a sales tax code",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/codes/{id}/deactivate": {
+      "post": {
+        "description": "Response {id, code (at most 8 characters), name, taxable, isSystem, isActive, updatedAt}. A system code is 409 SYSTEM_CODE. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_codes_by_id_deactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Deactivate a sales tax code",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/codes/{id}/reactivate": {
+      "post": {
+        "description": "Response {id, code (at most 8 characters), name, taxable, isSystem, isActive, updatedAt}. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_codes_by_id_reactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Reactivate a sales tax code",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/items": {
+      "get": {
+        "description": "Response {data: [{id, kind: item|group, name, description, rate (6 places; a group: the sum of its members), agencyId, agencyName, members? [{id, name, rate, agencyId, isActive}] (groups), legacyRate (a legacy item: the stored line rate it stands for, else null), isActive, inUse, updatedAt}]}, items then groups by name; active only unless includeInactive=true. One sales tax per document (Q-P23d): an item, or a group of 1-10 items charged together; tax = round2(taxable base x combined rate) once, allocated to the members by largest remainder. A legacy item (made for a rate saved on documents before sales tax setup, or sent by a line taxRate) has no agency until one is set; its rate can't change. A changed rate or agency applies to documents saved from now on (Q-P23v).",
+        "operationId": "get_api_v1_sales_tax_items",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "includeInactive",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List sales tax items and groups (sales-tax-setup-v1)",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "post": {
+        "description": "Response 201 {id, kind: item|group, name, description, rate (6 places; a group: the sum of its members), agencyId, agencyName, members? [{id, name, rate, agencyId, isActive}] (groups), legacyRate (a legacy item: the stored line rate it stands for, else null), isActive, inUse, updatedAt}. An item needs rate and agencyId (400 AGENCY_REQUIRED; an inactive or other company's agency is 400 VALIDATION_ERROR); a group needs memberIds: 1-10 different (400 GROUP_SIZE) active items of this company, not groups (400 GROUP_MEMBER_NOT_ITEM), and no rate or agencyId. Names are unique, case-insensitive (409 NAME_IN_USE). Rates are fractions written as strings with at most 6 places (\"0.088750\" = 8.875 %), 0 <= rate < 1; numbers are refused (400 VALIDATION_ERROR). Idempotency-Key. One sales tax per document (Q-P23d): an item, or a group of 1-10 items charged together; tax = round2(taxable base x combined rate) once, allocated to the members by largest remainder. A legacy item (made for a rate saved on documents before sales tax setup, or sent by a line taxRate) has no agency until one is set; its rate can't change. A changed rate or agency applies to documents saved from now on (Q-P23v).",
+        "operationId": "post_api_v1_sales_tax_items",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "agencyId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "description": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "kind": {
+                    "default": "item",
+                    "enum": [
+                      "item",
+                      "group"
+                    ],
+                    "type": "string"
+                  },
+                  "memberIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "rate": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a sales tax item or group",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/items/{id}": {
+      "get": {
+        "description": "Response {id, kind: item|group, name, description, rate (6 places; a group: the sum of its members), agencyId, agencyName, members? [{id, name, rate, agencyId, isActive}] (groups), legacyRate (a legacy item: the stored line rate it stands for, else null), isActive, inUse, updatedAt}; 404 for another company's.",
+        "operationId": "get_api_v1_sales_tax_items_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a sales tax item or group",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "put": {
+        "description": "Response {id, kind: item|group, name, description, rate (6 places; a group: the sum of its members), agencyId, agencyName, members? [{id, name, rate, agencyId, isActive}] (groups), legacyRate (a legacy item: the stored line rate it stands for, else null), isActive, inUse, updatedAt}. Omitted fields keep their values; memberIds sent replaces a group's members. The kind can't change; a legacy item's rate can't change (400 VALIDATION_ERROR); a legacy item may get or lose an agency. 404; 409 NAME_IN_USE, STALE. Rates are fractions written as strings with at most 6 places (\"0.088750\" = 8.875 %), 0 <= rate < 1; numbers are refused (400 VALIDATION_ERROR). Idempotency-Key. One sales tax per document (Q-P23d): an item, or a group of 1-10 items charged together; tax = round2(taxable base x combined rate) once, allocated to the members by largest remainder. A legacy item (made for a rate saved on documents before sales tax setup, or sent by a line taxRate) has no agency until one is set; its rate can't change. A changed rate or agency applies to documents saved from now on (Q-P23v).",
+        "operationId": "put_api_v1_sales_tax_items_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "agencyId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "description": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "item",
+                      "group"
+                    ],
+                    "type": "string"
+                  },
+                  "memberIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "rate": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit a sales tax item or group",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/items/{id}/deactivate": {
+      "post": {
+        "description": "Response {id, kind: item|group, name, description, rate (6 places; a group: the sum of its members), agencyId, agencyName, members? [{id, name, rate, agencyId, isActive}] (groups), legacyRate (a legacy item: the stored line rate it stands for, else null), isActive, inUse, updatedAt}. 409 ITEM_IN_GROUP {groups} while an active group contains the item. An inactive item can't be chosen for a new document (TAX_ITEM_INACTIVE); saved documents keep it. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_items_by_id_deactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Deactivate a sales tax item or group",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/items/{id}/reactivate": {
+      "post": {
+        "description": "Response {id, kind: item|group, name, description, rate (6 places; a group: the sum of its members), agencyId, agencyName, members? [{id, name, rate, agencyId, isActive}] (groups), legacyRate (a legacy item: the stored line rate it stands for, else null), isActive, inUse, updatedAt}. A group whose members are not all active is 400 GROUP_MEMBER_NOT_ITEM. 404. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_items_by_id_reactivate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Reactivate a sales tax item or group",
+        "tags": [
+          "sales-tax"
         ],
         "x-idempotency": true
       }
@@ -61638,7 +62629,10 @@
                         },
                         "taxRate": {
                           "default": "0",
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "type": "string"
@@ -61793,7 +62787,10 @@
                         },
                         "taxRate": {
                           "default": "0",
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "number"
+                          ]
                         },
                         "unitPrice": {
                           "type": "string"
@@ -79445,7 +80442,10 @@
                             },
                             "taxRate": {
                               "default": "0",
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "number"
+                              ]
                             },
                             "unitPrice": {
                               "type": "string"
@@ -80127,7 +81127,10 @@
                             },
                             "taxRate": {
                               "default": "0",
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "number"
+                              ]
                             },
                             "unitPrice": {
                               "type": "string"

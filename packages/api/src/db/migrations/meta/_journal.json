@@ -1765,6 +1765,13 @@
       "when": 1786700014380,
       "tag": "0251_finance_charges",
       "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "7",
+      "when": 1786800014380,
+      "tag": "0252_sales_tax_setup",
+      "breakpoints": true
     }
   ]
 }

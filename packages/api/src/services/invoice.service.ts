@@ -513,7 +513,7 @@ export async function previewInvoice(
   if (existing && existing.status === 'posted' && existing.contactId === customer.id) {
     before = before.minus(existing.total || '0');
   }
-  const rate = new Decimal(company?.defaultSalesTaxRate || '0').toFixed(4);
+  const rate = new Decimal(company?.defaultSalesTaxRate || '0').toFixed(6);
   return {
     lines: computed.lines.map((c, i) => ({
       itemId: lines[i]!.itemId,

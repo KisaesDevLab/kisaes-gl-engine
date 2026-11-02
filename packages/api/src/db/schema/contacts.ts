@@ -48,6 +48,9 @@ export const contacts = pgTable('contacts', {
   // Vendor-specific
   defaultExpenseAccountId: uuid('default_expense_account_id'),
   taxId: varchar('tax_id', { length: 30 }),
+  // Sales tax defaults (U-147, migration 0252): the client's sales tax item or group, and its tax code.
+  defaultSalesTaxId: uuid('default_sales_tax_id'),
+  taxCodeId: uuid('tax_code_id'),
   is1099Eligible: boolean('is_1099_eligible').default(false),
   // Migration 0177 — the account number THIS VENDOR assigned to us (utility
   // account, customer no.). Free text: dashes, letters and leading zeros are

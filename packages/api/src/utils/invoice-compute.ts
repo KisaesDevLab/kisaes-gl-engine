@@ -44,7 +44,7 @@
 import DecimalLib from 'decimal.js';
 import { AppError } from './errors.js';
 import {
-  computeSalesTotals, parseSalesQuantity, parseSalesUnitPrice, salesLineAmount, type SalesDocumentResult,
+  computeSalesTotals, parseSalesQuantity, parseSalesUnitPrice, salesLineAmount, type SalesDocumentResult, type SalesTaxUnit,
 } from './sales-compute.js';
 
 const BaseDecimal = DecimalLib.default || DecimalLib;
@@ -217,7 +217,7 @@ function itemLinePrice(
  */
 export function computeInvoice(
   lines: readonly InvoiceComputeLineInput[],
-  opts: { defaultTaxRate: unknown; priceLevel?: PricingLevel | null },
+  opts: { defaultTaxRate: unknown; priceLevel?: PricingLevel | null; salesTax?: SalesTaxUnit | null },
 ): InvoiceComputeResult {
   const zero = new Decimal(0);
   const out: Array<Omit<InvoiceComputeLine, 'taxRate' | 'taxAmount'>> = [];
@@ -306,7 +306,7 @@ export function computeInvoice(
   const totals = computeSalesTotals(out.map((o, i) => (
     o.itemType === 'subtotal'
       ? { amount: '0.00', isTaxable: false }
-      : { amount: o.amount, isTaxable: o.isTaxable, taxRate: lines[i]!.taxRate })), opts.defaultTaxRate);
+      : { amount: o.amount, isTaxable: o.isTaxable, taxRate: lines[i]!.taxRate })), opts.defaultTaxRate, opts.salesTax);
 
   return {
     ...totals,
