@@ -31,7 +31,8 @@ import * as formsPrint from './forms-print.service.js';
 import * as invoiceTemplates from './invoice-template.service.js';
 import { claimIdempotency } from './idempotency.service.js';
 import { auditLog } from '../middleware/audit.js';
-import { computeSalesDocument, salesDocumentJournal, salesDocumentPreviewLines, writeSalesDocumentTags } from './invoice.service.js';
+import { computeSalesDocument, salesDocumentJournal, salesDocumentPreviewLines, writeSalesDocumentTags, previewSalesTax } from './invoice.service.js';
+import * as salesTaxSvc from './sales-tax.service.js';
 import { getBalances } from './contacts.service.js';
 import { liveDepositsForSource } from './deposit-links.service.js';
 import { listSendHistory } from './document-send.service.js';
@@ -87,19 +88,22 @@ async function writeHeader(tx: Tx, tenantId: string, row: TxnRow, input: CreditM
 export interface SalesDocumentLineRecord {
   accountId: string; itemId: string | null; description: string | null; quantity: string | null; unitPrice: string | null;
   amount: string; isTaxable: boolean; taxRate: string; taxAmount: string; tagId: string | null; serviceDate: string | null;
+  /** U-147: the line's sales tax code. */
+  taxCode: { id: string; code: string; taxable: boolean } | null;
 }
 
 /** The income lines of a sales document (not its head line or the Sales Tax line), as the form shows them. */
 async function documentLines(executor: DbOrTx, tenantId: string, row: TxnRow, sign: 1 | -1): Promise<SalesDocumentLineRecord[]> {
   const res = await executor.execute(sql`
     SELECT jl.account_id, jl.item_id, jl.description, jl.quantity::text AS quantity, jl.unit_price::text AS unit_price,
-      (jl.credit - jl.debit)::text AS net, jl.is_taxable, jl.tax_rate::text AS tax_rate, jl.tax_amount::text AS tax_amount,
+      (jl.credit - jl.debit)::text AS net, jl.is_taxable, jl.tax_rate::text AS tax_rate, jl.tax_amount::text AS tax_amount, jl.tax_code_id,
       jl.tag_id, to_char(jl.service_date, 'YYYY-MM-DD') AS service_date, jl.line_order, a.system_tag
     FROM journal_lines jl JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
     WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id = ${row.id} AND jl.is_void_reversal = false
     ORDER BY jl.line_order, jl.id
   `);
   const rows = res.rows as Array<Record<string, unknown>>;
+  const codes = await salesTaxSvc.codesById(executor, tenantId, rows.map((r) => r['tax_code_id'] as string | null));
   // The head line (A/R or the deposit account) is the first; the Sales Tax line is tagged.
   return rows.slice(1).filter((r) => r['system_tag'] !== 'sales_tax_payable').map((r) => ({
     accountId: String(r['account_id']),
@@ -113,6 +117,7 @@ async function documentLines(executor: DbOrTx, tenantId: string, row: TxnRow, si
     taxAmount: m2(String(r['tax_amount'] ?? '0')),
     tagId: (r['tag_id'] as string | null) ?? null,
     serviceDate: (r['service_date'] as string | null) ?? null,
+    taxCode: r['tax_code_id'] ? codes.get(String(r['tax_code_id'])) ?? null : null,
   }));
 }
 
@@ -127,6 +132,8 @@ export interface CreditMemoRecord {
   refunds: Array<{ refundId: string; date: string; amount: string; method: string | null; voided: boolean }>;
   remaining: string;
   sendHistory: SendHistory;
+  /** U-147: the memo's sales tax with its members' (negative) tax; null without one. */
+  salesTax: Awaited<ReturnType<typeof salesTaxSvc.documentSalesTax>>;
 }
 
 export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id: string, companyId?: string): Promise<CreditMemoRecord> {
@@ -170,10 +177,12 @@ export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id
     applications: appRows, refunds: refundRows,
     remaining: row.status === 'posted' ? m2(Decimal.max(total.minus(used), 0)) : '0.00',
     sendHistory: await listSendHistory(executor, tenantId, id),
+    salesTax: await salesTaxSvc.documentSalesTax(executor, tenantId, row),
   };
 }
 
 export interface SalesReceiptRecord {
+  salesTax: Awaited<ReturnType<typeof salesTaxSvc.documentSalesTax>>;
   id: string; number: string | null; date: string; customerId: string | null; depositToAccountId: string | null;
   paymentMethod: string | null; refNo: string | null;
   lines: SalesDocumentLineRecord[];
@@ -208,6 +217,7 @@ export async function getSalesReceiptRecord(executor: DbOrTx, tenantId: string, 
     updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null, status: row.status,
     deposited: (await liveDepositsForSource(executor, tenantId, id)).length > 0,
     sendHistory: await listSendHistory(executor, tenantId, id),
+    salesTax: await salesTaxSvc.documentSalesTax(executor, tenantId, row),
   };
 }
 
@@ -217,8 +227,8 @@ export async function getSalesReceiptRecord(executor: DbOrTx, tenantId: string, 
 export async function previewCreditMemo(tenantId: string, input: CreditMemoPreviewInput, companyId?: string) {
   let existing: TxnRow | undefined;
   if (input.editingId) existing = await loadDoc(db, tenantId, input.editingId, 'credit_memo', companyId);
-  const doc = await computeSalesDocument(db, tenantId, input, companyId);
-  const problems: Array<{ code: string }> = [];
+  const doc = await computeSalesDocument(db, tenantId, input, companyId, { existingId: existing?.id ?? null });
+  const problems: Array<{ code: string; message?: string }> = [...doc.tax.problems];
   const total = new Decimal(doc.computed.total);
   if (!total.greaterThan(0)) problems.push({ code: 'CREDIT_MEMO_TOTAL_NOT_POSITIVE' });
 
@@ -266,6 +276,8 @@ export async function previewCreditMemo(tenantId: string, input: CreditMemoPrevi
     taxTotal: doc.computed.taxTotal,
     total: doc.computed.total,
     taxGroups: doc.computed.taxGroups,
+    // U-147: the memo reverses tax, so its members show negative (as GET).
+    salesTax: await previewSalesTax(db, tenantId, companyId, doc.tax, doc.computed, -1),
     contactBalanceBefore: before.toFixed(2),
     contactBalanceAfter: before.minus(total).toFixed(2),
     openInvoices,
@@ -296,6 +308,7 @@ export async function createCreditMemoDocument(tenantId: string, input: CreditMe
       txnType: 'credit_memo', txnNumber, printLater: input.printLater === true, txnDate: input.txnDate,
       contactId: input.contactId, memo: input.memo,
       subtotal: m4(doc.computed.subtotal), taxAmount: m4(doc.computed.taxTotal), total: m4(doc.computed.total),
+      salesTaxId: doc.tax.salesTaxId, salesTaxRates: doc.tax.unit?.members ?? null,
       lines: await salesDocumentJournal(tx, tenantId, doc, { reverse: true }),
     } as ledger.PostTransactionInput, userId, companyId, tx);
     const [row] = await tx.select().from(transactions)
@@ -335,7 +348,7 @@ export async function updateCreditMemoDocument(tenantId: string, id: string, inp
     }
     if (row.status !== 'posted') throw AppError.badRequest('Cannot update a void transaction');
     ledger.assertNotStale(row, input.expectedUpdatedAt, 'This credit memo');
-    const doc = await computeSalesDocument(tx, tenantId, input, companyId);
+    const doc = await computeSalesDocument(tx, tenantId, input, companyId, { existingId: id });
     const total = new Decimal(doc.computed.total);
     if (!total.greaterThan(0)) throw notPositive(doc.computed.total);
     const used = await tx.execute(sql`
@@ -373,6 +386,7 @@ export async function updateCreditMemoDocument(tenantId: string, id: string, inp
       txnType: 'credit_memo', txnDate: input.txnDate, contactId: input.contactId, memo: input.memo,
       ...(newNumber ? { txnNumber: newNumber } : {}),
       subtotal: m4(doc.computed.subtotal), taxAmount: m4(doc.computed.taxTotal), total: m4(doc.computed.total),
+      salesTaxId: doc.tax.salesTaxId, salesTaxRates: doc.tax.unit?.members ?? null,
       lines: await salesDocumentJournal(tx, tenantId, doc, { reverse: true }),
     } as ledger.PostTransactionInput, userId, companyId, tx);
     if (input.printLater !== undefined) await formsPrint.setPrintLater(tx, tenantId, id, input.printLater, companyId);
@@ -417,7 +431,7 @@ function receiptProblem(code: string, accountId: string): AppError {
 /** POST /sales-receipts/preview: every figure, posting nothing; problems[] (NEGATIVE_RECEIPT_NEEDS_BANK, DEPOSIT_ACCOUNT_INVALID). */
 export async function previewSalesReceipt(tenantId: string, input: SalesReceiptPreviewInput, companyId?: string) {
   if (input.editingId) await loadDoc(db, tenantId, input.editingId, 'cash_sale', companyId);
-  const doc = await computeSalesDocument(db, tenantId, input, companyId);
+  const doc = await computeSalesDocument(db, tenantId, input, companyId, { existingId: input.editingId ?? null });
   const dep = await receiptDepositTo(db, tenantId, companyId, input.depositToAccountId, new Decimal(doc.computed.total));
   let before = new Decimal(0);
   if (input.contactId) {
@@ -432,10 +446,11 @@ export async function previewSalesReceipt(tenantId: string, input: SalesReceiptP
     taxTotal: doc.computed.taxTotal,
     total: doc.computed.total,
     taxGroups: doc.computed.taxGroups,
+    salesTax: await previewSalesTax(db, tenantId, companyId, doc.tax, doc.computed),
     depositToAccountId: dep.accountId,
     contactBalanceBefore: before.toFixed(2),
     contactBalanceAfter: before.toFixed(2),
-    problems: dep.problem ? [{ code: dep.problem }] : [],
+    problems: [...(dep.problem ? [{ code: dep.problem }] : []), ...doc.tax.problems],
   };
 }
 
@@ -452,6 +467,7 @@ export async function createSalesReceipt(tenantId: string, input: SalesReceiptIn
       txnType: 'cash_sale', txnNumber, printLater: input.printLater === true, txnDate: input.txnDate,
       contactId: input.contactId ?? undefined, memo: input.memo, paymentMethod: input.paymentMethod, referenceNumber: input.refNo,
       subtotal: m4(doc.computed.subtotal), taxAmount: m4(doc.computed.taxTotal), total: m4(doc.computed.total),
+      salesTaxId: doc.tax.salesTaxId, salesTaxRates: doc.tax.unit?.members ?? null,
       lines: await salesDocumentJournal(tx, tenantId, doc, { headAccountId: dep.accountId }),
     } as ledger.PostTransactionInput, userId, companyId, tx);
     const [row] = await tx.select().from(transactions).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, posted.id))).limit(1);
@@ -471,7 +487,7 @@ export async function updateSalesReceipt(tenantId: string, id: string, input: Sa
     }
     if (row.status !== 'posted') throw AppError.badRequest('Cannot update a void transaction');
     ledger.assertNotStale(row, input.expectedUpdatedAt, 'This sales receipt');
-    const doc = await computeSalesDocument(tx, tenantId, input, companyId);
+    const doc = await computeSalesDocument(tx, tenantId, input, companyId, { existingId: id });
     const dep = await receiptDepositTo(tx, tenantId, companyId, input.depositToAccountId ?? (await headAccount(tx, tenantId, id)) ?? undefined,
       new Decimal(doc.computed.total));
     if (dep.problem) throw receiptProblem(dep.problem, dep.accountId);
@@ -492,6 +508,7 @@ export async function updateSalesReceipt(tenantId: string, id: string, input: Sa
       paymentMethod: input.paymentMethod, referenceNumber: input.refNo,
       ...(newNumber ? { txnNumber: newNumber } : {}),
       subtotal: m4(doc.computed.subtotal), taxAmount: m4(doc.computed.taxTotal), total: m4(doc.computed.total),
+      salesTaxId: doc.tax.salesTaxId, salesTaxRates: doc.tax.unit?.members ?? null,
       lines: await salesDocumentJournal(tx, tenantId, doc, { headAccountId: dep.accountId }),
     } as ledger.PostTransactionInput, userId, companyId, tx);
     if (input.printLater !== undefined) await formsPrint.setPrintLater(tx, tenantId, id, input.printLater, companyId);

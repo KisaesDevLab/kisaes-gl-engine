@@ -5,6 +5,7 @@
 import { eq, and, ilike, count, asc, desc, sql, type SQL } from 'drizzle-orm';
 import type { CreateItemInput, UpdateItemInput, ItemFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
+import * as salesTaxSvc from './sales-tax.service.js';
 import { items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -73,6 +74,8 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
   // The insert, its audit row and an Idempotency-Key (U-18) commit together.
   return await db.transaction(async (tx) => {
     await claimIdempotency(tx);
+    // The item's sales tax code (U-147): an active code of the item's company.
+    await salesTaxSvc.assertTaxRefs(tx, tenantId, (input as { companyId?: string | null }).companyId ?? null, { taxCodeId: (input as { taxCodeId?: string | null }).taxCodeId });
     const [item] = await tx.insert(items).values({ tenantId, ...input }).returning();
     if (!item) throw AppError.internal('Failed to create item');
     await recordIdempotentEntity(tx, 'item', item.id);
@@ -92,6 +95,8 @@ export async function update(tenantId: string, id: string, input: UpdateItemInpu
     const dup = await db.query.items.findFirst({ where: and(eq(items.tenantId, tenantId), eq(items.name, input.name)) });
     if (dup) throw AppError.conflict('An item with this name already exists');
   }
+  const taxCodeId = (input as { taxCodeId?: string | null }).taxCodeId;
+  if (taxCodeId && taxCodeId !== existing.taxCodeId) await salesTaxSvc.assertTaxRefs(db, tenantId, existing.companyId ?? null, { taxCodeId });
   const [updated] = await db.update(items).set({ ...input, updatedAt: new Date() })
     .where(and(eq(items.tenantId, tenantId), eq(items.id, id))).returning();
   if (!updated) throw AppError.notFound('Item not found');

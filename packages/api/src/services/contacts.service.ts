@@ -9,6 +9,7 @@ import { contacts, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as invoiceTemplates from './invoice-template.service.js';
 import * as priceLevels from './price-levels.service.js';
+import * as salesTaxSvc from './sales-tax.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import * as ledger from './ledger.service.js';
@@ -169,6 +170,8 @@ export async function create(tenantId: string, input: CreateContactInput, userId
     if (input.priceLevelId) await priceLevels.assertAssignable(tx, tenantId, input.priceLevelId, companyId);
     // A default invoice layout (U-130): an unarchived layout of the company.
     await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.defaultInvoiceLayoutId, companyId);
+    // Sales tax defaults (U-147): an active item/group and code of the company.
+    await salesTaxSvc.assertTaxRefs(tx, tenantId, companyId ?? null, { defaultSalesTaxId: input.defaultSalesTaxId, taxCodeId: input.taxCodeId });
     const [contact] = await tx.insert(contacts).values({
       tenantId,
       ...normalized,
@@ -195,6 +198,10 @@ export async function update(tenantId: string, id: string, input: UpdateContactI
     await invoiceTemplates.assertInvoiceLayout(db, tenantId, input.defaultInvoiceLayoutId, companyId ?? existing.companyId, existing.defaultInvoiceLayoutId);
   }
 
+  await salesTaxSvc.assertTaxRefs(db, tenantId, companyId ?? existing.companyId ?? null, {
+    defaultSalesTaxId: input.defaultSalesTaxId && input.defaultSalesTaxId !== existing.defaultSalesTaxId ? input.defaultSalesTaxId : null,
+    taxCodeId: input.taxCodeId && input.taxCodeId !== existing.taxCodeId ? input.taxCodeId : null,
+  });
   const normalized = {
     ...input,
     email: input.email === '' ? null : input.email,

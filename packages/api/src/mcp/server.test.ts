@@ -7,8 +7,8 @@ import 'express-async-errors';
 import crypto from 'crypto';
 import { sql } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
-import { apiKeys, companies } from '../db/schema/index.js';
-import { eq } from 'drizzle-orm';
+import { apiKeys, companies, contacts, accounts, transactions, transactionTaxLines } from '../db/schema/index.js';
+import { and, eq } from 'drizzle-orm';
 import * as authService from '../services/auth.service.js';
 import { handleMcpRequest } from './server.js';
 
@@ -121,6 +121,22 @@ describe('MCP server integration', () => {
     const resp = await rpc('initialize');
     expect(resp.result.protocolVersion).toBeDefined();
     expect(resp.result.capabilities).toBeDefined();
+  });
+
+  it('tools/call create_invoice posts in the company: company_id set, tax rows = Sales Tax Payable (U-147)', async () => {
+    const [co] = await db.select().from(companies).where(eq(companies.tenantId, tenantId)).limit(1);
+    const [cust] = await db.insert(contacts).values({ tenantId, companyId: co!.id, contactType: 'customer', displayName: 'MCP Tax Client' }).returning();
+    const [rev] = await db.select().from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.accountType, 'revenue'))).limit(1);
+    const resp = await rpc('tools/call', { name: 'create_invoice', arguments: {
+      customer_id: cust!.id, date: '2026-05-01', due_date: '2026-05-31',
+      lines: JSON.stringify([{ accountId: rev!.id, description: 'Work', quantity: '1', unitPrice: '100.00', taxRate: '0.0825' }]),
+    } });
+    expect(resp.result, JSON.stringify(resp)).toBeDefined();
+    const inv = JSON.parse(resp.result.content[0].text);
+    const [t] = await db.select().from(transactions).where(eq(transactions.id, inv.id));
+    expect(t!.companyId).toBe(co!.id);
+    const rows = await db.select().from(transactionTaxLines).where(eq(transactionTaxLines.transactionId, inv.id));
+    expect(rows.reduce((s, r) => s + Math.round(Number(r.tax) * 100), 0)).toBe(825);
   });
 
   it('tools/call list_bills runs', async () => {

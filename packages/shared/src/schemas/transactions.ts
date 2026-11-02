@@ -174,6 +174,16 @@ const lineItemSchema = z.object({
 // item's line takes discountPercent (else the item's) or unitPrice (the
 // amount off), not both; a subtotal item's line ignores both. Rules:
 // packages/shared/fixtures/invoice-golden.json pricingRules.
+// The document's sales tax (U-147, sales-tax-setup-v1): an item or group of
+// the company (GET /sales-tax/items); null = no sales tax. Omitted: the
+// edited document's, else the client's default, else the company's. Not
+// with a line taxRate (400 TAX_RATE_WITH_SALES_TAX). useCurrentRates: an
+// edit takes the items' current rates instead of its saved ones (Q-P23i).
+export const salesTaxDocFields = {
+  salesTaxId: z.string().uuid().nullable().optional(),
+  useCurrentRates: z.boolean().optional(),
+};
+
 export const invoiceLineSchema = z.object({
   accountId: z.string().uuid().optional(),
   itemId: z.string().uuid().nullable().optional(),
@@ -195,6 +205,11 @@ export const invoiceLineSchema = z.object({
   // A percent ("10" = 10 %), 0 to 1000, at most 4 places; omitted is 0. A
   // negative cost takes no markup (Q-P20z).
   markupPercent: z.string().min(1).max(12).optional(),
+  // The line's sales tax code (U-147, sales-tax-setup-v1): a code of the
+  // company (GET /sales-tax/codes). Omitted: the client's non-taxable code,
+  // else the item's, else the taxable flag (Tax / Non). Its taxable flag
+  // decides whether the line is taxed when the document has a sales tax.
+  taxCodeId: z.string().uuid().nullable().optional(),
 }).refine((l) => !!l.accountId || !!l.itemId || !!l.billableSourceLineId, { message: 'Each line needs an accountId or an itemId', path: ['accountId'] });
 
 export const createCashSaleSchema = z.object({
@@ -261,6 +276,7 @@ export const createInvoiceSchema = z.object({
   // with discount or subtotal lines is 409 INVOICE_LINES_MISSING (a client
   // that doesn't know items would drop them).
   pricingLinesComplete: z.boolean().optional(),
+  ...salesTaxDocFields,
 });
 
 // POST /invoices/preview (U-129, invoice-pricing-v1): the create body, plus

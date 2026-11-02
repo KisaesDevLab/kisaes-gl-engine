@@ -25327,6 +25327,17 @@
                       }
                     ]
                   },
+                  "defaultSalesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultTagId": {
                     "anyOf": [
                       {
@@ -25499,6 +25510,17 @@
                     "anyOf": [
                       {
                         "maxLength": 20,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taxCodeId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -26038,6 +26060,17 @@
                       }
                     ]
                   },
+                  "defaultSalesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "defaultTagId": {
                     "anyOf": [
                       {
@@ -26201,6 +26234,17 @@
                     "anyOf": [
                       {
                         "maxLength": 20,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taxCodeId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -26492,6 +26536,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -26518,6 +26573,17 @@
                   "printLater": {
                     "type": "boolean"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -26533,6 +26599,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -26701,6 +26770,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -26724,6 +26804,17 @@
                   "printLater": {
                     "type": "boolean"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -26739,6 +26830,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -26938,6 +27032,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -26964,6 +27069,17 @@
                   "printLater": {
                     "type": "boolean"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -26979,6 +27095,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -35077,6 +35196,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -35121,6 +35251,17 @@
                     "maxItems": 500,
                     "type": "array"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -35141,6 +35282,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -35289,6 +35433,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -35330,6 +35485,17 @@
                     "maxItems": 500,
                     "type": "array"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -35350,6 +35516,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -35550,6 +35719,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -35594,6 +35774,17 @@
                     "maxItems": 500,
                     "type": "array"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -35614,6 +35805,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -36626,6 +36820,17 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "taxCodeId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "unitPrice": {
                     "type": [
                       "string",
@@ -36874,6 +37079,17 @@
                     "maxLength": 255,
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "taxCodeId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "unitPrice": {
                     "type": [
@@ -55132,6 +55348,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -55172,6 +55399,17 @@
                     "maxLength": 100,
                     "type": "string"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -55187,6 +55425,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -55339,6 +55580,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -55376,6 +55628,17 @@
                     "maxLength": 100,
                     "type": "string"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -55391,6 +55654,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"
@@ -55595,6 +55861,17 @@
                             }
                           ]
                         },
+                        "taxCodeId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "taxRate": {
                           "type": [
                             "string",
@@ -55635,6 +55912,17 @@
                     "maxLength": 100,
                     "type": "string"
                   },
+                  "salesTaxId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -55650,6 +55938,9 @@
                   "txnNumber": {
                     "maxLength": 50,
                     "type": "string"
+                  },
+                  "useCurrentRates": {
+                    "type": "boolean"
                   },
                   "warnOnly": {
                     "type": "boolean"

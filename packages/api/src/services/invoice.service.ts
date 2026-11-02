@@ -14,6 +14,7 @@ import type { DocumentSendMethod } from '../db/schema/document-send-events.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
+import * as salesTaxSvc from './sales-tax.service.js';
 import { addCalendarDays, isCalendarDate } from '../utils/calendar-date.js';
 import * as documentNumbers from './document-number.service.js';
 import * as formsPrint from './forms-print.service.js';
@@ -120,6 +121,10 @@ interface ResolvedInvoiceLine {
   discountPercent?: string;
   isTaxable: boolean;
   taxRate?: string;
+  /** U-147: the request's code, the item's code, and the code resolved for the document's sales tax. */
+  taxCodeId?: string | null;
+  itemTaxCodeId?: string | null;
+  taxCode?: salesTaxSvc.DocTaxCode | null;
   tagId?: string | null;
   serviceDate: string | null;
   item: { id: string; type: SalesItemType; unitPrice: string | null; discountPercent: string | null } | null;
@@ -174,7 +179,7 @@ async function resolveInvoiceLines(
       parseMarkupPercent(l.markupPercent, `lines[${i}].markupPercent`);
       return {
         accountId: l.accountId, itemId: null, itemType: null, description: l.description,
-        isTaxable: l.isTaxable ?? true, taxRate: l.taxRate, tagId: l.tagId, serviceDate: l.serviceDate ?? null,
+        isTaxable: l.isTaxable ?? true, taxRate: l.taxRate, taxCodeId: l.taxCodeId ?? null, tagId: l.tagId, serviceDate: l.serviceDate ?? null,
         item: null, bill: { sourceLineId: l.billableSourceLineId, markupPercent: l.markupPercent },
       };
     }
@@ -193,6 +198,8 @@ async function resolveInvoiceLines(
       // A subtotal line is never taxed (U-129).
       isTaxable: itemType === 'subtotal' ? false : l.isTaxable ?? (item ? item.isTaxable !== false : false),
       taxRate: l.taxRate,
+      taxCodeId: l.taxCodeId ?? null,
+      itemTaxCodeId: item?.taxCodeId ?? null,
       tagId: l.tagId,
       serviceDate: l.serviceDate ?? null,
       item: item ? { id: item.id, type: itemType!, unitPrice: item.unitPrice, discountPercent: item.discountPercent } : null,
@@ -293,7 +300,7 @@ async function buildInvoiceJournal(
         const f = l.bill.figures;
         const src = l.bill.source.line;
         const common = {
-          description: l.description, isTaxable: c.isTaxable, taxRate: c.taxRate, tagId: l.tagId,
+          description: l.description, isTaxable: c.isTaxable, taxRate: c.taxRate, taxCodeId: l.taxCode?.id ?? null, tagId: l.tagId,
           serviceDate: l.serviceDate, unitPriceSource: 'billable_cost', billableSourceLineId: l.bill.sourceLineId,
         };
         const costLine = {
@@ -321,6 +328,7 @@ async function buildInvoiceJournal(
         unitPriceSource: c.unitPriceSource,
         isTaxable: c.isTaxable,
         taxRate: c.taxRate,
+        taxCodeId: l.taxCode?.id ?? null,
         taxAmount: money4(c.taxAmount),
         // ADR 0XX — invoice revenue lines carry the user-selected tag.
         // AR and sales-tax lines remain untagged (internal postings).
@@ -434,18 +442,20 @@ async function computeInvoiceFigures(
   await assertTagsInScope(executor, tenantId, companyId, input.tagIds);
   const alreadyBilled = await resolveBillableLines(executor, tenantId, companyId, customer.id, company, lines, billingCtx);
   const priceLevel = await loadPricingLevel(executor, tenantId, customer.priceLevelId, companyId);
+  const existing = billingCtx.invoiceId ? await existingSalesTax(executor, tenantId, billingCtx.invoiceId) : null;
+  const tax = await applyDocumentTax(executor, tenantId, companyId, company, customer, input, lines, existing);
   // A billable line is a fixed amount: never priced by a level (S10).
   const computed = computeInvoice(lines.map((l) => ({ ...l, billable: l.bill?.figures ?? null })), {
-    defaultTaxRate: company?.defaultSalesTaxRate || '0', priceLevel,
+    defaultTaxRate: tax.noTax ? '0' : company?.defaultSalesTaxRate || '0', priceLevel, salesTax: tax.unit,
   });
-  return { company, customer, lines, priceLevel, computed, alreadyBilled };
+  return { company, customer, lines, priceLevel, computed, alreadyBilled, tax };
 }
 
 /** Everything the invoice posts from its request. */
 async function prepareInvoice(
   tx: Tx, tenantId: string, input: CreateInvoiceInput, companyId: string | null | undefined, billingCtx: BillingContext,
 ) {
-  const { company, customer, lines, computed } = await computeInvoiceFigures(tx, tenantId, input, companyId, billingCtx);
+  const { company, customer, lines, computed, tax } = await computeInvoiceFigures(tx, tenantId, input, companyId, billingCtx);
   const journal = await buildInvoiceJournal(tx, tenantId, lines, computed);
   const claims: billing.BillableClaim[] = lines.flatMap((l) => (l.bill?.figures && l.bill.source ? [{
     sourceLineId: l.bill.sourceLineId,
@@ -454,7 +464,7 @@ async function prepareInvoice(
     markupAccountId: l.bill.markupAccountId ?? null,
     existingLinkId: l.bill.existingLinkId ?? null,
   }] : []));
-  return { company, customer, computed, journal, claims };
+  return { company, customer, computed, journal, claims, tax };
 }
 
 /** A billable line's preview fields (U-128): its figures, and an error when another invoice holds the cost. */
@@ -500,7 +510,7 @@ export async function previewInvoice(
   await invoiceTemplates.assertInvoiceLayout(db, tenantId, input.layoutId, existing ? existing.companyId : scope, existing?.layoutId);
   // Billable costs (U-128 S3): checked without a lock or a claim; a cost
   // another invoice holds is reported on its line (error), not refused.
-  const { company, customer, lines, priceLevel, computed, alreadyBilled } = await computeInvoiceFigures(db, tenantId, input, scope, {
+  const { company, customer, lines, priceLevel, computed, alreadyBilled, tax } = await computeInvoiceFigures(db, tenantId, input, scope, {
     invoiceId: existing?.id ?? null, preview: true,
   });
   const paymentTerms = input.paymentTerms ?? existing?.paymentTerms ?? undefined;
@@ -526,6 +536,8 @@ export async function previewInvoice(
       isTaxable: c.isTaxable,
       taxRate: c.taxRate,
       taxAmount: c.taxAmount,
+      // U-147: present on the sales tax path only (legacy-path previews are unchanged).
+      ...(lines[i]!.taxCode ? { taxCode: lines[i]!.taxCode } : {}),
       ...(lines[i]!.bill?.figures ? billablePreview(lines[i]!.bill!, alreadyBilled) : {}),
     })),
     subtotal: computed.subtotal,
@@ -539,6 +551,8 @@ export async function previewInvoice(
     taxTotal: computed.taxTotal,
     total: computed.total,
     taxGroups: computed.taxGroups,
+    salesTax: await previewSalesTax(db, tenantId, scope, tax, computed),
+    problems: tax.problems,
     paymentTerms: terms.paymentTerms ?? null,
     dueDate: terms.dueDate ?? null,
     priceLevel: priceLevel ? { id: priceLevel.id, name: priceLevel.name, percent: priceLevel.percent } : null,
@@ -569,7 +583,7 @@ export async function createInvoiceWithWarnings(
     await claimIdempotency(tx);
     // Billable costs (U-128): their sources are locked (id order) and
     // checked before anything posts; claimed in this transaction below.
-    const { company, customer, computed, journal, claims } = await prepareInvoice(tx, tenantId, input, companyId, {
+    const { company, customer, computed, journal, claims, tax } = await prepareInvoice(tx, tenantId, input, companyId, {
       invoiceId: null, lockTx: tx,
     });
     const terms = resolveInvoiceTerms(input, customer, company);
@@ -602,6 +616,7 @@ export async function createInvoiceWithWarnings(
       amountPaid: '0',
       status: 'posted',
       invoiceStatus: 'draft',
+      salesTaxId: tax.salesTaxId, salesTaxRates: tax.unit?.members ?? null,
       lines: journal,
     }, userId, companyId, tx);
     const header = {
@@ -707,7 +722,7 @@ export async function updateInvoiceWithWarnings(
       );
     }
     if (input.pricingLinesComplete !== true) await assertPricingLinesSent(tx, tenantId, invoiceId, input.lines);
-    const { company, customer, computed, journal, claims } = await prepareInvoice(tx, tenantId, input, scope, {
+    const { company, customer, computed, journal, claims, tax } = await prepareInvoice(tx, tenantId, input, scope, {
       invoiceId, lockTx: tx, alsoLockTxnIds: links.map((l) => l.sourceTransactionId),
     });
     // The total can't drop below what was paid (U-128 S6).
@@ -757,6 +772,7 @@ export async function updateInvoiceWithWarnings(
       taxAmount: money4(computed.taxTotal),
       total: money4(computed.total),
       balanceDue: balanceDue.toFixed(4),
+      salesTaxId: tax.salesTaxId, salesTaxRates: tax.unit?.members ?? null,
       lines: journal,
     }, userId, companyId, tx);
 
@@ -820,8 +836,10 @@ export async function getInvoice(tenantId: string, invoiceId: string, companyId?
   const tagged = accountIds.length === 0 ? [] : await db.select({ id: accounts.id, systemTag: accounts.systemTag }).from(accounts)
     .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, accountIds)));
   const tagOf = new Map(tagged.map((a) => [a.id, a.systemTag ?? null]));
-  const lines = txn.lines.map((l) => ({ ...l, accountSystemTag: tagOf.get(l.accountId) ?? null }));
-  return { ...txn, lines, tagIds: tagRows.map((r) => r.tagId), sendHistory, billableCosts };
+  const codes = await salesTaxSvc.codesById(db, tenantId, txn.lines.map((l) => l.taxCodeId));
+  const lines = txn.lines.map((l) => ({ ...l, accountSystemTag: tagOf.get(l.accountId) ?? null, taxCode: l.taxCodeId ? codes.get(l.taxCodeId) ?? null : null }));
+  const salesTax = await salesTaxSvc.documentSalesTax(db, tenantId, txn);
+  return { ...txn, lines, tagIds: tagRows.map((r) => r.tagId), sendHistory, billableCosts, salesTax };
 }
 
 /**
@@ -982,6 +1000,7 @@ export async function duplicateInvoiceWithWarnings(tenantId: string, invoiceId: 
     unitPrice: line.unitPrice || undefined,
     isTaxable: line.isTaxable ?? false,
     taxRate: line.taxRate || undefined,
+    taxCodeId: line.taxCodeId ?? null,
     taxAmount: line.taxAmount || undefined,
     serviceDate: line.serviceDate || undefined,
     discountPercent: line.discountPercent ?? null,
@@ -1001,6 +1020,8 @@ export async function duplicateInvoiceWithWarnings(tenantId: string, invoiceId: 
     balanceDue: original.total || undefined,
     amountPaid: '0',
     invoiceStatus: 'draft',
+    // The copy keeps the original's sales tax (U-147): rows by its items.
+    salesTaxId: original.salesTaxId ?? null,
     lines,
   }, userId, companyId);
   // The copy prints with the original's layout (U-130), unless it is archived.
@@ -1031,7 +1052,7 @@ export interface SalesDocumentInput {
  */
 export async function computeSalesDocument(
   executor: DbOrTx, tenantId: string, input: SalesDocumentInput, companyId: string | null | undefined,
-  opts: { legacyTaxableDefault?: boolean } = {},
+  opts: { legacyTaxableDefault?: boolean; existingId?: string | null } = {},
 ) {
   input.lines.forEach((l, i) => {
     if (l.billableSourceLineId || l.markupPercent !== undefined) {
@@ -1046,10 +1067,12 @@ export async function computeSalesDocument(
   }
   await assertTagsInScope(executor, tenantId, companyId, input.tagIds);
   const priceLevel = customer ? await loadPricingLevel(executor, tenantId, customer.priceLevelId, companyId) : null;
+  const existing = opts.existingId ? await existingSalesTax(executor, tenantId, opts.existingId) : null;
+  const tax = await applyDocumentTax(executor, tenantId, companyId, company, customer, input, lines, existing);
   const computed = computeInvoice(lines.map((l) => ({ ...l, billable: null })), {
-    defaultTaxRate: company?.defaultSalesTaxRate || '0', priceLevel,
+    defaultTaxRate: tax.noTax ? '0' : company?.defaultSalesTaxRate || '0', priceLevel, salesTax: tax.unit,
   });
-  return { company, customer, lines, priceLevel, computed };
+  return { company, customer, lines, priceLevel, computed, tax };
 }
 
 /** The journal of a sales document: `reverse` for a credit memo (Dr income / tax, Cr A/R), `headAccountId` for a receipt. */
@@ -1073,6 +1096,7 @@ export function salesDocumentPreviewLines(doc: Awaited<ReturnType<typeof compute
     isTaxable: c.isTaxable,
     taxRate: c.taxRate,
     taxAmount: c.taxAmount,
+    ...(doc.lines[i]!.taxCode ? { taxCode: doc.lines[i]!.taxCode } : {}),
   }));
 }
 
@@ -1080,4 +1104,47 @@ export function salesDocumentPreviewLines(doc: Awaited<ReturnType<typeof compute
 export async function writeSalesDocumentTags(tx: Tx, tenantId: string, txnId: string, companyId: string | null, tagIds: string[] | undefined) {
   const keep = tagIds === undefined ? await headerOnlyTags(tx, tenantId, txnId) : [];
   await writeHeaderTags(tx, tenantId, txnId, companyId, tagIds, keep);
+}
+
+// ─── Sales tax (U-147, sales-tax-setup-v1) ─────────────────────────
+
+/** The edited document's id and sales tax (its saved rates are kept, Q-P23i). */
+async function existingSalesTax(executor: DbOrTx, tenantId: string, id: string) {
+  const [row] = await executor.select({ id: transactions.id, salesTaxId: transactions.salesTaxId }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id))).limit(1);
+  return row ?? null;
+}
+
+/**
+ * Resolves the document's sales tax and line codes (sales-tax.service
+ * resolveDocumentTax) and, on the sales tax path, sets each line's taxable
+ * flag from its code.
+ */
+async function applyDocumentTax(
+  executor: DbOrTx, tenantId: string, companyId: string | null | undefined,
+  company: Awaited<ReturnType<typeof loadSalesCompany>>, customer: { defaultSalesTaxId?: string | null; taxCodeId?: string | null } | null,
+  input: { salesTaxId?: string | null; useCurrentRates?: boolean; lines: ReadonlyArray<{ taxRate?: unknown; taxCodeId?: string | null }> },
+  lines: ResolvedInvoiceLine[], existing: { id: string; salesTaxId: string | null } | null,
+) {
+  const tax = await salesTaxSvc.resolveDocumentTax(executor, tenantId, companyId, company, customer, {
+    salesTaxId: input.salesTaxId, useCurrentRates: input.useCurrentRates,
+    lines: lines.map((l, i) => ({
+      taxRate: input.lines[i]?.taxRate, taxCodeId: input.lines[i]?.taxCodeId ?? null, isTaxable: l.isTaxable,
+      itemTaxCodeId: l.itemTaxCodeId ?? null, isSubtotal: l.itemType === 'subtotal',
+    })),
+  }, existing);
+  if (tax.codes) lines.forEach((l, i) => { l.taxCode = tax.codes![i]; l.isTaxable = tax.codes![i]!.taxable; });
+  return tax;
+}
+
+/** The preview's salesTax: the computed members with their names (null on the legacy path). */
+export async function previewSalesTax(
+  executor: DbOrTx, tenantId: string, companyId: string | null | undefined,
+  tax: salesTaxSvc.DocTaxResolution, computed: { salesTaxMembers?: Array<{ itemId: string; rate: string; tax: string }> }, sign = 1,
+) {
+  if (!tax.unit) return null;
+  const co = await salesTaxSvc.rowCompanyId(executor, tenantId, companyId);
+  const unit = co ? await salesTaxSvc.loadUnit(executor, tenantId, co, tax.unit.id) : null;
+  const names = new Map((unit?.members ?? []).map((m) => [m.itemId, m.name]));
+  return salesTaxSvc.computedSalesTax(tax.unit, names, computed.salesTaxMembers, sign);
 }

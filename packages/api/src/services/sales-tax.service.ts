@@ -28,7 +28,7 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
-import { formatTaxRate, parseSetupTaxRate, TAX_RATE_PLACES } from '../utils/sales-compute.js';
+import { allocateCents, formatTaxRate, parseSetupTaxRate, TAX_RATE_PLACES } from '../utils/sales-compute.js';
 
 const BaseDecimal = DecimalLib.default || DecimalLib;
 const Decimal = BaseDecimal.clone({ precision: 40, rounding: BaseDecimal.ROUND_HALF_UP });
@@ -530,6 +530,7 @@ interface PostedLine {
   isTaxable?: boolean | null;
   taxRate?: string | null;
   taxAmount?: string | null;
+  taxCodeId?: string | null;
 }
 
 /** The company rows are filed under: the document's, else the tenant's first company (as loadSalesCompany). */
@@ -562,19 +563,26 @@ const d0 = (v: unknown) => new Decimal(v === null || v === undefined || v === ''
  */
 export async function writeTransactionTaxRows(
   tx: Tx, tenantId: string,
-  txn: { id: string; txnType: string; txnDate: string; companyId: string | null; status: string },
+  txn: { id: string; txnType: string; txnDate: string; companyId: string | null; status: string; salesTaxId?: string | null },
   lines: readonly PostedLine[], explicit?: readonly TaxRowInput[] | null,
+  memberRates?: ReadonlyArray<{ itemId: string; rate: string }> | null,
 ): Promise<void> {
+  // The rates the document was computed with (its writer's), else the ones
+  // its rows were written with (an edit keeps them, Q-P23i), else current.
+  const saved = memberRates?.length ? new Map(memberRates.map((m) => [m.itemId, m.rate]))
+    : txn.salesTaxId ? await savedMemberRates(tx, tenantId, txn.id, txn.salesTaxId) : new Map<string, string>();
   await tx.delete(transactionTaxLines).where(and(eq(transactionTaxLines.tenantId, tenantId), eq(transactionTaxLines.transactionId, txn.id),
     eq(transactionTaxLines.kind, 'sale')));
   if (!ROW_TYPES.has(txn.txnType) || txn.status !== 'posted') return;
   const sys = await systemAccountIds(tx, tenantId);
   const stp = lines.filter((l) => sys.stp.has(l.accountId)).reduce<DecimalValue>((s, l) => s.plus(d0(l.credit)).minus(d0(l.debit)), new Decimal(0));
-  if (stp.isZero() && !explicit?.length) return;
+  const hasSalesTax = !!txn.salesTaxId && txn.txnType !== 'daily_sales';
+  if (stp.isZero() && !explicit?.length && !hasSalesTax) return;
   const companyId = await rowCompanyId(tx, tenantId, txn.companyId);
   if (!companyId) return;
   const rows: Array<typeof transactionTaxLines.$inferInsert> = [];
   const base = { tenantId, companyId, transactionId: txn.id, kind: 'sale' as const, eventDate: txn.txnDate };
+  const isItemLine = (l: PostedLine) => !sys.stp.has(l.accountId) && !sys.ar.has(l.accountId);
   if (explicit?.length) {
     for (const r of explicit) {
       rows.push({
@@ -583,12 +591,38 @@ export async function writeTransactionTaxRows(
         rate: r.rate, base: d0(r.base).toFixed(4), tax: d0(r.tax).toFixed(4),
       });
     }
+  } else if (hasSalesTax) {
+    // One sales tax for the document (Q-P23d): the STP tax over its items by
+    // largest remainder of base x item rate (as the document compute did).
+    const unit = await loadUnit(tx, tenantId, companyId, txn.salesTaxId!);
+    if (unit) {
+      const members = unit.members.map((m) => ({ ...m, rate: saved.get(m.itemId) ?? m.rate }));
+      let taxBase = lines.filter((l) => l.isTaxable && isItemLine(l)).reduce<DecimalValue>((s, l) => s.plus(d0(l.credit)).minus(d0(l.debit)), new Decimal(0));
+      if (stp.isZero() && taxBase.isNegative()) taxBase = new Decimal(0);
+      const shares = splitTax(members.map((m) => taxBase.times(m.rate)), members.map((m) => new Decimal(m.rate)), stp);
+      members.forEach((m, k) => rows.push({
+        ...base, salesTaxId: unit.id, taxItemId: m.itemId, agencyId: m.agencyId, rate: new Decimal(m.rate).toFixed(TAX_RATE_PLACES),
+        base: taxBase.toFixed(4), tax: shares[k]!.toFixed(4),
+      }));
+      // Non-taxable lines by code, under every item (tax 0): the nonTaxable column.
+      const byCode = new Map<string, DecimalValue>();
+      for (const l of lines) {
+        if (l.isTaxable || !l.taxCodeId || !isItemLine(l)) continue;
+        byCode.set(l.taxCodeId, (byCode.get(l.taxCodeId) ?? new Decimal(0)).plus(d0(l.credit)).minus(d0(l.debit)));
+      }
+      for (const [codeId, amount] of byCode) {
+        if (amount.isZero()) continue;
+        for (const m of members) {
+          rows.push({ ...base, salesTaxId: unit.id, taxItemId: m.itemId, agencyId: m.agencyId, taxCodeId: codeId, rate: new Decimal(m.rate).toFixed(TAX_RATE_PLACES), base: amount.toFixed(4), tax: '0' });
+        }
+      }
+    }
   } else if (txn.txnType !== 'daily_sales') {
     // The legacy path: taxable lines grouped by their stored rate.
     const sign = txn.txnType === 'credit_memo' ? -1 : 1;
     const byRate = new Map<string, { base: DecimalValue; tax: DecimalValue }>();
     for (const l of lines) {
-      if (!l.isTaxable || sys.stp.has(l.accountId) || sys.ar.has(l.accountId)) continue;
+      if (!l.isTaxable || !isItemLine(l)) continue;
       const rate = d0(l.taxRate);
       if (!rate.greaterThan(0) || rate.greaterThanOrEqualTo(1)) continue;
       const key = rate.toFixed(TAX_RATE_PLACES);
@@ -608,6 +642,193 @@ export async function writeTransactionTaxRows(
   if (rows.length) await tx.insert(transactionTaxLines).values(rows);
 }
 
+/** allocateCents of the exact shares; when stored rates no longer explain the tax, the tax split by rate instead (always in range). */
+function splitTax(shares: DecimalValue[], rates: DecimalValue[], tax: DecimalValue): DecimalValue[] {
+  if (shares.length === 0) return [];
+  try {
+    return allocateCents(shares, tax);
+  } catch {
+    const total = rates.reduce((s, r) => s.plus(r), new Decimal(0));
+    const scaled = total.isZero() ? rates.map((_, k) => (k === 0 ? tax : new Decimal(0))) : rates.map((r) => tax.times(r).dividedBy(total));
+    return allocateCents(scaled, tax);
+  }
+}
+
+/** taxItemId -> rate of a transaction's sale rows for its sales tax (an edit keeps them unless the sales tax changes or useCurrentRates). */
+export async function savedMemberRates(executor: DbOrTx, tenantId: string, txnId: string, salesTaxId: string): Promise<Map<string, string>> {
+  const rows = await executor.select({ itemId: transactionTaxLines.taxItemId, rate: transactionTaxLines.rate }).from(transactionTaxLines)
+    .where(and(eq(transactionTaxLines.tenantId, tenantId), eq(transactionTaxLines.transactionId, txnId), eq(transactionTaxLines.kind, 'sale'),
+      eq(transactionTaxLines.salesTaxId, salesTaxId)));
+  const out = new Map<string, string>();
+  for (const r of rows) if (r.itemId && r.rate != null) out.set(r.itemId, new Decimal(r.rate).toFixed(TAX_RATE_PLACES));
+  return out;
+}
+
+export interface LoadedUnit {
+  id: string; name: string; kind: string; isActive: boolean;
+  members: Array<{ itemId: string; name: string; rate: string; agencyId: string | null; isActive: boolean }>;
+}
+
+/** A sales tax item or group of the company with its members (current rates); null when not found. */
+export async function loadUnit(executor: DbOrTx, tenantId: string, companyId: string, id: string): Promise<LoadedUnit | null> {
+  const [row] = await executor.select().from(salesTaxItems)
+    .where(and(eq(salesTaxItems.tenantId, tenantId), eq(salesTaxItems.companyId, companyId), eq(salesTaxItems.id, id))).limit(1);
+  if (!row) return null;
+  const items = row.kind === 'group' ? (await membersOf(executor, companyId, [id])).get(id) ?? [] : [row];
+  return {
+    id: row.id, name: row.name, kind: row.kind, isActive: row.isActive,
+    members: items.map((m) => ({ itemId: m.id, name: m.name, rate: new Decimal(m.rate ?? '0').toFixed(TAX_RATE_PLACES), agencyId: m.agencyId ?? null, isActive: m.isActive })),
+  };
+}
+
+// ── Document resolution (U-147, sales-tax-setup-v1) ──────────────────
+
+export interface DocTaxLineInput {
+  taxRate?: unknown;
+  taxCodeId?: string | null;
+  /** The line's taxable flag as resolved today (the request's, else the item's). */
+  isTaxable: boolean;
+  itemTaxCodeId?: string | null;
+  isSubtotal?: boolean;
+}
+
+export interface DocTaxCode { id: string; code: string; taxable: boolean; source: 'request' | 'client' | 'item' | 'is_taxable' | 'default' }
+
+export interface DocTaxResolution {
+  /** null: the legacy path (line rates / the company default rate) or no tax. */
+  unit: (SalesTaxUnit & { name: string; kind: string }) | null;
+  salesTaxId: string | null;
+  /** Per line on the sales tax path; null on the legacy path. */
+  codes: Array<DocTaxCode | null> | null;
+  /** No tax at all: tax is off, or the document says none (salesTaxId null). */
+  noTax: boolean;
+  problems: Array<{ code: string; message: string; details?: Record<string, unknown> }>;
+}
+
+type SalesTaxUnit = import('../utils/sales-compute.js').SalesTaxUnit;
+
+const present = (v: unknown) => v !== undefined && v !== null && v !== '';
+
+/**
+ * The document's sales tax and line codes (Q-P23d, Q-P23k, S5):
+ * - a line taxRate selects the legacy path (never a 400 to MyBooks Online);
+ *   with salesTaxId as well it is 400 TAX_RATE_WITH_SALES_TAX;
+ * - else request salesTaxId (null = none) -> the edited document's -> the
+ *   client's default -> the company's; none -> the legacy path with the
+ *   company default rate; tax off (salesTaxEnabled false) -> no tax
+ *   (salesTaxId sent is 400 SALES_TAX_OFF);
+ * - an inactive sales tax is 400 TAX_ITEM_INACTIVE when it is new to the
+ *   document; an edit keeps its saved member rates unless the sales tax
+ *   changes or useCurrentRates (Q-P23i; problem RATE_CHANGED);
+ * - line code: the line's, else the client's non-taxable code, else the
+ *   item's, else the taxable flag (Tax / Non); a subtotal line is Non.
+ */
+export async function resolveDocumentTax(
+  executor: DbOrTx, tenantId: string, companyIdIn: string | null | undefined,
+  company: { salesTaxEnabled?: boolean | null; defaultSalesTaxId?: string | null } | null,
+  customer: { defaultSalesTaxId?: string | null; taxCodeId?: string | null } | null,
+  input: { salesTaxId?: string | null; useCurrentRates?: boolean; lines: readonly DocTaxLineInput[] },
+  existing?: { id: string; salesTaxId: string | null } | null,
+): Promise<DocTaxResolution> {
+  const legacy = input.lines.some((l) => present(l.taxRate));
+  const off = company?.salesTaxEnabled === false;
+  const out: DocTaxResolution = { unit: null, salesTaxId: null, codes: null, noTax: false, problems: [] };
+  if (legacy && present(input.salesTaxId)) {
+    throw AppError.badRequest('Send a sales tax (salesTaxId) or line tax rates, not both.', 'TAX_RATE_WITH_SALES_TAX');
+  }
+  if (off && present(input.salesTaxId)) throw AppError.badRequest('Sales tax is turned off for this company.', 'SALES_TAX_OFF');
+  if (legacy) return out;
+  if (off || input.salesTaxId === null) { out.noTax = true; return out; }
+  const companyId = await rowCompanyId(executor, tenantId, companyIdIn);
+  const id = input.salesTaxId ?? existing?.salesTaxId ?? customer?.defaultSalesTaxId ?? company?.defaultSalesTaxId ?? null;
+  if (!id || !companyId) return out;
+  const unit = await loadUnit(executor, tenantId, companyId, id);
+  if (!unit) throw AppError.badRequest('Choose a sales tax item or group of this company.', 'VALIDATION_ERROR', { field: 'salesTaxId' });
+  const isNew = !existing || existing.salesTaxId !== id;
+  if (isNew && (!unit.isActive || unit.members.some((m) => !m.isActive))) {
+    throw AppError.badRequest(`The sales tax "${unit.name}" is inactive; choose another.`, 'TAX_ITEM_INACTIVE', { salesTaxId: id });
+  }
+  let members = unit.members.map((m) => ({ itemId: m.itemId, rate: m.rate }));
+  if (!isNew && existing) {
+    const saved = await savedMemberRates(executor, tenantId, existing.id, id);
+    if (saved.size > 0) {
+      const changed = members.some((m) => saved.has(m.itemId) && saved.get(m.itemId) !== m.rate);
+      if (changed && !input.useCurrentRates) {
+        members = members.map((m) => ({ itemId: m.itemId, rate: saved.get(m.itemId) ?? m.rate }));
+        out.problems.push({ code: 'RATE_CHANGED', message: 'A rate changed since this document was saved; it keeps its saved rates unless useCurrentRates is sent.' });
+      }
+    }
+  }
+  out.unit = { id: unit.id, name: unit.name, kind: unit.kind, members };
+  out.salesTaxId = unit.id;
+  const sys = await ensureSystemCodes(executor, tenantId, companyId);
+  const codeIds = [...new Set([
+    ...input.lines.flatMap((l) => [l.taxCodeId, l.itemTaxCodeId]), customer?.taxCodeId,
+  ].filter((v): v is string => !!v))];
+  const codeRows = codeIds.length === 0 ? [] : await executor.select().from(salesTaxCodes)
+    .where(and(eq(salesTaxCodes.tenantId, tenantId), eq(salesTaxCodes.companyId, companyId), inArray(salesTaxCodes.id, codeIds)));
+  const byId = new Map(codeRows.map((r) => [r.id, r]));
+  const clientCode = customer?.taxCodeId ? byId.get(customer.taxCodeId) : undefined;
+  out.codes = input.lines.map((l, i) => {
+    if (l.isSubtotal) return { id: sys.non.id, code: sys.non.code, taxable: false, source: 'default' };
+    if (l.taxCodeId) {
+      const r = byId.get(l.taxCodeId);
+      if (!r) throw AppError.badRequest(`lines[${i}].taxCodeId is not a tax code of this company`, 'VALIDATION_ERROR', { line: i });
+      return { id: r.id, code: r.code, taxable: r.taxable, source: 'request' };
+    }
+    if (clientCode && !clientCode.taxable) return { id: clientCode.id, code: clientCode.code, taxable: false, source: 'client' };
+    const ic = l.itemTaxCodeId ? byId.get(l.itemTaxCodeId) : undefined;
+    if (ic) return { id: ic.id, code: ic.code, taxable: ic.taxable, source: 'item' };
+    const f = l.isTaxable ? sys.tax : sys.non;
+    return { id: f.id, code: f.code, taxable: f.taxable, source: 'is_taxable' };
+  });
+  return out;
+}
+
+/**
+ * A posted document's sales tax for responses (U-147): {id, name, kind,
+ * rate, members [{id, name, rate, tax}]} from its rows (members' tax signed
+ * as stored: a credit memo's is negative); null without a sales tax.
+ */
+export async function documentSalesTax(executor: DbOrTx, tenantId: string, txn: { id: string; salesTaxId?: string | null; companyId: string | null }) {
+  if (!txn.salesTaxId) return null;
+  const companyId = await rowCompanyId(executor, tenantId, txn.companyId);
+  if (!companyId) return null;
+  const unit = await loadUnit(executor, tenantId, companyId, txn.salesTaxId);
+  if (!unit) return null;
+  const rows = await executor.select().from(transactionTaxLines)
+    .where(and(eq(transactionTaxLines.tenantId, tenantId), eq(transactionTaxLines.transactionId, txn.id), eq(transactionTaxLines.kind, 'sale'),
+      eq(transactionTaxLines.salesTaxId, txn.salesTaxId)));
+  const members = unit.members.map((m) => {
+    const mine = rows.filter((r) => r.taxItemId === m.itemId && !r.taxCodeId);
+    const rate = mine[0]?.rate != null ? new Decimal(mine[0].rate).toFixed(TAX_RATE_PLACES) : m.rate;
+    return { id: m.itemId, name: m.name, rate, tax: mine.reduce((s, r) => s.plus(r.tax), new Decimal(0)).toFixed(2) };
+  });
+  return {
+    id: unit.id, name: unit.name, kind: unit.kind,
+    rate: members.reduce((s, m) => s.plus(m.rate), new Decimal(0)).toFixed(TAX_RATE_PLACES), members,
+  };
+}
+
+/** Computed figures as the response's salesTax (preview / POST): names from the unit. */
+export function computedSalesTax(
+  unit: (SalesTaxUnit & { name: string; kind: string }) | null, names: Map<string, string>,
+  members: Array<{ itemId: string; rate: string; tax: string }> | undefined, sign = 1,
+) {
+  if (!unit || !members) return null;
+  return {
+    id: unit.id, name: unit.name, kind: unit.kind,
+    rate: unit.members.reduce((s, m) => s.plus(m.rate), new Decimal(0)).toFixed(TAX_RATE_PLACES),
+    members: members.map((m) => ({ id: m.itemId, name: names.get(m.itemId) ?? null, rate: m.rate, tax: new Decimal(m.tax).times(sign).toFixed(2) })),
+  };
+}
+
+/** Line codes of a posted document for GET: journal line tax_code_id -> {id, code, taxable}. */
+export async function codesById(executor: DbOrTx, tenantId: string, ids: Array<string | null | undefined>) {
+  const list = [...new Set(ids.filter((v): v is string => !!v))];
+  const rows = list.length === 0 ? [] : await executor.select().from(salesTaxCodes).where(and(eq(salesTaxCodes.tenantId, tenantId), inArray(salesTaxCodes.id, list)));
+  return new Map(rows.map((r) => [r.id, { id: r.id, code: r.code, taxable: r.taxable }]));
+}
 /** A delete removes the transaction's tax rows and payment lines (a void keeps them; readers filter on status 'posted'). */
 export async function deleteTransactionTaxRows(tx: Tx, tenantId: string, txnId: string): Promise<void> {
   await tx.delete(transactionTaxLines).where(and(eq(transactionTaxLines.tenantId, tenantId), eq(transactionTaxLines.transactionId, txnId)));
@@ -620,4 +841,26 @@ export async function backfillCompany(executor: DbOrTx, tenantId: string, compan
   const r = (res.rows as Array<{ r: Record<string, unknown> }>)[0]!.r;
   await auditLog(tenantId, 'create', 'sales_tax_backfill', companyId, null, r, undefined, executor);
   return r;
+}
+
+/**
+ * A client's or item's sales tax references (U-147): defaultSalesTaxId an
+ * active item or group, taxCodeId an active code, of the record's company
+ * (any company of the tenant when the record has none); else 400 VALIDATION_ERROR.
+ */
+export async function assertTaxRefs(
+  executor: DbOrTx, tenantId: string, companyId: string | null | undefined,
+  refs: { defaultSalesTaxId?: string | null; taxCodeId?: string | null },
+): Promise<void> {
+  const inScope = (row: { companyId: string; isActive: boolean } | undefined) => !!row && row.isActive && (!companyId || row.companyId === companyId);
+  if (refs.defaultSalesTaxId) {
+    const [r] = await executor.select({ companyId: salesTaxItems.companyId, isActive: salesTaxItems.isActive }).from(salesTaxItems)
+      .where(and(eq(salesTaxItems.tenantId, tenantId), eq(salesTaxItems.id, refs.defaultSalesTaxId))).limit(1);
+    if (!inScope(r)) throw AppError.badRequest('Choose an active sales tax item or group of this company.', 'VALIDATION_ERROR', { field: 'defaultSalesTaxId' });
+  }
+  if (refs.taxCodeId) {
+    const [r] = await executor.select({ companyId: salesTaxCodes.companyId, isActive: salesTaxCodes.isActive }).from(salesTaxCodes)
+      .where(and(eq(salesTaxCodes.tenantId, tenantId), eq(salesTaxCodes.id, refs.taxCodeId))).limit(1);
+    if (!inScope(r)) throw AppError.badRequest('Choose an active tax code of this company.', 'VALIDATION_ERROR', { field: 'taxCodeId' });
+  }
 }
