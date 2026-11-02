@@ -34861,7 +34861,8 @@
                 "bill_payment",
                 "daily_sales",
                 "aje",
-                "returned_payment"
+                "returned_payment",
+                "sales_tax_payment"
               ],
               "type": "string"
             }
@@ -57469,6 +57470,592 @@
         "tags": [
           "sales-tax"
         ]
+      }
+    },
+    "/api/v1/sales-tax/payments": {
+      "get": {
+        "description": "Response as GET /reports/sales-tax-payments: {data: [{transactionId, date, txnType, number, agencyId, agencyName, total, paid, adjustments, linked}]} by date. Query start_date, end_date (default this year), agency_id.",
+        "operationId": "get_api_v1_sales_tax_payments",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agency_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List sales tax payments (sales-tax-pay-v1)",
+        "tags": [
+          "sales-tax"
+        ]
+      },
+      "post": {
+        "description": "Response 201 {id, number, checkNumber, printStatus, total}. Posts a sales_tax_payment: per tax item Dr Sales Tax Payable (amount - adjustment; a credit when negative), each adjustment on its account (negative = credit), Cr bankAccountId for the total; zero lines left out. Owed per tax item of the agency = its tax rows counted on the company basis dated on or before throughDate + every live adjustment - every live paid and opening line, whatever their date (S1). lines omitted: every item at owed + its adjustments; sent: those items at those amounts. adjustments: amount signed (negative lowers what is paid, e.g. a timely-filing discount), on an income or expense account (400 ADJUSTMENT_ACCOUNT_INVALID), with a reason. A tax item not paid to the agency is 400 TAX_ITEM_NOT_FOR_AGENCY. expectedOwed (required): the owed total of the payment's lines as previewed (and lines[].expectedOwed per item when sent); checked under a lock on the agency, else 409 SALES_TAX_OWED_CHANGED {owed, lines}. 400 VALIDATION_ERROR, PAYMENT_TOTAL_NOT_POSITIVE, CHECK_NO_OR_PRINT_LATER (printLater with a checkNumber; a check with no checkNumber is printed later); 409 CHECK_NUMBER_IN_USE, RETRY. printLater queues the check (GET /checks/print-queue). A date on or before the closing date needs closingPassword. Idempotency-Key: a replay returns the same payment. No edit: void with POST /transactions/:id/void (owed comes back, the check leaves the queue).",
+        "operationId": "post_api_v1_sales_tax_payments",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "adjustments": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "amount": {
+                          "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "reason": {
+                          "maxLength": 255,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "taxItemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "taxItemId",
+                        "accountId",
+                        "amount",
+                        "reason"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  },
+                  "agencyId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "bankAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "checkNumber": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647,
+                    "type": "integer"
+                  },
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "date": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedOwed": {
+                    "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "expectedOwed": {
+                          "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "taxItemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "taxItemId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "method": {
+                    "enum": [
+                      "check",
+                      "electronic"
+                    ],
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "throughDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agencyId",
+                  "throughDate",
+                  "date",
+                  "bankAccountId",
+                  "method"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Pay sales tax to an agency (sales-tax-pay-v1)",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/payments/link": {
+      "post": {
+        "description": "Response 201 {transactionId, agencyId, total}. A posted check or journal entry of the company that debited Sales Tax Payable becomes a payment to the agency: paid lines per tax item (no new GL). 400 NOT_STP_PAYMENT, LINK_TOTAL_MISMATCH (the lines must add up to its net Sales Tax Payable debit), TAX_ITEM_NOT_FOR_AGENCY; 409 ALREADY_LINKED; 404 for another company's. A transaction dated on or before the closing date needs closingPassword. Idempotency-Key. Undo: POST /sales-tax/payments/:id/unlink.",
+        "operationId": "post_api_v1_sales_tax_payments_link",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "agencyId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "taxItemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "taxItemId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 200,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "transactionId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "transactionId",
+                  "agencyId",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Match a payment already made to an agency (sales-tax-pay-v1)",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/payments/mark-paid-through": {
+      "post": {
+        "description": "Response 201 {agencyId, throughDate, lines: [{taxItemId, name, amount}], total}: for tax paid before these books or outside them, an opening line (no GL) per tax item for what is owed through throughDate, so owed is 0.00 there. Audited. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_payments_mark_paid_through",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "agencyId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  "throughDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agencyId",
+                  "throughDate"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Mark an agency's tax paid through a date (sales-tax-pay-v1)",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/sales-tax/payments/preview": {
+      "post": {
+        "description": "Response {agencyId, throughDate, basis, lines: [{taxItemId, name, owed, adjustment, amount, expectedOwed}], owed, total, problems: [{code, message, details?}]}; posts nothing. Owed per tax item of the agency = its tax rows counted on the company basis dated on or before throughDate + every live adjustment - every live paid and opening line, whatever their date (S1). lines omitted: every item at owed + its adjustments; sent: those items at those amounts. adjustments: amount signed (negative lowers what is paid, e.g. a timely-filing discount), on an income or expense account (400 ADJUSTMENT_ACCOUNT_INVALID), with a reason. A tax item not paid to the agency is 400 TAX_ITEM_NOT_FOR_AGENCY. Problems (warnings): AMOUNT_MORE_THAN_OWED, LEGACY_UNASSIGNED (tax with no agency yet), NO_VENDOR_ADDRESS (method check and the agency vendor has no billing address).",
+        "operationId": "post_api_v1_sales_tax_payments_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "adjustments": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "amount": {
+                          "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "reason": {
+                          "maxLength": 255,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "taxItemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "taxItemId",
+                        "accountId",
+                        "amount",
+                        "reason"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  },
+                  "agencyId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "bankAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "checkNumber": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647,
+                    "type": "integer"
+                  },
+                  "date": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "expectedOwed": {
+                    "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "amount": {
+                          "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "expectedOwed": {
+                          "pattern": "^-?\\d{1,13}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "taxItemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "taxItemId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "method": {
+                    "enum": [
+                      "check",
+                      "electronic"
+                    ],
+                    "type": "string"
+                  },
+                  "printLater": {
+                    "type": "boolean"
+                  },
+                  "throughDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agencyId",
+                  "throughDate",
+                  "date",
+                  "bankAccountId",
+                  "method"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Preview a sales tax payment (sales-tax-pay-v1)",
+        "tags": [
+          "sales-tax"
+        ]
+      }
+    },
+    "/api/v1/sales-tax/payments/{id}": {
+      "get": {
+        "description": "Response {id, date, number, status, agencyId, throughDate, method, linked, bankAccountId, total, checkNumber, printStatus, lines: [{taxItemId, name, kind: paid|adjustment, amount, accountId, reason}], stubLines: [{label, amount}]}. linked = a payment made outside Pay Sales Tax and matched to the agency. 404 otherwise or for another company's.",
+        "operationId": "get_api_v1_sales_tax_payments_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a sales tax payment (sales-tax-pay-v1)",
+        "tags": [
+          "sales-tax"
+        ]
+      }
+    },
+    "/api/v1/sales-tax/payments/{id}/unlink": {
+      "post": {
+        "description": "Response {transactionId, unlinked}: drops the paid lines a link wrote (owed comes back). A Pay Sales Tax payment is 400 NOT_LINKED (void it instead); so is a transaction with no link. Closing password on its date. Idempotency-Key.",
+        "operationId": "post_api_v1_sales_tax_payments_by_id_unlink",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Unlink a matched payment (sales-tax-pay-v1)",
+        "tags": [
+          "sales-tax"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/settings/storage": {
@@ -80369,7 +80956,8 @@
                 "bill_payment",
                 "daily_sales",
                 "aje",
-                "returned_payment"
+                "returned_payment",
+                "sales_tax_payment"
               ],
               "type": "string"
             }
