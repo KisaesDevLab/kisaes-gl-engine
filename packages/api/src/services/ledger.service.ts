@@ -889,8 +889,9 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       await (await import('./finance-charge.service.js')).releaseAssessmentForVoidInTx(tx, tenantId, txnId);
     }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
-    // U-147: a voided or deleted document owes no tax (its STP lines go with it).
-    await salesTaxRows.deleteTransactionTaxRows(tx, tenantId, txnId);
+    // U-147: a voided document owes no tax. Its tax rows and payment lines
+    // stay as an audit trail (GET of a void payment still lists them); every
+    // reader counts only posted transactions' rows and lines.
 
     // Get original lines
     const originalLines = await tx.select().from(journalLines)

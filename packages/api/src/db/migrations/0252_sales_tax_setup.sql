@@ -187,7 +187,6 @@ $fn$;
 CREATE OR REPLACE FUNCTION sales_tax_backfill_company(p_tenant uuid, p_company uuid) RETURNS jsonb
 LANGUAGE plpgsql AS $fn$
 DECLARE
-  v_first boolean;
   v_items integer := 0;
   v_rows integer := 0;
   v_unassigned integer := 0;
@@ -198,9 +197,6 @@ DECLARE
   v_open numeric := 0;
   v_open_lines integer := 0;
 BEGIN
-  SELECT c.id = p_company INTO v_first FROM companies c WHERE c.tenant_id = p_tenant ORDER BY c.created_at NULLS LAST, c.id LIMIT 1;
-  v_first := COALESCE(v_first, false);
-
   INSERT INTO sales_tax_codes (tenant_id, company_id, code, name, taxable, is_system)
   VALUES (p_tenant, p_company, 'Tax', 'Taxable', true, true), (p_tenant, p_company, 'Non', 'Non-taxable', false, true)
   ON CONFLICT DO NOTHING;
@@ -216,14 +212,17 @@ BEGIN
   TRUNCATE st_bf_docs;
   TRUNCATE st_bf_rates;
 
-  -- Documents of the company with a Sales Tax Payable line (S3).
+  -- Documents of the company with a Sales Tax Payable line (S3). The
+  -- reports' company predicate (t.company_id = the company): a transaction
+  -- with no company_id is in no company's sales tax report, so it gets no
+  -- rows and its STP lines do not count toward the opening paid lines below.
   INSERT INTO st_bf_docs (id, txn_type, txn_date, stp)
   SELECT t.id, t.txn_type, t.txn_date, SUM(jl.credit - jl.debit)
   FROM transactions t
   JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
   JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
   WHERE t.tenant_id = p_tenant AND t.status = 'posted'
-    AND (t.company_id = p_company OR (t.company_id IS NULL AND v_first))
+    AND t.company_id = p_company
     AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'daily_sales')
     AND a.system_tag = 'sales_tax_payable' AND COALESCE(jl.is_void_reversal, false) = false
   GROUP BY t.id, t.txn_type, t.txn_date
@@ -281,7 +280,7 @@ BEGIN
   JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = jl.tenant_id
   JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
   WHERE jl.tenant_id = p_tenant AND t.status = 'posted' AND a.system_tag = 'sales_tax_payable'
-    AND (t.company_id = p_company OR (t.company_id IS NULL AND v_first));
+    AND t.company_id = p_company;
   v_open := v_rows_tax - v_stp;
   IF v_open > 0 THEN
     INSERT INTO sales_tax_payment_lines (tenant_id, company_id, transaction_id, tax_item_id, agency_id, kind, line_date, amount, reason)

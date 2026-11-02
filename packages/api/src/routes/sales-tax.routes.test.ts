@@ -13,7 +13,7 @@ import 'express-async-errors';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db } from '../db/index.js';
 import {
@@ -356,6 +356,26 @@ describe('golden 11: backfill and legacy rates (engineOnly)', () => {
     expect((await salesTax.backfillCompany(db, c.tenantId, c.companyId))['skipped']).toBe(true);
   });
 
+  it('the 0252 backfill uses the reports\' company predicate: a document or payment with no company_id gets no rows and no opening line', async () => {
+    const stp = c.roles['sales_tax_payable']!;
+    const mine = await legacyInvoice([{ amount: '300.00', taxRate: '0.0825' }], '2026-03-02');
+    const orphan = await legacyInvoice([{ amount: '100.00', taxRate: '0.0825' }], '2026-03-03');
+    const paid = await ledger.postTransaction(c.tenantId, {
+      txnType: 'expense', txnDate: '2026-03-20',
+      lines: [{ accountId: stp, debit: '8.25', credit: '0' }, { accountId: c.roles['checking'], debit: '0', credit: '8.25' }],
+    } as never, c.userId, c.companyId);
+    // Rows written before company_id was required: the orphan and the check that paid its tax have none.
+    await db.update(transactions).set({ companyId: null }).where(inArray(transactions.id, [orphan, paid.id]));
+    await cleanSalesTax(c.tenantId);
+    await db.update(companies).set({ defaultSalesTaxId: null, salesTaxEnabled: null }).where(eq(companies.id, c.companyId));
+    const r = await salesTax.backfillCompany(db, c.tenantId, c.companyId);
+    // The company's rows (24.75) equal its STP balance (24.75): nothing was paid before setup.
+    expect([r['rows'], r['openingPaid'], r['openingLines']]).toEqual([1, '0.00', 0]);
+    expect((await rowsAndStp(orphan)).rows).toEqual([]);
+    expect((await rowsAndStp(mine)).sum).toBe('24.75');
+    expect(await db.select().from(salesTaxPaymentLines).where(eq(salesTaxPaymentLines.companyId, c.companyId))).toEqual([]);
+  });
+
   it('an edit keeps the document\'s saved rate whatever the company default says now (S5)', async () => {
     const id = await legacyInvoice([{ amount: '300.00', taxRate: '0.0825' }], '2026-09-10');
     await h.request('PUT', '/api/v1/company/settings', c.token, { defaultSalesTaxRate: '0.0900' });
@@ -371,7 +391,7 @@ describe('golden 11: backfill and legacy rates (engineOnly)', () => {
 });
 
 describe('the rows invariant (S3, missing test 5)', () => {
-  it('invoice, credit memo and void: Σ rows = STP lines; a void drops the rows; a hand STP line is an unassigned row', async () => {
+  it('invoice, credit memo and void: Σ rows = STP lines; a void keeps the rows (status-filtered); a hand STP line is an unassigned row', async () => {
     const inv = await legacyInvoice([{ amount: '100.00', taxRate: '0.0825' }, { amount: '50.00', taxRate: '0.06' }], '2026-11-02');
     const a = await rowsAndStp(inv);
     expect([a.sum, a.stp, a.rows.length]).toEqual(['11.25', '11.25', 2]);
@@ -384,7 +404,9 @@ describe('the rows invariant (S3, missing test 5)', () => {
     const m = await rowsAndStp(memo);
     expect([m.sum, m.stp]).toEqual(['-0.83', '-0.83']);
     expect((await h.request('POST', `/api/v1/transactions/${inv}/void`, c.token, { reason: 'test' })).status).toBe(200);
-    expect((await rowsAndStp(inv)).rows).toEqual([]);
+    // Kept for the audit trail; the void's reversal brings its STP lines to 0.00.
+    const voided = await rowsAndStp(inv);
+    expect([voided.sum, voided.stp, voided.rows.length]).toEqual(['11.25', '0.00', 2]);
     const stpId = c.roles['sales_tax_payable']!;
     const [ar] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'accounts_receivable')));
     const odd = await h.request('POST', '/api/v1/transactions', c.token, {
