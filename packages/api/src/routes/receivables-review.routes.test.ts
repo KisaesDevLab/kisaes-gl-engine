@@ -65,15 +65,16 @@ async function expectAgingEqualsLedger(asOf: string) {
   }
 }
 
-/** Σ(debit - credit) of the cash-basis virtual ledger as of a date (0 = balanced) and its A/R. */
+/** Σ(debit - credit) of the cash-basis virtual ledger as of a date (0 = balanced), its A/R and its Unapplied receipts (U-152). */
 async function cashLedger(asOf: string) {
   const res = await db.execute(sql`
     WITH ${cashBasisLinesWith(c.tenantId, null, asOf, c.companyId)}
     SELECT COALESCE(SUM(cb.debit - cb.credit), 0)::text AS net,
-      COALESCE(SUM(CASE WHEN cb.account_id = ${c.roles['accounts_receivable']} THEN cb.debit - cb.credit ELSE 0 END), 0)::text AS ar
-    FROM cb_lines cb`);
-  const r = (res.rows as Array<{ net: string; ar: string }>)[0]!;
-  return { net: m2(r.net), ar: m2(r.ar) };
+      COALESCE(SUM(CASE WHEN cb.account_id = ${c.roles['accounts_receivable']} THEN cb.debit - cb.credit ELSE 0 END), 0)::text AS ar,
+      COALESCE(SUM(CASE WHEN a.system_tag = 'unapplied_receipts' THEN cb.debit - cb.credit ELSE 0 END), 0)::text AS ur
+    FROM cb_lines cb JOIN accounts a ON a.id = cb.account_id`);
+  const r = (res.rows as Array<{ net: string; ar: string; ur: string }>)[0]!;
+  return { net: m2(r.net), ar: m2(r.ar), ur: m2(r.ur) };
 }
 
 async function accrualAR(asOf: string) {
@@ -147,10 +148,14 @@ describe('B2: cash basis after a bounced payment\'s invoice is voided', () => {
     for (const asOf of ['2026-01-31', '2026-02-28', '2026-03-31']) {
       expect((await cashLedger(asOf)).net, asOf).toBe('0.00');
     }
+    // U-152 (Q-SPF1): money not applied to a posted invoice is Unapplied
+    // receipts income on cash, never A/R; it equals the accrual A/R credit.
     const jan = await cashLedger('2026-01-31');
-    expect(jan.ar).toBe(await accrualAR('2026-01-31'));
-    expect(jan.ar).toBe('-100.00');
-    expect((await cashLedger('2026-03-31')).ar).toBe(await accrualAR('2026-03-31'));
+    expect(jan.ar).toBe('0.00');
+    expect(jan.ur).toBe(await accrualAR('2026-01-31'));
+    expect(jan.ur).toBe('-100.00');
+    const mar = await cashLedger('2026-03-31');
+    expect([mar.ar, mar.ur]).toEqual(['0.00', await accrualAR('2026-03-31')]);
   });
 });
 

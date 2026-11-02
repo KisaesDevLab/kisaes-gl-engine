@@ -48,7 +48,7 @@ import { paymentsRouter } from './routes/payments.routes.js';
 import { customerRefundsRouter } from './routes/customer-refunds.routes.js';
 import { creditMemosRouter } from './routes/credit-memos.routes.js';
 import { financeChargesRouter } from './routes/finance-charges.routes.js';
-import { salesTaxRouter } from './routes/sales-tax.routes.js';
+import { salesTaxRouter, salesTaxReportsRouter } from './routes/sales-tax.routes.js';
 import { salesReceiptsRouter } from './routes/sales-receipts.routes.js';
 import { checksRouter } from './routes/checks.routes.js';
 import { checkSignaturesRouter } from './routes/check-signatures.routes.js';
@@ -581,6 +581,7 @@ app.use('/api/v1/tags', tagsRouter);
 // pack sub-paths (/catalog, /packs*) resolve via their own middleware chain.
 app.use('/api/v1/reports', reportPacksRouter);
 app.use('/api/v1/reports', customerStatementReportsRouter);
+app.use('/api/v1/reports', salesTaxReportsRouter);
 app.use('/api/v1/reports', reportsRouter);
 app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);

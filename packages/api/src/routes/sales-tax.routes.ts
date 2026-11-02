@@ -11,6 +11,7 @@ import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { idempotent } from '../middleware/idempotent.js';
 import * as st from '../services/sales-tax.service.js';
+import * as report from '../services/sales-tax-report.service.js';
 
 /**
  * Sales tax (U-147; sales-tax-setup-v1, idempotency-sales-tax-v1). One mount
@@ -191,3 +192,99 @@ for (const [path, active] of [['deactivate', false], ['reactivate', true]] as co
     res.json(await st.setCodeActive(req.tenantId, req.companyId, id(req), active, req.userId));
   });
 }
+
+// ── Owed and the cash-basis diagnostic (U-149, U-152) ────────────────
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date YYYY-MM-DD');
+const basisEnum = z.enum(['accrual', 'cash']);
+const owedQuery = z.object({
+  asOf: isoDate.optional(), as_of: isoDate.optional(),
+  basis: basisEnum.optional(),
+  agencyId: z.string().uuid().optional(), agency_id: z.string().uuid().optional(),
+});
+const owedShape = '{asOf, basis, agencyId, agencies: [{agencyId, name, items: [{taxItemId, name, owed}], total}], unassigned, total}';
+
+salesTaxRouter.get('/owed', describe({
+  summary: 'Sales tax owed as of a date (sales-tax-liability-v2)',
+  description: `Response ${owedShape}; amounts are 2-place strings. Per agency and tax item: the tax rows counted on the basis ` +
+    '(default the company\'s sales tax basis) dated on or before asOf (collected, SSUTA discounts; bad debts and recoveries on accrual only) ' +
+    '+ every live adjustment - every live paid and opening payment line, whatever their date (a payment made after asOf still counts, so ' +
+    'tax is never paid twice). Rows written before their item had an agency count under the item\'s agency. Unassigned: tax on Sales Tax ' +
+    'Payable with no tax item. asOf (or as_of) is required; agencyId (or agency_id) filters; another company\'s agency is 404.',
+  query: owedQuery,
+}), async (req, res) => {
+  const q = owedQuery.safeParse(req.query);
+  const asOf = q.success ? q.data.asOf ?? q.data.as_of : undefined;
+  if (!q.success || !asOf) { res.status(400).json({ error: { message: 'asOf is required (YYYY-MM-DD)', code: 'VALIDATION_ERROR' } }); return; }
+  res.json(await report.salesTaxOwed(req.tenantId, req.companyId, asOf, {
+    basis: q.data.basis ?? null, agencyId: q.data.agencyId ?? q.data.agency_id ?? null,
+  }));
+});
+
+salesTaxRouter.get('/diagnostics/cash-basis', describe({
+  summary: 'What the cash-basis corrections move in closed periods (cash-basis-spf-v1, Q-P23z)',
+  description: 'Response {companyId, closingDate, unappliedReceipts, customerDeposits, writeOffs, billDiscounts}, each {count, amount} ' +
+    '(2-place string), dated on or before the company\'s closing date (all zero without one). Cash-basis reports (U-152) now show ' +
+    'unapplied payments and Customer Deposits lines as Unapplied receipts income, leave write-offs out and net bill discounts; posted ' +
+    'transactions do not change, but cash-basis reports of those closed periods do. Read only.',
+}), async (req, res) => {
+  res.json(await report.cashBasisSpfDiagnostic(req.tenantId, req.companyId));
+});
+
+// ── Reports (mounted under /api/v1/reports before the reports router) ─
+
+/**
+ * GET /reports/sales-tax-liability and /reports/sales-tax-payments, v2
+ * (sales-tax-liability-v2). A `format` export (csv, pdf, …) falls through
+ * to the reports router's v1 handlers.
+ */
+export const salesTaxReportsRouter = Router();
+salesTaxReportsRouter.use(authenticate);
+salesTaxReportsRouter.use(companyContext);
+salesTaxReportsRouter.use(requireResource('reports'));
+
+const liabilityQuery = z.object({
+  start_date: isoDate.optional(), end_date: isoDate.optional(), basis: basisEnum.optional(), agency_id: z.string().uuid().optional(),
+  format: z.string().optional(),
+});
+const itemColumns = '{taxItemId, name, rate (6 places), taxableSales, nonTaxable: [{codeId, code, amount}], collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}';
+const totalsShape = '{taxableSales, collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}';
+
+salesTaxReportsRouter.get('/sales-tax-liability', describe({
+  summary: 'Sales tax liability by agency and tax item (sales-tax-liability-v2, cash-basis-spf-v1)',
+  description: 'Response {title, startDate, endDate, totalSales, totalTax (v1 numbers, accrual document totals), basis, agencyId, ' +
+    `agencies: [{agencyId|null, name, items: [${itemColumns}], totals: ${totalsShape}}], totals, total, unassigned, openingPaid, otherEntries, ` +
+    'glMovement, roundingDifference, balanceCheck: {stpBalance, owedAtEnd, unassigned, otherEntriesCumulative, openingPaid, ' +
+    'roundingDifferenceCumulative}}. New amounts are 2-place strings; roundingDifference 6 places. Query start_date, end_date (default this ' +
+    'year to today), basis accrual|cash (default the company\'s sales tax basis), agency_id (another company\'s is 404; the GL fields are ' +
+    'null when filtered). Columns are for the range, owedAtEnd cumulative to end_date. collected: accrual = sale rows by date; cash = the ' +
+    'running-total share of each payment, credit applied or deposit drawn (cash + discount, never write-offs) on the dates the cash ' +
+    'ledger uses, credit memo refunds, and sales receipts and daily sales on their date. discounts on both bases; badDebts and recoveries ' +
+    'accrual only (0.00 on cash). total = collected + discounts + badDebts + recoveries. glMovement = the Sales Tax Payable movement on ' +
+    'the basis = Σ columns + unassigned + otherEntries + roundingDifference (cash: exact shares - rounded shares). stpBalance = owedAtEnd + ' +
+    'openingPaid + unassigned + otherEntriesCumulative + roundingDifferenceCumulative.',
+  query: liabilityQuery,
+}), async (req, res, next) => {
+  const q = liabilityQuery.safeParse(req.query);
+  if (!q.success) { res.status(400).json({ error: { message: q.error.issues[0]?.message ?? 'invalid query', code: 'VALIDATION_ERROR' } }); return; }
+  if (q.data.format && q.data.format !== 'json') { next(); return; }
+  const today = new Date().toISOString().split('T')[0]!;
+  res.json(await report.buildSalesTaxLiabilityV2(req.tenantId, q.data.start_date ?? `${today.slice(0, 4)}-01-01`, q.data.end_date ?? today,
+    req.companyId, { basis: q.data.basis ?? null, agencyId: q.data.agency_id ?? null }));
+});
+
+const paymentsQuery = z.object({ start_date: isoDate.optional(), end_date: isoDate.optional(), agency_id: z.string().uuid().optional(), format: z.string().optional() });
+salesTaxReportsRouter.get('/sales-tax-payments', describe({
+  summary: 'Sales tax payments (sales-tax-liability-v2)',
+  description: 'Response {title, startDate, endDate, data: [{transactionId, date, txn_date, txnType, number, agencyId, agencyName, total, ' +
+    'paid, adjustments, linked}]}: Pay Sales Tax payments and payments linked to an agency (linked = true), by date; amounts are 2-place ' +
+    'strings. Query start_date, end_date, agency_id.',
+  query: paymentsQuery,
+}), async (req, res, next) => {
+  const q = paymentsQuery.safeParse(req.query);
+  if (!q.success) { res.status(400).json({ error: { message: q.error.issues[0]?.message ?? 'invalid query', code: 'VALIDATION_ERROR' } }); return; }
+  if (q.data.format && q.data.format !== 'json') { next(); return; }
+  const today = new Date().toISOString().split('T')[0]!;
+  res.json(await report.buildSalesTaxPaymentsV2(req.tenantId, q.data.start_date ?? `${today.slice(0, 4)}-01-01`, q.data.end_date ?? today,
+    req.companyId, q.data.agency_id ?? null));
+});

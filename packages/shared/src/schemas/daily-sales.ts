@@ -47,6 +47,11 @@ export const dailySalesTemplateLineSchema = z.object({
   isRequired: z.boolean().optional().default(false),
   allowTag: z.boolean().optional().default(false),
   isActive: z.boolean().optional().default(true),
+  // U-149 (daily-sales-tax-v1): a tax line linked to a sales tax (one per
+  // template; posted to Sales Tax Payable), and a sales line's tax code
+  // (none = taxable).
+  salesTaxId: z.string().uuid().nullable().optional(),
+  taxCodeId: z.string().uuid().nullable().optional(),
 });
 export type DailySalesTemplateLineInput = z.infer<typeof dailySalesTemplateLineSchema>;
 

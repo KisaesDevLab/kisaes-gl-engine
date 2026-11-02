@@ -643,7 +643,7 @@ export async function writeTransactionTaxRows(
 }
 
 /** allocateCents of the exact shares; when stored rates no longer explain the tax, the tax split by rate instead (always in range). */
-function splitTax(shares: DecimalValue[], rates: DecimalValue[], tax: DecimalValue): DecimalValue[] {
+export function splitTax(shares: DecimalValue[], rates: DecimalValue[], tax: DecimalValue): DecimalValue[] {
   if (shares.length === 0) return [];
   try {
     return allocateCents(shares, tax);
