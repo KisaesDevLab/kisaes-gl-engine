@@ -608,7 +608,7 @@ export async function writeTransactionTaxRows(
   if (rows.length) await tx.insert(transactionTaxLines).values(rows);
 }
 
-/** A void removes the transaction's tax rows (its STP lines are reversed with it). */
+/** A delete removes the transaction's tax rows and payment lines (a void keeps them; readers filter on status 'posted'). */
 export async function deleteTransactionTaxRows(tx: Tx, tenantId: string, txnId: string): Promise<void> {
   await tx.delete(transactionTaxLines).where(and(eq(transactionTaxLines.tenantId, tenantId), eq(transactionTaxLines.transactionId, txnId)));
   await tx.delete(salesTaxPaymentLines).where(and(eq(salesTaxPaymentLines.tenantId, tenantId), eq(salesTaxPaymentLines.transactionId, txnId)));
