@@ -34862,7 +34862,8 @@
                 "daily_sales",
                 "aje",
                 "returned_payment",
-                "sales_tax_payment"
+                "sales_tax_payment",
+                "bad_debt_recovery"
               ],
               "type": "string"
             }
@@ -81680,7 +81681,8 @@
                 "daily_sales",
                 "aje",
                 "returned_payment",
-                "sales_tax_payment"
+                "sales_tax_payment",
+                "bad_debt_recovery"
               ],
               "type": "string"
             }
