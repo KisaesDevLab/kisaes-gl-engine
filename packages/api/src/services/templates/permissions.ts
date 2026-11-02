@@ -54,6 +54,7 @@ export function txnResource(txnType: string, printStatus: string | null | undefi
     case 'bill': return 'bills';
     case 'vendor_credit': return 'vendor_credits';
     case 'bill_payment': return 'pay_bills';
+    case 'sales_tax_payment': return 'sales_tax';
     case 'aje': return 'trial_balance';
     case 'cash_sale':
     case 'transfer':

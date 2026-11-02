@@ -1390,6 +1390,39 @@ async function assertDepositedAmountKept(
   await assertNotDeposited(executor, tenantId, existing.id, 'edit');
 }
 
+/** The transaction has sales tax payment lines (a payment linked to an agency, U-150). */
+export async function hasSalesTaxLink(executor: DbOrTx, tenantId: string, txnId: string): Promise<boolean> {
+  const r = await executor.execute(sql`
+    SELECT 1 FROM sales_tax_payment_lines WHERE tenant_id = ${tenantId} AND transaction_id = ${txnId} LIMIT 1`);
+  return r.rows.length > 0;
+}
+
+/**
+ * A linked payment's edit (U-150): its paid lines are dated on it and add up
+ * to its Sales Tax Payable debit, so an edit that moves its date or changes
+ * that debit is 409 SALES_TAX_LINKED; other edits (memo, payee, other lines)
+ * go through.
+ */
+async function assertSalesTaxLinkUnchanged(
+  executor: DbOrTx, tenantId: string, existing: { id: string; txnDate: string }, input: { txnDate: string; lines: ReadonlyArray<{ accountId: string; debit?: string; credit?: string }> },
+): Promise<void> {
+  const r = await executor.execute(sql`
+    SELECT COALESCE(SUM(amount) FILTER (WHERE kind = 'paid'), 0)::text AS paid, COUNT(*)::int AS n
+    FROM sales_tax_payment_lines WHERE tenant_id = ${tenantId} AND transaction_id = ${existing.id}`);
+  const row = (r.rows as Array<{ paid: string; n: number }>)[0];
+  if (!row || Number(row.n) === 0) return;
+  const stp = await executor.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'sales_tax_payable')));
+  const stpIds = new Set(stp.map((a) => a.id));
+  const debit = input.lines.filter((l) => stpIds.has(l.accountId))
+    .reduce((s, l) => s.plus(l.debit || '0').minus(l.credit || '0'), new Decimal(0));
+  if (input.txnDate !== existing.txnDate || !debit.equals(new Decimal(row.paid))) {
+    throw AppError.conflict('This payment is linked to a sales tax agency. Unlink it first, then edit it and link it again.', 'SALES_TAX_LINKED', {
+      transactionId: existing.id,
+    });
+  }
+}
+
 export async function updateTransaction(
   tenantId: string,
   txnId: string,
@@ -1447,6 +1480,16 @@ export async function updateTransaction(
         { txnType: existing.txnType },
       );
     }
+
+    // Pay Sales Tax has no edit (U-150, Q-P23h): void it and pay again.
+    if (existing.txnType === 'sales_tax_payment' || input.txnType === 'sales_tax_payment') {
+      throw AppError.badRequest('A sales tax payment cannot be edited; void it and pay again.', 'TXN_EDIT_UNSUPPORTED', { txnType: 'sales_tax_payment' });
+    }
+
+    // A check or journal entry linked to a sales tax agency (U-150): its paid
+    // lines carry its date and its Sales Tax Payable debit, so an edit that
+    // changes either is 409 SALES_TAX_LINKED (unlink first, edit, link again).
+    await assertSalesTaxLinkUnchanged(tx, tenantId, existing, input);
 
     // Check lock date for both old and new dates (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
@@ -2486,6 +2529,11 @@ export async function bulkUpdateTransactions(
       // M5): a bulk payee change would move a bill to another vendor under
       // its payments, a category or source move would rewrite its lines.
       if (AP_DOCUMENT_TYPES.includes(txn.txnType)) { skipped.push({ id: txnId, reason: 'ap_document' }); continue; }
+      // A payment linked to a sales tax agency (U-150): a category or source
+      // move could take its Sales Tax Payable line away from its paid lines.
+      if ((setCategoryAccountId !== undefined || moveToAccountId !== undefined) && await hasSalesTaxLink(tx, tenantId, txnId)) {
+        skipped.push({ id: txnId, reason: 'sales_tax_linked' }); continue;
+      }
       const lockDate = txn.companyId ? (lockByCompany.get(txn.companyId) ?? null) : maxLock;
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }
 

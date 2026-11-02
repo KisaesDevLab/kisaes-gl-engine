@@ -23,7 +23,10 @@ export type TxnType =
   | 'aje'
   // A bounced customer payment (U-132, payment-bounce-v1): dated the bounce
   // date, Cr the account that held the money, Dr A/R; source_txn_id = the payment.
-  | 'returned_payment';
+  | 'returned_payment'
+  // Pay Sales Tax (U-150, sales-tax-pay-v1): Dr Sales Tax Payable per tax item,
+  // the adjustments, Cr the bank; contact = the agency's vendor.
+  | 'sales_tax_payment';
 
 export type TxnStatus = 'draft' | 'posted' | 'void' | 'deleted';
 

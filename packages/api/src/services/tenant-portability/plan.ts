@@ -502,6 +502,16 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'sales_tax_payment_lines.tax_item_id': 'tenant-ref:sales_tax_items',
   'sales_tax_payment_lines.agency_id': 'tenant-ref:sales_tax_agencies',
   'sales_tax_payment_lines.account_id': 'tenant-ref:accounts',
+  // Pay Sales Tax (U-150, migration 0254).
+  'sales_tax_payments.transaction_id': 'tenant-ref:transactions',
+  'sales_tax_payments.company_id': 'tenant-ref:companies',
+  'sales_tax_payments.agency_id': 'tenant-ref:sales_tax_agencies',
+  // Mark paid through runs (U-150, migration 0254).
+  'sales_tax_payment_lines.run_id': 'tenant-ref:sales_tax_mark_paid_runs',
+  'sales_tax_mark_paid_runs.company_id': 'tenant-ref:companies',
+  'sales_tax_mark_paid_runs.agency_id': 'tenant-ref:sales_tax_agencies',
+  'sales_tax_mark_paid_runs.created_by': 'identity',
+  'sales_tax_mark_paid_runs.undone_by': 'identity',
   'findings.company_id': 'tenant-ref:companies',
   'findings.transaction_id': 'tenant-ref:transactions',
   'findings.vendor_id': 'tenant-ref:contacts',
