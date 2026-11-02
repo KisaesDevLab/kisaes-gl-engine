@@ -126,3 +126,22 @@ export const salesTaxPaymentLines = pgTable('sales_tax_payment_lines', {
   txnIdx: index('idx_st_payment_lines_txn').on(t.transactionId),
   tenantIdx: index('idx_st_payment_lines_tenant').on(t.tenantId),
 }));
+
+/**
+ * Pay Sales Tax (U-150, migration 0254): one row per sales_tax_payment
+ * transaction — its agency, the date it pays through and the method. Its
+ * paid and adjustment lines are sales_tax_payment_lines.
+ */
+export const salesTaxPayments = pgTable('sales_tax_payments', {
+  transactionId: uuid('transaction_id').primaryKey(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  agencyId: uuid('agency_id').notNull(),
+  throughDate: date('through_date').notNull(),
+  /** check | electronic. */
+  method: varchar('method', { length: 12 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  companyIdx: index('idx_st_payments_company').on(t.companyId, t.agencyId, t.throughDate),
+  tenantIdx: index('idx_st_payments_tenant').on(t.tenantId),
+}));

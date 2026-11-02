@@ -52,7 +52,7 @@ const MONEY_DETAIL_TYPES = new Set<string>([...CASH_ACCOUNT_DETAIL_TYPES, ...REC
 const keptApplication = sql`(pa.voided_at IS NULL OR NOT EXISTS (
   SELECT 1 FROM transactions px WHERE px.id = pa.payment_id AND px.tenant_id = pa.tenant_id AND px.status = 'posted'))`;
 
-const OUTFLOW_TYPES = new Set<string>(['expense', 'bill_payment', 'customer_refund']);
+const OUTFLOW_TYPES = new Set<string>(['expense', 'bill_payment', 'customer_refund', 'sales_tax_payment']);
 
 /**
  * ledger.getTransaction plus the names the transaction view and the report

@@ -591,4 +591,13 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * (round2(taxable sales x the rate)) and problems [TAX_DIFFERS] (a warning); posting writes tax rows for the typed tax by item.
    */
   'daily-sales-tax-v1',
+  /**
+   * Pay Sales Tax (U-150): POST /sales-tax/payments/preview and /payments (method check | electronic, lines, signed adjustments with a
+   * reason, expectedOwed checked under the agency lock: 409 SALES_TAX_OWED_CHANGED), transaction type sales_tax_payment in /checks and the
+   * print queue, GET /sales-tax/payments and /:id (stubLines), POST /payments/link and /:id/unlink (match a payment made outside),
+   * POST /payments/mark-paid-through (opening lines, no GL). Void with POST /transactions/:id/void; no edit.
+   */
+  'sales-tax-pay-v1',
+  /** Idempotency-Key on POST /sales-tax/payments, /payments/link, /payments/:id/unlink and /payments/mark-paid-through (U-150). */
+  'idempotency-sales-tax-pay-v1',
 ];

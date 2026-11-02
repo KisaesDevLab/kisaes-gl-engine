@@ -1447,6 +1447,11 @@ export async function updateTransaction(
       );
     }
 
+    // Pay Sales Tax has no edit (U-150, Q-P23h): void it and pay again.
+    if (existing.txnType === 'sales_tax_payment' || input.txnType === 'sales_tax_payment') {
+      throw AppError.badRequest('A sales tax payment cannot be edited; void it and pay again.', 'TXN_EDIT_UNSUPPORTED', { txnType: 'sales_tax_payment' });
+    }
+
     // Check lock date for both old and new dates (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
     // unless the company has a closing-date password (U-15).

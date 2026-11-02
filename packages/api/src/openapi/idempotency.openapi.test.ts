@@ -136,8 +136,16 @@ export const IDEMPOTENCY_SALES_TAX_V1_ROUTES = ['agencies', 'items', 'codes'].fl
   `post /api/v1/sales-tax/${r}/{id}/reactivate`,
 ]).sort();
 
+/** Keyed by idempotency-sales-tax-pay-v1 (U-150): Pay Sales Tax, link, unlink, mark paid through. */
+export const IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES = [
+  'post /api/v1/sales-tax/payments',
+  'post /api/v1/sales-tax/payments/link',
+  'post /api/v1/sales-tax/payments/{id}/unlink',
+  'post /api/v1/sales-tax/payments/mark-paid-through',
+].sort();
+
 const ALL_KEYED_ROUTES = [
-  ...IDEMPOTENCY_SALES_TAX_V1_ROUTES,
+  ...IDEMPOTENCY_SALES_TAX_V1_ROUTES, ...IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES,
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
   ...IDEMPOTENCY_PAY_BILLS_V1_ROUTES, ...IDEMPOTENCY_CHECK_PRINT_V1_ROUTES, ...IDEMPOTENCY_INVOICE_V1_ROUTES,
   ...IDEMPOTENCY_INVOICE_EMAIL_V1_ROUTES, ...IDEMPOTENCY_RECEIVE_PAYMENT_V1_ROUTES, ...IDEMPOTENCY_CREDIT_MEMO_V1_ROUTES, ...IDEMPOTENCY_CUSTOMER_STATEMENTS_V1_ROUTES,
