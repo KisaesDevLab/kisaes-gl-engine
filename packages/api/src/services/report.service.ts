@@ -1871,6 +1871,8 @@ export async function buildSalesByCustomer(
           -- credit to a discount or write-off account is not a sale (the payment's own
           -- discount debit was never counted).
           AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
+          -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
+          AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
           -- Sale documents + the payments their revenue re-emits at
           -- (cb_lines rule 3 stamps the PAYMENT's txn_type). Without this,
           -- cash-basis "Sales" would count revenue credits from deposits and
@@ -1933,6 +1935,8 @@ export async function buildSalesByItem(
           -- credit to a discount or write-off account is not a sale (the payment's own
           -- discount debit was never counted).
           AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
+          -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
+          AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
           -- Same sale-document restriction as Sales by Customer (see note there).
           -- A refund of a credit memo re-emits the memo's income debits at the
           -- refund date (cb_lines rule 3b): returns, counted negative.

@@ -30,7 +30,7 @@ import { paymentsRouter } from './payments.routes.js';
 import { customerRefundsRouter } from './customer-refunds.routes.js';
 import { reportsRouter } from './reports.routes.js';
 import { Harness, type Co, key, m2 } from './receivables.test-support.js';
-import { cashBasisLinesWith, buildBalanceSheet } from '../services/report.service.js';
+import { cashBasisLinesWith, buildBalanceSheet, buildSalesByCustomer, buildSalesByItem } from '../services/report.service.js';
 import * as dailySales from '../services/daily-sales.service.js';
 import * as billService from '../services/bill.service.js';
 import * as billPayments from '../services/bill-payment.service.js';
@@ -426,6 +426,9 @@ describe('the cash Balance Sheet at every month end (missing test 1)', () => {
     const extra = await pay('2026-05-10', '40.00');
     ok(await req('POST', '/api/v1/customer-refunds', { txnDate: '2026-05-11', contactId: oz, refundFromAccountId: chk, amount: '40.00', sourceId: extra['id'] }));
     ok(await req('POST', `/api/v1/payments/${p1['id']}/bounce`, { date: '2026-06-05' }));
+    // A payment applied at save to an invoice dated later (review B1): income on the payment date, A/R untouched.
+    const inv3 = await invoice({ name: 'P-3', client: 'Ozark Outfitters', date: '2026-06-20', lines: [{ item: 'Install labor', quantity: '1', unitPrice: '80.00' }] });
+    await pay('2026-05-25', '80.00', [{ invoiceId: inv3, amount: '80.00' }]);
     for (const asOf of ['2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30', '2026-05-31', '2026-06-30']) {
       const b = await buildBalanceSheet(c.tenantId, asOf, 'cash', c.companyId);
       expect(m2(b.totalAssets), asOf).toBe(m2(b.totalLiabilities + b.totalEquity));
@@ -437,6 +440,11 @@ describe('the cash Balance Sheet at every month end (missing test 1)', () => {
     expect((await cashLedger(null, '2026-01-31'))['unapplied_receipts_income']).toBe('200.00');
     expect((await cashLedger(null, '2026-02-28'))['unapplied_receipts_income']).toBe('350.00');
     expect((await cashLedger(null, '2026-04-30'))['unapplied_receipts_income']).toBe('0.00');
+    // Unapplied money is not a sale: cash Sales by Customer / Item leave it out.
+    const feb = await buildSalesByCustomer(c.tenantId, '2026-02-01', '2026-02-28', c.companyId, null, 'cash');
+    expect(feb.data).toEqual([]);
+    const febItems = await buildSalesByItem(c.tenantId, '2026-02-01', '2026-02-28', c.companyId, null, 'cash');
+    expect(febItems.data).toEqual([]);
     for (const [s, e] of [['2026-01-01', '2026-03-31'], ['2026-04-01', '2026-06-30']]) await expectTies(s!, e!);
   });
 });

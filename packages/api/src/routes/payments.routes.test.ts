@@ -755,7 +755,8 @@ describe('payment-settle-v1 / payment-discounts-v1 (U-133, U-134)', () => {
     expect(rec.json.payment.applications.map((x: any) => x.appliedDate)).toEqual(['2026-11-03', '2026-11-03', '2026-11-11', '2026-11-12']);
     // Cash basis recognises the credits on their dates; the period nets to the cash.
     const pl = await buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-12-31', 'cash', c.companyId) as any;
-    expect(Number(pl.totalRevenue).toFixed(2)).toBe('5945.00'); // 5,645.00 + 20.00 + 30.00 + 250.00
+    // U-152 (Q-SPF1): the 5.00 still unapplied is Unapplied receipts income on cash.
+    expect(Number(pl.totalRevenue).toFixed(2)).toBe('5950.00'); // 5,645.00 + 20.00 + 30.00 + 250.00 + 5.00 unapplied
     // CREDIT_IN_USE: the payment can't drop below what others drew (50.00).
     const put = await request('PUT', `/api/v1/payments/${payment.id}`, c.token, {
       customerId: c.customer, date: '2026-11-03', depositTo: c.clearing, amount: '5680.00',
