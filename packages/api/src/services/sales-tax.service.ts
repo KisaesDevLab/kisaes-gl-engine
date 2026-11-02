@@ -692,7 +692,7 @@ export interface DocTaxLineInput {
   isSubtotal?: boolean;
 }
 
-export interface DocTaxCode { id: string; code: string; taxable: boolean; source: 'line' | 'client' | 'item' | 'flag' }
+export interface DocTaxCode { id: string; code: string; taxable: boolean; source: 'request' | 'client' | 'item' | 'is_taxable' | 'default' }
 
 export interface DocTaxResolution {
   /** null: the legacy path (line rates / the company default rate) or no tax. */
@@ -770,17 +770,17 @@ export async function resolveDocumentTax(
   const byId = new Map(codeRows.map((r) => [r.id, r]));
   const clientCode = customer?.taxCodeId ? byId.get(customer.taxCodeId) : undefined;
   out.codes = input.lines.map((l, i) => {
-    if (l.isSubtotal) return { id: sys.non.id, code: sys.non.code, taxable: false, source: 'flag' };
+    if (l.isSubtotal) return { id: sys.non.id, code: sys.non.code, taxable: false, source: 'default' };
     if (l.taxCodeId) {
       const r = byId.get(l.taxCodeId);
       if (!r) throw AppError.badRequest(`lines[${i}].taxCodeId is not a tax code of this company`, 'VALIDATION_ERROR', { line: i });
-      return { id: r.id, code: r.code, taxable: r.taxable, source: 'line' };
+      return { id: r.id, code: r.code, taxable: r.taxable, source: 'request' };
     }
     if (clientCode && !clientCode.taxable) return { id: clientCode.id, code: clientCode.code, taxable: false, source: 'client' };
     const ic = l.itemTaxCodeId ? byId.get(l.itemTaxCodeId) : undefined;
     if (ic) return { id: ic.id, code: ic.code, taxable: ic.taxable, source: 'item' };
     const f = l.isTaxable ? sys.tax : sys.non;
-    return { id: f.id, code: f.code, taxable: f.taxable, source: 'flag' };
+    return { id: f.id, code: f.code, taxable: f.taxable, source: 'is_taxable' };
   });
   return out;
 }

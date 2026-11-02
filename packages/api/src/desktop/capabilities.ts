@@ -561,7 +561,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Sales tax setup and documents (U-147, Q-P23d, Q-P23k, Q-P23i): /sales-tax/agencies, /items (items and groups), /codes; invoices,
    * credit memos and sales receipts (create, PUT, preview, GET) take salesTaxId (null = none; omitted: the edited document's, else the
    * client's default, else the company's), useCurrentRates and line taxCodeId, and answer salesTax {id, name, kind, rate, members [{id,
-   * name, rate, tax}]} (a credit memo's member tax negative) and line taxCode {id, code, taxable, source on previews}. One sales tax per
+   * name, rate, tax}]} (a credit memo's member tax negative) and line taxCode {id, code, taxable, source on previews: request | client | item | is_taxable | default (a subtotal line)}. One sales tax per
    * document, tax rounded once and allocated to lines and members by largest remainder. A line taxRate selects the legacy path (rows on a
    * legacy item per rate); with salesTaxId it is 400 TAX_RATE_WITH_SALES_TAX; 400 SALES_TAX_OFF; 400 TAX_ITEM_INACTIVE (new to the
    * document); an edit keeps its saved member rates (preview problem RATE_CHANGED) unless useCurrentRates. Contacts take

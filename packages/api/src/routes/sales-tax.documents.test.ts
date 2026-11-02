@@ -191,7 +191,7 @@ describe('resolution, codes and errors', () => {
   it('a line taxCodeId wins; a code of another company is 400; line taxRate still works (legacy path, never a 400)', async () => {
     const base = docBody(gstep(1)['request']);
     const non = await req('POST', '/api/v1/invoices/preview', { ...base, lines: base.lines.map((l) => ({ ...l, taxCodeId: ids.codes.get('Non') })) });
-    expect([non.json['taxTotal'], non.json['lines'][0]['taxCode']['source']]).toEqual(['0.00', 'line']);
+    expect([non.json['taxTotal'], non.json['lines'][0]['taxCode']['source']]).toEqual(['0.00', 'request']);
     const legacy = await req('POST', '/api/v1/invoices', { ...base, lines: base.lines.map((l) => ({ ...l, isTaxable: true, taxRate: 0.0725 })) });
     expect(legacy.status, JSON.stringify(legacy.json)).toBe(201);
     const id = legacy.json['invoice']?.['id'] ?? legacy.json['id'];
