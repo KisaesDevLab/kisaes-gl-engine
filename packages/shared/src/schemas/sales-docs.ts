@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
-import { invoiceLineSchema } from './transactions.js';
+import { invoiceLineSchema, salesTaxDocFields } from './transactions.js';
 import { wholeCentsAmount } from './payments.js';
 import { PAYMENT_METHODS } from '../constants/payment-methods.js';
 
@@ -26,6 +26,8 @@ const salesDocHeader = {
   txnNumber: z.string().trim().max(50).optional(),
   warnOnly: z.boolean().optional(),
   printLater: z.boolean().optional(),
+  // U-147: the document's sales tax (null = none) and useCurrentRates, as on invoices.
+  ...salesTaxDocFields,
 };
 
 /** POST /credit-memos, PUT /credit-memos/:id (U-138). */

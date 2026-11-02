@@ -35,6 +35,9 @@ export interface Contact {
   defaultMarkupPercent?: string | null;
   /** Invoice layout new invoices start on (U-130); null = the company default. */
   defaultInvoiceLayoutId?: string | null;
+  /** U-147: the client's default sales tax item or group, and tax code. */
+  defaultSalesTaxId?: string | null;
+  taxCodeId?: string | null;
   openingBalance: string;
   openingBalanceDate: string | null;
   defaultExpenseAccountId: string | null;
@@ -86,6 +89,9 @@ export interface CreateContactInput {
   defaultMarkupPercent?: string | null;
   /** Invoice layout new invoices start on (U-130); null = the company default. */
   defaultInvoiceLayoutId?: string | null;
+  /** U-147: the client's default sales tax item or group, and tax code. */
+  defaultSalesTaxId?: string | null;
+  taxCodeId?: string | null;
   openingBalance?: string;
   openingBalanceDate?: string | null;
   defaultExpenseAccountId?: string | null;
@@ -125,6 +131,9 @@ export interface UpdateContactInput {
   defaultMarkupPercent?: string | null;
   /** Invoice layout new invoices start on (U-130); null = the company default. */
   defaultInvoiceLayoutId?: string | null;
+  /** U-147: the client's default sales tax item or group, and tax code. */
+  defaultSalesTaxId?: string | null;
+  taxCodeId?: string | null;
   defaultExpenseAccountId?: string | null;
   defaultTagId?: string | null;
   taxId?: string | null;

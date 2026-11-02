@@ -488,6 +488,8 @@ interface PostTransactionInput {
    */
   salesTaxId?: string | null;
   taxRows?: import('./sales-tax.service.js').TaxRowInput[] | null;
+  /** The member rates the document's tax was computed with (U-147). */
+  salesTaxRates?: ReadonlyArray<{ itemId: string; rate: string }> | null;
   // null (edit) clears the stored number; undefined leaves it unchanged.
   txnNumber?: string | null;
   dueDate?: string;
@@ -738,7 +740,7 @@ export async function postTransaction(
 
     await syncTransactionTagsFromLines(tx, tenantId, companyId || null, txn.id, lineValues);
     // U-147: the document's tax rows, in this transaction (S3: every path).
-    await salesTaxRows.writeTransactionTaxRows(tx, tenantId, txn, lineValues, input.taxRows);
+    await salesTaxRows.writeTransactionTaxRows(tx, tenantId, txn, lineValues, input.taxRows, input.salesTaxRates);
 
     // Update account balances (only for posted transactions)
     if (txn.status === 'posted') {
@@ -1721,7 +1723,7 @@ export async function updateTransaction(
     if (input.salesTaxId !== undefined) {
       await tx.update(transactions).set({ salesTaxId: input.salesTaxId || null }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
     }
-    await salesTaxRows.writeTransactionTaxRows(tx, tenantId, { ...existing, txnType: input.txnType ?? existing.txnType, txnDate: input.txnDate }, lineValues, input.taxRows);
+    await salesTaxRows.writeTransactionTaxRows(tx, tenantId, { ...existing, txnType: input.txnType ?? existing.txnType, txnDate: input.txnDate, salesTaxId: input.salesTaxId !== undefined ? input.salesTaxId : existing.salesTaxId }, lineValues, input.taxRows, input.salesTaxRates);
 
     // Apply new balances
     if (existing.status === 'posted') {

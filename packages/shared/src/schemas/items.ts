@@ -43,6 +43,8 @@ export const createItemSchema = z.object({
   discountPercent: itemDiscountPercentSchema.nullish(),
   incomeAccountId: z.string().uuid(),
   isTaxable: z.boolean().default(true),
+  // The item's sales tax code (U-147); null = from isTaxable.
+  taxCodeId: z.string().uuid().nullish(),
 });
 
 export const updateItemSchema = z.object({
@@ -53,6 +55,7 @@ export const updateItemSchema = z.object({
   discountPercent: itemDiscountPercentSchema.nullish(),
   incomeAccountId: z.string().uuid().optional(),
   isTaxable: z.boolean().optional(),
+  taxCodeId: z.string().uuid().nullish(),
   isActive: z.boolean().optional(),
 });
 

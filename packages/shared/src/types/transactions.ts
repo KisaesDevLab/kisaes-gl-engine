@@ -371,7 +371,13 @@ export interface CreateInvoiceInput {
     billableSourceLineId?: string;
     /** Markup percent on the cost ("10" = 10 %), 0 to 1000 (U-128). */
     markupPercent?: string;
+    /** The line's sales tax code (U-147). */
+    taxCodeId?: string | null;
   }>;
+  /** The document's sales tax item or group (U-147); null = none; omitted = the client's, else the company's default. */
+  salesTaxId?: string | null;
+  /** An edit takes the current rates instead of its saved ones (Q-P23i). */
+  useCurrentRates?: boolean;
   memo?: string;
   internalNotes?: string;
   /** Printed on the invoice; memo stays internal (U-123). */
