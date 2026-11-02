@@ -37,6 +37,7 @@ import * as billPayments from '../services/bill-payment.service.js';
 import * as vendorCredits from '../services/vendor-credit.service.js';
 import * as deposits from '../services/deposit.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
+import { resolveEffectivePermissions } from '@kis-books/shared';
 
 type Body = Record<string, any>;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -397,6 +398,91 @@ describe('golden 15: bill discounts and vendor refunds on cash (Q-SPF7)', () => 
     expectLedger(await cashLedger(s[5]!['request']['startDate'], s[5]!['request']['endDate']), s[5]!['expect']);
     const b = await buildBalanceSheet(c.tenantId, '2026-11-30', 'cash', c.companyId);
     expect(m2(b.totalAssets)).toBe(m2(b.totalLiabilities + b.totalEquity));
+  });
+});
+
+describe('cash edge cases beyond rules 2, 2b and 3', () => {
+  it('a bill paid in two months, the discount on the second payment: A/P 0.00 at each month end, the expense nets to the cash paid', async () => {
+    await seed();
+    const [vendor] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Split Vendor' }).returning();
+    const bill = await billService.createBill(c.tenantId, {
+      contactId: vendor!.id, txnDate: '2026-09-02', lines: [{ accountId: ids.accts.get('supplies'), amount: '200.00' }],
+    } as never, c.userId, c.companyId);
+    const payBill = (date: string, amount: string, discount?: string) => billPayments.payBills(c.tenantId, {
+      bankAccountId: c.roles['checking'], txnDate: date, method: 'ach',
+      bills: [{ billId: bill.id, amount, ...(discount ? { discountAmount: discount } : {}) }], ...(discount ? { discountAccountId: ids.accts.get('bill_discounts') } : {}),
+    } as never, c.userId, c.companyId);
+    await payBill('2026-09-20', '120.00');
+    await payBill('2026-10-05', '76.00', '4.00');
+    expectLedger(await cashLedger('2026-09-01', '2026-09-30'), { accounts_payable: '0.00', supplies: '120.00', bill_discounts: '0.00', net: '-120.00' });
+    expectLedger(await cashLedger('2026-10-01', '2026-10-31'), { accounts_payable: '0.00', supplies: '80.00', bill_discounts: '4.00', net: '-76.00' });
+    for (const asOf of ['2026-09-30', '2026-10-31']) {
+      const b = await buildBalanceSheet(c.tenantId, asOf, 'cash', c.companyId);
+      expect(m2(b.totalAssets), asOf).toBe(m2(b.totalLiabilities + b.totalEquity));
+    }
+  });
+
+  it('Unapplied receipts: a voided unapplied payment and a remainder part applied, part refunded both end at 0.00', async () => {
+    await seed(false);
+    const oz = ids.clients.get('Ozark Outfitters')!;
+    const chk = c.roles['checking']!;
+    const pay = async (date: string, amount: string) => ok(await req('POST', '/api/v1/payments/receive', {
+      customerId: oz, date, amount, depositTo: chk, applications: [],
+    }))['payment'] as Body;
+    const voided = await pay('2026-07-03', '60.00');
+    expect((await cashLedger(null, '2026-07-31'))['unapplied_receipts_income']).toBe('60.00');
+    ok(await req('POST', `/api/v1/transactions/${voided['id']}/void`, { reason: 'entered twice' }), 200);
+    expect((await cashLedger(null, '2026-07-31'))['unapplied_receipts_income'] ?? '0.00').toBe('0.00');
+    const inv = await invoice({ name: 'U-1', client: 'Ozark Outfitters', date: '2026-08-10', lines: [{ item: 'Plants', quantity: '1', unitPrice: '100.00' }] });
+    const extra = await pay('2026-07-20', '150.00');
+    ok(await req('POST', `/api/v1/payments/${extra['id']}/apply`, { date: '2026-08-10', applications: [{ invoiceId: inv, amount: '108.88' }] }), 200);
+    ok(await req('POST', '/api/v1/customer-refunds', { txnDate: '2026-08-15', contactId: oz, refundFromAccountId: chk, amount: '41.12', sourceId: extra['id'] }));
+    expect((await cashLedger(null, '2026-07-31'))['unapplied_receipts_income']).toBe('150.00');
+    expect((await cashLedger(null, '2026-08-31'))['unapplied_receipts_income'] ?? '0.00').toBe('0.00');
+    for (const asOf of ['2026-07-31', '2026-08-31']) {
+      const b = await buildBalanceSheet(c.tenantId, asOf, 'cash', c.companyId);
+      expect(m2(b.totalAssets), asOf).toBe(m2(b.totalLiabilities + b.totalEquity));
+      const led = await cashLedger(null, asOf);
+      expect([asOf, led['accounts_receivable'] ?? '0.00', led['customer_deposits'] ?? '0.00']).toEqual([asOf, '0.00', '0.00']);
+    }
+    await expectTies('2026-07-01', '2026-08-31');
+  });
+});
+
+describe('daily sales (S9)', () => {
+  it('a linked tax line writes rows on the sales tax\'s items; an unlinked line to Sales Tax Payable is an unassigned row; other lines none', async () => {
+    await seed();
+    const stp = c.roles['sales_tax_payable']!;
+    const tpl = await dailySales.createTemplate(c.tenantId, { name: 'S9' } as never, c.userId, c.companyId);
+    await dailySales.replaceTemplateLines(c.tenantId, tpl.id, [
+      { section: 'sales', label: 'Sales', accountId: ids.accts.get('income'), normalSide: 'credit' },
+      { section: 'tax', label: 'State tax', accountId: null, normalSide: 'credit', salesTaxId: ids.taxes.get('Springfield') },
+      { section: 'tax', label: 'Event tax', accountId: stp, normalSide: 'credit' },
+      { section: 'payment', label: 'Cash', accountId: c.roles['payments_clearing'], normalSide: 'debit' },
+    ] as never, c.userId, c.companyId);
+    const t = await dailySales.getTemplate(c.tenantId, tpl.id, c.companyId);
+    const lineId = (label: string) => t.lines.find((l) => l.label === label && l.isActive)!.id;
+    const values = [
+      { templateLineId: lineId('Sales'), amount: '100.00' }, { templateLineId: lineId('State tax'), amount: '8.88' },
+      { templateLineId: lineId('Event tax'), amount: '1.50' }, { templateLineId: lineId('Cash'), amount: '110.38' },
+    ];
+    const draft = await dailySales.createDraft(c.tenantId, { templateId: tpl.id, businessDate: '2026-11-20', values } as never, c.userId, c.companyId);
+    const posted = await dailySales.postEntry(c.tenantId, draft.id, c.userId, c.companyId);
+    const rows = await db.select().from(transactionTaxLines).where(eq(transactionTaxLines.transactionId, String(posted.transactionId)));
+    const sum = (list: typeof rows) => m2(list.reduce((s, r) => s + Math.round(Number(r.tax) * 10000), 0) / 10000);
+    expect(sum(rows.filter((r) => r.taxItemId))).toBe('8.88');
+    expect(rows.filter((r) => r.taxItemId).every((r) => r.salesTaxId === ids.taxes.get('Springfield'))).toBe(true);
+    expect(rows.filter((r) => !r.taxItemId).map((r) => m2(r.tax))).toEqual(['1.50']);
+    const r = await liability({ startDate: '2026-11-01', endDate: '2026-11-30', basis: 'accrual' });
+    expect([r['unassigned'], r['otherEntries']]).toEqual(['1.50', '0.00']);
+  });
+});
+
+describe('role defaults (tenants and users created after 0253)', () => {
+  it('owner, accountant and a bookkeeper with no permission row get sales_tax full; readonly gets view', () => {
+    const base = { userType: 'staff', isSuperAdmin: false, hasPermissionRow: false, templateMap: null, overrides: null };
+    for (const role of ['owner', 'accountant', 'bookkeeper']) expect(resolveEffectivePermissions({ ...base, role } as never)['sales_tax']).toBe('full');
+    expect(resolveEffectivePermissions({ ...base, role: 'readonly' } as never)['sales_tax']).toBe('view');
   });
 });
 

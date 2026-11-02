@@ -142,6 +142,7 @@ export const IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES = [
   'post /api/v1/sales-tax/payments/link',
   'post /api/v1/sales-tax/payments/{id}/unlink',
   'post /api/v1/sales-tax/payments/mark-paid-through',
+  'post /api/v1/sales-tax/payments/mark-paid-through/{runId}/undo',
 ].sort();
 
 /** Keyed by idempotency-recovery-v1 (U-154): record a recovered bad debt. */

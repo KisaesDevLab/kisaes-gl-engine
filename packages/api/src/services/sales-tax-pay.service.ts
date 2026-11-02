@@ -20,14 +20,14 @@
  * A payment made some other way (a check or journal entry debiting Sales
  * Tax Payable) is linked to an agency by paid lines on that transaction.
  * "Mark paid through" records tax paid before the books were set up as
- * opening lines (no GL).
+ * opening lines (no GL), one run at a time; a run can be undone.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import {
-  accounts, contacts, salesTaxAgencies, salesTaxItems, salesTaxPaymentLines, salesTaxPayments, transactions, journalLines,
+  accounts, contacts, salesTaxAgencies, salesTaxItems, salesTaxMarkPaidRuns, salesTaxPaymentLines, salesTaxPayments, transactions, journalLines,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -51,8 +51,12 @@ export interface PayInput {
   date: string;
   bankAccountId: string;
   method: PayMethod;
-  /** Omitted: every item of the agency at owed + its adjustments. */
-  lines?: Array<{ taxItemId: string; amount: string; expectedOwed?: string }>;
+  /**
+   * Omitted: every item of the agency at owed + its adjustments. Sent: those
+   * items; a line's amount null or absent is owed + its adjustments, computed
+   * here (under the agency lock when paying), so only typed amounts are sent.
+   */
+  lines?: Array<{ taxItemId: string; amount?: string | null; expectedOwed?: string }>;
   /** amount: signed, 2 places; negative lowers what is paid (a timely-filing discount). */
   adjustments?: Array<{ taxItemId: string; accountId: string; amount: string; reason: string }>;
   printLater?: boolean;
@@ -122,7 +126,7 @@ async function planPayment(executor: DbOrTx, tenantId: string, companyId: string
   const names = new Map(items.map((i) => [i.id, i.name]));
   // Setup order (as the liability report lists them).
   const order = (id: string) => { const k = items.findIndex((i) => i.id === id); return k < 0 ? items.length : k; };
-  const owedAll = await salesTaxOwed(tenantId, companyId, input.throughDate, {});
+  const owedAll = await salesTaxOwed(tenantId, companyId, input.throughDate, {}, executor);
   const owed = new Map<string, DecimalValue>();
   for (const a of owedAll.agencies) {
     if (a.agencyId !== input.agencyId) continue;
@@ -143,11 +147,13 @@ async function planPayment(executor: DbOrTx, tenantId: string, companyId: string
   const adjBy = new Map<string, DecimalValue>();
   for (const a of adjustments) adjBy.set(a.taxItemId, (adjBy.get(a.taxItemId) ?? D0()).plus(a.value));
 
-  const sent = new Map<string, { amount: DecimalValue; expectedOwed?: string }>();
+  // amount null: owed + adjustments (computed below, on this executor).
+  const sent = new Map<string, { amount: DecimalValue | null; expectedOwed?: string }>();
   for (const [k, l] of (input.lines ?? []).entries()) {
     forAgency(l.taxItemId, `lines[${k}].taxItemId`);
     if (sent.has(l.taxItemId)) throw AppError.badRequest('A tax item is listed twice.', 'VALIDATION_ERROR', { field: `lines[${k}].taxItemId` });
-    sent.set(l.taxItemId, { amount: money(l.amount, `lines[${k}].amount`), expectedOwed: l.expectedOwed });
+    const amount = l.amount === null || l.amount === undefined ? null : money(l.amount, `lines[${k}].amount`);
+    sent.set(l.taxItemId, { amount, expectedOwed: l.expectedOwed });
   }
   // Lines sent: only those items (and any with an adjustment); else every item owed.
   const ids = [...new Set([...(input.lines ? [] : owed.keys()), ...adjBy.keys(), ...sent.keys()])]
@@ -156,7 +162,9 @@ async function planPayment(executor: DbOrTx, tenantId: string, companyId: string
   for (const id of ids) {
     const o = owed.get(id) ?? D0();
     const adj = adjBy.get(id) ?? D0();
-    const amount = input.lines ? sent.get(id)?.amount ?? D0() : o.plus(adj);
+    const s = sent.get(id);
+    // Not sent (lines given, an adjustment only): 0.00, as before.
+    const amount = !input.lines ? o.plus(adj) : s ? s.amount ?? o.plus(adj) : D0();
     if (o.isZero() && adj.isZero() && amount.isZero() && !sent.has(id)) continue;
     lines.push({ taxItemId: id, name: names.get(id) ?? '', owed: o, adjustment: adj, amount });
   }
@@ -177,6 +185,11 @@ async function planPayment(executor: DbOrTx, tenantId: string, companyId: string
     if (!v?.billingLine1) problems.push({ code: 'NO_VENDOR_ADDRESS', message: 'The agency has no mailing address for the check.' });
   }
   return { agency, lines, adjustments, problems, sent };
+}
+
+/** Σ of 2-place amount strings, exact (the link replay's total). */
+export function sumAmounts(amounts: readonly string[]): string {
+  return m2(amounts.reduce((s, a) => s.plus(new Decimal(a)), D0()));
 }
 
 const lineOut = (l: PlanLine) => ({
@@ -390,29 +403,99 @@ export async function unlinkPayment(tenantId: string, companyId: string, id: str
   });
 }
 
+type MarkPaidRun = typeof salesTaxMarkPaidRuns.$inferSelect;
+
+/** A mark-paid-through run as the API answers it (the 201 body, a replay, undo and the list). */
+function runOut(r: MarkPaidRun) {
+  return {
+    runId: r.id, agencyId: r.agencyId, throughDate: r.throughDate, reason: r.reason,
+    lines: r.lines, total: m2(new Decimal(r.total)),
+    createdAt: r.createdAt.toISOString(), undoneAt: r.undoneAt ? r.undoneAt.toISOString() : null,
+  };
+}
+
+async function loadRun(executor: DbOrTx, tenantId: string, companyId: string, runId: string, lock = false) {
+  const q = executor.select().from(salesTaxMarkPaidRuns)
+    .where(and(eq(salesTaxMarkPaidRuns.tenantId, tenantId), eq(salesTaxMarkPaidRuns.companyId, companyId), eq(salesTaxMarkPaidRuns.id, runId))).limit(1);
+  const [row] = lock ? await q.for('update') : await q;
+  if (!row) throw AppError.notFound('Mark paid through not found');
+  return row;
+}
+
+/** Replay of POST /mark-paid-through and /:runId/undo: the run as stored. */
+export async function getMarkPaidRun(tenantId: string, companyId: string, runId: string) {
+  return runOut(await loadRun(db, tenantId, companyId, runId));
+}
+
 /**
  * POST /sales-tax/payments/mark-paid-through (review B2): tax of the agency
  * owed through a date was paid before these books (or outside them): an
- * opening line per item for what is owed, no GL. Idempotency-Key.
+ * opening line per item with tax owed, for what it owes, no GL. An item
+ * over-paid (owed below 0.00) keeps its credit, so the agency ends at 0.00
+ * only when no item is over-paid. The lines are dated throughDate, so a date
+ * on or before the closing date needs closingPassword. Undo:
+ * undoMarkPaidThrough. Idempotency-Key (a replay returns the stored run).
  */
 export async function markPaidThrough(tenantId: string, companyId: string, input: { agencyId: string; throughDate: string; reason?: string }, userId?: string) {
   return db.transaction(async (tx) => {
     await claimIdempotency(tx);
     await loadAgency(tx, tenantId, companyId, input.agencyId, true);
-    const owed = await salesTaxOwed(tenantId, companyId, input.throughDate, { agencyId: input.agencyId });
+    await ledger.checkLockDate(tx, tenantId, input.throughDate, companyId, undefined, { oldDate: input.throughDate, newDate: input.throughDate });
+    const owed = await salesTaxOwed(tenantId, companyId, input.throughDate, { agencyId: input.agencyId }, tx);
     const items = owed.agencies.flatMap((a) => a.items).filter((i) => new Decimal(i.owed).greaterThan(0));
     const reason = (input.reason?.trim() || `Marked paid through ${input.throughDate}`).slice(0, 255);
+    const total = items.reduce((s, i) => s.plus(i.owed), D0());
+    const [run] = await tx.insert(salesTaxMarkPaidRuns).values({
+      tenantId, companyId, agencyId: input.agencyId, throughDate: input.throughDate, reason, total: total.toFixed(4),
+      lines: items.map((i) => ({ taxItemId: i.taxItemId, name: i.name, amount: i.owed })), createdBy: userId ?? null,
+    }).returning();
     if (items.length) {
       await tx.insert(salesTaxPaymentLines).values(items.map((i) => ({
         tenantId, companyId, transactionId: null, taxItemId: i.taxItemId, agencyId: input.agencyId, kind: 'opening',
-        lineDate: input.throughDate, amount: new Decimal(i.owed).toFixed(4), reason,
+        lineDate: input.throughDate, amount: new Decimal(i.owed).toFixed(4), reason, runId: run!.id,
       })));
     }
-    const total = items.reduce((s, i) => s.plus(i.owed), D0());
-    await recordIdempotentEntity(tx, 'sales_tax_agency', input.agencyId);
-    await auditLog(tenantId, 'create', 'sales_tax_mark_paid', input.agencyId, null, { throughDate: input.throughDate, items: items.length, total: m2(total) }, userId, tx);
-    return { agencyId: input.agencyId, throughDate: input.throughDate, lines: items.map((i) => ({ taxItemId: i.taxItemId, name: i.name, amount: i.owed })), total: m2(total) };
+    await recordIdempotentEntity(tx, 'sales_tax_mark_paid_run', run!.id);
+    await auditLog(tenantId, 'create', 'sales_tax_mark_paid', run!.id, null,
+      { agencyId: input.agencyId, throughDate: input.throughDate, items: items.length, total: m2(total) }, userId, tx);
+    return runOut(run!);
   });
+}
+
+/**
+ * POST /sales-tax/payments/mark-paid-through/:runId/undo: deletes the run's
+ * opening lines (owed comes back) and marks it undone; audited. Under the
+ * agency lock (it serializes with Pay). Closing password on throughDate.
+ * 404 for another company's or an unknown run; 409 ALREADY_UNDONE.
+ */
+export async function undoMarkPaidThrough(tenantId: string, companyId: string, runId: string, userId?: string) {
+  return db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const peek = await loadRun(tx, tenantId, companyId, runId);
+    await loadAgency(tx, tenantId, companyId, peek.agencyId, true);
+    const run = await loadRun(tx, tenantId, companyId, runId, true);
+    if (run.undoneAt) throw AppError.conflict('This mark paid through was already undone.', 'ALREADY_UNDONE', { runId });
+    await ledger.checkLockDate(tx, tenantId, run.throughDate, companyId, undefined, { oldDate: run.throughDate, newDate: run.throughDate });
+    const removed = await tx.delete(salesTaxPaymentLines)
+      .where(and(eq(salesTaxPaymentLines.tenantId, tenantId), eq(salesTaxPaymentLines.companyId, companyId), eq(salesTaxPaymentLines.runId, runId)))
+      .returning({ id: salesTaxPaymentLines.id });
+    const [after] = await tx.update(salesTaxMarkPaidRuns).set({ undoneAt: new Date(), undoneBy: userId ?? null })
+      .where(and(eq(salesTaxMarkPaidRuns.tenantId, tenantId), eq(salesTaxMarkPaidRuns.id, runId))).returning();
+    await recordIdempotentEntity(tx, 'sales_tax_mark_paid_run', runId);
+    await auditLog(tenantId, 'delete', 'sales_tax_mark_paid', runId,
+      { agencyId: run.agencyId, throughDate: run.throughDate, items: removed.length, total: m2(new Decimal(run.total)) }, null, userId, tx);
+    return runOut(after!);
+  });
+}
+
+/** GET /sales-tax/payments/mark-paid-through: the company's runs, newest first (undone ones only with includeUndone). */
+export async function listMarkPaidRuns(tenantId: string, companyId: string, opts: { agencyId?: string | null; includeUndone?: boolean } = {}) {
+  const conds = [eq(salesTaxMarkPaidRuns.tenantId, tenantId), eq(salesTaxMarkPaidRuns.companyId, companyId)];
+  if (opts.agencyId) conds.push(eq(salesTaxMarkPaidRuns.agencyId, opts.agencyId));
+  if (!opts.includeUndone) conds.push(isNull(salesTaxMarkPaidRuns.undoneAt));
+  const rows = await db.select().from(salesTaxMarkPaidRuns).where(and(...conds))
+    .orderBy(desc(salesTaxMarkPaidRuns.createdAt), desc(salesTaxMarkPaidRuns.id));
+  return { data: rows.map(runOut) };
 }
 
 export type { Tx };
