@@ -23,6 +23,7 @@ import { invoicesRouter } from './invoices.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { Harness, type Co, key, m2, lineSet, expectedLines } from './receivables.test-support.js';
 import * as checks from '../services/check.service.js';
+import * as ledger from '../services/ledger.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 
 type Body = Record<string, any>;
@@ -318,11 +319,15 @@ describe('review fixes (U-150)', () => {
     await expect(edit({ amount: '20.00', lines: [{ accountId: c.roles['sales_tax_payable']!, amount: '20.00' }] })).rejects.toMatchObject({ code: 'SALES_TAX_LINKED', statusCode: 409 });
     await expect(edit({ txnDate: '2026-12-20' })).rejects.toMatchObject({ code: 'SALES_TAX_LINKED' });
     await edit({ memo: 'City sales tax, November' });
-    const put = await req('PUT', `/api/v1/transactions/${chk.id}`, {
-      txnType: 'expense', txnDate: '2026-12-21',
-      lines: [{ accountId: c.roles['sales_tax_payable']!, debit: '24.02', credit: '0' }, { accountId: c.roles['checking']!, debit: '0', credit: '24.02' }],
-    });
-    expect([put.status, put.json['error']?.code]).toEqual([409, 'SALES_TAX_LINKED']);
+    // A linked journal entry, edited through the ledger (PUT /transactions/:id).
+    const jeLines = (amt: string) => [{ accountId: c.roles['sales_tax_payable']!, debit: amt, credit: '0' }, { accountId: c.roles['checking']!, debit: '0', credit: amt }];
+    const je = await ledger.postTransaction(c.tenantId, { txnType: 'journal_entry', txnDate: '2026-12-14', lines: jeLines('10.00') } as never, c.userId, c.companyId);
+    ok(await req('POST', '/api/v1/sales-tax/payments/link', { transactionId: je.id, agencyId: state(), lines: [{ taxItemId: ids.taxes.get('State'), amount: '10.00' }] }));
+    await expect(ledger.updateTransaction(c.tenantId, je.id, { txnType: 'journal_entry', txnDate: '2026-12-21', lines: jeLines('10.00') } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'SALES_TAX_LINKED' });
+    await expect(ledger.updateTransaction(c.tenantId, je.id, { txnType: 'journal_entry', txnDate: '2026-12-14', lines: jeLines('12.00') } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'SALES_TAX_LINKED' });
+    await ledger.updateTransaction(c.tenantId, je.id, { txnType: 'journal_entry', txnDate: '2026-12-14', memo: 'State', lines: jeLines('10.00') } as never, c.userId, c.companyId);
     expect((await owed('2026-11-30', 'Sample City Revenue Office'))['total']).toBe('50.00');
     ok(await req('POST', `/api/v1/sales-tax/payments/${chk.id}/unlink`, {}), 200);
     await edit({ amount: '20.00', lines: [{ accountId: c.roles['sales_tax_payable']!, amount: '20.00' }] });
