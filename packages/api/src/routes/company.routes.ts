@@ -41,6 +41,7 @@ import * as permissionService from '../services/permission.service.js';
 import { testSmtpConnection } from '../services/setup.service.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
+import { formatTaxRate } from '../utils/sales-compute.js';
 
 // Force the on-disk extension from the claimed MIME, not from the upload
 // filename. An uploader can send `Content-Type: image/png` with an
@@ -222,7 +223,7 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       defaultPaymentTerms: company.defaultPaymentTerms,
       invoicePrefix: company.invoicePrefix,
       invoiceNextNumber: company.invoiceNextNumber,
-      defaultSalesTaxRate: company.defaultSalesTaxRate,
+      defaultSalesTaxRate: formatTaxRate(company.defaultSalesTaxRate),
       currency: company.currency,
       dateFormat: company.dateFormat,
       categoryFilterMode: company.categoryFilterMode,
@@ -243,6 +244,7 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       financeChargeOnFinanceCharges: company.financeChargeOnFinanceCharges === true,
       financeChargeIncomeAccountId: company.financeChargeIncomeAccountId ?? null,
       financeChargePrintLater: company.financeChargePrintLater !== false,
+      ...companyService.salesTaxSettings(company),
     },
   });
 });

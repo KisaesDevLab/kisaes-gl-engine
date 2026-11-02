@@ -25,6 +25,11 @@ const MAX_LINES = 500;
 // and lists unless asked for (`status=deleted` or `includeDeleted=true`).
 const txnStatuses = ['draft', 'posted', 'void', 'deleted'] as const;
 
+// A document line's tax rate (U-148, review B3): a decimal string or a JSON
+// number (MyBooks Online divides a percent by 100 and may send
+// 0.011000000000000001); the engine rounds it half up to 6 places.
+export const docTaxRateSchema = z.union([z.string(), z.number()]).transform((v) => String(v));
+
 const journalLineInputSchema = z.object({
   accountId: z.string().uuid(),
   debit: z.string().default('0'),
@@ -33,7 +38,7 @@ const journalLineInputSchema = z.object({
   quantity: z.string().optional(),
   unitPrice: z.string().optional(),
   isTaxable: z.boolean().default(false),
-  taxRate: z.string().default('0'),
+  taxRate: docTaxRateSchema.default('0'),
   taxAmount: z.string().default('0'),
   // ADR 0XX — optional per-line tag. Null means explicitly untagged;
   // undefined (omitted) means the caller is not sending a tag value.
@@ -154,7 +159,7 @@ const lineItemSchema = z.object({
   quantity: z.string().min(1),
   unitPrice: z.string().min(1),
   isTaxable: z.boolean().default(false),
-  taxRate: z.string().optional(),
+  taxRate: docTaxRateSchema.optional(),
   tagId: z.string().uuid().nullable().optional(),
 });
 
@@ -177,7 +182,7 @@ export const invoiceLineSchema = z.object({
   unitPrice: z.string().min(1).optional(),
   discountPercent: z.string().min(1).max(12).optional(),
   isTaxable: z.boolean().optional(),
-  taxRate: z.string().optional(),
+  taxRate: docTaxRateSchema.optional(),
   tagId: z.string().uuid().nullable().optional(),
   serviceDate: isoDateOnly.nullable().optional(),
   // Billable cost (U-128, billable-costs-v1): the cost line (GET

@@ -86,4 +86,5 @@ export * from './price-levels.js';
 export * from './form-email-queue.js';
 export * from './customer-statements.js';
 export * from './finance-charges.js';
+export * from './sales-tax.js';
 export * from './billable-cost-links.js';

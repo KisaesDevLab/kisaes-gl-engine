@@ -38,6 +38,7 @@ export const PERMISSION_RESOURCES = [
   { key: 'receive_payment', label: 'Receive Payment', group: 'Sales', writable: true },
   { key: 'estimates', label: 'Estimates', group: 'Sales', writable: true },
   { key: 'items', label: 'Items', group: 'Sales', writable: true },
+  { key: 'sales_tax', label: 'Sales Tax', group: 'Sales', writable: true },
   // Payables
   { key: 'bills', label: 'Bills', group: 'Payables', writable: true },
   { key: 'pay_bills', label: 'Pay Bills', group: 'Payables', writable: true },

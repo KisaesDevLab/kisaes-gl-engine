@@ -18,6 +18,8 @@ export const items = pgTable('items', {
   discountPercent: decimal('discount_percent', { precision: 7, scale: 4 }),
   incomeAccountId: uuid('income_account_id').notNull(),
   isTaxable: boolean('is_taxable').default(true),
+  // The item's sales tax code (U-147, migration 0252); NULL = from isTaxable.
+  taxCodeId: uuid('tax_code_id'),
   isActive: boolean('is_active').default(true),
   // ADR 0XY: default tag applied to new journal lines that reference this item.
   defaultTagId: uuid('default_tag_id'),

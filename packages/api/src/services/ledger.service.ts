@@ -19,6 +19,7 @@ import { resolveDefaultTag } from './tags/resolve-default-tag.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertNotDeposited, releaseDepositLinks, liveDepositsForSource } from './deposit-links.service.js';
 import { releaseBilledCosts, assertSourceLinksIntact, billedInvoicesForLines } from './billable-links.js';
+import * as salesTaxRows from './sales-tax.service.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -480,6 +481,13 @@ export async function checkLockDate(
 interface PostTransactionInput {
   txnType: TxnType;
   txnDate: string;
+  /**
+   * U-147: the document's sales tax (item or group) and the tax rows its
+   * writer computed. Without rows, a sales document's rows are derived from
+   * its lines (legacy items per rate); see sales-tax.service writeTransactionTaxRows.
+   */
+  salesTaxId?: string | null;
+  taxRows?: import('./sales-tax.service.js').TaxRowInput[] | null;
   // null (edit) clears the stored number; undefined leaves it unchanged.
   txnNumber?: string | null;
   dueDate?: string;
@@ -555,7 +563,21 @@ export function round4(value: string | number | InstanceType<typeof Decimal> | n
  * (half away from zero), then the sums are compared with no tolerance. So
  * what is stored always balances; a difference of 0.0001 is refused.
  */
-export function assertBalanced(lines: ReadonlyArray<{ debit?: string | null; credit?: string | null }>): { debits: InstanceType<typeof Decimal>; credits: InstanceType<typeof Decimal> } {
+/**
+ * A line's tax rate as journal_lines.tax_rate stores it (U-148): a fraction
+ * rounded half away from zero to 6 places, as numeric(5,4) used to round
+ * silently to 4. Anything that is not a number is stored as 0.
+ */
+export function storedTaxRate(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '0.000000';
+  try {
+    return new Decimal(String(value)).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
+  } catch {
+    return '0.000000';
+  }
+}
+
+export function assertBalanced(lines:ReadonlyArray<{ debit?: string | null; credit?: string | null }>): { debits: InstanceType<typeof Decimal>; credits: InstanceType<typeof Decimal> } {
   let debits = new Decimal('0');
   let credits = new Decimal('0');
   for (const line of lines) {
@@ -666,6 +688,7 @@ export async function postTransaction(
       holdsDeposit: input.holdsDeposit ?? false,
       fromDepositId: input.fromDepositId || null,
       recurringScheduleId: input.recurringScheduleId || null,
+      salesTaxId: input.salesTaxId || null,
     }).returning();
 
     if (!txn) throw AppError.internal('Failed to create transaction');
@@ -692,8 +715,9 @@ export async function postTransaction(
       quantity: line.quantity || null,
       unitPrice: line.unitPrice || null,
       isTaxable: line.isTaxable || false,
-      taxRate: line.taxRate || '0',
+      taxRate: storedTaxRate(line.taxRate),
       taxAmount: line.taxAmount || '0',
+      taxCodeId: line.taxCodeId ?? null,
       lineOrder: i,
       contactId: line.contactId ?? null,
       serviceDate: line.serviceDate || null,
@@ -713,6 +737,8 @@ export async function postTransaction(
     const lines = await tx.insert(journalLines).values(lineValues).returning();
 
     await syncTransactionTagsFromLines(tx, tenantId, companyId || null, txn.id, lineValues);
+    // U-147: the document's tax rows, in this transaction (S3: every path).
+    await salesTaxRows.writeTransactionTaxRows(tx, tenantId, txn, lineValues, input.taxRows);
 
     // Update account balances (only for posted transactions)
     if (txn.status === 'posted') {
@@ -861,6 +887,9 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       await (await import('./finance-charge.service.js')).releaseAssessmentForVoidInTx(tx, tenantId, txnId);
     }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
+    // U-147: a voided document owes no tax. Its tax rows and payment lines
+    // stay as an audit trail (GET of a void payment still lists them); every
+    // reader counts only posted transactions' rows and lines.
 
     // Get original lines
     const originalLines = await tx.select().from(journalLines)
@@ -1254,6 +1283,8 @@ export async function deleteTransactionInTx(
       await (await import('./payment.service.js')).assertDepositSourcesNotBounced(tx, tenantId, txnId);
     }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
+    // U-147: a voided or deleted document owes no tax (its STP lines go with it).
+    await salesTaxRows.deleteTransactionTaxRows(tx, tenantId, txnId);
 
     // Other records that point at this transaction and would be left
     // pointing at a deleted one (a matched bank-feed item would also stay
@@ -1565,7 +1596,7 @@ export async function updateTransaction(
         accountId: line.accountId, debit: line.debit || '0', credit: line.credit || '0',
         description: line.description || null, itemId: line.itemId || null,
         quantity: line.quantity || null, unitPrice: line.unitPrice || null,
-        isTaxable: line.isTaxable || false, taxRate: line.taxRate || '0', taxAmount: line.taxAmount || '0',
+        isTaxable: line.isTaxable || false, taxRate: storedTaxRate(line.taxRate), taxAmount: line.taxAmount || '0', taxCodeId: line.taxCodeId ?? null,
         lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
         serviceDate: line.serviceDate || null,
         discountPercent: line.discountPercent ?? null,
@@ -1594,6 +1625,10 @@ export async function updateTransaction(
         ...newPLValues,
       ];
       await syncTransactionTagsFromLines(tx, tenantId, existing.companyId ?? null, txnId, fullValues, headerOnlyTags);
+      // U-147: rows from the full line set after the partial edit.
+      await salesTaxRows.writeTransactionTaxRows(tx, tenantId, existing,
+        await tx.select().from(journalLines).where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId), eq(journalLines.isVoidReversal, false))),
+        input.taxRows);
       // Full before-image: header plus every line as it stood before the edit.
       await auditLog(tenantId, 'update', 'transaction', txnId, { ...existing, lines: existingLines }, { reconciledPartialEdit: true }, userId, tx);
       // Every billed cost still has its line (U-128 review B1); else 500, rolled back.
@@ -1661,8 +1696,9 @@ export async function updateTransaction(
       quantity: line.quantity || null,
       unitPrice: line.unitPrice || null,
       isTaxable: line.isTaxable || false,
-      taxRate: line.taxRate || '0',
+      taxRate: storedTaxRate(line.taxRate),
       taxAmount: line.taxAmount || '0',
+      taxCodeId: line.taxCodeId ?? null,
       lineOrder: i,
       contactId: line.contactId ?? null,
       serviceDate: line.serviceDate || null,
@@ -1682,6 +1718,11 @@ export async function updateTransaction(
     const lines = await tx.insert(journalLines).values(lineValues).returning();
 
     await syncTransactionTagsFromLines(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, lineValues, headerOnlyTags);
+    // U-147: the edited document's tax rows (S3: every edit path).
+    if (input.salesTaxId !== undefined) {
+      await tx.update(transactions).set({ salesTaxId: input.salesTaxId || null }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+    }
+    await salesTaxRows.writeTransactionTaxRows(tx, tenantId, { ...existing, txnType: input.txnType ?? existing.txnType, txnDate: input.txnDate }, lineValues, input.taxRows);
 
     // Apply new balances
     if (existing.status === 'posted') {
@@ -1923,7 +1964,9 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
     quantity: journalLines.quantity,
     unitPrice: journalLines.unitPrice,
     isTaxable: journalLines.isTaxable,
-    taxRate: journalLines.taxRate,
+    // 6 places whatever scale the row was stored with (U-148).
+    taxRate: sql<string>`to_char(COALESCE(${journalLines.taxRate}, 0), 'FM9990.000000')`,
+    taxCodeId: journalLines.taxCodeId,
     taxAmount: journalLines.taxAmount,
     lineOrder: journalLines.lineOrder,
     tagId: journalLines.tagId,

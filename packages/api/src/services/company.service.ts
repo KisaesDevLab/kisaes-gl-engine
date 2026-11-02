@@ -16,6 +16,9 @@ import { hasSessionSecret } from '../desktop/session-secrets.js';
 import { assertBillDiscountAccount } from './bill-discount-account.js';
 import { assertMarkupAccount } from './billable-links.js';
 import { assertWriteOffAccount, assertSalesDiscountAccount } from './write-off-account.js';
+import { formatTaxRate, parseSalesTaxRate, TAX_RATE_PLACES } from '../utils/sales-compute.js';
+import { salesTaxItems, salesTaxGroupMembers } from '../db/schema/index.js';
+import { legacyItemFor } from './sales-tax.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -122,6 +125,11 @@ const COMPANY_UPDATABLE_FIELDS = [
   'financeChargeOnFinanceCharges',
   'financeChargeIncomeAccountId',
   'financeChargePrintLater',
+  // Sales tax flags (U-25 / U-147); validated in updateCompany.
+  'salesTaxEnabled',
+  'salesTaxBasis',
+  'defaultSalesTaxId',
+  'salesTaxSsuta',
 ] as const;
 
 export async function updateCompany(
@@ -191,6 +199,11 @@ export async function updateCompany(
     if (typeof updates['salesDiscountAccountId'] === 'string') {
       await assertSalesDiscountAccount(tx, tenantId, companyId, updates['salesDiscountAccountId'] as string);
     }
+    // Sales tax (U-148, U-147, S5): the default rate is stored at 6 places;
+    // a default sales tax must be an active item or group of the company;
+    // the rate alone (MyBooks Online) moves the default to its legacy item,
+    // the default alone sets the rate to its combined rate.
+    await applySalesTaxDefaults(tx, tenantId, companyId, updates);
     // Billable-cost markup account (U-128): an active income account of this company.
     const markupAccountId = updates['billableMarkupAccountId'];
     if (typeof markupAccountId === 'string') {
@@ -249,7 +262,7 @@ export async function getSettings(tenantId: string, companyId?: string) {
     defaultPaymentTerms: company.defaultPaymentTerms,
     invoicePrefix: company.invoicePrefix,
     invoiceNextNumber: company.invoiceNextNumber,
-    defaultSalesTaxRate: company.defaultSalesTaxRate,
+    defaultSalesTaxRate: formatTaxRate(company.defaultSalesTaxRate),
     currency: company.currency,
     dateFormat: company.dateFormat,
     categoryFilterMode: company.categoryFilterMode || 'by_type',
@@ -270,6 +283,7 @@ export async function getSettings(tenantId: string, companyId?: string) {
     financeChargeOnFinanceCharges: company.financeChargeOnFinanceCharges === true,
     financeChargeIncomeAccountId: company.financeChargeIncomeAccountId ?? null,
     financeChargePrintLater: company.financeChargePrintLater !== false,
+    ...salesTaxSettings(company),
   };
 }
 
@@ -512,5 +526,59 @@ async function assertFinanceChargeAccount(executor: DbOrTx, tenantId: string, co
   if (!row || (row.companyId && row.companyId !== companyId) || row.isActive === false
     || !['revenue', 'other_revenue', 'income', 'other_income'].includes(row.accountType)) {
     throw AppError.badRequest('Choose an income account for finance charges.', 'FINANCE_CHARGE_ACCOUNT_INVALID', { accountId });
+  }
+}
+
+/** The sales tax fields of GET/PUT /company/settings (U-25, U-147; company-sales-tax-flags-v1). */
+export function salesTaxSettings(company: {
+  salesTaxEnabled?: boolean | null; salesTaxBasis?: string | null; defaultSalesTaxId?: string | null; salesTaxSsuta?: boolean | null;
+}) {
+  return {
+    // Stored NULL = on (a company from before 0252 that the backfill left alone).
+    salesTaxEnabled: company.salesTaxEnabled !== false,
+    salesTaxBasis: company.salesTaxBasis === 'cash' ? 'cash' : 'accrual',
+    defaultSalesTaxId: company.defaultSalesTaxId ?? null,
+    salesTaxSsuta: company.salesTaxSsuta === true,
+  };
+}
+
+/**
+ * Sales tax defaults on a settings PUT (U-148, U-147, S5): defaultSalesTaxRate
+ * is stored rounded half up to 6 places (a browser's 0.011000000000000001 is
+ * 0.011000). defaultSalesTaxId must be an active item or group of this
+ * company (400 VALIDATION_ERROR); sent alone it sets defaultSalesTaxRate to
+ * its combined rate, so MyBooks Online shows the same rate. The rate sent
+ * alone (MyBooks Online's Preferences) moves defaultSalesTaxId to the legacy
+ * item for that rate (made on first use), or to null for 0.
+ */
+async function applySalesTaxDefaults(tx: DbOrTx, tenantId: string, companyId: string, updates: Record<string, unknown>): Promise<void> {
+  const rateSent = updates['defaultSalesTaxRate'] !== undefined;
+  const idSent = updates['defaultSalesTaxId'] !== undefined;
+  if (rateSent) {
+    updates['defaultSalesTaxRate'] = parseSalesTaxRate(updates['defaultSalesTaxRate'], 'defaultSalesTaxRate').toFixed(TAX_RATE_PLACES);
+  }
+  if (idSent && updates['defaultSalesTaxId'] !== null) {
+    const id = updates['defaultSalesTaxId'] as string;
+    const [row] = await tx.select().from(salesTaxItems)
+      .where(and(eq(salesTaxItems.tenantId, tenantId), eq(salesTaxItems.companyId, companyId), eq(salesTaxItems.id, id))).limit(1);
+    if (!row || !row.isActive) {
+      throw AppError.badRequest('Choose an active sales tax item or group of this company.', 'VALIDATION_ERROR', { field: 'defaultSalesTaxId' });
+    }
+    if (!rateSent) {
+      let rate = new Decimal(row.rate ?? '0');
+      if (row.kind === 'group') {
+        const members = await tx.select({ rate: salesTaxItems.rate }).from(salesTaxGroupMembers)
+          .innerJoin(salesTaxItems, eq(salesTaxItems.id, salesTaxGroupMembers.itemId))
+          .where(and(eq(salesTaxGroupMembers.companyId, companyId), eq(salesTaxGroupMembers.groupId, id)));
+        rate = members.reduce((s, m) => s.plus(m.rate ?? '0'), new Decimal(0));
+      }
+      updates['defaultSalesTaxRate'] = rate.toFixed(TAX_RATE_PLACES);
+    }
+  } else if (rateSent && !idSent) {
+    const rate = new Decimal(updates['defaultSalesTaxRate'] as string);
+    updates['defaultSalesTaxId'] = rate.isZero() ? null : (await legacyItemFor(tx, tenantId, companyId, rate.toFixed(TAX_RATE_PLACES))).id;
+  }
+  if (updates['salesTaxBasis'] !== undefined && !['accrual', 'cash'].includes(updates['salesTaxBasis'] as string)) {
+    throw AppError.badRequest('salesTaxBasis is accrual or cash.', 'VALIDATION_ERROR', { field: 'salesTaxBasis' });
   }
 }
