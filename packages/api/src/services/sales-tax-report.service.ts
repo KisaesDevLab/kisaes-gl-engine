@@ -32,7 +32,7 @@
 
 import { sql, type SQL } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { arAppsCte, cashBasisLinesWith, buildSalesTaxLiability } from './report.service.js';
 
@@ -65,9 +65,9 @@ const newBucket = (agencyId: string | null, itemId: string | null): Bucket => ({
 });
 
 /** The company's sales tax basis (Q-P23a): accrual unless set to cash. */
-export async function companyBasis(tenantId: string, companyId: string | null): Promise<SalesTaxBasis> {
+export async function companyBasis(tenantId: string, companyId: string | null, executor: DbOrTx = db): Promise<SalesTaxBasis> {
   if (!companyId) return 'accrual';
-  const r = await db.execute(sql`SELECT sales_tax_basis FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId}`);
+  const r = await executor.execute(sql`SELECT sales_tax_basis FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId}`);
   return (r.rows as Array<{ sales_tax_basis: string }>)[0]?.sales_tax_basis === 'cash' ? 'cash' : 'accrual';
 }
 
@@ -207,16 +207,16 @@ interface Names {
   codes: Map<string, string>;
 }
 
-async function loadNames(tenantId: string, companyId: string | null): Promise<Names> {
+async function loadNames(tenantId: string, companyId: string | null, executor: DbOrTx = db): Promise<Names> {
   const co = (alias: string) => (companyId ? sql`${sql.raw(alias)}.company_id = ${companyId}` : sql`TRUE`);
-  const items = await db.execute(sql`
+  const items = await executor.execute(sql`
     SELECT i.id, i.name, i.rate::text AS rate, i.agency_id, i.kind, i.is_active
     FROM sales_tax_items i WHERE i.tenant_id = ${tenantId} AND ${co('i')} ORDER BY i.created_at, i.id`);
-  const agencies = await db.execute(sql`
+  const agencies = await executor.execute(sql`
     SELECT ag.id, COALESCE(c.display_name, '') AS name
     FROM sales_tax_agencies ag LEFT JOIN contacts c ON c.id = ag.vendor_id AND c.tenant_id = ag.tenant_id
     WHERE ag.tenant_id = ${tenantId} AND ${co('ag')} ORDER BY ag.created_at, ag.id`);
-  const codes = await db.execute(sql`SELECT id, code FROM sales_tax_codes WHERE tenant_id = ${tenantId} AND ${co('sales_tax_codes')}`);
+  const codes = await executor.execute(sql`SELECT id, code FROM sales_tax_codes WHERE tenant_id = ${tenantId} AND ${co('sales_tax_codes')}`);
   return {
     items: new Map((items.rows as Array<Record<string, any>>).map((r, k) => [r['id'], {
       name: r['name'], rate: r['rate'] === null ? null : new Decimal(r['rate']).toFixed(6), agencyId: r['agency_id'], kind: r['kind'], isActive: r['is_active'], order: k,
@@ -226,9 +226,9 @@ async function loadNames(tenantId: string, companyId: string | null): Promise<Na
   };
 }
 
-async function buckets(tenantId: string, companyId: string | null, basis: SalesTaxBasis, startDate: string | null, endDate: string, agencyId: string | null, payAllDates = false) {
-  const ev = await db.execute(eventsSql(tenantId, companyId, basis, startDate, endDate, agencyId));
-  const lines = await db.execute(paymentLinesSql(tenantId, companyId, startDate, endDate, agencyId, payAllDates));
+async function buckets(tenantId: string, companyId: string | null, basis: SalesTaxBasis, startDate: string | null, endDate: string, agencyId: string | null, payAllDates = false, executor: DbOrTx = db) {
+  const ev = await executor.execute(eventsSql(tenantId, companyId, basis, startDate, endDate, agencyId));
+  const lines = await executor.execute(paymentLinesSql(tenantId, companyId, startDate, endDate, agencyId, payAllDates));
   const map = new Map<string, Bucket>();
   const get = (agency: string | null, item: string | null) => {
     const k = `${agency ?? '-'}|${item ?? '-'}`;
@@ -395,12 +395,14 @@ export async function buildSalesTaxLiabilityV2(
  * line, whatever their date (S1: a payment made after asOf still counts, so
  * tax is never paid twice). The same figure Pay Sales Tax checks.
  */
-export async function salesTaxOwed(tenantId: string, companyId: string, asOf: string, opts: LiabilityOptions = {}) {
-  const basis = opts.basis ?? await companyBasis(tenantId, companyId);
+export async function salesTaxOwed(tenantId: string, companyId: string, asOf: string, opts: LiabilityOptions = {}, executor: DbOrTx = db) {
+  // `executor`: Pay Sales Tax reads owed inside its transaction, under the
+  // agency lock, on that connection (never a second pool connection).
+  const basis = opts.basis ?? await companyBasis(tenantId, companyId, executor);
   const agencyId = opts.agencyId ?? null;
-  const names = await loadNames(tenantId, companyId);
+  const names = await loadNames(tenantId, companyId, executor);
   if (agencyId && !names.agencies.has(agencyId)) throw AppError.notFound('Sales tax agency not found');
-  const { map } = await buckets(tenantId, companyId, basis, null, asOf, agencyId, true);
+  const { map } = await buckets(tenantId, companyId, basis, null, asOf, agencyId, true, executor);
   const groups = byAgency(map, names, agencyId);
   const unassigned = [...map.values()].filter((b) => !b.itemId).reduce((s, b) => s.plus(owedOf(b, 'cum')), D0());
   const agencies = groups.map((g) => {

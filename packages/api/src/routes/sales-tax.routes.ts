@@ -240,7 +240,7 @@ const cents = z.string().regex(/^-?\d{1,13}(\.\d{1,2})?$/, 'an amount with at mo
 const payBody = z.object({
   agencyId: z.string().uuid(), throughDate: isoDate, date: isoDate, bankAccountId: z.string().uuid(),
   method: z.enum(['check', 'electronic']),
-  lines: z.array(z.object({ taxItemId: z.string().uuid(), amount: cents, expectedOwed: cents.optional() })).max(200).optional(),
+  lines: z.array(z.object({ taxItemId: z.string().uuid(), amount: cents.nullable().optional(), expectedOwed: cents.optional() })).max(200).optional(),
   adjustments: z.array(z.object({ taxItemId: z.string().uuid(), accountId: z.string().uuid(), amount: cents, reason: z.string().trim().min(1).max(255) })).max(200).optional(),
   printLater: z.boolean().optional(), checkNumber: z.number().int().positive().max(2147483647).optional(), memo: z.string().max(1000).optional(),
   expectedOwed: cents.optional(),
@@ -248,7 +248,8 @@ const payBody = z.object({
 const payPreviewShape = '{agencyId, throughDate, basis, lines: [{taxItemId, name, owed, adjustment, amount, expectedOwed}], owed, total, problems: [{code, message, details?}]}';
 const payRules = 'Owed per tax item of the agency = its tax rows counted on the company basis dated on or before throughDate + every live ' +
   'adjustment - every live paid and opening line, whatever their date (S1). lines omitted: every item at owed + its adjustments; sent: ' +
-  'those items at those amounts. adjustments: amount signed (negative lowers what is paid, e.g. a timely-filing discount), on an income ' +
+  'those items at those amounts, a line with amount null or absent at owed + its adjustments (computed by the engine; when paying, under ' +
+  'the agency lock), so preview and pay agree on untyped lines. adjustments: amount signed (negative lowers what is paid, e.g. a timely-filing discount), on an income ' +
   'or expense account (400 ADJUSTMENT_ACCOUNT_INVALID), with a reason. A tax item not paid to the agency is 400 TAX_ITEM_NOT_FOR_AGENCY.';
 
 salesTaxRouter.post('/payments/preview', validate(payBody), describe({
@@ -302,13 +303,15 @@ const linkBody = z.object({
 salesTaxRouter.post('/payments/link', closingPasswordLimiter, lockContextMiddleware,
   idempotent({ successStatus: 201, replay: async (req, e) => {
     const p = await pay.getPayment(req.tenantId, req.companyId, e!.id);
-    return { transactionId: p.id, agencyId: p.agencyId, total: (p.lines.filter((l) => l.kind === 'paid').reduce((s, l) => s + Math.round(Number(l.amount) * 100), 0) / 100).toFixed(2) };
+    return { transactionId: p.id, agencyId: p.agencyId, total: pay.sumAmounts(p.lines.filter((l) => l.kind === 'paid').map((l) => l.amount)) };
   } }), validate(linkBody), describe({
     summary: 'Match a payment already made to an agency (sales-tax-pay-v1)',
     description: 'Response 201 {transactionId, agencyId, total}. A posted check or journal entry of the company that debited Sales Tax ' +
       'Payable becomes a payment to the agency: paid lines per tax item (no new GL). 400 NOT_STP_PAYMENT, LINK_TOTAL_MISMATCH (the lines ' +
       'must add up to its net Sales Tax Payable debit), TAX_ITEM_NOT_FOR_AGENCY; 409 ALREADY_LINKED; 404 for another company\'s. A ' +
-      'transaction dated on or before the closing date needs closingPassword. Idempotency-Key. Undo: POST /sales-tax/payments/:id/unlink.',
+      'transaction dated on or before the closing date needs closingPassword. Idempotency-Key. Undo: POST /sales-tax/payments/:id/unlink. ' +
+      'While linked, an edit of the transaction (PUT /transactions/:id, /checks/:id) that moves its date or changes its Sales Tax Payable ' +
+      'debit is 409 SALES_TAX_LINKED (unlink first); a bulk category or account move skips it (reason sales_tax_linked).',
     body: linkBody.extend({ closingPassword: z.string().optional(), overrideConfirmed: z.boolean().optional() }),
   }), async (req, res) => {
     res.status(201).json(await pay.linkPayment(req.tenantId, req.companyId, req.body, req.userId));
@@ -325,15 +328,39 @@ salesTaxRouter.post('/payments/:id/unlink', closingPasswordLimiter, lockContextM
   });
 
 const markBody = z.object({ agencyId: z.string().uuid(), throughDate: isoDate, reason: z.string().trim().max(255).optional() });
-salesTaxRouter.post('/payments/mark-paid-through', idempotent({ successStatus: 201, replay: async (req) => ({
-  agencyId: req.body.agencyId, throughDate: req.body.throughDate, replayed: true,
-}) }), validate(markBody), describe({
-  summary: 'Mark an agency\'s tax paid through a date (sales-tax-pay-v1)',
-  description: 'Response 201 {agencyId, throughDate, lines: [{taxItemId, name, amount}], total}: for tax paid before these books or outside ' +
-    'them, an opening line (no GL) per tax item for what is owed through throughDate, so owed is 0.00 there. Audited. Idempotency-Key.',
-  body: markBody,
+const markRunShape = '{runId, agencyId, throughDate, reason, lines: [{taxItemId, name, amount}], total, createdAt, undoneAt}';
+const runParams = z.object({ runId: z.string().uuid() });
+salesTaxRouter.post('/payments/mark-paid-through', closingPasswordLimiter, lockContextMiddleware,
+  idempotent({ successStatus: 201, replay: async (req, e) => pay.getMarkPaidRun(req.tenantId, req.companyId, e!.id) }), validate(markBody), describe({
+    summary: 'Mark an agency\'s tax paid through a date (sales-tax-pay-v1)',
+    description: `Response 201 ${markRunShape}: for tax paid before these books or outside them, an opening line (no GL) per tax item with ` +
+      'tax owed through throughDate, for what it owes, so those items owe 0.00 there; an over-paid item (owed below 0.00) keeps its credit. ' +
+      'Lines are dated throughDate: on or before the closing date needs closingPassword. Audited. Idempotency-Key: a replay returns the ' +
+      'stored run. Undo: POST /sales-tax/payments/mark-paid-through/{runId}/undo.',
+    body: markBody.extend({ closingPassword: z.string().optional(), overrideConfirmed: z.boolean().optional() }),
+  }), async (req, res) => {
+    res.status(201).json(await pay.markPaidThrough(req.tenantId, req.companyId, req.body, req.userId));
+  });
+
+salesTaxRouter.post('/payments/mark-paid-through/:runId/undo', closingPasswordLimiter, lockContextMiddleware,
+  idempotent({ successStatus: 200, replay: async (req, e) => pay.getMarkPaidRun(req.tenantId, req.companyId, e!.id) }), describe({
+    summary: 'Undo a mark paid through (sales-tax-pay-v1)',
+    description: `Response ${markRunShape} with undoneAt set: deletes the run's opening lines (owed comes back). Audited. A throughDate on ` +
+      'or before the closing date needs closingPassword. 404 for an unknown run or another company\'s; 409 ALREADY_UNDONE. Idempotency-Key.',
+    params: runParams,
+    body: z.object({ closingPassword: z.string().optional(), overrideConfirmed: z.boolean().optional() }),
+  }), async (req, res) => {
+    res.json(await pay.undoMarkPaidThrough(req.tenantId, req.companyId, runParams.parse(req.params).runId, req.userId));
+  });
+
+const markListQuery = z.object({ agency_id: z.string().uuid().optional(), include_undone: z.enum(['true', 'false']).optional() });
+salesTaxRouter.get('/payments/mark-paid-through', describe({
+  summary: 'List mark paid through runs (sales-tax-pay-v1)',
+  description: `Response {data: [${markRunShape}]}, newest first; undone runs only with include_undone=true. Query agency_id.`,
+  query: markListQuery,
 }), async (req, res) => {
-  res.status(201).json(await pay.markPaidThrough(req.tenantId, req.companyId, req.body, req.userId));
+  const q = markListQuery.parse(req.query);
+  res.json(await pay.listMarkPaidRuns(req.tenantId, req.companyId, { agencyId: q.agency_id ?? null, includeUndone: q.include_undone === 'true' }));
 });
 
 salesTaxRouter.get('/payments/:id', describe({
