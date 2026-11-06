@@ -37,6 +37,7 @@ import * as transactionActivity from '../services/transaction-activity.service.j
 import * as txnListExport from '../services/transaction-list-export.service.js';
 import { auditLog } from '../middleware/audit.js';
 import * as featureFlags from '../services/feature-flags.service.js';
+import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
@@ -165,7 +166,7 @@ const registerEntryBodyDoc = z.discriminatedUnion('txnType', [
 
 transactionsRouter.post('/', keyedCreate, describe({
   summary: 'Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
-  description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
+  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
     'A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): every A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), any number of such lines is allowed; ' +
     'with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it. ' +
     'A cash sale or credit memo (document-numbers-v1) adds `warnings` (duplicate-number warnings of a warnOnly request, else []); ' +
@@ -231,7 +232,7 @@ transactionsRouter.post('/', keyedCreate, describe({
 
 transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
-  description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
+  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
     'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
     'a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED. ' +
     'ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); ' +

@@ -15,6 +15,7 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import { idempotent } from '../middleware/idempotent.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
 import { pickEnum } from '../utils/list-query.js';
+import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 export const vendorCreditsRouter = Router();
 vendorCreditsRouter.use(authenticate);
@@ -24,7 +25,7 @@ vendorCreditsRouter.use(requireResource('vendor_credits'));
 // Closed periods (U-83, ap-closing-v1): limiter → lock context → validate,
 // as on checks and bills.
 const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed');
-const closedPeriodNote = 'A credit dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): ' +
+const closedPeriodNote = `${INVENTORY_ROUTE_NOTE} ` + 'A credit dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): ' +
   '423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT (ap-closing-v1).';
 const lineRules = 'Lines take itemId, quantity, unitPrice, tagId and contactId as bill lines do (bill-lines-v1); isBillable may only be false or absent.';
 const creditBodyDoc = createVendorCreditSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });

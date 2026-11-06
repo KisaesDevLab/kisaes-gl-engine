@@ -572,3 +572,11 @@ export async function touchesInventory(tx: Tx, tenantId: string, txnId: string, 
   if ((await movementItemIds(tx, tenantId, txnId)).length > 0) return true;
   return (await inventoryAssetAccounts(tx, tenantId, accountIds.filter((a): a is string => !!a))).size > 0;
 }
+
+/** OpenAPI note for every posting route that takes inventory part lines (inventory-costing-v1). */
+export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): a part line needs a quantity; on bills and vendor credits it posts '
+  + 'to the part\'s inventory asset account (400 VALIDATION_ERROR otherwise); a line on an inventory asset account without a part is 400 '
+  + 'INVENTORY_ACCOUNT_DIRECT outside journal entries; a client-sent lineRole cogs | inventory_relief | cost_correction | cost_residual is 400 '
+  + 'VALIDATION_ERROR; parts on a document type that does not move stock yet are 400 INVENTORY_DOCUMENT_UNSUPPORTED; a document with parts '
+  + 'dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED, closingPassword or not; 409 RETRY after a deadlock or '
+  + 'lock timeout (nothing saved). Derived costing lines come back as inventoryLines, never in lines; NEGATIVE_STOCK is allowed.';

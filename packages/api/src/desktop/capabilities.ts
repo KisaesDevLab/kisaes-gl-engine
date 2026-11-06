@@ -656,7 +656,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * /vendor-credits/:id. A part line needs a quantity; receipts post to the part's asset account; a line on an inventory asset account
    * without a part outside journal entries is 400 INVENTORY_ACCOUNT_DIRECT; a client-sent derived lineRole is 400 VALIDATION_ERROR; parts
    * on other document types are 400 INVENTORY_DOCUMENT_UNSUPPORTED (E2b); a change that would re-value a closed-period row is 409
-   * INVENTORY_CLOSED_PERIOD (E2b adds the cost restatement); bulk moves and memorize of inventory documents are 409 INVENTORY_DOCUMENT;
+   * INVENTORY_PERIOD_CLOSED before any write, closingPassword or not (owner decision 2026-11-06; no restatement); bulk moves and memorize of inventory documents are 409 INVENTORY_DOCUMENT;
    * deadlocks, serialization failures and lock timeouts are 409 RETRY. GET /items stock figures come from the movements.
    */
   'inventory-costing-v1',];

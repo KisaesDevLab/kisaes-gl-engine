@@ -26,6 +26,7 @@ import * as emailService from '../services/email.service.js';
 import * as invoiceEmail from '../services/invoice-email.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
+import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 export const invoicesRouter = Router();
 invoicesRouter.use(authenticate);
@@ -98,7 +99,7 @@ invoicesRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempote
   replay: async (req, entity) => ({ invoice: await invoiceService.getInvoice(req.tenantId, entity!.id, req.companyId) }),
 }), validate(createInvoiceSchema), describe({
   summary: 'Create an invoice',
-  description: 'Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company\'s invoice counter '
+  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company\'s invoice counter '
     + '(numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by '
     + 'an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in '
     + '`warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only '
@@ -146,7 +147,7 @@ const keyedInvoiceById = (successStatus: 200 | 201) => idempotent({
 
 invoicesRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedInvoiceById(200), validate(createInvoiceSchema), describe({
   summary: 'Edit an invoice',
-  description: 'Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE '
+  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE '
     + '(details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice\'s; the due date '
     + 'is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and '
     + 'printLater keep their values. A finance-charge invoice (finance-charges-v1) keeps its client: a contactId change is 409 '
