@@ -65,6 +65,11 @@ CREATE INDEX IF NOT EXISTS idx_inventory_movements_position
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_inventory_movements_tenant ON inventory_movements (tenant_id);
 --> statement-breakpoint
+-- The linked returns of a sale (a sale's edit, void or delete and every
+-- linked-return check look them up by source_transaction_id).
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_source
+  ON inventory_movements (source_transaction_id) WHERE source_transaction_id IS NOT NULL;
+--> statement-breakpoint
 ALTER TABLE journal_lines ADD COLUMN IF NOT EXISTS inventory_movement_id uuid;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_jl_inventory_movement ON journal_lines (inventory_movement_id) WHERE inventory_movement_id IS NOT NULL;
