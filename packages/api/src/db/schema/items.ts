@@ -13,7 +13,8 @@ export const items = pgTable('items', {
   // A discount item without discountPercent: the amount off (U-39a).
   unitPrice: decimal('unit_price', { precision: 19, scale: 4 }),
   // Sales item kind (U-39a, item-kinds-sales-v1, migration 0243).
-  itemType: varchar('item_type', { length: 20 }).$type<'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal'>().notNull().default('service'),
+  // inventory_part added by U-39b (item-types-v1, migration 0258).
+  itemType: varchar('item_type', { length: 20 }).$type<'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal' | 'inventory_part'>().notNull().default('service'),
   // A discount item's percent off, 0 < p <= 100 (U-39a).
   discountPercent: decimal('discount_percent', { precision: 7, scale: 4 }),
   incomeAccountId: uuid('income_account_id').notNull(),
@@ -23,6 +24,18 @@ export const items = pgTable('items', {
   isActive: boolean('is_active').default(true),
   // ADR 0XY: default tag applied to new journal lines that reference this item.
   defaultTagId: uuid('default_tag_id'),
+  // Purchase side on every kind (U-39b, item-types-v1, migration 0258).
+  purchaseDescription: text('purchase_description'),
+  purchaseCost: decimal('purchase_cost', { precision: 19, scale: 4 }),
+  expenseAccountId: uuid('expense_account_id'),
+  preferredVendorId: uuid('preferred_vendor_id'),
+  // Inventory parts: asset and COGS accounts (required on a part), reorder
+  // point and quantity (NULL = none), a display unit label (Q-P24i).
+  assetAccountId: uuid('asset_account_id'),
+  cogsAccountId: uuid('cogs_account_id'),
+  reorderPoint: decimal('reorder_point', { precision: 12, scale: 4 }),
+  reorderQuantity: decimal('reorder_quantity', { precision: 12, scale: 4 }),
+  unitLabel: varchar('unit_label', { length: 10 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

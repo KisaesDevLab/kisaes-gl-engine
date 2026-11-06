@@ -94,6 +94,11 @@ export const updateCompanySettingsSchema = z.object({
   salesTaxBasis: z.enum(['accrual', 'cash']).optional(),
   defaultSalesTaxId: z.string().uuid().nullable().optional(),
   salesTaxSsuta: z.boolean().optional(),
+  // Inventory (U-25 inventory half, company-inventory-flag-v1; U-156
+  // inventory-account-v1): turning it on adopts or creates the inventory
+  // asset account and ensures a COGS account; turning it off while stock or
+  // value remains is 409 INVENTORY_IN_USE.
+  inventoryEnabled: z.boolean().optional(),
 });
 
 // Additional company under the same tenant. Used by `/company/create`.

@@ -1807,6 +1807,13 @@
       "when": 1787300014380,
       "tag": "0257_pa_tenant_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 258,
+      "version": "7",
+      "when": 1787400014380,
+      "tag": "0258_inventory_items",
+      "breakpoints": true
     }
   ]
 }

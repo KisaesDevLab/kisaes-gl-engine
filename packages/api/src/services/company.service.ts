@@ -20,6 +20,7 @@ import { assertWriteOffAccount, assertSalesDiscountAccount } from './write-off-a
 import { formatTaxRate, parseSalesTaxRate, TAX_RATE_PLACES } from '../utils/sales-compute.js';
 import { salesTaxItems, salesTaxGroupMembers } from '../db/schema/index.js';
 import { legacyItemFor } from './sales-tax.service.js';
+import { applyInventorySwitch, inventorySettings } from './inventory.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -131,6 +132,8 @@ const COMPANY_UPDATABLE_FIELDS = [
   'salesTaxBasis',
   'defaultSalesTaxId',
   'salesTaxSsuta',
+  // Inventory switch (U-25 / U-156); applied in updateCompany.
+  'inventoryEnabled',
 ] as const;
 
 export async function updateCompany(
@@ -205,6 +208,9 @@ export async function updateCompany(
     // the rate alone (MyBooks Online) moves the default to its legacy item,
     // the default alone sets the rate to its combined rate.
     await applySalesTaxDefaults(tx, tenantId, companyId, updates);
+    // Inventory (U-25, U-156): on adopts or makes the inventory accounts;
+    // off while stock or value remains is 409 INVENTORY_IN_USE.
+    await applyInventorySwitch(tx, tenantId, companyId, existing.inventoryEnabled === true, updates, userId);
     // Billable-cost markup account (U-128): an active income account of this company.
     const markupAccountId = updates['billableMarkupAccountId'];
     if (typeof markupAccountId === 'string') {
@@ -285,6 +291,7 @@ export async function getSettings(tenantId: string, companyId?: string) {
     financeChargeIncomeAccountId: company.financeChargeIncomeAccountId ?? null,
     financeChargePrintLater: company.financeChargePrintLater !== false,
     ...salesTaxSettings(company),
+    ...inventorySettings(company),
   };
 }
 

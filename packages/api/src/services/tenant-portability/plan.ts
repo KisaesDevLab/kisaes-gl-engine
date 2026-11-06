@@ -560,6 +560,11 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'contacts.default_invoice_layout_id': 'tenant-ref:invoice_templates',
   'items.income_account_id': 'tenant-ref:accounts',
   'items.company_id': 'tenant-ref:companies',
+  // Inventory parts and the purchase side (U-39b, migration 0258).
+  'items.expense_account_id': 'tenant-ref:accounts',
+  'items.asset_account_id': 'tenant-ref:accounts',
+  'items.cogs_account_id': 'tenant-ref:accounts',
+  'items.preferred_vendor_id': 'tenant-ref:contacts',
   'je_template_lines.template_id': 'tenant-ref:je_templates',
   'je_template_lines.account_id': 'tenant-ref:accounts',
   'je_template_lines.tag_id': 'tenant-ref:tags',

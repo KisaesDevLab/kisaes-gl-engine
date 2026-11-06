@@ -4,14 +4,17 @@
 
 /** Sales item kinds (U-39a, item-kinds-sales-v1). */
 export const SALES_ITEM_TYPES = ['service', 'non_inventory', 'other_charge', 'discount', 'subtotal'] as const;
+/** Every item kind: the sales kinds plus inventory_part (U-39b, item-types-v1). */
+export const ITEM_TYPES = [...SALES_ITEM_TYPES, 'inventory_part'] as const;
 export type SalesItemType = typeof SALES_ITEM_TYPES[number];
+export type ItemType = typeof ITEM_TYPES[number];
 
 export interface Item {
   id: string;
   tenantId: string;
   name: string;
   description: string | null;
-  itemType: SalesItemType;
+  itemType: ItemType;
   /** A discount item's percent off (0 < p <= 100), else null. */
   discountPercent: string | null;
   /** The price; for a discount item without discountPercent, the amount off. */
@@ -19,6 +22,21 @@ export interface Item {
   incomeAccountId: string;
   isTaxable: boolean;
   isActive: boolean;
+  /** Purchase side on every kind (U-39b, item-types-v1). */
+  purchaseDescription: string | null;
+  purchaseCost: string | null;
+  expenseAccountId: string | null;
+  preferredVendorId: string | null;
+  /** Inventory parts only (U-39b). */
+  assetAccountId: string | null;
+  cogsAccountId: string | null;
+  reorderPoint: string | null;
+  reorderQuantity: string | null;
+  unitLabel: string | null;
+  /** Read-only on parts (null on other kinds): quantity (4 places), average cost (6), asset value (2). */
+  quantityOnHand: string | null;
+  averageCost: string | null;
+  assetValue: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -26,22 +44,42 @@ export interface Item {
 export interface CreateItemInput {
   name: string;
   description?: string | null;
-  itemType?: SalesItemType;
+  itemType?: ItemType;
   discountPercent?: string | null;
   unitPrice?: string | null;
   incomeAccountId: string;
   isTaxable?: boolean;
+  purchaseDescription?: string | null;
+  purchaseCost?: string | null;
+  expenseAccountId?: string | null;
+  preferredVendorId?: string | null;
+  assetAccountId?: string | null;
+  cogsAccountId?: string | null;
+  reorderPoint?: string | null;
+  reorderQuantity?: string | null;
+  unitLabel?: string | null;
 }
 
 export interface UpdateItemInput {
   name?: string;
   description?: string | null;
-  itemType?: SalesItemType;
+  itemType?: ItemType;
   discountPercent?: string | null;
   unitPrice?: string | null;
   incomeAccountId?: string;
   isTaxable?: boolean;
   isActive?: boolean;
+  purchaseDescription?: string | null;
+  purchaseCost?: string | null;
+  expenseAccountId?: string | null;
+  preferredVendorId?: string | null;
+  assetAccountId?: string | null;
+  cogsAccountId?: string | null;
+  reorderPoint?: string | null;
+  reorderQuantity?: string | null;
+  unitLabel?: string | null;
+  /** updatedAt as last read (item-types-v1); a mismatch is 409 STALE. */
+  expectedUpdatedAt?: string;
 }
 
 export type LineEntryMode = 'category' | 'item';
@@ -50,7 +88,7 @@ export type ItemSortKey = 'name' | 'price' | 'taxable' | 'status';
 
 export interface ItemFilters {
   isActive?: boolean;
-  itemType?: SalesItemType;
+  itemType?: ItemType;
   isTaxable?: boolean;
   search?: string;
   sortBy?: ItemSortKey;

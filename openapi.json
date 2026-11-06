@@ -24196,6 +24196,7 @@
         ]
       },
       "put": {
+        "description": "Response {settings}. inventoryEnabled (company-inventory-flag-v1, NULL stored = off): true adopts the active other-current-asset account named \"Inventory Asset\" or creates it, tags it inventory_asset (inventory-account-v1) and makes sure a cost of goods sold account exists; false while any item still has stock or value is 409 INVENTORY_IN_USE.",
         "operationId": "put_api_v1_company_settings",
         "requestBody": {
           "content": {
@@ -24329,6 +24330,9 @@
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "inventoryEnabled": {
+                    "type": "boolean"
+                  },
                   "invoiceNextNumber": {
                     "minimum": 1,
                     "type": "integer"
@@ -24442,6 +24446,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Update company settings",
         "tags": [
           "company"
         ]
@@ -36674,7 +36679,7 @@
     },
     "/api/v1/items": {
       "get": {
-        "description": "{data, total}. itemType filters by kind. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
+        "description": "{data, total}. itemType filters by kind. Item kinds (item-kinds-sales-v1, item-types-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal | inventory_part. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview). Purchase side on every kind (item-types-v1): purchaseDescription, purchaseCost (a string, 0 or more, at most 4 places), expenseAccountId, preferredVendorId (a vendor of the company). An inventory_part needs inventory on for the company (400 INVENTORY_OFF), assetAccountId (an active asset account, not bank or receivables) and cogsAccountId (an active cost of goods sold account), and may take reorderPoint (0 or more) and reorderQuantity (above 0), strings with at most 4 places; unitLabel (at most 10 characters) on any kind. Only parts take the asset / COGS accounts and reorder fields. A bad account or vendor is 400 VALIDATION_ERROR with details.field. Read-only on parts (null on other kinds): quantityOnHand (4 places), averageCost (6 places), assetValue (2 places), all strings.",
         "operationId": "get_api_v1_items",
         "parameters": [
           {
@@ -36695,7 +36700,8 @@
                 "non_inventory",
                 "other_charge",
                 "discount",
-                "subtotal"
+                "subtotal",
+                "inventory_part"
               ],
               "type": "string"
             }
@@ -36783,7 +36789,7 @@
         ]
       },
       "post": {
-        "description": "Response 201 {item}. A name already used is 409. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
+        "description": "Response 201 {item}. A name already used is 409. Item kinds (item-kinds-sales-v1, item-types-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal | inventory_part. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview). Purchase side on every kind (item-types-v1): purchaseDescription, purchaseCost (a string, 0 or more, at most 4 places), expenseAccountId, preferredVendorId (a vendor of the company). An inventory_part needs inventory on for the company (400 INVENTORY_OFF), assetAccountId (an active asset account, not bank or receivables) and cogsAccountId (an active cost of goods sold account), and may take reorderPoint (0 or more) and reorderQuantity (above 0), strings with at most 4 places; unitLabel (at most 10 characters) on any kind. Only parts take the asset / COGS accounts and reorder fields. A bad account or vendor is 400 VALIDATION_ERROR with details.field. Read-only on parts (null on other kinds): quantityOnHand (4 places), averageCost (6 places), assetValue (2 places), all strings.",
         "operationId": "post_api_v1_items",
         "parameters": [
           {
@@ -36803,6 +36809,28 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "assetAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "cogsAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "description": {
                     "type": [
                       "string",
@@ -36813,6 +36841,17 @@
                     "anyOf": [
                       {
                         "pattern": "^\\d{1,3}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "expenseAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -36835,7 +36874,8 @@
                       "non_inventory",
                       "other_charge",
                       "discount",
-                      "subtotal"
+                      "subtotal",
+                      "inventory_part"
                     ],
                     "type": "string"
                   },
@@ -36844,10 +36884,76 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "preferredVendorId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "purchaseCost": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "purchaseDescription": {
+                    "anyOf": [
+                      {
+                        "maxLength": 4000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reorderPoint": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,8}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reorderQuantity": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,8}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "taxCodeId": {
                     "anyOf": [
                       {
                         "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "unitLabel": {
+                    "anyOf": [
+                      {
+                        "maxLength": 10,
                         "type": "string"
                       },
                       {
@@ -36986,6 +37092,7 @@
     },
     "/api/v1/items/{id}": {
       "delete": {
+        "description": "Response {message}. Items are never deleted (an item with stock movements keeps its history); the item becomes inactive.",
         "operationId": "delete_api_v1_items_by_id",
         "parameters": [
           {
@@ -36993,6 +37100,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -37010,11 +37118,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Make an item inactive",
         "tags": [
           "items"
         ]
       },
       "get": {
+        "description": "Response {item} with the read-only stock figures of a part (item-types-v1). Purchase side on every kind (item-types-v1): purchaseDescription, purchaseCost (a string, 0 or more, at most 4 places), expenseAccountId, preferredVendorId (a vendor of the company). An inventory_part needs inventory on for the company (400 INVENTORY_OFF), assetAccountId (an active asset account, not bank or receivables) and cogsAccountId (an active cost of goods sold account), and may take reorderPoint (0 or more) and reorderQuantity (above 0), strings with at most 4 places; unitLabel (at most 10 characters) on any kind. Only parts take the asset / COGS accounts and reorder fields. A bad account or vendor is 400 VALIDATION_ERROR with details.field. Read-only on parts (null on other kinds): quantityOnHand (4 places), averageCost (6 places), assetValue (2 places), all strings.",
         "operationId": "get_api_v1_items_by_id",
         "parameters": [
           {
@@ -37022,6 +37132,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -37039,12 +37150,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Get an item",
         "tags": [
           "items"
         ]
       },
       "put": {
-        "description": "Response {item}; omitted fields keep their values and the kind rules apply to the result. Item kinds (item-kinds-sales-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview).",
+        "description": "Response {item}; omitted fields keep their values and the kind rules apply to the result. The row is locked; expectedUpdatedAt (updatedAt as last read) that no longer matches is 409 STALE (details.updatedAt). Moving the kind to or from inventory_part while posted transactions name the item is 409 ITEM_IN_USE; changing a part's assetAccountId once it has stock movements is 409 ITEM_HAS_INVENTORY; moving away from inventory_part clears the part-only fields. A name already used is 409. Item kinds (item-kinds-sales-v1, item-types-v1): itemType service (default) | non_inventory | other_charge | discount | subtotal | inventory_part. A discount item takes discountPercent (0 < p <= 100, at most 4 places) or unitPrice (the amount off, 0 or more), not both, and is taxable unless isTaxable is false (a taxable discount reduces the taxable base); a subtotal item takes neither; other kinds take no discountPercent. Otherwise 400 VALIDATION_ERROR. Invoices price them per invoice-pricing-v1 (POST /invoices/preview). Purchase side on every kind (item-types-v1): purchaseDescription, purchaseCost (a string, 0 or more, at most 4 places), expenseAccountId, preferredVendorId (a vendor of the company). An inventory_part needs inventory on for the company (400 INVENTORY_OFF), assetAccountId (an active asset account, not bank or receivables) and cogsAccountId (an active cost of goods sold account), and may take reorderPoint (0 or more) and reorderQuantity (above 0), strings with at most 4 places; unitLabel (at most 10 characters) on any kind. Only parts take the asset / COGS accounts and reorder fields. A bad account or vendor is 400 VALIDATION_ERROR with details.field. Read-only on parts (null on other kinds): quantityOnHand (4 places), averageCost (6 places), assetValue (2 places), all strings.",
         "operationId": "put_api_v1_items_by_id",
         "parameters": [
           {
@@ -37052,6 +37164,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -37062,6 +37175,28 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "assetAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "cogsAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "description": {
                     "type": [
                       "string",
@@ -37072,6 +37207,21 @@
                     "anyOf": [
                       {
                         "pattern": "^\\d{1,3}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "expenseAccountId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -37095,7 +37245,8 @@
                       "non_inventory",
                       "other_charge",
                       "discount",
-                      "subtotal"
+                      "subtotal",
+                      "inventory_part"
                     ],
                     "type": "string"
                   },
@@ -37104,10 +37255,76 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "preferredVendorId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "purchaseCost": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "purchaseDescription": {
+                    "anyOf": [
+                      {
+                        "maxLength": 4000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reorderPoint": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,8}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reorderQuantity": {
+                    "anyOf": [
+                      {
+                        "pattern": "^\\d{1,8}(\\.\\d{1,4})?$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "taxCodeId": {
                     "anyOf": [
                       {
                         "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "unitLabel": {
+                    "anyOf": [
+                      {
+                        "maxLength": 10,
                         "type": "string"
                       },
                       {
