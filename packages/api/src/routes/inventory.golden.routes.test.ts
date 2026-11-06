@@ -240,7 +240,8 @@ describe('inventory-costing-v1 golden cases (U-157)', () => {
       { accountId: w.asset, debit: '1.00', credit: '0' }, { accountId: c.roles['income'], debit: '0', credit: '1.00' }] });
     expect(r.status, 'a journal entry may post to an inventory asset account').toBe(201);
     await req('DELETE', `/transactions/${r.json['transaction'].id}`, {});
-    const inv = await req('GET', `/invoices/${w.docs.get('A3')}`);
+    const invRes = await req('GET', `/invoices/${w.docs.get('A3')}`);
+    const inv = { json: (invRes.json['invoice'] ?? invRes.json) as Body };
     expect((inv.json['lines'] as Body[]).every((l) => !['cogs', 'inventory_relief'].includes(l['lineRole']))).toBe(true);
     expect((inv.json['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cogs', '14.35'], ['inventory_relief', '-14.35']]);
     const viaTxn = await req('GET', `/transactions/${w.docs.get('A3')}`);
@@ -340,9 +341,9 @@ describe('inventory-costing-v1 guards (B3, B4)', () => {
   it('refuses client-sent derived roles, direct inventory lines, parts off their asset account and parts on unsupported documents', async () => {
     const w = await setup();
     const err = (r: { status: number; json: Body }) => [r.status, r.json['error']?.code];
-    expect(err(await req('POST', '/transactions', { txnType: 'expense', txnDate: '2026-01-02', contactId: w.vendor, lines: [
-      { accountId: w.asset, debit: '5.00', credit: '0' }, { accountId: c.roles['checking'], debit: '0', credit: '5.00' }] })))
-      .toEqual([400, 'INVENTORY_ACCOUNT_DIRECT']);
+    const direct = await req('POST', '/transactions', { txnType: 'expense', txnDate: '2026-01-02', contactId: w.vendor,
+      payFromAccountId: c.roles['checking'], lines: [{ expenseAccountId: w.asset, amount: '5.00' }] });
+    expect(err(direct), JSON.stringify(direct.json)).toEqual([400, 'INVENTORY_ACCOUNT_DIRECT']);
     expect(err(await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-02', lines: [{ accountId: c.roles['expense'], amount: '5.00', itemId: w.items.get('W'), quantity: '1', unitPrice: '5.00' }] })))
       .toEqual([400, 'VALIDATION_ERROR']);
     expect(err(await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-02', lines: [{ accountId: w.asset, amount: '5.00', itemId: w.items.get('W') }] })))
@@ -353,9 +354,10 @@ describe('inventory-costing-v1 guards (B3, B4)', () => {
     await expect(postTransaction(c.tenantId, { txnType: 'journal_entry', txnDate: '2026-01-02', lines: [
       { accountId: w.cogs, debit: '1', credit: '0', lineRole: 'cogs' }, { accountId: w.asset, debit: '0', credit: '1' }] } as never, c.userId, c.companyId))
       .rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    expect(err(await req('POST', '/transactions', { txnType: 'journal_entry', txnDate: '2026-01-02', lines: [
-      { accountId: w.asset, debit: '1.00', credit: '0', itemId: w.items.get('W'), quantity: '1' }, { accountId: c.roles['income'], debit: '0', credit: '1.00' }] })))
-      .toEqual([400, 'INVENTORY_DOCUMENT_UNSUPPORTED']);
+    // A part on a document type that doesn't move stock (a journal entry here; checks and cash sales until E2b).
+    await expect(postTransaction(c.tenantId, { txnType: 'journal_entry', txnDate: '2026-01-02', lines: [
+      { accountId: w.asset, debit: '1', credit: '0', itemId: w.items.get('W'), quantity: '1' }, { accountId: c.roles['income'], debit: '0', credit: '1' }] } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'INVENTORY_DOCUMENT_UNSUPPORTED' });
   });
 
   it('bulk moves are 409 INVENTORY_DOCUMENT; an asset-account change with movements is 409 ITEM_HAS_INVENTORY; inventory off with stock is 409', async () => {

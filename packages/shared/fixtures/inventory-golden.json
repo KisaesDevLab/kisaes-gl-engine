@@ -156,7 +156,7 @@
         { "case": "C4", "event": "edit", "doc": "A3", "quantity": "5", "closingPassword": "closing-pass-1" },
         { "case": "C5", "event": "edit", "doc": "A5", "date": "2026-01-09", "closingPassword": "closing-pass-1" },
         { "case": "C-void", "event": "void", "doc": "A2", "closingPassword": "closing-pass-1" },
-        { "case": "C-delete", "event": "delete", "doc": "A4", "closingPassword": "closing-pass-1" }
+        { "case": "C-delete", "event": "delete", "doc": "A1", "closingPassword": "closing-pass-1" }
       ],
       "expectRefusal": { "status": 409, "code": "INVENTORY_PERIOD_CLOSED" },
       "final": { "W": { "onHand": "4.0000", "assetValue": "16.20", "averageCost": "4.050000" } },
