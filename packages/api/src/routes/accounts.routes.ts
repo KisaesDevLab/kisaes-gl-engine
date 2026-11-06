@@ -76,14 +76,25 @@ accountsRouter.post('/import', validate(importAccountsSchema), async (req, res) 
   res.status(201).json(result);
 });
 
-accountsRouter.post('/merge', validate(mergeAccountsSchema), async (req, res) => {
+// Inventory accounts (inventory-account-v1, U-156): the note of the account write routes.
+const INVENTORY_ACCOUNT_NOTE = 'An account inventory needs (the inventory asset account, or an asset, COGS or expense account an inventory '
+  + 'item names: an active item, or an inactive one with stock movements) can not be made inactive, deleted, merged away or change its type: '
+  + '409 ACCOUNT_IN_USE (details.accountId or details.itemIds).';
+
+accountsRouter.post('/merge', validate(mergeAccountsSchema), describe({
+  summary: 'Merge an account into another',
+  description: `Response {account}. ${INVENTORY_ACCOUNT_NOTE}`,
+}), async (req, res) => {
   const result = await accountsService.merge(req.tenantId, req.body.sourceId, req.body.targetId, req.userId);
   res.json({ account: result });
 });
 
 // Bulk inline edit (COA Bulk Edit table). Registered before the
 // parameterized routes below so "bulk" is never captured as an :id.
-accountsRouter.put('/bulk', validate(bulkUpdateAccountsSchema), async (req, res) => {
+accountsRouter.put('/bulk', validate(bulkUpdateAccountsSchema), describe({
+  summary: 'Edit several accounts',
+  description: `Response {updated, accounts}. ${INVENTORY_ACCOUNT_NOTE}`,
+}), async (req, res) => {
   const updated = await accountsService.bulkUpdate(req.tenantId, req.body, req.userId);
   res.json({ updated: updated.length, accounts: updated });
 });
@@ -93,12 +104,18 @@ accountsRouter.get('/:id', async (req, res) => {
   res.json({ account });
 });
 
-accountsRouter.put('/:id', validate(updateAccountSchema), async (req, res) => {
+accountsRouter.put('/:id', validate(updateAccountSchema), describe({
+  summary: 'Edit an account',
+  description: `Response {account}. ${INVENTORY_ACCOUNT_NOTE}`,
+}), async (req, res) => {
   const account = await accountsService.update(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ account });
 });
 
-accountsRouter.delete('/:id', async (req, res) => {
+accountsRouter.delete('/:id', describe({
+  summary: 'Make an account inactive',
+  description: `Response {account}. ${INVENTORY_ACCOUNT_NOTE}`,
+}), async (req, res) => {
   const account = await accountsService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ account });
 });

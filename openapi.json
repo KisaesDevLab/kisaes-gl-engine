@@ -2627,6 +2627,7 @@
     },
     "/api/v1/accounts/bulk": {
       "put": {
+        "description": "Response {updated, accounts}. An account inventory needs (the inventory asset account, or an asset, COGS or expense account an inventory item names: an active item, or an inactive one with stock movements) can not be made inactive, deleted, merged away or change its type: 409 ACCOUNT_IN_USE (details.accountId or details.itemIds).",
         "operationId": "put_api_v1_accounts_bulk",
         "requestBody": {
           "content": {
@@ -2715,6 +2716,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Edit several accounts",
         "tags": [
           "accounts"
         ]
@@ -2839,6 +2841,7 @@
     },
     "/api/v1/accounts/merge": {
       "post": {
+        "description": "Response {account}. An account inventory needs (the inventory asset account, or an asset, COGS or expense account an inventory item names: an active item, or an inactive one with stock movements) can not be made inactive, deleted, merged away or change its type: 409 ACCOUNT_IN_USE (details.accountId or details.itemIds).",
         "operationId": "post_api_v1_accounts_merge",
         "requestBody": {
           "content": {
@@ -2878,6 +2881,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Merge an account into another",
         "tags": [
           "accounts"
         ]
@@ -2885,6 +2889,7 @@
     },
     "/api/v1/accounts/{id}": {
       "delete": {
+        "description": "Response {account}. An account inventory needs (the inventory asset account, or an asset, COGS or expense account an inventory item names: an active item, or an inactive one with stock movements) can not be made inactive, deleted, merged away or change its type: 409 ACCOUNT_IN_USE (details.accountId or details.itemIds).",
         "operationId": "delete_api_v1_accounts_by_id",
         "parameters": [
           {
@@ -2909,6 +2914,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Make an account inactive",
         "tags": [
           "accounts"
         ]
@@ -2943,6 +2949,7 @@
         ]
       },
       "put": {
+        "description": "Response {account}. An account inventory needs (the inventory asset account, or an asset, COGS or expense account an inventory item names: an active item, or an inactive one with stock movements) can not be made inactive, deleted, merged away or change its type: 409 ACCOUNT_IN_USE (details.accountId or details.itemIds).",
         "operationId": "put_api_v1_accounts_by_id",
         "parameters": [
           {
@@ -3051,6 +3058,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Edit an account",
         "tags": [
           "accounts"
         ]

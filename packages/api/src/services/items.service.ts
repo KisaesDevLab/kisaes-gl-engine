@@ -15,7 +15,7 @@ import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertNotStale } from './ledger.service.js';
 
-export async function list(tenantId: string, filters?: ItemFilters) {
+export async function list(tenantId: string, filters?: ItemFilters, companyId?: string | null) {
   const conditions = [eq(items.tenantId, tenantId)];
   if (filters?.isActive !== undefined) conditions.push(eq(items.isActive, filters.isActive));
   if (filters?.isTaxable !== undefined) conditions.push(eq(items.isTaxable, filters.isTaxable));
@@ -40,7 +40,7 @@ export async function list(tenantId: string, filters?: ItemFilters) {
     db.select({ count: count() }).from(items).where(where),
   ]);
   // Parts carry their read-only stock figures (U-39b); other kinds null.
-  return { data: await inventory.withStockFigures(db, tenantId, data), total: total[0]?.count ?? 0 };
+  return { data: await inventory.withStockFigures(db, tenantId, data, companyId), total: total[0]?.count ?? 0 };
 }
 
 export async function getById(tenantId: string, id: string, executor: DbOrTx = db) {
@@ -49,9 +49,9 @@ export async function getById(tenantId: string, id: string, executor: DbOrTx = d
   return item;
 }
 
-/** One item with its read-only stock figures (U-39b, item-types-v1). */
-export async function getWithFigures(tenantId: string, id: string, executor: DbOrTx = db) {
-  const [item] = await inventory.withStockFigures(executor, tenantId, [await getById(tenantId, id, executor)]);
+/** One item with its read-only stock figures (U-39b, item-types-v1); `companyId` picks whose stock (items are tenant-wide). */
+export async function getWithFigures(tenantId: string, id: string, executor: DbOrTx = db, companyId?: string | null) {
+  const [item] = await inventory.withStockFigures(executor, tenantId, [await getById(tenantId, id, executor)], companyId);
   return item!;
 }
 
@@ -163,7 +163,7 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
     if (!item) throw AppError.internal('Failed to create item');
     await recordIdempotentEntity(tx, 'item', item.id);
     await auditLog(tenantId, 'create', 'item', item.id, null, item, userId, tx);
-    return (await inventory.withStockFigures(tx, tenantId, [item]))[0]!;
+    return (await inventory.withStockFigures(tx, tenantId, [item], companyId))[0]!;
   });
 }
 
@@ -221,7 +221,7 @@ export async function update(tenantId: string, id: string, input: UpdateItemInpu
       .where(and(eq(items.tenantId, tenantId), eq(items.id, id))).returning();
     if (!updated) throw AppError.notFound('Item not found');
     await auditLog(tenantId, 'update', 'item', id, existing, updated, userId, tx);
-    return (await inventory.withStockFigures(tx, tenantId, [updated]))[0]!;
+    return (await inventory.withStockFigures(tx, tenantId, [updated], companyId))[0]!;
   });
 }
 

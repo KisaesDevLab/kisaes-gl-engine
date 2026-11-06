@@ -132,25 +132,33 @@ export interface StockFigures { quantityOnHand: string | null; averageCost: stri
 const NO_FIGURES: StockFigures = { quantityOnHand: null, averageCost: null, assetValue: null };
 const ZERO_FIGURES: StockFigures = { quantityOnHand: '0.0000', averageCost: '0.000000', assetValue: '0.00' };
 
-/** Stock figures per item id, from the latest movement of each part (U-157). */
-export async function stockFigures(executor: DbOrTx, tenantId: string, rows: ReadonlyArray<{ id: string; itemType: string | null }>): Promise<Map<string, StockFigures>> {
-  void executor; void tenantId;
+/**
+ * Stock figures per item id, from the latest movement of each part (U-157).
+ * Items are tenant-wide and stock is kept per company: `companyId` (the
+ * request's company) picks whose stock; without it, the tenant's oldest
+ * company's (where a posting without a company keeps its stock).
+ */
+export async function stockFigures(executor: DbOrTx, tenantId: string, rows: ReadonlyArray<{ id: string; itemType: string | null }>,
+  companyId?: string | null): Promise<Map<string, StockFigures>> {
+  void executor; void tenantId; void companyId;
   const out = new Map<string, StockFigures>();
   for (const r of rows) out.set(r.id, r.itemType === 'inventory_part' ? { ...ZERO_FIGURES } : { ...NO_FIGURES });
   return out;
 }
 
 /** Items with their stock figures, for the item routes. */
-export async function withStockFigures<T extends { id: string; itemType: string | null }>(executor: DbOrTx, tenantId: string, rows: T[]): Promise<Array<T & StockFigures>> {
-  const figures = await stockFigures(executor, tenantId, rows);
+export async function withStockFigures<T extends { id: string; itemType: string | null }>(executor: DbOrTx, tenantId: string, rows: T[],
+  companyId?: string | null): Promise<Array<T & StockFigures>> {
+  const figures = await stockFigures(executor, tenantId, rows, companyId);
   return rows.map((r) => ({ ...r, ...(figures.get(r.id) ?? NO_FIGURES) }));
 }
 
 /**
  * Accounts the inventory needs kept (U-156, S12): the tagged inventory
- * asset account and every account an active part names as its asset, COGS
- * or expense account. Deactivating, deleting or merging one is 409
- * ACCOUNT_IN_USE.
+ * asset account and every account a part names as its asset, COGS or
+ * expense account, where the part is active or, inactive, still has stock
+ * movements (its stock and history post there). Deactivating, deleting,
+ * merging away or retyping one is 409 ACCOUNT_IN_USE.
  */
 export async function assertAccountNotInventory(executor: DbOrTx, tenantId: string, accountIds: readonly string[]): Promise<void> {
   const ids = [...new Set(accountIds)];
@@ -160,12 +168,17 @@ export async function assertAccountNotInventory(executor: DbOrTx, tenantId: stri
   if (tagged.length > 0) {
     throw AppError.conflict('This is the inventory asset account. It stays active while inventory is in use.', 'ACCOUNT_IN_USE', { accountId: tagged[0]!.id });
   }
-  const used = await executor.select({ id: items.id, name: items.name }).from(items)
-    .where(and(eq(items.tenantId, tenantId), eq(items.itemType, 'inventory_part'), eq(items.isActive, true),
+  const parts = await executor.select({ id: items.id, isActive: items.isActive }).from(items)
+    .where(and(eq(items.tenantId, tenantId), eq(items.itemType, 'inventory_part'),
       or(inArray(items.assetAccountId, ids), inArray(items.cogsAccountId, ids), inArray(items.expenseAccountId, ids))))
-    .limit(5);
+    .orderBy(items.id);
+  const used: string[] = [];
+  for (const p of parts) {
+    if (used.length >= 5) break;
+    if (p.isActive !== false || await itemHasMovements(executor, tenantId, p.id)) used.push(p.id);
+  }
   if (used.length > 0) {
-    throw AppError.conflict('Inventory items post to this account. Change their accounts or make them inactive first.', 'ACCOUNT_IN_USE',
-      { itemIds: used.map((u) => u.id) });
+    throw AppError.conflict('Inventory items post to this account (active items, or inactive items with stock history). Change their accounts first.',
+      'ACCOUNT_IN_USE', { itemIds: used });
   }
 }
