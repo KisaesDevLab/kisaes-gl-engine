@@ -143,19 +143,27 @@ const ZERO_FIGURES: StockFigures = { quantityOnHand: '0.0000', averageCost: '0.0
  * (all dates, U-157): quantityOnHand = running_qty, assetValue =
  * running_value (what the GL holds), averageCost = running_value /
  * running_qty to 6 places while on hand is above 0, else the last positive
- * average. A part with no movement shows zeros.
+ * average. A part with no movement shows zeros. Items are tenant-wide and
+ * stock is kept per company: `companyId` (the request's company) picks
+ * whose stock; without it, the tenant's oldest company's (where a posting
+ * without a company keeps its stock).
  */
-export async function stockFigures(executor: DbOrTx, tenantId: string, rows: ReadonlyArray<{ id: string; itemType: string | null }>): Promise<Map<string, StockFigures>> {
+export async function stockFigures(executor: DbOrTx, tenantId: string, rows: ReadonlyArray<{ id: string; itemType: string | null }>,
+  companyId?: string | null): Promise<Map<string, StockFigures>> {
   const out = new Map<string, StockFigures>();
   const partIds: string[] = [];
   for (const r of rows) {
     if (r.itemType === 'inventory_part') { out.set(r.id, { ...ZERO_FIGURES }); partIds.push(r.id); } else out.set(r.id, { ...NO_FIGURES });
   }
   if (partIds.length === 0) return out;
+  const company = companyId
+    ? sql`${companyId}::uuid`
+    : sql`(SELECT id FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id LIMIT 1)`;
   const res = await executor.execute(sql`
     SELECT DISTINCT ON (item_id) item_id, running_qty::text AS q, running_value::text AS p, last_cost::text AS l
     FROM inventory_movements
-    WHERE tenant_id = ${tenantId} AND voided = false AND item_id IN (${sql.join(partIds.map((i) => sql`${i}::uuid`), sql`, `)})
+    WHERE tenant_id = ${tenantId} AND company_id = ${company} AND voided = false
+      AND item_id IN (${sql.join(partIds.map((i) => sql`${i}::uuid`), sql`, `)})
     ORDER BY item_id, movement_date DESC, txn_created_at DESC, transaction_id DESC`);
   for (const row of res.rows as Array<{ item_id: string; q: string; p: string; l: string }>) {
     const q = new Decimal(row.q);
@@ -167,16 +175,18 @@ export async function stockFigures(executor: DbOrTx, tenantId: string, rows: Rea
 }
 
 /** Items with their stock figures, for the item routes. */
-export async function withStockFigures<T extends { id: string; itemType: string | null }>(executor: DbOrTx, tenantId: string, rows: T[]): Promise<Array<T & StockFigures>> {
-  const figures = await stockFigures(executor, tenantId, rows);
+export async function withStockFigures<T extends { id: string; itemType: string | null }>(executor: DbOrTx, tenantId: string, rows: T[],
+  companyId?: string | null): Promise<Array<T & StockFigures>> {
+  const figures = await stockFigures(executor, tenantId, rows, companyId);
   return rows.map((r) => ({ ...r, ...(figures.get(r.id) ?? NO_FIGURES) }));
 }
 
 /**
  * Accounts the inventory needs kept (U-156, S12): the tagged inventory
- * asset account and every account an active part names as its asset, COGS
- * or expense account. Deactivating, deleting or merging one is 409
- * ACCOUNT_IN_USE.
+ * asset account and every account a part names as its asset, COGS or
+ * expense account, where the part is active or, inactive, still has stock
+ * movements (its stock and history post there). Deactivating, deleting,
+ * merging away or retyping one is 409 ACCOUNT_IN_USE.
  */
 export async function assertAccountNotInventory(executor: DbOrTx, tenantId: string, accountIds: readonly string[]): Promise<void> {
   const ids = [...new Set(accountIds)];
@@ -186,12 +196,14 @@ export async function assertAccountNotInventory(executor: DbOrTx, tenantId: stri
   if (tagged.length > 0) {
     throw AppError.conflict('This is the inventory asset account. It stays active while inventory is in use.', 'ACCOUNT_IN_USE', { accountId: tagged[0]!.id });
   }
-  const used = await executor.select({ id: items.id, name: items.name }).from(items)
-    .where(and(eq(items.tenantId, tenantId), eq(items.itemType, 'inventory_part'), eq(items.isActive, true),
-      or(inArray(items.assetAccountId, ids), inArray(items.cogsAccountId, ids), inArray(items.expenseAccountId, ids))))
-    .limit(5);
+  const used = (await executor.select({ id: items.id }).from(items)
+    .where(and(eq(items.tenantId, tenantId), eq(items.itemType, 'inventory_part'),
+      or(inArray(items.assetAccountId, ids), inArray(items.cogsAccountId, ids), inArray(items.expenseAccountId, ids)),
+      or(eq(items.isActive, true), isNull(items.isActive), sql`EXISTS (SELECT 1 FROM inventory_movements m
+        WHERE m.tenant_id = ${items.tenantId} AND m.item_id = ${items.id} AND m.voided = false)`)))
+    .orderBy(items.id).limit(5)).map((r) => r.id);
   if (used.length > 0) {
-    throw AppError.conflict('Inventory items post to this account. Change their accounts or make them inactive first.', 'ACCOUNT_IN_USE',
-      { itemIds: used.map((u) => u.id) });
+    throw AppError.conflict('Inventory items post to this account (active items, or inactive items with stock history). Change their accounts first.',
+      'ACCOUNT_IN_USE', { itemIds: used });
   }
 }

@@ -643,7 +643,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   /**
    * Inventory asset account (U-156): turning inventory on adopts the active other-current-asset account named "Inventory Asset" or
    * creates it, tags it system_tag inventory_asset and makes sure a cost of goods sold account exists. The tagged account and the
-   * accounts active parts name can't be deactivated, merged away or change type (409 ACCOUNT_IN_USE).
+   * accounts parts name (active parts, and inactive parts with stock movements) can't be deactivated, merged away or change type (409 ACCOUNT_IN_USE).
    */
   'inventory-account-v1',
   /** inventoryEnabled on GET/PUT /company/settings (U-25; stored NULL = off); off while stock or value remains is 409 INVENTORY_IN_USE. */
