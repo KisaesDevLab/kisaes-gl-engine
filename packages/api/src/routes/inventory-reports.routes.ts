@@ -15,6 +15,7 @@ import { companyContext } from '../middleware/company.js';
 import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
 import * as inventoryReports from '../services/inventory-report.service.js';
+import { resolveToday } from '../services/dashboard.service.js';
 
 export const inventoryReportsRouter = Router();
 inventoryReportsRouter.use(authenticate);
@@ -22,7 +23,8 @@ inventoryReportsRouter.use(companyContext);
 inventoryReportsRouter.use(requireResource('reports'));
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date YYYY-MM-DD');
-const today = () => new Date().toISOString().slice(0, 10);
+// The engine's today: the database's CURRENT_DATE (dashboard.resolveToday), not Node's UTC date.
+const today = () => resolveToday();
 function parse<T extends z.ZodTypeAny>(schema: T, query: unknown): z.infer<T> {
   const q = schema.safeParse(query);
   if (!q.success) {
@@ -49,7 +51,7 @@ inventoryReportsRouter.get('/inventory-valuation', describe({
   query: valuationQuery,
 }), async (req, res) => {
   const q = parse(valuationQuery, req.query);
-  res.json(await inventoryReports.valuationSummary(req.tenantId, q.asOf ?? today(), req.companyId));
+  res.json(await inventoryReports.valuationSummary(req.tenantId, q.asOf ?? await today(), req.companyId));
 });
 
 const detailQuery = z.object({
@@ -81,7 +83,7 @@ inventoryReportsRouter.get('/inventory-stock-status', describe({
   query: statusQuery,
 }), async (req, res) => {
   const q = parse(statusQuery, req.query);
-  res.json(await inventoryReports.stockStatus(req.tenantId, q.asOf ?? today(), req.companyId));
+  res.json(await inventoryReports.stockStatus(req.tenantId, q.asOf ?? await today(), req.companyId));
 });
 
 inventoryReportsRouter.get('/reorder', describe({

@@ -24,6 +24,7 @@ import { creditMemosRouter } from './credit-memos.routes.js';
 import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { checksRouter } from './checks.routes.js';
 import { inventoryRouter } from './inventory.routes.js';
+import { inventoryReportsRouter } from './inventory-reports.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
@@ -41,7 +42,8 @@ beforeEach(async () => {
   }];
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
     ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/credit-memos', creditMemosRouter],
-    ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter]]);
+    ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter],
+    ['/api/v1/reports', inventoryReportsRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -389,5 +391,18 @@ describe('P24 review: adjustments, counts and opening stock (E3)', () => {
     expect(equity.accountId).not.toBe(foreign!.id);
     const [acct] = await db.select().from(accounts).where(eq(accounts.id, equity.accountId));
     expect([acct!.systemTag, acct!.companyId === c.companyId || acct!.companyId === null]).toEqual(['opening_balances', true]);
+  });
+});
+describe('P24 review: inventory reports (E4)', () => {
+  it('the reorder report and the default as-of date of valuation and stock status are the database\'s today', async () => {
+    await setup();
+    const today = String((await db.execute(sql`SELECT CURRENT_DATE::text AS d`)).rows[0]!['d']);
+    const reorder = await req('GET', '/reports/reorder');
+    expect(reorder.status, JSON.stringify(reorder.json)).toBe(200);
+    expect(reorder.json['asOf']).toBe(today);
+    const status = await req('GET', '/reports/inventory-stock-status');
+    expect([status.status, status.json['asOf']]).toEqual([200, today]);
+    const valuation = await req('GET', '/reports/inventory-valuation');
+    expect([valuation.status, valuation.json['asOf']]).toEqual([200, today]);
   });
 });
