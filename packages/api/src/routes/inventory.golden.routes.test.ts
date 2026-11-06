@@ -33,6 +33,7 @@ import { checksRouter } from './checks.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { postAdjustment } from '../services/inventory-adjustment.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
+import { Decimal } from '../utils/inventory-walk.js';
 
 type Body = Record<string, any>;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -621,5 +622,60 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
     const cm = await req('POST', '/credit-memos/preview', { contactId: c.customer, txnDate: s5['date'], lines: [line] });
     expect(cm.json['warnings']).toEqual([]);
     expect(await rows(w.items.get('W')!)).toEqual(before);
+  });
+});
+
+describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
+  it('G: rule 3 scales the invoice COGS and relief by payment / total; an applied credit memo and a $0 invoice show none', async () => {
+    c = await h.company('0.081000');
+    const w = await setup();
+    const g = gcase('G');
+    const steps = g['steps'] as Body[];
+    const { payBills } = await import('../services/bill-payment.service.js');
+    const { receivePayment } = await import('../services/payment.service.js');
+    for (const s of steps) {
+      if (s['event'] === 'bill_payment') {
+        await payBills(c.tenantId, { bankAccountId: c.roles['checking'], txnDate: s['date'], method: 'check', printLater: true,
+          bills: [{ billId: w.docs.get(s['bill'])!, amount: s['amount'] }] } as never, c.userId, c.companyId);
+      } else if (s['event'] === 'customer_payment') {
+        await receivePayment(c.tenantId, { customerId: c.customer, date: s['date'], amount: s['amount'], depositTo: c.roles['checking'],
+          applications: [{ invoiceId: w.docs.get(s['invoice'])!, amount: s['amount'] }] } as never, c.userId, c.companyId);
+      } else if (s['event'] === 'invoice') {
+        const body = { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: w.items.get('W'), quantity: s['quantity'], unitPrice: '10.00', isTaxable: true }] };
+        const r = await req('POST', '/invoices', body);
+        expect(r.status, JSON.stringify(r.json)).toBe(201);
+        expect(r.json['invoice'].total).toMatch(new RegExp(`^${s['total'].replace('.', '\\.')}`));
+        w.docs.set(s['doc'], idOf(r.json));
+      } else {
+        await step(w, s);
+      }
+      await invariants(w);
+    }
+    const want = g['asOf']['2026-01-31'];
+    const reports = await import('../services/report.service.js');
+    const pl = await reports.buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-01-31', 'cash', c.companyId, null, null, { exactAmounts: true });
+    const cogs = pl.cogs.find((e) => e.accountId === w.cogs)!;
+    expect(cogs.amountExact && new Decimal(cogs.amountExact).toString(), 'cash COGS share, unrounded').toBe(new Decimal(want.cash.cogsShare).toString());
+    expect(cogs.amount.toFixed(2)).toBe(want.cash.cogs);
+    expect(pl.totalRevenue.toFixed(2)).toBe(want.cash.income);
+    const bs = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'cash', c.companyId);
+    expect(bs.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2), 'cash inventory').toBe(want.cash.inventory);
+    expect(bs.totalAssets.toFixed(2)).toBe((bs.totalLiabilities + bs.totalEquity).toFixed(2));
+    const accrual = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'accrual', c.companyId);
+    expect(accrual.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.accrual.glInventory);
+    expect((await figures(w))['assetValue']).toBe(want.accrual.valuation);
+    // An applied (not refunded) credit memo is not cash: no inventory or COGS change on cash basis.
+    const cm = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-20',
+      lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '10.00', isTaxable: true, returnOf: { transactionId: w.docs.get('A3') } }],
+      applications: [{ invoiceId: w.docs.get('A3'), amount: '10.81' }] });
+    expect(cm.status, JSON.stringify(cm.json)).toBe(201);
+    // A $0 invoice of the item: its COGS never shows on cash basis (N3).
+    const zero = await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-21', lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '0', isTaxable: false }] });
+    expect(zero.status, JSON.stringify(zero.json)).toBe(201);
+    await invariants(w);
+    const pl2 = await reports.buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-01-31', 'cash', c.companyId, null, null, { exactAmounts: true });
+    expect(pl2.cogs.find((e) => e.accountId === w.cogs)!.amount.toFixed(2)).toBe(want.cash.cogs);
+    const bs2 = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'cash', c.companyId);
+    expect(bs2.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.cash.inventory);
   });
 });
