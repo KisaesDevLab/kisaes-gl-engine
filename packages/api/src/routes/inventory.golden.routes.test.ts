@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, contacts, inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
+import { accounts, companies, contacts, inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
 import { itemsRouter } from './items.routes.js';
 import { companyRouter } from './company.routes.js';
 import { billsRouter } from './bills.routes.js';
@@ -31,6 +31,7 @@ import { creditMemosRouter } from './credit-memos.routes.js';
 import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { checksRouter } from './checks.routes.js';
 import { inventoryRouter } from './inventory.routes.js';
+import { inventoryReportsRouter } from './inventory-reports.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { postAdjustment } from '../services/inventory-adjustment.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -52,7 +53,8 @@ beforeEach(async () => {
   h.extraCleanup = [cleanInventory];
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
     ['/api/v1/vendor-credits', vendorCreditsRouter], ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter],
-    ['/api/v1/credit-memos', creditMemosRouter], ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter]]);
+    ['/api/v1/credit-memos', creditMemosRouter], ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter],
+    ['/api/v1/reports', inventoryReportsRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -679,6 +681,13 @@ describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
     expect(pl2.cogs.find((e) => e.accountId === w.cogs)!.amount.toFixed(2)).toBe(want.cash.cogs);
     const bs2 = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'cash', c.companyId);
     expect(bs2.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.cash.inventory);
+    // U-160 on a cash-basis company: the valuation stays accrual (= accrual GL) and carries basisNote (N3).
+    await db.update(companies).set({ accountingMethod: 'cash' }).where(eq(companies.id, c.companyId));
+    const v = await req('GET', '/reports/inventory-valuation?asOf=2026-01-19');
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+    expect((v.json['accounts'] as Body[]).find((a) => a['accountId'] === w.asset)).toMatchObject({
+      valuation: want.accrual.valuation, glBalance: want.accrual.glInventory, difference: '0.00' });
+    expect(typeof v.json['basisNote'] === 'string').toBe(want.basisNote);
   });
 });
 
@@ -757,9 +766,38 @@ async function fullReplayMatches(itemId: string) {
   });
 }
 
+/**
+ * Every read route that filters by itemId or reports stock (U-160, U-78):
+ * each reads the stock ledger, so its figures equal the GL by construction.
+ * A new one fails this test until it is listed here.
+ */
+const STOCK_READ_ROUTES: Record<string, string> = {
+  'GET /api/v1/reports/inventory-valuation': 'stock ledger as of a date + accrual GL per asset account',
+  'GET /api/v1/reports/inventory-valuation-detail': 'stock ledger rows (itemId filter)',
+  'GET /api/v1/reports/inventory-stock-status': 'stock ledger as of a date',
+  'GET /api/v1/reports/reorder': 'stock ledger, latest row',
+  'GET /api/v1/items/reorder-alerts': 'stock ledger, latest row',
+};
+
+function stockReadRoutes(): string[] {
+  const o = JSON.parse(readFileSync(path.resolve(here, '../../../../openapi.json'), 'utf8')) as Body;
+  const out: string[] = [];
+  for (const [p, ops] of Object.entries(o['paths'] as Body)) {
+    const op = (ops as Body)['get'] as Body | undefined;
+    if (!op) continue;
+    const text = `${op['summary'] ?? ''} ${op['description'] ?? ''}`;
+    if (((op['parameters'] ?? []) as Body[]).some((x) => x['name'] === 'itemId') || /inventory-reports-v1|reorder-alerts-v1/.test(text)) out.push(`GET ${p}`);
+  }
+  return out.sort();
+}
+
 describe('inventory-costing-v1 write paths (B4)', () => {
   it('every write route that takes an itemId is classified: it costs, or moves nothing, or writes nothing', () => {
     expect(itemWriteRoutes()).toEqual(Object.keys(ITEM_WRITE_ROUTES).sort());
+  });
+
+  it('every stock report route (itemId filter or inventory-reports-v1 / reorder-alerts-v1) is listed: each reads the stock ledger', () => {
+    expect(stockReadRoutes()).toEqual(Object.keys(STOCK_READ_ROUTES).sort());
   });
 
   it('every ledger txnType either moves stock for a part line or refuses it (400 INVENTORY_DOCUMENT_UNSUPPORTED)', async () => {
@@ -1104,5 +1142,129 @@ describe('inventory-adjust-v1: adjustments, counts and opening stock (U-159, E3)
   it('advertises inventory-adjust-v1 after inventory-costing-v1', () => {
     const i = DESKTOP_CAPABILITIES.indexOf('inventory-adjust-v1');
     expect(i).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('inventory-costing-v1'));
+  });
+});
+
+// ─── Reports (U-160 inventory-reports-v1, U-78 reorder-alerts-v1; P24 E4) ──
+
+describe('inventory-reports-v1 and reorder-alerts-v1 (golden S, U-160, U-78)', () => {
+  const code = (x: { status: number; json: Body }) => [x.status, x.json['error']?.code];
+  const s = () => gcase('S');
+  /** The accrual GL balance of an account from posted lines dated on or before asOf. */
+  const glAsOf = async (accountId: string, asOf: string) => ((await db.execute(sql`
+    SELECT COALESCE(SUM(jl.debit - jl.credit), 0)::numeric(19,2)::text AS b FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id
+    WHERE jl.tenant_id = ${c.tenantId} AND jl.account_id = ${accountId} AND t.status = 'posted' AND t.txn_date <= ${asOf}::date`)).rows[0] as { b: string }).b;
+
+  it('S: valuation as of each date equals the accrual GL (difference 0.00); a direct journal entry is the only difference', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    const W = w.items.get('W')!;
+    for (const [asOf, want] of Object.entries(s()['valuation'] as Record<string, Body>)) {
+      const r = await req('GET', `/reports/inventory-valuation?asOf=${asOf}`);
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      expect(r.json).toMatchObject({ asOf, basis: 'accrual', basisNote: null });
+      const row = (r.json['rows'] as Body[]).find((x) => x['itemId'] === W)!;
+      expect([row['onHand'], row['averageCost'], row['value'], row['percentOfTotal']], asOf)
+        .toEqual([want['onHand'], want['averageCost'], want['value'], want['percentOfTotal']]);
+      expect(row['assetAccountId']).toBe(w.asset);
+      const acct = (r.json['accounts'] as Body[]).find((x) => x['accountId'] === w.asset)!;
+      expect([acct['valuation'], acct['glBalance'], acct['difference']], asOf).toEqual([want['value'], want['glBalance'], want['difference']]);
+      expect(acct['glBalance']).toBe(await glAsOf(w.asset, asOf));
+      expect(r.json['totalValue']).toBe(want['value']);
+      // Every figure is a string (no JS numbers on the wire).
+      for (const v of [...Object.values(row), ...Object.values(acct)]) expect(typeof v === 'number').toBe(false);
+    }
+    // A journal entry straight to the asset account: the GL moves, the valuation doesn't; difference shows it.
+    const { postTransaction } = await import('../services/ledger.service.js');
+    await postTransaction(c.tenantId, { txnType: 'journal_entry', txnDate: '2026-01-26', memo: 'direct', lines: [
+      { accountId: w.asset, debit: '5.00', credit: '0' }, { accountId: w.adjustment, debit: '0', credit: '5.00' },
+    ] } as never, c.userId, c.companyId);
+    const after = await req('GET', '/reports/inventory-valuation?asOf=2026-01-31');
+    expect((after.json['accounts'] as Body[]).find((x) => x['accountId'] === w.asset)).toMatchObject({ valuation: '16.20', glBalance: '21.20', difference: '5.00' });
+    const before = await req('GET', '/reports/inventory-valuation?asOf=2026-01-25');
+    expect((before.json['accounts'] as Body[]).find((x) => x['accountId'] === w.asset)).toMatchObject({ glBalance: '16.20', difference: '0.00' });
+    // Cash-basis companies get the note; the figures stay accrual.
+    await db.update(companies).set({ accountingMethod: 'cash' }).where(eq(companies.id, c.companyId));
+    const cash = await req('GET', '/reports/inventory-valuation?asOf=2026-01-25');
+    expect(typeof cash.json['basisNote']).toBe('string');
+    expect(cash.json['totalValue']).toBe('16.20');
+  });
+
+  it('S: valuation detail rows follow the stock ledger with running figures; opening before from', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    const W = w.items.get('W')!;
+    const want = s()['detail'] as Body;
+    const r = await req('GET', `/reports/inventory-valuation-detail?from=${want['from']}&to=${want['to']}&itemId=${W}`);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json['opening']).toEqual([{ itemId: W, ...want['opening'] }]);
+    const name = new Map([...w.docs].map(([k, v]) => [v, k]));
+    expect((r.json['data'] as Body[]).map((x) => ({ doc: name.get(x['transactionId']), kind: x['kind'], quantity: x['quantity'], value: x['value'],
+      correction: x['correction'], runningQuantity: x['runningQuantity'], runningValue: x['runningValue'], averageCost: x['averageCost'] })))
+      .toEqual(want['rows']);
+    expect(r.json['total']).toBe((want['rows'] as Body[]).length);
+    // The whole month: one row per stored movement; runningValue = previous + value (I1); paging.
+    const all = await req('GET', `/reports/inventory-valuation-detail?from=2026-01-01&to=2026-01-31`);
+    const stored = await rows(W);
+    expect((all.json['data'] as Body[]).map((x) => x['movementId'])).toEqual(stored.map((m) => m.id));
+    let run = new Decimal(0);
+    for (const x of all.json['data'] as Body[]) {
+      run = run.plus(x['value']);
+      expect(x['runningValue']).toBe(run.toFixed(2));
+      expect(new Decimal(x['movementValue']).plus(x['correction']).plus(x['residual']).toFixed(2)).toBe(x['value']);
+    }
+    const page = await req('GET', `/reports/inventory-valuation-detail?from=2026-01-01&to=2026-01-31&limit=2&offset=2`);
+    expect((page.json['data'] as Body[]).map((x) => x['movementId'])).toEqual(stored.slice(2, 4).map((m) => m.id));
+    expect(page.json['total']).toBe(stored.length);
+    expect(page.json['opening']).toEqual([]);
+    // Guards: to before from, a bad date, an item that is not an inventory item of the company.
+    expect(code(await req('GET', '/reports/inventory-valuation-detail?from=2026-01-31&to=2026-01-01'))).toEqual([400, 'VALIDATION_ERROR']);
+    expect(code(await req('GET', '/reports/inventory-valuation-detail?from=2026-1-1&to=2026-01-31'))).toEqual([400, 'VALIDATION_ERROR']);
+    expect(code(await req('GET', '/reports/inventory-valuation-detail?from=2026-01-01'))).toEqual([400, 'VALIDATION_ERROR']);
+    expect((await req('GET', `/reports/inventory-valuation-detail?from=2026-01-01&to=2026-01-31&itemId=${'0'.repeat(8)}-0000-4000-8000-${'0'.repeat(12)}`)).status).toBe(404);
+  });
+
+  it('S: stock status as of a date, reorder alerts and the reorder report', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    const W = w.items.get('W')!;
+    // No reorder point yet: never flagged, no alerts.
+    expect((await req('GET', '/items/reorder-alerts')).json).toEqual({ data: [], total: 0 });
+    const put = await req('PUT', `/items/${W}`, { reorderPoint: s()['reorderPoint'], reorderQuantity: '20', preferredVendorId: w.vendor });
+    expect(put.status, JSON.stringify(put.json)).toBe(200);
+    for (const [asOf, want] of Object.entries(s()['stockStatus'] as Record<string, Body>)) {
+      const r = await req('GET', `/reports/inventory-stock-status?asOf=${asOf}`);
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      const row = (r.json['data'] as Body[]).find((x) => x['itemId'] === W)!;
+      expect([row['onHand'], row['reorder'], row['reorderPoint'], row['reorderQuantity']], asOf).toEqual([want['onHand'], want['reorder'], '5.0000', '20.0000']);
+      expect(row['preferredVendor']).toEqual({ id: w.vendor, name: golden['seed'].vendor });
+    }
+    const alerts = await req('GET', '/items/reorder-alerts');
+    expect(alerts.status, JSON.stringify(alerts.json)).toBe(200);
+    expect((alerts.json['data'] as Body[]).map((x) => [x['itemId'], x['onHand'], x['reorderPoint'], x['reorder']]))
+      .toEqual((s()['reorderAlerts'] as Body[]).map((a) => [w.items.get(a['item']), a['onHand'], a['reorderPoint'], true]));
+    const report = await req('GET', '/reports/reorder');
+    expect(report.status).toBe(200);
+    expect((report.json['data'] as Body[]).map((x) => [x['itemId'], x['reorderQuantity']])).toEqual([[W, '20.0000']]);
+    // A receipt above the point clears the alert.
+    await step(w, { event: 'bill', doc: 'S1', date: '2026-01-26', item: 'W', quantity: '2', unitPrice: '4.05', amount: '8.10' });
+    expect((await req('GET', '/items/reorder-alerts')).json['total']).toBe(0);
+    await invariants(w);
+  });
+
+  it('inventory off is 400 INVENTORY_OFF on every report; a user without reports access is refused', async () => {
+    for (const p of ['/reports/inventory-valuation', '/reports/inventory-valuation-detail?from=2026-01-01&to=2026-01-31',
+      '/reports/inventory-stock-status', '/reports/reorder', '/items/reorder-alerts']) {
+      expect(code(await req('GET', p)), p).toEqual([400, 'INVENTORY_OFF']);
+    }
+    await setup();
+    const staff = await h.staffToken(c, { banking: 'full' });
+    expect((await h.request('GET', '/api/v1/reports/inventory-valuation', staff)).status).toBe(403);
+  });
+
+  it('advertises inventory-reports-v1 and reorder-alerts-v1 after inventory-adjust-v1', () => {
+    const i = DESKTOP_CAPABILITIES.indexOf('inventory-reports-v1');
+    expect(i).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('inventory-adjust-v1'));
+    expect(DESKTOP_CAPABILITIES.indexOf('reorder-alerts-v1')).toBeGreaterThan(i);
   });
 });

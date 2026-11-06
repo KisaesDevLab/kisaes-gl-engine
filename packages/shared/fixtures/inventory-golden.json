@@ -356,6 +356,35 @@
         "An applied (not refunded) credit memo shows no inventory or COGS on cash basis.",
         "A $0 invoice's COGS never shows on cash basis."
       ]
+    },
+    {
+      "id": "S",
+      "title": "Reports on case A (U-160, U-78): valuation as of a date, valuation detail with running figures, stock status and reorder (W reorder point 5)",
+      "from": "A",
+      "reorderPoint": "5",
+      "valuation": {
+        "2026-01-01": { "onHand": "0.0000", "averageCost": "0.000000", "value": "0.00", "percentOfTotal": null, "glBalance": "0.00", "difference": "0.00" },
+        "2026-01-08": { "onHand": "11.0000", "averageCost": "3.589091", "value": "39.48", "percentOfTotal": "100.00", "glBalance": "39.48", "difference": "0.00" },
+        "2026-01-12": { "onHand": "-3.0000", "averageCost": "3.589091", "value": "-10.77", "percentOfTotal": "100.00", "glBalance": "-10.77", "difference": "0.00" },
+        "2026-01-31": { "onHand": "4.0000", "averageCost": "4.050000", "value": "16.20", "percentOfTotal": "100.00", "glBalance": "16.20", "difference": "0.00" }
+      },
+      "detail": {
+        "from": "2026-01-10",
+        "to": "2026-01-20",
+        "opening": { "onHand": "11.0000", "value": "39.48" },
+        "rows": [
+          { "doc": "A4", "kind": "sale", "quantity": "-11.0000", "value": "-39.48", "correction": "0.00", "runningQuantity": "0.0000", "runningValue": "0.00", "averageCost": "3.589091" },
+          { "doc": "A5", "kind": "sale", "quantity": "-3.0000", "value": "-10.77", "correction": "0.00", "runningQuantity": "-3.0000", "runningValue": "-10.77", "averageCost": "3.589091" },
+          { "doc": "A6", "kind": "receipt", "quantity": "10.0000", "value": "37.37", "correction": "-0.63", "runningQuantity": "7.0000", "runningValue": "26.60", "averageCost": "3.800000" },
+          { "doc": "A7", "kind": "adjust_qty", "quantity": "-1.0000", "value": "-3.80", "correction": "0.00", "runningQuantity": "6.0000", "runningValue": "22.80", "averageCost": "3.800000" }
+        ]
+      },
+      "stockStatus": {
+        "2026-01-08": { "onHand": "11.0000", "reorder": false },
+        "2026-01-12": { "onHand": "-3.0000", "reorder": true },
+        "2026-01-31": { "onHand": "4.0000", "reorder": true }
+      },
+      "reorderAlerts": [{ "item": "W", "onHand": "4.0000", "reorderPoint": "5.0000" }]
     }
   ]
 }

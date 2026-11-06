@@ -43,6 +43,7 @@ import { dailySalesRouter } from './routes/daily-sales.routes.js';
 import { jeTemplatesRouter } from './routes/je-templates.routes.js';
 import { itemsRouter } from './routes/items.routes.js';
 import { inventoryRouter } from './routes/inventory.routes.js';
+import { inventoryReportsRouter } from './routes/inventory-reports.routes.js';
 import { priceLevelsRouter } from './routes/price-levels.routes.js';
 import { billableCostsRouter } from './routes/billable-costs.routes.js';
 import { paymentsRouter } from './routes/payments.routes.js';
@@ -583,6 +584,8 @@ app.use('/api/v1/tags', tagsRouter);
 app.use('/api/v1/reports', reportPacksRouter);
 app.use('/api/v1/reports', customerStatementReportsRouter);
 app.use('/api/v1/reports', salesTaxReportsRouter);
+// Inventory valuation, stock status and reorder (U-160, U-78).
+app.use('/api/v1/reports', inventoryReportsRouter);
 app.use('/api/v1/reports', reportsRouter);
 app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);

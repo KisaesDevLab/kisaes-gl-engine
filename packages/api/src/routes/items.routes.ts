@@ -12,6 +12,7 @@ import { validate } from '../middleware/validate.js';
 import { idempotent } from '../middleware/idempotent.js';
 import { describe } from '../middleware/describe.js';
 import * as itemsService from '../services/items.service.js';
+import * as inventoryReports from '../services/inventory-report.service.js';
 
 export const itemsRouter = Router();
 itemsRouter.use(authenticate);
@@ -64,6 +65,16 @@ itemsRouter.get('/export', async (req, res) => {
 itemsRouter.post('/import', validate(itemsImportSchema), async (req, res) => {
   const result = await itemsService.importFromCsv(req.tenantId, req.body.items);
   res.status(201).json({ imported: result.length });
+});
+
+// Before /:id (U-78, reorder-alerts-v1).
+itemsRouter.get('/reorder-alerts', describe({
+  summary: 'Inventory items at or below their reorder point',
+  description: 'reorder-alerts-v1: Response {data: [{itemId, name, description, unitLabel, preferredVendorId, preferredVendor {id, name} | null, '
+    + 'reorderPoint, reorderQuantity, onHand, value, reorder: true}], total}: the active inventory items with a reorder point whose on hand now '
+    + '(the latest stock movement, every date; base unit, 4-place strings) is at or below it, by name. Inventory off: 400 INVENTORY_OFF.',
+}), async (req, res) => {
+  res.json(await inventoryReports.reorderAlerts(req.tenantId, req.companyId));
 });
 
 itemsRouter.get('/:id', describe({
