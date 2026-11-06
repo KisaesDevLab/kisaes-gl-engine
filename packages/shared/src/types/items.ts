@@ -33,6 +33,10 @@ export interface Item {
   reorderPoint: string | null;
   reorderQuantity: string | null;
   unitLabel: string | null;
+  /** Units of measure (U-161): the unit set and default units (null = base). */
+  unitSetId: string | null;
+  defaultPurchaseUnitId: string | null;
+  defaultSaleUnitId: string | null;
   /** Read-only on parts (null on other kinds): quantity (4 places), average cost (6), asset value (2). */
   quantityOnHand: string | null;
   averageCost: string | null;
@@ -60,6 +64,9 @@ export interface CreateItemInput {
   reorderPoint?: string | null;
   reorderQuantity?: string | null;
   unitLabel?: string | null;
+  unitSetId?: string | null;
+  defaultPurchaseUnitId?: string | null;
+  defaultSaleUnitId?: string | null;
 }
 
 export interface UpdateItemInput {
@@ -80,6 +87,9 @@ export interface UpdateItemInput {
   reorderPoint?: string | null;
   reorderQuantity?: string | null;
   unitLabel?: string | null;
+  unitSetId?: string | null;
+  defaultPurchaseUnitId?: string | null;
+  defaultSaleUnitId?: string | null;
   /** updatedAt as last read (item-types-v1); a mismatch is 409 STALE. */
   expectedUpdatedAt?: string;
 }

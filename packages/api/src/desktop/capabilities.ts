@@ -687,5 +687,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Reorder alerts (U-78, P24 E4): GET /items/reorder-alerts {data, total} and GET /reports/reorder {title, asOf, data}: active inventory items
    * with a reorder point whose on hand now is at or below it, with reorder quantity and preferred vendor.
    */
-  'reorder-alerts-v1',];
+  'reorder-alerts-v1',
+  /**
+   * Units of measure (U-161, P24 E5, Q-P24i): GET/POST /unit-sets, GET/PUT/DELETE /unit-sets/:id (a base unit and units with fixed factors,
+   * base units per unit, 6 places; expectedUpdatedAt 409 STALE); items take unitSetId, defaultPurchaseUnitId, defaultSaleUnitId and return
+   * unitPrices; every item line (bills, vendor credits, checks, card charges, invoices, credit memos, sales receipts, cash sales, inventory
+   * adjustments and counts) takes unitId (null = base): quantity and unitPrice stay in that unit, baseQuantity = round4(quantity x factor) half
+   * away from zero drives stock, costing and reports; 400 UNIT_NOT_IN_SET, 400 UNIT_QUANTITY_TOO_SMALL; a unit on any line keeps its factor and
+   * set, and an item on any line keeps its set (409 UNIT_IN_USE, Q-P24w). GET /reports/reorder adds purchaseUnit and
+   * reorderQuantityInPurchaseUnit; stock status adds unitSetId and baseUnit. Migration 0260.
+   */
+  'units-of-measure-v1',];
 

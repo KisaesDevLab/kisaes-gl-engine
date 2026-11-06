@@ -36,6 +36,7 @@ export interface WriteCheckInput {
     isBillable?: boolean;
     /** An inventory item bought (U-158): the item's inventory asset account; quantity > 0; amount = round2(quantity x unitPrice) when unitPrice is sent. */
     itemId?: string | null;
+    unitId?: string | null;
     quantity?: string | null;
     unitPrice?: string | null;
   }>;

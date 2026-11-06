@@ -94,17 +94,19 @@ export function sameAmount(a: string, b: string): boolean {
  * absent, so a line without an item posts exactly as before.
  */
 export function itemLineDetails(
-  l: { itemId?: string | null; quantity?: string | null; unitPrice?: string | null },
+  l: { itemId?: string | null; quantity?: string | null; unitPrice?: string | null; unitId?: string | null },
   amount: DecimalValue | string, i: number,
-): { itemId?: string; quantity?: string; unitPrice?: string } {
+): { itemId?: string; quantity?: string; unitPrice?: string; unitId?: string } {
   const field = `lines[${i}]`;
   const hasQty = l.quantity !== undefined && l.quantity !== null;
   const hasPrice = l.unitPrice !== undefined && l.unitPrice !== null;
   if (hasPrice && !hasQty) {
     throw AppError.badRequest(`Line ${i + 1} has a cost (unitPrice) but no quantity`, 'LINE_QTY_RATE_INCOMPLETE', { lineIndex: i });
   }
-  const out: { itemId?: string; quantity?: string; unitPrice?: string } = {};
+  const out: { itemId?: string; quantity?: string; unitPrice?: string; unitId?: string } = {};
   if (l.itemId) out.itemId = l.itemId;
+  // U-161: the unit quantity and unitPrice are in; the ledger core resolves it.
+  if (l.unitId) out.unitId = l.unitId;
   if (hasQty) {
     out.quantity = parseQuantity(l.quantity, `${field}.quantity`).toFixed();
     if (hasPrice) {

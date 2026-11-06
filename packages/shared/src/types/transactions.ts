@@ -60,6 +60,7 @@ export interface JournalLine {
   contactId: string | null;
   // Item on the line (bill-lines-v1 on bills and vendor credits; invoices).
   itemId?: string | null;
+  unitId?: string | null;
   // Billable to the line's customer (U-50) and its billed state.
   isBillable?: boolean;
   billedStatus?: string | null;
@@ -230,6 +231,12 @@ export interface JournalLineInput {
   // costing core keeps it on the line's inventory movement
   // (inventory_movements.source_transaction_id).
   returnOf?: { transactionId: string } | null;
+  // Units of measure (U-161): the unit quantity and unitPrice are in (a unit
+  // of the item's set; null = the base unit). Persisted on
+  // journal_lines.unit_id. baseQuantity (journal_lines.base_quantity) is set
+  // by the ledger core, round4(quantity x factor); callers never send it.
+  unitId?: string | null;
+  baseQuantity?: string | null;
 }
 
 export interface CreateJournalEntryInput {
@@ -258,6 +265,7 @@ export interface ExpenseLineItem {
   isBillable?: boolean;
   /** An inventory item bought (U-158): the item's inventory asset account; quantity > 0; amount = round2(quantity x unitPrice) when unitPrice is sent. */
   itemId?: string | null;
+  unitId?: string | null;
   quantity?: string | null;
   unitPrice?: string | null;
 }
@@ -353,6 +361,7 @@ export interface CreateCashSaleInput {
     tagId?: string | null;
     /** An inventory item sold (U-158): the core posts its cost of goods. */
     itemId?: string | null;
+    unitId?: string | null;
   }>;
   memo?: string;
   /** Document number (U-111): typed, or the company's next when omitted. */
@@ -375,6 +384,7 @@ export interface CreateInvoiceInput {
     /** Required unless itemId supplies the income account (U-123). */
     accountId?: string;
     itemId?: string | null;
+    unitId?: string | null;
     description?: string;
     /** Omitted: 1 (U-129). */
     quantity?: string;

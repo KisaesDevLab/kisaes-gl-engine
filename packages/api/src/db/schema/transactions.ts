@@ -220,6 +220,11 @@ export const journalLines = pgTable('journal_lines', {
   // costing line (lineRole cogs | inventory_relief | cost_correction |
   // cost_residual) belongs to.
   inventoryMovementId: uuid('inventory_movement_id'),
+  // U-161 (migration 0260): the unit the line's quantity and unit price are
+  // in (NULL = the item's base unit) and the quantity in base units,
+  // round4(quantity x factor), stored only when unitId is set.
+  unitId: uuid('unit_id'),
+  baseQuantity: decimal('base_quantity', { precision: 12, scale: 4 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

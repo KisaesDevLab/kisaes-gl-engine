@@ -31,7 +31,12 @@ const partRules = 'Purchase side on every kind (item-types-v1): purchaseDescript
   + 'assetAccountId (an active asset account, not bank or receivables) and cogsAccountId (an active cost of goods sold account), and may take '
   + 'reorderPoint (0 or more) and reorderQuantity (above 0), strings with at most 4 places; unitLabel (at most 10 characters) on any kind. '
   + 'Only parts take the asset / COGS accounts and reorder fields. A bad account or vendor is 400 VALIDATION_ERROR with details.field. '
-  + 'Read-only on parts (null on other kinds): quantityOnHand (4 places), averageCost (6 places), assetValue (2 places), all strings.';
+  + 'Read-only on parts (null on other kinds): quantityOnHand (4 places), averageCost (6 places), assetValue (2 places), all strings. '
+  + 'Units of measure (units-of-measure-v1): unitSetId (an active unit set of the company, GET /unit-sets), defaultPurchaseUnitId and '
+  + 'defaultSaleUnitId (units of that set; null = the base unit), else 400 VALIDATION_ERROR; changing unitSetId while any transaction line '
+  + 'names the item is 409 UNIT_IN_USE. Read-only unitPrices: null without a set, else [{unitId (null = base), name, abbreviation, factor, '
+  + 'unitPrice = round4(unitPrice x factor)}], the default price of a line in each unit. Stock figures are in the base unit; unitLabel stays the '
+  + 'display unit of an item without a set.';
 
 itemsRouter.get('/', describe({
   summary: 'List items',

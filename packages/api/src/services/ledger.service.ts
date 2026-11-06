@@ -21,6 +21,7 @@ import { assertNotDeposited, releaseDepositLinks, liveDepositsForSource } from '
 import { releaseBilledCosts, assertSourceLinksIntact, billedInvoicesForLines } from './billable-links.js';
 import * as salesTaxRows from './sales-tax.service.js';
 import * as costing from './inventory-costing.service.js';
+import { resolveLineUnits } from './unit-lines.service.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -597,6 +598,11 @@ export function assertBalanced(lines:ReadonlyArray<{ debit?: string | null; cred
 
 export { PostTransactionInput };
 
+/** journal_lines.unit_id and base_quantity of a line (U-161): set only when the line names a unit (resolveLineUnits). */
+function unitColumns(line: { itemId?: string | null; unitId?: string | null; baseQuantity?: string | null }) {
+  return line.unitId && line.itemId ? { unitId: line.unitId, baseQuantity: line.baseQuantity ?? null } : { unitId: null, baseQuantity: null };
+}
+
 export async function postTransaction(
   tenantId: string,
   input: PostTransactionInput,
@@ -641,6 +647,9 @@ export async function postTransaction(
     // lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED
     // here, before the closing-date check, so no password or confirmation
     // opens it (owner decision 2026-11-06). Null when no part is involved.
+    // Units of measure (U-161): each line naming a unit gets its base quantity (400 UNIT_NOT_IN_SET /
+    // UNIT_QUANTITY_TOO_SMALL); the units are share-locked so their factors can't change before commit.
+    await resolveLineUnits(tx, tenantId, input.lines);
     const costingLock = await costing.prepareNew(tx, tenantId, companyId ?? null, input.txnType, input.txnDate, input.lines);
     if (noAmount && !costingLock) throw AppError.badRequest('Transaction must have non-zero amounts');
     // AJEs bypass the closing-date lock by design (TB module D10 /
@@ -729,6 +738,7 @@ export async function postTransaction(
       itemId: line.itemId || null,
       quantity: line.quantity || null,
       unitPrice: line.unitPrice || null,
+      ...unitColumns(line),
       isTaxable: line.isTaxable || false,
       taxRate: storedTaxRate(line.taxRate),
       taxAmount: line.taxAmount || '0',
@@ -1539,6 +1549,7 @@ export async function updateTransaction(
     // old and new parts before any balance write; the old or new date on or
     // before the closing date is 409 INVENTORY_PERIOD_CLOSED, before the
     // closing-date check (owner decision 2026-11-06).
+    await resolveLineUnits(tx, tenantId, input.lines); // U-161, as postTransaction
     const costingLock = await costing.prepareEdit(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, input.txnType ?? existing.txnType,
       existing.txnDate, input.txnDate, input.lines);
     // Check lock date for both old and new dates (company-scoped).
@@ -1693,7 +1704,7 @@ export async function updateTransaction(
         tenantId, companyId: companyId || null, transactionId: txnId,
         accountId: line.accountId, debit: line.debit || '0', credit: line.credit || '0',
         description: line.description || null, itemId: line.itemId || null,
-        quantity: line.quantity || null, unitPrice: line.unitPrice || null,
+        quantity: line.quantity || null, unitPrice: line.unitPrice || null, ...unitColumns(line),
         isTaxable: line.isTaxable || false, taxRate: storedTaxRate(line.taxRate), taxAmount: line.taxAmount || '0', taxCodeId: line.taxCodeId ?? null,
         lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
         serviceDate: line.serviceDate || null,
@@ -1793,6 +1804,7 @@ export async function updateTransaction(
       itemId: line.itemId || null,
       quantity: line.quantity || null,
       unitPrice: line.unitPrice || null,
+      ...unitColumns(line),
       isTaxable: line.isTaxable || false,
       taxRate: storedTaxRate(line.taxRate),
       taxAmount: line.taxAmount || '0',
@@ -2091,6 +2103,9 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
     unitPriceSource: journalLines.unitPriceSource,
     billableSourceLineId: journalLines.billableSourceLineId,
     inventoryMovementId: journalLines.inventoryMovementId,
+    // U-161: the line's unit (null = base) and its quantity in base units.
+    unitId: journalLines.unitId,
+    baseQuantity: journalLines.baseQuantity,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     // Exclude the persisted void-reversal rows (rule 23) so the detail

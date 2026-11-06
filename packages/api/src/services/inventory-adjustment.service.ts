@@ -21,18 +21,19 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
-import { accounts, contacts, inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
+import { accounts, contacts, inventoryMovements, items, journalLines, transactions, unitSets } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import { Decimal } from '../utils/inventory-walk.js';
 import { inventoryAssetAccounts, lockForInventory, splitDerived } from './inventory-costing.service.js';
 import { assertInventoryOn } from './inventory.service.js';
+import { resolveLineUnits } from './unit-lines.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 
 type Dec = InstanceType<typeof Decimal>;
 
-export interface AdjustmentLineInput { itemId: string; quantityChange?: string | null; valueChange?: string | null }
+export interface AdjustmentLineInput { itemId: string; quantityChange?: string | null; valueChange?: string | null; unitId?: string | null }
 export interface AdjustmentInput {
   txnDate: string; adjustmentAccountId: string; memo?: string; lines: AdjustmentLineInput[]; expectedUpdatedAt?: string;
 }
@@ -92,7 +93,7 @@ async function adjustmentLines(executor: DbOrTx, tenantId: string, companyId: st
   const parts = await executor.select({ id: items.id, assetAccountId: items.assetAccountId, itemType: items.itemType, companyId: items.companyId }).from(items)
     .where(and(eq(items.tenantId, tenantId), inArray(items.id, ids)));
   const byId = new Map(parts.map((p) => [p.id, p]));
-  const lines: Array<{ accountId: string; itemId?: string; quantity?: string; debit: string; credit: string; description?: string }> = [];
+  const lines: Array<{ accountId: string; itemId?: string; quantity?: string; unitId?: string; debit: string; credit: string; description?: string }> = [];
   input.lines.forEach((l, i) => {
     const part = byId.get(l.itemId);
     if (!part || part.itemType !== 'inventory_part' || !part.assetAccountId || ledger.inOtherCompany(part, companyId)) {
@@ -102,14 +103,17 @@ async function adjustmentLines(executor: DbOrTx, tenantId: string, companyId: st
     const hasValue = l.valueChange !== undefined && l.valueChange !== null && l.valueChange !== '';
     if (!hasQty && !hasValue) throw AppError.badRequest(`lines[${i}] needs a quantityChange or a valueChange`, 'VALIDATION_ERROR', { lineIndex: i });
     const qty = hasQty ? parseQuantityChange(l.quantityChange, `lines[${i}].quantityChange`).toFixed() : undefined;
+    // U-161: quantityChange in a unit of the item's set; the ledger core stores its base quantity.
+    const unit = hasQty && l.unitId ? { unitId: l.unitId } : {};
+    if (l.unitId && !hasQty) throw AppError.badRequest(`lines[${i}].unitId goes with a quantityChange`, 'VALIDATION_ERROR', { lineIndex: i });
     if (hasValue) {
       const v = parseValueChange(l.valueChange, `lines[${i}].valueChange`, opts.openingZero === true);
       const amt = v.abs().toFixed(2);
       const up = !v.isNegative();
-      lines.push({ accountId: part.assetAccountId, itemId: part.id, ...(qty ? { quantity: qty } : {}), debit: up ? amt : '0', credit: up ? '0' : amt });
+      lines.push({ accountId: part.assetAccountId, itemId: part.id, ...(qty ? { quantity: qty, ...unit } : {}), debit: up ? amt : '0', credit: up ? '0' : amt });
       lines.push({ accountId: input.adjustmentAccountId, debit: up ? '0' : amt, credit: up ? amt : '0' });
     } else {
-      lines.push({ accountId: input.adjustmentAccountId, itemId: part.id, quantity: qty!, debit: '0', credit: '0' });
+      lines.push({ accountId: input.adjustmentAccountId, itemId: part.id, quantity: qty!, ...unit, debit: '0', credit: '0' });
     }
   });
   await assertAdjustmentAccount(executor, tenantId, companyId, input.adjustmentAccountId);
@@ -141,7 +145,7 @@ async function loadAdjustment(executor: DbOrTx, tenantId: string, id: string, co
 
 export interface AdjustmentRecord {
   id: string; date: string; adjustmentAccountId: string | null; memo: string | null; status: string; updatedAt: string | null;
-  lines: Array<{ itemId: string; quantityChange: string | null; valueChange: string | null; value: string; movementId: string | null }>;
+  lines: Array<{ itemId: string; quantityChange: string | null; unitId: string | null; baseQuantityChange: string | null; valueChange: string | null; value: string; movementId: string | null }>;
   inventoryLines: Array<{ role: string; accountId: string; amount: string; movementId: string | null }>;
 }
 
@@ -166,6 +170,8 @@ export async function getAdjustment(executor: DbOrTx, tenantId: string, id: stri
       return {
         itemId: l.itemId!,
         quantityChange: l.quantity !== null && !new Decimal(l.quantity).isZero() ? new Decimal(l.quantity).toFixed(4) : null,
+        unitId: l.unitId ?? null,
+        baseQuantityChange: l.quantity !== null && !new Decimal(l.quantity).isZero() ? new Decimal(l.baseQuantity ?? l.quantity).toFixed(4) : null,
         valueChange: valueLine ? given.toFixed(2) : null,
         value: new Decimal(m?.value ?? '0').toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2),
         movementId: m?.id ?? null,
@@ -234,7 +240,7 @@ export async function companyIdOf(executor: DbOrTx, tenantId: string, companyId?
 }
 
 export interface CountSheetRow {
-  itemId: string; name: string; description: string | null; unit: string | null;
+  itemId: string; name: string; description: string | null; unit: string | null; unitSetId: string | null;
   preferredVendor: { id: string; name: string } | null; onHand: string; value: string;
 }
 
@@ -242,7 +248,7 @@ export interface CountSheetRow {
 export async function countSheet(tenantId: string, asOf: string, companyId?: string): Promise<{ asOf: string; items: CountSheetRow[] }> {
   await assertInventoryOn(db, tenantId, companyId);
   const co = await companyIdOf(db, tenantId, companyId);
-  const parts = await db.select({ id: items.id, name: items.name, description: items.description, unit: items.unitLabel, vendorId: items.preferredVendorId, companyId: items.companyId })
+  const parts = await db.select({ id: items.id, name: items.name, description: items.description, unit: items.unitLabel, unitSetId: items.unitSetId, vendorId: items.preferredVendorId, companyId: items.companyId })
     .from(items).where(and(eq(items.tenantId, tenantId), eq(items.itemType, 'inventory_part'), eq(items.isActive, true))).orderBy(items.name, items.id);
   const mine = parts.filter((p) => !p.companyId || p.companyId === co);
   const stock = await stockAsOf(db, tenantId, co, mine.map((p) => p.id), asOf);
@@ -250,12 +256,17 @@ export async function countSheet(tenantId: string, asOf: string, companyId?: str
   const vendors = vendorIds.length === 0 ? [] : await db.select({ id: contacts.id, name: contacts.displayName }).from(contacts)
     .where(and(eq(contacts.tenantId, tenantId), inArray(contacts.id, vendorIds)));
   const vname = new Map(vendors.map((v) => [v.id, v.name]));
+  // U-161: an item with a unit set counts in its base unit (unitLabel otherwise).
+  const setIds = [...new Set(mine.map((p) => p.unitSetId).filter((v): v is string => !!v))];
+  const sets = setIds.length === 0 ? [] : await db.select({ id: unitSets.id, base: unitSets.baseUnitName }).from(unitSets).where(and(eq(unitSets.tenantId, tenantId), inArray(unitSets.id, setIds)));
+  const baseName = new Map(sets.map((s) => [s.id, s.base]));
   return {
     asOf,
     items: mine.map((p) => {
       const s = stock.get(p.id);
       return {
-        itemId: p.id, name: p.name, description: p.description ?? null, unit: p.unit ?? null,
+        itemId: p.id, name: p.name, description: p.description ?? null, unit: (p.unitSetId ? baseName.get(p.unitSetId) : null) ?? p.unit ?? null,
+        unitSetId: p.unitSetId ?? null,
         preferredVendor: p.vendorId && vname.has(p.vendorId) ? { id: p.vendorId, name: vname.get(p.vendorId)! } : null,
         onHand: (s?.onHand ?? new Decimal(0)).toFixed(4),
         value: (s?.value ?? new Decimal(0)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2),
@@ -272,7 +283,7 @@ export async function countSheet(tenantId: string, asOf: string, companyId?: str
  * equal: nothing is posted ({adjustment: null}).
  */
 export async function postCount(tenantId: string, input: {
-  asOf: string; adjustmentAccountId: string; memo?: string; lines: Array<{ itemId: string; sheetOnHand: string; countedQuantity: string }>;
+  asOf: string; adjustmentAccountId: string; memo?: string; lines: Array<{ itemId: string; sheetOnHand: string; countedQuantity: string; unitId?: string | null }>;
 }, userId?: string, companyId?: string) {
   const ids = [...new Set(input.lines.map((l) => l.itemId))];
   if (ids.length !== input.lines.length) throw AppError.badRequest('One line per item', 'VALIDATION_ERROR');
@@ -282,6 +293,10 @@ export async function postCount(tenantId: string, input: {
   return db.transaction(async (tx) => {
     await claimIdempotency(tx);
     await assertInventoryOn(tx, tenantId, companyId);
+    // U-161: a count in a unit of the item's set becomes base units, round4(count x factor).
+    const unitLines = input.lines.map((l, i) => ({ itemId: l.itemId, unitId: l.unitId ?? null, quantity: parsed[i]!.counted.toFixed(), baseQuantity: null as string | null }));
+    await resolveLineUnits(tx, tenantId, unitLines);
+    unitLines.forEach((u, i) => { if (u.unitId && u.baseQuantity !== null) parsed[i]!.counted = new Decimal(u.baseQuantity); });
     const co = await companyIdOf(tx, tenantId, companyId);
     // The costing lock order: companies row, then the items; asOf on or before the closing date is 409 INVENTORY_PERIOD_CLOSED.
     await lockForInventory(tx, tenantId, co, ids, [input.asOf]);

@@ -53,6 +53,7 @@ import {
 } from '../utils/inventory-walk.js';
 import { INVENTORY_ASSET_TAG } from './inventory.service.js';
 import { noteInventoryWarnings } from './inventory-warnings-context.js';
+import { resolveLineUnits, UNIT_LINE_NOTE } from './unit-lines.service.js';
 
 /** Line roles only the costing walk writes (U-157). */
 export const DERIVED_LINE_ROLES = ['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'] as const;
@@ -80,6 +81,8 @@ const MONEY_LIMIT = new Decimal('1e15');
 
 interface InputLine {
   accountId: string; debit?: string | null; credit?: string | null; itemId?: string | null; quantity?: string | null; lineRole?: string | null;
+  /** Base units (U-161), set by units.resolveLineUnits for a line that names a unit. */
+  baseQuantity?: string | null;
   /** A credit-memo part line returning units of a sale (Q-P24e, Q-P24u). */
   returnOf?: { transactionId: string } | null;
 }
@@ -98,12 +101,13 @@ export interface InventoryWarning { code: 'NEGATIVE_STOCK'; itemId: string; date
 const d = (v: unknown) => new Decimal(v === null || v === undefined || v === '' ? '0' : String(v));
 
 /**
- * A line's quantity in the item's base unit (P24 §2.1). Every costing read of
- * a quantity goes through here; until units of measure land (U-161, E5) it
- * is the line quantity.
+ * A line's quantity in the item's base unit (P24 §2.1, U-161). Every costing
+ * read of a quantity goes through here: the stored or resolved
+ * base_quantity = round4(quantity x factor) of a line that names a unit, else
+ * the line quantity (the base unit).
  */
-export function baseQuantity(line: { quantity?: string | null }): Dec {
-  return d(line.quantity);
+export function baseQuantity(line: { quantity?: string | null; baseQuantity?: string | null }): Dec {
+  return line.baseQuantity !== undefined && line.baseQuantity !== null && line.baseQuantity !== '' ? d(line.baseQuantity) : d(line.quantity);
 }
 
 /** The accounts of `accountIds` that are inventory asset accounts: tagged inventory_asset or named by a part. */
@@ -358,7 +362,7 @@ const mkey = (itemId: string, sourceId: string | null | undefined) => `${itemId}
  * sale), lines aggregated (S4). `links` maps a line's line_order to the sale
  * it returns (credit memos only).
  */
-function specsFor(txnType: string, lines: Array<{ id: string; itemId: string; accountId: string; quantity: string | null; debit: string; credit: string; tagId: string | null; lineOrder: number | null }>,
+function specsFor(txnType: string, lines: Array<{ id: string; itemId: string; accountId: string; quantity: string | null; baseQuantity: string | null; debit: string; credit: string; tagId: string | null; lineOrder: number | null }>,
   parts: Map<string, PartRow>, links: ReadonlyMap<number, string>): Map<string, Spec> {
   const out = new Map<string, Spec>();
   for (const l of lines) {
@@ -428,7 +432,7 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
 
   const docLines = txn.status === 'posted' && STOCK_TYPES.has(txn.txnType)
     ? await tx.select({
-      id: journalLines.id, itemId: journalLines.itemId, accountId: journalLines.accountId, quantity: journalLines.quantity,
+      id: journalLines.id, itemId: journalLines.itemId, accountId: journalLines.accountId, quantity: journalLines.quantity, baseQuantity: journalLines.baseQuantity,
       debit: journalLines.debit, credit: journalLines.credit, tagId: journalLines.tagId, lineRole: journalLines.lineRole, lineOrder: journalLines.lineOrder,
     }).from(journalLines).where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId), eq(journalLines.isVoidReversal, false)))
     : [];
@@ -769,7 +773,8 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): bil
   + 'SALE_HAS_RETURNS; a document with parts dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED, closingPassword '
   + 'or not; 409 RETRY after a deadlock or lock timeout (nothing saved). Derived costing lines come back as inventoryLines '
   + '[{role, accountId, amount (debit positive), movementId}], never in lines. NEGATIVE_STOCK is allowed: the reply\'s warnings[] carries '
-  + '{code: NEGATIVE_STOCK, itemId, date, onHand} for the first row per item whose on hand newly went below 0 (create, edit, void, delete).';
+  + '{code: NEGATIVE_STOCK, itemId, date, onHand} for the first row per item whose on hand newly went below 0 (create, edit, void, delete). '
+  + UNIT_LINE_NOTE;
 
 /**
  * NEGATIVE_STOCK for a preview (U-158): what posting `doc` would warn,
@@ -779,13 +784,15 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): bil
  * replayed from its first affected position.
  */
 export async function previewInventoryWarnings(executor: DbOrTx, tenantId: string, companyId: string | null | undefined,
-  doc: { txnType: string; txnDate: string; editingId?: string | null; lines: ReadonlyArray<{ itemId?: string | null; quantity?: string | null }> }): Promise<InventoryWarning[]> {
+  doc: { txnType: string; txnDate: string; editingId?: string | null; lines: ReadonlyArray<{ itemId?: string | null; quantity?: string | null; unitId?: string | null; baseQuantity?: string | null }> }): Promise<InventoryWarning[]> {
   if (!STOCK_TYPES.has(doc.txnType) || ADJUST_TYPES.has(doc.txnType)) return [];
-  const parts = await partsOf(executor, tenantId, doc.lines.map((l) => l.itemId));
+  // Lines naming a unit (U-161) count in base units.
+  const lines = doc.lines.some((l) => !!l.unitId) ? await resolveLineUnits(executor, tenantId, doc.lines.map((l) => ({ ...l }))) : doc.lines;
+  const parts = await partsOf(executor, tenantId, lines.map((l) => l.itemId));
   if (parts.size === 0 && !doc.editingId) return [];
   const sign = SALE_TYPES.has(doc.txnType) || VENDOR_RETURN_TYPES.has(doc.txnType) ? -1 : 1;
   const qtyByItem = new Map<string, Dec>();
-  for (const l of doc.lines) {
+  for (const l of lines) {
     if (!l.itemId || !parts.has(l.itemId)) continue;
     let q: Dec;
     try { q = baseQuantity(l); } catch { continue; }

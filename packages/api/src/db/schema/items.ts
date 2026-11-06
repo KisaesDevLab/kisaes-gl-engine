@@ -36,6 +36,12 @@ export const items = pgTable('items', {
   reorderPoint: decimal('reorder_point', { precision: 12, scale: 4 }),
   reorderQuantity: decimal('reorder_quantity', { precision: 12, scale: 4 }),
   unitLabel: varchar('unit_label', { length: 10 }),
+  // Units of measure (U-161, migration 0260): the item's unit set and its
+  // default purchase / sale units (NULL = the base unit). unitLabel stays the
+  // display unit of an item without a set.
+  unitSetId: uuid('unit_set_id'),
+  defaultPurchaseUnitId: uuid('default_purchase_unit_id'),
+  defaultSaleUnitId: uuid('default_sale_unit_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

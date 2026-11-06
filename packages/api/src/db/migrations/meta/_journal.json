@@ -1821,6 +1821,13 @@
       "when": 1787500014380,
       "tag": "0259_inventory_movements",
       "breakpoints": true
+    },
+    {
+      "idx": 260,
+      "version": "7",
+      "when": 1787500015380,
+      "tag": "0260_units_of_measure",
+      "breakpoints": true
     }
   ]
 }

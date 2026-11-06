@@ -247,6 +247,7 @@ export function recurringInvoiceLines(lines: readonly StoredInvoiceLine[], arAcc
       const base = {
         accountId: l.accountId,
         ...(l.itemId ? { itemId: l.itemId } : {}),
+        ...(l.itemId && l.unitId ? { unitId: l.unitId } : {}),
         description: l.description || undefined,
         isTaxable: l.isTaxable ?? false,
         ...(salesTax ? { taxCodeId: l.taxCodeId ?? null } : { taxRate: l.taxRate ?? '0' }),

@@ -32,6 +32,7 @@ import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { checksRouter } from './checks.routes.js';
 import { inventoryRouter } from './inventory.routes.js';
 import { inventoryReportsRouter } from './inventory-reports.routes.js';
+import { unitSetsRouter } from './unit-sets.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { postAdjustment } from '../services/inventory-adjustment.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -54,7 +55,7 @@ beforeEach(async () => {
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
     ['/api/v1/vendor-credits', vendorCreditsRouter], ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter],
     ['/api/v1/credit-memos', creditMemosRouter], ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter],
-    ['/api/v1/reports', inventoryReportsRouter]]);
+    ['/api/v1/reports', inventoryReportsRouter], ['/api/v1/unit-sets', unitSetsRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -1266,5 +1267,147 @@ describe('inventory-reports-v1 and reorder-alerts-v1 (golden S, U-160, U-78)', (
     const i = DESKTOP_CAPABILITIES.indexOf('inventory-reports-v1');
     expect(i).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('inventory-adjust-v1'));
     expect(DESKTOP_CAPABILITIES.indexOf('reorder-alerts-v1')).toBeGreaterThan(i);
+  });
+});
+
+// ─── Units of measure (U-161 units-of-measure-v1; P24 E5, golden U) ──────
+
+describe('units-of-measure-v1 (golden U, U-161)', () => {
+  const code = (x: { status: number; json: Body }) => [x.status, x.json['error']?.code];
+
+  async function unitWorld() {
+    const w = await setup();
+    const u = gcase('U');
+    const made = await req('POST', '/unit-sets', { name: u['unitSet'].name, baseUnitName: u['unitSet'].base,
+      units: (u['unitSet'].units as Body[]).map((x) => ({ name: x['name'], factor: x['factor'] })) });
+    expect(made.status, JSON.stringify(made.json)).toBe(201);
+    const set = made.json['unitSet'] as Body;
+    const unit = new Map<string, string | null>((set['units'] as Body[]).map((x) => [x['name'] as string, x['id'] as string]));
+    unit.set(u['unitSet'].base, null);
+    const W = w.items.get('W')!;
+    const put = await req('PUT', `/items/${W}`, { unitSetId: set['id'], defaultPurchaseUnitId: unit.get('case') });
+    expect(put.status, JSON.stringify(put.json)).toBe(200);
+    return { w, W, set, unit };
+  }
+
+  it('U: lines in a unit move stock by round4(quantity x factor); the amount stays in the entered unit; UNIT_QUANTITY_TOO_SMALL; UNIT_IN_USE', async () => {
+    const { w, W, set, unit } = await unitWorld();
+    for (const s of gcase('U')['steps'] as Body[]) {
+      const unitId = s['unit'] !== undefined ? unit.get(s['unit']) ?? null : undefined;
+      let r: { status: number; json: Body } | null = null;
+      if (s['event'] === 'bill') {
+        r = await req('POST', '/bills', { contactId: w.vendor, txnDate: s['date'], lines: [{ accountId: w.asset, amount: s['amount'], itemId: W, quantity: s['quantity'], unitPrice: s['unitPrice'], unitId }] });
+      } else if (s['event'] === 'invoice') {
+        r = await req('POST', '/invoices', { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: W, quantity: s['quantity'], unitPrice: '10.00', unitId, isTaxable: false }] });
+      } else if (s['event'] === 'item_unit_prices') {
+        const put = await req('PUT', `/items/${W}`, { unitPrice: s['basePrice'] });
+        const prices = put.json['item']['unitPrices'] as Body[];
+        expect(prices.find((p) => p['unitId'] === null)).toMatchObject({ name: 'bottle', factor: '1.000000', unitPrice: '4.5000' });
+        for (const [name, price] of Object.entries(s['expect'] as Record<string, string>)) expect(prices.find((p) => p['name'] === name)!['unitPrice'], name).toBe(price);
+        continue;
+      } else if (s['event'] === 'unit_factor_change') {
+        const units = (set['units'] as Body[]).map((x) => ({ id: x['id'], name: x['name'], factor: x['name'] === s['unit'] ? s['factor'] : x['factor'] }));
+        r = await req('PUT', `/unit-sets/${set['id']}`, { units });
+      }
+      const e = s['expect'] as Body;
+      if (typeof e['status'] === 'number') {
+        expect(code(r!), `step ${s['n']}`).toEqual([e['status'], e['code']]);
+        continue;
+      }
+      expect([200, 201], JSON.stringify(r!.json)).toContain(r!.status);
+      const id = idOf(r!.json);
+      const [mv] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, id));
+      if (e['value']) expect(m2(mv!.value), `step ${s['n']} value`).toBe(e['value']);
+      if (e['baseQuantity']) {
+        const [line] = await db.select().from(journalLines).where(and(eq(journalLines.transactionId, id), eq(journalLines.itemId, W)));
+        expect([line!.unitId, Number(line!.baseQuantity).toFixed(4), new Decimal(line!.quantity!).toFixed()], `step ${s['n']} line`)
+          .toEqual([unitId ?? null, e['baseQuantity'], new Decimal(s['quantity']).toFixed()]);
+        expect(new Decimal(mv!.quantity).abs().toFixed(4)).toBe(e['baseQuantity']);
+      }
+      const f = await figures(w);
+      expect([f['quantityOnHand'], f['assetValue']], `step ${s['n']}`).toEqual([e['onHand'], e['assetValue']]);
+      await invariants(w);
+    }
+    const f = await figures(w);
+    const fin = gcase('U')['final']['W'];
+    expect([f['quantityOnHand'], f['assetValue']]).toEqual([fin.onHand, fin.assetValue]);
+    // The bill's amount stayed in the entered unit: 2 cases x 30.00.
+    const billLine = (await db.select().from(journalLines).where(and(eq(journalLines.tenantId, c.tenantId), eq(journalLines.itemId, W), eq(journalLines.unitId, unit.get('case')!))))[0]!;
+    expect([m2(billLine.debit), new Decimal(billLine.unitPrice!).toFixed(2)]).toEqual(['60.00', '30.00']);
+  });
+
+  it('readers return unitId and baseQuantity; edits re-resolve; guards: unit outside the set, unit without an item, no price, set change after use', async () => {
+    const { w, W, set, unit } = await unitWorld();
+    const bill = await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-02', lines: [{ accountId: w.asset, amount: '60.00', itemId: W, quantity: '2', unitPrice: '30.00', unitId: unit.get('case') }] });
+    expect(bill.status, JSON.stringify(bill.json)).toBe(201);
+    const inv = await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-03', lines: [{ itemId: W, quantity: '1', unitPrice: '60.00', unitId: unit.get('half-case'), isTaxable: false }] });
+    expect(inv.status, JSON.stringify(inv.json)).toBe(201);
+    const invId = idOf(inv.json);
+    const got = await req('GET', `/invoices/${invId}`);
+    const line = (got.json['invoice']?.lines ?? got.json['lines']) as Body[];
+    expect(line.find((l) => l['itemId'] === W)).toMatchObject({ unitId: unit.get('half-case'), baseQuantity: '6.0000' });
+    // An edit in another unit re-resolves: 1 case = 12 bottles.
+    const ed = await req('PUT', `/invoices/${invId}`, { contactId: c.customer, txnDate: '2026-01-03', lines: [{ itemId: W, quantity: '1', unitPrice: '120.00', unitId: unit.get('case'), isTaxable: false }] });
+    expect(ed.status, JSON.stringify(ed.json)).toBe(200);
+    expect((await figures(w))['quantityOnHand']).toBe('12.0000');
+    await invariants(w);
+    // Credit memo and sales receipt lines carry the unit too.
+    const cm = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-04', lines: [{ itemId: W, quantity: '1', unitPrice: '60.00', unitId: unit.get('half-case'), isTaxable: false, returnOf: { transactionId: invId } }] });
+    expect(cm.status, JSON.stringify(cm.json)).toBe(201);
+    expect((cm.json['creditMemo']['lines'] as Body[])[0]).toMatchObject({ unitId: unit.get('half-case'), baseQuantity: '6.0000' });
+    expect((await figures(w))['quantityOnHand']).toBe('18.0000');
+    await invariants(w);
+    // Guards.
+    const [other] = await db.insert(items).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Loose', incomeAccountId: c.roles['income']!, itemType: 'service' }).returning();
+    expect(code(await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-05', lines: [{ itemId: other!.id, quantity: '1', unitPrice: '1.00', unitId: unit.get('case'), isTaxable: false }] })))
+      .toEqual([400, 'UNIT_NOT_IN_SET']);
+    expect(code(await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-05', lines: [{ itemId: W, quantity: '1', unitId: unit.get('case'), isTaxable: false }] })))
+      .toEqual([400, 'VALIDATION_ERROR']);
+    expect(code(await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-05', lines: [{ accountId: c.roles['expense'], amount: '5.00', unitId: unit.get('case') }] })))
+      .toEqual([400, 'VALIDATION_ERROR']);
+    const set2 = await req('POST', '/unit-sets', { name: 'Box', baseUnitName: 'piece', units: [{ name: 'box', factor: '10' }] });
+    expect(code(await req('PUT', `/items/${W}`, { unitSetId: set2.json['unitSet'].id }))).toEqual([409, 'UNIT_IN_USE']);
+    expect(code(await req('PUT', `/items/${other!.id}`, { defaultSaleUnitId: unit.get('case') }))).toEqual([400, 'VALIDATION_ERROR']);
+    // A used unit can't be removed; a new unit can be added; a stale token is 409 STALE.
+    const units = (set['units'] as Body[]).map((x) => ({ id: x['id'], name: x['name'], factor: x['factor'] }));
+    expect(code(await req('PUT', `/unit-sets/${set['id']}`, { units: units.filter((x) => x['name'] !== 'case') }))).toEqual([409, 'UNIT_IN_USE']);
+    expect(code(await req('PUT', `/unit-sets/${set['id']}`, { units, expectedUpdatedAt: '2020-01-01T00:00:00.000Z' }))).toEqual([409, 'STALE']);
+    const added = await req('PUT', `/unit-sets/${set['id']}`, { units: [...units, { name: 'pallet', factor: '480' }] });
+    expect(added.status, JSON.stringify(added.json)).toBe(200);
+    expect((added.json['unitSet']['units'] as Body[]).map((x) => x['name'])).toContain('pallet');
+    expect(added.json['unitSet']['inUse']).toBe(true);
+    expect(code(await req('DELETE', `/unit-sets/${set['id']}`))).toEqual([409, 'UNIT_IN_USE']);
+    expect(code(await req('POST', '/unit-sets', { name: 'Bottle', baseUnitName: 'x', units: [] }))).toEqual([409, 'DUPLICATE_NAME']);
+    expect(code(await req('POST', '/unit-sets', { name: 'Bad', baseUnitName: 'x', units: [{ name: 'y', factor: '0' }] }))).toEqual([400, 'VALIDATION_ERROR']);
+    expect(code(await req('POST', '/unit-sets', { name: 'Bad2', baseUnitName: 'x', units: [{ name: 'X', factor: '2' }] }))).toEqual([400, 'VALIDATION_ERROR']);
+    const unused = await req('POST', '/unit-sets', { name: 'Spare', baseUnitName: 'each', units: [{ name: 'dozen', factor: '12' }] });
+    expect((await req('DELETE', `/unit-sets/${unused.json['unitSet'].id}`)).json).toEqual({ id: unused.json['unitSet'].id, deleted: true });
+  });
+
+  it('adjustments, counts and the reorder report in units; the count sheet shows the base unit', async () => {
+    const { w, W, unit } = await unitWorld();
+    await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-02', lines: [{ accountId: w.asset, amount: '60.00', itemId: W, quantity: '2', unitPrice: '30.00', unitId: unit.get('case') }] });
+    const adj = await req('POST', '/inventory/adjustments', { txnDate: '2026-01-03', adjustmentAccountId: w.adjustment, lines: [{ itemId: W, quantityChange: '-1', unitId: unit.get('half-case') }] });
+    expect(adj.status, JSON.stringify(adj.json)).toBe(201);
+    expect(adj.json['adjustment'].lines[0]).toMatchObject({ quantityChange: '-1.0000', unitId: unit.get('half-case'), baseQuantityChange: '-6.0000', value: '-15.00' });
+    expect((await figures(w))['quantityOnHand']).toBe('18.0000');
+    const sheet = await req('GET', '/inventory/count-sheet?asOf=2026-01-31');
+    expect((sheet.json['items'] as Body[]).find((i) => i['itemId'] === W)).toMatchObject({ unit: 'bottle', onHand: '18.0000' });
+    // Counted 1 case and 0.5 half-case = 15 bottles: one adjustment of -3.
+    const count = await req('POST', '/inventory/counts', { asOf: '2026-01-31', adjustmentAccountId: w.adjustment,
+      lines: [{ itemId: W, sheetOnHand: '18.0000', countedQuantity: '1.25', unitId: unit.get('case') }] });
+    expect(count.status, JSON.stringify(count.json)).toBe(201);
+    expect(count.json['adjustment'].lines[0]).toMatchObject({ quantityChange: '-3.0000' });
+    expect((await figures(w))['quantityOnHand']).toBe('15.0000');
+    await invariants(w);
+    // Reorder: point 20 bottles, reorder 48 bottles = 4 cases (the default purchase unit).
+    await req('PUT', `/items/${W}`, { reorderPoint: '20', reorderQuantity: '48' });
+    const rep = await req('GET', '/reports/reorder');
+    expect(rep.json['data'][0]).toMatchObject({ itemId: W, reorderQuantity: '48.0000', reorderQuantityInPurchaseUnit: '4.0000', baseUnit: 'bottle',
+      purchaseUnit: { id: unit.get('case'), name: 'case', abbreviation: null, factor: '12.000000' } });
+  });
+
+  it('advertises units-of-measure-v1 after reorder-alerts-v1', () => {
+    expect(DESKTOP_CAPABILITIES.indexOf('units-of-measure-v1')).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('reorder-alerts-v1'));
   });
 });

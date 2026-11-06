@@ -444,6 +444,7 @@ transactionsRouter.post('/:id/duplicate', apDocumentPermission('create'), async 
     ...(l.itemId ? { itemId: l.itemId } : {}),
     ...(l.quantity ? { quantity: l.quantity } : {}),
     ...(l.unitPrice ? { unitPrice: l.unitPrice } : {}),
+    ...(l.unitId ? { unitId: l.unitId } : {}),
   }));
 
   const result = await ledger.postTransaction(req.tenantId, {

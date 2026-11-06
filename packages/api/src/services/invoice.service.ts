@@ -116,6 +116,8 @@ type InvoiceLineInput = CreateInvoiceInput['lines'][number];
 interface ResolvedInvoiceLine {
   accountId: string;
   itemId: string | null;
+  /** U-161: the unit quantity and unitPrice are in (null = the base unit). */
+  unitId?: string | null;
   itemType: SalesItemType | null;
   description?: string;
   quantity?: string;
@@ -189,9 +191,14 @@ async function resolveInvoiceLines(
     const accountId = l.accountId ?? item?.incomeAccountId;
     if (!accountId) throw scopeError(`lines[${i}] needs an accountId or an itemId`);
     const itemType = (item?.itemType ?? null) as SalesItemType | null;
+    // U-161: a line in a unit sends its price in that unit (GET /items unitPrices gives the default).
+    if (l.unitId && (l.unitPrice === undefined || l.unitPrice === null)) {
+      throw AppError.badRequest(`lines[${i}]: a line with unitId needs unitPrice (the price per unit; GET /items unitPrices has the default)`, 'VALIDATION_ERROR', { lineIndex: i, field: 'unitPrice' });
+    }
     return {
       accountId,
       itemId: item?.id ?? null,
+      unitId: l.unitId ?? null,
       itemType,
       description: l.description,
       quantity: l.quantity,
@@ -322,6 +329,7 @@ async function buildInvoiceJournal(
         ...side(c.itemType === 'subtotal' ? '0' : c.amount, 'credit'),
         description: l.description,
         itemId: l.itemId,
+        ...(l.unitId ? { unitId: l.unitId } : {}),
         // The figures the pricing step used (U-129): a discount line keeps
         // its percent, a subtotal line posts $0 with no quantity or price.
         quantity: c.quantity ?? undefined,
@@ -1005,6 +1013,7 @@ export async function duplicateInvoiceWithWarnings(tenantId: string, invoiceId: 
     itemId: line.itemId || undefined,
     quantity: line.quantity || undefined,
     unitPrice: line.unitPrice || undefined,
+    unitId: (line as { unitId?: string | null }).unitId || undefined,
     isTaxable: line.isTaxable ?? false,
     taxRate: line.taxRate || undefined,
     taxCodeId: line.taxCodeId ?? null,

@@ -42,6 +42,8 @@ export const writeCheckSchema = z.object({
     itemId: z.string().uuid().nullable().optional(),
     quantity: z.string().min(1).nullable().optional(),
     unitPrice: z.string().min(1).nullable().optional(),
+    // The unit quantity and unitPrice are in (U-161, units-of-measure-v1): a unit of the item's set; null = the base unit.
+    unitId: z.string().uuid().nullable().optional(),
   })).min(1),
   tagIds: z.array(z.string().uuid()).optional(),
   // Client-generated id the form's attachments were uploaded against while

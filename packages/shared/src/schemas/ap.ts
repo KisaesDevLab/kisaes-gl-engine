@@ -30,6 +30,8 @@ const expectedUpdatedAt = z.string().datetime({ offset: true }).optional();
 // quantity x unitPrice rounded half away from zero to cents.
 const lineItemFields = {
   itemId: z.string().uuid().nullable().optional(),
+  // The unit quantity and unitPrice are in (U-161, units-of-measure-v1): a unit of the item's set; null = the base unit.
+  unitId: z.string().uuid().nullable().optional(),
   quantity: z.string().min(1).nullable().optional(),
   unitPrice: z.string().min(1).nullable().optional(),
   // ADR 0XX: per-line tag.
