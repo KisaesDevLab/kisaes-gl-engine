@@ -674,5 +674,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * POST /items takes opening {quantity, value, asOf} on a part: an adjustment against Opening Balances (created if missing) in the item's
    * transaction (Q-P24h). Anything dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED.
    */
-  'inventory-adjust-v1',];
+  'inventory-adjust-v1',
+  /**
+   * Inventory reports (U-160, P24 E4), from the stock ledger as decimal strings: GET /reports/inventory-valuation?asOf (per item on hand,
+   * average cost, value, percentOfTotal; per inventory asset account valuation, accrual glBalance as of the date and difference; totalValue;
+   * basisNote on cash-basis companies), GET /reports/inventory-valuation-detail?from&to&itemId&limit&offset (movement rows in posting order
+   * with running figures, opening per item) and GET /reports/inventory-stock-status?asOf (active items, on hand, reorder point, reorder flag).
+   * Inventory off: 400 INVENTORY_OFF.
+   */
+  'inventory-reports-v1',
+  /**
+   * Reorder alerts (U-78, P24 E4): GET /items/reorder-alerts {data, total} and GET /reports/reorder {title, asOf, data}: active inventory items
+   * with a reorder point whose on hand now is at or below it, with reorder quantity and preferred vendor.
+   */
+  'reorder-alerts-v1',];
 

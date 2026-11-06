@@ -204,21 +204,28 @@ export async function deleteAdjustment(tenantId: string, id: string, userId?: st
 
 // ─── Counts (U-159, Q-P24g) ──────────────────────────────────────────
 
-/** On hand and value of each part as of a date: the latest live movement dated on or before it (base units). */
-async function stockAsOf(executor: DbOrTx, tenantId: string, companyId: string, itemIds: readonly string[], asOf: string) {
-  const out = new Map<string, { onHand: Dec; value: Dec }>();
+/**
+ * On hand, value and last positive average of each part as of a date: the
+ * latest live movement dated on or before it (base units). `asOf` null: the
+ * latest movement of any date. Parts with no such movement are absent.
+ */
+export async function stockAsOf(executor: DbOrTx, tenantId: string, companyId: string, itemIds: readonly string[], asOf: string | null) {
+  const out = new Map<string, { onHand: Dec; value: Dec; lastCost: Dec }>();
   if (itemIds.length === 0) return out;
   const r = await executor.execute(sql`
-    SELECT DISTINCT ON (m.item_id) m.item_id::text AS item_id, m.running_qty::text AS q, m.running_value::text AS v
+    SELECT DISTINCT ON (m.item_id) m.item_id::text AS item_id, m.running_qty::text AS q, m.running_value::text AS v, m.last_cost::text AS l
     FROM inventory_movements m
-    WHERE m.tenant_id = ${tenantId} AND m.company_id = ${companyId} AND m.voided = false AND m.movement_date <= ${asOf}::date
+    WHERE m.tenant_id = ${tenantId} AND m.company_id = ${companyId} AND m.voided = false
+      ${asOf === null ? sql`` : sql`AND m.movement_date <= ${asOf}::date`}
       AND m.item_id IN (${sql.join(itemIds.map((i) => sql`${i}::uuid`), sql`, `)})
     ORDER BY m.item_id, m.movement_date DESC, m.txn_created_at DESC, m.transaction_id DESC`);
-  for (const row of r.rows as Array<{ item_id: string; q: string; v: string }>) out.set(row.item_id, { onHand: new Decimal(row.q), value: new Decimal(row.v) });
+  for (const row of r.rows as Array<{ item_id: string; q: string; v: string; l: string }>) {
+    out.set(row.item_id, { onHand: new Decimal(row.q), value: new Decimal(row.v), lastCost: new Decimal(row.l) });
+  }
   return out;
 }
 
-async function companyIdOf(executor: DbOrTx, tenantId: string, companyId?: string): Promise<string> {
+export async function companyIdOf(executor: DbOrTx, tenantId: string, companyId?: string): Promise<string> {
   if (companyId) return companyId;
   const r = await executor.execute(sql`SELECT id FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id LIMIT 1`);
   const row = r.rows[0] as { id: string } | undefined;
