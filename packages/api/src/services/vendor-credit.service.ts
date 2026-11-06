@@ -68,6 +68,7 @@ function creditJournal(apAccountId: string, input: CreateVendorCreditInput, buil
       itemId: l.itemId ?? undefined,
       quantity: l.quantity ?? undefined,
       unitPrice: l.unitPrice ?? undefined,
+      unitId: l.unitId ?? undefined,
       contactId: l.contactId,
     })),
   ];

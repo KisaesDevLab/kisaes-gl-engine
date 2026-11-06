@@ -7,6 +7,7 @@ import type { CreateItemInput, UpdateItemInput, ItemFilters } from '@kis-books/s
 import { db, type DbOrTx } from '../db/index.js';
 import * as salesTaxSvc from './sales-tax.service.js';
 import * as inventory from './inventory.service.js';
+import * as units from './units.service.js';
 import { items, accounts, contacts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -40,7 +41,7 @@ export async function list(tenantId: string, filters?: ItemFilters, companyId?: 
     db.select({ count: count() }).from(items).where(where),
   ]);
   // Parts carry their read-only stock figures (U-39b); other kinds null.
-  return { data: await inventory.withStockFigures(db, tenantId, data, companyId), total: total[0]?.count ?? 0 };
+  return { data: await withFigures(db, tenantId, data, companyId), total: total[0]?.count ?? 0 };
 }
 
 export async function getById(tenantId: string, id: string, executor: DbOrTx = db) {
@@ -49,9 +50,14 @@ export async function getById(tenantId: string, id: string, executor: DbOrTx = d
   return item;
 }
 
-/** One item with its read-only stock figures (U-39b, item-types-v1); `companyId` picks whose stock (items are tenant-wide). */
+/** Items with their read-only stock figures (U-39b) and default prices per unit (U-161, unitPrices; null without a unit set). */
+async function withFigures<T extends typeof items.$inferSelect>(executor: DbOrTx, tenantId: string, rows: T[], companyId?: string | null) {
+  return units.withUnitPrices(executor, tenantId, await inventory.withStockFigures(executor, tenantId, rows, companyId));
+}
+
+/** One item with its read-only stock figures (U-39b, item-types-v1) and unit prices (U-161). */
 export async function getWithFigures(tenantId: string, id: string, executor: DbOrTx = db, companyId?: string | null) {
-  const [item] = await inventory.withStockFigures(executor, tenantId, [await getById(tenantId, id, executor)], companyId);
+  const [item] = await withFigures(executor, tenantId, [await getById(tenantId, id, executor)], companyId);
   return item!;
 }
 
@@ -159,6 +165,8 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
     await assertItemRefs(tx, tenantId, companyId, input as unknown as Record<string, unknown>);
     // The item's sales tax code (U-147): an active code of the item's company.
     await salesTaxSvc.assertTaxRefs(tx, tenantId, (input as { companyId?: string | null }).companyId ?? null, { taxCodeId: (input as { taxCodeId?: string | null }).taxCodeId });
+    // Units of measure (U-161): an active set of the company; default units of that set.
+    await units.assertItemUnits(tx, tenantId, companyId, input);
     const { opening, ...fields } = input;
     if (opening && input.itemType !== 'inventory_part') {
       throw AppError.badRequest('Only an inventory item takes opening stock', 'VALIDATION_ERROR', { field: 'opening' });
@@ -173,7 +181,7 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
       const { postOpening } = await import('./inventory-adjustment.service.js');
       await postOpening(tx, tenantId, companyId, item.id, opening, userId);
     }
-    return (await inventory.withStockFigures(tx, tenantId, [item], companyId))[0]!;
+    return (await withFigures(tx, tenantId, [item], companyId))[0]!;
   });
 }
 
@@ -191,6 +199,12 @@ const PART_ONLY_FIELDS = ['assetAccountId', 'cogsAccountId', 'reorderPoint', 're
 export async function update(tenantId: string, id: string, input: UpdateItemInput, userId?: string, companyId?: string) {
   const { expectedUpdatedAt, ...changes } = input;
   return await db.transaction(async (tx) => {
+    // U-161: a unit set change first locks the old set's units (a posting naming one finishes first), before the item row.
+    const setMoves = changes.unitSetId !== undefined;
+    if (setMoves) {
+      const [peek] = await tx.select({ setId: items.unitSetId }).from(items).where(and(eq(items.tenantId, tenantId), eq(items.id, id))).limit(1);
+      await units.lockForSetChange(tx, tenantId, peek?.setId ?? null);
+    }
     const [existing] = await tx.select().from(items).where(and(eq(items.tenantId, tenantId), eq(items.id, id))).for('update').limit(1);
     if (!existing) throw AppError.notFound('Item not found');
     assertNotStale(existing, expectedUpdatedAt, 'This item');
@@ -220,6 +234,17 @@ export async function update(tenantId: string, id: string, input: UpdateItemInpu
       throw AppError.conflict('This item already has stock on its inventory asset account, so the account can not change.', 'ITEM_HAS_INVENTORY');
     }
     if (changes.name && changes.name !== existing.name) await assertNameFree(tx, tenantId, changes.name, id);
+    // Units of measure (U-161, Q-P24w): the set changes only while no line names the item; defaults stay in the set.
+    if (setMoves && (changes.unitSetId ?? null) !== (existing.unitSetId ?? null)) {
+      await units.assertSetChangeAllowed(tx, tenantId, id);
+      if (changes.defaultPurchaseUnitId === undefined) set['defaultPurchaseUnitId'] = null;
+      if (changes.defaultSaleUnitId === undefined) set['defaultSaleUnitId'] = null;
+    }
+    if (setMoves || changes.defaultPurchaseUnitId !== undefined || changes.defaultSaleUnitId !== undefined) {
+      const pickU = (k: 'unitSetId' | 'defaultPurchaseUnitId' | 'defaultSaleUnitId') => (set[k] !== undefined ? set[k] : existing[k]) as string | null;
+      await units.assertItemUnits(tx, tenantId, companyId ?? existing.companyId, {
+        unitSetId: pickU('unitSetId'), defaultPurchaseUnitId: pickU('defaultPurchaseUnitId'), defaultSaleUnitId: pickU('defaultSaleUnitId') });
+    }
     const refs: Record<string, unknown> = {};
     for (const f of ['incomeAccountId', 'expenseAccountId', 'assetAccountId', 'cogsAccountId', 'preferredVendorId'] as const) {
       if (set[f] !== undefined && set[f] !== existing[f]) refs[f] = set[f];
@@ -231,7 +256,7 @@ export async function update(tenantId: string, id: string, input: UpdateItemInpu
       .where(and(eq(items.tenantId, tenantId), eq(items.id, id))).returning();
     if (!updated) throw AppError.notFound('Item not found');
     await auditLog(tenantId, 'update', 'item', id, existing, updated, userId, tx);
-    return (await inventory.withStockFigures(tx, tenantId, [updated], companyId))[0]!;
+    return (await withFigures(tx, tenantId, [updated], companyId))[0]!;
   });
 }
 

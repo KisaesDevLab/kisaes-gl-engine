@@ -13,6 +13,7 @@ export * from './banking.js';
 export * from './attachments.js';
 export * from './items.js';
 export * from './inventory.js';
+export * from './units.js';
 export * from './bank-rules.js';
 export * from './budgets.js';
 export * from './system-settings.js';

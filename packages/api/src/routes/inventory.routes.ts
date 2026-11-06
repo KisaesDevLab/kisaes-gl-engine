@@ -49,7 +49,9 @@ const rules = 'inventory-adjust-v1: one line per inventory item {itemId, quantit
   + 'or before the closing date (for an edit, the old or the new date): 409 INVENTORY_PERIOD_CLOSED, closingPassword or not. 409 RETRY after a '
   + 'deadlock or lock timeout (nothing saved). The reply\'s warnings[] carries NEGATIVE_STOCK {code, itemId, date, onHand} when an item\'s on hand '
   + 'newly went below 0. Record: {id, date, adjustmentAccountId, memo, status, updatedAt, lines: [{itemId, quantityChange, valueChange, value '
-  + '(as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}.';
+  + '(as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}. Units (units-of-measure-v1): a line may take unitId, the '
+  + 'unit quantityChange is in (a unit of the item\'s set; null = base): stock moves by round4(quantityChange x factor) (400 UNIT_NOT_IN_SET, 400 '
+  + 'UNIT_QUANTITY_TOO_SMALL); the record\'s lines add unitId and baseQuantityChange.';
 
 const readAdjustment = (req: { tenantId: string; companyId?: string }, id: string) => adjustments.getAdjustment(db, req.tenantId, id, req.companyId);
 
@@ -124,7 +126,8 @@ inventoryRouter.get('/count-sheet', describe({
   summary: 'The physical count sheet',
   description: 'inventory-adjust-v1: Response {asOf, items: [{itemId, name, description, unit, preferredVendor {id, name} | null, onHand '
     + '(4 places, base unit), value (2 places)}]} for every active inventory item of the company, by name; on hand and value as of asOf (default '
-    + 'today), from the stock ledger. Send each onHand back as sheetOnHand with POST /inventory/counts. Inventory off: 400 INVENTORY_OFF.',
+    + 'today), from the stock ledger. Send each onHand back as sheetOnHand with POST /inventory/counts. Inventory off: 400 INVENTORY_OFF. '
+    + 'units-of-measure-v1: unit is the base unit name of an item with a unit set (else its unitLabel); items add unitSetId.',
   query: inventoryCountSheetQuerySchema,
 }), async (req, res) => {
   const q = inventoryCountSheetQuerySchema.safeParse(req.query);
@@ -144,7 +147,8 @@ inventoryRouter.post('/counts', closingPasswordLimiter, lockContextMiddleware, i
     + 'details.items [{itemId, sheetOnHand, onHand}] for every such line, and nothing is saved. Otherwise one adjustment dated asOf moves each '
     + 'item by countedQuantity - onHand at average cost (lines with no difference are left out): Response 201 {adjustment}; with no difference '
     + 'at all nothing is posted, Response 201 {adjustment: null}. asOf on or before the closing date: 409 INVENTORY_PERIOD_CLOSED. '
-    + 'adjustmentAccountId as for adjustments.',
+    + 'adjustmentAccountId as for adjustments. A line may take unitId (units-of-measure-v1): countedQuantity is in that unit of the item\'s set and '
+    + 'counts as round4(countedQuantity x factor) base units (400 UNIT_NOT_IN_SET, 400 UNIT_QUANTITY_TOO_SMALL); sheetOnHand stays in the base unit.',
   body: inventoryCountSchema,
 }), async (req, res) => {
   res.status(201).json(await adjustments.postCount(req.tenantId, req.body, req.userId, req.companyId));

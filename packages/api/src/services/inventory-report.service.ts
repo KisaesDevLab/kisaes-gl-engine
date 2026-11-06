@@ -21,6 +21,7 @@ import { AppError } from '../utils/errors.js';
 import { Decimal, type Dec } from '../utils/inventory-walk.js';
 import { assertInventoryOn, INVENTORY_ASSET_TAG } from './inventory.service.js';
 import { companyIdOf, stockAsOf } from './inventory-adjustment.service.js';
+import { baseUnits, unitsById } from './units.service.js';
 
 const money = (v: Dec) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
 const qty = (v: Dec) => v.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
@@ -41,6 +42,7 @@ export const CASH_BASIS_NOTE = 'This report shows inventory at average cost as o
 interface PartInfo {
   id: string; name: string; description: string | null; isActive: boolean; assetAccountId: string | null;
   preferredVendorId: string | null; reorderPoint: string | null; reorderQuantity: string | null; unitLabel: string | null;
+  unitSetId: string | null; defaultPurchaseUnitId: string | null;
 }
 
 /** The company's inventory parts (company-less rows count as the company's, as elsewhere), by name. */
@@ -48,7 +50,7 @@ async function partsOf(executor: DbOrTx, tenantId: string, companyId: string): P
   const rows = await executor.select({
     id: items.id, name: items.name, description: items.description, isActive: items.isActive, assetAccountId: items.assetAccountId,
     preferredVendorId: items.preferredVendorId, reorderPoint: items.reorderPoint, reorderQuantity: items.reorderQuantity,
-    unitLabel: items.unitLabel, companyId: items.companyId,
+    unitLabel: items.unitLabel, unitSetId: items.unitSetId, defaultPurchaseUnitId: items.defaultPurchaseUnitId, companyId: items.companyId,
   }).from(items).where(and(eq(items.tenantId, tenantId), eq(items.itemType, 'inventory_part'))).orderBy(items.name, items.id);
   return rows.filter((r) => !r.companyId || r.companyId === companyId).map((r) => ({ ...r, isActive: r.isActive !== false }));
 }
@@ -199,6 +201,8 @@ export async function valuationDetail(tenantId: string, q: { from: string; to: s
 
 export interface StockStatusRow {
   itemId: string; name: string; description: string | null; unitLabel: string | null;
+  /** U-161: the item's unit set and base unit name (quantities are in it); null without a set. */
+  unitSetId: string | null; baseUnit: string | null;
   preferredVendorId: string | null; preferredVendor: { id: string; name: string } | null;
   reorderPoint: string | null; reorderQuantity: string | null; onHand: string; value: string; reorder: boolean;
 }
@@ -207,6 +211,7 @@ async function statusRows(tenantId: string, co: string, asOf: string | null): Pr
   const parts = (await partsOf(db, tenantId, co)).filter((p) => p.isActive);
   const stock = await stockAsOf(db, tenantId, co, parts.map((p) => p.id), asOf);
   const vnames = await vendorNames(db, tenantId, parts.map((p) => p.preferredVendorId));
+  const bases = await baseUnits(db, tenantId, parts.map((p) => p.unitSetId));
   const zero = new Decimal(0);
   return parts.map((p) => {
     const s = stock.get(p.id);
@@ -214,6 +219,7 @@ async function statusRows(tenantId: string, co: string, asOf: string | null): Pr
     const point = p.reorderPoint === null ? null : new Decimal(p.reorderPoint);
     return {
       itemId: p.id, name: p.name, description: p.description ?? null, unitLabel: p.unitLabel ?? null,
+      unitSetId: p.unitSetId, baseUnit: p.unitSetId ? bases.get(p.unitSetId)?.name ?? null : null,
       preferredVendorId: p.preferredVendorId,
       preferredVendor: p.preferredVendorId && vnames.has(p.preferredVendorId) ? { id: p.preferredVendorId, name: vnames.get(p.preferredVendorId)! } : null,
       reorderPoint: point === null ? null : qty(point), reorderQuantity: p.reorderQuantity === null ? null : qty(new Decimal(p.reorderQuantity)),
@@ -235,9 +241,23 @@ export async function reorderAlerts(tenantId: string, companyId?: string) {
   return { data, total: data.length };
 }
 
-/** GET /reports/reorder: the reorder alerts as a report, with how many to order (the reorder quantity, base unit). */
+/**
+ * GET /reports/reorder: the reorder alerts as a report, with how many to order:
+ * the reorder quantity (base unit) and, for an item with a default purchase
+ * unit (U-161), the same in that unit, round4(reorderQuantity / factor).
+ */
 export async function reorderReport(tenantId: string, companyId?: string) {
   const co = await scope(tenantId, companyId);
-  const data = (await statusRows(tenantId, co, null)).filter((r) => r.reorder);
+  const rows = (await statusRows(tenantId, co, null)).filter((r) => r.reorder);
+  const parts = new Map((await partsOf(db, tenantId, co)).map((p) => [p.id, p]));
+  const purchase = await unitsById(db, tenantId, rows.map((r) => parts.get(r.itemId)?.defaultPurchaseUnitId));
+  const data = rows.map((r) => {
+    const u = purchase.get(parts.get(r.itemId)?.defaultPurchaseUnitId ?? '');
+    return {
+      ...r,
+      purchaseUnit: u ? { id: u.id, name: u.name, abbreviation: u.abbreviation, factor: u.factor.toFixed(6) } : null,
+      reorderQuantityInPurchaseUnit: u && r.reorderQuantity !== null ? qty(new Decimal(r.reorderQuantity).dividedBy(u.factor)) : null,
+    };
+  });
   return { title: 'Items to Reorder', asOf: await today(), data };
 }

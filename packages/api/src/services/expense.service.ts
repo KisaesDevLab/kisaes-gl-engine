@@ -36,7 +36,7 @@ export function buildExpensePayload(input: CreateExpenseInput) {
       contactId: 'contactId' in line ? line.contactId ?? null : null,
       isBillable: 'isBillable' in line ? line.isBillable === true : false,
       // An inventory item bought on the card charge (U-158): costed by the ledger core.
-      ...itemLineDetails(line as { itemId?: string | null; quantity?: string | null; unitPrice?: string | null }, amounts[i]!, i),
+      ...itemLineDetails(line as { itemId?: string | null; quantity?: string | null; unitPrice?: string | null; unitId?: string | null }, amounts[i]!, i),
     })),
     // Payment-side cash credit has no user-facing tag; leave null.
     { accountId: input.payFromAccountId, debit: '0', credit: total },

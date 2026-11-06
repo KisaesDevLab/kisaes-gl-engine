@@ -195,6 +195,8 @@ export interface ApLineInput {
   itemId?: string | null;
   quantity?: string | null;
   unitPrice?: string | null;
+  // U-161: the unit quantity and unitPrice are in (null = base).
+  unitId?: string | null;
   tagId?: string | null;
   contactId?: string | null;
   isBillable?: boolean;
@@ -207,6 +209,7 @@ export interface BuiltApLine {
   itemId: string | null;
   quantity: string | null;
   unitPrice: string | null;
+  unitId: string | null;
   tagId?: string | null;
   contactId: string | null;
   isBillable: boolean;
@@ -272,6 +275,7 @@ export function buildApLines(lines: readonly ApLineInput[], opts: { allowBillabl
       itemId: l.itemId || null,
       quantity,
       unitPrice,
+      unitId: l.unitId ?? null,
       tagId: l.tagId,
       contactId: l.contactId || null,
       isBillable: l.isBillable === true,
@@ -359,6 +363,7 @@ function lineExtras(l: BuiltApLine) {
     itemId: l.itemId ?? undefined,
     quantity: l.quantity ?? undefined,
     unitPrice: l.unitPrice ?? undefined,
+    unitId: l.unitId ?? undefined,
     contactId: l.contactId,
     isBillable: l.isBillable,
   };

@@ -22,6 +22,8 @@ export const inventoryAdjustmentLineSchema = z.object({
   itemId: z.string().uuid(),
   quantityChange: z.string().min(1).max(20).nullable().optional(),
   valueChange: z.string().min(1).max(20).nullable().optional(),
+  // The unit quantityChange is in (U-161, units-of-measure-v1): a unit of the item's set; null = the base unit.
+  unitId: z.string().uuid().nullable().optional(),
 });
 
 /** POST /inventory/adjustments, PUT /inventory/adjustments/:id. */
@@ -61,6 +63,8 @@ export const inventoryCountSchema = z.object({
     itemId: z.string().uuid(),
     sheetOnHand: z.string().min(1).max(20),
     countedQuantity: z.string().min(1).max(20),
+    // The unit countedQuantity is in (U-161); null = the base unit. sheetOnHand stays in the base unit.
+    unitId: z.string().uuid().nullable().optional(),
   })).min(1).max(MAX_LINES),
 });
 
@@ -74,6 +78,39 @@ export const itemOpeningSchema = z.object({
   value: z.string().min(1).max(20),
   asOf: isoDate,
 });
+
+// Units of measure (U-161, units-of-measure-v1, Q-P24i). A unit set has a
+// base unit and other units, each a fixed factor = base units per unit
+// (> 0, at most 6 places, at most 1,000,000). A unit named on a line keeps
+// its factor and set (409 UNIT_IN_USE, Q-P24w); new units can be added.
+const unitNameSchema = z.string().trim().min(1).max(30);
+const unitAbbreviationSchema = z.string().trim().max(10).nullish();
+export const unitFactorSchema = z.string().trim().regex(/^\d{1,7}(\.\d{1,6})?$/, 'A factor above 0 with at most 6 decimal places')
+  .refine((v) => Number(v) > 0 && Number(v) <= 1_000_000, 'The factor must be above 0 and at most 1,000,000');
+export const unitSetUnitSchema = z.object({
+  // PUT: the id of a unit kept; omitted = a new unit.
+  id: z.string().uuid().optional(),
+  name: unitNameSchema,
+  abbreviation: unitAbbreviationSchema,
+  factor: unitFactorSchema,
+});
+export const createUnitSetSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  baseUnitName: unitNameSchema,
+  baseUnitAbbreviation: unitAbbreviationSchema,
+  units: z.array(unitSetUnitSchema).max(50).default([]),
+});
+export const updateUnitSetSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  baseUnitName: unitNameSchema.optional(),
+  baseUnitAbbreviation: unitAbbreviationSchema,
+  isActive: z.boolean().optional(),
+  // The whole list of units: kept units by id, new ones without; a unit left out is removed.
+  units: z.array(unitSetUnitSchema).max(50).optional(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+});
+export type CreateUnitSetInput = z.infer<typeof createUnitSetSchema>;
+export type UpdateUnitSetInput = z.infer<typeof updateUnitSetSchema>;
 
 export type InventoryAdjustmentInput = z.infer<typeof inventoryAdjustmentSchema>;
 export type InventoryCountInput = z.infer<typeof inventoryCountSchema>;

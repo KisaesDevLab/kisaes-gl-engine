@@ -107,6 +107,8 @@ export const createExpenseSchema = z.object({
     itemId: z.string().uuid().nullable().optional(),
     quantity: z.string().min(1).nullable().optional(),
     unitPrice: z.string().min(1).nullable().optional(),
+    // The unit quantity and unitPrice are in (U-161, units-of-measure-v1): a unit of the item's set; null = the base unit.
+    unitId: z.string().uuid().nullable().optional(),
   })).max(MAX_LINES).optional(),
   memo: z.string().optional(),
   tags: z.array(z.string().uuid()).optional(),
@@ -167,6 +169,8 @@ const lineItemSchema = z.object({
   itemId: z.string().uuid().nullable().optional(),
   description: z.string().optional(),
   quantity: z.string().min(1),
+  // The unit quantity and unitPrice are in (U-161, units-of-measure-v1): a unit of the item's set; null = the base unit.
+  unitId: z.string().uuid().nullable().optional(),
   unitPrice: z.string().min(1),
   isTaxable: z.boolean().default(false),
   taxRate: docTaxRateSchema.optional(),
@@ -197,6 +201,8 @@ export const salesTaxDocFields = {
 export const invoiceLineFields = {
   accountId: z.string().uuid().optional(),
   itemId: z.string().uuid().nullable().optional(),
+  // The unit quantity and unitPrice are in (U-161, units-of-measure-v1): a unit of the item's set; null = the base unit.
+  unitId: z.string().uuid().nullable().optional(),
   description: z.string().max(4000).optional(),
   quantity: z.string().min(1).optional(),
   unitPrice: z.string().min(1).optional(),

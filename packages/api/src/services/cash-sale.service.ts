@@ -55,6 +55,7 @@ async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput
       description: line.description,
       quantity: line.quantity,
       unitPrice: line.unitPrice,
+      ...(line.unitId ? { unitId: line.unitId } : {}),
       isTaxable: c.isTaxable,
       taxRate: c.taxRate,
       taxAmount: new Decimal(c.taxAmount).toFixed(4),

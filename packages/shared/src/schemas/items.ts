@@ -54,6 +54,13 @@ const purchaseFields = {
   reorderPoint: itemQuantitySettingSchema.nullish(),
   reorderQuantity: itemQuantitySettingSchema.nullish(),
   unitLabel: z.string().trim().max(10, 'A unit label has at most 10 characters').nullish(),
+  // Units of measure (U-161, units-of-measure-v1): a unit set of the company
+  // and the default purchase / sale units (units of that set; null = the
+  // base unit). The set changes only while no line names the item (409
+  // UNIT_IN_USE). unitLabel stays the display unit of an item without a set.
+  unitSetId: z.string().uuid().nullish(),
+  defaultPurchaseUnitId: z.string().uuid().nullish(),
+  defaultSaleUnitId: z.string().uuid().nullish(),
 };
 
 export const createItemSchema = z.object({

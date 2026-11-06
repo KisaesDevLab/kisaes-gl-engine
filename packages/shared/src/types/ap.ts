@@ -14,6 +14,7 @@ export interface BillLineInput {
   description?: string;
   amount: string;
   itemId?: string | null;
+  unitId?: string | null;
   /** bill-lines-v1: decimal strings; amount must equal quantity x unitPrice (cents, half away from zero). */
   quantity?: string | null;
   unitPrice?: string | null;
@@ -48,6 +49,7 @@ export interface VendorCreditLineInput {
   description?: string;
   amount: string;
   itemId?: string | null;
+  unitId?: string | null;
   quantity?: string | null;
   unitPrice?: string | null;
   tagId?: string | null;

@@ -126,6 +126,9 @@ export interface SalesDocumentLineRecord {
   taxCode: { id: string; code: string; taxable: boolean } | null;
   /** U-158: on a credit memo line, the sale whose units it returns; null otherwise. */
   returnOf: { transactionId: string } | null;
+  /** U-161: the unit quantity and unitPrice are in (null = base) and the quantity in base units (null without a unit). */
+  unitId: string | null;
+  baseQuantity: string | null;
 }
 
 /** Derived costing lines of a document (U-157 B3): never in `lines`. */
@@ -147,7 +150,8 @@ async function documentLines(executor: DbOrTx, tenantId: string, row: TxnRow, si
   const res = await executor.execute(sql`
     SELECT jl.account_id, jl.item_id, jl.description, jl.quantity::text AS quantity, jl.unit_price::text AS unit_price,
       (jl.credit - jl.debit)::text AS net, jl.is_taxable, jl.tax_rate::text AS tax_rate, jl.tax_amount::text AS tax_amount, jl.tax_code_id,
-      jl.tag_id, to_char(jl.service_date, 'YYYY-MM-DD') AS service_date, jl.line_order, a.system_tag, m.source_transaction_id AS return_of
+      jl.tag_id, to_char(jl.service_date, 'YYYY-MM-DD') AS service_date, jl.line_order, a.system_tag, m.source_transaction_id AS return_of,
+      jl.unit_id, jl.base_quantity::text AS base_quantity
     FROM journal_lines jl JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
     LEFT JOIN inventory_movements m ON m.id = jl.inventory_movement_id AND m.tenant_id = jl.tenant_id
     WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id = ${row.id} AND jl.is_void_reversal = false
@@ -171,6 +175,8 @@ async function documentLines(executor: DbOrTx, tenantId: string, row: TxnRow, si
     serviceDate: (r['service_date'] as string | null) ?? null,
     taxCode: r['tax_code_id'] ? codes.get(String(r['tax_code_id'])) ?? null : null,
     returnOf: r['return_of'] ? { transactionId: String(r['return_of']) } : null,
+    unitId: (r['unit_id'] as string | null) ?? null,
+    baseQuantity: r['base_quantity'] == null ? null : new Decimal(String(r['base_quantity'])).toFixed(4),
   }));
 }
 

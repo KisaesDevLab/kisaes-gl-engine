@@ -44,6 +44,7 @@ import { jeTemplatesRouter } from './routes/je-templates.routes.js';
 import { itemsRouter } from './routes/items.routes.js';
 import { inventoryRouter } from './routes/inventory.routes.js';
 import { inventoryReportsRouter } from './routes/inventory-reports.routes.js';
+import { unitSetsRouter } from './routes/unit-sets.routes.js';
 import { priceLevelsRouter } from './routes/price-levels.routes.js';
 import { billableCostsRouter } from './routes/billable-costs.routes.js';
 import { paymentsRouter } from './routes/payments.routes.js';
@@ -600,6 +601,8 @@ app.use('/api/v1/je-templates', jeTemplatesRouter);
 app.use('/api/v1/items', itemsRouter);
 // Inventory adjustments and counts (U-159, inventory-adjust-v1).
 app.use('/api/v1/inventory', inventoryRouter);
+// Units of measure (U-161, units-of-measure-v1).
+app.use('/api/v1/unit-sets', unitSetsRouter);
 app.use('/api/v1/price-levels', priceLevelsRouter);
 app.use('/api/v1/billable-costs', billableCostsRouter);
 app.use('/api/v1/payments', paymentsRouter);
