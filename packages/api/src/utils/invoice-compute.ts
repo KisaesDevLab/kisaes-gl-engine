@@ -51,7 +51,8 @@ const BaseDecimal = DecimalLib.default || DecimalLib;
 const Decimal = BaseDecimal.clone({ precision: 40, rounding: BaseDecimal.ROUND_HALF_UP });
 type DecimalValue = InstanceType<typeof Decimal>;
 
-export type SalesItemType = 'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal';
+// inventory_part (U-39b) prices like any other item kind.
+export type SalesItemType = 'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal' | 'inventory_part';
 export type UnitPriceSource = 'input' | 'item' | 'price_level' | 'price_level_percent' | 'none' | 'billable_cost';
 
 /**

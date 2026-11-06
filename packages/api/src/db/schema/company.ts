@@ -68,6 +68,8 @@ export const companies = pgTable('companies', {
   salesTaxEnabled: boolean('sales_tax_enabled'),
   salesTaxBasis: varchar('sales_tax_basis', { length: 10 }).notNull().default('accrual'),
   salesTaxSsuta: boolean('sales_tax_ssuta').notNull().default(false),
+  // Inventory (U-25 inventory half, migration 0258): NULL = off.
+  inventoryEnabled: boolean('inventory_enabled'),
   // Prefix and next number per document type other than invoices (U-111,
   // migration 0240): {cash_sale|credit_memo|statement: {prefix, next}}.
   documentNumbers: jsonb('document_numbers').$type<Record<string, { prefix?: string; next?: number }>>().notNull().default({}),

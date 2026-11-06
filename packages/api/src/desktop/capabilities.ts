@@ -630,4 +630,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'bad-debt-recovery-v1',
   /** Idempotency-Key on POST /payments/write-off-recoveries (U-154). */
-  'idempotency-recovery-v1',];
+  'idempotency-recovery-v1',
+  /**
+   * Item kinds and the purchase side (U-39b): itemType inventory_part; purchaseDescription, purchaseCost, expenseAccountId and
+   * preferredVendorId on every kind; assetAccountId and cogsAccountId (required) and reorderPoint / reorderQuantity on parts; unitLabel
+   * (at most 10 characters); read-only quantityOnHand (4 places), averageCost (6) and assetValue (2) strings on parts (null on other
+   * kinds). PUT /items/:id locks the row and takes expectedUpdatedAt (409 STALE); the name check runs in the transaction. Moving the
+   * kind to or from inventory_part with posted lines is 409 ITEM_IN_USE; a part's asset account can't change once it has stock
+   * movements (409 ITEM_HAS_INVENTORY); a new part while inventory is off is 400 INVENTORY_OFF.
+   */
+  'item-types-v1',
+  /**
+   * Inventory asset account (U-156): turning inventory on adopts the active other-current-asset account named "Inventory Asset" or
+   * creates it, tags it system_tag inventory_asset and makes sure a cost of goods sold account exists. The tagged account and the
+   * accounts parts name (active parts, and inactive parts with stock movements) can't be deactivated, merged away or change type (409 ACCOUNT_IN_USE).
+   */
+  'inventory-account-v1',
+  /** inventoryEnabled on GET/PUT /company/settings (U-25; stored NULL = off); off while stock or value remains is 409 INVENTORY_IN_USE. */
+  'company-inventory-flag-v1',];

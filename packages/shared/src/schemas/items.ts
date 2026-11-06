@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import { sortBySchema, sortDirSchema } from './list-view.js';
-import { SALES_ITEM_TYPES } from '../types/items.js';
+import { ITEM_TYPES } from '../types/items.js';
 
 export const itemSortKeys = ['name', 'price', 'taxable', 'status'] as const;
 
@@ -15,8 +15,8 @@ const boolParam = z.preprocess((v) => (v === 'true' ? true : v === 'false' ? fal
 // Active/Inactive select silently did nothing).
 export const itemFiltersSchema = z.object({
   isActive: boolParam,
-  // Item kind (U-39a, item-kinds-sales-v1).
-  itemType: z.enum(SALES_ITEM_TYPES).optional(),
+  // Item kind (U-39a item-kinds-sales-v1; inventory_part U-39b item-types-v1).
+  itemType: z.enum(ITEM_TYPES).optional(),
   isTaxable: boolParam,
   search: z.string().optional(),
   sortBy: sortBySchema(itemSortKeys),
@@ -35,28 +35,52 @@ export const itemDiscountPercentSchema = z.string().trim()
   .regex(/^\d{1,3}(\.\d{1,4})?$/, 'A percent with at most 4 decimal places')
   .refine((v) => Number(v) > 0 && Number(v) <= 100, 'The discount percent must be above 0 and at most 100');
 
+// Purchase side and inventory fields (U-39b, item-types-v1). Money and
+// quantities are decimal strings, never JSON numbers: purchaseCost 0 or
+// more with at most 4 places; reorderPoint 0 or more and reorderQuantity
+// above 0, at most 4 places each (below 100,000,000).
+export const itemPurchaseCostSchema = z.string().trim()
+  .regex(/^\d{1,15}(\.\d{1,4})?$/, 'A cost of 0 or more with at most 4 decimal places');
+export const itemQuantitySettingSchema = z.string().trim()
+  .regex(/^\d{1,8}(\.\d{1,4})?$/, 'A quantity of 0 or more with at most 4 decimal places');
+const purchaseFields = {
+  purchaseDescription: z.string().max(4000).nullish(),
+  purchaseCost: itemPurchaseCostSchema.nullish(),
+  expenseAccountId: z.string().uuid().nullish(),
+  preferredVendorId: z.string().uuid().nullish(),
+  assetAccountId: z.string().uuid().nullish(),
+  cogsAccountId: z.string().uuid().nullish(),
+  reorderPoint: itemQuantitySettingSchema.nullish(),
+  reorderQuantity: itemQuantitySettingSchema.nullish(),
+  unitLabel: z.string().trim().max(10, 'A unit label has at most 10 characters').nullish(),
+};
+
 export const createItemSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
   description: z.string().nullish(),
-  itemType: z.enum(SALES_ITEM_TYPES).default('service'),
+  itemType: z.enum(ITEM_TYPES).default('service'),
   unitPrice: z.string().nullish(),
   discountPercent: itemDiscountPercentSchema.nullish(),
   incomeAccountId: z.string().uuid(),
   isTaxable: z.boolean().default(true),
   // The item's sales tax code (U-147); null = from isTaxable.
   taxCodeId: z.string().uuid().nullish(),
+  ...purchaseFields,
 });
 
 export const updateItemSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().nullish(),
-  itemType: z.enum(SALES_ITEM_TYPES).optional(),
+  itemType: z.enum(ITEM_TYPES).optional(),
   unitPrice: z.string().nullish(),
   discountPercent: itemDiscountPercentSchema.nullish(),
   incomeAccountId: z.string().uuid().optional(),
   isTaxable: z.boolean().optional(),
   taxCodeId: z.string().uuid().nullish(),
   isActive: z.boolean().optional(),
+  ...purchaseFields,
+  // updatedAt as last read (item-types-v1): a mismatch is 409 STALE.
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 
 // CSV-import body for POST /items/import. The frontend reads the CSV

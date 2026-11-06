@@ -13,6 +13,7 @@ import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.
 import * as coaTemplatesService from './coa-templates.service.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { assertAccountNotInventory } from './inventory.service.js';
 
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
@@ -123,6 +124,11 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
   delete sanitized['tenantId'];
   delete sanitized['companyId'];
 
+  // Inventory accounts stay active and keep their type (U-156, S12): 409 ACCOUNT_IN_USE.
+  if (input.isActive === false || (input.accountType && input.accountType !== existing.accountType)) {
+    await assertAccountNotInventory(db, tenantId, [id]);
+  }
+
   // Block type change on system accounts
   if (existing.isSystem && input.accountType && input.accountType !== existing.accountType) {
     throw AppError.badRequest('Cannot change the type of a system account');
@@ -203,6 +209,7 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
     if (acct.isSystem && u.accountType && u.accountType !== acct.accountType) {
       throw AppError.badRequest(`Cannot change the type of system account "${acct.name}"`);
     }
+    if (u.accountType && u.accountType !== acct.accountType) await assertAccountNotInventory(db, tenantId, [u.id]);
     const finalNumber = u.accountNumber !== undefined ? (u.accountNumber || null) : acct.accountNumber;
     finalNumbers.set(u.id, finalNumber);
   }
@@ -271,6 +278,8 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
   const existing = await getById(tenantId, id);
+  // Inventory accounts (U-156, S12): 409 ACCOUNT_IN_USE.
+  await assertAccountNotInventory(db, tenantId, [id]);
 
   if (existing.isSystem) {
     throw AppError.badRequest('Cannot deactivate a system account');
@@ -501,6 +510,8 @@ export async function exportToCsv(tenantId: string): Promise<string> {
 export async function merge(tenantId: string, sourceId: string, targetId: string, userId?: string) {
   const source = await getById(tenantId, sourceId);
   const target = await getById(tenantId, targetId);
+  // Inventory accounts (U-156, S12): 409 ACCOUNT_IN_USE.
+  await assertAccountNotInventory(db, tenantId, [sourceId]);
 
   if (source.isSystem) {
     throw AppError.badRequest('Cannot merge a system account');

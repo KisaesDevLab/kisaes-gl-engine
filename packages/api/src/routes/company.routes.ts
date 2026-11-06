@@ -42,6 +42,7 @@ import { testSmtpConnection } from '../services/setup.service.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { formatTaxRate } from '../utils/sales-compute.js';
+import { inventorySettings } from '../services/inventory.service.js';
 
 // Force the on-disk extension from the claimed MIME, not from the upload
 // filename. An uploader can send `Content-Type: image/png` with an
@@ -211,7 +212,13 @@ function captureClosingPassword(req: import('express').Request, res: import('exp
   next();
 }
 
-companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimiter, captureClosingPassword, validate(updateCompanySettingsSchema), describe({ body: updateCompanySettingsBodyDoc }), async (req, res) => {
+companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimiter, captureClosingPassword, validate(updateCompanySettingsSchema), describe({
+  summary: 'Update company settings',
+  description: 'Response {settings}. inventoryEnabled (company-inventory-flag-v1, NULL stored = off): true adopts the active other-current-asset '
+    + 'account named "Inventory Asset" or creates it, tags it inventory_asset (inventory-account-v1) and makes sure a cost of goods sold account '
+    + 'exists; false while any item still has stock or value is 409 INVENTORY_IN_USE.',
+  body: updateCompanySettingsBodyDoc,
+}), async (req, res) => {
   const company = await companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId, {
     password: res.locals['closingPassword'] as string | undefined,
     actor: { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin },
@@ -245,6 +252,7 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
       financeChargeIncomeAccountId: company.financeChargeIncomeAccountId ?? null,
       financeChargePrintLater: company.financeChargePrintLater !== false,
       ...companyService.salesTaxSettings(company),
+      ...inventorySettings(company),
     },
   });
 });

@@ -64,10 +64,12 @@ export const RELAXED_COLUMNS: Record<string, { relaxedIn: number }> = {
  * 0235 (U-94): document_drafts.kind takes 'statement' (vendor statement).
  * 0238 (U-101): a bill payment application may carry no cash when its
  * early-payment discount is positive (amount >= 0 AND amount + discount > 0).
+ * 0258 (U-39b): items.item_type takes 'inventory_part'.
  */
 export const WIDENED_CHECKS: Record<string, { widenedIn: number }> = {
   'document_drafts.document_drafts_kind_ck': { widenedIn: 236 },
   'bill_payment_applications.chk_bpa_amount_positive': { widenedIn: 239 },
+  'items.items_item_type_ck': { widenedIn: 259 },
 };
 
 export interface TableCompat {
