@@ -1165,7 +1165,9 @@ export async function assertApDocumentUnapplied(
  * a sub-ledger otherwise (invoices, payments, AJEs, daily sales) keep their
  * own void paths and are refused with TXN_DELETE_UNSUPPORTED.
  */
-export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense', 'transfer', 'deposit', 'cash_sale', 'bill', 'vendor_credit'];
+export const DELETABLE_TXN_TYPES: readonly string[] = ['journal_entry', 'expense', 'transfer', 'deposit', 'cash_sale', 'bill', 'vendor_credit',
+  // U-159 (inventory-adjust-v1): DELETE /inventory/adjustments/:id; its movements are voided and the items re-walked.
+  'inventory_adjustment'];
 
 /**
  * Soft delete (P12 R7, capability txn-delete-v1). Nothing is physically

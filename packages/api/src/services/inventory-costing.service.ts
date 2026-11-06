@@ -236,6 +236,16 @@ async function lock(tx: Tx, tenantId: string, companyId: string | null | undefin
   return { companyId: row.id, lockDate, itemIds: ids, links: new Map() };
 }
 
+/**
+ * The costing lock for a caller that must read stock under it before it
+ * posts (a physical count, U-159): companies row, then the items in id
+ * order; a date on or before the closing date is 409 INVENTORY_PERIOD_CLOSED.
+ * The posting it then makes in the same transaction takes the same locks again.
+ */
+export async function lockForInventory(tx: Tx, tenantId: string, companyId: string, itemIds: readonly string[], dates: readonly string[]): Promise<CostingLock> {
+  return lock(tx, tenantId, companyId, itemIds, dates);
+}
+
 async function movementItemIds(tx: Tx, tenantId: string, txnId: string): Promise<string[]> {
   const rows = await tx.select({ itemId: inventoryMovements.itemId }).from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.transactionId, txnId)));
@@ -641,6 +651,16 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
     links.set(saleId, { r: d(row.r), s: d(row.s), n: d(row.n) });
   }
   const result = walk(seed, walkRows, links);
+  // Q-P24s: a value-only adjustment of the posting itself needs stock on hand at its date (400 INVENTORY_NO_STOCK).
+  // Only the trigger is checked: later walks carry rows that were accepted when they were posted.
+  rows.forEach((m, i) => {
+    if (m.transactionId !== triggerId || m.kind !== 'adjust_value') return;
+    const before = i === 0 ? seed : result.rows[i - 1]!.after;
+    if (!before.q.greaterThan(0)) {
+      throw AppError.badRequest('A value-only adjustment needs the item in stock on its date. Adjust the quantity too, or date it when there is stock.',
+        'INVENTORY_NO_STOCK', { itemId, date: m.movementDate, onHand: before.q.toFixed(4) });
+    }
+  });
   const changed: Changed[] = [];
   const cols: Record<'id' | 'value' | 'correction' | 'residual' | 'q' | 'v' | 'l', string[]> = { id: [], value: [], correction: [], residual: [], q: [], v: [], l: [] };
   rows.forEach((m, i) => {

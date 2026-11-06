@@ -64,6 +64,7 @@ export * from './schemas/banking.js';
 export * from './schemas/tags.js';
 export * from './schemas/preferences.js';
 export * from './schemas/items.js';
+export * from './schemas/inventory.js';
 export * from './schemas/price-levels.js';
 export * from './schemas/payments.js';
 export * from './schemas/sales-docs.js';

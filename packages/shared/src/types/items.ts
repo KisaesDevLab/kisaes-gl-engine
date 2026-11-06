@@ -42,6 +42,8 @@ export interface Item {
 }
 
 export interface CreateItemInput {
+  /** An inventory part's opening stock (U-159): quantity > 0, value >= 0 (2 places), asOf YYYY-MM-DD. */
+  opening?: { quantity: string; value: string; asOf: string };
   name: string;
   description?: string | null;
   itemType?: ItemType;

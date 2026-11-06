@@ -42,6 +42,7 @@ import { batchRouter } from './routes/batch.routes.js';
 import { dailySalesRouter } from './routes/daily-sales.routes.js';
 import { jeTemplatesRouter } from './routes/je-templates.routes.js';
 import { itemsRouter } from './routes/items.routes.js';
+import { inventoryRouter } from './routes/inventory.routes.js';
 import { priceLevelsRouter } from './routes/price-levels.routes.js';
 import { billableCostsRouter } from './routes/billable-costs.routes.js';
 import { paymentsRouter } from './routes/payments.routes.js';
@@ -594,6 +595,8 @@ app.use('/api/v1/batch', batchRouter);
 app.use('/api/v1/daily-sales', dailySalesRouter);
 app.use('/api/v1/je-templates', jeTemplatesRouter);
 app.use('/api/v1/items', itemsRouter);
+// Inventory adjustments and counts (U-159, inventory-adjust-v1).
+app.use('/api/v1/inventory', inventoryRouter);
 app.use('/api/v1/price-levels', priceLevelsRouter);
 app.use('/api/v1/billable-costs', billableCostsRouter);
 app.use('/api/v1/payments', paymentsRouter);

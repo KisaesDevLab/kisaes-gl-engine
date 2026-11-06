@@ -159,10 +159,20 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
     await assertItemRefs(tx, tenantId, companyId, input as unknown as Record<string, unknown>);
     // The item's sales tax code (U-147): an active code of the item's company.
     await salesTaxSvc.assertTaxRefs(tx, tenantId, (input as { companyId?: string | null }).companyId ?? null, { taxCodeId: (input as { taxCodeId?: string | null }).taxCodeId });
-    const [item] = await tx.insert(items).values({ tenantId, ...input }).returning();
+    const { opening, ...fields } = input;
+    if (opening && input.itemType !== 'inventory_part') {
+      throw AppError.badRequest('Only an inventory item takes opening stock', 'VALIDATION_ERROR', { field: 'opening' });
+    }
+    const [item] = await tx.insert(items).values({ tenantId, ...fields }).returning();
     if (!item) throw AppError.internal('Failed to create item');
     await recordIdempotentEntity(tx, 'item', item.id);
     await auditLog(tenantId, 'create', 'item', item.id, null, item, userId, tx);
+    // Opening stock (U-159, Q-P24h): an adjustment against Opening Balances in the same transaction;
+    // dated on or before the closing date it is 409 INVENTORY_PERIOD_CLOSED and nothing is saved.
+    if (opening) {
+      const { postOpening } = await import('./inventory-adjustment.service.js');
+      await postOpening(tx, tenantId, companyId, item.id, opening, userId);
+    }
     return (await inventory.withStockFigures(tx, tenantId, [item], companyId))[0]!;
   });
 }

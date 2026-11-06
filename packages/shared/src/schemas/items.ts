@@ -3,6 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
+import { itemOpeningSchema } from './inventory.js';
 import { sortBySchema, sortDirSchema } from './list-view.js';
 import { ITEM_TYPES } from '../types/items.js';
 
@@ -66,6 +67,9 @@ export const createItemSchema = z.object({
   // The item's sales tax code (U-147); null = from isTaxable.
   taxCodeId: z.string().uuid().nullish(),
   ...purchaseFields,
+  // An inventory part's opening stock (U-159, inventory-adjust-v1, Q-P24h):
+  // posted with the item as an inventory adjustment against Opening Balances.
+  opening: itemOpeningSchema.optional(),
 });
 
 export const updateItemSchema = z.object({
