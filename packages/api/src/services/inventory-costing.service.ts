@@ -39,10 +39,10 @@
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import type { Tx } from '../db/index.js';
+import type { DbOrTx, Tx } from '../db/index.js';
 import { inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
-import { auditLog } from '../middleware/audit.js';
+import { auditLogMany } from '../middleware/audit.js';
 import {
   Decimal, walk, ZERO_STATE, type Dec, type MovementKind, type WalkRow, type WalkState,
 } from '../utils/inventory-walk.js';
@@ -102,12 +102,30 @@ export async function inventoryAssetAccounts(tx: Tx, tenantId: string, accountId
   return new Set((r.rows as Array<{ id: string }>).map((x) => x.id));
 }
 
-async function partsOf(tx: Tx, tenantId: string, itemIds: readonly (string | null | undefined)[]): Promise<Map<string, PartRow>> {
+async function partsOf(tx: DbOrTx, tenantId: string, itemIds: readonly (string | null | undefined)[]): Promise<Map<string, PartRow>> {
   const ids = [...new Set(itemIds.filter((v): v is string => !!v))];
   if (ids.length === 0) return new Map();
   const rows = await tx.select({ id: items.id, assetAccountId: items.assetAccountId, cogsAccountId: items.cogsAccountId, purchaseCost: items.purchaseCost })
     .from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids), eq(items.itemType, 'inventory_part')));
   return new Map(rows.map((r) => [r.id, r]));
+}
+
+/**
+ * The parts among a posting's line items, read FOR KEY SHARE in id order
+ * (every item a line names, parts or not). An item edit takes its row FOR
+ * UPDATE, which waits for this posting, so a kind change into or out of
+ * inventory_part can't slip between this read and the posting's commit
+ * (ITEM_IN_USE then sees the posted line). KEY SHARE never blocks another
+ * posting, nor the costing lock's FOR NO KEY UPDATE on the parts.
+ */
+async function lineParts(tx: Tx, tenantId: string, itemIds: readonly (string | null | undefined)[]): Promise<Map<string, PartRow>> {
+  const ids = [...new Set(itemIds.filter((v): v is string => !!v))].sort();
+  if (ids.length === 0) return new Map();
+  const rows = await tx.select({ id: items.id, itemType: items.itemType, assetAccountId: items.assetAccountId, cogsAccountId: items.cogsAccountId,
+    purchaseCost: items.purchaseCost })
+    .from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids))).orderBy(items.id).for('key share');
+  return new Map(rows.filter((r) => r.itemType === 'inventory_part')
+    .map((r) => [r.id, { id: r.id, assetAccountId: r.assetAccountId, cogsAccountId: r.cogsAccountId, purchaseCost: r.purchaseCost }]));
 }
 
 /**
@@ -160,18 +178,28 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
 
 /**
  * The costing lock (P24 §5): lock_timeout 5 s, the companies row FOR UPDATE
- * (its lock_date read there), then the items in id order. A document date
- * on or before the closing date is 409 INVENTORY_PERIOD_CLOSED (owner
- * decision 2026-11-06), read under the row lock so a concurrent close waits.
+ * (its lock_date read there), then the items in id order (FOR NO KEY
+ * UPDATE: the costing never changes an item row; it conflicts with every
+ * other costing lock and with an item edit, not with the KEY SHARE of
+ * lineParts). A document date on or before the closing date is 409
+ * INVENTORY_PERIOD_CLOSED (owner decision 2026-11-06), read under the row
+ * lock so a concurrent close waits. A posting without a company (older
+ * callers) locks every company row of the tenant in (created_at, id) order
+ * and is gated by the latest closing date among them, as checkLockDate
+ * gates it; its stock is kept on the oldest company.
  */
 async function lock(tx: Tx, tenantId: string, companyId: string | null | undefined, itemIds: readonly string[], dates: ReadonlyArray<string | null | undefined>): Promise<CostingLock> {
   await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
   const r = await tx.execute(companyId
     ? sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} FOR UPDATE`
-    : sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id LIMIT 1 FOR UPDATE`);
-  const row = r.rows[0] as { id: string; lock_date: string | null } | undefined;
+    : sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id FOR UPDATE`);
+  const rows = r.rows as Array<{ id: string; lock_date: string | null }>;
+  const row = rows[0];
   if (!row) throw AppError.notFound('Company not found');
-  const lockDate = row.lock_date ? String(row.lock_date).slice(0, 10) : null;
+  const lockDate = rows.reduce<string | null>((mx, x) => {
+    const dt = x.lock_date ? String(x.lock_date).slice(0, 10) : null;
+    return dt && (!mx || dt > mx) ? dt : mx;
+  }, null);
   if (lockDate && dates.some((dt) => !!dt && dt <= lockDate)) {
     throw AppError.conflict(
       `This transaction has inventory items and is dated on or before the closing date (${lockDate}). Inventory in a closed period can't change; date it after the closing date or move the closing date.`,
@@ -180,7 +208,7 @@ async function lock(tx: Tx, tenantId: string, companyId: string | null | undefin
   }
   const ids = [...new Set(itemIds)].sort();
   if (ids.length > 0) {
-    await tx.select({ id: items.id }).from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids))).orderBy(items.id).for('update');
+    await tx.select({ id: items.id }).from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids))).orderBy(items.id).for('no key update');
   }
   return { companyId: row.id, lockDate, itemIds: ids };
 }
@@ -196,7 +224,7 @@ async function movementItemIds(tx: Tx, tenantId: string, txnId: string): Promise
  * lock when a part is involved. Null when nothing moves stock.
  */
 export async function prepareNew(tx: Tx, tenantId: string, companyId: string | null | undefined, txnType: string, txnDate: string, lines: readonly InputLine[]): Promise<CostingLock | null> {
-  const parts = await partsOf(tx, tenantId, lines.map((l) => l.itemId));
+  const parts = await lineParts(tx, tenantId, lines.map((l) => l.itemId));
   await assertLines(tx, tenantId, txnType, lines, parts);
   if (parts.size === 0) return null;
   return lock(tx, tenantId, companyId, [...parts.keys()], [txnDate]);
@@ -205,7 +233,7 @@ export async function prepareNew(tx: Tx, tenantId: string, companyId: string | n
 /** Before an edit writes anything: the guards on the new lines, then the lock over old and new parts. */
 export async function prepareEdit(tx: Tx, tenantId: string, companyId: string | null | undefined, txnId: string, txnType: string,
   oldDate: string, newDate: string, lines: readonly InputLine[]): Promise<CostingLock | null> {
-  const parts = await partsOf(tx, tenantId, lines.map((l) => l.itemId));
+  const parts = await lineParts(tx, tenantId, lines.map((l) => l.itemId));
   await assertLines(tx, tenantId, txnType, lines, parts);
   const old = await movementItemIds(tx, tenantId, txnId);
   if (parts.size === 0 && old.length === 0) return null;
@@ -374,21 +402,20 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
     }
   }
 
-  // Derived lines of every movement whose figures changed (and the trigger's).
+  // Derived lines of every movement whose figures changed (and the trigger's), batched (S13).
   const touched = new Set<string>([txnId]);
-  for (const m of reconcile.values()) {
-    touched.add(m.transactionId);
-    await reconcileLines(tx, tenantId, m, parts, deltas);
-  }
+  for (const m of reconcile.values()) touched.add(m.transactionId);
+  await reconcileLines(tx, tenantId, [...reconcile.values()], parts, deltas);
   // One balance delta per account, in account-id order (B5).
   const { applyAccountDeltas } = await import('./ledger.service.js');
   await applyAccountDeltas(tx, tenantId, deltas);
 
-  // One compact audit row per other document whose derived lines the walk changed (S5).
-  for (const [docId, changes] of changedDocs) {
-    await auditLog(tenantId, 'update', 'transaction', docId, { inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c.before })) },
-      { inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c.after })), costingTrigger: txnId }, opts.userId, tx);
-  }
+  // One compact audit row per other document whose derived lines the walk changed (S5), in batched inserts.
+  await auditLogMany(tenantId, [...changedDocs].map(([docId, changes]) => ({
+    action: 'update' as const, entityType: 'transaction', entityId: docId,
+    before: { inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c.before })) },
+    after: { inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c.after })), costingTrigger: txnId },
+  })), opts.userId, tx);
   await backstop(tx, tenantId, [...touched]);
   return warnings;
 }
@@ -432,7 +459,7 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
   }));
   const result = walk(seed, walkRows);
   const changed: Changed[] = [];
-  const values: ReturnType<typeof sql>[] = [];
+  const cols: Record<'id' | 'value' | 'correction' | 'residual' | 'q' | 'v' | 'l', string[]> = { id: [], value: [], correction: [], residual: [], q: [], v: [], l: [] };
   rows.forEach((m, i) => {
     const r = result.rows[i]!;
     const f = r.fig;
@@ -445,16 +472,18 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
     if (differs || m.transactionId === triggerId) {
       changed.push({ row: { ...m, ...next }, before: cents(m), after: cents(next) });
     }
-    values.push(sql`(${m.id}::uuid, ${next.value}::numeric, ${next.correction}::numeric, ${next.residual}::numeric, ${a.q.toFixed(4)}::numeric,
-      ${a.v.toFixed(4)}::numeric, ${a.l.toFixed(6)}::numeric)`);
+    cols.id.push(m.id); cols.value.push(next.value); cols.correction.push(next.correction); cols.residual.push(next.residual);
+    cols.q.push(a.q.toFixed(4)); cols.v.push(a.v.toFixed(4)); cols.l.push(a.l.toFixed(6));
   });
-  // Batched: one UPDATE ... FROM (VALUES ...) per 500 rows (S13).
-  for (let i = 0; i < values.length; i += 500) {
+  // Batched (S13): one UPDATE ... FROM unnest(arrays) per 5,000 rows, seven array parameters each.
+  for (let i = 0; i < cols.id.length; i += BULK) {
+    const part = (xs: string[]) => pgArray(xs.slice(i, i + BULK));
     await tx.execute(sql`
       UPDATE inventory_movements m SET value = v.value, correction = v.correction, residual = v.residual, running_qty = v.q,
         running_value = v.v, last_cost = v.l, updated_at = now()
-      FROM (VALUES ${sql.join(values.slice(i, i + 500), sql`, `)}) AS v(id, value, correction, residual, q, v, l)
-      WHERE m.id = v.id`);
+      FROM unnest(${part(cols.id)}::uuid[], ${part(cols.value)}::numeric[], ${part(cols.correction)}::numeric[], ${part(cols.residual)}::numeric[],
+        ${part(cols.q)}::numeric[], ${part(cols.v)}::numeric[], ${part(cols.l)}::numeric[]) AS v(id, value, correction, residual, q, v, l)
+      WHERE m.id = v.id AND m.tenant_id = ${tenantId}`);
   }
   const neg = result.negative;
   const warning: InventoryWarning | null = neg
@@ -485,41 +514,103 @@ function desiredLines(m: MovementRow, part: PartRow, counterAccountId: string, e
   return out;
 }
 
-async function reconcileLines(tx: Tx, tenantId: string, m: MovementRow, parts: Map<string, PartRow>, deltas: Map<string, Dec>) {
-  const [doc] = await tx.select({ status: transactions.status, companyId: transactions.companyId, txnType: transactions.txnType })
-    .from(transactions).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, m.transactionId))).limit(1);
-  if (!doc || doc.status !== 'posted' || m.voided) return;
-  let part = parts.get(m.itemId);
-  if (!part) {
-    part = (await partsOf(tx, tenantId, [m.itemId])).get(m.itemId);
-    if (!part) throw AppError.internal('Costing: movement of an item that is not an inventory part');
-    parts.set(m.itemId, part);
+/** Rows per batched statement (S13): ids per DELETE / SELECT and rows per INSERT; BULK rows per UPDATE ... FROM unnest(arrays). */
+const BATCH = 1000;
+const BULK = 5000;
+/** A Postgres array literal of uuids or decimal strings (no quoting needed), passed as one parameter. */
+const pgArray = (xs: readonly string[]) => `{${xs.join(',')}}`;
+function chunks<T>(xs: readonly T[], n = BATCH): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+}
+
+/**
+ * Rewrites the derived lines of `movements` (S13: set-based, a constant
+ * number of statements per 1,000 movements): the documents and their lines
+ * are read in batches; a movement whose derived lines already match is
+ * skipped; one whose lines keep their roles and accounts gets its amounts
+ * updated in place; any other has its derived lines replaced. Balance deltas
+ * collect in `deltas`. Movements of the same document are handled in the
+ * given order, so new lines take line orders after the document's last.
+ */
+async function reconcileLines(tx: Tx, tenantId: string, movements: readonly MovementRow[], parts: Map<string, PartRow>, deltas: Map<string, Dec>) {
+  const live = movements.filter((m) => !m.voided);
+  if (live.length === 0) return;
+  const missing = [...new Set(live.map((m) => m.itemId))].filter((id) => !parts.has(id));
+  if (missing.length > 0) for (const [id, p] of await partsOf(tx, tenantId, missing)) parts.set(id, p);
+  const txnIds = [...new Set(live.map((m) => m.transactionId))];
+  const docs = new Map<string, { status: string; companyId: string | null; txnType: string }>();
+  const linesOf = new Map<string, Array<typeof journalLines.$inferSelect>>();
+  for (const ids of chunks(txnIds)) {
+    const ds = await tx.select({ id: transactions.id, status: transactions.status, companyId: transactions.companyId, txnType: transactions.txnType })
+      .from(transactions).where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids)));
+    for (const doc of ds) docs.set(doc.id, doc);
+    const ls = await tx.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), inArray(journalLines.transactionId, ids), eq(journalLines.isVoidReversal, false)));
+    for (const l of ls) {
+      const list = linesOf.get(l.transactionId) ?? [];
+      list.push(l);
+      linesOf.set(l.transactionId, list);
+    }
   }
-  const all = await tx.select().from(journalLines)
-    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, m.transactionId), eq(journalLines.isVoidReversal, false)));
-  const existing = all.filter((l) => isDerivedRole(l.lineRole) && l.inventoryMovementId === m.id);
-  const itemLine = all.find((l) => l.itemId === m.itemId && !isDerivedRole(l.lineRole));
-  // An adjustment's quantity-only line names the adjustment account; everything else counters on the item's COGS account.
-  const counter = ADJUST_TYPES.has(doc.txnType) && itemLine && itemLine.accountId !== part.assetAccountId ? itemLine.accountId : part.cogsAccountId!;
-  const existingCounter = new Map<string, string>();
-  for (const l of existing) if (l.accountId !== part.assetAccountId) existingCounter.set(l.lineRole!, l.accountId);
-  const want = desiredLines(m, part, counter, existingCounter);
+  const add = (accountId: string, v: Dec) => deltas.set(accountId, (deltas.get(accountId) ?? new Decimal(0)).plus(v));
   const key = (l: { role?: string | null; lineRole?: string | null; accountId: string; debit: string; credit: string }) =>
     `${l.role ?? l.lineRole}|${l.accountId}|${d(l.debit).toFixed(4)}|${d(l.credit).toFixed(4)}`;
-  const have = existing.map((l) => key({ ...l, role: l.lineRole })).sort().join(';');
-  if (have === want.map((l) => key(l)).sort().join(';')) return;
-  const add = (accountId: string, v: Dec) => deltas.set(accountId, (deltas.get(accountId) ?? new Decimal(0)).plus(v));
-  if (existing.length > 0) {
-    await tx.delete(journalLines).where(and(eq(journalLines.tenantId, tenantId), inArray(journalLines.id, existing.map((l) => l.id))));
-    for (const l of existing) add(l.accountId, d(l.credit).minus(d(l.debit)));
+  const slot = (l: { role?: string | null; lineRole?: string | null; accountId: string }) => `${l.role ?? l.lineRole}|${l.accountId}`;
+  const nextOrder = new Map<string, number>();
+  const toDelete: string[] = [];
+  const toInsert: Array<typeof journalLines.$inferInsert> = [];
+  const toUpdate: Array<{ id: string; debit: string; credit: string }> = [];
+  for (const m of live) {
+    const doc = docs.get(m.transactionId);
+    if (!doc || doc.status !== 'posted') continue;
+    const part = parts.get(m.itemId);
+    if (!part) throw AppError.internal('Costing: movement of an item that is not an inventory part');
+    const all = linesOf.get(m.transactionId) ?? [];
+    const existing = all.filter((l) => isDerivedRole(l.lineRole) && l.inventoryMovementId === m.id);
+    const itemLine = all.find((l) => l.itemId === m.itemId && !isDerivedRole(l.lineRole));
+    // An adjustment's quantity-only line names the adjustment account; everything else counters on the item's COGS account.
+    const counter = ADJUST_TYPES.has(doc.txnType) && itemLine && itemLine.accountId !== part.assetAccountId ? itemLine.accountId : part.cogsAccountId!;
+    const existingCounter = new Map<string, string>();
+    for (const l of existing) if (l.accountId !== part.assetAccountId) existingCounter.set(l.lineRole!, l.accountId);
+    const want = desiredLines(m, part, counter, existingCounter);
+    if (existing.map((l) => key(l)).sort().join(';') === want.map((l) => key(l)).sort().join(';')) continue;
+    // Same roles on the same accounts, one line each: new amounts in place.
+    const bySlot = new Map(existing.map((l) => [slot(l), l]));
+    if (bySlot.size === existing.length && want.length === existing.length && want.every((l) => bySlot.has(slot(l)))) {
+      for (const l of want) {
+        const old = bySlot.get(slot(l))!;
+        if (key(old) === key(l)) continue;
+        toUpdate.push({ id: old.id, debit: l.debit, credit: l.credit });
+        add(l.accountId, d(l.debit).minus(d(l.credit)).minus(d(old.debit).minus(d(old.credit))));
+      }
+      continue;
+    }
+    for (const l of existing) {
+      toDelete.push(l.id);
+      add(l.accountId, d(l.credit).minus(d(l.debit)));
+    }
+    if (want.length > 0) {
+      const maxOrder = nextOrder.get(m.transactionId) ?? all.reduce((mx, l) => Math.max(mx, l.lineOrder ?? 0), 0);
+      want.forEach((l, i) => toInsert.push({
+        tenantId, companyId: doc.companyId, transactionId: m.transactionId, accountId: l.accountId, debit: l.debit, credit: l.credit,
+        lineRole: l.role, inventoryMovementId: m.id, tagId: itemLine?.tagId ?? null, lineOrder: maxOrder + 1 + i,
+      }));
+      nextOrder.set(m.transactionId, maxOrder + want.length);
+      for (const l of want) add(l.accountId, d(l.debit).minus(d(l.credit)));
+    }
   }
-  if (want.length > 0) {
-    const maxOrder = all.reduce((mx, l) => Math.max(mx, l.lineOrder ?? 0), 0);
-    await tx.insert(journalLines).values(want.map((l, i) => ({
-      tenantId, companyId: doc.companyId, transactionId: m.transactionId, accountId: l.accountId, debit: l.debit, credit: l.credit,
-      lineRole: l.role, inventoryMovementId: m.id, tagId: itemLine?.tagId ?? null, lineOrder: maxOrder + 1 + i,
-    })));
-    for (const l of want) add(l.accountId, d(l.debit).minus(d(l.credit)));
+  for (const ids of chunks(toDelete)) {
+    await tx.delete(journalLines).where(and(eq(journalLines.tenantId, tenantId), inArray(journalLines.id, ids)));
+  }
+  for (const rows of chunks(toInsert)) await tx.insert(journalLines).values(rows);
+  for (const rows of chunks(toUpdate, BULK)) {
+    await tx.execute(sql`
+      UPDATE journal_lines jl SET debit = v.debit, credit = v.credit
+      FROM unnest(${pgArray(rows.map((r) => r.id))}::uuid[], ${pgArray(rows.map((r) => r.debit))}::numeric[],
+        ${pgArray(rows.map((r) => r.credit))}::numeric[]) AS v(id, debit, credit)
+      WHERE jl.id = v.id AND jl.tenant_id = ${tenantId}`);
   }
 }
 
@@ -528,7 +619,11 @@ async function reconcileLines(tx: Tx, tenantId: string, m: MovementRow, parts: M
  * movements, the lines on inventory asset accounts add up to its movements'
  * written figures. Anything else is a bug: 500, everything rolls back.
  */
-async function backstop(tx: Tx, tenantId: string, txnIds: string[]) {
+async function backstop(tx: Tx, tenantId: string, allIds: string[]) {
+  for (const txnIds of chunks(allIds)) await backstopBatch(tx, tenantId, txnIds);
+}
+
+async function backstopBatch(tx: Tx, tenantId: string, txnIds: string[]) {
   if (txnIds.length === 0) return;
   const r = await tx.execute(sql`
     WITH mv AS (
@@ -579,4 +674,5 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): a p
   + 'INVENTORY_ACCOUNT_DIRECT outside journal entries; a client-sent lineRole cogs | inventory_relief | cost_correction | cost_residual is 400 '
   + 'VALIDATION_ERROR; parts on a document type that does not move stock yet are 400 INVENTORY_DOCUMENT_UNSUPPORTED; a document with parts '
   + 'dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED, closingPassword or not; 409 RETRY after a deadlock or '
-  + 'lock timeout (nothing saved). Derived costing lines come back as inventoryLines, never in lines; NEGATIVE_STOCK is allowed.';
+  + 'lock timeout (the posting rolled back: resend it under the same Idempotency-Key); editing a document with parts that is part of a completed '
+  + 'bank reconciliation is 409 INVENTORY_DOCUMENT. Derived costing lines come back as inventoryLines, never in lines; NEGATIVE_STOCK is allowed.';
