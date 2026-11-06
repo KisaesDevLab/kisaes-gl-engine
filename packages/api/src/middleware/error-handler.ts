@@ -9,6 +9,7 @@ import { AppError } from '../utils/errors.js';
 import { isDesktop } from '../desktop/profile.js';
 import { errorSummaryForLog } from '../utils/log-safe.js';
 import { OfflineUnavailableError } from '../utils/offline.js';
+import { isRetryable, retryError } from '../utils/deadlock.js';
 
 // Body-parser throws a custom error with `.type === 'entity.too.large'`
 // when a request exceeds express.json()'s `limit`. Without this case
@@ -85,6 +86,14 @@ export function errorHandler(
         details: err.errors,
       },
     });
+    return;
+  }
+
+  // A deadlock, serialization failure or lock timeout rolled everything back
+  // (U-157): the client may resend under the same Idempotency-Key.
+  if (isRetryable(err)) {
+    const retry = retryError();
+    res.status(retry.statusCode).json({ error: { message: retry.message, code: retry.code } });
     return;
   }
 

@@ -265,10 +265,22 @@ export async function previewSuspenseConsolidation(tenantId: string): Promise<{
  * Why this account's lines cannot be moved, or null when they can.
  * Mirrors the guards bulkUpdateTransactions applies per transaction: a line
  * cleared in a completed reconciliation must not move, and neither must a
- * line inside a closed period or on a void/adjusting entry.
+ * line inside a closed period or on a void/adjusting entry. Inventory (U-157,
+ * B4): an inventory asset account (tagged inventory_asset or a part's asset
+ * account) and lines that belong to a stock movement stay where they are.
  */
 export async function blockedLineReason(tenantId: string, accountId: string): Promise<string | null> {
   const res = await db.execute<{ reason: string }>(sql`
+    SELECT 'inventory' AS reason
+    FROM accounts a
+    WHERE a.tenant_id = ${tenantId} AND a.id = ${accountId}
+      AND (a.system_tag = 'inventory_asset' OR EXISTS (
+        SELECT 1 FROM items i WHERE i.tenant_id = a.tenant_id AND i.item_type = 'inventory_part' AND i.asset_account_id = a.id))
+    UNION ALL
+    SELECT 'inventory' AS reason
+    FROM journal_lines jl
+    WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${accountId} AND jl.inventory_movement_id IS NOT NULL
+    UNION ALL
     SELECT 'reconciled' AS reason
     FROM journal_lines jl
     JOIN reconciliation_lines rl ON rl.journal_line_id = jl.id
@@ -309,6 +321,14 @@ export async function moveAllLinesBetweenAccounts(
   fromAccountId: string,
   toAccountId: string,
 ): Promise<number> {
+  // Never onto an inventory asset account (U-157, B4): its lines must match the stock ledger.
+  const onto = await tx.execute(sql`
+    SELECT 1 FROM accounts a WHERE a.tenant_id = ${tenantId} AND a.id = ${toAccountId}
+      AND (a.system_tag = 'inventory_asset' OR EXISTS (
+        SELECT 1 FROM items i WHERE i.tenant_id = a.tenant_id AND i.item_type = 'inventory_part' AND i.asset_account_id = a.id))`);
+  if (onto.rows.length > 0) {
+    throw AppError.conflict('Lines can not be moved onto an inventory asset account.', 'INVENTORY_DOCUMENT');
+  }
   const sums = await tx.execute<{ d: string; c: string; n: string }>(sql`
     SELECT COALESCE(SUM(debit), 0)::text AS d,
            COALESCE(SUM(credit), 0)::text AS c,

@@ -27,3 +27,15 @@ export function retryError(): AppError {
 export const deadlockAsRetry: ErrorRequestHandler = (err, _req, _res, next) => {
   next(isDeadlock(err) ? retryError() : err);
 };
+
+/**
+ * Errors after which the whole transaction is rolled back and a resend may
+ * succeed (U-157, P24 §5): a deadlock (40P01), a serialization failure
+ * (40001) or a lock wait past lock_timeout (55P03; costing writes set 5 s).
+ * The global error handler answers them 409 RETRY.
+ */
+export function isRetryable(e: unknown): boolean {
+  const err = e as { code?: string; cause?: { code?: string } } | null;
+  const code = err?.code ?? err?.cause?.code;
+  return code === '40P01' || code === '40001' || code === '55P03';
+}

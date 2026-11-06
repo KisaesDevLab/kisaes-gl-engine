@@ -32,6 +32,7 @@ export const TXN_TYPE_LABELS: Record<TxnType, string> = {
   returned_payment: 'Bounced payment',
   sales_tax_payment: 'Sales tax payment',
   bad_debt_recovery: 'Recovered bad debt',
+  inventory_adjustment: 'Inventory adjustment',
 };
 
 /** Any transaction-shaped object: only the type is required. */

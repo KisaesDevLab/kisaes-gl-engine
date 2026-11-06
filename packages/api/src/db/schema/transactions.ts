@@ -112,6 +112,8 @@ export const transactions = pgTable('transactions', {
   salesTaxId: uuid('sales_tax_id'),
   // U-153 (migration 0256): a customer payment's SSUTA switch when first posted (NULL = before 0256: off).
   salesTaxSsuta: boolean('sales_tax_ssuta'),
+  // U-157 (migration 0259): NULL, or cost_restatement (a system inventory_adjustment).
+  systemKind: varchar('system_kind', { length: 30 }),
   fromDepositId: uuid('from_deposit_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),
@@ -216,6 +218,10 @@ export const journalLines = pgTable('journal_lines', {
   // markup line ('billable_markup'): the cost line it bills (U-128,
   // migration 0245). No FK; the source line keeps its id across edits.
   billableSourceLineId: uuid('billable_source_line_id'),
+  // U-157 (migration 0259): the stock movement an item line or a derived
+  // costing line (lineRole cogs | inventory_relief | cost_correction |
+  // cost_residual) belongs to.
+  inventoryMovementId: uuid('inventory_movement_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

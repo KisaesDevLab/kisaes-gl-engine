@@ -1814,6 +1814,13 @@
       "when": 1787400014380,
       "tag": "0258_inventory_items",
       "breakpoints": true
+    },
+    {
+      "idx": 259,
+      "version": "7",
+      "when": 1787500014380,
+      "tag": "0259_inventory_movements",
+      "breakpoints": true
     }
   ]
 }

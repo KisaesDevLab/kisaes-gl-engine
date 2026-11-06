@@ -12,6 +12,7 @@ import { companies, contacts, transactions, journalLines, accounts, items } from
 import type { InvoiceLayoutColumns } from '../db/schema/templates.js';
 import { AppError } from '../utils/errors.js';
 import * as invoiceTemplateService from './invoice-template.service.js';
+import { isDerivedRole } from './inventory-costing.service.js';
 
 interface InvoicePdfData {
   company: {
@@ -104,7 +105,7 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
     if (c) customer = c;
   }
 
-  const lines = await db.select().from(journalLines)
+  const lines = (await db.select().from(journalLines)
     // Void-reversal rows (rule 23) are GL artifacts — a voided invoice's
     // PDF should render the document as issued, not doubled lines.
     .where(and(
@@ -112,7 +113,9 @@ async function gatherInvoiceData(tenantId: string, invoiceId: string): Promise<I
       eq(journalLines.transactionId, invoiceId),
       eq(journalLines.isVoidReversal, false),
     ))
-    .orderBy(journalLines.lineOrder);
+    .orderBy(journalLines.lineOrder))
+    // Derived costing lines (U-157: COGS and inventory relief) are not on the form.
+    .filter((l) => !isDerivedRole(l.lineRole));
 
   // The form's own lines: the item lines (they carry a quantity, or a price
   // source when priced by invoice-pricing-v1, U-129; a negative one, such as
