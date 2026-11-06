@@ -25,6 +25,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { accounts, companies } from '../db/schema/index.js';
 import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
+import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 export const checksRouter = Router();
 checksRouter.use(authenticate);
@@ -42,7 +43,12 @@ const readCheck = (req: { tenantId: string; companyId?: string }, id: string) =>
 checksRouter.post('/', idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ check: await readCheck(req, entity!.id) }),
-}), closingPasswordLimiter, lockContextMiddleware, validate(writeCheckSchema), async (req, res) => {
+}), closingPasswordLimiter, lockContextMiddleware, validate(writeCheckSchema), describe({
+  summary: 'Write a check',
+  description: 'Response 201 {check}. ' + INVENTORY_ROUTE_NOTE + ' On a check line: itemId, quantity and unitPrice (U-158); unitPrice without '
+    + 'quantity is 400 LINE_QTY_RATE_INCOMPLETE, an amount that is not round2(quantity x unitPrice) 400 LINE_AMOUNT_MISMATCH.',
+  body: writeCheckSchema,
+}), async (req, res) => {
   const check = await checkService.createCheck(req.tenantId, req.body, req.userId, req.companyId);
   // Checks post as txn_type 'expense', which is the attachable type the
   // transaction detail page reads — keep them in step.
@@ -404,6 +410,7 @@ checksRouter.put('/:id', idempotent({
   replay: async (req) => ({ check: await readCheck(req, req.params['id']!) }),
 }), closingPasswordLimiter, lockContextMiddleware, validate(updateCheckSchema), describe({
   summary: 'Edit a check: lines, amount, payee, date, number and print status (check-edit-v1)',
+  description: INVENTORY_ROUTE_NOTE + ' The reply\'s check has inventoryLines; its lines never carry derived costing lines.',
   body: updateCheckBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {

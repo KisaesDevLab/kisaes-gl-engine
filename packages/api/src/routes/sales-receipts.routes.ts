@@ -17,6 +17,7 @@ import { db } from '../db/index.js';
 import * as salesDocs from '../services/sales-docs.service.js';
 import { mountSalesDocEmail } from './sales-doc-email.js';
 import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
+import { INVENTORY_PREVIEW_NOTE, INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 /**
  * Sales receipts (U-143, sales-receipt-lines-v1): a cash sale on the invoice
@@ -36,7 +37,7 @@ const closing = {
   overrideConfirmed: z.boolean().optional(),
 };
 const closedPeriodNote = 'A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): ' +
-  'without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.';
+  'without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. ' + INVENTORY_ROUTE_NOTE + ' The record has inventoryLines.';
 const rules = 'Lines as invoice lines (itemId or accountId, quantity, unitPrice, discountPercent, isTaxable, taxRate, tagId, ' +
   'serviceDate); billable-cost fields are 400 VALIDATION_ERROR. Posting: Dr depositToAccountId (default Payments Clearing) the total, ' +
   'Cr each income line, Cr Sales Tax Payable the tax. A total below 0.00 (a return with money back) to Payments Clearing is 400 ' +
@@ -48,7 +49,7 @@ const recordNote = 'SalesReceiptRecord: {id, number, date, customerId, depositTo
 
 salesReceiptsRouter.post('/preview', validate(salesReceiptPreviewSchema), describe({
   summary: 'Preview a sales receipt; posts nothing (sales-receipt-lines-v1)',
-  description: 'Response {lines, subtotal, taxableBase, taxRate, taxTotal, total, taxGroups, depositToAccountId, contactBalanceBefore, ' +
+  description: INVENTORY_PREVIEW_NOTE + ' Response {lines, subtotal, taxableBase, taxRate, taxTotal, total, taxGroups, depositToAccountId, contactBalanceBefore, ' +
     `contactBalanceAfter, problems: [{code: NEGATIVE_RECEIPT_NEEDS_BANK | DEPOSIT_ACCOUNT_INVALID}]}; never 4xx for those. ${rules}`,
   body: salesReceiptPreviewSchema,
 }), async (req, res) => {

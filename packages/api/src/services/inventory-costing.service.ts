@@ -737,12 +737,19 @@ export async function touchesInventory(tx: Tx, tenantId: string, txnId: string, 
 }
 
 /** OpenAPI note for every posting route that takes inventory part lines (inventory-costing-v1). */
-export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): a part line needs a quantity; on bills and vendor credits it posts '
-  + 'to the part\'s inventory asset account (400 VALIDATION_ERROR otherwise); a line on an inventory asset account without a part is 400 '
-  + 'INVENTORY_ACCOUNT_DIRECT outside journal entries; a client-sent lineRole cogs | inventory_relief | cost_correction | cost_residual is 400 '
-  + 'VALIDATION_ERROR; parts on a document type that does not move stock yet are 400 INVENTORY_DOCUMENT_UNSUPPORTED; a document with parts '
-  + 'dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED, closingPassword or not; 409 RETRY after a deadlock or '
-  + 'lock timeout (nothing saved). Derived costing lines come back as inventoryLines, never in lines; NEGATIVE_STOCK is allowed.';
+export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): bills, checks and card charges (expense) buy them at the line amount, '
+  + 'vendor credits return them at the line amount, invoices, sales receipts and cash sales sell them at average cost, credit memos take them back '
+  + '(a line with returnOf {transactionId} of an invoice or sales receipt that sold the item: at that sale\'s cost; without it at the current average). '
+  + 'A part line needs a quantity above 0; on a purchase document it posts to the part\'s inventory asset account (400 VALIDATION_ERROR otherwise); '
+  + 'a line on an inventory asset account without a part is 400 INVENTORY_ACCOUNT_DIRECT outside journal entries; a client-sent lineRole cogs | '
+  + 'inventory_relief | cost_correction | cost_residual is 400 VALIDATION_ERROR; parts on any other document type are 400 INVENTORY_DOCUMENT_UNSUPPORTED; '
+  + 'returnOf off a credit memo, or naming a document that is not a posted sale of the item, is 400 VALIDATION_ERROR; a return dated before its sale '
+  + 'is 400 RETURN_BEFORE_SALE; returning more than the sale sold (all its linked returns together) is 400 RETURN_EXCEEDS_SALE; voiding or deleting '
+  + 'a sale with live linked returns, taking the item off it, selling fewer units than were returned or dating it after a return is 409 '
+  + 'SALE_HAS_RETURNS; a document with parts dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED, closingPassword '
+  + 'or not; 409 RETRY after a deadlock or lock timeout (nothing saved). Derived costing lines come back as inventoryLines '
+  + '[{role, accountId, amount (debit positive), movementId}], never in lines. NEGATIVE_STOCK is allowed: the reply\'s warnings[] carries '
+  + '{code: NEGATIVE_STOCK, itemId, date, onHand} for the first row per item whose on hand newly went below 0 (create, edit, void, delete).';
 
 /**
  * NEGATIVE_STOCK for a preview (U-158): what posting `doc` would warn,
@@ -810,3 +817,6 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
   }
   return out;
 }
+
+/** OpenAPI note for the invoice, credit memo and sales receipt previews (U-158). */
+export const INVENTORY_PREVIEW_NOTE = 'warnings[] (inventory-costing-v1): {code: NEGATIVE_STOCK, itemId, date, onHand} when posting this body would take an item on hand below 0 (the first row per item, computed from the stock ledger with nothing written); posting is still allowed.';

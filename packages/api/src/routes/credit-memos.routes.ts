@@ -20,6 +20,7 @@ import * as salesDocs from '../services/sales-docs.service.js';
 import { mountSalesDocEmail } from './sales-doc-email.js';
 import { deadlockAsRetry } from '../utils/deadlock.js';
 import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
+import { INVENTORY_PREVIEW_NOTE, INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 /**
  * Credit memos as A/R credit sources (U-137, credit-memo-apply-v1). A memo's
@@ -42,7 +43,8 @@ const closing = {
   overrideConfirmed: z.boolean().optional(),
 };
 const closedPeriodNote = 'A change dated on or before the closing date needs closingPassword (or a staff overrideConfirmed): ' +
-  'without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429.';
+  'without it 423 CLOSED_PERIOD; a wrong password 403; too many tries 429. ' + INVENTORY_ROUTE_NOTE + ' Lines: returnOf {transactionId} | null; on PUT, ' +
+  'omitted keeps the stored link of the line at the same position with the same item. The record\'s lines carry returnOf and it has inventoryLines.';
 
 async function remainingOf(tenantId: string, companyId: string, memoId: string): Promise<string> {
   const res = await db.execute(sql`
@@ -108,7 +110,7 @@ const memoRecordNote = 'CreditMemoRecord: {id, number, date, customerId, lines: 
 
 creditMemosRouter.post('/preview', validate(creditMemoPreviewSchema), describe({
   summary: 'Preview a credit memo; posts nothing (credit-memo-edit-v1)',
-  description: 'Response {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, ' +
+  description: INVENTORY_PREVIEW_NOTE + ' Response {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, ' +
     'taxAmount}], subtotal, taxableBase, taxRate, taxTotal, total, taxGroups, contactBalanceBefore, contactBalanceAfter, openInvoices: ' +
     '[{invoiceId, number, date, dueDate, balanceDue, balanceDueExact}], suggestedApplications: [{invoiceId, amount}] (oldest first up to ' +
     'the total), remainingCredit, problems: [{code: CREDIT_MEMO_TOTAL_NOT_POSITIVE}]}. The same compute as POST, so preview = post. ' +
