@@ -19,7 +19,7 @@
  * costing gate), password or not.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { accounts, contacts, inventoryMovements, items, journalLines, transactions, unitSets } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -323,9 +323,15 @@ export async function postCount(tenantId: string, input: {
 
 // ─── Opening stock on item create (U-159, Q-P24h) ───────────────────
 
-/** The Opening Balances equity account (system tag opening_balances), created when missing. */
+/**
+ * The company's Opening Balances equity account (system tag opening_balances: one of the company or a tenant-wide one,
+ * P24 review), created for the company when missing; never another company's.
+ */
 async function openingBalancesAccount(tx: Tx, tenantId: string, companyId: string | undefined): Promise<string> {
-  const [a] = await tx.select({ id: accounts.id }).from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'opening_balances'))).limit(1);
+  const scope = companyId ? or(isNull(accounts.companyId), eq(accounts.companyId, companyId)) : undefined;
+  const [a] = await tx.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'opening_balances'), scope))
+    .orderBy(sql`${accounts.companyId} IS NULL`, accounts.createdAt).limit(1);
   if (a) return a.id;
   const [made] = await tx.insert(accounts).values({
     tenantId, companyId: companyId ?? null, name: 'Opening Balances', accountType: 'equity', detailType: 'opening_balance_equity', systemTag: 'opening_balances', isSystem: true,

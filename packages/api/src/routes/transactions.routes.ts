@@ -150,7 +150,11 @@ transactionsRouter.get('/report.pdf', expensiveOpLimiter, async (req, res) => {
 // Bulk-edit Payee / Category / Tag across selected transactions from the
 // list view. Static path declared before the '/:id' routes so it isn't
 // captured as an id.
-transactionsRouter.post('/bulk-update', validate(bulkUpdateTransactionsSchema), async (req, res) => {
+transactionsRouter.post('/bulk-update', validate(bulkUpdateTransactionsSchema), describe({
+  summary: 'Edit the payee, category or tag of several transactions',
+  description: 'A selected transaction with inventory items (stock movements, inventory-costing-v1) is 409 INVENTORY_DOCUMENT '
+    + '(details.transactionId): edit it on its own form.',
+}), async (req, res) => {
   const result = await ledger.bulkUpdateTransactions(req.tenantId, req.body, req.userId, req.companyId);
   res.json(result);
 });

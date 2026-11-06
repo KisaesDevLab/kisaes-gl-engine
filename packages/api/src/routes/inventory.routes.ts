@@ -25,6 +25,7 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import * as adjustments from '../services/inventory-adjustment.service.js';
+import { resolveToday } from '../services/dashboard.service.js';
 import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 export const inventoryRouter = Router();
@@ -131,7 +132,8 @@ inventoryRouter.get('/count-sheet', describe({
 }), async (req, res) => {
   const q = inventoryCountSheetQuerySchema.safeParse(req.query);
   if (!q.success) throw AppError.badRequest('asOf must be a date YYYY-MM-DD', 'VALIDATION_ERROR', { field: 'asOf' });
-  const asOf = q.data.asOf ?? new Date().toISOString().slice(0, 10);
+  // Default: the database's today (CURRENT_DATE, the engine's "today" as in dashboard.resolveToday), not Node's UTC date.
+  const asOf = q.data.asOf ?? await resolveToday();
   res.json(await adjustments.countSheet(req.tenantId, asOf, req.companyId));
 });
 

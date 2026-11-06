@@ -16,7 +16,7 @@ import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertNotStale } from './ledger.service.js';
 
-export async function list(tenantId: string, filters?: ItemFilters) {
+export async function list(tenantId: string, filters?: ItemFilters, companyId?: string | null) {
   const conditions = [eq(items.tenantId, tenantId)];
   if (filters?.isActive !== undefined) conditions.push(eq(items.isActive, filters.isActive));
   if (filters?.isTaxable !== undefined) conditions.push(eq(items.isTaxable, filters.isTaxable));
@@ -41,7 +41,7 @@ export async function list(tenantId: string, filters?: ItemFilters) {
     db.select({ count: count() }).from(items).where(where),
   ]);
   // Parts carry their read-only stock figures (U-39b); other kinds null.
-  return { data: await withFigures(db, tenantId, data), total: total[0]?.count ?? 0 };
+  return { data: await withFigures(db, tenantId, data, companyId), total: total[0]?.count ?? 0 };
 }
 
 export async function getById(tenantId: string, id: string, executor: DbOrTx = db) {
@@ -51,13 +51,13 @@ export async function getById(tenantId: string, id: string, executor: DbOrTx = d
 }
 
 /** Items with their read-only stock figures (U-39b) and default prices per unit (U-161, unitPrices; null without a unit set). */
-async function withFigures<T extends typeof items.$inferSelect>(executor: DbOrTx, tenantId: string, rows: T[]) {
-  return units.withUnitPrices(executor, tenantId, await inventory.withStockFigures(executor, tenantId, rows));
+async function withFigures<T extends typeof items.$inferSelect>(executor: DbOrTx, tenantId: string, rows: T[], companyId?: string | null) {
+  return units.withUnitPrices(executor, tenantId, await inventory.withStockFigures(executor, tenantId, rows, companyId));
 }
 
 /** One item with its read-only stock figures (U-39b, item-types-v1) and unit prices (U-161). */
-export async function getWithFigures(tenantId: string, id: string, executor: DbOrTx = db) {
-  const [item] = await withFigures(executor, tenantId, [await getById(tenantId, id, executor)]);
+export async function getWithFigures(tenantId: string, id: string, executor: DbOrTx = db, companyId?: string | null) {
+  const [item] = await withFigures(executor, tenantId, [await getById(tenantId, id, executor)], companyId);
   return item!;
 }
 
@@ -181,7 +181,7 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
       const { postOpening } = await import('./inventory-adjustment.service.js');
       await postOpening(tx, tenantId, companyId, item.id, opening, userId);
     }
-    return (await withFigures(tx, tenantId, [item]))[0]!;
+    return (await withFigures(tx, tenantId, [item], companyId))[0]!;
   });
 }
 
@@ -256,7 +256,7 @@ export async function update(tenantId: string, id: string, input: UpdateItemInpu
       .where(and(eq(items.tenantId, tenantId), eq(items.id, id))).returning();
     if (!updated) throw AppError.notFound('Item not found');
     await auditLog(tenantId, 'update', 'item', id, existing, updated, userId, tx);
-    return (await withFigures(tx, tenantId, [updated]))[0]!;
+    return (await withFigures(tx, tenantId, [updated], companyId))[0]!;
   });
 }
 

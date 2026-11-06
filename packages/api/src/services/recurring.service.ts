@@ -303,6 +303,11 @@ export async function postLegacyClone(
         // generated instance so segment-scoped recurrences keep their
         // tag trail intact.
         tagId: l.tagId ?? null,
+        // An item line keeps its item, quantity and price, so an inventory part
+        // is bought again through the costing core (U-157 review S3).
+        ...(l.itemId ? { itemId: l.itemId } : {}),
+        ...(l.itemId && l.quantity ? { quantity: l.quantity } : {}),
+        ...(l.itemId && l.unitPrice ? { unitPrice: l.unitPrice } : {}),
       }));
 
     if (expenseLines.length === 0) {
@@ -377,6 +382,13 @@ export async function postLegacyClone(
       // billable line starts 'unbilled' (ledger billableColumns).
       contactId: l.contactId ?? null,
       isBillable: l.isBillable === true,
+      // An item line keeps its item, quantity and price, so an inventory part
+      // moves stock through the costing core (U-157 review S3). A credit
+      // memo's link to its sale (returnOf) is not copied: a copy returns at
+      // the current average.
+      ...(l.itemId ? { itemId: l.itemId } : {}),
+      ...(l.itemId && l.quantity ? { quantity: l.quantity } : {}),
+      ...(l.itemId && l.unitPrice ? { unitPrice: l.unitPrice } : {}),
     }));
 
     txn = await ledger.postTransaction(tenantId, {

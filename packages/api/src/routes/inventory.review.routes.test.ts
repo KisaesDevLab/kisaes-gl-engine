@@ -1,0 +1,408 @@
+// Copyright 2026 Kisaes LLC
+// Licensed under the PolyForm Small Business License 1.0.0.
+// Free for small businesses; see LICENSE for terms.
+//
+// ClientLedger P24 combined review (2026-11-06) of inventory-costing-v1 and
+// the rows that build on it: one test per finding and per missing test,
+// through the real routes where a route exists. The golden cases live in
+// inventory.golden.routes.test.ts.
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import 'express-async-errors';
+import express from 'express';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { and, eq, sql } from 'drizzle-orm';
+import { db } from '../db/index.js';
+import { accounts, companies, contacts, inventoryMovements, items, journalLines, reconciliationLines, reconciliations, transactions } from '../db/schema/index.js';
+import { itemsRouter } from './items.routes.js';
+import { companyRouter } from './company.routes.js';
+import { billsRouter } from './bills.routes.js';
+import { invoicesRouter } from './invoices.routes.js';
+import { transactionsRouter } from './transactions.routes.js';
+import { creditMemosRouter } from './credit-memos.routes.js';
+import { salesReceiptsRouter } from './sales-receipts.routes.js';
+import { checksRouter } from './checks.routes.js';
+import { inventoryRouter } from './inventory.routes.js';
+import { inventoryReportsRouter } from './inventory-reports.routes.js';
+import { Harness, type Co, key } from './receivables.test-support.js';
+import { errorHandler } from '../middleware/error-handler.js';
+
+type Body = Record<string, any>;
+
+const h = new Harness();
+let c: Co;
+
+beforeEach(async () => {
+  h.extraCleanup = [async (tid) => {
+    await db.delete(inventoryMovements).where(eq(inventoryMovements.tenantId, tid));
+    const recs = await db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tid));
+    for (const r of recs) await db.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, r.id));
+    await db.delete(reconciliations).where(eq(reconciliations.tenantId, tid));
+  }];
+  await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
+    ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/credit-memos', creditMemosRouter],
+    ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter],
+    ['/api/v1/reports', inventoryReportsRouter]]);
+  c = await h.company();
+});
+afterEach(async () => { await h.stop(); });
+
+const req = (method: string, p: string, body?: unknown, headers: Record<string, string> = {}) =>
+  h.request(method, `/api/v1${p}`, c.token, body, method === 'GET' ? headers : { 'Idempotency-Key': key(), ...headers });
+const err = (r: { status: number; json: Body }) => [r.status, r.json['error']?.code];
+
+interface World { asset: string; cogs: string; vendor: string; part: string }
+
+async function setup(): Promise<World> {
+  const on = await req('PUT', '/company/settings', { inventoryEnabled: true });
+  expect(on.status, JSON.stringify(on.json)).toBe(200);
+  const [asset] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'inventory_asset')));
+  const [cogs] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountType, 'cogs'), eq(accounts.isActive, true)));
+  const [vendor] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Cedar Supply' }).returning();
+  const w = { asset: asset!.id, cogs: cogs!.id, vendor: vendor!.id, part: '' };
+  w.part = await part(w, 'W');
+  return w;
+}
+
+async function part(w: World, name: string, cogsAccountId = w.cogs): Promise<string> {
+  const r = await req('POST', '/items', { name, itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: c.roles['income'],
+    assetAccountId: w.asset, cogsAccountId });
+  expect(r.status, JSON.stringify(r.json)).toBe(201);
+  return String(r.json['item'].id);
+}
+
+async function bill(w: World, date: string, lines: Array<{ itemId: string; quantity: string; amount: string }>) {
+  const r = await req('POST', '/bills', { contactId: w.vendor, txnDate: date,
+    lines: lines.map((l) => ({ accountId: w.asset, amount: l.amount, itemId: l.itemId, quantity: l.quantity, unitPrice: (Number(l.amount) / Number(l.quantity)).toFixed(4) })) });
+  expect(r.status, JSON.stringify(r.json)).toBe(201);
+  return String(r.json['bill']?.id ?? r.json['id']);
+}
+
+async function invoice(itemId: string, date: string, quantity: string) {
+  const r = await req('POST', '/invoices', { contactId: c.customer, txnDate: date, lines: [{ itemId, quantity, unitPrice: '10.00', isTaxable: false }] });
+  expect(r.status, JSON.stringify(r.json)).toBe(201);
+  return String(r.json['invoice']?.id ?? r.json['id']);
+}
+
+describe('P24 review: inventory-costing-v1 (E2a)', () => {
+  it('S7: an inactive part with stock history keeps its accounts; one without movements does not', async () => {
+    const w = await setup();
+    const accountsService = await import('../services/accounts.service.js');
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '2', amount: '6.00' }]);
+    expect((await req('DELETE', `/items/${w.part}`)).status).toBe(200);
+    await expect(accountsService.deactivate(c.tenantId, w.cogs, c.userId)).rejects.toMatchObject({ code: 'ACCOUNT_IN_USE' });
+    const [cogs2] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'COGS 2', accountType: 'cogs', detailType: 'cost_of_goods_sold' }).returning();
+    const idle = await part(w, 'Idle', cogs2!.id);
+    await expect(accountsService.deactivate(c.tenantId, cogs2!.id, c.userId)).rejects.toMatchObject({ code: 'ACCOUNT_IN_USE' });
+    expect((await req('DELETE', `/items/${idle}`)).status).toBe(200);
+    await expect(accountsService.deactivate(c.tenantId, cogs2!.id, c.userId)).resolves.toBeTruthy();
+  });
+
+  it('memorizing a document with parts is 409 INVENTORY_DOCUMENT', async () => {
+    const w = await setup();
+    const id = await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '2', amount: '6.00' }]);
+    const { snapshotForCreate } = await import('../services/templates/snapshot.js');
+    await expect(snapshotForCreate(db, c.tenantId, c.companyId, id)).rejects.toMatchObject({ code: 'INVENTORY_DOCUMENT' });
+  });
+
+  it('the invoice PDF shows the form lines only, never the derived costing lines', async () => {
+    const w = await setup();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '10', amount: '33.30' }]);
+    const inv = await invoice(w.part, '2026-01-06', '3');
+    const relief = await db.select().from(journalLines).where(and(eq(journalLines.transactionId, inv), eq(journalLines.lineRole, 'cogs')));
+    expect(relief.map((l) => l.debit)).toEqual(['9.9900']);
+    const { getInvoiceHtml } = await import('../services/pdf.service.js');
+    const html = await getInvoiceHtml(c.tenantId, inv);
+    expect(html).toContain('30.00');
+    expect(html).not.toContain('9.99');
+  });
+
+  it('lines can not be moved onto or off an inventory asset account (409 INVENTORY_DOCUMENT; blockedLineReason inventory)', async () => {
+    const w = await setup();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '2', amount: '6.00' }]);
+    const { moveAllLinesBetweenAccounts, blockedLineReason } = await import('../services/system-accounts.service.js');
+    await expect(db.transaction((tx) => moveAllLinesBetweenAccounts(tx, c.tenantId, c.roles['expense']!, w.asset)))
+      .rejects.toMatchObject({ code: 'INVENTORY_DOCUMENT' });
+    expect(await blockedLineReason(c.tenantId, w.asset)).toBe('inventory');
+  });
+
+  it('S8: a posting without a company is gated by the latest closing date of the tenant, as checkLockDate gates it', async () => {
+    const w = await setup();
+    await db.insert(companies).values({ tenantId: c.tenantId, businessName: 'Second Books', setupComplete: true, lockDate: '2026-03-31' });
+    const { postTransaction } = await import('../services/ledger.service.js');
+    const ap = (await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'accounts_payable'))))[0]!.id;
+    await expect(postTransaction(c.tenantId, { txnType: 'bill', txnDate: '2026-02-01', contactId: w.vendor, lines: [
+      { accountId: w.asset, debit: '3', credit: '0', itemId: w.part, quantity: '1' }, { accountId: ap, debit: '0', credit: '3' }] } as never, c.userId))
+      .rejects.toMatchObject({ code: 'INVENTORY_PERIOD_CLOSED', details: { closingDate: '2026-03-31' } });
+    expect(await db.select().from(inventoryMovements).where(eq(inventoryMovements.tenantId, c.tenantId))).toEqual([]);
+  });
+
+  it('GET /items stock figures are the request company\'s stock (items are tenant-wide)', async () => {
+    const w = await setup();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '2', amount: '6.00' }]);
+    const other = await h.secondCompany(c);
+    await db.insert(inventoryMovements).values({ tenantId: c.tenantId, companyId: other['X-Company-Id']!, itemId: w.part, transactionId: crypto.randomUUID(),
+      movementDate: '2026-02-01', txnCreatedAt: new Date(), kind: 'receipt', quantity: '999', valueMode: 'given', value: '999', runningQty: '999',
+      runningValue: '999', lastCost: '1' });
+    expect((await req('GET', `/items/${w.part}`)).json['item'].quantityOnHand).toBe('2.0000');
+    const list = (await req('GET', '/items')).json['data'] as Body[];
+    expect(list.find((i) => i['id'] === w.part)!['quantityOnHand']).toBe('2.0000');
+    expect((await req('GET', `/items/${w.part}`, undefined, other)).json['item'].quantityOnHand).toBe('999.0000');
+  });
+
+  it('a kind change into inventory_part waits for an in-flight posting that names the item (KEY SHARE), then sees its line', async () => {
+    const w = await setup();
+    const svc = await req('POST', '/items', { name: 'Svc', itemType: 'service', unitPrice: '5.00', incomeAccountId: c.roles['income'] });
+    const id = String(svc.json['item'].id);
+    const { prepareNew } = await import('../services/inventory-costing.service.js');
+    let released = 0;
+    const hold = db.transaction(async (tx) => {
+      await prepareNew(tx, c.tenantId, c.companyId, 'invoice', '2026-02-01', [{ accountId: c.roles['income']!, credit: '5', itemId: id, quantity: '1' }]);
+      await new Promise((r) => setTimeout(r, 700));
+      released = Date.now();
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    const put = await req('PUT', `/items/${id}`, { itemType: 'inventory_part', assetAccountId: w.asset, cogsAccountId: w.cogs });
+    const done = Date.now();
+    await hold;
+    expect(put.status, JSON.stringify(put.json)).toBe(200);
+    expect(released).toBeGreaterThan(0);
+    expect(done).toBeGreaterThanOrEqual(released);
+  });
+
+  it('S10: outside a route that maps it, a lock timeout is 409 RETRY without promising that nothing was saved', async () => {
+    const app = express();
+    app.get('/x', () => { throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }); });
+    app.use(errorHandler);
+    const server = app.listen(0);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const res = await new Promise<{ status: number; body: Body }>((resolve, reject) => {
+        http.get({ host: '127.0.0.1', port, path: '/x' }, (r) => {
+          let s = '';
+          r.on('data', (ch) => { s += ch; });
+          r.on('end', () => resolve({ status: r.statusCode ?? 0, body: JSON.parse(s) as Body }));
+        }).on('error', reject);
+      });
+      expect([res.status, res.body['error'].code]).toEqual([409, 'RETRY']);
+      expect(res.body['error'].message).not.toMatch(/nothing was saved/i);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  /**
+   * A backdated 20-part bill over `LATER` later rows of each part: every later sale re-costs. Returns the bill's
+   * posting time. The later invoices (each selling 1 of every part at 1.00, with its derived lines) are seeded in
+   * SQL: routes are far too slow.
+   */
+  async function backdatedOver(LATER: number): Promise<number> {
+    const w = await setup();
+    const N = 20;
+    const parts = [w.part];
+    for (let i = 1; i < N; i++) parts.push(await part(w, `P${i}`));
+    await bill(w, '2026-01-01', parts.map((id) => ({ itemId: id, quantity: '100000', amount: '100000.00' })));
+    await db.execute(sql`
+      INSERT INTO transactions (tenant_id, company_id, txn_type, txn_date, status, created_at)
+      SELECT ${c.tenantId}::uuid, ${c.companyId}::uuid, 'invoice', DATE '2026-01-03' + (g % 300), 'posted', now() + g * interval '1 millisecond'
+      FROM generate_series(1, ${LATER}::int) g`);
+    await db.execute(sql`
+      INSERT INTO inventory_movements (tenant_id, company_id, item_id, transaction_id, movement_date, txn_created_at, kind, quantity, value_mode, value,
+        running_qty, running_value, last_cost)
+      SELECT t.tenant_id, t.company_id, i.id, t.id, t.txn_date, t.created_at, 'sale', -1, 'derived', -1, 0, 0, 1
+      FROM transactions t CROSS JOIN items i
+      WHERE t.tenant_id = ${c.tenantId} AND t.txn_type = 'invoice' AND i.tenant_id = ${c.tenantId} AND i.item_type = 'inventory_part'`);
+    await db.execute(sql`
+      INSERT INTO journal_lines (tenant_id, company_id, transaction_id, account_id, debit, credit, line_role, inventory_movement_id, line_order)
+      SELECT m.tenant_id, m.company_id, m.transaction_id, ${w.asset}::uuid, 0, 1, 'inventory_relief', m.id, 1 FROM inventory_movements m
+      WHERE m.tenant_id = ${c.tenantId} AND m.kind = 'sale'
+      UNION ALL
+      SELECT m.tenant_id, m.company_id, m.transaction_id, ${w.cogs}::uuid, 1, 0, 'cogs', m.id, 2 FROM inventory_movements m
+      WHERE m.tenant_id = ${c.tenantId} AND m.kind = 'sale'`);
+    await db.execute(sql`ANALYZE inventory_movements`);
+    await db.execute(sql`ANALYZE journal_lines`);
+
+    const t0 = Date.now();
+    const backdated = await bill(w, '2026-01-02', parts.map((id) => ({ itemId: id, quantity: '1000', amount: '2000.00' })));
+    const ms = Date.now() - t0;
+    // Every later sale re-costs at the new average (102,000 / 101,000).
+    const sample = await db.select().from(inventoryMovements)
+      .where(and(eq(inventoryMovements.tenantId, c.tenantId), eq(inventoryMovements.itemId, w.part), eq(inventoryMovements.kind, 'sale'))).limit(1);
+    expect(sample[0]!.value).toBe('-1.0100');
+    const cogs = await db.select().from(journalLines).where(and(eq(journalLines.inventoryMovementId, sample[0]!.id), eq(journalLines.lineRole, 'cogs')));
+    expect(cogs.map((l) => l.debit)).toEqual(['1.0100']);
+    // One audit row per re-costed document (batched inserts).
+    const audits = await db.execute(sql`SELECT COUNT(*)::int AS n FROM audit_log WHERE tenant_id = ${c.tenantId} AND after_data::text LIKE ${'%' + backdated + '%'}`);
+    expect((audits.rows[0] as { n: number }).n).toBe(LATER);
+    console.log(`[perf] backdated 20-part bill over ${LATER} later rows each: ${ms} ms`);
+    return ms;
+  }
+
+  it('S9: a backdated 20-part bill re-costs every later row in batched statements (20 x 250 rows)', async () => {
+    await backdatedOver(250);
+  }, 120_000);
+
+  // The P24 budget (S13): 20 parts x 5,000 later rows each under 3 s. Heavy (it seeds 100,000 movements and 200,000
+  // lines), so it runs when INVENTORY_PERF=1. Measured 2026-11-06 on the ClientLedger dev box: about 14.5 s; the
+  // budget is not met yet (row writes dominate: about 35 us per rewritten journal line and per movement).
+  it.runIf(process.env['INVENTORY_PERF'] === '1')('S9 performance budget: 20 parts x 5,000 later rows each post in under 3 s', async () => {
+    expect(await backdatedOver(5000)).toBeLessThan(3000);
+  }, 300_000);
+});
+
+describe('P24 review: returns, checks, cash sales and copies (E2b)', () => {
+  const memoBody = (itemId: string, date: string, quantity: string, returnOf?: string) => ({ contactId: c.customer, txnDate: date,
+    lines: [{ itemId, quantity, unitPrice: '10.00', isTaxable: false, ...(returnOf ? { returnOf: { transactionId: returnOf } } : {}) }] });
+
+  it('S2: a credit memo entered before its sale on the same date can not link to it (400 RETURN_BEFORE_SALE, not 500); one entered after can', async () => {
+    const w = await setup();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '10', amount: '30.00' }]);
+    const early = await req('POST', '/credit-memos', memoBody(w.part, '2026-01-08', '1'));
+    expect(early.status, JSON.stringify(early.json)).toBe(201);
+    const earlyId = String(early.json['creditMemo']?.id ?? early.json['id']);
+    const sale = await invoice(w.part, '2026-01-08', '3');
+    const relink = await req('PUT', `/credit-memos/${earlyId}`, memoBody(w.part, '2026-01-08', '1', sale));
+    expect(err(relink), JSON.stringify(relink.json)).toEqual([400, 'RETURN_BEFORE_SALE']);
+    const late = await req('POST', '/credit-memos', memoBody(w.part, '2026-01-08', '1', sale));
+    expect(late.status, JSON.stringify(late.json)).toBe(201);
+    // Dated after the sale's day the early memo may link.
+    expect((await req('PUT', `/credit-memos/${earlyId}`, memoBody(w.part, '2026-01-09', '1', sale))).status).toBe(200);
+  });
+
+  it('S3: a recurring copy of a bill, a check and a sales receipt with a part moves stock through the costing core', async () => {
+    const w = await setup();
+    const { postLegacyClone } = await import('../services/recurring.service.js');
+    const b = await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '4', amount: '12.00' }]);
+    const chk = await req('POST', '/checks', { bankAccountId: c.roles['checking'], contactId: w.vendor, payeeNameOnCheck: 'Cedar Supply', txnDate: '2026-01-06',
+      amount: '6.00', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.part, quantity: '2', unitPrice: '3.00' }] });
+    expect(chk.status, JSON.stringify(chk.json)).toBe(201);
+    const sr = await req('POST', '/sales-receipts', { contactId: c.customer, txnDate: '2026-01-07', depositToAccountId: c.roles['checking'],
+      lines: [{ itemId: w.part, quantity: '1', unitPrice: '10.00', isTaxable: false }] });
+    expect(sr.status, JSON.stringify(sr.json)).toBe(201);
+    const ids = [b, String(chk.json['check']?.id ?? chk.json['id']), String(sr.json['salesReceipt']?.id ?? sr.json['id'])];
+    for (const id of ids) {
+      const copy = await postLegacyClone(c.tenantId, { id: crypto.randomUUID(), templateTransactionId: id, nextOccurrence: '2026-02-01' }) as { id: string };
+      const [orig] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, id));
+      const [mv] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, copy.id));
+      expect(mv, id).toBeTruthy();
+      expect([mv!.kind, mv!.quantity]).toEqual([orig!.kind, orig!.quantity]);
+    }
+  });
+
+  it('editing a document with parts that is cleared in a completed bank reconciliation is 409 INVENTORY_DOCUMENT', async () => {
+    const w = await setup();
+    const body = { bankAccountId: c.roles['checking'], contactId: w.vendor, payeeNameOnCheck: 'Cedar Supply', txnDate: '2026-01-06',
+      amount: '6.00', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.part, quantity: '2', unitPrice: '3.00' }] };
+    const chk = await req('POST', '/checks', body);
+    expect(chk.status, JSON.stringify(chk.json)).toBe(201);
+    const id = String(chk.json['check']?.id ?? chk.json['id']);
+    const [bankLine] = await db.select().from(journalLines).where(and(eq(journalLines.transactionId, id), eq(journalLines.accountId, c.roles['checking']!)));
+    const [rec] = await db.insert(reconciliations).values({ tenantId: c.tenantId, companyId: c.companyId, accountId: c.roles['checking']!,
+      statementDate: '2026-01-31', statementEndingBalance: '-6', beginningBalance: '0', status: 'complete', completedAt: new Date() }).returning();
+    await db.insert(reconciliationLines).values({ reconciliationId: rec!.id, journalLineId: bankLine!.id, isCleared: true });
+    const put = await req('PUT', `/checks/${id}`, { ...body, memo: 'changed', lines: [{ ...body.lines[0]!, quantity: '3', unitPrice: '2.00' }] });
+    expect(err(put), JSON.stringify(put.json)).toEqual([409, 'INVENTORY_DOCUMENT']);
+  });
+
+  it('S10: after 409 RETRY a resend under the same Idempotency-Key posts the bill once', async () => {
+    const w = await setup();
+    const body = { contactId: w.vendor, txnDate: '2026-01-05', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.part, quantity: '2', unitPrice: '3.00' }] };
+    const k = key();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => { locked = r; });
+    const hold = db.transaction(async (tx) => {
+      await tx.select().from(items).where(eq(items.id, w.part)).for('update');
+      locked();
+      await held;
+    });
+    await isLocked;
+    const first = await h.request('POST', '/api/v1/bills', c.token, body, { 'Idempotency-Key': k });
+    release();
+    await hold;
+    expect(err(first), JSON.stringify(first.json)).toEqual([409, 'RETRY']);
+    const second = await h.request('POST', '/api/v1/bills', c.token, body, { 'Idempotency-Key': k });
+    expect(second.status, JSON.stringify(second.json)).toBe(201);
+    const third = await h.request('POST', '/api/v1/bills', c.token, body, { 'Idempotency-Key': k });
+    expect(third.status).toBe(201);
+    const bills = await db.select().from(transactions).where(and(eq(transactions.tenantId, c.tenantId), eq(transactions.txnType, 'bill')));
+    expect(bills.length).toBe(1);
+  }, 60_000);
+
+  it('sales tax and A/R lines of an invoice stay byte-identical when a backdated bill re-costs it', async () => {
+    const w = await setup();
+    await db.update(companies).set({ defaultSalesTaxRate: '0.0825' }).where(eq(companies.id, c.companyId));
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '10', amount: '30.00' }]);
+    const r = await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-08', lines: [{ itemId: w.part, quantity: '3', unitPrice: '10.00', isTaxable: true }] });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const inv = String(r.json['invoice']?.id ?? r.json['id']);
+    const snap = async () => ({
+      lines: (await db.select().from(journalLines).where(eq(journalLines.transactionId, inv)))
+        .filter((l) => !['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'].includes(l.lineRole ?? ''))
+        .map((l) => JSON.stringify(l)).sort(),
+      txn: await db.execute(sql`SELECT total::text, tax_amount::text, balance_due::text, updated_at::text FROM transactions WHERE id = ${inv}`).then((x) => x.rows),
+      tax: await db.execute(sql`SELECT * FROM transaction_tax_lines WHERE transaction_id = ${inv} ORDER BY id`).then((x) => x.rows.map((row) => JSON.stringify(row))).catch(() => []),
+    });
+    const before = await snap();
+    const cogsBefore = (await db.select().from(journalLines).where(and(eq(journalLines.transactionId, inv), eq(journalLines.lineRole, 'cogs'))))[0]!.debit;
+    await bill(w, '2026-01-02', [{ itemId: w.part, quantity: '10', amount: '50.00' }]);
+    const cogsAfter = (await db.select().from(journalLines).where(and(eq(journalLines.transactionId, inv), eq(journalLines.lineRole, 'cogs'))))[0]!.debit;
+    expect(cogsAfter).not.toBe(cogsBefore);
+    expect(await snap()).toEqual(before);
+  });
+});
+describe('P24 review: adjustments, counts and opening stock (E3)', () => {
+  it('S1: a transactions-only user can not void, delete or duplicate an inventory adjustment through /transactions (403)', async () => {
+    const w = await setup();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '4', amount: '12.00' }]);
+    const [adj] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Shrinkage', accountType: 'expense' }).returning();
+    const { postAdjustment } = await import('../services/inventory-adjustment.service.js');
+    const t = await postAdjustment(c.tenantId, c.companyId, { txnDate: '2026-01-06', adjustmentAccountId: adj!.id, lines: [{ itemId: w.part, quantityChange: '-1' }] } as never, c.userId);
+    const token = await h.staffToken(c, { transactions: 'full' });
+    const as = (method: string, p: string, body?: unknown) => h.request(method, `/api/v1${p}`, token, body, { 'Idempotency-Key': key() });
+    expect((await as('POST', `/transactions/${t.id}/void`, { reason: 'x' })).status).toBe(403);
+    expect((await as('DELETE', `/transactions/${t.id}`)).status).toBe(403);
+    expect((await as('POST', `/transactions/${t.id}/duplicate`)).status).toBe(403);
+    const [still] = await db.select().from(transactions).where(eq(transactions.id, t.id));
+    expect(still!.status).toBe('posted');
+  });
+
+  it('the count sheet defaults to the database\'s today, not the server\'s UTC date', async () => {
+    await setup();
+    const today = String((await db.execute(sql`SELECT CURRENT_DATE::text AS d`)).rows[0]!['d']);
+    const r = await req('GET', '/inventory/count-sheet');
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json['asOf']).toBe(today);
+  });
+
+  it('opening stock posts to the company\'s own Opening Balances account, never another company\'s', async () => {
+    const w = await setup();
+    const other = await h.secondCompany(c);
+    const [foreign] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: other['X-Company-Id']!, name: 'Opening Balances',
+      accountType: 'equity', detailType: 'opening_balance_equity', systemTag: 'opening_balances', isSystem: true } as never).returning();
+    const r = await req('POST', '/items', { name: 'Opened', itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: c.roles['income'],
+      assetAccountId: w.asset, cogsAccountId: w.cogs, opening: { quantity: '5', value: '10.00', asOf: '2026-01-15' } });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const [mv] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.itemId, String(r.json['item'].id)));
+    const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, mv!.transactionId));
+    const equity = lines.find((l) => l.accountId !== w.asset)!;
+    expect(equity.accountId).not.toBe(foreign!.id);
+    const [acct] = await db.select().from(accounts).where(eq(accounts.id, equity.accountId));
+    expect([acct!.systemTag, acct!.companyId === c.companyId || acct!.companyId === null]).toEqual(['opening_balances', true]);
+  });
+});
+describe('P24 review: inventory reports (E4)', () => {
+  it('the reorder report and the default as-of date of valuation and stock status are the database\'s today', async () => {
+    await setup();
+    const today = String((await db.execute(sql`SELECT CURRENT_DATE::text AS d`)).rows[0]!['d']);
+    const reorder = await req('GET', '/reports/reorder');
+    expect(reorder.status, JSON.stringify(reorder.json)).toBe(200);
+    expect(reorder.json['asOf']).toBe(today);
+    const status = await req('GET', '/reports/inventory-stock-status');
+    expect([status.status, status.json['asOf']]).toEqual([200, today]);
+    const valuation = await req('GET', '/reports/inventory-valuation');
+    expect([valuation.status, valuation.json['asOf']]).toEqual([200, today]);
+  });
+});

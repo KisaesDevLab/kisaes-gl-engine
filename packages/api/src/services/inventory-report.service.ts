@@ -15,6 +15,7 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, type DbOrTx } from '../db/index.js';
+import { resolveToday } from './dashboard.service.js';
 import { accounts, companies, contacts, items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { Decimal, type Dec } from '../utils/inventory-walk.js';
@@ -25,7 +26,8 @@ import { baseUnits, unitsById } from './units.service.js';
 const money = (v: Dec) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
 const qty = (v: Dec) => v.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
 const cost6 = (v: Dec) => v.toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
-const today = () => new Date().toISOString().slice(0, 10);
+// The engine's today: the database's CURRENT_DATE (dashboard.resolveToday), not Node's UTC date.
+const today = () => resolveToday();
 
 /** The average cost shown after a row: value / on hand while on hand is above 0, else the last positive average (as GET /items). */
 function averageOf(onHand: Dec, value: Dec, lastCost: Dec): string {
@@ -257,5 +259,5 @@ export async function reorderReport(tenantId: string, companyId?: string) {
       reorderQuantityInPurchaseUnit: u && r.reorderQuantity !== null ? qty(new Decimal(r.reorderQuantity).dividedBy(u.factor)) : null,
     };
   });
-  return { title: 'Items to Reorder', asOf: today(), data };
+  return { title: 'Items to Reorder', asOf: await today(), data };
 }

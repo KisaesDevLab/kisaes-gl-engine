@@ -43,14 +43,14 @@ itemsRouter.get('/', describe({
   description: `{data, total}. itemType filters by kind. ${kindRules} ${partRules}`,
   query: itemFiltersSchema,
 }), async (req, res) => {
-  const result = await itemsService.list(req.tenantId, itemFiltersSchema.parse(req.query));
+  const result = await itemsService.list(req.tenantId, itemFiltersSchema.parse(req.query), req.companyId);
   res.json(result);
 });
 
 // Idempotency-Key (idempotency-v1, U-18).
 itemsRouter.post('/', idempotent({
   successStatus: 201,
-  replay: async (req, entity) => ({ item: await itemsService.getWithFigures(req.tenantId, entity!.id) }),
+  replay: async (req, entity) => ({ item: await itemsService.getWithFigures(req.tenantId, entity!.id, undefined, req.companyId) }),
 }), validate(createItemSchema), describe({
   summary: 'Create an item',
   description: `Response 201 {item}. A name already used is 409. ${kindRules} ${partRules}`,
@@ -87,7 +87,7 @@ itemsRouter.get('/:id', describe({
   description: `Response {item} with the read-only stock figures of a part (item-types-v1). ${partRules}`,
   params: idParams,
 }), async (req, res) => {
-  const item = await itemsService.getWithFigures(req.tenantId, req.params['id']!);
+  const item = await itemsService.getWithFigures(req.tenantId, req.params['id']!, undefined, req.companyId);
   res.json({ item });
 });
 
