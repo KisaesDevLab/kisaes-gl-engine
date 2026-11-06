@@ -318,7 +318,11 @@ describe('closed periods are refused for inventory (owner decision 2026-11-06, g
       if (c5['event'] === 'bill') r = await req('POST', '/bills', { contactId: w.vendor, txnDate: c5['date'], closingPassword: 'closing-pass-1', lines });
       else if (c5['event'] === 'void') r = await req('POST', `/transactions/${w.docs.get(c5['doc'])}/void`, { reason: 'x', closingPassword: 'closing-pass-1' });
       else if (c5['event'] === 'delete') r = await req('DELETE', `/transactions/${w.docs.get(c5['doc'])}`, { closingPassword: 'closing-pass-1' });
-      else {
+      else if (c5['event'] === 'adjust_qty') {
+        const e = await postAdjustment(c.tenantId, c.companyId, { txnDate: c5['date'], adjustmentAccountId: w.adjustment,
+          lines: [{ itemId: w.items.get('W')!, quantityChange: c5['quantityChange'] }] }, c.userId).then(() => null, (x) => x as Body);
+        r = { status: e?.['statusCode'] ?? 201, json: { error: { code: e?.['code'] } } };
+      } else {
         const body = { ...structuredClone(w.bodies.get(c5['doc'])!), ...(c5['date'] ? { txnDate: c5['date'] } : {}), closingPassword: 'closing-pass-1' } as Body;
         if (c5['quantity']) body['lines'][0].quantity = c5['quantity'];
         r = await req('PUT', `/invoices/${w.docs.get(c5['doc'])}`, body);
@@ -335,6 +339,40 @@ describe('closed periods are refused for inventory (owner decision 2026-11-06, g
     expect(plain.status, JSON.stringify(plain.json)).toBe(201);
     await invariants(w);
   });
+
+  it('C: closing moved later refuses the newly closed documents with nothing recomputed; moved earlier reopens them (case M step 10 numbers)', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    const rowsBefore = await rows(w.items.get('W')!);
+    expect((await req('PUT', '/company/settings', { lockDate: '2026-01-20' })).status).toBe(200);
+    expect((await rows(w.items.get('W')!)).map((r) => [r.id, r.value, r.runningValue])).toEqual(rowsBefore.map((r) => [r.id, r.value, r.runningValue]));
+    const body = { ...structuredClone(w.bodies.get('A6')!), txnDate: '2026-01-16' } as Body;
+    const moved = await req('PUT', `/bills/${w.docs.get('A6')}`, body);
+    expect([moved.status, moved.json['error']?.code]).toEqual([409, 'INVENTORY_PERIOD_CLOSED']);
+    expect((await req('PUT', '/company/settings', { lockDate: '2026-01-05' })).status).toBe(200);
+    await runSteps(w, [(gcase('M')['steps'] as Body[])[0]!]);
+    await checkRows(w, gcase('M')['rowsAfter']['10']);
+  });
+
+  for (const id of ['K', 'K2']) {
+    it(`${id}: ${gcase(id)['title']}`, async () => {
+      const w = await setup();
+      await runSteps(w, gcase('A')['steps']);
+      expect((await req('PUT', '/company/settings', { lockDate: '2026-01-10' })).status).toBe(200);
+      const closedLines = async () => (await db.execute(sql`
+        SELECT jl.id, jl.account_id, jl.debit::text, jl.credit::text, jl.line_role FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id
+        WHERE jl.tenant_id = ${c.tenantId} AND t.txn_date <= '2026-01-10' ORDER BY jl.id`)).rows;
+      const closedRows = async () => (await db.execute(sql`
+        SELECT id, value::text, correction::text, residual::text, running_qty::text, running_value::text, last_cost::text FROM inventory_movements
+        WHERE tenant_id = ${c.tenantId} AND movement_date <= '2026-01-10' ORDER BY id`)).rows;
+      const [lines0, rows0] = [await closedLines(), await closedRows()];
+      await runSteps(w, (gcase(id)['steps'] as Body[]).filter((s) => s['event'] !== 'closing_date'));
+      await checkRows(w, gcase(id)['rows']);
+      await checkFinal(w, gcase(id)['final']);
+      expect(await closedLines(), 'every line dated on or before the closing date byte-identical').toEqual(lines0);
+      expect(await closedRows(), 'no closed movement row changes').toEqual(rows0);
+    });
+  }
 });
 
 describe('inventory-costing-v1 guards (B3, B4)', () => {

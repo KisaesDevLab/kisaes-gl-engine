@@ -16,7 +16,11 @@
 --    last_cost (the last positive average). Position: (movement_date,
 --    txn_created_at, transaction_id); txn_created_at is the transaction's
 --    created_at, kept on edits. A voided or deleted document's rows stay,
---    voided = true. Soft references (no FK), like transaction_tax_lines.
+--    voided = true. A credit-memo return linked to its sale (Q-P24e,
+--    returnOf.transactionId; valued in E2b) carries source_transaction_id
+--    = the sale and value_mode linked: one row per (transaction, item, linked
+--    sale), NULL counting as one value. Soft references (no FK), like
+--    transaction_tax_lines.
 -- 2. journal_lines.inventory_movement_id: the movement an item line or a
 --    derived line (line_role cogs | inventory_relief | cost_correction |
 --    cost_residual, written only by the costing walk) belongs to.
@@ -34,12 +38,13 @@ CREATE TABLE IF NOT EXISTS inventory_movements (
   company_id uuid NOT NULL,
   item_id uuid NOT NULL,
   transaction_id uuid NOT NULL,
+  source_transaction_id uuid,
   movement_date date NOT NULL,
   txn_created_at timestamptz NOT NULL,
   kind varchar(20) NOT NULL CONSTRAINT inventory_movements_kind_ck
     CHECK (kind IN ('receipt', 'sale', 'customer_return', 'vendor_return', 'adjust_qty', 'adjust_value')),
   quantity numeric(12,4) NOT NULL DEFAULT 0,
-  value_mode varchar(10) NOT NULL CONSTRAINT inventory_movements_value_mode_ck CHECK (value_mode IN ('given', 'derived')),
+  value_mode varchar(10) NOT NULL CONSTRAINT inventory_movements_value_mode_ck CHECK (value_mode IN ('given', 'derived', 'linked')),
   value numeric(19,4) NOT NULL DEFAULT 0,
   correction numeric(19,4) NOT NULL DEFAULT 0,
   residual numeric(19,4) NOT NULL DEFAULT 0,
@@ -52,7 +57,8 @@ CREATE TABLE IF NOT EXISTS inventory_movements (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_movements_txn_item ON inventory_movements (transaction_id, item_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_movements_txn_item
+  ON inventory_movements (transaction_id, item_id, source_transaction_id) NULLS NOT DISTINCT;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_inventory_movements_position
   ON inventory_movements (company_id, item_id, movement_date, txn_created_at, transaction_id);

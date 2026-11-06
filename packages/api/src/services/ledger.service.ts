@@ -633,6 +633,12 @@ export async function postTransaction(
     // Idempotency-Key (U-18): claimed first, in this transaction, so the
     // key row commits or rolls back with the posting. No-op without one.
     await claimIdempotency(tx);
+    // Inventory costing (U-157): line guards, then the costing lock (companies
+    // row, then items) before any balance write. A document with inventory
+    // lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED
+    // here, before the closing-date check, so no password or confirmation
+    // opens it (owner decision 2026-11-06). Null when no part is involved.
+    const costingLock = await costing.prepareNew(tx, tenantId, companyId ?? null, input.txnType, input.txnDate, input.lines);
     // AJEs bypass the closing-date lock by design (TB module D10 /
     // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
     // router is the only path that posts txn_type 'aje', and closing a
@@ -648,11 +654,6 @@ export async function postTransaction(
       companyId ?? null,
       input.lines.map((l) => l.accountId),
     );
-    // Inventory costing (U-157): line guards, then the costing lock (companies
-    // row, then items) before any balance write; a document with inventory
-    // lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED,
-    // password or not (owner decision 2026-11-06). Null when no part is involved.
-    const costingLock = await costing.prepareNew(tx, tenantId, companyId ?? null, input.txnType, input.txnDate, input.lines);
 
     // Insert transaction header
     const [txn] = await tx.insert(transactions).values({
@@ -1528,6 +1529,12 @@ export async function updateTransaction(
     // changes either is 409 SALES_TAX_LINKED (unlink first, edit, link again).
     await assertSalesTaxLinkUnchanged(tx, tenantId, existing, input);
 
+    // Inventory costing (U-157): line guards, then the costing lock over the
+    // old and new parts before any balance write; the old or new date on or
+    // before the closing date is 409 INVENTORY_PERIOD_CLOSED, before the
+    // closing-date check (owner decision 2026-11-06).
+    const costingLock = await costing.prepareEdit(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, input.txnType ?? existing.txnType,
+      existing.txnDate, input.txnDate, input.lines);
     // Check lock date for both old and new dates (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
     // unless the company has a closing-date password (U-15).
@@ -1552,10 +1559,6 @@ export async function updateTransaction(
       companyId ?? existing.companyId ?? null,
       input.lines.map((l) => l.accountId),
     );
-    // Inventory costing (U-157): line guards, then the costing lock over the
-    // old and new parts before any balance write.
-    const costingLock = await costing.prepareEdit(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, input.txnType ?? existing.txnType,
-      existing.txnDate, input.txnDate, input.lines);
 
     // An item a posted deposit settles keeps the amount the deposit took
     // (U-52): an edit that changes what it holds in Payments Clearing (or a

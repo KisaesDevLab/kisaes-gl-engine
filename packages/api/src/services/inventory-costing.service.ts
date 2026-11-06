@@ -81,6 +81,15 @@ export interface InventoryWarning { code: 'NEGATIVE_STOCK'; itemId: string; date
 
 const d = (v: unknown) => new Decimal(v === null || v === undefined || v === '' ? '0' : String(v));
 
+/**
+ * A line's quantity in the item's base unit (P24 §2.1). Every costing read of
+ * a quantity goes through here; until units of measure land (U-161, E5) it
+ * is the line quantity.
+ */
+export function baseQuantity(line: { quantity?: string | null }): Dec {
+  return d(line.quantity);
+}
+
 /** The accounts of `accountIds` that are inventory asset accounts: tagged inventory_asset or named by a part. */
 export async function inventoryAssetAccounts(tx: Tx, tenantId: string, accountIds: readonly string[]): Promise<Set<string>> {
   const ids = [...new Set(accountIds.filter(Boolean))];
@@ -133,7 +142,7 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
         { lineIndex: i, txnType });
     }
     const hasQty = l.quantity !== undefined && l.quantity !== null && l.quantity !== '';
-    if (!ADJUST_TYPES.has(txnType) && (!hasQty || !d(l.quantity).greaterThan(0))) {
+    if (!ADJUST_TYPES.has(txnType) && (!hasQty || !baseQuantity(l).greaterThan(0))) {
       throw AppError.badRequest(`Line ${i + 1}: an inventory item line needs a quantity above 0`, 'VALIDATION_ERROR', { lineIndex: i });
     }
     if ((RECEIPT_TYPES.has(txnType) || VENDOR_RETURN_TYPES.has(txnType)) && l.accountId !== part.assetAccountId) {
@@ -226,7 +235,7 @@ function specsFor(txnType: string, lines: Array<{ itemId: string; accountId: str
       s = { itemId: l.itemId, kind: 'receipt', quantity: new Decimal(0), valueMode: 'derived', given: null, counterAccountId: null, tagId: l.tagId };
       out.set(l.itemId, s);
     }
-    const qty = d(l.quantity);
+    const qty = baseQuantity(l);
     const amount = d(l.debit).minus(d(l.credit));
     if (RECEIPT_TYPES.has(txnType)) {
       s.kind = 'receipt'; s.valueMode = 'given'; s.quantity = s.quantity.plus(qty); s.given = (s.given ?? new Decimal(0)).plus(amount);
@@ -349,7 +358,7 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
       if (!oldLive) continue;
     }
     if (!startPos) continue;
-    const res = await walkItem(tx, tenantId, companyId, itemId, startPos, txnId);
+    const res = await walkItem(tx, tenantId, companyId, itemId, startPos, txnId, opts.lock.lockDate);
     if (res.warning) warnings.push(res.warning);
     for (const m of res.changed) {
       reconcile.set(m.row.id, m.row);
@@ -397,8 +406,10 @@ const cents = (m: { value: string; correction: string; residual: string }) =>
  * after the closing date (lock() refuses earlier documents).
  */
 async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: string, start: ReturnType<typeof pos>,
-  triggerId: string): Promise<{ changed: Changed[]; warning: InventoryWarning | null }> {
+  triggerId: string, lockDate: string | null): Promise<{ changed: Changed[]; warning: InventoryWarning | null }> {
   const [sDate, sCreated, sTxn] = start;
+  // I4: no walk starts at or before the closing date (the gate refused those documents).
+  if (lockDate && sDate <= lockDate) throw AppError.internal('Costing: a walk would start in a closed period');
   const startCreated = new Date(sCreated).toISOString();
   const key = sql`(movement_date, txn_created_at, transaction_id)`;
   const at = sql`(${sDate}::date, ${startCreated}::timestamptz, ${sTxn}::uuid)`;
@@ -414,7 +425,8 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
       eq(inventoryMovements.voided, false), sql`${key} >= ${at}`))
     .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
   const walkRows: WalkRow[] = rows.map((m) => ({
-    id: m.id, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode,
+    // Linked returns (value_mode linked, Q-P24e) are valued from their sale in E2b; E2a never writes one.
+    id: m.id, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode === 'given' ? 'given' : 'derived',
     given: m.valueMode === 'given' ? d(m.value) : null,
     fallbackCost: m.fallbackCost === null ? null : d(m.fallbackCost),
   }));

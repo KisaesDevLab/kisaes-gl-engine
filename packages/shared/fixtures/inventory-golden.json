@@ -4,7 +4,9 @@
     "Position: (date, transaction created_at, transaction id). An edit keeps created_at.",
     "State per item: Q on hand, V value (the GL), L = round6(V/Q) after the latest row that left Q > 0 and V > 0 (the last positive average). The formulas below write T for V.",
     "Outflow at cost of q > 0 units (sale, quantity-only adjustment down), on T: Q > 0 and q <= Q: relief = round2(T x q / Q); q > Q: relief = (Q > 0 ? T : 0) + round2(excess x c), excess = q - max(Q, 0), c = L if L > 0, else the item's purchase cost when the line was posted, else 0.",
-    "Inflow at cost of r units (customer return, quantity-only adjustment up): round2(T x r / Q) if Q > 0, else round2(r x c).",
+    "Inflow at cost of r units (unlinked customer return, quantity-only adjustment up): round2(T x r / Q) if Q > 0, else round2(r x c).",
+    "Linked return (Q-P24e): a credit-memo line with returnOf {transactionId} (an invoice or sales receipt of the same item, dated on or before the credit memo). Sale relief R for S units; returns linked to it, in position order, with cumulative returned quantity N_k: value_k = round2(R x N_k / S) - round2(R x N_(k-1) / S). N <= S (400 RETURN_EXCEEDS_SALE); a credit memo dated before the sale is 400 RETURN_BEFORE_SALE; a sale with linked returns can't be voided, deleted, lose that item, drop below N or move after a return (409 SALE_HAS_RETURNS).",
+    "Units (U-161): quantities in movements, on hand and reports are base units; base quantity = round4(quantity x factor); the line amount stays round2(quantity x unitPrice) in the entered unit.",
     "Given value: a receipt adds its line amount, a vendor return takes its line amount off, an adjustment with a value adds that value.",
     "Correction when Q < 0 before an inflow of r units worth A: k = min(r, -Q); C = round2(A x k / r) - round2(-T x k / -Q), posted on the inflow's document (Dr COGS, Cr inventory when C > 0); T := T + A - C.",
     "Residual: a row leaving Q = 0 with T != 0 moves T to the item's COGS account on that document.",
@@ -145,7 +147,7 @@
     {
       "id": "C",
       "engineOnly": true,
-      "title": "Closed period refused (owner decision 2026-11-06; replaces the restatement cases C-C5): A, then closing date Jan 10 with a closing-date password; every add, edit, void or delete of an inventory document dated on or before Jan 10 is 409 INVENTORY_PERIOD_CLOSED, password or not, and nothing changes",
+      "title": "Refusals (Q-P24b, Revision 4; replaces the restatement cases C-C5): A, then closing date Jan 10 with a closing-date password. Adding, editing, voiding or deleting a document with inventory lines dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED whatever override the closing date grants, and nothing is written; a document without inventory items keeps the password flow",
       "from": "A",
       "steps": [
         { "n": 10, "event": "closing_date", "date": "2026-01-10", "password": "closing-pass-1" }
@@ -153,14 +155,69 @@
       "refusals": [
         { "case": "C", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00", "closingPassword": "closing-pass-1" },
         { "case": "C2", "event": "bill", "date": "2026-01-09", "item": "W", "quantity": "1", "unitPrice": "5.00", "amount": "5.00", "closingPassword": "closing-pass-1" },
-        { "case": "C4", "event": "edit", "doc": "A3", "quantity": "5", "closingPassword": "closing-pass-1" },
-        { "case": "C5", "event": "edit", "doc": "A5", "date": "2026-01-09", "closingPassword": "closing-pass-1" },
-        { "case": "C-void", "event": "void", "doc": "A2", "closingPassword": "closing-pass-1" },
-        { "case": "C-delete", "event": "delete", "doc": "A1", "closingPassword": "closing-pass-1" }
+        { "case": "C3", "event": "edit", "doc": "A3", "quantity": "5", "closingPassword": "closing-pass-1" },
+        { "case": "C4", "event": "edit", "doc": "A5", "date": "2026-01-09", "closingPassword": "closing-pass-1" },
+        { "case": "C5", "event": "void", "doc": "A3", "closingPassword": "closing-pass-1" },
+        { "case": "C6", "event": "delete", "doc": "A1", "closingPassword": "closing-pass-1" },
+        { "case": "C7", "event": "adjust_qty", "date": "2026-01-10", "item": "W", "quantityChange": "-1", "account": "adjustment", "closingPassword": "closing-pass-1" }
       ],
       "expectRefusal": { "status": 409, "code": "INVENTORY_PERIOD_CLOSED" },
-      "final": { "W": { "onHand": "4.0000", "assetValue": "16.20", "averageCost": "4.050000" } },
-      "after": "A bill dated Jan 11 (after the closing date) posts as usual; a document without inventory items keeps the closing-date password flow."
+      "allowed": [
+        { "event": "journal_entry_without_items", "date": "2026-01-09", "closingPassword": "closing-pass-1", "expect": 201 },
+        { "event": "bill", "date": "2026-01-11", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00", "expect": 201 }
+      ],
+      "closingMoved": [
+        { "to": "2026-01-20", "then": { "event": "edit", "doc": "A6", "date": "2026-01-16" }, "expect": { "status": 409, "code": "INVENTORY_PERIOD_CLOSED" }, "unchanged": true },
+        { "to": "2026-01-05", "then": { "event": "edit", "doc": "A3", "quantity": "6" }, "expectRowsAs": "M/10" }
+      ],
+      "final": { "W": { "onHand": "4.0000", "assetValue": "16.20", "averageCost": "4.050000" } }
+    },
+    {
+      "id": "K",
+      "engineOnly": true,
+      "title": "Open edit over closed receipts (A, closing Jan 10, Jan 12 invoice quantity 3 -> 2): seeded from the last closed row; every line dated on or before Jan 10 byte-identical",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "closing_date", "date": "2026-01-10", "password": "closing-pass-1" },
+        { "n": 11, "event": "edit", "doc": "A5", "quantity": "2" }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+        { "doc": "A2", "value": "20.50", "onHand": "15.0000", "assetValue": "53.83" },
+        { "doc": "A3", "value": "-14.35", "onHand": "11.0000", "assetValue": "39.48" },
+        { "doc": "A4", "value": "-39.48", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "A5", "value": "-7.18", "onHand": "-2.0000", "assetValue": "-7.18" },
+        { "doc": "A6", "value": "38.00", "correction": "-0.42", "onHand": "8.0000", "assetValue": "30.40" },
+        { "doc": "A7", "value": "-3.80", "onHand": "7.0000", "assetValue": "26.60" },
+        { "doc": "A8", "value": "1.50", "onHand": "7.0000", "assetValue": "28.10" },
+        { "doc": "A9", "value": "-8.03", "onHand": "5.0000", "assetValue": "20.07" }
+      ],
+      "closedLinesUnchanged": true,
+      "final": { "W": { "onHand": "5.0000", "assetValue": "20.07" } }
+    },
+    {
+      "id": "K2",
+      "engineOnly": true,
+      "title": "Open receipt after the closing date (A, closing Jan 10, bill Jan 11, 2 @ 3.00): only later rows change",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "closing_date", "date": "2026-01-10", "password": "closing-pass-1" },
+        { "n": 11, "doc": "K2a", "event": "bill", "date": "2026-01-11", "item": "W", "quantity": "2", "unitPrice": "3.00", "amount": "6.00" }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33" },
+        { "doc": "A2", "value": "20.50" },
+        { "doc": "A3", "value": "-14.35" },
+        { "doc": "A4", "value": "-39.48", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "K2a", "value": "6.00", "onHand": "2.0000", "assetValue": "6.00" },
+        { "doc": "A5", "value": "-9.00", "onHand": "-1.0000", "assetValue": "-3.00" },
+        { "doc": "A6", "value": "38.00", "correction": "-0.80", "onHand": "9.0000", "assetValue": "34.20" },
+        { "doc": "A7", "value": "-3.80", "onHand": "8.0000", "assetValue": "30.40" },
+        { "doc": "A8", "value": "1.50", "onHand": "8.0000", "assetValue": "31.90" },
+        { "doc": "A9", "value": "-7.98", "onHand": "6.0000", "assetValue": "23.92" }
+      ],
+      "closedLinesUnchanged": true,
+      "final": { "W": { "onHand": "6.0000", "assetValue": "23.92" } }
     },
     {
       "id": "D",
@@ -194,7 +251,7 @@
     },
     {
       "id": "E",
-      "title": "Returns and residual",
+      "title": "Unlinked returns and residual (the credit memo has no returnOf: current average)",
       "from": null,
       "steps": [
         { "n": 1, "doc": "E1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "3", "unitPrice": "10.00", "amount": "30.00" },
@@ -209,6 +266,51 @@
           "expect": { "value": "-19.00", "residual": "-1.00", "onHand": "0.0000", "assetValue": "0.00" } }
       ],
       "final": { "W": { "onHand": "0.0000", "assetValue": "0.00" } }
+    },
+    {
+      "id": "R",
+      "title": "Linked returns (Q-P24e): A steps 1-6, then credit memos linked to the Jan 8 invoice (relief R 14.35 for S 4 units) come back at the original sale cost",
+      "from": "A",
+      "fromSteps": 6,
+      "steps": [
+        { "n": 7, "doc": "R1", "event": "credit_memo", "date": "2026-01-16", "item": "W", "quantity": "2", "returnOf": "A3",
+          "expect": { "value": "7.18", "onHand": "9.0000", "assetValue": "33.78", "note": "round2(14.35 x 2 / 4 = 7.175); unlinked would be 7.60" } },
+        { "n": 8, "doc": "R2", "event": "credit_memo", "date": "2026-01-17", "item": "W", "quantity": "2", "returnOf": "A3",
+          "expect": { "value": "7.17", "onHand": "11.0000", "assetValue": "40.95", "note": "14.35 - 7.18: all 14.35 returned" } },
+        { "n": 9, "event": "credit_memo", "date": "2026-01-18", "item": "W", "quantity": "1", "returnOf": "A3", "expect": { "status": 400, "code": "RETURN_EXCEEDS_SALE" } },
+        { "n": 10, "event": "void", "doc": "A3", "expect": { "status": 409, "code": "SALE_HAS_RETURNS" } },
+        { "n": 11, "doc": "B1", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00" }
+      ],
+      "rows": [
+        { "doc": "A3", "value": "-12.54" },
+        { "doc": "A4", "value": "-34.48" },
+        { "doc": "A5", "value": "-9.41" },
+        { "doc": "A6", "value": "38.00", "onHand": "13.0000", "assetValue": "47.40" },
+        { "doc": "R1", "value": "6.27" },
+        { "doc": "R2", "value": "6.27", "onHand": "17.0000", "assetValue": "59.94" }
+      ],
+      "final": { "W": { "onHand": "17.0000", "assetValue": "59.94" } }
+    },
+    {
+      "id": "U",
+      "title": "Units of measure (U-161): unit set Bottle, base bottle; case = 12, half-case = 6, litre = 1.333333, ml = 0.001333",
+      "from": null,
+      "unitSet": { "name": "Bottle", "base": "bottle", "units": [
+        { "name": "case", "factor": "12" }, { "name": "half-case", "factor": "6" }, { "name": "litre", "factor": "1.333333" }, { "name": "ml", "factor": "0.001333" } ] },
+      "steps": [
+        { "n": 1, "doc": "U1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "2", "unit": "case", "unitPrice": "30.00", "amount": "60.00",
+          "expect": { "baseQuantity": "24.0000", "onHand": "24.0000", "assetValue": "60.00" } },
+        { "n": 2, "doc": "U2", "event": "invoice", "date": "2026-01-03", "item": "W", "quantity": "5", "unit": "bottle",
+          "expect": { "value": "-12.50", "onHand": "19.0000", "assetValue": "47.50" } },
+        { "n": 3, "doc": "U3", "event": "invoice", "date": "2026-01-04", "item": "W", "quantity": "1", "unit": "half-case",
+          "expect": { "baseQuantity": "6.0000", "value": "-15.00", "onHand": "13.0000", "assetValue": "32.50" } },
+        { "n": 4, "doc": "U4", "event": "invoice", "date": "2026-01-05", "item": "W", "quantity": "0.75", "unit": "litre",
+          "expect": { "baseQuantity": "1.0000", "value": "-2.50", "onHand": "12.0000", "assetValue": "30.00" } },
+        { "n": 5, "event": "item_unit_prices", "basePrice": "4.50", "expect": { "case": "54.0000" } },
+        { "n": 6, "event": "invoice", "date": "2026-01-06", "item": "W", "quantity": "0.0001", "unit": "ml", "expect": { "status": 400, "code": "UNIT_QUANTITY_TOO_SMALL" } },
+        { "n": 7, "event": "unit_factor_change", "unit": "case", "factor": "24", "expect": { "status": 409, "code": "UNIT_IN_USE" } }
+      ],
+      "final": { "W": { "onHand": "12.0000", "assetValue": "30.00" } }
     },
     {
       "id": "F",

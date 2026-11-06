@@ -493,6 +493,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'inventory_movements.company_id': 'tenant-ref:companies',
   'inventory_movements.item_id': 'tenant-ref:items',
   'inventory_movements.transaction_id': 'tenant-ref:transactions',
+  'inventory_movements.source_transaction_id': 'tenant-ref:transactions',
   'journal_lines.inventory_movement_id': 'tenant-ref:inventory_movements',
   'transaction_tax_lines.company_id': 'tenant-ref:companies',
   'transaction_tax_lines.transaction_id': 'tenant-ref:transactions',
