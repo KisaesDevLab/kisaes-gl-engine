@@ -26,11 +26,16 @@
  * transaction; a deadlock, a serialization failure or a lock timeout is 409
  * RETRY (error-handler).
  *
+ * Closed periods are refused, not restated (owner decision 2026-11-06,
+ * replacing Q-P24b / Q-P24t): adding, editing, voiding or deleting a
+ * document with inventory lines dated on or before the closing date is 409
+ * INVENTORY_PERIOD_CLOSED, closing-date password or not (an edit checks the
+ * old and the new date). So every walk starts after the closing date and no
+ * row on or before it ever changes.
+ *
  * E2a scope: bills (billReceived true or false), vendor credits, invoices
- * and inventory adjustments. A change that would re-value a row dated on or
- * before the closing date is 409 INVENTORY_CLOSED_PERIOD until the cost
- * restatement lands (E2b); part lines on other document types are 400
- * INVENTORY_DOCUMENT_UNSUPPORTED.
+ * and inventory adjustments; part lines on other document types are 400
+ * INVENTORY_DOCUMENT_UNSUPPORTED until E2b.
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -146,20 +151,29 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
 
 /**
  * The costing lock (P24 §5): lock_timeout 5 s, the companies row FOR UPDATE
- * (its lock_date read there), then the items in id order.
+ * (its lock_date read there), then the items in id order. A document date
+ * on or before the closing date is 409 INVENTORY_PERIOD_CLOSED (owner
+ * decision 2026-11-06), read under the row lock so a concurrent close waits.
  */
-async function lock(tx: Tx, tenantId: string, companyId: string | null | undefined, itemIds: readonly string[]): Promise<CostingLock> {
+async function lock(tx: Tx, tenantId: string, companyId: string | null | undefined, itemIds: readonly string[], dates: ReadonlyArray<string | null | undefined>): Promise<CostingLock> {
   await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
   const r = await tx.execute(companyId
     ? sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} FOR UPDATE`
     : sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id LIMIT 1 FOR UPDATE`);
   const row = r.rows[0] as { id: string; lock_date: string | null } | undefined;
   if (!row) throw AppError.notFound('Company not found');
+  const lockDate = row.lock_date ? String(row.lock_date).slice(0, 10) : null;
+  if (lockDate && dates.some((dt) => !!dt && dt <= lockDate)) {
+    throw AppError.conflict(
+      `This transaction has inventory items and is dated on or before the closing date (${lockDate}). Inventory in a closed period can't change; date it after the closing date or move the closing date.`,
+      'INVENTORY_PERIOD_CLOSED', { closingDate: lockDate },
+    );
+  }
   const ids = [...new Set(itemIds)].sort();
   if (ids.length > 0) {
     await tx.select({ id: items.id }).from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids))).orderBy(items.id).for('update');
   }
-  return { companyId: row.id, lockDate: row.lock_date ? String(row.lock_date).slice(0, 10) : null, itemIds: ids };
+  return { companyId: row.id, lockDate, itemIds: ids };
 }
 
 async function movementItemIds(tx: Tx, tenantId: string, txnId: string): Promise<string[]> {
@@ -172,27 +186,29 @@ async function movementItemIds(tx: Tx, tenantId: string, txnId: string): Promise
  * Before a new posting writes anything: the line guards, then the costing
  * lock when a part is involved. Null when nothing moves stock.
  */
-export async function prepareNew(tx: Tx, tenantId: string, companyId: string | null | undefined, txnType: string, lines: readonly InputLine[]): Promise<CostingLock | null> {
+export async function prepareNew(tx: Tx, tenantId: string, companyId: string | null | undefined, txnType: string, txnDate: string, lines: readonly InputLine[]): Promise<CostingLock | null> {
   const parts = await partsOf(tx, tenantId, lines.map((l) => l.itemId));
   await assertLines(tx, tenantId, txnType, lines, parts);
   if (parts.size === 0) return null;
-  return lock(tx, tenantId, companyId, [...parts.keys()]);
+  return lock(tx, tenantId, companyId, [...parts.keys()], [txnDate]);
 }
 
 /** Before an edit writes anything: the guards on the new lines, then the lock over old and new parts. */
-export async function prepareEdit(tx: Tx, tenantId: string, companyId: string | null | undefined, txnId: string, txnType: string, lines: readonly InputLine[]): Promise<CostingLock | null> {
+export async function prepareEdit(tx: Tx, tenantId: string, companyId: string | null | undefined, txnId: string, txnType: string,
+  oldDate: string, newDate: string, lines: readonly InputLine[]): Promise<CostingLock | null> {
   const parts = await partsOf(tx, tenantId, lines.map((l) => l.itemId));
   await assertLines(tx, tenantId, txnType, lines, parts);
   const old = await movementItemIds(tx, tenantId, txnId);
   if (parts.size === 0 && old.length === 0) return null;
-  return lock(tx, tenantId, companyId, [...parts.keys(), ...old]);
+  // The old date counts only when the document holds stock today.
+  return lock(tx, tenantId, companyId, [...parts.keys(), ...old], [newDate, old.length > 0 ? oldDate : null]);
 }
 
 /** Before a void or delete writes anything: the lock over the document's parts. */
-export async function prepareExisting(tx: Tx, tenantId: string, companyId: string | null | undefined, txnId: string): Promise<CostingLock | null> {
+export async function prepareExisting(tx: Tx, tenantId: string, companyId: string | null | undefined, txnId: string, txnDate: string): Promise<CostingLock | null> {
   const old = await movementItemIds(tx, tenantId, txnId);
   if (old.length === 0) return null;
-  return lock(tx, tenantId, companyId, old);
+  return lock(tx, tenantId, companyId, old, [txnDate]);
 }
 
 type MovementRow = typeof inventoryMovements.$inferSelect;
@@ -233,10 +249,10 @@ function specsFor(txnType: string, lines: Array<{ itemId: string; accountId: str
   return out;
 }
 
-const pos = (m: { movementDate: string; sortRank: number; txnCreatedAt: Date; transactionId: string }) =>
-  [m.movementDate, m.sortRank, m.txnCreatedAt.getTime(), m.transactionId] as const;
+const pos = (m: { movementDate: string; txnCreatedAt: Date; transactionId: string }) =>
+  [m.movementDate, m.txnCreatedAt.getTime(), m.transactionId] as const;
 function cmpPos(a: ReturnType<typeof pos>, b: ReturnType<typeof pos>): number {
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 3; i++) {
     if (a[i]! < b[i]!) return -1;
     if (a[i]! > b[i]!) return 1;
   }
@@ -245,8 +261,6 @@ function cmpPos(a: ReturnType<typeof pos>, b: ReturnType<typeof pos>): number {
 
 export interface ApplyOptions {
   lock: CostingLock;
-  /** checkLockDate returned an override for this document (password, staff confirmation, AJE exemption): its own rows are open. */
-  overridden: boolean;
   userId?: string;
 }
 
@@ -296,7 +310,7 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
 
     if (spec && part) {
       const fields = {
-        movementDate: txn.txnDate, sortRank: 1, kind: spec.kind, quantity: spec.quantity.toFixed(4), valueMode: spec.valueMode,
+        movementDate: txn.txnDate, kind: spec.kind, quantity: spec.quantity.toFixed(4), valueMode: spec.valueMode,
         value: spec.valueMode === 'given' ? (spec.given ?? new Decimal(0)).toFixed(4) : (oldLive?.valueMode === 'derived' ? oldLive.value : '0'),
       };
       const unchanged = !!oldLive && oldLive.movementDate === fields.movementDate && oldLive.kind === fields.kind
@@ -335,7 +349,7 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
       if (!oldLive) continue;
     }
     if (!startPos) continue;
-    const res = await walkItem(tx, tenantId, companyId, itemId, startPos, opts, txnId);
+    const res = await walkItem(tx, tenantId, companyId, itemId, startPos, txnId);
     if (res.warning) warnings.push(res.warning);
     for (const m of res.changed) {
       reconcile.set(m.row.id, m.row);
@@ -377,69 +391,57 @@ const cents = (m: { value: string; correction: string; residual: string }) =>
 
 /**
  * Re-walks one item from `start` (P24 §2.2): seeded from the stored row just
- * before it, frozen rows keep their figures, every row's running figures are
- * rewritten in one statement. Returns the rows whose written figures changed
- * (or that belong to the trigger) and the NEGATIVE_STOCK warning.
+ * before it; every row's figures and running figures rewritten in batched
+ * statements (S3, S13). Returns the rows whose figures changed (or that
+ * belong to the trigger) and the NEGATIVE_STOCK warning. The start is always
+ * after the closing date (lock() refuses earlier documents).
  */
 async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: string, start: ReturnType<typeof pos>,
-  opts: ApplyOptions, triggerId: string): Promise<{ changed: Changed[]; warning: InventoryWarning | null }> {
-  const [sDate, sRank, sCreated, sTxn] = start;
+  triggerId: string): Promise<{ changed: Changed[]; warning: InventoryWarning | null }> {
+  const [sDate, sCreated, sTxn] = start;
   const startCreated = new Date(sCreated).toISOString();
-  const after = sql`(movement_date, sort_rank, txn_created_at, transaction_id) >= (${sDate}::date, ${sRank}::smallint, ${startCreated}::timestamptz, ${sTxn}::uuid)`;
+  const key = sql`(movement_date, txn_created_at, transaction_id)`;
+  const at = sql`(${sDate}::date, ${startCreated}::timestamptz, ${sTxn}::uuid)`;
   const seedRows = await tx.execute(sql`
-    SELECT movement_date::text AS movement_date, running_qty::text AS q, running_value::text AS p, true_value::text AS t, last_cost::text AS l
+    SELECT running_qty::text AS q, running_value::text AS v, last_cost::text AS l
     FROM inventory_movements
-    WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND item_id = ${itemId} AND voided = false
-      AND (movement_date, sort_rank, txn_created_at, transaction_id) < (${sDate}::date, ${sRank}::smallint, ${startCreated}::timestamptz, ${sTxn}::uuid)
-    ORDER BY movement_date DESC, sort_rank DESC, txn_created_at DESC, transaction_id DESC LIMIT 1`);
-  const seedRow = seedRows.rows[0] as { movement_date: string; q: string; p: string; t: string; l: string } | undefined;
-  const seed: WalkState = seedRow ? { q: d(seedRow.q), p: d(seedRow.p), t: d(seedRow.t), l: d(seedRow.l) } : { ...ZERO_STATE };
-  const lockDate = opts.lock.lockDate;
-  if (lockDate && sDate > lockDate && seedRow && !seed.p.equals(seed.t)) {
-    // I4: after the closing date P = T at every position; anything else is a broken ledger.
-    throw AppError.internal('Costing: posted and true inventory value differ after the closing date');
-  }
+    WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND item_id = ${itemId} AND voided = false AND ${key} < ${at}
+    ORDER BY movement_date DESC, txn_created_at DESC, transaction_id DESC LIMIT 1`);
+  const seedRow = seedRows.rows[0] as { q: string; v: string; l: string } | undefined;
+  const seed: WalkState = seedRow ? { q: d(seedRow.q), v: d(seedRow.v), l: d(seedRow.l) } : { ...ZERO_STATE };
   const rows = await tx.select().from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, companyId), eq(inventoryMovements.itemId, itemId),
-      eq(inventoryMovements.voided, false), after))
-    .orderBy(inventoryMovements.movementDate, inventoryMovements.sortRank, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
+      eq(inventoryMovements.voided, false), sql`${key} >= ${at}`))
+    .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
   const walkRows: WalkRow[] = rows.map((m) => ({
     id: m.id, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode,
     given: m.valueMode === 'given' ? d(m.value) : null,
     fallbackCost: m.fallbackCost === null ? null : d(m.fallbackCost),
-    frozen: !!lockDate && m.movementDate <= lockDate && !(opts.overridden && m.transactionId === triggerId),
-    stored: { value: d(m.value), correction: d(m.correction), residual: d(m.residual) },
   }));
-  const result = walk(seed, walkRows, { closingDate: lockDate, startsInClosedPeriod: !!lockDate && sDate <= lockDate });
-  if (result.restatement || rows.some((m) => m.kind === 'restatement')) {
-    throw AppError.conflict(
-      'This change would re-value stock sold on or before the closing date. Cost restatements are not available yet; change the closing date or make the change in the open period.',
-      'INVENTORY_CLOSED_PERIOD', { itemId, closingDate: lockDate, restatement: result.restatement ? result.restatement.value.toFixed(2) : null },
-    );
-  }
+  const result = walk(seed, walkRows);
   const changed: Changed[] = [];
   const values: ReturnType<typeof sql>[] = [];
   rows.forEach((m, i) => {
     const r = result.rows[i]!;
-    const w = r.written;
+    const f = r.fig;
     const a = r.after;
-    if (a.q.abs().greaterThanOrEqualTo(QTY_LIMIT) || a.p.abs().greaterThanOrEqualTo(MONEY_LIMIT) || a.t.abs().greaterThanOrEqualTo(MONEY_LIMIT)) {
+    if (a.q.abs().greaterThanOrEqualTo(QTY_LIMIT) || a.v.abs().greaterThanOrEqualTo(MONEY_LIMIT)) {
       throw AppError.badRequest('The quantity on hand or the inventory value would be too large', 'VALIDATION_ERROR', { itemId });
     }
-    const next = { value: w.value.toFixed(4), correction: w.correction.toFixed(4), residual: w.residual.toFixed(4) };
-    const differs = !d(m.value).equals(w.value) || !d(m.correction).equals(w.correction) || !d(m.residual).equals(w.residual);
+    const next = { value: f.value.toFixed(4), correction: f.correction.toFixed(4), residual: f.residual.toFixed(4) };
+    const differs = !d(m.value).equals(f.value) || !d(m.correction).equals(f.correction) || !d(m.residual).equals(f.residual);
     if (differs || m.transactionId === triggerId) {
       changed.push({ row: { ...m, ...next }, before: cents(m), after: cents(next) });
     }
     values.push(sql`(${m.id}::uuid, ${next.value}::numeric, ${next.correction}::numeric, ${next.residual}::numeric, ${a.q.toFixed(4)}::numeric,
-      ${a.p.toFixed(4)}::numeric, ${a.t.toFixed(4)}::numeric, ${a.l.toFixed(6)}::numeric)`);
+      ${a.v.toFixed(4)}::numeric, ${a.l.toFixed(6)}::numeric)`);
   });
   // Batched: one UPDATE ... FROM (VALUES ...) per 500 rows (S13).
   for (let i = 0; i < values.length; i += 500) {
     await tx.execute(sql`
       UPDATE inventory_movements m SET value = v.value, correction = v.correction, residual = v.residual, running_qty = v.q,
-        running_value = v.p, true_value = v.t, last_cost = v.l, updated_at = now()
-      FROM (VALUES ${sql.join(values.slice(i, i + 500), sql`, `)}) AS v(id, value, correction, residual, q, p, t, l)
+        running_value = v.v, last_cost = v.l, updated_at = now()
+      FROM (VALUES ${sql.join(values.slice(i, i + 500), sql`, `)}) AS v(id, value, correction, residual, q, v, l)
       WHERE m.id = v.id`);
   }
   const neg = result.negative;

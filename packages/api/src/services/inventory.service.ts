@@ -103,7 +103,7 @@ export async function stockRemains(executor: DbOrTx, tenantId: string, companyId
     SELECT 1 FROM (
       SELECT DISTINCT ON (item_id) running_qty, running_value FROM inventory_movements
       WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND voided = false
-      ORDER BY item_id, movement_date DESC, sort_rank DESC, txn_created_at DESC, transaction_id DESC
+      ORDER BY item_id, movement_date DESC, txn_created_at DESC, transaction_id DESC
     ) last WHERE last.running_qty <> 0 OR last.running_value <> 0 LIMIT 1`);
   return r.rows.length > 0;
 }
@@ -156,7 +156,7 @@ export async function stockFigures(executor: DbOrTx, tenantId: string, rows: Rea
     SELECT DISTINCT ON (item_id) item_id, running_qty::text AS q, running_value::text AS p, last_cost::text AS l
     FROM inventory_movements
     WHERE tenant_id = ${tenantId} AND voided = false AND item_id IN (${sql.join(partIds.map((i) => sql`${i}::uuid`), sql`, `)})
-    ORDER BY item_id, movement_date DESC, sort_rank DESC, txn_created_at DESC, transaction_id DESC`);
+    ORDER BY item_id, movement_date DESC, txn_created_at DESC, transaction_id DESC`);
   for (const row of res.rows as Array<{ item_id: string; q: string; p: string; l: string }>) {
     const q = new Decimal(row.q);
     const p = new Decimal(row.p);

@@ -140,7 +140,7 @@ async function step(w: World, s: Body) {
 async function rows(itemId: string) {
   return db.select().from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, c.tenantId), eq(inventoryMovements.itemId, itemId), eq(inventoryMovements.voided, false)))
-    .orderBy(inventoryMovements.movementDate, inventoryMovements.sortRank, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
+    .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
 }
 
 const m2 = (v: string) => Number(v).toFixed(2);
@@ -154,7 +154,7 @@ async function invariants(w: World) {
     SELECT COALESCE(SUM(last.running_value), 0)::numeric(19,2)::text AS v FROM (
       SELECT DISTINCT ON (m.item_id) m.running_value FROM inventory_movements m JOIN items i ON i.id = m.item_id
       WHERE m.tenant_id = ${c.tenantId} AND m.voided = false AND i.asset_account_id = ${w.asset}
-      ORDER BY m.item_id, m.movement_date DESC, m.sort_rank DESC, m.txn_created_at DESC, m.transaction_id DESC) last`)).rows[0] as { v: string };
+      ORDER BY m.item_id, m.movement_date DESC, m.txn_created_at DESC, m.transaction_id DESC) last`)).rows[0] as { v: string };
   expect(valuation.v, 'I2 valuation = accrual GL').toBe((await gl(w.asset)).b);
   for (const id of [w.asset, w.cogs, w.adjustment]) {
     const [a] = await db.select({ balance: accounts.balance }).from(accounts).where(eq(accounts.id, id));
@@ -168,7 +168,6 @@ async function invariants(w: World) {
   for (const r of await rows(w.items.get('W')!)) {
     p = Math.round((p + Number(r.value) + Number(r.correction) + Number(r.residual)) * 100) / 100;
     expect(m2(r.runningValue), 'I1').toBe(p.toFixed(2));
-    expect(m2(r.runningValue)).toBe(m2(r.trueValue));
   }
 }
 
@@ -282,7 +281,8 @@ describe('inventory-costing-v1 golden cases (U-157)', () => {
     const w = await setup();
     await runSteps(w, gcase('A')['steps']);
     const m = gcase('M');
-    const [s10, s11] = m['steps'] as Body[];
+    const s10 = m['steps'][0] as Body;
+    const s11 = m['steps'][1] as Body;
     await runSteps(w, [s10]);
     await checkRows(w, m['rowsAfter']['10']);
     await runSteps(w, [s11]);
@@ -299,6 +299,41 @@ describe('inventory-costing-v1 golden cases (U-157)', () => {
       await checkFinal(w, gcase(id)['final']);
     });
   }
+});
+
+describe('closed periods are refused for inventory (owner decision 2026-11-06, golden C)', () => {
+  it('C: a document with inventory lines on or before the closing date is 409 INVENTORY_PERIOD_CLOSED, password or not; nothing changes', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    const pw = await req('PUT', '/company/closing-password', { newPassword: 'closing-pass-1' });
+    expect(pw.status, JSON.stringify(pw.json)).toBe(200);
+    const close = await req('PUT', '/company/settings', { lockDate: '2026-01-10', closingPassword: 'closing-pass-1' });
+    expect(close.status, JSON.stringify(close.json)).toBe(200);
+    const before = await figures(w);
+    const lines = [{ accountId: w.asset, amount: '12.00', itemId: w.items.get('W'), quantity: '6', unitPrice: '2.00' }];
+    const err = (r: { status: number; json: Body }) => [r.status, r.json['error']?.code];
+    for (const c5 of gcase('C')['refusals'] as Body[]) {
+      let r: { status: number; json: Body };
+      if (c5['event'] === 'bill') r = await req('POST', '/bills', { contactId: w.vendor, txnDate: c5['date'], closingPassword: 'closing-pass-1', lines });
+      else if (c5['event'] === 'void') r = await req('POST', `/transactions/${w.docs.get(c5['doc'])}/void`, { reason: 'x', closingPassword: 'closing-pass-1' });
+      else if (c5['event'] === 'delete') r = await req('DELETE', `/transactions/${w.docs.get(c5['doc'])}`, { closingPassword: 'closing-pass-1' });
+      else {
+        const body = { ...structuredClone(w.bodies.get(c5['doc'])!), ...(c5['date'] ? { txnDate: c5['date'] } : {}), closingPassword: 'closing-pass-1' } as Body;
+        if (c5['quantity']) body['lines'][0].quantity = c5['quantity'];
+        r = await req('PUT', `/invoices/${w.docs.get(c5['doc'])}`, body);
+      }
+      expect(err(r), JSON.stringify(c5)).toEqual([409, 'INVENTORY_PERIOD_CLOSED']);
+    }
+    expect(await figures(w)).toEqual(before);
+    await invariants(w);
+    // After the closing date inventory posts as usual; a document without items keeps the password flow.
+    const ok = await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-11', lines });
+    expect(ok.status, JSON.stringify(ok.json)).toBe(201);
+    const plain = await req('POST', '/transactions', { txnType: 'journal_entry', txnDate: '2026-01-09', closingPassword: 'closing-pass-1', lines: [
+      { accountId: c.roles['expense'], debit: '1.00', credit: '0' }, { accountId: c.roles['checking'], debit: '0', credit: '1.00' }] });
+    expect(plain.status, JSON.stringify(plain.json)).toBe(201);
+    await invariants(w);
+  });
 });
 
 describe('inventory-costing-v1 guards (B3, B4)', () => {

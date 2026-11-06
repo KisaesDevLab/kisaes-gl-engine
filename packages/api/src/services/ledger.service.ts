@@ -649,8 +649,10 @@ export async function postTransaction(
       input.lines.map((l) => l.accountId),
     );
     // Inventory costing (U-157): line guards, then the costing lock (companies
-    // row, then items) before any balance write. Null when no part is involved.
-    const costingLock = await costing.prepareNew(tx, tenantId, companyId ?? null, input.txnType, input.lines);
+    // row, then items) before any balance write; a document with inventory
+    // lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED,
+    // password or not (owner decision 2026-11-06). Null when no part is involved.
+    const costingLock = await costing.prepareNew(tx, tenantId, companyId ?? null, input.txnType, input.txnDate, input.lines);
 
     // Insert transaction header
     const [txn] = await tx.insert(transactions).values({
@@ -754,7 +756,7 @@ export async function postTransaction(
     }
     // Stock movements, the item walks and the derived COGS lines (U-157).
     const inventoryWarnings = costingLock && txn.status === 'posted'
-      ? await costing.apply(tx, tenantId, txn.id, { lock: costingLock, overridden: !!lockOverride, userId })
+      ? await costing.apply(tx, tenantId, txn.id, { lock: costingLock, userId })
       : [];
 
     await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId, tx);
@@ -832,7 +834,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
     assertNotStale(txn, opts.expectedUpdatedAt);
     // Inventory costing (U-157): the costing lock before any balance write.
-    const costingLock = txn.txnType === 'bill_payment' ? null : await costing.prepareExisting(tx, tenantId, txn.companyId, txnId);
+    const costingLock = txn.txnType === 'bill_payment' ? null : await costing.prepareExisting(tx, tenantId, txn.companyId, txnId, txn.txnDate);
 
     // A bill payment carries its applications (review B1): voiding it as a
     // plain transaction would leave the bills it paid marked paid. It goes
@@ -853,7 +855,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     // Check lock date against the transaction's date (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
     // unless the company has a closing-date password (U-15).
-    const voidOverride = await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
       txnId, oldDate: txn.txnDate, newDate: null, ajeExempt: txn.txnType === 'aje',
     });
 
@@ -982,7 +984,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     }
     // The document's movements are voided and every later row re-walked (U-157, I7).
     const voidWarnings = costingLock
-      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, overridden: !!voidOverride, userId })
+      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId })
       : [];
 
     // Full before-image: the header AND the lines as they stood before the
@@ -1268,13 +1270,13 @@ export async function deleteTransactionInTx(
     }
     assertNotStale(txn, opts.expectedUpdatedAt);
     // Inventory costing (U-157): the costing lock before any balance write.
-    const costingLock = await costing.prepareExisting(tx, tenantId, txn.companyId, txnId);
+    const costingLock = await costing.prepareExisting(tx, tenantId, txn.companyId, txnId, txn.txnDate);
     // A bill or vendor credit is deletable only while nothing is applied to
     // it (U-84): 409 BILL_HAS_PAYMENTS / CREDIT_APPLIED (a refunded credit
     // is TXN_DELETE_LINKED below, as any deposited item).
     await assertApDocumentUnapplied(tx, tenantId, txn);
 
-    const deleteOverride = await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
+    await checkLockDate(tx, tenantId, txn.txnDate, txn.companyId, undefined, {
       txnId, oldDate: txn.txnDate, newDate: null,
     });
 
@@ -1375,7 +1377,7 @@ export async function deleteTransactionInTx(
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
     // The document's movements are voided and every later row re-walked (U-157, I7).
     const deleteWarnings = costingLock
-      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, overridden: !!deleteOverride, userId: opts.userId })
+      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId: opts.userId })
       : [];
 
     await auditLog(tenantId, 'delete', 'transaction', txnId,
@@ -1526,7 +1528,6 @@ export async function updateTransaction(
     // changes either is 409 SALES_TAX_LINKED (unlink first, edit, link again).
     await assertSalesTaxLinkUnchanged(tx, tenantId, existing, input);
 
-    let editOverride: LockOverride | undefined;
     // Check lock date for both old and new dates (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
     // unless the company has a closing-date password (U-15).
@@ -1539,7 +1540,6 @@ export async function updateTransaction(
         ? await checkLockDate(tx, tenantId, input.txnDate, companyId ?? existing.companyId ?? null, undefined, { deferAudit: true, ajeExempt })
         : undefined;
       const override = oldSide ?? newSide;
-      editOverride = override;
       if (override) {
         await auditLockOverride(tx, tenantId, override, { txnId, oldDate: existing.txnDate, newDate: input.txnDate });
       }
@@ -1554,7 +1554,8 @@ export async function updateTransaction(
     );
     // Inventory costing (U-157): line guards, then the costing lock over the
     // old and new parts before any balance write.
-    const costingLock = await costing.prepareEdit(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, input.txnType ?? existing.txnType, input.lines);
+    const costingLock = await costing.prepareEdit(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, input.txnType ?? existing.txnType,
+      existing.txnDate, input.txnDate, input.lines);
 
     // An item a posted deposit settles keeps the amount the deposit took
     // (U-52): an edit that changes what it holds in Payments Clearing (or a
@@ -1819,7 +1820,7 @@ export async function updateTransaction(
     // Stock movements, the item walks and the derived lines (U-157): the
     // edit deleted every line, derived ones included; the walk puts them back.
     const inventoryWarnings = costingLock && existing.status === 'posted'
-      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, overridden: !!editOverride, userId })
+      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId })
       : [];
 
     // Full before-image: header plus the lines this edit deleted, so the

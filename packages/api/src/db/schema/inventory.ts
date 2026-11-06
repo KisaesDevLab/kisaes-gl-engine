@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { pgTable, uuid, varchar, decimal, boolean, date, timestamp, smallint, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, decimal, boolean, date, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
  * The stock ledger (U-157, migration 0259): one row per (transaction, item).
@@ -16,11 +16,9 @@ export const inventoryMovements = pgTable('inventory_movements', {
   itemId: uuid('item_id').notNull(),
   transactionId: uuid('transaction_id').notNull(),
   movementDate: date('movement_date').notNull(),
-  // 0 = cost restatement (first on its date), 1 = anything else.
-  sortRank: smallint('sort_rank').notNull().default(1),
   // The transaction's created_at (position tiebreak; kept on edits).
   txnCreatedAt: timestamp('txn_created_at', { withTimezone: true }).notNull(),
-  kind: varchar('kind', { length: 20 }).$type<'receipt' | 'sale' | 'customer_return' | 'vendor_return' | 'adjust_qty' | 'adjust_value' | 'restatement'>().notNull(),
+  kind: varchar('kind', { length: 20 }).$type<'receipt' | 'sale' | 'customer_return' | 'vendor_return' | 'adjust_qty' | 'adjust_value'>().notNull(),
   quantity: decimal('quantity', { precision: 12, scale: 4 }).notNull().default('0'),
   valueMode: varchar('value_mode', { length: 10 }).$type<'given' | 'derived'>().notNull(),
   value: decimal('value', { precision: 19, scale: 4 }).notNull().default('0'),
@@ -29,13 +27,12 @@ export const inventoryMovements = pgTable('inventory_movements', {
   fallbackCost: decimal('fallback_cost', { precision: 19, scale: 6 }),
   runningQty: decimal('running_qty', { precision: 12, scale: 4 }).notNull().default('0'),
   runningValue: decimal('running_value', { precision: 19, scale: 4 }).notNull().default('0'),
-  trueValue: decimal('true_value', { precision: 19, scale: 4 }).notNull().default('0'),
   lastCost: decimal('last_cost', { precision: 19, scale: 6 }).notNull().default('0'),
   voided: boolean('voided').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   txnItemIdx: uniqueIndex('idx_inventory_movements_txn_item').on(table.transactionId, table.itemId),
-  positionIdx: index('idx_inventory_movements_position').on(table.companyId, table.itemId, table.movementDate, table.sortRank, table.txnCreatedAt, table.transactionId),
+  positionIdx: index('idx_inventory_movements_position').on(table.companyId, table.itemId, table.movementDate, table.txnCreatedAt, table.transactionId),
   tenantIdx: index('idx_inventory_movements_tenant').on(table.tenantId),
 }));
