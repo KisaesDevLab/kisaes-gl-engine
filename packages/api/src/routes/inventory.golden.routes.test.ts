@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, contacts, inventoryMovements, journalLines, transactions } from '../db/schema/index.js';
+import { accounts, contacts, inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
 import { itemsRouter } from './items.routes.js';
 import { companyRouter } from './company.routes.js';
 import { billsRouter } from './bills.routes.js';
@@ -30,6 +30,7 @@ import { transactionsRouter } from './transactions.routes.js';
 import { creditMemosRouter } from './credit-memos.routes.js';
 import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { checksRouter } from './checks.routes.js';
+import { inventoryRouter } from './inventory.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { postAdjustment } from '../services/inventory-adjustment.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -51,7 +52,7 @@ beforeEach(async () => {
   h.extraCleanup = [cleanInventory];
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
     ['/api/v1/vendor-credits', vendorCreditsRouter], ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter],
-    ['/api/v1/credit-memos', creditMemosRouter], ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter]]);
+    ['/api/v1/credit-memos', creditMemosRouter], ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -59,7 +60,7 @@ afterEach(async () => { await h.stop(); });
 const req = (method: string, p: string, body?: unknown) =>
   h.request(method, `/api/v1${p}`, c.token, body, method === 'GET' ? {} : { 'Idempotency-Key': key() });
 const idOf = (j: Body): string => String(j['id'] ?? j['bill']?.id ?? j['credit']?.id ?? j['vendorCredit']?.id ?? j['invoice']?.id
-  ?? j['creditMemo']?.id ?? j['salesReceipt']?.id ?? j['check']?.id ?? j['transaction']?.id);
+  ?? j['creditMemo']?.id ?? j['salesReceipt']?.id ?? j['check']?.id ?? j['adjustment']?.id ?? j['transaction']?.id);
 
 interface World {
   asset: string; cogs: string; adjustment: string; vendor: string; card: string; items: Map<string, string>; docs: Map<string, string>;
@@ -164,12 +165,13 @@ async function step(w: World, s: Body, via?: string) {
     }
     case 'adjust_qty':
     case 'adjust_value': {
-      const t = await postAdjustment(c.tenantId, c.companyId, {
-        txnDate: s['date'], adjustmentAccountId: w.adjustment,
-        lines: [{ itemId: item, ...(s['quantityChange'] ? { quantityChange: s['quantityChange'] } : {}), ...(s['valueChange'] ? { valueChange: s['valueChange'] } : {}) }],
-      }, c.userId);
-      w.docs.set(s['doc'], t.id);
-      return;
+      // U-159: through POST /inventory/adjustments.
+      const body = { txnDate: s['date'], adjustmentAccountId: w.adjustment,
+        lines: [{ itemId: item, ...(s['quantityChange'] ? { quantityChange: s['quantityChange'] } : {}), ...(s['valueChange'] ? { valueChange: s['valueChange'] } : {}) }] };
+      r = await req('POST', '/inventory/adjustments', body);
+      w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'inventory/adjustments');
+      break;
     }
     case 'void':
       r = await req('POST', `/transactions/${w.docs.get(s['doc'])}/void`, { reason: 'golden' });
@@ -701,6 +703,8 @@ const ITEM_WRITE_ROUTES: Record<string, string> = {
   'POST /api/v1/estimates': 'moves nothing (estimates store units)',
   'POST /api/v1/price-levels': 'moves nothing (prices)', 'PUT /api/v1/price-levels/{id}': 'moves nothing (prices)',
   'POST /api/v1/plaid/link-token/update': 'not an item of the item list (a Plaid item)',
+  'POST /api/v1/inventory/adjustments': 'costs (an inventory_adjustment through the ledger core)', 'PUT /api/v1/inventory/adjustments/{id}': 'costs',
+  'POST /api/v1/inventory/counts': 'costs (one adjustment for the differences)',
 };
 
 function itemWriteRoutes(): string[] {
@@ -955,5 +959,150 @@ describe('copies of inventory documents (P24 §2.3)', () => {
       expect(mv?.kind, doc).toBe(doc === 'A3' ? 'sale' : 'receipt');
       await invariants(w);
     }
+  });
+});
+
+describe('inventory-adjust-v1: adjustments, counts and opening stock (U-159, E3)', () => {
+  const code = (x: { status: number; json: Body }) => [x.status, x.json['error']?.code];
+
+  it('F: a count posts one adjustment for the differences at average cost; an equal count posts no line', async () => {
+    const w = await setup();
+    for (const name of ['X', 'Y']) {
+      const r = await req('POST', '/items', { name, itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: c.roles['income'], assetAccountId: w.asset, cogsAccountId: w.cogs });
+      w.items.set(name, r.json['item'].id);
+    }
+    for (const name of ['W', 'X', 'Y']) {
+      // X and Y run case A as W does (the per-step figures checked are W's, so only W keeps them).
+      await runSteps(w, (gcase('A')['steps'] as Body[]).map((st) => ({ ...st, item: name, doc: `${name}${st['doc']}`, ...(name === 'W' ? {} : { expect: undefined }) })));
+    }
+    const f = gcase('F')['steps'][0] as Body;
+    const sheet = await req('GET', `/inventory/count-sheet?asOf=${f['date']}`);
+    expect(sheet.status, JSON.stringify(sheet.json)).toBe(200);
+    const sheetItems = sheet.json['items'] as Body[];
+    for (const l of f['lines'] as Body[]) expect(sheetItems.find((i) => i['itemId'] === w.items.get(l['item']))!['onHand']).toBe(l['sheetOnHand']);
+    expect(sheetItems.find((i) => i['itemId'] === w.items.get('W'))!['value']).toBe('16.20');
+    const count = await req('POST', '/inventory/counts', { asOf: f['date'], adjustmentAccountId: w.adjustment,
+      lines: (f['lines'] as Body[]).map((l) => ({ itemId: w.items.get(l['item']), sheetOnHand: l['sheetOnHand'], countedQuantity: l['countedQuantity'] })) });
+    expect(count.status, JSON.stringify(count.json)).toBe(201);
+    const adj = count.json['adjustment'] as Body;
+    const want = f['expect'] as Body;
+    expect((adj['lines'] as Body[]).map((l) => [l['itemId'], l['quantityChange'], l['value']]))
+      .toEqual((want['lines'] as Body[]).map((l) => [w.items.get(l['item']), l['quantityChange'], l['value']]));
+    for (const l of want['lines'] as Body[]) {
+      const fig = await figures(w, l['item']);
+      expect([fig['quantityOnHand'], fig['assetValue']], l['item']).toEqual([l['onHand'], l['assetValue']]);
+    }
+    expect((adj['lines'] as Body[]).some((l) => l['itemId'] === w.items.get('X'))).toBe(false);
+    await invariants(w);
+    // The same sheet again is now stale for W and Y (not X): 409 STALE listing both, nothing saved.
+    const again = await req('POST', '/inventory/counts', { asOf: f['date'], adjustmentAccountId: w.adjustment,
+      lines: (f['lines'] as Body[]).map((l) => ({ itemId: w.items.get(l['item']), sheetOnHand: l['sheetOnHand'], countedQuantity: l['countedQuantity'] })) });
+    expect(code(again)).toEqual([409, 'STALE']);
+    expect((again.json['error']['details']['items'] as Body[]).map((i) => i['itemId']).sort()).toEqual([w.items.get('W'), w.items.get('Y')].sort());
+    // Counted equal everywhere: nothing posts.
+    const same = await req('POST', '/inventory/counts', { asOf: f['date'], adjustmentAccountId: w.adjustment,
+      lines: [{ itemId: w.items.get('X'), sheetOnHand: '4.0000', countedQuantity: '4' }] });
+    expect([same.status, same.json['adjustment']]).toEqual([201, null]);
+  });
+
+  it('adjustment routes: read, edit with expectedUpdatedAt, idempotent replay, void, delete; guards', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 8));
+    const W = w.items.get('W')!;
+    const a7 = await req('GET', `/inventory/adjustments/${w.docs.get('A7')}`);
+    expect(a7.status).toBe(200);
+    expect(a7.json['adjustment']).toMatchObject({ date: '2026-01-20', adjustmentAccountId: w.adjustment, status: 'posted',
+      lines: [{ itemId: W, quantityChange: '-1.0000', valueChange: null, value: '-3.80' }] });
+    expect((a7.json['adjustment']['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cogs', '3.80'], ['inventory_relief', '-3.80']]);
+    const a8 = (await req('GET', `/inventory/adjustments/${w.docs.get('A8')}`)).json['adjustment'] as Body;
+    expect(a8['lines']).toEqual([expect.objectContaining({ quantityChange: null, valueChange: '1.50', value: '1.50' })]);
+    // Edit: stale token 409; current token re-walks.
+    const body = { ...w.bodies.get('A7')!, lines: [{ itemId: W, quantityChange: '-2' }] };
+    expect(code(await req('PUT', `/inventory/adjustments/${w.docs.get('A7')}`, { ...body, expectedUpdatedAt: '2020-01-01T00:00:00.000Z' }))).toEqual([409, 'STALE']);
+    const ed = await req('PUT', `/inventory/adjustments/${w.docs.get('A7')}`, { ...body, expectedUpdatedAt: a7.json['adjustment'].updatedAt });
+    expect(ed.status, JSON.stringify(ed.json)).toBe(200);
+    expect(ed.json['adjustment'].lines[0].value).toBe('-7.60');
+    await invariants(w);
+    // Idempotency-Key: the same key and body replays the first answer, nothing posted twice.
+    const k = key();
+    const once = { txnDate: '2026-01-26', adjustmentAccountId: w.adjustment, lines: [{ itemId: W, quantityChange: '1' }] };
+    const r1 = await h.request('POST', '/api/v1/inventory/adjustments', c.token, once, { 'Idempotency-Key': k });
+    const r2 = await h.request('POST', '/api/v1/inventory/adjustments', c.token, once, { 'Idempotency-Key': k });
+    expect([r1.status, r2.status]).toEqual([201, 201]);
+    expect(r2.json['adjustment'].id).toBe(r1.json['adjustment'].id);
+    // Void and delete re-walk.
+    expect((await req('POST', `/inventory/adjustments/${r1.json['adjustment'].id}/void`, { reason: 'x' })).json['adjustment'].status).toBe('void');
+    expect((await req('DELETE', `/inventory/adjustments/${w.docs.get('A8')}`, {})).json).toMatchObject({ status: 'deleted' });
+    await invariants(w);
+    await fullReplayMatches(W);
+    // Guards: the asset account as adjustment account, an unknown line, nothing on hand for a value-only line.
+    expect(code(await req('POST', '/inventory/adjustments', { ...once, adjustmentAccountId: w.asset }))).toEqual([400, 'VALIDATION_ERROR']);
+    expect(code(await req('POST', '/inventory/adjustments', { ...once, lines: [{ itemId: W }] }))).toEqual([400, 'VALIDATION_ERROR']);
+    expect(code(await req('POST', '/inventory/adjustments', { ...once, txnDate: '2026-01-11', lines: [{ itemId: W, valueChange: '1.00' }] })))
+      .toEqual([400, 'INVENTORY_NO_STOCK']);
+    expect(code(await req('GET', `/inventory/adjustments/${w.docs.get('A3')}`))).toEqual([404, 'NOT_FOUND']);
+    await invariants(w);
+  });
+
+  it('closed periods: adjustments, counts and opening stock on or before the closing date are 409 INVENTORY_PERIOD_CLOSED', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    expect((await req('PUT', '/company/settings', { lockDate: '2026-01-20' })).status).toBe(200);
+    const W = w.items.get('W')!;
+    const closed = [409, 'INVENTORY_PERIOD_CLOSED'];
+    expect(code(await req('POST', '/inventory/adjustments', { txnDate: '2026-01-20', adjustmentAccountId: w.adjustment, lines: [{ itemId: W, quantityChange: '-1' }] }))).toEqual(closed);
+    expect(code(await req('PUT', `/inventory/adjustments/${w.docs.get('A8')}`, { ...w.bodies.get('A8')!, txnDate: '2026-01-23' }))).toEqual([200, undefined]);
+    expect(code(await req('PUT', `/inventory/adjustments/${w.docs.get('A7')}`, { ...w.bodies.get('A7')!, txnDate: '2026-01-21' }))).toEqual(closed);
+    expect(code(await req('POST', `/inventory/adjustments/${w.docs.get('A7')}/void`, {}))).toEqual(closed);
+    expect(code(await req('DELETE', `/inventory/adjustments/${w.docs.get('A7')}`, {}))).toEqual(closed);
+    expect(code(await req('POST', '/inventory/counts', { asOf: '2026-01-20', adjustmentAccountId: w.adjustment, lines: [{ itemId: W, sheetOnHand: '6.0000', countedQuantity: '5' }] }))).toEqual(closed);
+    const made = await req('POST', '/items', { name: 'Opening closed', itemType: 'inventory_part', unitPrice: '1.00', incomeAccountId: c.roles['income'],
+      assetAccountId: w.asset, cogsAccountId: w.cogs, opening: { quantity: '5', value: '10.00', asOf: '2026-01-15' } });
+    expect(code(made)).toEqual(closed);
+    expect((await db.select().from(items).where(and(eq(items.tenantId, c.tenantId), eq(items.name, 'Opening closed'))))).toHaveLength(0);
+    await invariants(w);
+  });
+
+  it('opening stock on item create (Q-P24h): an adjustment against Opening Balances in the same transaction', async () => {
+    const w = await setup();
+    const made = await req('POST', '/items', { name: 'Seed part', itemType: 'inventory_part', unitPrice: '5.00', incomeAccountId: c.roles['income'],
+      assetAccountId: w.asset, cogsAccountId: w.cogs, opening: { quantity: '12', value: '30.00', asOf: '2026-01-01' } });
+    expect(made.status, JSON.stringify(made.json)).toBe(201);
+    expect([made.json['item'].quantityOnHand, made.json['item'].assetValue, made.json['item'].averageCost]).toEqual(['12.0000', '30.00', '2.500000']);
+    const [mv] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.itemId, made.json['item'].id));
+    const lines = await db.select({ accountId: journalLines.accountId, debit: journalLines.debit, credit: journalLines.credit }).from(journalLines)
+      .where(eq(journalLines.transactionId, mv!.transactionId));
+    const [ob] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'opening_balances')));
+    expect(lines.find((l) => l.accountId === ob!.id)).toMatchObject({ credit: '30.0000' });
+    expect([mv!.kind, mv!.valueMode]).toEqual(['adjust_qty', 'given']);
+    // A free opening (value 0.00) keeps the quantity at zero value; a non-part can't take opening stock.
+    const free = await req('POST', '/items', { name: 'Free part', itemType: 'inventory_part', unitPrice: '5.00', incomeAccountId: c.roles['income'],
+      assetAccountId: w.asset, cogsAccountId: w.cogs, opening: { quantity: '3', value: '0.00', asOf: '2026-01-01' } });
+    expect([free.status, free.json['item']?.assetValue]).toEqual([201, '0.00']);
+    expect(code(await req('POST', '/items', { name: 'Service', itemType: 'service', unitPrice: '5.00', incomeAccountId: c.roles['income'],
+      opening: { quantity: '3', value: '1.00', asOf: '2026-01-01' } }))).toEqual([400, 'VALIDATION_ERROR']);
+    await invariants(w);
+  });
+
+  it('a count and a sale at once: the count is 409 STALE, or the sale lands after it; never a count against an old on hand', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 3));
+    const W = w.items.get('W')!;
+    const [count, sale] = await Promise.all([
+      req('POST', '/inventory/counts', { asOf: '2026-01-31', adjustmentAccountId: w.adjustment, lines: [{ itemId: W, sheetOnHand: '11.0000', countedQuantity: '10' }] }),
+      req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-30', lines: [{ itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false }] }),
+    ]);
+    // Either may lose a lock race and answer 409 RETRY (nothing saved; the desktop resends once), never both.
+    expect(sale.status === 201 || sale.json['error']?.code === 'RETRY', JSON.stringify(sale.json)).toBe(true);
+    expect(count.status === 201 || ['STALE', 'RETRY'].includes(count.json['error']?.code), JSON.stringify(count.json)).toBe(true);
+    expect(sale.status === 201 || count.status === 201).toBe(true);
+    const onHand = 11 - (count.status === 201 ? 1 : 0) - (sale.status === 201 ? 1 : 0);
+    expect((await figures(w))['quantityOnHand']).toBe(onHand.toFixed(4));
+    await invariants(w);
+  });
+
+  it('advertises inventory-adjust-v1 after inventory-costing-v1', () => {
+    const i = DESKTOP_CAPABILITIES.indexOf('inventory-adjust-v1');
+    expect(i).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('inventory-costing-v1'));
   });
 });

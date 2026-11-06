@@ -35080,6 +35080,531 @@
         ]
       }
     },
+    "/api/v1/inventory/adjustments": {
+      "post": {
+        "description": "Response 201 {adjustment}. inventory-adjust-v1: one line per inventory item {itemId, quantityChange?, valueChange?} (at least one): quantityChange a signed, non-zero decimal string (at most 4 places, |q| < 100,000,000) in the item's base unit; valueChange signed money (at most 2 places). Quantity only: the units go in or out at average cost (the walk writes the asset / adjustment account pair, inventoryLines). With a value: the asset account moves by it; a value-only line needs the item on hand at its date (400 INVENTORY_NO_STOCK, Q-P24s). adjustmentAccountId: an active account of the company that is not an inventory asset account (400 VALIDATION_ERROR). Inventory off: 400 INVENTORY_OFF. Dated on or before the closing date (for an edit, the old or the new date): 409 INVENTORY_PERIOD_CLOSED, closingPassword or not. 409 RETRY after a deadlock or lock timeout (nothing saved). The reply's warnings[] carries NEGATIVE_STOCK {code, itemId, date, onHand} when an item's on hand newly went below 0. Record: {id, date, adjustmentAccountId, memo, status, updatedAt, lines: [{itemId, quantityChange, valueChange, value (as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}.",
+        "operationId": "post_api_v1_inventory_adjustments",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "adjustmentAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "itemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "quantityChange": {
+                          "anyOf": [
+                            {
+                              "maxLength": 20,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "valueChange": {
+                          "anyOf": [
+                            {
+                              "maxLength": 20,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "itemId"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "adjustmentAccountId",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Adjust inventory quantities or values",
+        "tags": [
+          "inventory"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/inventory/adjustments/{id}": {
+      "delete": {
+        "description": "Response {id, status: deleted}: its movements are voided and every later row re-walked. expectedUpdatedAt mismatch is 409 STALE. inventory-adjust-v1: one line per inventory item {itemId, quantityChange?, valueChange?} (at least one): quantityChange a signed, non-zero decimal string (at most 4 places, |q| < 100,000,000) in the item's base unit; valueChange signed money (at most 2 places). Quantity only: the units go in or out at average cost (the walk writes the asset / adjustment account pair, inventoryLines). With a value: the asset account moves by it; a value-only line needs the item on hand at its date (400 INVENTORY_NO_STOCK, Q-P24s). adjustmentAccountId: an active account of the company that is not an inventory asset account (400 VALIDATION_ERROR). Inventory off: 400 INVENTORY_OFF. Dated on or before the closing date (for an edit, the old or the new date): 409 INVENTORY_PERIOD_CLOSED, closingPassword or not. 409 RETRY after a deadlock or lock timeout (nothing saved). The reply's warnings[] carries NEGATIVE_STOCK {code, itemId, date, onHand} when an item's on hand newly went below 0. Record: {id, date, adjustmentAccountId, memo, status, updatedAt, lines: [{itemId, quantityChange, valueChange, value (as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}.",
+        "operationId": "delete_api_v1_inventory_adjustments_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete an inventory adjustment",
+        "tags": [
+          "inventory"
+        ],
+        "x-idempotency": true
+      },
+      "get": {
+        "description": "Response {adjustment}. Of another company: 404. inventory-adjust-v1: one line per inventory item {itemId, quantityChange?, valueChange?} (at least one): quantityChange a signed, non-zero decimal string (at most 4 places, |q| < 100,000,000) in the item's base unit; valueChange signed money (at most 2 places). Quantity only: the units go in or out at average cost (the walk writes the asset / adjustment account pair, inventoryLines). With a value: the asset account moves by it; a value-only line needs the item on hand at its date (400 INVENTORY_NO_STOCK, Q-P24s). adjustmentAccountId: an active account of the company that is not an inventory asset account (400 VALIDATION_ERROR). Inventory off: 400 INVENTORY_OFF. Dated on or before the closing date (for an edit, the old or the new date): 409 INVENTORY_PERIOD_CLOSED, closingPassword or not. 409 RETRY after a deadlock or lock timeout (nothing saved). The reply's warnings[] carries NEGATIVE_STOCK {code, itemId, date, onHand} when an item's on hand newly went below 0. Record: {id, date, adjustmentAccountId, memo, status, updatedAt, lines: [{itemId, quantityChange, valueChange, value (as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}.",
+        "operationId": "get_api_v1_inventory_adjustments_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get an inventory adjustment",
+        "tags": [
+          "inventory"
+        ]
+      },
+      "put": {
+        "description": "Response {adjustment}. The row is locked; expectedUpdatedAt (updatedAt as last read) that no longer matches is 409 STALE. A void adjustment is 400. inventory-adjust-v1: one line per inventory item {itemId, quantityChange?, valueChange?} (at least one): quantityChange a signed, non-zero decimal string (at most 4 places, |q| < 100,000,000) in the item's base unit; valueChange signed money (at most 2 places). Quantity only: the units go in or out at average cost (the walk writes the asset / adjustment account pair, inventoryLines). With a value: the asset account moves by it; a value-only line needs the item on hand at its date (400 INVENTORY_NO_STOCK, Q-P24s). adjustmentAccountId: an active account of the company that is not an inventory asset account (400 VALIDATION_ERROR). Inventory off: 400 INVENTORY_OFF. Dated on or before the closing date (for an edit, the old or the new date): 409 INVENTORY_PERIOD_CLOSED, closingPassword or not. 409 RETRY after a deadlock or lock timeout (nothing saved). The reply's warnings[] carries NEGATIVE_STOCK {code, itemId, date, onHand} when an item's on hand newly went below 0. Record: {id, date, adjustmentAccountId, memo, status, updatedAt, lines: [{itemId, quantityChange, valueChange, value (as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}.",
+        "operationId": "put_api_v1_inventory_adjustments_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "adjustmentAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "itemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "quantityChange": {
+                          "anyOf": [
+                            {
+                              "maxLength": 20,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "valueChange": {
+                          "anyOf": [
+                            {
+                              "maxLength": 20,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "itemId"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  },
+                  "txnDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "txnDate",
+                  "adjustmentAccountId",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Edit an inventory adjustment",
+        "tags": [
+          "inventory"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/inventory/adjustments/{id}/void": {
+      "post": {
+        "description": "Response {adjustment} (status void): its movements are voided and every later row re-walked; reversal lines mirror it. expectedUpdatedAt mismatch is 409 STALE; already void 400. inventory-adjust-v1: one line per inventory item {itemId, quantityChange?, valueChange?} (at least one): quantityChange a signed, non-zero decimal string (at most 4 places, |q| < 100,000,000) in the item's base unit; valueChange signed money (at most 2 places). Quantity only: the units go in or out at average cost (the walk writes the asset / adjustment account pair, inventoryLines). With a value: the asset account moves by it; a value-only line needs the item on hand at its date (400 INVENTORY_NO_STOCK, Q-P24s). adjustmentAccountId: an active account of the company that is not an inventory asset account (400 VALIDATION_ERROR). Inventory off: 400 INVENTORY_OFF. Dated on or before the closing date (for an edit, the old or the new date): 409 INVENTORY_PERIOD_CLOSED, closingPassword or not. 409 RETRY after a deadlock or lock timeout (nothing saved). The reply's warnings[] carries NEGATIVE_STOCK {code, itemId, date, onHand} when an item's on hand newly went below 0. Record: {id, date, adjustmentAccountId, memo, status, updatedAt, lines: [{itemId, quantityChange, valueChange, value (as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}.",
+        "operationId": "post_api_v1_inventory_adjustments_by_id_void",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "expectedUpdatedAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Void an inventory adjustment",
+        "tags": [
+          "inventory"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/inventory/count-sheet": {
+      "get": {
+        "description": "inventory-adjust-v1: Response {asOf, items: [{itemId, name, description, unit, preferredVendor {id, name} | null, onHand (4 places, base unit), value (2 places)}]} for every active inventory item of the company, by name; on hand and value as of asOf (default today), from the stock ledger. Send each onHand back as sheetOnHand with POST /inventory/counts. Inventory off: 400 INVENTORY_OFF.",
+        "operationId": "get_api_v1_inventory_count_sheet",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The physical count sheet",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/inventory/counts": {
+      "post": {
+        "description": "inventory-adjust-v1 (Q-P24g): lines [{itemId, sheetOnHand (the sheet's onHand), countedQuantity (0 or more, at most 4 places)}]. Under the item locks the engine recomputes on hand as of asOf; when any line's sheetOnHand no longer matches it is 409 STALE with details.items [{itemId, sheetOnHand, onHand}] for every such line, and nothing is saved. Otherwise one adjustment dated asOf moves each item by countedQuantity - onHand at average cost (lines with no difference are left out): Response 201 {adjustment}; with no difference at all nothing is posted, Response 201 {adjustment: null}. asOf on or before the closing date: 409 INVENTORY_PERIOD_CLOSED. adjustmentAccountId as for adjustments.",
+        "operationId": "post_api_v1_inventory_counts",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "adjustmentAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "asOf": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "countedQuantity": {
+                          "maxLength": 20,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "itemId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "sheetOnHand": {
+                          "maxLength": 20,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "itemId",
+                        "sheetOnHand",
+                        "countedQuantity"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "memo": {
+                    "maxLength": 4000,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "asOf",
+                  "adjustmentAccountId",
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Post a physical count",
+        "tags": [
+          "inventory"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/invoices": {
       "get": {
         "description": "The transaction list filters, plus sent (invoice-sent-history-v1): \"false\" keeps the invoices never sent (no send event, no sent date, never marked sent) that are not void, whatever their payment status, so one that is partly paid still shows; \"true\" keeps the others.",
@@ -37123,6 +37648,31 @@
                     "maxLength": 255,
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "opening": {
+                    "additionalProperties": true,
+                    "properties": {
+                      "asOf": {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      },
+                      "quantity": {
+                        "maxLength": 20,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "value": {
+                        "maxLength": 20,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "quantity",
+                      "value",
+                      "asOf"
+                    ],
+                    "type": "object"
                   },
                   "preferredVendorId": {
                     "anyOf": [

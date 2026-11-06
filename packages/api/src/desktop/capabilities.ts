@@ -664,5 +664,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * INVENTORY_PERIOD_CLOSED before any write, closingPassword or not (owner decision 2026-11-06; no restatement); bulk moves and memorize of inventory documents are 409 INVENTORY_DOCUMENT;
    * deadlocks, serialization failures and lock timeouts are 409 RETRY. GET /items stock figures come from the movements.
    */
-  'inventory-costing-v1',];
+  'inventory-costing-v1',
+  /**
+   * Inventory adjustments and counts (U-159, P24 E3): POST/GET/PUT/DELETE /inventory/adjustments(/:id) and POST /:id/void (Idempotency-Key,
+   * expectedUpdatedAt 409 STALE), one line per part {itemId, quantityChange?, valueChange?} against an adjustment account; quantity only at
+   * average cost; a value-only line with nothing on hand is 400 INVENTORY_NO_STOCK (Q-P24s). GET /inventory/count-sheet?asOf (active parts,
+   * on hand and value as of the date) and POST /inventory/counts {asOf, adjustmentAccountId, lines: [{itemId, sheetOnHand, countedQuantity}]}:
+   * on hand recomputed under the item locks, any mismatch 409 STALE listing every such item, else one adjustment for the differences (Q-P24g).
+   * POST /items takes opening {quantity, value, asOf} on a part: an adjustment against Opening Balances (created if missing) in the item's
+   * transaction (Q-P24h). Anything dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED.
+   */
+  'inventory-adjust-v1',];
 
