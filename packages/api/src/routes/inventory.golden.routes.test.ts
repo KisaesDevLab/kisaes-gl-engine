@@ -679,3 +679,266 @@ describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
     expect(bs2.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.cash.inventory);
   });
 });
+
+// ─── Write paths, property, concurrency (U-157 / U-158 B4, I1-I7) ─────────
+
+/**
+ * Every write route whose body can carry an itemId (openapi.json), and what
+ * it does with an inventory part. A new route fails this test until it is
+ * classified here (fails closed).
+ */
+const ITEM_WRITE_ROUTES: Record<string, string> = {
+  'POST /api/v1/bills': 'costs', 'PUT /api/v1/bills/{id}': 'costs',
+  'POST /api/v1/vendor-credits': 'costs', 'PUT /api/v1/vendor-credits/{id}': 'costs',
+  'POST /api/v1/checks': 'costs', 'PUT /api/v1/checks/{id}': 'costs',
+  'POST /api/v1/invoices': 'costs', 'PUT /api/v1/invoices/{id}': 'costs',
+  'POST /api/v1/credit-memos': 'costs', 'PUT /api/v1/credit-memos/{id}': 'costs',
+  'POST /api/v1/sales-receipts': 'costs', 'PUT /api/v1/sales-receipts/{id}': 'costs',
+  'POST /api/v1/transactions': 'costs (expense, cash_sale; every other txnType refuses parts)', 'PUT /api/v1/transactions/{id}': 'costs',
+  'POST /api/v1/bill-captures/{id}/enter': 'costs (posts through bill.service and the ledger core)',
+  'POST /api/v1/document-drafts/{id}/convert': 'costs (posts a bill or check through their services and the ledger core)',
+  'POST /api/v1/invoices/preview': 'writes nothing', 'POST /api/v1/credit-memos/preview': 'writes nothing', 'POST /api/v1/sales-receipts/preview': 'writes nothing',
+  'POST /api/v1/estimates': 'moves nothing (estimates store units)',
+  'POST /api/v1/price-levels': 'moves nothing (prices)', 'PUT /api/v1/price-levels/{id}': 'moves nothing (prices)',
+  'POST /api/v1/plaid/link-token/update': 'not an item of the item list (a Plaid item)',
+};
+
+function itemWriteRoutes(): string[] {
+  const o = JSON.parse(readFileSync(path.resolve(here, '../../../../openapi.json'), 'utf8')) as Body;
+  const has = (s: Body | undefined, seen = new Set<unknown>()): boolean => {
+    if (!s || typeof s !== 'object' || seen.has(s)) return false;
+    seen.add(s);
+    if (s['$ref']) return has(o['components']['schemas'][String(s['$ref']).split('/').pop()!], seen);
+    if (s['properties'] && 'itemId' in s['properties']) return true;
+    return Object.values(s).some((v) => typeof v === 'object' && has(v as Body, seen));
+  };
+  const out: string[] = [];
+  for (const [p, ops] of Object.entries(o['paths'] as Body)) {
+    for (const [m, op] of Object.entries(ops as Body)) {
+      if (['post', 'put', 'patch'].includes(m) && has((op as Body)['requestBody']?.content?.['application/json']?.schema)) out.push(`${m.toUpperCase()} ${p}`);
+    }
+  }
+  return out.sort();
+}
+
+/** A seeded generator (mulberry32): the property runs are reproducible. */
+function rng(seed: number) {
+  let a = seed >>> 0;
+  const next = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return { next, int: (lo: number, hi: number) => lo + Math.floor(next() * (hi - lo + 1)), pick: <T>(xs: T[]) => xs[Math.floor(next() * xs.length)]! };
+}
+
+/** I5: a full replay of the item from zero gives every stored row's figures (the incremental walks agree with it). */
+async function fullReplayMatches(itemId: string) {
+  const { walk, ZERO_STATE } = await import('../utils/inventory-walk.js');
+  const live = await rows(itemId);
+  const res = walk(ZERO_STATE, live.map((m) => ({
+    id: m.id, transactionId: m.transactionId, date: m.movementDate, kind: m.kind, quantity: new Decimal(m.quantity), valueMode: m.valueMode,
+    given: m.valueMode === 'given' ? new Decimal(m.value) : null, sourceId: m.sourceTransactionId,
+    fallbackCost: m.fallbackCost === null ? null : new Decimal(m.fallbackCost),
+  })));
+  live.forEach((m, i) => {
+    const r = res.rows[i]!;
+    const got = [m.value, m.correction, m.residual, m.runningQty, m.runningValue].map((v) => new Decimal(v).toFixed(4));
+    const want = [r.fig.value, r.fig.correction, r.fig.residual, r.after.q, r.after.v].map((v) => v.toFixed(4));
+    expect(got, `I5 row ${i}`).toEqual(want);
+    // I3: nothing on hand holds no value.
+    if (new Decimal(m.runningQty).isZero()) expect(new Decimal(m.runningValue).isZero(), 'I3').toBe(true);
+  });
+}
+
+describe('inventory-costing-v1 write paths (B4)', () => {
+  it('every write route that takes an itemId is classified: it costs, or moves nothing, or writes nothing', () => {
+    expect(itemWriteRoutes()).toEqual(Object.keys(ITEM_WRITE_ROUTES).sort());
+  });
+
+  it('every ledger txnType either moves stock for a part line or refuses it (400 INVENTORY_DOCUMENT_UNSUPPORTED)', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 2));
+    const { postTransaction } = await import('../services/ledger.service.js');
+    const { INVENTORY_DOCUMENT_TYPES } = await import('../services/inventory-costing.service.js');
+    const types = ['invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry', 'credit_memo', 'customer_refund',
+      'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje', 'returned_payment', 'sales_tax_payment', 'bad_debt_recovery', 'inventory_adjustment'];
+    for (const txnType of types) {
+      const stock = INVENTORY_DOCUMENT_TYPES.has(txnType);
+      const buy = ['bill', 'expense', 'vendor_credit'].includes(txnType);
+      const partAccount = buy ? w.asset : c.roles['income'];
+      const lines = [
+        { accountId: partAccount, debit: txnType === 'vendor_credit' || !buy ? '0' : '2', credit: txnType === 'vendor_credit' || !buy ? '2' : '0', itemId: w.items.get('W'), quantity: '1' },
+        { accountId: c.roles['checking'], debit: txnType === 'vendor_credit' || !buy ? '2' : '0', credit: txnType === 'vendor_credit' || !buy ? '0' : '2' },
+      ];
+      if (txnType === 'credit_memo') { lines[0]!.debit = '2'; lines[0]!.credit = '0'; lines[1]!.debit = '0'; lines[1]!.credit = '2'; }
+      if (txnType === 'inventory_adjustment') { lines[0]!.accountId = w.adjustment; lines[0]!.debit = '0'; lines[0]!.credit = '0'; lines[1]!.debit = '0'; lines[1]!.credit = '0'; }
+      const outcome = await postTransaction(c.tenantId, { txnType, txnDate: '2026-01-06', contactId: buy ? w.vendor : c.customer, total: '2', lines } as never, c.userId, c.companyId)
+        .then((t) => ({ ok: true as const, id: (t as Body)['id'] as string }), (e) => ({ ok: false as const, code: (e as Body)['code'] as string }));
+      if (stock) {
+        expect(outcome.ok, `${txnType} moves stock`).toBe(true);
+        const mv = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, (outcome as { id: string }).id));
+        expect(mv, txnType).toHaveLength(1);
+      } else {
+        expect(outcome, `${txnType} refuses parts`).toEqual({ ok: false, code: 'INVENTORY_DOCUMENT_UNSUPPORTED' });
+      }
+      await invariants(w);
+    }
+  });
+
+  it('property: random receipts, sales, linked and unlinked returns, vendor credits, voids and edits keep I1-I3, I5 and I7', async () => {
+    for (const seed of [7, 2026, 31337]) {
+      c = await h.company();
+      const w = await setup();
+      const r = rng(seed);
+      const W = w.items.get('W')!;
+      const sales: Array<{ doc: string; date: string; qty: number }> = [];
+      const ok = (x: { status: number; json: Body }, allowed: string[] = []) => {
+        if (x.status < 300) return true;
+        expect(allowed, `seed ${seed}: ${JSON.stringify(x.json)}`).toContain(x.json['error']?.code);
+        return false;
+      };
+      const day = () => `2026-01-${String(r.int(1, 28)).padStart(2, '0')}`;
+      for (let n = 0; n < 30; n++) {
+        const op = r.pick(['bill', 'bill', 'invoice', 'invoice', 'receipt', 'return', 'linked', 'vcredit', 'void', 'edit']);
+        const doc = `P${seed}-${n}`;
+        if (op === 'bill' || op === 'vcredit') {
+          const qty = r.int(1, op === 'bill' ? 9 : 2);
+          const price = (r.int(100, 999) / 100).toFixed(2);
+          const amount = new Decimal(price).times(qty).toFixed(2);
+          const x = await req('POST', op === 'bill' ? '/bills' : '/vendor-credits', { contactId: w.vendor, txnDate: day(),
+            lines: [{ accountId: w.asset, amount, itemId: W, quantity: String(qty), unitPrice: price }] });
+          if (ok(x)) w.docs.set(doc, idOf(x.json));
+        } else if (op === 'invoice' || op === 'receipt') {
+          const qty = r.int(1, 6);
+          const date = day();
+          const x = op === 'invoice'
+            ? await req('POST', '/invoices', { contactId: c.customer, txnDate: date, lines: [{ itemId: W, quantity: String(qty), unitPrice: '10.00', isTaxable: false }] })
+            : await req('POST', '/sales-receipts', { contactId: c.customer, txnDate: date, depositToAccountId: c.roles['checking'], lines: [{ itemId: W, quantity: String(qty), unitPrice: '10.00', isTaxable: false }] });
+          if (ok(x)) { w.docs.set(doc, idOf(x.json)); sales.push({ doc, date, qty }); w.routes.set(doc, op === 'invoice' ? 'invoices' : 'sales-receipts'); }
+        } else if (op === 'return' || op === 'linked') {
+          const sale = op === 'linked' && sales.length > 0 ? r.pick(sales) : null;
+          const date = sale ? `2026-01-${String(r.int(Number(sale.date.slice(8)), 28)).padStart(2, '0')}` : day();
+          const x = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: date, lines: [{ itemId: W, quantity: String(r.int(1, 2)), unitPrice: '10.00', isTaxable: false,
+            ...(sale ? { returnOf: { transactionId: w.docs.get(sale.doc)! } } : {}) }] });
+          if (ok(x, ['RETURN_EXCEEDS_SALE'])) w.docs.set(doc, idOf(x.json));
+        } else if (op === 'void' && w.docs.size > 0) {
+          const victim = r.pick([...w.docs.keys()]);
+          const x = await req('POST', `/transactions/${w.docs.get(victim)}/void`, { reason: 'property' });
+          if (ok(x, ['SALE_HAS_RETURNS'])) { w.docs.delete(victim); const i = sales.findIndex((s) => s.doc === victim); if (i >= 0) sales.splice(i, 1); }
+        } else if (op === 'edit' && sales.length > 0) {
+          const s = r.pick(sales);
+          const qty = r.int(1, 6);
+          const date = r.next() < 0.5 ? s.date : day();
+          const route = w.routes.get(s.doc)!;
+          const body = route === 'invoices'
+            ? { contactId: c.customer, txnDate: date, lines: [{ itemId: W, quantity: String(qty), unitPrice: '10.00', isTaxable: false }] }
+            : { contactId: c.customer, txnDate: date, depositToAccountId: c.roles['checking'], lines: [{ itemId: W, quantity: String(qty), unitPrice: '10.00', isTaxable: false }] };
+          const x = await req('PUT', `/${route}/${w.docs.get(s.doc)}`, body);
+          if (ok(x, ['SALE_HAS_RETURNS'])) { s.qty = qty; s.date = date; }
+        }
+        await invariants(w);
+      }
+      await fullReplayMatches(W);
+      // I7: no sale gives back more than its relief.
+      const over = await db.execute(sql`
+        SELECT s.transaction_id FROM inventory_movements s JOIN inventory_movements r ON r.source_transaction_id = s.transaction_id AND r.item_id = s.item_id AND r.voided = false
+        WHERE s.tenant_id = ${c.tenantId} AND s.voided = false AND s.source_transaction_id IS NULL AND s.kind = 'sale'
+        GROUP BY s.transaction_id, s.value, s.quantity HAVING SUM(r.value) > -s.value OR SUM(r.quantity) > -s.quantity`);
+      expect(over.rows, `I7 seed ${seed}`).toEqual([]);
+    }
+  }, 240_000);
+
+  it('I5: with distinct dates the stock ledger does not depend on entry order', async () => {
+    const w = await setup();
+    const second = await req('POST', '/items', { name: 'W2', itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: c.roles['income'], assetAccountId: w.asset, cogsAccountId: w.cogs });
+    const W2 = second.json['item'].id as string;
+    const docs = [
+      { kind: 'bill', date: '2026-02-02', qty: '10', price: '3.3333', amount: '33.33' }, { kind: 'invoice', date: '2026-02-04', qty: '4' },
+      { kind: 'bill', date: '2026-02-05', qty: '5', price: '4.10', amount: '20.50' }, { kind: 'invoice', date: '2026-02-08', qty: '13' },
+      { kind: 'credit_memo', date: '2026-02-09', qty: '1' }, { kind: 'vendor_credit', date: '2026-02-10', qty: '1', price: '2.00', amount: '2.00' },
+      { kind: 'bill', date: '2026-02-12', qty: '7', price: '3.80', amount: '26.60' }, { kind: 'invoice', date: '2026-02-15', qty: '2' },
+    ];
+    const post = async (item: string, d: Body) => {
+      const x = d['kind'] === 'bill' || d['kind'] === 'vendor_credit'
+        ? await req('POST', d['kind'] === 'bill' ? '/bills' : '/vendor-credits', { contactId: w.vendor, txnDate: d['date'], lines: [{ accountId: w.asset, amount: d['amount'], itemId: item, quantity: d['qty'], unitPrice: d['price'] }] })
+        : await req('POST', d['kind'] === 'invoice' ? '/invoices' : '/credit-memos', { contactId: c.customer, txnDate: d['date'], lines: [{ itemId: item, quantity: d['qty'], unitPrice: '10.00', isTaxable: false }] });
+      expect(x.status, JSON.stringify(x.json)).toBeLessThan(300);
+    };
+    for (const d of docs) await post(w.items.get('W')!, d);
+    for (const i of [5, 2, 7, 0, 3, 6, 1, 4]) await post(W2, docs[i]!);
+    const shape = async (item: string) => (await rows(item)).map((m) => [m.movementDate, m.value, m.correction, m.residual, m.runningQty, m.runningValue, m.lastCost]);
+    expect(await shape(W2)).toEqual(await shape(w.items.get('W')!));
+    await fullReplayMatches(W2);
+  });
+});
+
+describe('inventory-costing-v1 concurrency (P24 §5)', () => {
+  it('a backdated bill and an edit of a later invoice at once: both commit or one is 409 RETRY; never a hang; I2 holds', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 6));
+    const a5 = structuredClone(w.bodies.get('A5')!) as Body;
+    a5['lines'][0].quantity = '2';
+    const [bill, edit] = await Promise.all([
+      req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-03', lines: [{ accountId: w.asset, amount: '12.00', itemId: w.items.get('W'), quantity: '6', unitPrice: '2.00' }] }),
+      req('PUT', `/invoices/${w.docs.get('A5')}`, a5),
+    ]);
+    for (const x of [bill, edit]) expect(x.status < 300 || x.json['error']?.code === 'RETRY', JSON.stringify(x.json)).toBe(true);
+    expect([bill, edit].some((x) => x.status < 300)).toBe(true);
+    await invariants(w);
+    await fullReplayMatches(w.items.get('W')!);
+  });
+
+  it('a closing-date move and a posting at once: the close waits for the posting, then refuses later inventory writes', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 2));
+    const [close, posted] = await Promise.all([
+      req('PUT', '/company/settings', { lockDate: '2026-01-20' }),
+      req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-18', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.items.get('W'), quantity: '2', unitPrice: '3.00' }] }),
+    ]);
+    expect(close.status, JSON.stringify(close.json)).toBe(200);
+    expect(posted.status === 201 || posted.json['error']?.code === 'INVENTORY_PERIOD_CLOSED', JSON.stringify(posted.json)).toBe(true);
+    const late = await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-19', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.items.get('W'), quantity: '2', unitPrice: '3.00' }] });
+    expect([late.status, late.json['error']?.code]).toEqual([409, 'INVENTORY_PERIOD_CLOSED']);
+    await invariants(w);
+  });
+
+  it('a linked credit memo and an edit of its sale at once: never more returned than sold', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 3));
+    const a3 = structuredClone(w.bodies.get('A3')!) as Body;
+    a3['lines'][0].quantity = '1';
+    const [memo, edit] = await Promise.all([
+      req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-09', lines: [{ itemId: w.items.get('W'), quantity: '3', unitPrice: '10.00', isTaxable: false, returnOf: { transactionId: w.docs.get('A3') } }] }),
+      req('PUT', `/invoices/${w.docs.get('A3')}`, a3),
+    ]);
+    const codes = [memo, edit].map((x) => (x.status < 300 ? 'ok' : x.json['error']?.code));
+    expect(codes.filter((x) => x === 'ok'), JSON.stringify(codes)).toHaveLength(1);
+    expect(codes.some((x) => ['RETURN_EXCEEDS_SALE', 'SALE_HAS_RETURNS', 'RETRY'].includes(x))).toBe(true);
+    await invariants(w);
+  });
+
+  it('an item lock held past lock_timeout (5 s) answers 409 RETRY and saves nothing', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 1));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM items WHERE id = ${w.items.get('W')!} FOR UPDATE`);
+      locked();
+      await held;
+    });
+    await isLocked;
+    const before = (await rows(w.items.get('W')!)).length;
+    const x = await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-04', lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '10.00', isTaxable: false }] });
+    release();
+    await holder;
+    expect([x.status, x.json['error']?.code]).toEqual([409, 'RETRY']);
+    expect((await rows(w.items.get('W')!)).length).toBe(before);
+    await invariants(w);
+  }, 30_000);
+});
