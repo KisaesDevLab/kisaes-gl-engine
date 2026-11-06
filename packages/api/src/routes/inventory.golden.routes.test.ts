@@ -942,3 +942,18 @@ describe('inventory-costing-v1 concurrency (P24 §5)', () => {
     await invariants(w);
   }, 30_000);
 });
+
+describe('copies of inventory documents (P24 §2.3)', () => {
+  it('POST /transactions/:id/duplicate of a cash sale and of a check reposts their parts through the costing core', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 4), (s) => ({ A1: 'check', A3: 'cash_sale' } as Record<string, string>)[s['doc']]);
+    for (const doc of ['A3', 'A1']) {
+      const copy = await req('POST', `/transactions/${w.docs.get(doc)}/duplicate`, {});
+      expect(copy.status, JSON.stringify(copy.json)).toBe(201);
+      const id = (copy.json['transaction'] as Body)['id'] as string;
+      const [mv] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, id));
+      expect(mv?.kind, doc).toBe(doc === 'A3' ? 'sale' : 'receipt');
+      await invariants(w);
+    }
+  });
+});

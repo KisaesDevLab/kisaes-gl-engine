@@ -649,13 +649,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   /** inventoryEnabled on GET/PUT /company/settings (U-25; stored NULL = off); off while stock or value remains is 409 INVENTORY_IN_USE. */
   'company-inventory-flag-v1',
   /**
-   * Average-cost inventory costing in the ledger core (U-157 core, P24 E2a; E2b completes it before the pin bump): inventory_movements,
-   * one per (document, part); the item re-walked from the first affected position on every post, edit, void and delete; derived lines
-   * (lineRole cogs | inventory_relief | cost_correction | cost_residual) on bills, vendor credits, invoices and inventory adjustments,
-   * returned outside lines as inventoryLines [{role, accountId, amount, movementId}] on GET /transactions/:id, /invoices/:id, /bills/:id and
-   * /vendor-credits/:id. A part line needs a quantity; receipts post to the part's asset account; a line on an inventory asset account
-   * without a part outside journal entries is 400 INVENTORY_ACCOUNT_DIRECT; a client-sent derived lineRole is 400 VALIDATION_ERROR; parts
-   * on other document types are 400 INVENTORY_DOCUMENT_UNSUPPORTED (E2b); any document with part lines dated on or before the closing date (old or new date) is 409
+   * Average-cost inventory costing in the ledger core (U-157, U-158; P24 E2a + E2b): inventory_movements, one per (document, part,
+   * linked sale); the item re-walked from the first affected position on every post, edit, void and delete; derived lines (lineRole cogs |
+   * inventory_relief | cost_correction | cost_residual) on bills, checks and card charges (expense), vendor credits, invoices, sales
+   * receipts / cash sales, credit memos and inventory adjustments, returned outside lines as inventoryLines [{role, accountId, amount,
+   * movementId}] on GET /transactions/:id, /invoices/:id, /bills/:id, /vendor-credits/:id, /credit-memos/:id, /sales-receipts/:id and the
+   * PUT /checks/:id reply. Credit-memo lines take returnOf {transactionId} (an invoice or sales receipt that sold the item): returned at
+   * that sale's cost by cumulative difference (Q-P24e), re-valued when the sale re-costs; 400 RETURN_BEFORE_SALE, 400
+   * RETURN_EXCEEDS_SALE, 409 SALE_HAS_RETURNS (Q-P24x); without returnOf at the current average. NEGATIVE_STOCK {itemId, date, onHand}
+   * in warnings[] of posting replies and of the invoice, credit memo and sales receipt previews. A part line needs a quantity; purchases
+   * post to the part's asset account; a line on an inventory asset account without a part outside journal entries is 400
+   * INVENTORY_ACCOUNT_DIRECT; a client-sent derived lineRole is 400 VALIDATION_ERROR; parts on other document types are 400
+   * INVENTORY_DOCUMENT_UNSUPPORTED; any document with part lines dated on or before the closing date (old or new date) is 409
    * INVENTORY_PERIOD_CLOSED before any write, closingPassword or not (owner decision 2026-11-06; no restatement); bulk moves and memorize of inventory documents are 409 INVENTORY_DOCUMENT;
    * deadlocks, serialization failures and lock timeouts are 409 RETRY. GET /items stock figures come from the movements.
    */

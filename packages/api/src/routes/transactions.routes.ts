@@ -438,6 +438,12 @@ transactionsRouter.post('/:id/duplicate', apDocumentPermission('create'), async 
     description: l.description || undefined,
     // Line names (U-58) come along, so a JE's A/R / A/P line stays named.
     contactId: l.contactId ?? null,
+    // The item, quantity and price come along (U-158): a copy of a document
+    // with inventory parts reposts through the costing core. Derived costing
+    // lines and returnOf are never in original.lines, so they don't.
+    ...(l.itemId ? { itemId: l.itemId } : {}),
+    ...(l.quantity ? { quantity: l.quantity } : {}),
+    ...(l.unitPrice ? { unitPrice: l.unitPrice } : {}),
   }));
 
   const result = await ledger.postTransaction(req.tenantId, {
