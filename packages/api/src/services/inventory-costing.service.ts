@@ -121,11 +121,15 @@ async function partsOf(tx: DbOrTx, tenantId: string, itemIds: readonly (string |
 async function lineParts(tx: Tx, tenantId: string, itemIds: readonly (string | null | undefined)[]): Promise<Map<string, PartRow>> {
   const ids = [...new Set(itemIds.filter((v): v is string => !!v))].sort();
   if (ids.length === 0) return new Map();
+  // The costing lock_timeout (5 s, 409 RETRY) covers this wait too; a posting without parts gets its old setting back.
+  const prev = String((await tx.execute(sql`SELECT current_setting('lock_timeout') AS p, set_config('lock_timeout', '5s', true) AS n`)).rows[0]!['p']);
   const rows = await tx.select({ id: items.id, itemType: items.itemType, assetAccountId: items.assetAccountId, cogsAccountId: items.cogsAccountId,
     purchaseCost: items.purchaseCost })
     .from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids))).orderBy(items.id).for('key share');
-  return new Map(rows.filter((r) => r.itemType === 'inventory_part')
+  const parts = new Map(rows.filter((r) => r.itemType === 'inventory_part')
     .map((r) => [r.id, { id: r.id, assetAccountId: r.assetAccountId, cogsAccountId: r.cogsAccountId, purchaseCost: r.purchaseCost }]));
+  if (parts.size === 0 && prev !== '5s') await tx.execute(sql`SELECT set_config('lock_timeout', ${prev}, true)`);
+  return parts;
 }
 
 /**
