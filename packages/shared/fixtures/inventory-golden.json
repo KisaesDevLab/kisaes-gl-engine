@@ -1,0 +1,361 @@
+{
+  "description": "Average-cost inventory (P24, U-157 to U-160) shared by the engine (packages/shared/fixtures/inventory-golden.json) and the ClientLedger client (fixtures/inventory/golden.json, byte-identical; the --demo engine runs every case not marked engineOnly). Synthetic. Dates are 2026; quantities are 4-place strings, money 2-place strings, average costs 6-place strings. Values are signed by their effect on the inventory asset account: a receipt is positive, a sale's relief negative, a negative-stock correction C is shown as -C.",
+  "rules": [
+    "Position: (date, transaction created_at, transaction id). An edit keeps created_at.",
+    "State per item: Q on hand, V value (the GL), L = round6(V/Q) after the latest row that left Q > 0 and V > 0 (the last positive average). The formulas below write T for V.",
+    "Outflow at cost of q > 0 units (sale, quantity-only adjustment down), on T: Q > 0 and q <= Q: relief = round2(T x q / Q); q > Q: relief = (Q > 0 ? T : 0) + round2(excess x c), excess = q - max(Q, 0), c = L if L > 0, else the item's purchase cost when the line was posted, else 0.",
+    "Inflow at cost of r units (unlinked customer return, quantity-only adjustment up): round2(T x r / Q) if Q > 0, else round2(r x c).",
+    "Linked return (Q-P24e): a credit-memo line with returnOf {transactionId} (an invoice or sales receipt of the same item, dated on or before the credit memo). Sale relief R for S units; returns linked to it, in position order, with cumulative returned quantity N_k: value_k = round2(R x N_k / S) - round2(R x N_(k-1) / S). N <= S (400 RETURN_EXCEEDS_SALE); a credit memo dated before the sale is 400 RETURN_BEFORE_SALE; a sale with linked returns can't be voided, deleted, lose that item, drop below N or move after a return (409 SALE_HAS_RETURNS).",
+    "Units (U-161): quantities in movements, on hand and reports are base units; base quantity = round4(quantity x factor); the line amount stays round2(quantity x unitPrice) in the entered unit.",
+    "Given value: a receipt adds its line amount, a vendor return takes its line amount off, an adjustment with a value adds that value.",
+    "Correction when Q < 0 before an inflow of r units worth A: k = min(r, -Q); C = round2(A x k / r) - round2(-T x k / -Q), posted on the inflow's document (Dr COGS, Cr inventory when C > 0); T := T + A - C.",
+    "Residual: a row leaving Q = 0 with T != 0 moves T to the item's COGS account on that document.",
+    "round2 and round6 are half away from zero at 40 digits, negatives included (round2(5.015) = 5.02, round2(-0.005) = -0.01).",
+    "Closed periods (owner decision 2026-11-06): adding, editing, voiding or deleting a document with inventory lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED, closing-date password or not; so no movement on or before the closing date ever changes and there are no cost restatements.",
+    "NEGATIVE_STOCK {itemId, date, onHand} warns on the first row per item whose running quantity newly goes below 0; posting is allowed.",
+    "Every case starts from an empty company with the seed accounts and items, or from the end state of the case named in `from`. `expect` after a step lists the item's state after that step; `rows` lists every movement row after the case's last step, in position order. Keys and cases marked engineOnly are not checked by the demo engine."
+  ],
+  "seed": {
+    "accounts": {
+      "inventory": { "name": "Inventory Asset", "type": "asset", "detailType": "other_current_asset", "systemTag": "inventory_asset" },
+      "cogs": { "name": "Cost of Goods Sold", "type": "cogs", "detailType": "cost_of_goods_sold" },
+      "income": { "name": "Sales", "type": "revenue" },
+      "adjustment": { "name": "Inventory Shrinkage", "type": "expense" },
+      "checking": { "name": "Operating checking", "type": "asset", "detailType": "bank" }
+    },
+    "items": {
+      "W": { "itemType": "inventory_part", "assetAccount": "inventory", "cogsAccount": "cogs", "incomeAccount": "income", "unitPrice": "10.00", "purchaseCost": null },
+      "X": { "itemType": "inventory_part", "assetAccount": "inventory", "cogsAccount": "cogs", "incomeAccount": "income", "unitPrice": "10.00", "purchaseCost": null },
+      "Y": { "itemType": "inventory_part", "assetAccount": "inventory", "cogsAccount": "cogs", "incomeAccount": "income", "unitPrice": "10.00", "purchaseCost": null }
+    },
+    "vendor": "Prairie Mill Supply",
+    "customer": "Bluestem Veterinary Clinic",
+    "salePrice": "10.00"
+  },
+  "cases": [
+    {
+      "id": "A",
+      "title": "Reference sequence (item W, no closing date)",
+      "from": null,
+      "steps": [
+        { "n": 1, "doc": "A1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "10", "unitPrice": "3.3333", "amount": "33.33",
+          "expect": { "value": "33.33", "onHand": "10.0000", "assetValue": "33.33", "averageCost": "3.333000" } },
+        { "n": 2, "doc": "A2", "event": "bill", "date": "2026-01-05", "item": "W", "quantity": "5", "unitPrice": "4.10", "amount": "20.50",
+          "expect": { "value": "20.50", "onHand": "15.0000", "assetValue": "53.83", "averageCost": "3.588667" } },
+        { "n": 3, "doc": "A3", "event": "invoice", "date": "2026-01-08", "item": "W", "quantity": "4",
+          "expect": { "value": "-14.35", "onHand": "11.0000", "assetValue": "39.48", "averageCost": "3.589091" } },
+        { "n": 4, "doc": "A4", "event": "invoice", "date": "2026-01-10", "item": "W", "quantity": "11",
+          "expect": { "value": "-39.48", "onHand": "0.0000", "assetValue": "0.00", "averageCost": "3.589091" } },
+        { "n": 5, "doc": "A5", "event": "invoice", "date": "2026-01-12", "item": "W", "quantity": "3",
+          "expect": { "value": "-10.77", "onHand": "-3.0000", "assetValue": "-10.77", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-12", "onHand": "-3.0000" }] } },
+        { "n": 6, "doc": "A6", "event": "bill", "date": "2026-01-15", "item": "W", "quantity": "10", "unitPrice": "3.80", "amount": "38.00",
+          "expect": { "value": "38.00", "correction": "-0.63", "onHand": "7.0000", "assetValue": "26.60", "averageCost": "3.800000" } },
+        { "n": 7, "doc": "A7", "event": "adjust_qty", "date": "2026-01-20", "item": "W", "quantityChange": "-1", "account": "adjustment",
+          "expect": { "value": "-3.80", "onHand": "6.0000", "assetValue": "22.80", "averageCost": "3.800000" } },
+        { "n": 8, "doc": "A8", "event": "adjust_value", "date": "2026-01-22", "item": "W", "valueChange": "1.50", "account": "adjustment",
+          "expect": { "value": "1.50", "onHand": "6.0000", "assetValue": "24.30", "averageCost": "4.050000" } },
+        { "n": 9, "doc": "A9", "event": "invoice", "date": "2026-01-25", "item": "W", "quantity": "2",
+          "expect": { "value": "-8.10", "onHand": "4.0000", "assetValue": "16.20", "averageCost": "4.050000" } }
+      ],
+      "final": { "W": { "onHand": "4.0000", "assetValue": "16.20", "averageCost": "4.050000" } },
+      "tieOut": { "inventory": "16.20", "cogs": "73.33", "adjustmentDebit": "3.80", "adjustmentCredit": "1.50" }
+    },
+    {
+      "id": "B",
+      "title": "Backdated receipt (A + bill Jan 3, 6 @ 2.00)",
+      "from": "A",
+      "steps": [
+        { "n": 10, "doc": "B1", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00" }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+        { "doc": "B1", "value": "12.00", "onHand": "16.0000", "assetValue": "45.33" },
+        { "doc": "A2", "value": "20.50", "onHand": "21.0000", "assetValue": "65.83" },
+        { "doc": "A3", "value": "-12.54", "onHand": "17.0000", "assetValue": "53.29" },
+        { "doc": "A4", "value": "-34.48", "onHand": "6.0000", "assetValue": "18.81" },
+        { "doc": "A5", "value": "-9.41", "onHand": "3.0000", "assetValue": "9.40" },
+        { "doc": "A6", "value": "38.00", "correction": "0.00", "onHand": "13.0000", "assetValue": "47.40" },
+        { "doc": "A7", "value": "-3.65", "onHand": "12.0000", "assetValue": "43.75" },
+        { "doc": "A8", "value": "1.50", "onHand": "12.0000", "assetValue": "45.25" },
+        { "doc": "A9", "value": "-7.54", "onHand": "10.0000", "assetValue": "37.71" }
+      ],
+      "final": { "W": { "onHand": "10.0000", "assetValue": "37.71", "averageCost": "3.771000" } }
+    },
+    {
+      "id": "V",
+      "title": "Void the Jan 5 bill (from A)",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "void", "doc": "A2", "expect": { "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-10", "onHand": "-5.0000" }] } }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+        { "doc": "A3", "value": "-13.33", "onHand": "6.0000", "assetValue": "20.00", "averageCost": "3.333333" },
+        { "doc": "A4", "value": "-36.67", "onHand": "-5.0000", "assetValue": "-16.67" },
+        { "doc": "A5", "value": "-10.00", "onHand": "-8.0000", "assetValue": "-26.67" },
+        { "doc": "A6", "value": "38.00", "correction": "-3.73", "onHand": "2.0000", "assetValue": "7.60" },
+        { "doc": "A7", "value": "-3.80", "onHand": "1.0000", "assetValue": "3.80" },
+        { "doc": "A8", "value": "1.50", "onHand": "1.0000", "assetValue": "5.30" },
+        { "doc": "A9", "value": "-10.60", "onHand": "-1.0000", "assetValue": "-5.30" }
+      ],
+      "final": { "W": { "onHand": "-1.0000", "assetValue": "-5.30" } }
+    },
+    {
+      "id": "X",
+      "title": "Delete the Jan 5 bill (from A): case V numbers, status deleted, reversal lines",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "delete", "doc": "A2", "expect": { "status": "deleted", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-10", "onHand": "-5.0000" }] } }
+      ],
+      "rowsAs": "V",
+      "final": { "W": { "onHand": "-1.0000", "assetValue": "-5.30" } }
+    },
+    {
+      "id": "M",
+      "title": "Edits (from A): Jan 8 quantity 4 -> 6, then the Jan 15 bill moved to Jan 9",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "edit", "doc": "A3", "quantity": "6" },
+        { "n": 11, "event": "edit", "doc": "A6", "date": "2026-01-09", "expect": { "warnings": [] } }
+      ],
+      "rowsAfter": {
+        "10": [
+          { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+          { "doc": "A2", "value": "20.50", "onHand": "15.0000", "assetValue": "53.83" },
+          { "doc": "A3", "value": "-21.53", "onHand": "9.0000", "assetValue": "32.30", "averageCost": "3.588889" },
+          { "doc": "A4", "value": "-39.48", "onHand": "-2.0000", "assetValue": "-7.18" },
+          { "doc": "A5", "value": "-10.77", "onHand": "-5.0000", "assetValue": "-17.95" },
+          { "doc": "A6", "value": "38.00", "correction": "-1.05", "onHand": "5.0000", "assetValue": "19.00" },
+          { "doc": "A7", "value": "-3.80", "onHand": "4.0000", "assetValue": "15.20" },
+          { "doc": "A8", "value": "1.50", "onHand": "4.0000", "assetValue": "16.70" },
+          { "doc": "A9", "value": "-8.35", "onHand": "2.0000", "assetValue": "8.35" }
+        ],
+        "11": [
+          { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+          { "doc": "A2", "value": "20.50", "onHand": "15.0000", "assetValue": "53.83" },
+          { "doc": "A3", "value": "-21.53", "onHand": "9.0000", "assetValue": "32.30" },
+          { "doc": "A6", "value": "38.00", "correction": "0.00", "onHand": "19.0000", "assetValue": "70.30" },
+          { "doc": "A4", "value": "-40.70", "onHand": "8.0000", "assetValue": "29.60" },
+          { "doc": "A5", "value": "-11.10", "onHand": "5.0000", "assetValue": "18.50" },
+          { "doc": "A7", "value": "-3.70", "onHand": "4.0000", "assetValue": "14.80" },
+          { "doc": "A8", "value": "1.50", "onHand": "4.0000", "assetValue": "16.30" },
+          { "doc": "A9", "value": "-8.15", "onHand": "2.0000", "assetValue": "8.15" }
+        ]
+      },
+      "final": { "W": { "onHand": "2.0000", "assetValue": "8.15" } }
+    },
+    {
+      "id": "C",
+      "engineOnly": true,
+      "title": "Refusals (Q-P24b, Revision 4; replaces the restatement cases C-C5): A, then closing date Jan 10 with a closing-date password. Adding, editing, voiding or deleting a document with inventory lines dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED whatever override the closing date grants, and nothing is written; a document without inventory items keeps the password flow",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "closing_date", "date": "2026-01-10", "password": "closing-pass-1" }
+      ],
+      "refusals": [
+        { "case": "C", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00", "closingPassword": "closing-pass-1" },
+        { "case": "C2", "event": "bill", "date": "2026-01-09", "item": "W", "quantity": "1", "unitPrice": "5.00", "amount": "5.00", "closingPassword": "closing-pass-1" },
+        { "case": "C3", "event": "edit", "doc": "A3", "quantity": "5", "closingPassword": "closing-pass-1" },
+        { "case": "C4", "event": "edit", "doc": "A5", "date": "2026-01-09", "closingPassword": "closing-pass-1" },
+        { "case": "C5", "event": "void", "doc": "A3", "closingPassword": "closing-pass-1" },
+        { "case": "C6", "event": "delete", "doc": "A1", "closingPassword": "closing-pass-1" },
+        { "case": "C7", "event": "adjust_qty", "date": "2026-01-10", "item": "W", "quantityChange": "-1", "account": "adjustment", "closingPassword": "closing-pass-1" }
+      ],
+      "expectRefusal": { "status": 409, "code": "INVENTORY_PERIOD_CLOSED" },
+      "allowed": [
+        { "event": "journal_entry_without_items", "date": "2026-01-09", "closingPassword": "closing-pass-1", "expect": 201 },
+        { "event": "bill", "date": "2026-01-11", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00", "expect": 201 }
+      ],
+      "closingMoved": [
+        { "to": "2026-01-20", "then": { "event": "edit", "doc": "A6", "date": "2026-01-16" }, "expect": { "status": 409, "code": "INVENTORY_PERIOD_CLOSED" }, "unchanged": true },
+        { "to": "2026-01-05", "then": { "event": "edit", "doc": "A3", "quantity": "6" }, "expectRowsAs": "M/10" }
+      ],
+      "final": { "W": { "onHand": "4.0000", "assetValue": "16.20", "averageCost": "4.050000" } }
+    },
+    {
+      "id": "K",
+      "engineOnly": true,
+      "title": "Open edit over closed receipts (A, closing Jan 10, Jan 12 invoice quantity 3 -> 2): seeded from the last closed row; every line dated on or before Jan 10 byte-identical",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "closing_date", "date": "2026-01-10", "password": "closing-pass-1" },
+        { "n": 11, "event": "edit", "doc": "A5", "quantity": "2" }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+        { "doc": "A2", "value": "20.50", "onHand": "15.0000", "assetValue": "53.83" },
+        { "doc": "A3", "value": "-14.35", "onHand": "11.0000", "assetValue": "39.48" },
+        { "doc": "A4", "value": "-39.48", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "A5", "value": "-7.18", "onHand": "-2.0000", "assetValue": "-7.18" },
+        { "doc": "A6", "value": "38.00", "correction": "-0.42", "onHand": "8.0000", "assetValue": "30.40" },
+        { "doc": "A7", "value": "-3.80", "onHand": "7.0000", "assetValue": "26.60" },
+        { "doc": "A8", "value": "1.50", "onHand": "7.0000", "assetValue": "28.10" },
+        { "doc": "A9", "value": "-8.03", "onHand": "5.0000", "assetValue": "20.07" }
+      ],
+      "closedLinesUnchanged": true,
+      "final": { "W": { "onHand": "5.0000", "assetValue": "20.07" } }
+    },
+    {
+      "id": "K2",
+      "engineOnly": true,
+      "title": "Open receipt after the closing date (A, closing Jan 10, bill Jan 11, 2 @ 3.00): only later rows change",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "closing_date", "date": "2026-01-10", "password": "closing-pass-1" },
+        { "n": 11, "doc": "K2a", "event": "bill", "date": "2026-01-11", "item": "W", "quantity": "2", "unitPrice": "3.00", "amount": "6.00" }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33" },
+        { "doc": "A2", "value": "20.50" },
+        { "doc": "A3", "value": "-14.35" },
+        { "doc": "A4", "value": "-39.48", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "K2a", "value": "6.00", "onHand": "2.0000", "assetValue": "6.00" },
+        { "doc": "A5", "value": "-9.00", "onHand": "-1.0000", "assetValue": "-3.00" },
+        { "doc": "A6", "value": "38.00", "correction": "-0.80", "onHand": "9.0000", "assetValue": "34.20" },
+        { "doc": "A7", "value": "-3.80", "onHand": "8.0000", "assetValue": "30.40" },
+        { "doc": "A8", "value": "1.50", "onHand": "8.0000", "assetValue": "31.90" },
+        { "doc": "A9", "value": "-7.98", "onHand": "6.0000", "assetValue": "23.92" }
+      ],
+      "closedLinesUnchanged": true,
+      "final": { "W": { "onHand": "6.0000", "assetValue": "23.92" } }
+    },
+    {
+      "id": "D",
+      "title": "Ratio vs rounded average",
+      "from": null,
+      "steps": [
+        { "n": 1, "doc": "D1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "3", "unitPrice": "3.3433", "amount": "10.03",
+          "expect": { "value": "10.03", "onHand": "3.0000", "assetValue": "10.03", "averageCost": "3.343333" } },
+        { "n": 2, "doc": "D2", "event": "invoice", "date": "2026-01-03", "item": "W", "quantity": "1.5",
+          "expect": { "value": "-5.02", "onHand": "1.5000", "assetValue": "5.01" } },
+        { "n": 3, "doc": "D3", "event": "invoice", "date": "2026-01-04", "item": "W", "quantity": "1.5",
+          "expect": { "value": "-5.01", "onHand": "0.0000", "assetValue": "0.00" } }
+      ],
+      "final": { "W": { "onHand": "0.0000", "assetValue": "0.00" } }
+    },
+    {
+      "id": "N",
+      "title": "Negative midpoint: round2(-0.005) is -0.01 (banker's rounding gives 0.00)",
+      "from": null,
+      "steps": [
+        { "n": 1, "doc": "N1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "2", "unitPrice": "5.00", "amount": "10.00",
+          "expect": { "value": "10.00", "onHand": "2.0000", "assetValue": "10.00" } },
+        { "n": 2, "doc": "N2", "event": "vendor_credit", "date": "2026-01-03", "item": "W", "quantity": "1", "unitPrice": "10.01", "amount": "10.01",
+          "expect": { "value": "-10.01", "onHand": "1.0000", "assetValue": "-0.01" } },
+        { "n": 3, "doc": "N3", "event": "invoice", "date": "2026-01-04", "item": "W", "quantity": "0.5",
+          "expect": { "value": "0.01", "onHand": "0.5000", "assetValue": "0.00" } },
+        { "n": 4, "doc": "N4", "event": "invoice", "date": "2026-01-05", "item": "W", "quantity": "0.5",
+          "expect": { "value": "0.00", "onHand": "0.0000", "assetValue": "0.00" } }
+      ],
+      "final": { "W": { "onHand": "0.0000", "assetValue": "0.00" } }
+    },
+    {
+      "id": "E",
+      "title": "Unlinked returns and residual (the credit memo has no returnOf: current average)",
+      "from": null,
+      "steps": [
+        { "n": 1, "doc": "E1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "3", "unitPrice": "10.00", "amount": "30.00" },
+        { "n": 2, "doc": "E2", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "1", "unitPrice": "13.00", "amount": "13.00" },
+        { "n": 3, "doc": "E3", "event": "vendor_credit", "date": "2026-01-04", "item": "W", "quantity": "1", "unitPrice": "13.00", "amount": "13.00",
+          "expect": { "value": "-13.00", "onHand": "3.0000", "assetValue": "30.00" } },
+        { "n": 4, "doc": "E4", "event": "invoice", "date": "2026-01-05", "item": "W", "quantity": "2",
+          "expect": { "value": "-20.00", "onHand": "1.0000", "assetValue": "10.00" } },
+        { "n": 5, "doc": "E5", "event": "credit_memo", "date": "2026-01-06", "item": "W", "quantity": "1",
+          "expect": { "value": "10.00", "onHand": "2.0000", "assetValue": "20.00" } },
+        { "n": 6, "doc": "E6", "event": "vendor_credit", "date": "2026-01-07", "item": "W", "quantity": "2", "unitPrice": "9.50", "amount": "19.00",
+          "expect": { "value": "-19.00", "residual": "-1.00", "onHand": "0.0000", "assetValue": "0.00" } }
+      ],
+      "final": { "W": { "onHand": "0.0000", "assetValue": "0.00" } }
+    },
+    {
+      "id": "R",
+      "title": "Linked returns (Q-P24e): A steps 1-6, then credit memos linked to the Jan 8 invoice (relief R 14.35 for S 4 units) come back at the original sale cost",
+      "from": "A",
+      "fromSteps": 6,
+      "steps": [
+        { "n": 7, "doc": "R1", "event": "credit_memo", "date": "2026-01-16", "item": "W", "quantity": "2", "returnOf": "A3",
+          "expect": { "value": "7.18", "onHand": "9.0000", "assetValue": "33.78", "note": "round2(14.35 x 2 / 4 = 7.175); unlinked would be 7.60" } },
+        { "n": 8, "doc": "R2", "event": "credit_memo", "date": "2026-01-17", "item": "W", "quantity": "2", "returnOf": "A3",
+          "expect": { "value": "7.17", "onHand": "11.0000", "assetValue": "40.95", "note": "14.35 - 7.18: all 14.35 returned" } },
+        { "n": 9, "event": "credit_memo", "date": "2026-01-18", "item": "W", "quantity": "1", "returnOf": "A3", "expect": { "status": 400, "code": "RETURN_EXCEEDS_SALE" } },
+        { "n": 10, "event": "void", "doc": "A3", "expect": { "status": 409, "code": "SALE_HAS_RETURNS" } },
+        { "n": 11, "doc": "B1", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00" }
+      ],
+      "rows": [
+        { "doc": "A3", "value": "-12.54" },
+        { "doc": "A4", "value": "-34.48" },
+        { "doc": "A5", "value": "-9.41" },
+        { "doc": "A6", "value": "38.00", "onHand": "13.0000", "assetValue": "47.40" },
+        { "doc": "R1", "value": "6.27" },
+        { "doc": "R2", "value": "6.27", "onHand": "17.0000", "assetValue": "59.94" }
+      ],
+      "final": { "W": { "onHand": "17.0000", "assetValue": "59.94" } }
+    },
+    {
+      "id": "U",
+      "title": "Units of measure (U-161): unit set Bottle, base bottle; case = 12, half-case = 6, litre = 1.333333, ml = 0.001333",
+      "from": null,
+      "unitSet": { "name": "Bottle", "base": "bottle", "units": [
+        { "name": "case", "factor": "12" }, { "name": "half-case", "factor": "6" }, { "name": "litre", "factor": "1.333333" }, { "name": "ml", "factor": "0.001333" } ] },
+      "steps": [
+        { "n": 1, "doc": "U1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "2", "unit": "case", "unitPrice": "30.00", "amount": "60.00",
+          "expect": { "baseQuantity": "24.0000", "onHand": "24.0000", "assetValue": "60.00" } },
+        { "n": 2, "doc": "U2", "event": "invoice", "date": "2026-01-03", "item": "W", "quantity": "5", "unit": "bottle",
+          "expect": { "value": "-12.50", "onHand": "19.0000", "assetValue": "47.50" } },
+        { "n": 3, "doc": "U3", "event": "invoice", "date": "2026-01-04", "item": "W", "quantity": "1", "unit": "half-case",
+          "expect": { "baseQuantity": "6.0000", "value": "-15.00", "onHand": "13.0000", "assetValue": "32.50" } },
+        { "n": 4, "doc": "U4", "event": "invoice", "date": "2026-01-05", "item": "W", "quantity": "0.75", "unit": "litre",
+          "expect": { "baseQuantity": "1.0000", "value": "-2.50", "onHand": "12.0000", "assetValue": "30.00" } },
+        { "n": 5, "event": "item_unit_prices", "basePrice": "4.50", "expect": { "case": "54.0000" } },
+        { "n": 6, "event": "invoice", "date": "2026-01-06", "item": "W", "quantity": "0.0001", "unit": "ml", "expect": { "status": 400, "code": "UNIT_QUANTITY_TOO_SMALL" } },
+        { "n": 7, "event": "unit_factor_change", "unit": "case", "factor": "24", "expect": { "status": 409, "code": "UNIT_IN_USE" } }
+      ],
+      "final": { "W": { "onHand": "12.0000", "assetValue": "30.00" } }
+    },
+    {
+      "id": "F",
+      "title": "Count on Jan 31 (W at A step 9; X and Y in the same state)",
+      "from": "A",
+      "setup": "X and Y run case A's steps 1-9 as W does",
+      "steps": [
+        { "n": 10, "doc": "F1", "event": "count", "date": "2026-01-31", "account": "adjustment",
+          "lines": [
+            { "item": "W", "sheetOnHand": "4.0000", "countedQuantity": "3.5" },
+            { "item": "X", "sheetOnHand": "4.0000", "countedQuantity": "4" },
+            { "item": "Y", "sheetOnHand": "4.0000", "countedQuantity": "6" }
+          ],
+          "expect": {
+            "lines": [
+              { "item": "W", "quantityChange": "-0.5000", "value": "-2.03", "onHand": "3.5000", "assetValue": "14.17" },
+              { "item": "Y", "quantityChange": "2.0000", "value": "8.10", "onHand": "6.0000", "assetValue": "24.30" }
+            ],
+            "noLine": ["X"]
+          } }
+      ]
+    },
+    {
+      "id": "G",
+      "engineOnly": true,
+      "title": "Cash basis (A steps 1-3; bill 1 paid in full Jan 3, bill 2 unpaid; invoice Jan 8 4 @ 10.00 = 40.00 + 8.1 % tax 3.24 = 43.24; payment Jan 9 10.81 = 1/4)",
+      "from": null,
+      "steps": [
+        { "n": 1, "doc": "A1", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "10", "unitPrice": "3.3333", "amount": "33.33" },
+        { "n": 2, "event": "bill_payment", "date": "2026-01-03", "bill": "A1", "amount": "33.33" },
+        { "n": 3, "doc": "A2", "event": "bill", "date": "2026-01-05", "item": "W", "quantity": "5", "unitPrice": "4.10", "amount": "20.50" },
+        { "n": 4, "doc": "A3", "event": "invoice", "date": "2026-01-08", "item": "W", "quantity": "4", "taxRate": "0.081000", "total": "43.24" },
+        { "n": 5, "event": "customer_payment", "date": "2026-01-09", "invoice": "A3", "amount": "10.81" }
+      ],
+      "asOf": {
+        "2026-01-31": {
+          "cash": { "income": "10.00", "salesTax": "0.81", "cogsShare": "3.5875", "cogs": "3.59", "inventoryShare": "29.7425", "inventory": "29.74" },
+          "accrual": { "valuation": "39.48", "glInventory": "39.48" },
+          "basisNote": true
+        }
+      },
+      "alsoChecks": [
+        "An applied (not refunded) credit memo shows no inventory or COGS on cash basis.",
+        "A $0 invoice's COGS never shows on cash basis."
+      ]
+    }
+  ]
+}

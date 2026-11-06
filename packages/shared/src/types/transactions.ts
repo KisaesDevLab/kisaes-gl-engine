@@ -29,7 +29,11 @@ export type TxnType =
   | 'sales_tax_payment'
   // A recovered bad debt (U-154, bad-debt-recovery-v1): Dr A/R, Cr the write-off
   // account, Cr Sales Tax Payable for the recovered SSUTA tax; reopens the invoice.
-  | 'bad_debt_recovery';
+  | 'bad_debt_recovery'
+  // A stock adjustment (U-157, U-159): quantity and / or value per inventory
+  // part vs an adjustment account; system_kind cost_restatement for the
+  // walk's closed-period restatements.
+  | 'inventory_adjustment';
 
 export type TxnStatus = 'draft' | 'posted' | 'void' | 'deleted';
 

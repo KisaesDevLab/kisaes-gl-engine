@@ -489,6 +489,12 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'sales_tax_group_members.group_id': 'tenant-ref:sales_tax_items',
   'sales_tax_group_members.item_id': 'tenant-ref:sales_tax_items',
   'sales_tax_codes.company_id': 'tenant-ref:companies',
+  // Inventory costing (U-157, migration 0259).
+  'inventory_movements.company_id': 'tenant-ref:companies',
+  'inventory_movements.item_id': 'tenant-ref:items',
+  'inventory_movements.transaction_id': 'tenant-ref:transactions',
+  'inventory_movements.source_transaction_id': 'tenant-ref:transactions',
+  'journal_lines.inventory_movement_id': 'tenant-ref:inventory_movements',
   'transaction_tax_lines.company_id': 'tenant-ref:companies',
   'transaction_tax_lines.transaction_id': 'tenant-ref:transactions',
   'transaction_tax_lines.sales_tax_id': 'tenant-ref:sales_tax_items',

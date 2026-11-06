@@ -37,6 +37,7 @@ import * as transactionActivity from '../services/transaction-activity.service.j
 import * as txnListExport from '../services/transaction-list-export.service.js';
 import { auditLog } from '../middleware/audit.js';
 import * as featureFlags from '../services/feature-flags.service.js';
+import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
@@ -146,7 +147,11 @@ transactionsRouter.get('/report.pdf', expensiveOpLimiter, async (req, res) => {
 // Bulk-edit Payee / Category / Tag across selected transactions from the
 // list view. Static path declared before the '/:id' routes so it isn't
 // captured as an id.
-transactionsRouter.post('/bulk-update', validate(bulkUpdateTransactionsSchema), async (req, res) => {
+transactionsRouter.post('/bulk-update', validate(bulkUpdateTransactionsSchema), describe({
+  summary: 'Edit the payee, category or tag of several transactions',
+  description: 'A selected transaction with inventory items (stock movements, inventory-costing-v1) is 409 INVENTORY_DOCUMENT '
+    + '(details.transactionId): edit it on its own form.',
+}), async (req, res) => {
   const result = await ledger.bulkUpdateTransactions(req.tenantId, req.body, req.userId, req.companyId);
   res.json(result);
 });
@@ -165,7 +170,7 @@ const registerEntryBodyDoc = z.discriminatedUnion('txnType', [
 
 transactionsRouter.post('/', keyedCreate, describe({
   summary: 'Create a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
-  description: 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
+  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 201 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean): true when Payments Clearing holds a net credit after posting. ' +
     'A journal entry (je-names-v1, je-number-v1, je-adjusting-v1, je-reversing-v1): every A/R or A/P line needs contactId (400 JE_AR_AP_NAME_REQUIRED), any number of such lines is allowed; ' +
     'with reverseOn the response carries `reversalTransactionId` and `reverseOn` of the reversing entry posted with it. ' +
     'A cash sale or credit memo (document-numbers-v1) adds `warnings` (duplicate-number warnings of a warnOnly request, else []); ' +
@@ -231,7 +236,7 @@ transactionsRouter.post('/', keyedCreate, describe({
 
 transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
-  description: 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
+  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
     'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +
     'a date moves or creates it; replacing or removing a reversal changed since it was created is 409 REVERSAL_EDITED. ' +
     'ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); ' +
@@ -364,7 +369,7 @@ async function voidAjeGuard(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
-transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'), keyedById, validate(voidTransactionSchema), async (req, res) => {
+transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'), keyedById, validate(voidTransactionSchema), describe({ summary: 'Void a transaction', description: INVENTORY_ROUTE_NOTE }), async (req, res) => {
   // A/P documents keep their sub-ledger right here too (ap-edit-v1, review
   // B1): a bill or vendor credit with anything applied is 409
   // BILL_HAS_PAYMENTS / CREDIT_APPLIED; a bill payment is voided with its
@@ -392,7 +397,7 @@ const deleteTransactionBodyDoc = deleteTransactionSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, (req, _res, next) => {
+transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, describe({ summary: 'Delete a transaction', description: INVENTORY_ROUTE_NOTE }), (req, _res, next) => {
   // A DELETE often has no body at all.
   if (!req.body || typeof req.body !== 'object') req.body = {};
   next();

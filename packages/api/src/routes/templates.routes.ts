@@ -159,7 +159,7 @@ templatesRouter.post('/', describe({
 
 templatesRouter.post('/from-transaction', describe({
   summary: 'Save a posted transaction as a template (templates-v1)',
-  description: 'Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 400 RECURRING_HAS_BILLABLE_COSTS when a schedule is set on an invoice that bills costs (Q-P20ah: such an invoice cannot repeat; a copy never bills a cost again); 404 another company or a transaction without a company.',
+  description: 'Kinds templates cannot hold (invoice, bill...) become a legacy template. Needs write access to the source transaction type (invoice: invoices, bill: bills, check: checks...), else 403 PERMISSION_DENIED. 400 TEMPLATE_SOURCE_INVALID (void/deleted), TEMPLATE_DEPOSIT_GROUPING; 400 RECURRING_HAS_BILLABLE_COSTS when a schedule is set on an invoice that bills costs (Q-P20ah: such an invoice cannot repeat; a copy never bills a cost again); 404 another company or a transaction without a company. A transaction with inventory items (inventory-costing-v1) is 409 INVENTORY_DOCUMENT: its costing lines are derived, so it is not memorized.',
 }), validate(createTxnTemplateFromTransactionSchema), async (req, _res, next) => {
   const src = await loadSource(db, req.tenantId, req.companyId, req.body.transactionId);
   if (!src) throw AppError.notFound('Transaction not found');

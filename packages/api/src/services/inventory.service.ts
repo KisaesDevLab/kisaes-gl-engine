@@ -9,8 +9,7 @@
  * the accounts parts post to in place.
  *
  * Stock figures and "has stock" checks read the costing ledger
- * (inventory_movements, U-157). Until that table lands (migration 0259)
- * no part can hold stock, so they report zero.
+ * (inventory_movements, U-157): the latest live movement of each part.
  */
 
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
@@ -18,6 +17,7 @@ import { accounts, companies, items } from '../db/schema/index.js';
 import type { DbOrTx } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { Decimal } from '../utils/inventory-walk.js';
 
 /** The system tag of the inventory asset account (U-156). */
 export const INVENTORY_ASSET_TAG = 'inventory_asset';
@@ -95,18 +95,24 @@ export async function ensureInventoryAccounts(tx: DbOrTx, tenantId: string, comp
 
 /**
  * Whether any part of the company still holds stock or value (U-25:
- * turning inventory off is 409 INVENTORY_IN_USE then). Reads the costing
- * ledger (U-157); before it exists no part can hold stock.
+ * turning inventory off is 409 INVENTORY_IN_USE then): the latest live
+ * movement of some item has a non-zero running quantity or value.
  */
 export async function stockRemains(executor: DbOrTx, tenantId: string, companyId: string): Promise<boolean> {
-  void executor; void tenantId; void companyId;
-  return false;
+  const r = await executor.execute(sql`
+    SELECT 1 FROM (
+      SELECT DISTINCT ON (item_id) running_qty, running_value FROM inventory_movements
+      WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND voided = false
+      ORDER BY item_id, movement_date DESC, txn_created_at DESC, transaction_id DESC
+    ) last WHERE last.running_qty <> 0 OR last.running_value <> 0 LIMIT 1`);
+  return r.rows.length > 0;
 }
 
-/** Whether an item has any stock movement (U-157); before the costing ledger exists, none. */
+/** Whether an item has any live stock movement (U-157; ITEM_HAS_INVENTORY). */
 export async function itemHasMovements(executor: DbOrTx, tenantId: string, itemId: string): Promise<boolean> {
-  void executor; void tenantId; void itemId;
-  return false;
+  const r = await executor.execute(sql`
+    SELECT 1 FROM inventory_movements WHERE tenant_id = ${tenantId} AND item_id = ${itemId} AND voided = false LIMIT 1`);
+  return r.rows.length > 0;
 }
 
 /**
@@ -133,16 +139,38 @@ const NO_FIGURES: StockFigures = { quantityOnHand: null, averageCost: null, asse
 const ZERO_FIGURES: StockFigures = { quantityOnHand: '0.0000', averageCost: '0.000000', assetValue: '0.00' };
 
 /**
- * Stock figures per item id, from the latest movement of each part (U-157).
- * Items are tenant-wide and stock is kept per company: `companyId` (the
- * request's company) picks whose stock; without it, the tenant's oldest
- * company's (where a posting without a company keeps its stock).
+ * Stock figures per item id, from the latest live movement of each part
+ * (all dates, U-157): quantityOnHand = running_qty, assetValue =
+ * running_value (what the GL holds), averageCost = running_value /
+ * running_qty to 6 places while on hand is above 0, else the last positive
+ * average. A part with no movement shows zeros. Items are tenant-wide and
+ * stock is kept per company: `companyId` (the request's company) picks
+ * whose stock; without it, the tenant's oldest company's (where a posting
+ * without a company keeps its stock).
  */
 export async function stockFigures(executor: DbOrTx, tenantId: string, rows: ReadonlyArray<{ id: string; itemType: string | null }>,
   companyId?: string | null): Promise<Map<string, StockFigures>> {
-  void executor; void tenantId; void companyId;
   const out = new Map<string, StockFigures>();
-  for (const r of rows) out.set(r.id, r.itemType === 'inventory_part' ? { ...ZERO_FIGURES } : { ...NO_FIGURES });
+  const partIds: string[] = [];
+  for (const r of rows) {
+    if (r.itemType === 'inventory_part') { out.set(r.id, { ...ZERO_FIGURES }); partIds.push(r.id); } else out.set(r.id, { ...NO_FIGURES });
+  }
+  if (partIds.length === 0) return out;
+  const company = companyId
+    ? sql`${companyId}::uuid`
+    : sql`(SELECT id FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id LIMIT 1)`;
+  const res = await executor.execute(sql`
+    SELECT DISTINCT ON (item_id) item_id, running_qty::text AS q, running_value::text AS p, last_cost::text AS l
+    FROM inventory_movements
+    WHERE tenant_id = ${tenantId} AND company_id = ${company} AND voided = false
+      AND item_id IN (${sql.join(partIds.map((i) => sql`${i}::uuid`), sql`, `)})
+    ORDER BY item_id, movement_date DESC, txn_created_at DESC, transaction_id DESC`);
+  for (const row of res.rows as Array<{ item_id: string; q: string; p: string; l: string }>) {
+    const q = new Decimal(row.q);
+    const p = new Decimal(row.p);
+    const avg = q.greaterThan(0) ? p.dividedBy(q).toDecimalPlaces(6, Decimal.ROUND_HALF_UP) : new Decimal(row.l);
+    out.set(row.item_id, { quantityOnHand: q.toFixed(4), averageCost: avg.toFixed(6), assetValue: p.toFixed(2) });
+  }
   return out;
 }
 
@@ -168,15 +196,12 @@ export async function assertAccountNotInventory(executor: DbOrTx, tenantId: stri
   if (tagged.length > 0) {
     throw AppError.conflict('This is the inventory asset account. It stays active while inventory is in use.', 'ACCOUNT_IN_USE', { accountId: tagged[0]!.id });
   }
-  const parts = await executor.select({ id: items.id, isActive: items.isActive }).from(items)
+  const used = (await executor.select({ id: items.id }).from(items)
     .where(and(eq(items.tenantId, tenantId), eq(items.itemType, 'inventory_part'),
-      or(inArray(items.assetAccountId, ids), inArray(items.cogsAccountId, ids), inArray(items.expenseAccountId, ids))))
-    .orderBy(items.id);
-  const used: string[] = [];
-  for (const p of parts) {
-    if (used.length >= 5) break;
-    if (p.isActive !== false || await itemHasMovements(executor, tenantId, p.id)) used.push(p.id);
-  }
+      or(inArray(items.assetAccountId, ids), inArray(items.cogsAccountId, ids), inArray(items.expenseAccountId, ids)),
+      or(eq(items.isActive, true), isNull(items.isActive), sql`EXISTS (SELECT 1 FROM inventory_movements m
+        WHERE m.tenant_id = ${items.tenantId} AND m.item_id = ${items.id} AND m.voided = false)`)))
+    .orderBy(items.id).limit(5)).map((r) => r.id);
   if (used.length > 0) {
     throw AppError.conflict('Inventory items post to this account (active items, or inactive items with stock history). Change their accounts first.',
       'ACCOUNT_IN_USE', { itemIds: used });

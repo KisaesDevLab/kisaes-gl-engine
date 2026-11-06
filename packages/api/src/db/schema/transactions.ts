@@ -216,6 +216,10 @@ export const journalLines = pgTable('journal_lines', {
   // markup line ('billable_markup'): the cost line it bills (U-128,
   // migration 0245). No FK; the source line keeps its id across edits.
   billableSourceLineId: uuid('billable_source_line_id'),
+  // U-157 (migration 0259): the stock movement an item line or a derived
+  // costing line (lineRole cogs | inventory_relief | cost_correction |
+  // cost_residual) belongs to.
+  inventoryMovementId: uuid('inventory_movement_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   transactionIdx: index('idx_jl_transaction').on(table.transactionId),

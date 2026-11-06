@@ -26,6 +26,7 @@ import * as emailService from '../services/email.service.js';
 import * as invoiceEmail from '../services/invoice-email.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
+import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 export const invoicesRouter = Router();
 invoicesRouter.use(authenticate);
@@ -40,7 +41,7 @@ const idParams = z.object({ id: z.string().uuid() });
 // see the body before lockContextMiddleware strips the password, and both
 // run before the idempotency check and validation (bills.routes.ts order).
 const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed');
-const closedPeriodNote = 'An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): '
+const closedPeriodNote = `${INVENTORY_ROUTE_NOTE} ` + 'An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): '
   + '423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1).';
 const bodyDoc = createInvoiceSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });
 const voidBodyDoc = voidTransactionSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });

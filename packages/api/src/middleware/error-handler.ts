@@ -9,6 +9,7 @@ import { AppError } from '../utils/errors.js';
 import { isDesktop } from '../desktop/profile.js';
 import { errorSummaryForLog } from '../utils/log-safe.js';
 import { OfflineUnavailableError } from '../utils/offline.js';
+import { isRetryable, retryErrorUnscoped } from '../utils/deadlock.js';
 
 // Body-parser throws a custom error with `.type === 'entity.too.large'`
 // when a request exceeds express.json()'s `limit`. Without this case
@@ -85,6 +86,18 @@ export function errorHandler(
         details: err.errors,
       },
     });
+    return;
+  }
+
+  // A deadlock, serialization failure or lock timeout (U-157) rolled back the
+  // database transaction it hit. Here, outside any one route, that is all we
+  // know: a request that commits in several steps may have saved an earlier
+  // one, so the message doesn't promise that nothing was saved (routers whose
+  // write is one transaction answer deadlockAsRetry's message first). The
+  // client resends under the same Idempotency-Key; a stored key replays.
+  if (isRetryable(err)) {
+    const retry = retryErrorUnscoped();
+    res.status(retry.statusCode).json({ error: { message: retry.message, code: retry.code } });
     return;
   }
 

@@ -20,6 +20,7 @@ import { escapeLike } from '../utils/sql-like.js';
 import { assertNotDeposited, releaseDepositLinks, liveDepositsForSource } from './deposit-links.service.js';
 import { releaseBilledCosts, assertSourceLinksIntact, billedInvoicesForLines } from './billable-links.js';
 import * as salesTaxRows from './sales-tax.service.js';
+import * as costing from './inventory-costing.service.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -618,7 +619,9 @@ export async function postTransaction(
   // Exact decimal comparison, no tolerance (U-65).
   const { debits: totalDebits, credits: totalCredits } = assertBalanced(input.lines);
 
-  if (totalDebits.isZero() && totalCredits.isZero()) {
+  // A quantity-only inventory adjustment has no amount until the costing
+  // walk values it (U-157): its derived lines carry the value.
+  if (totalDebits.isZero() && totalCredits.isZero() && input.txnType !== 'inventory_adjustment') {
     throw AppError.badRequest('Transaction must have non-zero amounts');
   }
 
@@ -630,6 +633,12 @@ export async function postTransaction(
     // Idempotency-Key (U-18): claimed first, in this transaction, so the
     // key row commits or rolls back with the posting. No-op without one.
     await claimIdempotency(tx);
+    // Inventory costing (U-157): line guards, then the costing lock (companies
+    // row, then items) before any balance write. A document with inventory
+    // lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED
+    // here, before the closing-date check, so no password or confirmation
+    // opens it (owner decision 2026-11-06). Null when no part is involved.
+    const costingLock = await costing.prepareNew(tx, tenantId, companyId ?? null, input.txnType, input.txnDate, input.lines);
     // AJEs bypass the closing-date lock by design (TB module D10 /
     // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
     // router is the only path that posts txn_type 'aje', and closing a
@@ -746,13 +755,17 @@ export async function postTransaction(
     if (txn.status === 'posted') {
       await updateAccountBalances(tx, tenantId, input.lines);
     }
+    // Stock movements, the item walks and the derived COGS lines (U-157).
+    const inventoryWarnings = costingLock && txn.status === 'posted'
+      ? await costing.apply(tx, tenantId, txn.id, { lock: costingLock, userId })
+      : [];
 
     await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId, tx);
     if (lockOverride) {
       await auditLockOverride(tx, tenantId, lockOverride, { txnId: txn.id, oldDate: null, newDate: input.txnDate });
     }
 
-    return { ...txn, lines };
+    return { ...txn, lines, ...(inventoryWarnings.length > 0 ? { inventoryWarnings } : {}) };
   };
 
   // Reuse the outer tx if one was passed in (caller is already inside a
@@ -821,6 +834,8 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     }
     if (txn.status === 'void') throw AppError.badRequest('Transaction is already void');
     assertNotStale(txn, opts.expectedUpdatedAt);
+    // Inventory costing (U-157): the costing lock before any balance write.
+    const costingLock = txn.txnType === 'bill_payment' ? null : await costing.prepareExisting(tx, tenantId, txn.companyId, txnId, txn.txnDate);
 
     // A bill payment carries its applications (review B1): voiding it as a
     // plain transaction would leave the bills it paid marked paid. It goes
@@ -968,6 +983,10 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       // Reverse account balances
       await updateAccountBalances(tx, tenantId, reversingLines);
     }
+    // The document's movements are voided and every later row re-walked (U-157, I7).
+    const voidWarnings = costingLock
+      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId })
+      : [];
 
     // Full before-image: the header AND the lines as they stood before the
     // void (the reversing lines are new rows, so originalLines is exact).
@@ -979,6 +998,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     }, userId, tx);
 
     if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId, { companyId: opts.companyId });
+    return voidWarnings.length > 0 ? { inventoryWarnings: voidWarnings } : undefined;
   }
 }
 
@@ -1250,6 +1270,8 @@ export async function deleteTransactionInTx(
       );
     }
     assertNotStale(txn, opts.expectedUpdatedAt);
+    // Inventory costing (U-157): the costing lock before any balance write.
+    const costingLock = await costing.prepareExisting(tx, tenantId, txn.companyId, txnId, txn.txnDate);
     // A bill or vendor credit is deletable only while nothing is applied to
     // it (U-84): 409 BILL_HAS_PAYMENTS / CREDIT_APPLIED (a refunded credit
     // is TXN_DELETE_LINKED below, as any deposited item).
@@ -1354,6 +1376,10 @@ export async function deleteTransactionInTx(
       status: 'deleted',
       updatedAt: new Date(),
     }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)));
+    // The document's movements are voided and every later row re-walked (U-157, I7).
+    const deleteWarnings = costingLock
+      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId: opts.userId })
+      : [];
 
     await auditLog(tenantId, 'delete', 'transaction', txnId,
       { ...txn, lines: originalLines },
@@ -1368,7 +1394,7 @@ export async function deleteTransactionInTx(
     // The reversal has its own updatedAt; the caller's token was for the original.
     if (reversal) await deleteTransactionInTx(tx, tenantId, reversal.id, { ...opts, expectedUpdatedAt: undefined });
 
-    return { id: txnId, status: 'deleted' as const };
+    return { id: txnId, status: 'deleted' as const, ...(deleteWarnings.length > 0 ? { inventoryWarnings: deleteWarnings } : {}) };
   }
 }
 
@@ -1503,6 +1529,12 @@ export async function updateTransaction(
     // changes either is 409 SALES_TAX_LINKED (unlink first, edit, link again).
     await assertSalesTaxLinkUnchanged(tx, tenantId, existing, input);
 
+    // Inventory costing (U-157): line guards, then the costing lock over the
+    // old and new parts before any balance write; the old or new date on or
+    // before the closing date is 409 INVENTORY_PERIOD_CLOSED, before the
+    // closing-date check (owner decision 2026-11-06).
+    const costingLock = await costing.prepareEdit(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, input.txnType ?? existing.txnType,
+      existing.txnDate, input.txnDate, input.lines);
     // Check lock date for both old and new dates (company-scoped).
     // AJEs are exempt (firm-only CRUD regardless of closing date — TB5)
     // unless the company has a closing-date password (U-15).
@@ -1562,6 +1594,9 @@ export async function updateTransaction(
     `);
     const clearedLineIds = new Set((clearedRows.rows as Array<{ journal_line_id: string }>).map((r) => r.journal_line_id));
 
+    if (clearedLineIds.size > 0 && costingLock) {
+      throw AppError.conflict('This transaction moves inventory and is part of a completed bank reconciliation. Undo the reconciliation first.', 'INVENTORY_DOCUMENT');
+    }
     if (clearedLineIds.size > 0) {
       // Reconciled transaction. The reconciliation cleared this txn's
       // balance-sheet line(s) (the bank / credit-card account). Those lines
@@ -1785,6 +1820,11 @@ export async function updateTransaction(
     if (existing.status === 'posted') {
       await updateAccountBalances(tx, tenantId, input.lines);
     }
+    // Stock movements, the item walks and the derived lines (U-157): the
+    // edit deleted every line, derived ones included; the walk puts them back.
+    const inventoryWarnings = costingLock && existing.status === 'posted'
+      ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId })
+      : [];
 
     // Full before-image: header plus the lines this edit deleted, so the
     // audit trail can show (and restore) what the transaction was.
@@ -1795,8 +1835,16 @@ export async function updateTransaction(
     const [updated] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
       .limit(1);
-    return { ...updated, lines };
+    return { ...updated, lines, ...(inventoryWarnings.length > 0 ? { inventoryWarnings } : {}) };
   });
+}
+
+/**
+ * Per-account balance deltas (debit positive) applied once, in account-id
+ * order (U-157 B5: the costing walk's derived-line changes).
+ */
+export async function applyAccountDeltas(executor: DbOrTx, tenantId: string, deltas: ReadonlyMap<string, InstanceType<typeof Decimal>>) {
+  await updateAccountBalances(executor, tenantId, [...deltas].map(([accountId, v]) => ({ accountId, debit: v.toFixed(4), credit: '0' })));
 }
 
 async function updateAccountBalances(
@@ -2007,7 +2055,7 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
     contactName = c?.displayName ?? null;
   }
 
-  const rawLines = await db.select({
+  const allLines = await db.select({
     id: journalLines.id,
     tenantId: journalLines.tenantId,
     transactionId: journalLines.transactionId,
@@ -2036,6 +2084,7 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
     discountPercent: journalLines.discountPercent,
     unitPriceSource: journalLines.unitPriceSource,
     billableSourceLineId: journalLines.billableSourceLineId,
+    inventoryMovementId: journalLines.inventoryMovementId,
   }).from(journalLines)
     .leftJoin(accounts, eq(journalLines.accountId, accounts.id))
     // Exclude the persisted void-reversal rows (rule 23) so the detail
@@ -2047,6 +2096,11 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
       eq(journalLines.isVoidReversal, false),
     ))
     .orderBy(journalLines.lineOrder);
+  // Derived costing lines (U-157, B3) are never in `lines`: a client that
+  // saves the document back sends only what it entered. They come back as
+  // inventoryLines [{role, accountId, amount (debit positive), movementId}].
+  const { lines: enteredLines, inventoryLines } = costing.splitDerived(allLines);
+  const rawLines = enteredLines;
 
   // Billed cost lines (U-128): the invoice each is on (same company as the
   // source: a claim requires it).
@@ -2069,7 +2123,7 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
       ))
       .orderBy(transactions.createdAt, transactions.id)
       .limit(1);
-    return { ...txn, contactName, lines, reversalTransactionId: rev?.id ?? null, reverseOn: rev?.txnDate ?? null };
+    return { ...txn, contactName, lines, inventoryLines, reversalTransactionId: rev?.id ?? null, reverseOn: rev?.txnDate ?? null };
   }
 
   // Deposits (U-53): the cash-back line, as the create body takes it.
@@ -2078,10 +2132,10 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
     const cashBack = cb
       ? { accountId: cb.accountId, amount: new Decimal(cb.debit || '0').toFixed(4), memo: cb.description ?? null }
       : null;
-    return { ...txn, contactName, lines, cashBack };
+    return { ...txn, contactName, lines, inventoryLines, cashBack };
   }
 
-  return { ...txn, contactName, lines };
+  return { ...txn, contactName, lines, inventoryLines };
 }
 
 export async function listTransactions(tenantId: string, filters: {
@@ -2545,6 +2599,12 @@ export async function bulkUpdateTransactions(
       // move could take its Sales Tax Payable line away from its paid lines.
       if ((setCategoryAccountId !== undefined || moveToAccountId !== undefined) && await hasSalesTaxLink(tx, tenantId, txnId)) {
         skipped.push({ id: txnId, reason: 'sales_tax_linked' }); continue;
+      }
+      // Inventory (U-157, Q-P24q): no category or source move on a document that
+      // moves stock, nor onto or off an inventory asset account: 409 INVENTORY_DOCUMENT.
+      if ((setCategoryAccountId !== undefined || moveToAccountId !== undefined)
+        && await costing.touchesInventory(tx, tenantId, txnId, [setCategoryAccountId, moveToAccountId, moveFromAccountId])) {
+        throw AppError.conflict('A transaction with inventory items can not be recategorized in bulk. Edit it on its own form.', 'INVENTORY_DOCUMENT', { transactionId: txnId });
       }
       const lockDate = txn.companyId ? (lockByCompany.get(txn.companyId) ?? null) : maxLock;
       if (lockDate && txn.txnDate <= lockDate) { skipped.push({ id: txnId, reason: 'locked' }); continue; }

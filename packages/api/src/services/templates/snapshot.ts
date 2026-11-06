@@ -26,6 +26,7 @@ import type { DbOrTx } from '../../db/index.js';
 import { journalLines, transactionTags, transactions } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { depositGroupingRefused, validateDraft } from './draft.js';
+import { isDerivedRole } from '../inventory-costing.service.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -69,6 +70,11 @@ export async function snapshotTransaction(
     eq(journalLines.transactionId, txn.id),
     eq(journalLines.isVoidReversal, false),
   )).orderBy(asc(journalLines.lineOrder));
+  // A document that moves inventory (U-157, Q-P24q) is not memorized: its
+  // costing lines are derived and its copy would post them again.
+  if (lines.some((l) => l.inventoryMovementId || isDerivedRole(l.lineRole))) {
+    throw AppError.conflict('A transaction with inventory items can not be memorized. Enter it again instead.', 'INVENTORY_DOCUMENT');
+  }
   const headerTags = (await exec.select({ tagId: transactionTags.tagId }).from(transactionTags)
     .where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.transactionId, txn.id))))
     .map((r) => r.tagId);

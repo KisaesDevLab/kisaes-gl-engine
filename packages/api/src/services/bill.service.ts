@@ -17,6 +17,7 @@ import { addCalendarDays } from '../utils/calendar-date.js';
 import { lineAmountFromQuantity, parseQuantity, parseUnitPrice, fitsMoneyColumn, sameAmount, exactSum, termsDiscountAmount } from '../utils/line-amount.js';
 import { assertLineContacts } from './line-contacts.service.js';
 import { relinkDraftAttachments } from './attachment.service.js';
+import { isDerivedRole } from './inventory-costing.service.js';
 
 // ─── Terms (U-86, bill-terms-v1) ────────────────────────────────
 
@@ -322,13 +323,15 @@ export async function keepUnchangedLineDetails(
 ): Promise<void> {
   const candidates = rawLines.map((l, i) => (LINE_DETAIL_KEYS.every((k) => l[k] === undefined) ? i : -1)).filter((i) => i >= 0);
   if (candidates.length === 0) return;
-  let stored = await executor.select().from(journalLinesTable)
+  let stored = (await executor.select().from(journalLinesTable)
     .where(and(
       eq(journalLinesTable.tenantId, tenantId),
       eq(journalLinesTable.transactionId, existing.id),
       eq(journalLinesTable.isVoidReversal, false),
     ))
-    .orderBy(journalLinesTable.lineOrder);
+    .orderBy(journalLinesTable.lineOrder))
+    // Derived costing lines (U-157) come after the A/P line and are never sent back.
+    .filter((l) => !isDerivedRole(l.lineRole));
   // The A/P line: last on a bill (credit), first on a vendor credit (debit).
   const isBill = existing.txnType === 'bill';
   if (isBill && stored.at(-1)?.accountId === apAccountId) stored = stored.slice(0, -1);

@@ -94,13 +94,8 @@ describe('migration 0258 inventory items', () => {
 
   it('rollback stops with a clear message while stock movements exist', async () => {
     await inRolledBackTx(async (tx) => {
-      const exists = (await tx.execute(sql`SELECT to_regclass('public.inventory_movements') IS NOT NULL AS e`)).rows[0] as { e: boolean };
-      if (!exists.e) await tx.execute(sql`CREATE TABLE inventory_movements (id uuid PRIMARY KEY DEFAULT gen_random_uuid())`);
-      await tx.execute(sql.raw(exists.e
-        ? `INSERT INTO inventory_movements SELECT * FROM inventory_movements LIMIT 0`
-        : `INSERT INTO inventory_movements DEFAULT VALUES`));
-      const hasRows = (await tx.execute(sql`SELECT EXISTS (SELECT 1 FROM inventory_movements) AS e`)).rows[0] as { e: boolean };
-      if (!hasRows.e) return; // 0259 present and empty here: covered by its own test.
+      await tx.execute(sql`INSERT INTO inventory_movements (tenant_id, company_id, item_id, transaction_id, movement_date, txn_created_at, kind, value_mode)
+        VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), '2026-01-02', now(), 'receipt', 'given')`);
       await tx.execute(sql`SAVEPOINT s1`);
       await expect(run(tx, ROLLBACK)).rejects.toThrow(/inventory_movements holds stock movements/);
       await tx.execute(sql`ROLLBACK TO SAVEPOINT s1`);

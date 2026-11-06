@@ -21,6 +21,7 @@ import * as billOcrService from '../services/ai-bill-ocr.service.js';
 import * as attachmentService from '../services/attachment.service.js';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
+import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
 
 export const billsRouter = Router();
 billsRouter.use(authenticate);
@@ -33,7 +34,7 @@ billsRouter.use(requireResource('bills'));
 // must see the body before lockContextMiddleware strips the password, and
 // both run before validation (checks.routes.ts order).
 const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed');
-const closedPeriodNote = 'A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): ' +
+const closedPeriodNote = `${INVENTORY_ROUTE_NOTE} ` + 'A bill dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): ' +
   '423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (ap-closing-v1).';
 const billBodyDoc = createBillSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });
 const voidBodyDoc = voidTransactionSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });
