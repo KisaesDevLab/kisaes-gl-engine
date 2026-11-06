@@ -236,6 +236,13 @@ describe('inventory-costing-v1 golden cases (U-157)', () => {
     const w = await setup();
     const steps = gcase('A')['steps'] as Body[];
     await runSteps(w, steps.slice(0, 4));
+    // NEGATIVE_STOCK comes back from the ledger core (inventoryWarnings); warnings[] on route replies is E2b (U-158).
+    const s5 = steps[4]!;
+    const { createInvoice } = await import('../services/invoice.service.js');
+    const inv5 = await createInvoice(c.tenantId, { contactId: c.customer, txnDate: s5['date'],
+      lines: [{ itemId: w.items.get('W'), quantity: s5['quantity'], unitPrice: '10.00', isTaxable: false }] } as never, c.userId, c.companyId) as Body;
+    const want = s5['expect']['warnings'][0];
+    expect(inv5['inventoryWarnings']).toEqual([{ code: want.code, itemId: w.items.get('W'), date: want.date, onHand: want.onHand }]);
     const r = await req('POST', '/transactions', { txnType: 'journal_entry', txnDate: '2026-01-11', lines: [
       { accountId: w.asset, debit: '1.00', credit: '0' }, { accountId: c.roles['income'], debit: '0', credit: '1.00' }] });
     expect(r.status, 'a journal entry may post to an inventory asset account').toBe(201);

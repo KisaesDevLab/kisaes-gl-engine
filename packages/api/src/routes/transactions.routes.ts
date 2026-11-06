@@ -365,7 +365,7 @@ async function voidAjeGuard(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
-transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'), keyedById, validate(voidTransactionSchema), async (req, res) => {
+transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'), keyedById, validate(voidTransactionSchema), describe({ summary: 'Void a transaction', description: INVENTORY_ROUTE_NOTE }), async (req, res) => {
   // A/P documents keep their sub-ledger right here too (ap-edit-v1, review
   // B1): a bill or vendor credit with anything applied is 409
   // BILL_HAS_PAYMENTS / CREDIT_APPLIED; a bill payment is voided with its
@@ -393,7 +393,7 @@ const deleteTransactionBodyDoc = deleteTransactionSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, (req, _res, next) => {
+transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, describe({ summary: 'Delete a transaction', description: INVENTORY_ROUTE_NOTE }), (req, _res, next) => {
   // A DELETE often has no body at all.
   if (!req.body || typeof req.body !== 'object') req.body = {};
   next();

@@ -41,7 +41,7 @@ const idParams = z.object({ id: z.string().uuid() });
 // see the body before lockContextMiddleware strips the password, and both
 // run before the idempotency check and validation (bills.routes.ts order).
 const closingPasswordDoc = z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed');
-const closedPeriodNote = 'An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): '
+const closedPeriodNote = `${INVENTORY_ROUTE_NOTE} ` + 'An invoice dated on or before the closing date (for an edit, the old or the new date) needs closingPassword (or a staff overrideConfirmed): '
   + '423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (invoice-edit-v1).';
 const bodyDoc = createInvoiceSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });
 const voidBodyDoc = voidTransactionSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() });
@@ -99,7 +99,7 @@ invoicesRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempote
   replay: async (req, entity) => ({ invoice: await invoiceService.getInvoice(req.tenantId, entity!.id, req.companyId) }),
 }), validate(createInvoiceSchema), describe({
   summary: 'Create an invoice',
-  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company\'s invoice counter '
+  description: 'Response 201 `{invoice, warnings}` (the invoice as GET /invoices/:id returns it). No txnNumber: the next free number from the company\'s invoice counter '
     + '(numbers a live invoice already holds are skipped; a refused post takes no number). A typed txnNumber already used by '
     + 'an invoice of the company is 409 DOCUMENT_NUMBER_IN_USE (details {txnNumber, transactionId}), or posts with it listed in '
     + '`warnings` when warnOnly is true (document-numbers-v1). An idempotent replay (same Idempotency-Key) returns only '
@@ -147,7 +147,7 @@ const keyedInvoiceById = (successStatus: 200 | 201) => idempotent({
 
 invoicesRouter.put('/:id', closingPasswordLimiter, lockContextMiddleware, keyedInvoiceById(200), validate(createInvoiceSchema), describe({
   summary: 'Edit an invoice',
-  description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE '
+  description: 'Response 200 {invoice, warnings} as committed (its updatedAt is the next expectedUpdatedAt). expectedUpdatedAt (invoice-edit-v1): mismatch 409 STALE '
     + '(details.updatedAt), nothing changes. A void or paid invoice is 400; one of another company 404. Terms: an omitted paymentTerms keeps the invoice\'s; the due date '
     + 'is recomputed when the date or the terms change (unless dueDate is sent), else kept. Omitted poNumber, customerMessage, hideZeroLines, internalNotes, tagIds and '
     + 'printLater keep their values. A finance-charge invoice (finance-charges-v1) keeps its client: a contactId change is 409 '
