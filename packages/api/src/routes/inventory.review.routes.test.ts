@@ -25,6 +25,7 @@ import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { checksRouter } from './checks.routes.js';
 import { inventoryRouter } from './inventory.routes.js';
 import { inventoryReportsRouter } from './inventory-reports.routes.js';
+import { unitSetsRouter } from './unit-sets.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
@@ -43,7 +44,7 @@ beforeEach(async () => {
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
     ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/credit-memos', creditMemosRouter],
     ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter],
-    ['/api/v1/reports', inventoryReportsRouter]]);
+    ['/api/v1/reports', inventoryReportsRouter], ['/api/v1/unit-sets', unitSetsRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -404,5 +405,21 @@ describe('P24 review: inventory reports (E4)', () => {
     expect([status.status, status.json['asOf']]).toEqual([200, today]);
     const valuation = await req('GET', '/reports/inventory-valuation');
     expect([valuation.status, valuation.json['asOf']]).toEqual([200, today]);
+  });
+});
+describe('P24 review: units of measure (E5)', () => {
+  it('S4: a line whose base quantity is 100,000,000 or more is 400 VALIDATION_ERROR, not a numeric overflow 500', async () => {
+    const w = await setup();
+    const made = await req('POST', '/unit-sets', { name: 'Bulk', baseUnitName: 'each', units: [{ name: 'Mega', factor: '1000000' }] });
+    expect(made.status, JSON.stringify(made.json)).toBe(201);
+    const set = made.json['unitSet'] as Body;
+    const mega = (set['units'] as Body[]).find((u) => u['name'] === 'Mega')!['id'];
+    expect((await req('PUT', `/items/${w.part}`, { unitSetId: set['id'] })).status).toBe(200);
+    const line = (quantity: string) => ({ contactId: w.vendor, txnDate: '2026-01-05',
+      lines: [{ accountId: w.asset, amount: '10.00', itemId: w.part, quantity, unitPrice: (10 / Number(quantity)).toFixed(4), unitId: mega }] });
+    const big = await req('POST', '/bills', line('100'));
+    expect([...err(big), big.json['error']?.details?.field], JSON.stringify(big.json)).toEqual([400, 'VALIDATION_ERROR', 'quantity']);
+    const ok = await req('POST', '/bills', line('99.9999'));
+    expect(ok.status, JSON.stringify(ok.json)).toBe(201);
   });
 });

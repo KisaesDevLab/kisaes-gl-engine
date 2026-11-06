@@ -16,6 +16,8 @@ import { Decimal, type Dec } from '../utils/inventory-walk.js';
 
 /** round4 half away from zero (Q-P24v). */
 const round4 = (v: Dec) => v.toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+/** Base quantities stay below 1e8 (numeric(12,4)). */
+const BASE_LIMIT = new Decimal('1e8');
 
 // ─── Lines (ledger core) ─────────────────────────────────────────────
 
@@ -26,6 +28,13 @@ export function toBase(quantity: Dec, factor: Dec, lineIndex?: number): Dec {
     throw AppError.badRequest(
       `${lineIndex === undefined ? 'The quantity' : `Line ${lineIndex + 1}: the quantity`} is too small for this unit: it is 0 in the base unit after rounding to 4 places.`,
       'UNIT_QUANTITY_TOO_SMALL', lineIndex === undefined ? undefined : { lineIndex },
+    );
+  }
+  // journal_lines.base_quantity and the stock ledger are numeric(12,4): at most 99,999,999.9999 base units (P24 review S4).
+  if (base.abs().greaterThanOrEqualTo(BASE_LIMIT)) {
+    throw AppError.badRequest(
+      `${lineIndex === undefined ? 'The quantity' : `Line ${lineIndex + 1}: the quantity`} is too large: it is 100,000,000 or more in the base unit.`,
+      'VALIDATION_ERROR', lineIndex === undefined ? { field: 'quantity' } : { lineIndex, field: 'quantity' },
     );
   }
   return base;
@@ -76,4 +85,4 @@ export const UNIT_LINE_NOTE = 'Units of measure (units-of-measure-v1): an item l
   + 'null or omitted = the base unit). quantity and unitPrice are in that unit and the amount stays round2(quantity x unitPrice); the engine stores '
   + 'baseQuantity = round4(quantity x factor), half away from zero, which stock, costing and reports use. A unit outside the item\'s set is 400 '
   + 'UNIT_NOT_IN_SET; unitId without itemId is 400 VALIDATION_ERROR; a quantity that is 0 in the base unit after rounding is 400 '
-  + 'UNIT_QUANTITY_TOO_SMALL. Lines come back with unitId and baseQuantity.';
+  + 'UNIT_QUANTITY_TOO_SMALL; 100,000,000 or more in the base unit is 400 VALIDATION_ERROR (details.field quantity). Lines come back with unitId and baseQuantity.';

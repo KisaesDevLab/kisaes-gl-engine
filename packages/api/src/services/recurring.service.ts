@@ -308,6 +308,7 @@ export async function postLegacyClone(
         ...(l.itemId ? { itemId: l.itemId } : {}),
         ...(l.itemId && l.quantity ? { quantity: l.quantity } : {}),
         ...(l.itemId && l.unitPrice ? { unitPrice: l.unitPrice } : {}),
+        ...(l.itemId && l.unitId ? { unitId: l.unitId } : {}),
       }));
 
     if (expenseLines.length === 0) {
@@ -389,6 +390,7 @@ export async function postLegacyClone(
       ...(l.itemId ? { itemId: l.itemId } : {}),
       ...(l.itemId && l.quantity ? { quantity: l.quantity } : {}),
       ...(l.itemId && l.unitPrice ? { unitPrice: l.unitPrice } : {}),
+        ...(l.itemId && l.unitId ? { unitId: l.unitId } : {}),
     }));
 
     txn = await ledger.postTransaction(tenantId, {

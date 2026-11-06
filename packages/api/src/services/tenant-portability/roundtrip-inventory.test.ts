@@ -25,6 +25,7 @@ import * as itemsService from '../items.service.js';
 import * as billService from '../bill.service.js';
 import * as invoiceService from '../invoice.service.js';
 import * as salesDocs from '../sales-docs.service.js';
+import * as unitsService from '../units.service.js';
 import { runExport, type ExportResult } from './export.service.js';
 import { runImport } from './import.service.js';
 import { ArchiveReader } from './archive-reader.js';
@@ -39,6 +40,7 @@ const createdUsers: string[] = [];
 let tenantId = '';
 let callerId = '';
 let archive: ExportResult;
+let importedId = '';
 
 async function q<T = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T[]> {
   const r = await db.execute(sql.raw(text.replace(/\$(\d+)/g, (_m, n) => {
@@ -126,6 +128,10 @@ beforeAll(async () => {
   await itemsService.create(tenantId, { name: 'Widget', itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: revenue,
     assetAccountId: asset!.id, cogsAccountId: cogs } as never, undefined, companyId);
   const co = await companyOf(tenantId);
+  // Units of measure (U-161): a unit set on the item, set before its first posting.
+  const set = await unitsService.createUnitSet(tenantId, { name: 'Counts', baseUnitName: 'each', units: [{ name: 'Case', factor: '12' }] } as never,
+    undefined, companyId);
+  await itemsService.update(tenantId, co.itemId, { unitSetId: set.id } as never, undefined, companyId);
   // Golden A's receipts and sales (negative stock and a correction), then a linked return.
   await bill(co, '2026-01-02', '10', '3.3333', '33.33', 'B1');
   await bill(co, '2026-01-05', '5', '4.10', '20.50', 'B2');
@@ -134,6 +140,10 @@ beforeAll(async () => {
   await invoiceService.createInvoice(tenantId, { contactId: customer!.id, txnDate: '2026-01-12', txnNumber: `I2-${stamp}`,
     lines: [{ itemId: co.itemId, quantity: '14', unitPrice: '10.00', isTaxable: false }] } as never, undefined, companyId);
   await bill(co, '2026-01-15', '10', '3.80', '38.00', 'B3');
+  // Units of measure (U-161): a bill line in cases (2 cases = 24 base units).
+  await billService.createBill(tenantId, { contactId: co.vendor, txnDate: '2026-01-15', vendorInvoiceNumber: 'B4',
+    lines: [{ accountId: co.asset, amount: '72.00', itemId: co.itemId, quantity: '2', unitPrice: '36.00', unitId: set.units.find((u) => u.name === 'Case')!.id }],
+  } as never, undefined, companyId);
   await salesDocs.createCreditMemoDocument(tenantId, { contactId: customer!.id, txnDate: '2026-01-16', txnNumber: `CM-${stamp}`,
     lines: [{ itemId: co.itemId, quantity: '2', unitPrice: '10.00', isTaxable: false, returnOf: { transactionId: sale.id } }] } as never, undefined, companyId);
   await invariantsHold(tenantId);
@@ -168,10 +178,11 @@ describe('the stock ledger in tenant archives (U-157, U-158)', () => {
     const reader = await ArchiveReader.open(archive.path!, PASS);
     await reader.verifyAll();
     const before = await stockShape(tenantId);
-    expect(before.rows.length).toBe(6);
+    expect(before.rows.length).toBe(7);
     expect(before.rows.find((r) => r['kind'] === 'customer_return')).toMatchObject({ value_mode: 'linked', returns: `I1-${stamp}` });
     const imported = await runImport({ filePath: archive.path!, passphrase: PASS, callerUserId: callerId });
     createdTenants.push(imported.tenantId);
+    importedId = imported.tenantId;
     expect(imported.verification).toMatchObject({ contentEqual: true, trialBalanceEqual: true });
     expect(await stockShape(imported.tenantId)).toEqual(before);
     await invariantsHold(imported.tenantId);
@@ -186,4 +197,23 @@ describe('the stock ledger in tenant archives (U-157, U-158)', () => {
     await invariantsHold(imported.tenantId);
     expect(await stockShape(imported.tenantId)).toEqual(await stockShape(tenantId));
   }, 600_000);
+
+  it('unit sets, the set of the item and line units survive with remapped ids (U-161)', async () => {
+    expect(importedId).not.toBe('');
+    const units = async (tid: string) => ({
+      sets: await q(`SELECT s.name, s.base_unit_name AS base, u.name AS unit, u.factor::text AS factor FROM unit_sets s
+        JOIN unit_set_units u ON u.unit_set_id = s.id WHERE s.tenant_id = $1 ORDER BY 1, 3`, [tid]),
+      items: await q(`SELECT i.name, s.name AS set FROM items i JOIN unit_sets s ON s.id = i.unit_set_id WHERE i.tenant_id = $1 ORDER BY 1`, [tid]),
+      lines: await q(`SELECT t.vendor_invoice_number AS doc, u.name AS unit, jl.quantity::text AS q, jl.base_quantity::text AS bq
+        FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id JOIN unit_set_units u ON u.id = jl.unit_id
+        WHERE jl.tenant_id = $1 ORDER BY 1`, [tid]),
+    });
+    const original = await units(tenantId);
+    expect(original.lines).toEqual([{ doc: 'B4', unit: 'Case', q: '2.0000', bq: '24.0000' }]);
+    expect(original.items).toEqual([{ name: 'Widget', set: 'Counts' }]);
+    expect(await units(importedId)).toEqual(original);
+    const leaked = await q<{ n: number }>(`SELECT count(*)::int AS n FROM journal_lines jl WHERE jl.tenant_id = $1
+      AND jl.unit_id IN (SELECT u.id FROM unit_set_units u JOIN unit_sets s ON s.id = u.unit_set_id WHERE s.tenant_id = $2)`, [importedId, tenantId]);
+    expect(leaked[0]!.n).toBe(0);
+  });
 });
