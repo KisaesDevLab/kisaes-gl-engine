@@ -3,12 +3,21 @@
 -- Free for small businesses; see LICENSE for terms.
 --
 -- Rollback for 0259 (inventory costing, U-157). The code that reads these
--- must be rolled back with it. The posted documents and every journal line
--- stay, derived COGS lines included, so balances and reports are unchanged;
--- LOST: the stock ledger (quantities on hand, average costs and the link
--- from lines to movements). Derived lines keep their
--- line_role, which the older code does not hide from document readers.
+-- must be rolled back with it. Refused while the stock ledger has any row
+-- (live or voided): dropping it would lose the quantities on hand and
+-- average costs, and the older code would show the derived COGS lines as
+-- form lines and let edits post over them (the 0258 rollback guard counts
+-- on this one). Restore a backup taken before inventory was used instead.
+-- Otherwise (no inventory was ever posted) nothing is lost.
 
+DO $$
+BEGIN
+  IF to_regclass('public.inventory_movements') IS NOT NULL
+     AND EXISTS (SELECT 1 FROM inventory_movements LIMIT 1) THEN
+    RAISE EXCEPTION 'Rollback of 0259 stopped: inventory has been posted (inventory_movements has rows). Restore a backup taken before inventory was used instead.';
+  END IF;
+END $$;
+--> statement-breakpoint
 DROP INDEX IF EXISTS idx_jl_inventory_movement;
 --> statement-breakpoint
 ALTER TABLE journal_lines DROP COLUMN IF EXISTS inventory_movement_id;

@@ -20,6 +20,7 @@ import {
   isDelegatedAdmin,
 } from '../utils/admin-scope.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
 import { z } from 'zod';
 import * as adminService from '../services/admin.service.js';
 import { pickEnum } from '../utils/list-query.js';
@@ -218,7 +219,10 @@ delegable.get(tenantOps, '/tenants/:id/system-accounts', async (req, res) => {
   res.json(await adminService.getSystemAccountsInfo(req.params['id']!));
 });
 
-delegable.put(tenantOps, '/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), async (req, res) => {
+delegable.put(tenantOps, '/tenants/:id/system-accounts/:tag', validate(adminAssignSystemAccountSchema), describe({
+  summary: 'Assign a system account role',
+  description: 'balanceAction move moves the lines of the old account onto the new one; onto an inventory asset account (inventory-costing-v1) that is 409 INVENTORY_DOCUMENT.',
+}), async (req, res) => {
   assertTenantInScope(req, req.params['id']!);
   await guardAdminTenantRoute(req.params['id']);
   res.json(await adminService.assignSystemAccount(

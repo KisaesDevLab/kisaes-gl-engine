@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
+import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, decimal, boolean, date, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
@@ -37,4 +38,5 @@ export const inventoryMovements = pgTable('inventory_movements', {
   txnItemIdx: uniqueIndex('idx_inventory_movements_txn_item').on(table.transactionId, table.itemId, table.sourceTransactionId), // NULLS NOT DISTINCT in 0259
   positionIdx: index('idx_inventory_movements_position').on(table.companyId, table.itemId, table.movementDate, table.txnCreatedAt, table.transactionId),
   tenantIdx: index('idx_inventory_movements_tenant').on(table.tenantId),
+  sourceIdx: index('idx_inventory_movements_source').on(table.sourceTransactionId).where(sql`source_transaction_id IS NOT NULL`),
 }));

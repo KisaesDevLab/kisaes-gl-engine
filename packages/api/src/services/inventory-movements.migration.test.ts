@@ -3,8 +3,9 @@
 // Free for small businesses; see LICENSE for terms.
 //
 // U-157: migration 0259 adds inventory_movements and
-// journal_lines.inventory_movement_id. Additive; the rollback drops them and
-// the forward migration is idempotent. Every rollback runs inside a database
+// journal_lines.inventory_movement_id. Additive; the rollback drops them
+// (refused while the stock ledger has a row) and the forward migration is
+// idempotent. Every rollback runs inside a database
 // transaction that is rolled back, so the rest of the suite never sees the
 // old schema.
 
@@ -71,9 +72,27 @@ describe('migration 0259 inventory movements', () => {
     });
   });
 
+  it('has the partial index on the linked sale', async () => {
+    const r = await db.execute(sql`SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_inventory_movements_source'`);
+    expect(String((r.rows[0] as { indexdef: string }).indexdef)).toMatch(/\(source_transaction_id\) WHERE \(source_transaction_id IS NOT NULL\)/);
+  });
+
+  it('rollback is refused while the stock ledger has a row, live or voided; nothing is dropped', async () => {
+    await inRolledBackTx(async (tx) => {
+      await tx.execute(sql`DELETE FROM inventory_movements`);
+      await tx.execute(row(crypto.randomUUID(), crypto.randomUUID(), null));
+      await tx.execute(sql`UPDATE inventory_movements SET voided = true`);
+      await tx.execute(sql`SAVEPOINT s1`);
+      await expect(run(tx, ROLLBACK)).rejects.toThrow(/Rollback of 0259 stopped/);
+      await tx.execute(sql`ROLLBACK TO SAVEPOINT s1`);
+      expect(await shape(tx)).toEqual({ table: true, column: true });
+    });
+  });
+
   it('rollback drops the table and the column; forward again (twice) restores them', async () => {
     await inRolledBackTx(async (tx) => {
       expect(await shape(tx)).toEqual({ table: true, column: true });
+      await tx.execute(sql`DELETE FROM inventory_movements`);
       await run(tx, ROLLBACK);
       expect(await shape(tx)).toEqual({ table: false, column: false });
       await run(tx, FORWARD);

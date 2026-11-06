@@ -17,6 +17,7 @@ import {
 import { authenticate } from '../middleware/auth.js';
 import { requireResource, requirePermission } from '../middleware/permission.js';
 import { validate } from '../middleware/validate.js';
+import { describe } from '../middleware/describe.js';
 import * as service from '../services/tenant-report-settings.service.js';
 import * as detailTypesService from '../services/detail-types.service.js';
 import * as adminService from '../services/admin.service.js';
@@ -122,6 +123,10 @@ tenantSettingsRouter.put(
   '/system-accounts/:tag',
   requirePermission('company_settings', 'update'),
   validate(assignTenantSystemAccountSchema),
+  describe({
+    summary: 'Assign a system account role',
+    description: 'balanceAction move moves the lines of the old account onto the new one; onto an inventory asset account (inventory-costing-v1) that is 409 INVENTORY_DOCUMENT.',
+  }),
   async (req, res) => {
     const tag = req.params['tag']!;
     // A tenant admin may only touch roles the catalog opens up. Anything else
