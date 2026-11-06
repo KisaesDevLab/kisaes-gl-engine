@@ -157,7 +157,11 @@ export const IDEMPOTENCY_INVENTORY_V1_ROUTES = [
   'post /api/v1/inventory/counts',
 ].sort();
 
+/** Keyed by units-of-measure-v1, with idempotency-v1's contract (U-161): create a unit set. */
+export const IDEMPOTENCY_UNIT_SETS_V1_ROUTES = ['post /api/v1/unit-sets'];
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_UNIT_SETS_V1_ROUTES,
   ...IDEMPOTENCY_INVENTORY_V1_ROUTES,
   ...IDEMPOTENCY_SALES_TAX_V1_ROUTES, ...IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES, ...IDEMPOTENCY_RECOVERY_V1_ROUTES,
   ...IDEMPOTENCY_V1_ROUTES, ...IDEMPOTENCY_AP_V1_ROUTES, ...IDEMPOTENCY_DOCS_V1_ROUTES, ...IDEMPOTENCY_DOCS_ATTACH_V1_ROUTES,
