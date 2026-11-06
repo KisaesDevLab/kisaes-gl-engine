@@ -85,3 +85,36 @@ export function exactSum(values: ReadonlyArray<DecimalValue | string>): DecimalV
 export function sameAmount(a: string, b: string): boolean {
   return new Decimal(a).equals(new Decimal(b));
 }
+
+/**
+ * The item fields of a check or card-charge line (U-158, the bill rules of
+ * U-85): unitPrice without quantity is 400 LINE_QTY_RATE_INCOMPLETE; with
+ * both, the amount must equal round2(quantity x unitPrice) (400
+ * LINE_AMOUNT_MISMATCH, details.lineIndex and expected). Absent fields stay
+ * absent, so a line without an item posts exactly as before.
+ */
+export function itemLineDetails(
+  l: { itemId?: string | null; quantity?: string | null; unitPrice?: string | null },
+  amount: DecimalValue | string, i: number,
+): { itemId?: string; quantity?: string; unitPrice?: string } {
+  const field = `lines[${i}]`;
+  const hasQty = l.quantity !== undefined && l.quantity !== null;
+  const hasPrice = l.unitPrice !== undefined && l.unitPrice !== null;
+  if (hasPrice && !hasQty) {
+    throw AppError.badRequest(`Line ${i + 1} has a cost (unitPrice) but no quantity`, 'LINE_QTY_RATE_INCOMPLETE', { lineIndex: i });
+  }
+  const out: { itemId?: string; quantity?: string; unitPrice?: string } = {};
+  if (l.itemId) out.itemId = l.itemId;
+  if (hasQty) {
+    out.quantity = parseQuantity(l.quantity, `${field}.quantity`).toFixed();
+    if (hasPrice) {
+      out.unitPrice = parseUnitPrice(l.unitPrice, `${field}.unitPrice`).toFixed();
+      const expected = lineAmountFromQuantity(out.quantity, out.unitPrice, field);
+      if (!new Decimal(expected).equals(new Decimal(amount))) {
+        throw AppError.badRequest(`Line ${i + 1}: amount ${new Decimal(amount).toFixed(2)} is not quantity x cost (${expected})`,
+          'LINE_AMOUNT_MISMATCH', { lineIndex: i, expected });
+      }
+    }
+  }
+  return out;
+}

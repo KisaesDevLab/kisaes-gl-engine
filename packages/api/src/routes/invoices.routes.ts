@@ -26,10 +26,13 @@ import * as emailService from '../services/email.service.js';
 import * as invoiceEmail from '../services/invoice-email.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
-import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
+import { INVENTORY_PREVIEW_NOTE, INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 export const invoicesRouter = Router();
 invoicesRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+invoicesRouter.use(inventoryWarningsContext);
 invoicesRouter.use(companyContext);
 invoicesRouter.use(requireResource('invoices'));
 
@@ -115,7 +118,7 @@ invoicesRouter.post('/', closingPasswordLimiter, lockContextMiddleware, idempote
 // no audit row, no Idempotency-Key (U-129).
 invoicesRouter.post('/preview', validate(previewInvoiceSchema), describe({
   summary: 'Preview an invoice\'s figures',
-  description: 'invoice-pricing-v1: computes the invoice the body would post (POST /invoices; with invoiceId, PUT /invoices/:invoiceId) with the same code, '
+  description: INVENTORY_PREVIEW_NOTE + ' invoice-pricing-v1: computes the invoice the body would post (POST /invoices; with invoiceId, PUT /invoices/:invoiceId) with the same code, '
     + 'and writes nothing. Response 200 {lines: [{itemId, itemType, quantity, unitPrice, unitPriceSource, discountPercent, amount, isTaxable, taxRate, taxAmount}], '
     + 'subtotal, taxableBase, taxRate (the company default), taxTotal, total, taxGroups [{rate, base, tax}], paymentTerms, dueDate, '
     + 'priceLevel {id, name, percent} | null, contactBalanceBefore, contactBalanceAfter}: amounts are 2-place strings; contactBalanceAfter is the client\'s open '

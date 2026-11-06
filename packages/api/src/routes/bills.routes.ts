@@ -22,9 +22,12 @@ import * as attachmentService from '../services/attachment.service.js';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 export const billsRouter = Router();
 billsRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+billsRouter.use(inventoryWarningsContext);
 billsRouter.use(companyContext);
 billsRouter.use(requireResource('bills'));
 

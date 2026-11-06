@@ -14,12 +14,15 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, companies, contacts, inventoryMovements, journalLines } from '../db/schema/index.js';
+import { accounts, companies, contacts, inventoryMovements, items, journalLines, reconciliationLines, reconciliations, transactions } from '../db/schema/index.js';
 import { itemsRouter } from './items.routes.js';
 import { companyRouter } from './company.routes.js';
 import { billsRouter } from './bills.routes.js';
 import { invoicesRouter } from './invoices.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
+import { creditMemosRouter } from './credit-memos.routes.js';
+import { salesReceiptsRouter } from './sales-receipts.routes.js';
+import { checksRouter } from './checks.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
@@ -29,9 +32,15 @@ const h = new Harness();
 let c: Co;
 
 beforeEach(async () => {
-  h.extraCleanup = [async (tid) => { await db.delete(inventoryMovements).where(eq(inventoryMovements.tenantId, tid)); }];
+  h.extraCleanup = [async (tid) => {
+    await db.delete(inventoryMovements).where(eq(inventoryMovements.tenantId, tid));
+    const recs = await db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tid));
+    for (const r of recs) await db.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, r.id));
+    await db.delete(reconciliations).where(eq(reconciliations.tenantId, tid));
+  }];
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
-    ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter]]);
+    ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/credit-memos', creditMemosRouter],
+    ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -237,4 +246,107 @@ describe('P24 review: inventory-costing-v1 (E2a)', () => {
   it.runIf(process.env['INVENTORY_PERF'] === '1')('S9 performance budget: 20 parts x 5,000 later rows each post in under 3 s', async () => {
     expect(await backdatedOver(5000)).toBeLessThan(3000);
   }, 300_000);
+});
+
+describe('P24 review: returns, checks, cash sales and copies (E2b)', () => {
+  const memoBody = (itemId: string, date: string, quantity: string, returnOf?: string) => ({ contactId: c.customer, txnDate: date,
+    lines: [{ itemId, quantity, unitPrice: '10.00', isTaxable: false, ...(returnOf ? { returnOf: { transactionId: returnOf } } : {}) }] });
+
+  it('S2: a credit memo entered before its sale on the same date can not link to it (400 RETURN_BEFORE_SALE, not 500); one entered after can', async () => {
+    const w = await setup();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '10', amount: '30.00' }]);
+    const early = await req('POST', '/credit-memos', memoBody(w.part, '2026-01-08', '1'));
+    expect(early.status, JSON.stringify(early.json)).toBe(201);
+    const earlyId = String(early.json['creditMemo']?.id ?? early.json['id']);
+    const sale = await invoice(w.part, '2026-01-08', '3');
+    const relink = await req('PUT', `/credit-memos/${earlyId}`, memoBody(w.part, '2026-01-08', '1', sale));
+    expect(err(relink), JSON.stringify(relink.json)).toEqual([400, 'RETURN_BEFORE_SALE']);
+    const late = await req('POST', '/credit-memos', memoBody(w.part, '2026-01-08', '1', sale));
+    expect(late.status, JSON.stringify(late.json)).toBe(201);
+    // Dated after the sale's day the early memo may link.
+    expect((await req('PUT', `/credit-memos/${earlyId}`, memoBody(w.part, '2026-01-09', '1', sale))).status).toBe(200);
+  });
+
+  it('S3: a recurring copy of a bill, a check and a sales receipt with a part moves stock through the costing core', async () => {
+    const w = await setup();
+    const { postLegacyClone } = await import('../services/recurring.service.js');
+    const b = await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '4', amount: '12.00' }]);
+    const chk = await req('POST', '/checks', { bankAccountId: c.roles['checking'], contactId: w.vendor, payeeNameOnCheck: 'Cedar Supply', txnDate: '2026-01-06',
+      amount: '6.00', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.part, quantity: '2', unitPrice: '3.00' }] });
+    expect(chk.status, JSON.stringify(chk.json)).toBe(201);
+    const sr = await req('POST', '/sales-receipts', { contactId: c.customer, txnDate: '2026-01-07', depositToAccountId: c.roles['checking'],
+      lines: [{ itemId: w.part, quantity: '1', unitPrice: '10.00', isTaxable: false }] });
+    expect(sr.status, JSON.stringify(sr.json)).toBe(201);
+    const ids = [b, String(chk.json['check']?.id ?? chk.json['id']), String(sr.json['salesReceipt']?.id ?? sr.json['id'])];
+    for (const id of ids) {
+      const copy = await postLegacyClone(c.tenantId, { id: crypto.randomUUID(), templateTransactionId: id, nextOccurrence: '2026-02-01' }) as { id: string };
+      const [orig] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, id));
+      const [mv] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, copy.id));
+      expect(mv, id).toBeTruthy();
+      expect([mv!.kind, mv!.quantity]).toEqual([orig!.kind, orig!.quantity]);
+    }
+  });
+
+  it('editing a document with parts that is cleared in a completed bank reconciliation is 409 INVENTORY_DOCUMENT', async () => {
+    const w = await setup();
+    const body = { bankAccountId: c.roles['checking'], contactId: w.vendor, payeeNameOnCheck: 'Cedar Supply', txnDate: '2026-01-06',
+      amount: '6.00', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.part, quantity: '2', unitPrice: '3.00' }] };
+    const chk = await req('POST', '/checks', body);
+    expect(chk.status, JSON.stringify(chk.json)).toBe(201);
+    const id = String(chk.json['check']?.id ?? chk.json['id']);
+    const [bankLine] = await db.select().from(journalLines).where(and(eq(journalLines.transactionId, id), eq(journalLines.accountId, c.roles['checking']!)));
+    const [rec] = await db.insert(reconciliations).values({ tenantId: c.tenantId, companyId: c.companyId, accountId: c.roles['checking']!,
+      statementDate: '2026-01-31', statementEndingBalance: '-6', beginningBalance: '0', status: 'complete', completedAt: new Date() }).returning();
+    await db.insert(reconciliationLines).values({ reconciliationId: rec!.id, journalLineId: bankLine!.id, isCleared: true });
+    const put = await req('PUT', `/checks/${id}`, { ...body, memo: 'changed', lines: [{ ...body.lines[0]!, quantity: '3', unitPrice: '2.00' }] });
+    expect(err(put), JSON.stringify(put.json)).toEqual([409, 'INVENTORY_DOCUMENT']);
+  });
+
+  it('S10: after 409 RETRY a resend under the same Idempotency-Key posts the bill once', async () => {
+    const w = await setup();
+    const body = { contactId: w.vendor, txnDate: '2026-01-05', lines: [{ accountId: w.asset, amount: '6.00', itemId: w.part, quantity: '2', unitPrice: '3.00' }] };
+    const k = key();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => { locked = r; });
+    const hold = db.transaction(async (tx) => {
+      await tx.select().from(items).where(eq(items.id, w.part)).for('update');
+      locked();
+      await held;
+    });
+    await isLocked;
+    const first = await h.request('POST', '/api/v1/bills', c.token, body, { 'Idempotency-Key': k });
+    release();
+    await hold;
+    expect(err(first), JSON.stringify(first.json)).toEqual([409, 'RETRY']);
+    const second = await h.request('POST', '/api/v1/bills', c.token, body, { 'Idempotency-Key': k });
+    expect(second.status, JSON.stringify(second.json)).toBe(201);
+    const third = await h.request('POST', '/api/v1/bills', c.token, body, { 'Idempotency-Key': k });
+    expect(third.status).toBe(201);
+    const bills = await db.select().from(transactions).where(and(eq(transactions.tenantId, c.tenantId), eq(transactions.txnType, 'bill')));
+    expect(bills.length).toBe(1);
+  }, 60_000);
+
+  it('sales tax and A/R lines of an invoice stay byte-identical when a backdated bill re-costs it', async () => {
+    const w = await setup();
+    await db.update(companies).set({ defaultSalesTaxRate: '0.0825' }).where(eq(companies.id, c.companyId));
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '10', amount: '30.00' }]);
+    const r = await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-08', lines: [{ itemId: w.part, quantity: '3', unitPrice: '10.00', isTaxable: true }] });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const inv = String(r.json['invoice']?.id ?? r.json['id']);
+    const snap = async () => ({
+      lines: (await db.select().from(journalLines).where(eq(journalLines.transactionId, inv)))
+        .filter((l) => !['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'].includes(l.lineRole ?? ''))
+        .map((l) => JSON.stringify(l)).sort(),
+      txn: await db.execute(sql`SELECT total::text, tax_amount::text, balance_due::text, updated_at::text FROM transactions WHERE id = ${inv}`).then((x) => x.rows),
+      tax: await db.execute(sql`SELECT * FROM transaction_tax_lines WHERE transaction_id = ${inv} ORDER BY id`).then((x) => x.rows.map((row) => JSON.stringify(row))).catch(() => []),
+    });
+    const before = await snap();
+    const cogsBefore = (await db.select().from(journalLines).where(and(eq(journalLines.transactionId, inv), eq(journalLines.lineRole, 'cogs'))))[0]!.debit;
+    await bill(w, '2026-01-02', [{ itemId: w.part, quantity: '10', amount: '50.00' }]);
+    const cogsAfter = (await db.select().from(journalLines).where(and(eq(journalLines.transactionId, inv), eq(journalLines.lineRole, 'cogs'))))[0]!.debit;
+    expect(cogsAfter).not.toBe(cogsBefore);
+    expect(await snap()).toEqual(before);
+  });
 });

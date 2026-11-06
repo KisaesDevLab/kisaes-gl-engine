@@ -15,6 +15,7 @@ import type { DocumentSendMethod } from '../db/schema/document-send-events.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
+import * as costing from './inventory-costing.service.js';
 import * as salesTaxSvc from './sales-tax.service.js';
 import { addCalendarDays, isCalendarDate } from '../utils/calendar-date.js';
 import * as documentNumbers from './document-number.service.js';
@@ -554,8 +555,11 @@ export async function previewInvoice(
     taxGroups: computed.taxGroups,
     salesTax: await previewSalesTax(db, tenantId, scope, tax, computed),
     problems: tax.problems,
-    // U-151: exemption certificate warnings for a non-taxable client.
-    warnings: await exemptionWarnings(db, tenantId, scope ?? customer.companyId ?? null, customer, input.txnDate),
+    // U-151: exemption certificate warnings for a non-taxable client; U-158: NEGATIVE_STOCK the post would warn.
+    warnings: [...await exemptionWarnings(db, tenantId, scope ?? customer.companyId ?? null, customer, input.txnDate),
+      ...await costing.previewInventoryWarnings(db, tenantId, scope ?? existing?.companyId, {
+        txnType: 'invoice', txnDate: input.txnDate, editingId: existing?.id ?? null, lines: input.lines,
+      })],
     paymentTerms: terms.paymentTerms ?? null,
     dueDate: terms.dueDate ?? null,
     priceLevel: priceLevel ? { id: priceLevel.id, name: priceLevel.name, percent: priceLevel.percent } : null,

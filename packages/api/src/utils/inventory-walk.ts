@@ -49,6 +49,8 @@ export const ZERO_STATE: WalkState = { q: ZERO, v: ZERO, l: ZERO };
 
 export interface WalkRow {
   id: string;
+  /** The row's document (a sale's id is what linked returns name). */
+  transactionId?: string;
   date: string;
   kind: MovementKind;
   /** Signed quantity (in > 0, out < 0; 0 for value-only adjustments). */
@@ -58,9 +60,13 @@ export interface WalkRow {
    * adjustments with a value) in `given`, signed as its effect on the asset.
    * derived: valued at cost from the state (sales, customer returns,
    * quantity-only adjustments).
+   * linked: a customer return linked to its sale (Q-P24e), valued from the
+   * sale's relief by cumulative difference (see walk()).
    */
-  valueMode: 'given' | 'derived';
+  valueMode: 'given' | 'derived' | 'linked';
   given: Dec | null;
+  /** The linked sale (valueMode linked). */
+  sourceId?: string | null;
   /** The item's purchase cost when the line was posted or last edited (Q-P24d). */
   fallbackCost: Dec | null;
 }
@@ -82,6 +88,9 @@ export interface RowResult {
 }
 
 export interface NegativeStock { rowId: string; date: string; onHand: Dec }
+
+/** A sale as its linked returns see it: relief R (positive), S units sold, N units already returned. */
+export interface SaleLink { r: Dec; s: Dec; n: Dec }
 
 export interface WalkResult {
   rows: RowResult[];
@@ -137,19 +146,45 @@ export function stepRow(s: WalkState, row: WalkRow): { fig: RowFigures; after: W
   return { fig: { value, correction, residual }, after: { q, v, l } };
 }
 
-/** Walks the rows (in position order, voided rows left out) from `seed`. */
-export function walk(seed: WalkState, rows: readonly WalkRow[]): WalkResult {
+/**
+ * Walks the rows (in position order, voided rows left out) from `seed`.
+ * `links`: for every sale a linked row names that is not itself in `rows`
+ * (it sits before the walk start), its stored relief R, quantity S and the
+ * quantity N its linked returns before the start already took back. A sale
+ * in `rows` registers itself (its returns always come after it). A linked
+ * return of q units: value = round2(R x (N + q) / S) - round2(R x N / S),
+ * so returning every unit gives back exactly R (I7).
+ */
+export function walk(seed: WalkState, rows: readonly WalkRow[], links: ReadonlyMap<string, SaleLink> = new Map()): WalkResult {
   let s: WalkState = { ...seed };
   const out: RowResult[] = [];
   let negative: NegativeStock | null = null;
+  const sales = new Map<string, SaleLink>([...links].map(([k, v]) => [k, { ...v }]));
   for (const row of rows) {
     const before = s;
-    const { fig, after } = stepRow(s, row);
+    let input = row;
+    if (row.valueMode === 'linked') {
+      const sale = row.sourceId ? sales.get(row.sourceId) : undefined;
+      if (!sale) throw new Error('inventory walk: a linked return without its sale');
+      input = { ...row, valueMode: 'given', given: linkedValue(sale, row.quantity) };
+      sale.n = sale.n.plus(row.quantity);
+    }
+    const { fig, after } = stepRow(s, input);
     s = after;
+    if (row.kind === 'sale' && row.transactionId && row.quantity.lessThan(0)) {
+      sales.set(row.transactionId, { r: fig.value.negated(), s: row.quantity.negated(), n: ZERO });
+    }
     if (!negative && before.q.greaterThanOrEqualTo(0) && s.q.lessThan(0)) negative = { rowId: row.id, date: row.date, onHand: s.q };
     out.push({ id: row.id, fig, after: { ...s } });
   }
   return { rows: out, negative, final: s };
+}
+
+/** The value of q more units returned against `sale` (cumulative difference, Q-P24e). */
+export function linkedValue(sale: SaleLink, q: Dec): Dec {
+  if (!sale.s.greaterThan(0)) return ZERO;
+  const upTo = (n: Dec) => round2(sale.r.times(n).dividedBy(sale.s));
+  return upTo(sale.n.plus(q)).minus(upTo(sale.n));
 }
 
 /** Average cost as GET /items shows it: V/Q to 6 places while Q > 0, else the last positive average. */

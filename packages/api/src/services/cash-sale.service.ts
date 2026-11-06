@@ -15,6 +15,7 @@ import * as formsPrint from './forms-print.service.js';
 import { claimIdempotency } from './idempotency.service.js';
 import { getDefaultTaxRate } from './invoice.service.js';
 import { computeSalesDocument } from '../utils/sales-compute.js';
+import { assertItemsInScope } from './bill.service.js';
 
 async function getSystemAccount(tenantId: string, systemTag: string): Promise<string> {
   const account = await db.query.accounts.findFirst({
@@ -49,6 +50,8 @@ async function buildCashSalePayload(tenantId: string, input: CreateCashSaleInput
     return {
       accountId: line.accountId,
       ...side(c.amount, 'credit'),
+      // An inventory item sold (U-158): the core posts its cost of goods.
+      ...(line.itemId ? { itemId: line.itemId } : {}),
       description: line.description,
       quantity: line.quantity,
       unitPrice: line.unitPrice,
@@ -98,6 +101,7 @@ export async function createCashSaleWithWarnings(
   // Number and posting in one transaction: a refused post takes no number.
   return await db.transaction(async (tx) => {
     await claimIdempotency(tx);
+    await assertItemsInScope(tx, tenantId, companyId, input.lines.map((l) => l.itemId ?? null));
     const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'cash_sale', input.txnNumber, {
       companyId, warnOnly: input.warnOnly === true, executor: tx,
     });
@@ -121,6 +125,7 @@ export async function updateCashSaleWithWarnings(
   // The ledger edit and the print-later mark commit together (U-113).
   return await db.transaction(async (tx) => {
     await claimIdempotency(tx);
+    await assertItemsInScope(tx, tenantId, companyId, input.lines.map((l) => l.itemId ?? null));
     let warnings: documentNumbers.DocumentNumberWarning[] = [];
     if (newNumber) {
       warnings = await documentNumbers.checkDuplicate(tenantId, 'cash_sale', newNumber, {

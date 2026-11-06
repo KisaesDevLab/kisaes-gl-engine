@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { z } from 'zod';
-import { invoiceLineSchema, salesTaxDocFields } from './transactions.js';
+import { creditMemoLineSchema, invoiceLineSchema, salesTaxDocFields } from './transactions.js';
 import { wholeCentsAmount } from './payments.js';
 import { PAYMENT_METHODS } from '../constants/payment-methods.js';
 
@@ -33,6 +33,8 @@ const salesDocHeader = {
 /** POST /credit-memos, PUT /credit-memos/:id (U-138). */
 export const creditMemoSchema = z.object({
   ...salesDocHeader,
+  // Lines may name the sale they return (returnOf, U-158).
+  lines: z.array(creditMemoLineSchema).min(1).max(MAX_LINES),
   contactId: z.string().uuid(),
   // Q-P22b: applied in the same database transaction (applied_date NULL).
   applications: z.array(z.object({

@@ -37,6 +37,7 @@ import * as salesTaxSvc from './sales-tax.service.js';
 import { getBalances } from './contacts.service.js';
 import { liveDepositsForSource } from './deposit-links.service.js';
 import { listSendHistory } from './document-send.service.js';
+import * as costing from './inventory-costing.service.js';
 
 /** A form's send history (U-126), as GET /invoices/:id returns it; on both records since U-144 (sales-doc-email-v1). */
 export type SendHistory = Awaited<ReturnType<typeof listSendHistory>>;
@@ -71,6 +72,38 @@ async function systemAccount(executor: DbOrTx, tenantId: string, tag: string): P
   return row?.id ?? null;
 }
 
+/**
+ * A credit memo's journal with each line's returnOf (U-158): the journal is
+ * the head (A/R) line, then one line per form line, then the tax line.
+ */
+function withReturnLinks<L extends object>(journal: L[], lines: ReadonlyArray<{ returnOf?: { transactionId: string } | null }>): L[] {
+  return journal.map((l, j) => {
+    const link = j >= 1 && j <= lines.length ? lines[j - 1]!.returnOf : null;
+    return link ? { ...l, returnOf: link } : l;
+  });
+}
+
+/**
+ * An edit's credit-memo lines that omit returnOf keep the stored link of the
+ * line at the same position with the same item (review L1: an older client
+ * must not unlink a return by omission); null removes it.
+ */
+async function keepReturnLinks(executor: DbOrTx, tenantId: string, id: string, lines: CreditMemoInput['lines']): Promise<CreditMemoInput['lines']> {
+  if (lines.every((l) => l.returnOf !== undefined)) return lines;
+  const res = await executor.execute(sql`
+    SELECT jl.item_id, m.source_transaction_id AS return_of FROM journal_lines jl
+    LEFT JOIN inventory_movements m ON m.id = jl.inventory_movement_id AND m.tenant_id = jl.tenant_id
+    WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id = ${id} AND jl.is_void_reversal = false
+      AND (jl.line_role IS NULL OR jl.line_role NOT IN ('cogs', 'inventory_relief', 'cost_correction', 'cost_residual'))
+    ORDER BY jl.line_order, jl.id`);
+  const stored = (res.rows as Array<{ item_id: string | null; return_of: string | null }>).slice(1);
+  return lines.map((l, i) => {
+    if (l.returnOf !== undefined) return l;
+    const st = stored[i];
+    return st && st.return_of && st.item_id && st.item_id === l.itemId ? { ...l, returnOf: { transactionId: st.return_of } } : l;
+  });
+}
+
 /** Header fields stored after the post (as an invoice stores them). */
 async function writeHeader(tx: Tx, tenantId: string, row: TxnRow, input: CreditMemoInput | SalesReceiptInput, customer: { id: string } | null) {
   await invoiceTemplates.assertInvoiceLayout(tx, tenantId, input.layoutId, row.companyId, row.layoutId);
@@ -91,6 +124,22 @@ export interface SalesDocumentLineRecord {
   amount: string; isTaxable: boolean; taxRate: string; taxAmount: string; tagId: string | null; serviceDate: string | null;
   /** U-147: the line's sales tax code. */
   taxCode: { id: string; code: string; taxable: boolean } | null;
+  /** U-158: on a credit memo line, the sale whose units it returns; null otherwise. */
+  returnOf: { transactionId: string } | null;
+}
+
+/** Derived costing lines of a document (U-157 B3): never in `lines`. */
+export type InventoryLineRecord = { role: string; accountId: string; amount: string; movementId: string | null };
+
+async function inventoryLinesOf(executor: DbOrTx, tenantId: string, id: string): Promise<InventoryLineRecord[]> {
+  const res = await executor.execute(sql`
+    SELECT line_role, account_id, debit::text AS debit, credit::text AS credit, inventory_movement_id
+    FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id = ${id} AND is_void_reversal = false
+      AND line_role IN ('cogs', 'inventory_relief', 'cost_correction', 'cost_residual')
+    ORDER BY line_order, id`);
+  return costing.splitDerived((res.rows as Array<Record<string, string | null>>).map((r) => ({
+    lineRole: r['line_role'], accountId: String(r['account_id']), debit: r['debit'] ?? null, credit: r['credit'] ?? null, inventoryMovementId: r['inventory_movement_id'],
+  }))).inventoryLines;
 }
 
 /** The income lines of a sales document (not its head line or the Sales Tax line), as the form shows them. */
@@ -98,9 +147,11 @@ async function documentLines(executor: DbOrTx, tenantId: string, row: TxnRow, si
   const res = await executor.execute(sql`
     SELECT jl.account_id, jl.item_id, jl.description, jl.quantity::text AS quantity, jl.unit_price::text AS unit_price,
       (jl.credit - jl.debit)::text AS net, jl.is_taxable, jl.tax_rate::text AS tax_rate, jl.tax_amount::text AS tax_amount, jl.tax_code_id,
-      jl.tag_id, to_char(jl.service_date, 'YYYY-MM-DD') AS service_date, jl.line_order, a.system_tag
+      jl.tag_id, to_char(jl.service_date, 'YYYY-MM-DD') AS service_date, jl.line_order, a.system_tag, m.source_transaction_id AS return_of
     FROM journal_lines jl JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
+    LEFT JOIN inventory_movements m ON m.id = jl.inventory_movement_id AND m.tenant_id = jl.tenant_id
     WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id = ${row.id} AND jl.is_void_reversal = false
+      AND (jl.line_role IS NULL OR jl.line_role NOT IN ('cogs', 'inventory_relief', 'cost_correction', 'cost_residual'))
     ORDER BY jl.line_order, jl.id
   `);
   const rows = res.rows as Array<Record<string, unknown>>;
@@ -119,6 +170,7 @@ async function documentLines(executor: DbOrTx, tenantId: string, row: TxnRow, si
     tagId: (r['tag_id'] as string | null) ?? null,
     serviceDate: (r['service_date'] as string | null) ?? null,
     taxCode: r['tax_code_id'] ? codes.get(String(r['tax_code_id'])) ?? null : null,
+    returnOf: r['return_of'] ? { transactionId: String(r['return_of']) } : null,
   }));
 }
 
@@ -135,6 +187,8 @@ export interface CreditMemoRecord {
   sendHistory: SendHistory;
   /** U-147: the memo's sales tax with its members' (negative) tax; null without one. */
   salesTax: Awaited<ReturnType<typeof salesTaxSvc.documentSalesTax>>;
+  /** U-157 B3: the costing walk's lines (returned units back into stock), never in `lines`. */
+  inventoryLines: InventoryLineRecord[];
 }
 
 export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id: string, companyId?: string): Promise<CreditMemoRecord> {
@@ -179,6 +233,7 @@ export async function getCreditMemoRecord(executor: DbOrTx, tenantId: string, id
     remaining: row.status === 'posted' ? m2(Decimal.max(total.minus(used), 0)) : '0.00',
     sendHistory: await listSendHistory(executor, tenantId, id),
     salesTax: await salesTaxSvc.documentSalesTax(executor, tenantId, row),
+    inventoryLines: await inventoryLinesOf(executor, tenantId, id),
   };
 }
 
@@ -191,6 +246,8 @@ export interface SalesReceiptRecord {
   memo: string | null; customerMessage: string | null; hideZeroLines: boolean; layoutId: string | null; printLater: boolean;
   updatedAt: string | null; status: string; deposited: boolean;
   sendHistory: SendHistory;
+  /** U-157 B3: the costing walk's lines (cost of goods sold), never in `lines`. */
+  inventoryLines: InventoryLineRecord[];
 }
 
 async function headAccount(executor: DbOrTx, tenantId: string, id: string): Promise<string | null> {
@@ -219,6 +276,7 @@ export async function getSalesReceiptRecord(executor: DbOrTx, tenantId: string, 
     deposited: (await liveDepositsForSource(executor, tenantId, id)).length > 0,
     sendHistory: await listSendHistory(executor, tenantId, id),
     salesTax: await salesTaxSvc.documentSalesTax(executor, tenantId, row),
+    inventoryLines: await inventoryLinesOf(executor, tenantId, id),
   };
 }
 
@@ -285,6 +343,10 @@ export async function previewCreditMemo(tenantId: string, input: CreditMemoPrevi
     suggestedApplications,
     remainingCredit: Decimal.max(left, 0).toFixed(2),
     problems,
+    // U-158: NEGATIVE_STOCK the post would warn (returns add stock; an edit may take it away).
+    warnings: await costing.previewInventoryWarnings(db, tenantId, companyId ?? existing?.companyId, {
+      txnType: 'credit_memo', txnDate: input.txnDate, editingId: existing?.id ?? null, lines: input.lines,
+    }),
   };
 }
 
@@ -310,7 +372,7 @@ export async function createCreditMemoDocument(tenantId: string, input: CreditMe
       contactId: input.contactId, memo: input.memo,
       subtotal: m4(doc.computed.subtotal), taxAmount: m4(doc.computed.taxTotal), total: m4(doc.computed.total),
       salesTaxId: doc.tax.salesTaxId, salesTaxRates: doc.tax.unit?.members ?? null,
-      lines: await salesDocumentJournal(tx, tenantId, doc, { reverse: true }),
+      lines: withReturnLinks(await salesDocumentJournal(tx, tenantId, doc, { reverse: true }), input.lines),
     } as ledger.PostTransactionInput, userId, companyId, tx);
     const [row] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, posted.id))).for('update').limit(1);
@@ -388,7 +450,7 @@ export async function updateCreditMemoDocument(tenantId: string, id: string, inp
       ...(newNumber ? { txnNumber: newNumber } : {}),
       subtotal: m4(doc.computed.subtotal), taxAmount: m4(doc.computed.taxTotal), total: m4(doc.computed.total),
       salesTaxId: doc.tax.salesTaxId, salesTaxRates: doc.tax.unit?.members ?? null,
-      lines: await salesDocumentJournal(tx, tenantId, doc, { reverse: true }),
+      lines: withReturnLinks(await salesDocumentJournal(tx, tenantId, doc, { reverse: true }), await keepReturnLinks(tx, tenantId, id, input.lines)),
     } as ledger.PostTransactionInput, userId, companyId, tx);
     if (input.printLater !== undefined) await formsPrint.setPrintLater(tx, tenantId, id, input.printLater, companyId);
     const [fresh] = await tx.select().from(transactions).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, id))).limit(1);
@@ -452,9 +514,12 @@ export async function previewSalesReceipt(tenantId: string, input: SalesReceiptP
     contactBalanceBefore: before.toFixed(2),
     contactBalanceAfter: before.toFixed(2),
     problems: [...(dep.problem ? [{ code: dep.problem }] : []), ...doc.tax.problems],
-    // U-151: exemption certificate warnings for a non-taxable client.
-    warnings: input.contactId ? await exemptionWarnings(db, tenantId, companyId ?? null,
-      (await db.select({ id: contacts.id, taxCodeId: contacts.taxCodeId }).from(contacts).where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, input.contactId))).limit(1))[0], input.txnDate) : [],
+    // U-151: exemption certificate warnings for a non-taxable client; U-158: NEGATIVE_STOCK the post would warn.
+    warnings: [...(input.contactId ? await exemptionWarnings(db, tenantId, companyId ?? null,
+      (await db.select({ id: contacts.id, taxCodeId: contacts.taxCodeId }).from(contacts).where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, input.contactId))).limit(1))[0], input.txnDate) : []),
+    ...await costing.previewInventoryWarnings(db, tenantId, companyId, {
+      txnType: 'cash_sale', txnDate: input.txnDate, editingId: input.editingId ?? null, lines: input.lines,
+    })],
   };
 }
 

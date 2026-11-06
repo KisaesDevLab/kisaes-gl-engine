@@ -619,9 +619,12 @@ export async function postTransaction(
   // Exact decimal comparison, no tolerance (U-65).
   const { debits: totalDebits, credits: totalCredits } = assertBalanced(input.lines);
 
-  // A quantity-only inventory adjustment has no amount until the costing
-  // walk values it (U-157): its derived lines carry the value.
-  if (totalDebits.isZero() && totalCredits.isZero() && input.txnType !== 'inventory_adjustment') {
+  // A document with no amount is refused, except one that moves inventory
+  // (U-157, U-158): a quantity-only adjustment or a $0 sale of a part (a
+  // free sample) has no amount until the costing walk values it; its
+  // derived lines carry the cost. Checked once the costing lock is known.
+  const noAmount = totalDebits.isZero() && totalCredits.isZero();
+  if (noAmount && !input.lines.some((l) => l.itemId)) {
     throw AppError.badRequest('Transaction must have non-zero amounts');
   }
 
@@ -639,6 +642,7 @@ export async function postTransaction(
     // here, before the closing-date check, so no password or confirmation
     // opens it (owner decision 2026-11-06). Null when no part is involved.
     const costingLock = await costing.prepareNew(tx, tenantId, companyId ?? null, input.txnType, input.txnDate, input.lines);
+    if (noAmount && !costingLock) throw AppError.badRequest('Transaction must have non-zero amounts');
     // AJEs bypass the closing-date lock by design (TB module D10 /
     // CLAUDE.md TB5): AJE CRUD is firm-only at all times — the tb
     // router is the only path that posts txn_type 'aje', and closing a
