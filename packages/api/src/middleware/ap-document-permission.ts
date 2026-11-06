@@ -14,8 +14,10 @@ import { AppError } from '../utils/errors.js';
 // or bill payment reached through them also needs its own screen's
 // permission, so `transactions` alone can't void a bill. Mount it ahead of
 // idempotent(), so a replay is checked too.
+// An inventory adjustment (U-159) belongs to items the same way (P24 review S1):
+// 	ransactions alone can't void, delete or duplicate one.
 const AP_DOCUMENT_RESOURCE: Readonly<Record<string, ResourceKey>> = {
-  bill: 'bills', vendor_credit: 'vendor_credits', bill_payment: 'pay_bills',
+  bill: 'bills', vendor_credit: 'vendor_credits', bill_payment: 'pay_bills', inventory_adjustment: 'items',
 };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

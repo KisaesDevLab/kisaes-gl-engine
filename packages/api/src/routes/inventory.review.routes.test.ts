@@ -23,6 +23,7 @@ import { transactionsRouter } from './transactions.routes.js';
 import { creditMemosRouter } from './credit-memos.routes.js';
 import { salesReceiptsRouter } from './sales-receipts.routes.js';
 import { checksRouter } from './checks.routes.js';
+import { inventoryRouter } from './inventory.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
@@ -40,7 +41,7 @@ beforeEach(async () => {
   }];
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
     ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/credit-memos', creditMemosRouter],
-    ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter]]);
+    ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -348,5 +349,45 @@ describe('P24 review: returns, checks, cash sales and copies (E2b)', () => {
     const cogsAfter = (await db.select().from(journalLines).where(and(eq(journalLines.transactionId, inv), eq(journalLines.lineRole, 'cogs'))))[0]!.debit;
     expect(cogsAfter).not.toBe(cogsBefore);
     expect(await snap()).toEqual(before);
+  });
+});
+describe('P24 review: adjustments, counts and opening stock (E3)', () => {
+  it('S1: a transactions-only user can not void, delete or duplicate an inventory adjustment through /transactions (403)', async () => {
+    const w = await setup();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '4', amount: '12.00' }]);
+    const [adj] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Shrinkage', accountType: 'expense' }).returning();
+    const { postAdjustment } = await import('../services/inventory-adjustment.service.js');
+    const t = await postAdjustment(c.tenantId, c.companyId, { txnDate: '2026-01-06', adjustmentAccountId: adj!.id, lines: [{ itemId: w.part, quantityChange: '-1' }] } as never, c.userId);
+    const token = await h.staffToken(c, { transactions: 'full' });
+    const as = (method: string, p: string, body?: unknown) => h.request(method, `/api/v1${p}`, token, body, { 'Idempotency-Key': key() });
+    expect((await as('POST', `/transactions/${t.id}/void`, { reason: 'x' })).status).toBe(403);
+    expect((await as('DELETE', `/transactions/${t.id}`)).status).toBe(403);
+    expect((await as('POST', `/transactions/${t.id}/duplicate`)).status).toBe(403);
+    const [still] = await db.select().from(transactions).where(eq(transactions.id, t.id));
+    expect(still!.status).toBe('posted');
+  });
+
+  it('the count sheet defaults to the database\'s today, not the server\'s UTC date', async () => {
+    await setup();
+    const today = String((await db.execute(sql`SELECT CURRENT_DATE::text AS d`)).rows[0]!['d']);
+    const r = await req('GET', '/inventory/count-sheet');
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json['asOf']).toBe(today);
+  });
+
+  it('opening stock posts to the company\'s own Opening Balances account, never another company\'s', async () => {
+    const w = await setup();
+    const other = await h.secondCompany(c);
+    const [foreign] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: other['X-Company-Id']!, name: 'Opening Balances',
+      accountType: 'equity', detailType: 'opening_balance_equity', systemTag: 'opening_balances', isSystem: true } as never).returning();
+    const r = await req('POST', '/items', { name: 'Opened', itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: c.roles['income'],
+      assetAccountId: w.asset, cogsAccountId: w.cogs, opening: { quantity: '5', value: '10.00', asOf: '2026-01-15' } });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const [mv] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.itemId, String(r.json['item'].id)));
+    const lines = await db.select().from(journalLines).where(eq(journalLines.transactionId, mv!.transactionId));
+    const equity = lines.find((l) => l.accountId !== w.asset)!;
+    expect(equity.accountId).not.toBe(foreign!.id);
+    const [acct] = await db.select().from(accounts).where(eq(accounts.id, equity.accountId));
+    expect([acct!.systemTag, acct!.companyId === c.companyId || acct!.companyId === null]).toEqual(['opening_balances', true]);
   });
 });
