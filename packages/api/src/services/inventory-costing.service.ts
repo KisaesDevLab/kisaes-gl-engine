@@ -137,11 +137,15 @@ async function partsOf(tx: DbOrTx, tenantId: string, itemIds: readonly (string |
 async function lineParts(tx: Tx, tenantId: string, itemIds: readonly (string | null | undefined)[]): Promise<Map<string, PartRow>> {
   const ids = [...new Set(itemIds.filter((v): v is string => !!v))].sort();
   if (ids.length === 0) return new Map();
+  // The costing lock_timeout (5 s, 409 RETRY) covers this wait too; a posting without parts gets its old setting back.
+  const prev = String((await tx.execute(sql`SELECT current_setting('lock_timeout') AS p, set_config('lock_timeout', '5s', true) AS n`)).rows[0]!['p']);
   const rows = await tx.select({ id: items.id, itemType: items.itemType, assetAccountId: items.assetAccountId, cogsAccountId: items.cogsAccountId,
     purchaseCost: items.purchaseCost })
     .from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids))).orderBy(items.id).for('key share');
-  return new Map(rows.filter((r) => r.itemType === 'inventory_part')
+  const parts = new Map(rows.filter((r) => r.itemType === 'inventory_part')
     .map((r) => [r.id, { id: r.id, assetAccountId: r.assetAccountId, cogsAccountId: r.cogsAccountId, purchaseCost: r.purchaseCost }]));
+  if (parts.size === 0 && prev !== '5s') await tx.execute(sql`SELECT set_config('lock_timeout', ${prev}, true)`);
+  return parts;
 }
 
 /**
@@ -262,6 +266,16 @@ async function assertReturns(tx: Tx, tenantId: string, held: CostingLock, txnId:
     w.qty = w.qty.plus(baseQuantity(l));
     want.set(k, w);
   }
+  // The memo's position: an edited memo keeps its created_at; a new one is created by this database transaction (now()).
+  const memo = { id: txnId ?? 'ffffffff-ffff-ffff-ffff-ffffffffffff', createdAt: new Date() };
+  if (txnId) {
+    const [t] = await tx.select({ createdAt: transactions.createdAt }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId))).limit(1);
+    if (t?.createdAt) memo.createdAt = t.createdAt;
+  } else {
+    const n = (await tx.execute(sql`SELECT now() AS n`)).rows[0]!['n'];
+    memo.createdAt = n instanceof Date ? n : new Date(String(n));
+  }
   for (const w of want.values()) {
     const [sale] = await tx.select({ id: transactions.id, txnType: transactions.txnType, status: transactions.status, txnDate: transactions.txnDate,
       companyId: transactions.companyId })
@@ -273,9 +287,14 @@ async function assertReturns(tx: Tx, tenantId: string, held: CostingLock, txnId:
       throw AppError.badRequest(`Line ${w.lineIndex + 1}: returnOf must name a posted invoice or sales receipt of this company that sold this item`,
         'VALIDATION_ERROR', { lineIndex: w.lineIndex, transactionId: w.saleId });
     }
-    if (txnDate < sale.txnDate) {
-      throw AppError.badRequest(`Line ${w.lineIndex + 1}: a return can't be dated before its sale (${sale.txnDate})`, 'RETURN_BEFORE_SALE',
-        { lineIndex: w.lineIndex, transactionId: w.saleId, saleDate: sale.txnDate });
+    // Positions, not dates (review S2): on the sale's date the memo must also come after it in entry order
+    // ((date, created_at, id)), or the walk would meet the return before its sale.
+    const memoPos = pos({ movementDate: txnDate, txnCreatedAt: memo.createdAt, transactionId: memo.id });
+    if (cmpPos(memoPos, pos(mv)) < 0) {
+      throw AppError.badRequest(txnDate < sale.txnDate
+        ? `Line ${w.lineIndex + 1}: a return can't be dated before its sale (${sale.txnDate})`
+        : `Line ${w.lineIndex + 1}: this credit memo was entered before its sale on the same date (${sale.txnDate}); date it after the sale, or enter a new credit memo`,
+      'RETURN_BEFORE_SALE', { lineIndex: w.lineIndex, transactionId: w.saleId, saleDate: sale.txnDate });
     }
     const sold = d(mv.quantity).negated();
     const r = await tx.execute(sql`
@@ -297,13 +316,16 @@ async function assertReturns(tx: Tx, tenantId: string, held: CostingLock, txnId:
  */
 async function assertSaleReturnsKept(tx: Tx, tenantId: string, txnId: string,
   next: { txnDate: string; soldByItem: Map<string, Dec> } | null) {
+  // before: some return sits before the sale's new position (date, created_at, id) (review S2: same-day returns).
   const r = await tx.execute(sql`
-    SELECT m.item_id::text AS item_id, SUM(m.quantity)::text AS n, MIN(m.movement_date)::text AS first,
+    SELECT m.item_id::text AS item_id, SUM(m.quantity)::text AS n,
+      ${next ? sql`bool_or((m.movement_date, m.txn_created_at, m.transaction_id) < (${next.txnDate}::date,
+        (SELECT s.created_at FROM transactions s WHERE s.tenant_id = ${tenantId} AND s.id = ${txnId}), ${txnId}::uuid))` : sql`false`} AS before,
       array_agg(DISTINCT m.transaction_id::text) AS returns
     FROM inventory_movements m
     WHERE m.tenant_id = ${tenantId} AND m.source_transaction_id = ${txnId} AND m.voided = false
     GROUP BY m.item_id`);
-  const rows = r.rows as Array<{ item_id: string; n: string; first: string; returns: string[] }>;
+  const rows = r.rows as Array<{ item_id: string; n: string; before: boolean; returns: string[] }>;
   const refuse = (why: string, row: typeof rows[number]) => AppError.conflict(
     `${why} Void the credit memo that returns it, or take the sale off it, first.`, 'SALE_HAS_RETURNS',
     { itemId: row.item_id, returned: d(row.n).toFixed(4), creditMemoIds: row.returns });
@@ -312,7 +334,7 @@ async function assertSaleReturnsKept(tx: Tx, tenantId: string, txnId: string,
     const sold = next.soldByItem.get(row.item_id);
     if (!sold) throw refuse('Units of this item were returned against this sale, so the item can not come off it.', row);
     if (sold.lessThan(d(row.n))) throw refuse(`${d(row.n).toFixed(4)} units of this item were returned against this sale, so it can not sell fewer.`, row);
-    if (next.txnDate > String(row.first).slice(0, 10)) throw refuse('A return of this sale is dated before the new date.', row);
+    if (row.before) throw refuse('A return of this sale is dated before the new date (or entered before the sale on that date).', row);
   }
 }
 
