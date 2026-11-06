@@ -33,20 +33,26 @@
  * old and the new date). So every walk starts after the closing date and no
  * row on or before it ever changes.
  *
- * E2a scope: bills (billReceived true or false), vendor credits, invoices
- * and inventory adjustments; part lines on other document types are 400
- * INVENTORY_DOCUMENT_UNSUPPORTED until E2b.
+ * Documents that move stock: bills (billReceived true or false), checks
+ * and card charges (txn_type expense) as receipts at their line amount;
+ * vendor credits as vendor returns at their line amount; invoices and
+ * sales receipts / cash sales as sales at cost; credit memos as customer
+ * returns, at the original sale's cost when the line names the sale
+ * (returnOf, Q-P24e) and at the current average otherwise; inventory
+ * adjustments. Part lines on any other document type are 400
+ * INVENTORY_DOCUMENT_UNSUPPORTED.
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import type { Tx } from '../db/index.js';
+import type { DbOrTx, Tx } from '../db/index.js';
 import { inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import {
-  Decimal, walk, ZERO_STATE, type Dec, type MovementKind, type WalkRow, type WalkState,
+  Decimal, walk, ZERO_STATE, type Dec, type MovementKind, type SaleLink, type WalkRow, type WalkState,
 } from '../utils/inventory-walk.js';
 import { INVENTORY_ASSET_TAG } from './inventory.service.js';
+import { noteInventoryWarnings } from './inventory-warnings-context.js';
 
 /** Line roles only the costing walk writes (U-157). */
 export const DERIVED_LINE_ROLES = ['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'] as const;
@@ -55,12 +61,17 @@ export function isDerivedRole(role: string | null | undefined): role is DerivedL
   return !!role && (DERIVED_LINE_ROLES as readonly string[]).includes(role);
 }
 
-// Document types that move stock (E2a), and the kind of their movement.
-const RECEIPT_TYPES = new Set(['bill']);
+// Document types that move stock, and the kind of their movement. Checks
+// and card charges are txn_type expense (a check is an expense with a check
+// number).
+const RECEIPT_TYPES = new Set(['bill', 'expense']);
 const VENDOR_RETURN_TYPES = new Set(['vendor_credit']);
-const SALE_TYPES = new Set(['invoice']);
+const SALE_TYPES = new Set(['invoice', 'cash_sale']);
+const CUSTOMER_RETURN_TYPES = new Set(['credit_memo']);
 const ADJUST_TYPES = new Set(['inventory_adjustment']);
-const STOCK_TYPES = new Set([...RECEIPT_TYPES, ...VENDOR_RETURN_TYPES, ...SALE_TYPES, ...ADJUST_TYPES]);
+const STOCK_TYPES = new Set([...RECEIPT_TYPES, ...VENDOR_RETURN_TYPES, ...SALE_TYPES, ...CUSTOMER_RETURN_TYPES, ...ADJUST_TYPES]);
+/** Document types that move inventory parts (for callers outside the core). */
+export const INVENTORY_DOCUMENT_TYPES: ReadonlySet<string> = STOCK_TYPES;
 // Types whose lines may sit on an inventory asset account without an item.
 const DIRECT_OK_TYPES = new Set(['journal_entry', 'aje']);
 
@@ -69,12 +80,17 @@ const MONEY_LIMIT = new Decimal('1e15');
 
 interface InputLine {
   accountId: string; debit?: string | null; credit?: string | null; itemId?: string | null; quantity?: string | null; lineRole?: string | null;
+  /** A credit-memo part line returning units of a sale (Q-P24e, Q-P24u). */
+  returnOf?: { transactionId: string } | null;
 }
 
 interface PartRow { id: string; assetAccountId: string | null; cogsAccountId: string | null; purchaseCost: string | null }
 
-/** A costing lock held by the caller's transaction. */
-export interface CostingLock { companyId: string; lockDate: string | null; itemIds: string[] }
+/**
+ * A costing lock held by the caller's transaction. `links`: the sale each
+ * linked credit-memo line returns, by line index (= journal_lines.line_order).
+ */
+export interface CostingLock { companyId: string; lockDate: string | null; itemIds: string[]; links: Map<number, string> }
 
 /** NEGATIVE_STOCK (U-158): the first row per item whose running quantity newly went below 0. */
 export interface InventoryWarning { code: 'NEGATIVE_STOCK'; itemId: string; date: string; onHand: string }
@@ -102,7 +118,7 @@ export async function inventoryAssetAccounts(tx: Tx, tenantId: string, accountId
   return new Set((r.rows as Array<{ id: string }>).map((x) => x.id));
 }
 
-async function partsOf(tx: Tx, tenantId: string, itemIds: readonly (string | null | undefined)[]): Promise<Map<string, PartRow>> {
+async function partsOf(tx: DbOrTx, tenantId: string, itemIds: readonly (string | null | undefined)[]): Promise<Map<string, PartRow>> {
   const ids = [...new Set(itemIds.filter((v): v is string => !!v))];
   if (ids.length === 0) return new Map();
   const rows = await tx.select({ id: items.id, assetAccountId: items.assetAccountId, cogsAccountId: items.cogsAccountId, purchaseCost: items.purchaseCost })
@@ -123,6 +139,9 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
   lines.forEach((l, i) => {
     if (isDerivedRole(l.lineRole)) {
       throw AppError.badRequest(`Line ${i + 1}: lineRole ${l.lineRole} is written by the engine's costing only`, 'VALIDATION_ERROR', { lineIndex: i });
+    }
+    if (l.returnOf && (!CUSTOMER_RETURN_TYPES.has(txnType) || !l.itemId || !parts.has(l.itemId))) {
+      throw AppError.badRequest(`Line ${i + 1}: returnOf goes on a credit memo line of an inventory item only`, 'VALIDATION_ERROR', { lineIndex: i });
     }
   });
   const assetAccounts = await inventoryAssetAccounts(tx, tenantId, lines.map((l) => l.accountId));
@@ -149,8 +168,8 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
       throw AppError.badRequest(`Line ${i + 1}: an inventory item line posts to the item's inventory asset account`, 'VALIDATION_ERROR',
         { lineIndex: i, expectedAccountId: part.assetAccountId });
     }
-    if (SALE_TYPES.has(txnType) && assetAccounts.has(l.accountId)) {
-      throw AppError.badRequest(`Line ${i + 1}: a sale of an inventory item posts to an income account`, 'INVENTORY_ACCOUNT_DIRECT', { lineIndex: i });
+    if ((SALE_TYPES.has(txnType) || CUSTOMER_RETURN_TYPES.has(txnType)) && assetAccounts.has(l.accountId)) {
+      throw AppError.badRequest(`Line ${i + 1}: a sale or return of an inventory item posts to an income account`, 'INVENTORY_ACCOUNT_DIRECT', { lineIndex: i });
     }
     if (ADJUST_TYPES.has(txnType) && l.accountId !== part.assetAccountId && !(d(l.debit).isZero() && d(l.credit).isZero())) {
       throw AppError.badRequest(`Line ${i + 1}: an adjustment's value posts to the item's inventory asset account`, 'VALIDATION_ERROR', { lineIndex: i });
@@ -182,7 +201,7 @@ async function lock(tx: Tx, tenantId: string, companyId: string | null | undefin
   if (ids.length > 0) {
     await tx.select({ id: items.id }).from(items).where(and(eq(items.tenantId, tenantId), inArray(items.id, ids))).orderBy(items.id).for('update');
   }
-  return { companyId: row.id, lockDate, itemIds: ids };
+  return { companyId: row.id, lockDate, itemIds: ids, links: new Map() };
 }
 
 async function movementItemIds(tx: Tx, tenantId: string, txnId: string): Promise<string[]> {
@@ -191,15 +210,97 @@ async function movementItemIds(tx: Tx, tenantId: string, txnId: string): Promise
   return rows.map((r) => r.itemId);
 }
 
+/** The linked lines of a posting: line index -> the sale it returns. */
+function linksOf(lines: readonly InputLine[]): Map<number, string> {
+  const out = new Map<number, string>();
+  lines.forEach((l, i) => { if (l.returnOf?.transactionId) out.set(i, l.returnOf.transactionId); });
+  return out;
+}
+
+/**
+ * Linked returns (Q-P24e), under the item locks: each sale a credit-memo
+ * line names is a posted invoice or sales receipt of this company with a
+ * line of that item; the memo is dated on or after it (400
+ * RETURN_BEFORE_SALE) and every linked return of the sale, this one
+ * included, takes back at most what it sold (400 RETURN_EXCEEDS_SALE).
+ */
+async function assertReturns(tx: Tx, tenantId: string, held: CostingLock, txnId: string | null, txnDate: string, lines: readonly InputLine[]) {
+  if (held.links.size === 0) return;
+  const want = new Map<string, { saleId: string; itemId: string; qty: Dec; lineIndex: number }>();
+  for (const [i, saleId] of held.links) {
+    const l = lines[i]!;
+    const k = `${saleId}|${l.itemId}`;
+    const w = want.get(k) ?? { saleId, itemId: l.itemId!, qty: new Decimal(0), lineIndex: i };
+    w.qty = w.qty.plus(baseQuantity(l));
+    want.set(k, w);
+  }
+  for (const w of want.values()) {
+    const [sale] = await tx.select({ id: transactions.id, txnType: transactions.txnType, status: transactions.status, txnDate: transactions.txnDate,
+      companyId: transactions.companyId })
+      .from(transactions).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, w.saleId))).limit(1);
+    const [mv] = sale ? await tx.select().from(inventoryMovements).where(and(eq(inventoryMovements.tenantId, tenantId),
+      eq(inventoryMovements.transactionId, w.saleId), eq(inventoryMovements.itemId, w.itemId), sql`${inventoryMovements.sourceTransactionId} IS NULL`,
+      eq(inventoryMovements.voided, false))).limit(1) : [];
+    if (!sale || !SALE_TYPES.has(sale.txnType) || sale.status !== 'posted' || (sale.companyId && sale.companyId !== held.companyId) || !mv) {
+      throw AppError.badRequest(`Line ${w.lineIndex + 1}: returnOf must name a posted invoice or sales receipt of this company that sold this item`,
+        'VALIDATION_ERROR', { lineIndex: w.lineIndex, transactionId: w.saleId });
+    }
+    if (txnDate < sale.txnDate) {
+      throw AppError.badRequest(`Line ${w.lineIndex + 1}: a return can't be dated before its sale (${sale.txnDate})`, 'RETURN_BEFORE_SALE',
+        { lineIndex: w.lineIndex, transactionId: w.saleId, saleDate: sale.txnDate });
+    }
+    const sold = d(mv.quantity).negated();
+    const r = await tx.execute(sql`
+      SELECT COALESCE(SUM(m.quantity), 0)::text AS n FROM inventory_movements m
+      WHERE m.tenant_id = ${tenantId} AND m.source_transaction_id = ${w.saleId} AND m.item_id = ${w.itemId} AND m.voided = false
+        ${txnId ? sql`AND m.transaction_id <> ${txnId}` : sql``}`);
+    const others = d((r.rows[0] as { n: string }).n);
+    if (others.plus(w.qty).greaterThan(sold)) {
+      throw AppError.badRequest(`Line ${w.lineIndex + 1}: only ${Decimal.max(sold.minus(others), 0).toFixed(4)} of the units this sale sold are left to return`,
+        'RETURN_EXCEEDS_SALE', { lineIndex: w.lineIndex, transactionId: w.saleId, sold: sold.toFixed(4), returned: others.toFixed(4) });
+    }
+  }
+}
+
+/**
+ * A sale with live linked returns (Q-P24x): can't be voided or deleted
+ * (`next` null), lose the item, sell fewer units than were returned, or
+ * move after a return (409 SALE_HAS_RETURNS). Read under the item locks.
+ */
+async function assertSaleReturnsKept(tx: Tx, tenantId: string, txnId: string,
+  next: { txnDate: string; soldByItem: Map<string, Dec> } | null) {
+  const r = await tx.execute(sql`
+    SELECT m.item_id::text AS item_id, SUM(m.quantity)::text AS n, MIN(m.movement_date)::text AS first,
+      array_agg(DISTINCT m.transaction_id::text) AS returns
+    FROM inventory_movements m
+    WHERE m.tenant_id = ${tenantId} AND m.source_transaction_id = ${txnId} AND m.voided = false
+    GROUP BY m.item_id`);
+  const rows = r.rows as Array<{ item_id: string; n: string; first: string; returns: string[] }>;
+  const refuse = (why: string, row: typeof rows[number]) => AppError.conflict(
+    `${why} Void the credit memo that returns it, or take the sale off it, first.`, 'SALE_HAS_RETURNS',
+    { itemId: row.item_id, returned: d(row.n).toFixed(4), creditMemoIds: row.returns });
+  for (const row of rows) {
+    if (!next) throw refuse('Units of this sale were returned on a credit memo, so it can not be voided or deleted.', row);
+    const sold = next.soldByItem.get(row.item_id);
+    if (!sold) throw refuse('Units of this item were returned against this sale, so the item can not come off it.', row);
+    if (sold.lessThan(d(row.n))) throw refuse(`${d(row.n).toFixed(4)} units of this item were returned against this sale, so it can not sell fewer.`, row);
+    if (next.txnDate > String(row.first).slice(0, 10)) throw refuse('A return of this sale is dated before the new date.', row);
+  }
+}
+
 /**
  * Before a new posting writes anything: the line guards, then the costing
- * lock when a part is involved. Null when nothing moves stock.
+ * lock when a part is involved, then the linked-return checks. Null when
+ * nothing moves stock.
  */
 export async function prepareNew(tx: Tx, tenantId: string, companyId: string | null | undefined, txnType: string, txnDate: string, lines: readonly InputLine[]): Promise<CostingLock | null> {
   const parts = await partsOf(tx, tenantId, lines.map((l) => l.itemId));
   await assertLines(tx, tenantId, txnType, lines, parts);
   if (parts.size === 0) return null;
-  return lock(tx, tenantId, companyId, [...parts.keys()], [txnDate]);
+  const held = await lock(tx, tenantId, companyId, [...parts.keys()], [txnDate]);
+  held.links = linksOf(lines);
+  await assertReturns(tx, tenantId, held, null, txnDate, lines);
+  return held;
 }
 
 /** Before an edit writes anything: the guards on the new lines, then the lock over old and new parts. */
@@ -210,31 +311,57 @@ export async function prepareEdit(tx: Tx, tenantId: string, companyId: string | 
   const old = await movementItemIds(tx, tenantId, txnId);
   if (parts.size === 0 && old.length === 0) return null;
   // The old date counts only when the document holds stock today.
-  return lock(tx, tenantId, companyId, [...parts.keys(), ...old], [newDate, old.length > 0 ? oldDate : null]);
+  const held = await lock(tx, tenantId, companyId, [...parts.keys(), ...old], [newDate, old.length > 0 ? oldDate : null]);
+  held.links = linksOf(lines);
+  await assertReturns(tx, tenantId, held, txnId, newDate, lines);
+  if (SALE_TYPES.has(txnType)) {
+    const soldByItem = new Map<string, Dec>();
+    for (const l of lines) {
+      if (l.itemId && parts.has(l.itemId)) soldByItem.set(l.itemId, (soldByItem.get(l.itemId) ?? new Decimal(0)).plus(baseQuantity(l)));
+    }
+    await assertSaleReturnsKept(tx, tenantId, txnId, { txnDate: newDate, soldByItem });
+  }
+  return held;
 }
 
-/** Before a void or delete writes anything: the lock over the document's parts. */
+/** Before a void or delete writes anything: the lock over the document's parts; a sale with linked returns is 409 SALE_HAS_RETURNS. */
 export async function prepareExisting(tx: Tx, tenantId: string, companyId: string | null | undefined, txnId: string, txnDate: string): Promise<CostingLock | null> {
   const old = await movementItemIds(tx, tenantId, txnId);
   if (old.length === 0) return null;
-  return lock(tx, tenantId, companyId, old, [txnDate]);
+  const held = await lock(tx, tenantId, companyId, old, [txnDate]);
+  await assertSaleReturnsKept(tx, tenantId, txnId, null);
+  return held;
 }
 
 type MovementRow = typeof inventoryMovements.$inferSelect;
 
-interface Spec { itemId: string; kind: MovementKind; quantity: Dec; valueMode: 'given' | 'derived'; given: Dec | null; counterAccountId: string | null; tagId: string | null }
+interface Spec {
+  itemId: string; sourceId: string | null; kind: MovementKind; quantity: Dec; valueMode: 'given' | 'derived' | 'linked'; given: Dec | null;
+  counterAccountId: string | null; tagId: string | null; lineIds: string[];
+}
 
-/** The document's movements as its current lines say (one per part, lines aggregated, S4). */
-function specsFor(txnType: string, lines: Array<{ itemId: string; accountId: string; quantity: string | null; debit: string; credit: string; tagId: string | null }>, parts: Map<string, PartRow>): Map<string, Spec> {
+/** A movement's key on its document: the item and, for a linked return, the sale (S4, Q-P24u). */
+const mkey = (itemId: string, sourceId: string | null | undefined) => `${itemId}|${sourceId ?? ''}`;
+
+/**
+ * The document's movements as its current lines say: one per (part, linked
+ * sale), lines aggregated (S4). `links` maps a line's line_order to the sale
+ * it returns (credit memos only).
+ */
+function specsFor(txnType: string, lines: Array<{ id: string; itemId: string; accountId: string; quantity: string | null; debit: string; credit: string; tagId: string | null; lineOrder: number | null }>,
+  parts: Map<string, PartRow>, links: ReadonlyMap<number, string>): Map<string, Spec> {
   const out = new Map<string, Spec>();
   for (const l of lines) {
     const part = parts.get(l.itemId);
     if (!part) continue;
-    let s = out.get(l.itemId);
+    const sourceId = CUSTOMER_RETURN_TYPES.has(txnType) ? links.get(l.lineOrder ?? -1) ?? null : null;
+    const k = mkey(l.itemId, sourceId);
+    let s = out.get(k);
     if (!s) {
-      s = { itemId: l.itemId, kind: 'receipt', quantity: new Decimal(0), valueMode: 'derived', given: null, counterAccountId: null, tagId: l.tagId };
-      out.set(l.itemId, s);
+      s = { itemId: l.itemId, sourceId, kind: 'receipt', quantity: new Decimal(0), valueMode: 'derived', given: null, counterAccountId: null, tagId: l.tagId, lineIds: [] };
+      out.set(k, s);
     }
+    s.lineIds.push(l.id);
     const qty = baseQuantity(l);
     const amount = d(l.debit).minus(d(l.credit));
     if (RECEIPT_TYPES.has(txnType)) {
@@ -243,6 +370,8 @@ function specsFor(txnType: string, lines: Array<{ itemId: string; accountId: str
       s.kind = 'vendor_return'; s.valueMode = 'given'; s.quantity = s.quantity.minus(qty); s.given = (s.given ?? new Decimal(0)).plus(amount);
     } else if (SALE_TYPES.has(txnType)) {
       s.kind = 'sale'; s.quantity = s.quantity.minus(qty);
+    } else if (CUSTOMER_RETURN_TYPES.has(txnType)) {
+      s.kind = 'customer_return'; s.quantity = s.quantity.plus(qty); s.valueMode = sourceId ? 'linked' : 'derived';
     } else if (ADJUST_TYPES.has(txnType)) {
       s.quantity = s.quantity.plus(qty);
       if (l.accountId === part.assetAccountId) {
@@ -290,41 +419,47 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
   const docLines = txn.status === 'posted' && STOCK_TYPES.has(txn.txnType)
     ? await tx.select({
       id: journalLines.id, itemId: journalLines.itemId, accountId: journalLines.accountId, quantity: journalLines.quantity,
-      debit: journalLines.debit, credit: journalLines.credit, tagId: journalLines.tagId, lineRole: journalLines.lineRole,
+      debit: journalLines.debit, credit: journalLines.credit, tagId: journalLines.tagId, lineRole: journalLines.lineRole, lineOrder: journalLines.lineOrder,
     }).from(journalLines).where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId), eq(journalLines.isVoidReversal, false)))
     : [];
   const itemLines = docLines.filter((l): l is typeof l & { itemId: string } => !!l.itemId && !isDerivedRole(l.lineRole));
   const parts = await partsOf(tx, tenantId, [...itemLines.map((l) => l.itemId), ...opts.lock.itemIds]);
-  const specs = specsFor(txn.txnType, itemLines, parts);
+  const specs = specsFor(txn.txnType, itemLines, parts, opts.lock.links);
 
   const existing = await tx.select().from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.transactionId, txnId)));
-  const byItem = new Map(existing.map((m) => [m.itemId, m]));
-  const itemIds = [...new Set([...specs.keys(), ...byItem.keys()])].sort();
+  const byKey = new Map(existing.map((m) => [mkey(m.itemId, m.sourceTransactionId), m]));
+  const keys = [...new Set([...specs.keys(), ...byKey.keys()])].sort();
 
   const warnings: InventoryWarning[] = [];
   const deltas = new Map<string, Dec>();
   const changedDocs = new Map<string, { itemId: string; before: string; after: string }[]>();
   // Movements whose derived lines must be reconciled, with their row as written.
   const reconcile = new Map<string, MovementRow>();
+  // Per item: where its walk starts, and the document's own movements to reconcile after it.
+  const starts = new Map<string, ReturnType<typeof pos>>();
+  const own = new Map<string, string[]>();
+  const createdAt = txn.createdAt ?? new Date();
 
-  for (const itemId of itemIds) {
+  // Phase 1: the document's movements as its lines now say (one per item and linked sale).
+  for (const k of keys) {
+    const spec = specs.get(k);
+    const old = byKey.get(k);
+    const itemId = spec?.itemId ?? old!.itemId;
     const part = parts.get(itemId);
-    const spec = specs.get(itemId);
-    const old = byItem.get(itemId);
     const oldLive = old && !old.voided ? old : undefined;
-    const createdAt = txn.createdAt ?? new Date();
-    let current: MovementRow | undefined;
     let startPos: ReturnType<typeof pos> | null = oldLive ? pos(oldLive) : null;
 
     if (spec && part) {
       const fields = {
-        movementDate: txn.txnDate, kind: spec.kind, quantity: spec.quantity.toFixed(4), valueMode: spec.valueMode,
-        value: spec.valueMode === 'given' ? (spec.given ?? new Decimal(0)).toFixed(4) : (oldLive?.valueMode === 'derived' ? oldLive.value : '0'),
+        movementDate: txn.txnDate, kind: spec.kind, quantity: spec.quantity.toFixed(4), valueMode: spec.valueMode, sourceTransactionId: spec.sourceId,
+        // A derived or linked value is the walk's; it keeps the stored one until the walk rewrites it.
+        value: spec.valueMode === 'given' ? (spec.given ?? new Decimal(0)).toFixed(4) : (oldLive?.valueMode === spec.valueMode ? oldLive.value : '0'),
       };
       const unchanged = !!oldLive && oldLive.movementDate === fields.movementDate && oldLive.kind === fields.kind
         && d(oldLive.quantity).equals(spec.quantity) && oldLive.valueMode === fields.valueMode
-        && (spec.valueMode === 'derived' || d(oldLive.value).equals(spec.given ?? 0));
+        && (spec.valueMode !== 'given' || d(oldLive.value).equals(spec.given ?? 0));
+      let current: MovementRow | undefined;
       if (old) {
         [current] = await tx.update(inventoryMovements).set({
           ...fields,
@@ -338,18 +473,18 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
         }).returning();
       }
       await tx.update(journalLines).set({ inventoryMovementId: current!.id })
-        .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId), eq(journalLines.itemId, itemId),
-          eq(journalLines.isVoidReversal, false)));
+        .where(and(eq(journalLines.tenantId, tenantId), inArray(journalLines.id, spec.lineIds)));
       if (unchanged) {
-        // S4: nothing moved for this item; its derived lines come back from the stored row.
+        // S4: nothing moved for this movement; its derived lines come back from the stored row.
         reconcile.set(current!.id, current!);
         continue;
       }
+      own.set(itemId, [...(own.get(itemId) ?? []), current!.id]);
       const newPos = pos(current!);
       startPos = startPos && cmpPos(startPos, newPos) < 0 ? startPos : newPos;
     } else if (old) {
       if (txn.status === 'posted') {
-        // An edit took the item off the document: the movement goes.
+        // An edit took the item (or this link) off the document: the movement goes.
         await tx.delete(inventoryMovements).where(eq(inventoryMovements.id, old.id));
       } else if (!old.voided) {
         // A void or delete: the row stays, voided (I7); its derived lines stay mirrored by the reversal.
@@ -358,7 +493,13 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
       if (!oldLive) continue;
     }
     if (!startPos) continue;
-    const res = await walkItem(tx, tenantId, companyId, itemId, startPos, txnId, opts.lock.lockDate);
+    const prev = starts.get(itemId);
+    starts.set(itemId, prev && cmpPos(prev, startPos) < 0 ? prev : startPos);
+  }
+
+  // Phase 2: one walk per item from its earliest affected position.
+  for (const itemId of [...starts.keys()].sort()) {
+    const res = await walkItem(tx, tenantId, companyId, itemId, starts.get(itemId)!, txnId, opts.lock.lockDate);
     if (res.warning) warnings.push(res.warning);
     for (const m of res.changed) {
       reconcile.set(m.row.id, m.row);
@@ -368,8 +509,9 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
         changedDocs.set(m.row.transactionId, list);
       }
     }
-    if (current && !reconcile.has(current.id)) {
-      const [fresh] = await tx.select().from(inventoryMovements).where(eq(inventoryMovements.id, current.id));
+    for (const id of own.get(itemId) ?? []) {
+      if (reconcile.has(id)) continue;
+      const [fresh] = await tx.select().from(inventoryMovements).where(eq(inventoryMovements.id, id));
       if (fresh) reconcile.set(fresh.id, fresh);
     }
   }
@@ -390,6 +532,8 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
       { inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c.after })), costingTrigger: txnId }, opts.userId, tx);
   }
   await backstop(tx, tenantId, [...touched]);
+  // NEGATIVE_STOCK on the request's reply (U-158): warnings[] of the route.
+  noteInventoryWarnings(warnings);
   return warnings;
 }
 
@@ -425,12 +569,29 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
       eq(inventoryMovements.voided, false), sql`${key} >= ${at}`))
     .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
   const walkRows: WalkRow[] = rows.map((m) => ({
-    // Linked returns (value_mode linked, Q-P24e) are valued from their sale in E2b; E2a never writes one.
-    id: m.id, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode === 'given' ? 'given' : 'derived',
-    given: m.valueMode === 'given' ? d(m.value) : null,
+    id: m.id, transactionId: m.transactionId, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode,
+    given: m.valueMode === 'given' ? d(m.value) : null, sourceId: m.sourceTransactionId,
     fallbackCost: m.fallbackCost === null ? null : d(m.fallbackCost),
   }));
-  const result = walk(seed, walkRows);
+  // Linked returns (Q-P24e) whose sale sits before the walk start: the sale's
+  // stored relief and quantity, and what earlier returns already took back.
+  const inWindow = new Set(rows.filter((m) => m.kind === 'sale').map((m) => m.transactionId));
+  const outside = [...new Set(rows.filter((m) => m.valueMode === 'linked' && m.sourceTransactionId && !inWindow.has(m.sourceTransactionId))
+    .map((m) => m.sourceTransactionId!))];
+  const links = new Map<string, SaleLink>();
+  for (const saleId of outside) {
+    const r = await tx.execute(sql`
+      SELECT (SELECT -value FROM inventory_movements WHERE tenant_id = ${tenantId} AND transaction_id = ${saleId} AND item_id = ${itemId}
+          AND source_transaction_id IS NULL AND voided = false)::text AS r,
+        (SELECT -quantity FROM inventory_movements WHERE tenant_id = ${tenantId} AND transaction_id = ${saleId} AND item_id = ${itemId}
+          AND source_transaction_id IS NULL AND voided = false)::text AS s,
+        (SELECT COALESCE(SUM(quantity), 0) FROM inventory_movements WHERE tenant_id = ${tenantId} AND source_transaction_id = ${saleId}
+          AND item_id = ${itemId} AND voided = false AND ${key} < ${at})::text AS n`);
+    const row = r.rows[0] as { r: string | null; s: string | null; n: string };
+    if (row.r === null || row.s === null) throw AppError.internal('Costing: a linked return without its sale');
+    links.set(saleId, { r: d(row.r), s: d(row.s), n: d(row.n) });
+  }
+  const result = walk(seed, walkRows, links);
   const changed: Changed[] = [];
   const values: ReturnType<typeof sql>[] = [];
   rows.forEach((m, i) => {
@@ -479,7 +640,8 @@ function desiredLines(m: MovementRow, part: PartRow, counterAccountId: string, e
     out.push({ role: counterRole, accountId: acct, debit: assetDebit ? '0' : amt, credit: assetDebit ? amt : '0' });
   };
   const cogs = part.cogsAccountId!;
-  if (m.valueMode === 'derived') pair('inventory_relief', 'cogs', d(m.value), counterAccountId || cogs);
+  // A sale's relief, a return's value back in (linked or at average), a quantity-only adjustment.
+  if (m.valueMode !== 'given') pair('inventory_relief', 'cogs', d(m.value), counterAccountId || cogs);
   pair('cost_correction', 'cost_correction', d(m.correction), cogs);
   pair('cost_residual', 'cost_residual', d(m.residual), cogs);
   return out;
@@ -498,7 +660,8 @@ async function reconcileLines(tx: Tx, tenantId: string, m: MovementRow, parts: M
   const all = await tx.select().from(journalLines)
     .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, m.transactionId), eq(journalLines.isVoidReversal, false)));
   const existing = all.filter((l) => isDerivedRole(l.lineRole) && l.inventoryMovementId === m.id);
-  const itemLine = all.find((l) => l.itemId === m.itemId && !isDerivedRole(l.lineRole));
+  const itemLine = all.find((l) => l.inventoryMovementId === m.id && !isDerivedRole(l.lineRole))
+    ?? all.find((l) => l.itemId === m.itemId && !isDerivedRole(l.lineRole));
   // An adjustment's quantity-only line names the adjustment account; everything else counters on the item's COGS account.
   const counter = ADJUST_TYPES.has(doc.txnType) && itemLine && itemLine.accountId !== part.assetAccountId ? itemLine.accountId : part.cogsAccountId!;
   const existingCounter = new Map<string, string>();
@@ -580,3 +743,70 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): a p
   + 'VALIDATION_ERROR; parts on a document type that does not move stock yet are 400 INVENTORY_DOCUMENT_UNSUPPORTED; a document with parts '
   + 'dated on or before the closing date (old or new date) is 409 INVENTORY_PERIOD_CLOSED, closingPassword or not; 409 RETRY after a deadlock or '
   + 'lock timeout (nothing saved). Derived costing lines come back as inventoryLines, never in lines; NEGATIVE_STOCK is allowed.';
+
+/**
+ * NEGATIVE_STOCK for a preview (U-158): what posting `doc` would warn,
+ * computed from the stored stock ledger in memory, with nothing written. The
+ * document's movement (quantities only) is placed at its position (an
+ * edited document keeps its created_at) and each item's running quantity is
+ * replayed from its first affected position.
+ */
+export async function previewInventoryWarnings(executor: DbOrTx, tenantId: string, companyId: string | null | undefined,
+  doc: { txnType: string; txnDate: string; editingId?: string | null; lines: ReadonlyArray<{ itemId?: string | null; quantity?: string | null }> }): Promise<InventoryWarning[]> {
+  if (!STOCK_TYPES.has(doc.txnType) || ADJUST_TYPES.has(doc.txnType)) return [];
+  const parts = await partsOf(executor, tenantId, doc.lines.map((l) => l.itemId));
+  if (parts.size === 0 && !doc.editingId) return [];
+  const sign = SALE_TYPES.has(doc.txnType) || VENDOR_RETURN_TYPES.has(doc.txnType) ? -1 : 1;
+  const qtyByItem = new Map<string, Dec>();
+  for (const l of doc.lines) {
+    if (!l.itemId || !parts.has(l.itemId)) continue;
+    let q: Dec;
+    try { q = baseQuantity(l); } catch { continue; }
+    qtyByItem.set(l.itemId, (qtyByItem.get(l.itemId) ?? new Decimal(0)).plus(q.times(sign)));
+  }
+  const co = companyId ? companyId : ((await executor.execute(sql`SELECT id FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id LIMIT 1`)).rows[0] as { id: string } | undefined)?.id;
+  if (!co) return [];
+  let createdAt = new Date();
+  const oldByItem = new Map<string, { date: string; created: Date }>();
+  const selfId = doc.editingId ?? 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+  if (doc.editingId) {
+    const [t] = await executor.select({ createdAt: transactions.createdAt }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, doc.editingId))).limit(1);
+    if (t?.createdAt) createdAt = t.createdAt;
+    const olds = await executor.select().from(inventoryMovements).where(and(eq(inventoryMovements.tenantId, tenantId),
+      eq(inventoryMovements.transactionId, doc.editingId), eq(inventoryMovements.voided, false)));
+    for (const m of olds) {
+      oldByItem.set(m.itemId, { date: m.movementDate, created: m.txnCreatedAt });
+      if (!qtyByItem.has(m.itemId)) qtyByItem.set(m.itemId, new Decimal(0));
+    }
+  }
+  const out: InventoryWarning[] = [];
+  for (const [itemId, qty] of [...qtyByItem].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const rows = (await executor.select({ transactionId: inventoryMovements.transactionId, date: inventoryMovements.movementDate,
+      created: inventoryMovements.txnCreatedAt, quantity: inventoryMovements.quantity }).from(inventoryMovements)
+      .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, co), eq(inventoryMovements.itemId, itemId),
+        eq(inventoryMovements.voided, false)))
+      .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId))
+      .filter((r) => r.transactionId !== doc.editingId);
+    const mine = { transactionId: selfId, date: doc.txnDate, created: createdAt, quantity: qty.toFixed(4) };
+    const before = (r: { date: string; created: Date; transactionId: string }) => cmpPos(pos({ movementDate: r.date, txnCreatedAt: r.created, transactionId: r.transactionId }),
+      pos({ movementDate: mine.date, txnCreatedAt: mine.created, transactionId: mine.transactionId })) < 0;
+    const at = rows.findIndex((r) => !before(r));
+    const merged = [...rows.slice(0, at < 0 ? rows.length : at), mine, ...(at < 0 ? [] : rows.slice(at))];
+    const old = oldByItem.get(itemId);
+    const start = old ? cmpPos(pos({ movementDate: old.date, txnCreatedAt: old.created, transactionId: selfId }), pos({ movementDate: mine.date, txnCreatedAt: mine.created, transactionId: selfId })) < 0
+      ? { date: old.date, created: old.created } : { date: mine.date, created: mine.created } : { date: mine.date, created: mine.created };
+    let q = new Decimal(0);
+    for (const r of merged) {
+      const prior = q;
+      q = q.plus(d(r.quantity));
+      const inWindow = cmpPos(pos({ movementDate: r.date, txnCreatedAt: r.created, transactionId: r.transactionId }),
+        pos({ movementDate: start.date, txnCreatedAt: start.created, transactionId: selfId })) >= 0 || r === mine;
+      if (inWindow && prior.greaterThanOrEqualTo(0) && q.lessThan(0)) {
+        out.push({ code: 'NEGATIVE_STOCK', itemId, date: r.date, onHand: q.toFixed(4) });
+        break;
+      }
+    }
+  }
+  return out;
+}

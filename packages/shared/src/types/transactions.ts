@@ -31,8 +31,7 @@ export type TxnType =
   // account, Cr Sales Tax Payable for the recovered SSUTA tax; reopens the invoice.
   | 'bad_debt_recovery'
   // A stock adjustment (U-157, U-159): quantity and / or value per inventory
-  // part vs an adjustment account; system_kind cost_restatement for the
-  // walk's closed-period restatements.
+  // part vs an adjustment account.
   | 'inventory_adjustment';
 
 export type TxnStatus = 'draft' | 'posted' | 'void' | 'deleted';
@@ -226,6 +225,11 @@ export interface JournalLineInput {
   // markup line ('billable_markup'): the cost line it bills (U-128).
   // Persisted on journal_lines.billable_source_line_id.
   billableSourceLineId?: string | null;
+  // A credit-memo line returning units of an inventory item's sale (U-158,
+  // Q-P24e): the invoice or sales receipt. Not a journal_lines column: the
+  // costing core keeps it on the line's inventory movement
+  // (inventory_movements.source_transaction_id).
+  returnOf?: { transactionId: string } | null;
 }
 
 export interface CreateJournalEntryInput {
@@ -252,6 +256,10 @@ export interface ExpenseLineItem {
   contactId?: string | null;
   /** Billable to the line's customer (U-50); requires contactId. */
   isBillable?: boolean;
+  /** An inventory item bought (U-158): the item's inventory asset account; quantity > 0; amount = round2(quantity x unitPrice) when unitPrice is sent. */
+  itemId?: string | null;
+  quantity?: string | null;
+  unitPrice?: string | null;
 }
 
 export interface CreateExpenseInput {
@@ -343,6 +351,8 @@ export interface CreateCashSaleInput {
     isTaxable?: boolean;
     taxRate?: string;
     tagId?: string | null;
+    /** An inventory item sold (U-158): the core posts its cost of goods. */
+    itemId?: string | null;
   }>;
   memo?: string;
   /** Document number (U-111): typed, or the company's next when omitted. */

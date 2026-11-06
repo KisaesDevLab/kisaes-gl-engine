@@ -24,9 +24,12 @@ import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { accounts, companies } from '../db/schema/index.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 export const checksRouter = Router();
 checksRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+checksRouter.use(inventoryWarningsContext);
 checksRouter.use(companyContext);
 checksRouter.use(requireResource('checks'));
 

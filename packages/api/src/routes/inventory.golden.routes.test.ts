@@ -2,9 +2,11 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 //
-// U-157 inventory-costing-v1 (ClientLedger P24 E2a): golden cases A, B, V,
-// X, M, D and N of packages/shared/fixtures/inventory-golden.json through
-// the real bill, vendor credit, invoice and transaction routes, with the I2
+// U-157 / U-158 inventory-costing-v1 (ClientLedger P24 E2a, E2b): golden
+// cases A, B, V, X, M, D, N, K, K2, C, E and R of
+// packages/shared/fixtures/inventory-golden.json through the real bill,
+// vendor credit, invoice, credit memo, sales receipt, check and transaction
+// routes, with the I2
 // check after every step: per inventory asset account, the last running
 // value of each item equals the accrual GL balance from journal lines, and
 // accounts.balance equals the sum of lines for the asset and COGS accounts.
@@ -25,6 +27,9 @@ import { billsRouter } from './bills.routes.js';
 import { vendorCreditsRouter } from './vendor-credits.routes.js';
 import { invoicesRouter } from './invoices.routes.js';
 import { transactionsRouter } from './transactions.routes.js';
+import { creditMemosRouter } from './credit-memos.routes.js';
+import { salesReceiptsRouter } from './sales-receipts.routes.js';
+import { checksRouter } from './checks.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { postAdjustment } from '../services/inventory-adjustment.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -44,18 +49,20 @@ async function cleanInventory(tid: string) {
 beforeEach(async () => {
   h.extraCleanup = [cleanInventory];
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
-    ['/api/v1/vendor-credits', vendorCreditsRouter], ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter]]);
+    ['/api/v1/vendor-credits', vendorCreditsRouter], ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter],
+    ['/api/v1/credit-memos', creditMemosRouter], ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
 
 const req = (method: string, p: string, body?: unknown) =>
   h.request(method, `/api/v1${p}`, c.token, body, method === 'GET' ? {} : { 'Idempotency-Key': key() });
-const idOf = (j: Body): string => String(j['id'] ?? j['bill']?.id ?? j['credit']?.id ?? j['vendorCredit']?.id ?? j['invoice']?.id ?? j['transaction']?.id);
+const idOf = (j: Body): string => String(j['id'] ?? j['bill']?.id ?? j['credit']?.id ?? j['vendorCredit']?.id ?? j['invoice']?.id
+  ?? j['creditMemo']?.id ?? j['salesReceipt']?.id ?? j['check']?.id ?? j['transaction']?.id);
 
 interface World {
-  asset: string; cogs: string; adjustment: string; vendor: string; items: Map<string, string>; docs: Map<string, string>;
-  bodies: Map<string, Body>;
+  asset: string; cogs: string; adjustment: string; vendor: string; card: string; items: Map<string, string>; docs: Map<string, string>;
+  bodies: Map<string, Body>; routes: Map<string, string>;
 }
 
 async function setup(): Promise<World> {
@@ -66,7 +73,8 @@ async function setup(): Promise<World> {
   const [cogs] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountType, 'cogs'), eq(accounts.isActive, true)));
   const [adj] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Inventory Shrinkage', accountType: 'expense' }).returning();
   const [vendor] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: golden['seed'].vendor }).returning();
-  const world: World = { asset, cogs: cogs!.id, adjustment: adj!.id, vendor: vendor!.id, items: new Map(), docs: new Map(), bodies: new Map() };
+  const [card] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Business card', accountType: 'liability', detailType: 'credit_card' }).returning();
+  const world: World = { asset, cogs: cogs!.id, adjustment: adj!.id, vendor: vendor!.id, card: card!.id, items: new Map(), docs: new Map(), bodies: new Map(), routes: new Map() };
   for (const name of ['W']) {
     const r = await req('POST', '/items', {
       name, itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: c.roles['income'], assetAccountId: asset, cogsAccountId: world.cogs,
@@ -77,17 +85,70 @@ async function setup(): Promise<World> {
   return world;
 }
 
-const stepWarnings: Body[][] = [];
+/** The last step's reply (warnings[] of U-158). */
+let lastReply: Body = {};
 
-/** Runs one golden step through the routes. */
-async function step(w: World, s: Body) {
+/**
+ * Runs one golden step through the routes. `via` posts a receipt as a check
+ * or card charge, a sale as a sales receipt or a POST /transactions cash
+ * sale: the stock ledger must come out the same (U-158).
+ */
+async function step(w: World, s: Body, via?: string) {
   const item = s['item'] ? w.items.get(s['item'])! : '';
   let r: { status: number; json: Body } | null = null;
-  switch (s['event']) {
+  lastReply = {};
+  const event = via ?? s['event'];
+  const expectStatus = s['expect']?.status as number | undefined;
+  switch (event) {
     case 'bill': {
       const body = { contactId: w.vendor, txnDate: s['date'], lines: [{ accountId: w.asset, amount: s['amount'], itemId: item, quantity: s['quantity'], unitPrice: s['unitPrice'] }] };
       r = await req('POST', '/bills', body);
       w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'bills');
+      break;
+    }
+    case 'check': {
+      const body = { bankAccountId: c.roles['checking'], contactId: w.vendor, payeeNameOnCheck: golden['seed'].vendor, txnDate: s['date'], amount: s['amount'],
+        lines: [{ accountId: w.asset, amount: s['amount'], itemId: item, quantity: s['quantity'], unitPrice: s['unitPrice'] }] };
+      r = await req('POST', '/checks', body);
+      w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'checks');
+      break;
+    }
+    case 'card_charge': {
+      const body = { txnType: 'expense', txnDate: s['date'], contactId: w.vendor, payFromAccountId: w.card,
+        lines: [{ expenseAccountId: w.asset, amount: s['amount'], itemId: item, quantity: s['quantity'], unitPrice: s['unitPrice'] }] };
+      r = await req('POST', '/transactions', body);
+      w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'transactions');
+      break;
+    }
+    case 'sales_receipt': {
+      const body = { contactId: c.customer, txnDate: s['date'], depositToAccountId: c.roles['checking'],
+        lines: [{ itemId: item, quantity: s['quantity'], unitPrice: golden['seed'].salePrice, isTaxable: false }] };
+      r = await req('POST', '/sales-receipts', body);
+      w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'sales-receipts');
+      break;
+    }
+    case 'cash_sale': {
+      const body = { txnType: 'cash_sale', contactId: c.customer, txnDate: s['date'], depositToAccountId: c.roles['checking'],
+        lines: [{ accountId: c.roles['income'], itemId: item, quantity: s['quantity'], unitPrice: golden['seed'].salePrice, isTaxable: false }] };
+      r = await req('POST', '/transactions', body);
+      w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'transactions');
+      break;
+    }
+    case 'credit_memo': {
+      const body = { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: item, quantity: s['quantity'], unitPrice: golden['seed'].salePrice, isTaxable: false,
+        ...(s['returnOf'] ? { returnOf: { transactionId: w.docs.get(s['returnOf'])! } } : {}) }] };
+      r = await req('POST', '/credit-memos', body);
+      if (expectStatus) {
+        expect([r.status, r.json['error']?.code], JSON.stringify(r.json)).toEqual([expectStatus, s['expect'].code]);
+        return;
+      }
+      w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'credit-memos');
       break;
     }
     case 'vendor_credit':
@@ -97,6 +158,7 @@ async function step(w: World, s: Body) {
       const body = { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: item, quantity: s['quantity'], unitPrice: golden['seed'].salePrice, isTaxable: false }] };
       r = await req('POST', '/invoices', body);
       w.bodies.set(s['doc'], body);
+      w.routes.set(s['doc'], 'invoices');
       break;
     }
     case 'adjust_qty':
@@ -110,30 +172,41 @@ async function step(w: World, s: Body) {
     }
     case 'void':
       r = await req('POST', `/transactions/${w.docs.get(s['doc'])}/void`, { reason: 'golden' });
+      if (typeof expectStatus === 'number') {
+        expect([r.status, r.json['error']?.code], JSON.stringify(r.json)).toEqual([expectStatus, s['expect'].code]);
+        return;
+      }
       expect(r.status, JSON.stringify(r.json)).toBe(200);
+      lastReply = r.json;
       return;
     case 'delete':
       r = await req('DELETE', `/transactions/${w.docs.get(s['doc'])}`, { reason: 'golden' });
       expect(r.status, JSON.stringify(r.json)).toBe(200);
       if (s['expect']?.status) expect(r.json['transaction']?.status ?? r.json['status']).toBe(s['expect'].status);
+      lastReply = r.json;
       return;
     case 'edit': {
       const id = w.docs.get(s['doc'])!;
       const body = structuredClone(w.bodies.get(s['doc'])!) as Body;
       if (s['quantity']) body['lines'][0].quantity = s['quantity'];
       if (s['date']) body['txnDate'] = s['date'];
-      const kind = (await db.select({ t: transactions.txnType }).from(transactions).where(eq(transactions.id, id)))[0]!.t;
-      r = await req('PUT', `/${kind === 'bill' ? 'bills' : 'invoices'}/${id}`, body);
+      const route = w.routes.get(s['doc']) ?? 'invoices';
+      r = await req('PUT', `/${route}/${id}`, body);
+      if (typeof expectStatus === 'number') {
+        expect([r.status, r.json['error']?.code], JSON.stringify(r.json)).toEqual([expectStatus, s['expect'].code]);
+        return;
+      }
       expect(r.status, JSON.stringify(r.json)).toBe(200);
       w.bodies.set(s['doc'], body);
+      lastReply = r.json;
       return;
     }
     default:
-      throw new Error(`step ${s['event']} is not run in E2a`);
+      throw new Error(`step ${s['event']} is not run here`);
   }
   expect([200, 201], JSON.stringify(r!.json)).toContain(r!.status);
   if (s['doc']) w.docs.set(s['doc'], idOf(r!.json));
-  stepWarnings.push([]);
+  lastReply = r!.json;
 }
 
 /** The item's movement rows in position order. */
@@ -176,7 +249,12 @@ async function figures(w: World, name = 'W') {
 }
 
 async function checkExpect(w: World, e: Body | undefined, docId: string | undefined) {
-  if (!e) return;
+  if (!e || typeof e['status'] === 'number') return;
+  if (e['warnings']) {
+    // U-158: NEGATIVE_STOCK on the route's reply, warnings[].
+    const got = ((lastReply['warnings'] ?? []) as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK');
+    expect(got, 'warnings[] NEGATIVE_STOCK').toEqual((e['warnings'] as Body[]).map((x) => ({ code: x['code'], itemId: w.items.get(x['item']), date: x['date'], onHand: x['onHand'] })));
+  }
   const f = await figures(w);
   if (e['onHand']) expect(f['quantityOnHand']).toBe(e['onHand']);
   if (e['assetValue']) expect(f['assetValue']).toBe(e['assetValue']);
@@ -189,17 +267,18 @@ async function checkExpect(w: World, e: Body | undefined, docId: string | undefi
   }
 }
 
-async function runSteps(w: World, steps: Body[]) {
+async function runSteps(w: World, steps: Body[], via?: (s: Body) => string | undefined) {
   for (const s of steps) {
-    await step(w, s);
+    await step(w, s, via?.(s));
     await checkExpect(w, s['expect'], s['doc'] ? w.docs.get(s['doc']) : undefined);
     await invariants(w);
   }
 }
 
-async function checkRows(w: World, expected: Body[]) {
-  const got = await rows(w.items.get('W')!);
+async function checkRows(w: World, expected: Body[], subset = false) {
   const name = new Map([...w.docs].map(([k, v]) => [v, k]));
+  const want = new Set(expected.map((e) => e['doc'] as string));
+  const got = (await rows(w.items.get('W')!)).filter((r) => !subset || want.has(name.get(r.transactionId)!));
   expect(got.map((r) => name.get(r.transactionId))).toEqual(expected.map((e) => e['doc']));
   expected.forEach((e, i) => {
     const r = got[i]!;
@@ -420,5 +499,127 @@ describe('inventory-costing-v1 guards (B3, B4)', () => {
 
   it('advertises inventory-costing-v1', () => {
     expect(DESKTOP_CAPABILITIES).toContain('inventory-costing-v1');
+  });
+});
+
+describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-158, E2b)', () => {
+  it('E: unlinked returns at the current average; a vendor credit at its line amount leaves a residual', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('E')['steps']);
+    await checkFinal(w, gcase('E')['final']);
+    const [m] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get('E5')!));
+    expect([m!.kind, m!.valueMode, m!.sourceTransactionId]).toEqual(['customer_return', 'derived', null]);
+  });
+
+  it('R: linked returns at the original sale cost, RETURN_EXCEEDS_SALE, SALE_HAS_RETURNS, re-valued when the sale re-costs', async () => {
+    const w = await setup();
+    const r = gcase('R');
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, r['fromSteps']));
+    await runSteps(w, r['steps']);
+    await checkRows(w, r['rows'], true);
+    await checkFinal(w, r['final']);
+    // I7: every unit of A3 returned gives back exactly its relief.
+    const mv = async (doc: string) => (await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get(doc)!)))[0]!;
+    const back = Number((await mv('R1')).value) + Number((await mv('R2')).value);
+    expect(back.toFixed(2)).toBe((-Number((await mv('A3')).value)).toFixed(2));
+    expect([(await mv('R1')).valueMode, (await mv('R1')).sourceTransactionId]).toEqual(['linked', w.docs.get('A3')]);
+    // Readers: returnOf on the line, the asset / COGS pair in inventoryLines only.
+    const got = await req('GET', `/credit-memos/${w.docs.get('R1')}`);
+    const memo = got.json['creditMemo'] as Body;
+    expect(memo['lines'][0].returnOf).toEqual({ transactionId: w.docs.get('A3') });
+    expect((memo['lines'] as Body[]).every((l) => l['accountId'] !== w.asset)).toBe(true);
+    expect((memo['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cogs', '-6.27'], ['inventory_relief', '6.27']]);
+    // A sale with linked returns: no void, no fewer units than returned, no item off it, no move after a return (Q-P24x).
+    const code = (x: { status: number; json: Body }) => [x.status, x.json['error']?.code];
+    // (An invoice is never deleted: 409 TXN_DELETE_UNSUPPORTED; its void is golden R step 10.)
+    const a3 = structuredClone(w.bodies.get('A3')!) as Body;
+    expect(code(await req('PUT', `/invoices/${w.docs.get('A3')}`, { ...a3, lines: [{ ...a3['lines'][0], quantity: '3' }] }))).toEqual([409, 'SALE_HAS_RETURNS']);
+    expect(code(await req('PUT', `/invoices/${w.docs.get('A3')}`, { ...a3, txnDate: '2026-01-17' }))).toEqual([409, 'SALE_HAS_RETURNS']);
+    expect(code(await req('PUT', `/invoices/${w.docs.get('A3')}`, { ...a3, lines: [{ accountId: c.roles['income'], quantity: '4', unitPrice: '10.00', isTaxable: false }] })))
+      .toEqual([409, 'SALE_HAS_RETURNS']);
+    // A move that stays before the returns re-costs the sale and its returns.
+    expect((await req('PUT', `/invoices/${w.docs.get('A3')}`, { ...a3, txnDate: '2026-01-16' })).status).toBe(200);
+    await invariants(w);
+    expect(((await mv('R1')).value)).not.toBe('7.1800');
+    // A credit memo edit that omits returnOf keeps the link; null unlinks (current average).
+    const r2 = structuredClone(w.bodies.get('R2')!) as Body;
+    const { returnOf: _drop, ...plain } = r2['lines'][0] as Body;
+    expect((await req('PUT', `/credit-memos/${w.docs.get('R2')}`, { ...r2, memo: 'kept', lines: [plain] })).status).toBe(200);
+    expect([(await mv('R2')).valueMode, (await mv('R2')).sourceTransactionId]).toEqual(['linked', w.docs.get('A3')]);
+    expect((await req('PUT', `/credit-memos/${w.docs.get('R2')}`, { ...r2, lines: [{ ...plain, returnOf: null }] })).status).toBe(200);
+    expect([(await mv('R2')).valueMode, (await mv('R2')).sourceTransactionId]).toEqual(['derived', null]);
+    await invariants(w);
+    // Once its last linked return is voided the sale can be voided.
+    expect((await req('POST', `/transactions/${w.docs.get('R1')}/void`, { reason: 'x' })).status).toBe(200);
+    expect((await req('POST', `/transactions/${w.docs.get('A3')}/void`, { reason: 'x' })).status).toBe(200);
+    await invariants(w);
+  });
+
+  it('refuses a return dated before its sale, of an item the sale did not sell, or on a document that is not a credit memo', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 3));
+    const code = (x: { status: number; json: Body }) => [x.status, x.json['error']?.code];
+    const line = { itemId: w.items.get('W'), quantity: '1', unitPrice: '10.00', isTaxable: false };
+    expect(code(await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-07', lines: [{ ...line, returnOf: { transactionId: w.docs.get('A3') } }] })))
+      .toEqual([400, 'RETURN_BEFORE_SALE']);
+    expect(code(await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-09', lines: [{ ...line, returnOf: { transactionId: w.docs.get('A1') } }] })))
+      .toEqual([400, 'VALIDATION_ERROR']);
+    const other = await req('POST', '/items', { name: 'Other part', itemType: 'inventory_part', unitPrice: '10.00', incomeAccountId: c.roles['income'], assetAccountId: w.asset, cogsAccountId: w.cogs });
+    expect(code(await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-09',
+      lines: [{ ...line, itemId: other.json['item'].id, returnOf: { transactionId: w.docs.get('A3') } }] }))).toEqual([400, 'VALIDATION_ERROR']);
+    const { postTransaction } = await import('../services/ledger.service.js');
+    await expect(postTransaction(c.tenantId, { txnType: 'invoice', txnDate: '2026-01-09', contactId: c.customer, lines: [
+      { accountId: c.roles['accounts_receivable'], debit: '10', credit: '0' },
+      { accountId: c.roles['income'], debit: '0', credit: '10', itemId: w.items.get('W'), quantity: '1', returnOf: { transactionId: w.docs.get('A3')! } }] } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await invariants(w);
+  });
+
+  it('A through checks, card charges, sales receipts and cash sales: the same stock ledger, warnings[] on replies, derived lines only in inventoryLines', async () => {
+    const w = await setup();
+    const via: Record<string, string> = { A1: 'check', A2: 'card_charge', A3: 'sales_receipt', A4: 'cash_sale', A6: 'check', A9: 'sales_receipt' };
+    await runSteps(w, gcase('A')['steps'], (s) => via[s['doc']]);
+    await checkFinal(w, gcase('A')['final']);
+    for (const doc of ['A1', 'A2', 'A4', 'A6']) {
+      const t = (await req('GET', `/transactions/${w.docs.get(doc)}`)).json as Body;
+      const txn = (t['transaction'] ?? t) as Body;
+      expect((txn['lines'] as Body[]).every((l) => !['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'].includes(l['lineRole'])), doc).toBe(true);
+      expect(Array.isArray(txn['inventoryLines']), doc).toBe(true);
+    }
+    const a4 = ((await req('GET', `/transactions/${w.docs.get('A4')}`)).json['transaction'] ?? {}) as Body;
+    expect((a4['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cogs', '39.48'], ['inventory_relief', '-39.48']]);
+    const a6 = ((await req('GET', `/transactions/${w.docs.get('A6')}`)).json['transaction'] ?? {}) as Body;
+    expect((a6['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cost_correction', '-0.63'], ['cost_correction', '0.63']]);
+    const sr = (await req('GET', `/sales-receipts/${w.docs.get('A3')}`)).json['salesReceipt'] as Body;
+    expect((sr['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cogs', '14.35'], ['inventory_relief', '-14.35']]);
+    expect(sr['lines']).toHaveLength(1);
+    // Voiding the card charge (A2) gives case V's numbers and warns on the reply.
+    await runSteps(w, [{ n: 10, event: 'void', doc: 'A2', expect: gcase('V')['steps'][0].expect }]);
+    await checkRows(w, gcase('V')['rows']);
+    // A check line amount must be quantity x cost.
+    const bad = await req('POST', '/checks', { bankAccountId: c.roles['checking'], payeeNameOnCheck: 'Prairie Mill Supply', txnDate: '2026-02-01', amount: '5.00',
+      lines: [{ accountId: w.asset, amount: '5.00', itemId: w.items.get('W'), quantity: '2', unitPrice: '3.00' }] });
+    expect([bad.status, bad.json['error']?.code]).toEqual([400, 'LINE_AMOUNT_MISMATCH']);
+  });
+
+  it('previews warn NEGATIVE_STOCK in warnings[] without writing anything', async () => {
+    const w = await setup();
+    const steps = gcase('A')['steps'] as Body[];
+    await runSteps(w, steps.slice(0, 4));
+    const before = await rows(w.items.get('W')!);
+    const s5 = steps[4]!;
+    const want = [{ code: 'NEGATIVE_STOCK', itemId: w.items.get('W'), date: s5['date'], onHand: '-3.0000' }];
+    const line = { itemId: w.items.get('W'), quantity: s5['quantity'], unitPrice: '10.00', isTaxable: false };
+    const inv = await req('POST', '/invoices/preview', { contactId: c.customer, txnDate: s5['date'], lines: [line] });
+    expect(inv.status, JSON.stringify(inv.json)).toBe(200);
+    expect((inv.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK')).toEqual(want);
+    const sr = await req('POST', '/sales-receipts/preview', { contactId: c.customer, txnDate: s5['date'], depositToAccountId: c.roles['checking'], lines: [line] });
+    expect((sr.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK')).toEqual(want);
+    // Editing the Jan 8 invoice up to 15 units would take Jan 10 below zero.
+    const edit = await req('POST', '/invoices/preview', { ...w.bodies.get('A3'), invoiceId: w.docs.get('A3'), lines: [{ ...line, quantity: '15' }] });
+    expect((edit.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK')).toEqual([{ ...want[0], date: '2026-01-10', onHand: '-11.0000' }]);
+    const cm = await req('POST', '/credit-memos/preview', { contactId: c.customer, txnDate: s5['date'], lines: [line] });
+    expect(cm.json['warnings']).toEqual([]);
+    expect(await rows(w.items.get('W')!)).toEqual(before);
   });
 });

@@ -8,6 +8,8 @@ import * as ledger from './ledger.service.js';
 import { assertLineContacts } from './line-contacts.service.js';
 import { assertPrintedFaceKeptOnExpenseEdit } from './check.service.js';
 import { exactAmount } from '../utils/money.js';
+import { itemLineDetails } from '../utils/line-amount.js';
+import { assertItemsInScope } from './bill.service.js';
 
 export function buildExpensePayload(input: CreateExpenseInput) {
   const expenseLines = input.lines && input.lines.length > 0
@@ -33,6 +35,8 @@ export function buildExpensePayload(input: CreateExpenseInput) {
       // Per-line customer and billable mark (U-49, U-50).
       contactId: 'contactId' in line ? line.contactId ?? null : null,
       isBillable: 'isBillable' in line ? line.isBillable === true : false,
+      // An inventory item bought on the card charge (U-158): costed by the ledger core.
+      ...itemLineDetails(line as { itemId?: string | null; quantity?: string | null; unitPrice?: string | null }, amounts[i]!, i),
     })),
     // Payment-side cash credit has no user-facing tag; leave null.
     { accountId: input.payFromAccountId, debit: '0', credit: total },
@@ -58,6 +62,7 @@ export async function createExpense(
   const payload = buildExpensePayload(input);
   const post = async (tx: Tx) => {
     await assertLineContacts(tenantId, payload.lines, tx, companyId);
+    await assertItemsInScope(tx, tenantId, companyId, payload.lines.map((l) => l.itemId ?? null));
     return ledger.postTransaction(tenantId, payload, userId, companyId, tx);
   };
   return outerTx ? post(outerTx) : db.transaction(post);
@@ -73,6 +78,7 @@ export async function updateExpense(tenantId: string, txnId: string, input: Crea
       payFromAccountId: input.payFromAccountId, txnDate: payload.txnDate,
     }, companyId);
     await assertLineContacts(tenantId, payload.lines, tx, companyId);
+    await assertItemsInScope(tx, tenantId, companyId, payload.lines.map((l) => l.itemId ?? null));
     return ledger.updateTransaction(tenantId, txnId, payload, userId, companyId, tx);
   });
 }

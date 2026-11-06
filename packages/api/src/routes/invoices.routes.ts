@@ -27,9 +27,12 @@ import * as invoiceEmail from '../services/invoice-email.service.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
 import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 export const invoicesRouter = Router();
 invoicesRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+invoicesRouter.use(inventoryWarningsContext);
 invoicesRouter.use(companyContext);
 invoicesRouter.use(requireResource('invoices'));
 

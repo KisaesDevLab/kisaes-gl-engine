@@ -100,6 +100,13 @@ export const createExpenseSchema = z.object({
     contactId: z.string().uuid().nullable().optional(),
     // Billable to the line's customer (U-50); requires contactId.
     isBillable: z.boolean().optional(),
+    // An inventory item bought (U-158, inventory-costing-v1): the line's
+    // account is the item's inventory asset account; quantity > 0 (at most 4
+    // places) is required; with unitPrice the amount must equal
+    // round2(quantity x unitPrice) (400 LINE_AMOUNT_MISMATCH).
+    itemId: z.string().uuid().nullable().optional(),
+    quantity: z.string().min(1).nullable().optional(),
+    unitPrice: z.string().min(1).nullable().optional(),
   })).max(MAX_LINES).optional(),
   memo: z.string().optional(),
   tags: z.array(z.string().uuid()).optional(),
@@ -155,6 +162,9 @@ export const createDepositSchema = z.object({
 // request company's default rate (U-122, sales-cents-v1).
 const lineItemSchema = z.object({
   accountId: z.string().uuid(),
+  // An inventory item sold on a cash sale (U-158, inventory-costing-v1): the
+  // line keeps its income account; the costing walk posts the cost of goods.
+  itemId: z.string().uuid().nullable().optional(),
   description: z.string().optional(),
   quantity: z.string().min(1),
   unitPrice: z.string().min(1),
@@ -184,7 +194,7 @@ export const salesTaxDocFields = {
   useCurrentRates: z.boolean().optional(),
 };
 
-export const invoiceLineSchema = z.object({
+export const invoiceLineFields = {
   accountId: z.string().uuid().optional(),
   itemId: z.string().uuid().nullable().optional(),
   description: z.string().max(4000).optional(),
@@ -210,7 +220,21 @@ export const invoiceLineSchema = z.object({
   // else the item's, else the taxable flag (Tax / Non). Its taxable flag
   // decides whether the line is taxed when the document has a sales tax.
   taxCodeId: z.string().uuid().nullable().optional(),
-}).refine((l) => !!l.accountId || !!l.itemId || !!l.billableSourceLineId, { message: 'Each line needs an accountId or an itemId', path: ['accountId'] });
+};
+const hasAccountOrItem = (l: { accountId?: string; itemId?: string | null; billableSourceLineId?: string }) => !!l.accountId || !!l.itemId || !!l.billableSourceLineId;
+const needsAccountOrItem = () => ({ message: 'Each line needs an accountId or an itemId', path: ['accountId'] });
+export const invoiceLineSchema = z.object(invoiceLineFields).refine(hasAccountOrItem, needsAccountOrItem());
+
+// A credit-memo line (U-138) may return units of an earlier sale (U-158,
+// inventory-costing-v1, Q-P24e / Q-P24u): returnOf names the invoice or sales
+// receipt (the transaction, not a line) that sold this inventory item. The
+// units come back at that sale's cost; without returnOf at the current
+// average cost. On PUT, omitted keeps the stored link of the line at the
+// same position with the same item; null removes it.
+export const creditMemoLineSchema = z.object({
+  ...invoiceLineFields,
+  returnOf: z.object({ transactionId: z.string().uuid() }).nullable().optional(),
+}).refine(hasAccountOrItem, needsAccountOrItem());
 
 export const createCashSaleSchema = z.object({
   txnDate: z.string().min(1),

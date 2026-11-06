@@ -19,6 +19,7 @@ import * as paymentService from '../services/payment.service.js';
 import * as salesDocs from '../services/sales-docs.service.js';
 import { mountSalesDocEmail } from './sales-doc-email.js';
 import { deadlockAsRetry } from '../utils/deadlock.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 /**
  * Credit memos as A/R credit sources (U-137, credit-memo-apply-v1). A memo's
@@ -29,6 +30,8 @@ import { deadlockAsRetry } from '../utils/deadlock.js';
  */
 export const creditMemosRouter = Router();
 creditMemosRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+creditMemosRouter.use(inventoryWarningsContext);
 creditMemosRouter.use(companyContext);
 // Credit memos are a Sales document under the invoices resource, as the
 // permission templates already map them (templates/permissions.ts).

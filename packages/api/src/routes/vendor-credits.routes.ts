@@ -16,9 +16,12 @@ import { idempotent } from '../middleware/idempotent.js';
 import * as vendorCreditService from '../services/vendor-credit.service.js';
 import { pickEnum } from '../utils/list-query.js';
 import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 export const vendorCreditsRouter = Router();
 vendorCreditsRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+vendorCreditsRouter.use(inventoryWarningsContext);
 vendorCreditsRouter.use(companyContext);
 vendorCreditsRouter.use(requireResource('vendor_credits'));
 

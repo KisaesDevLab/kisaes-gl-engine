@@ -34,6 +34,10 @@ export interface WriteCheckInput {
     contactId?: string | null;
     /** Billable to the line's customer (U-50); requires contactId. */
     isBillable?: boolean;
+    /** An inventory item bought (U-158): the item's inventory asset account; quantity > 0; amount = round2(quantity x unitPrice) when unitPrice is sent. */
+    itemId?: string | null;
+    quantity?: string | null;
+    unitPrice?: string | null;
   }>;
   tagIds?: string[];
   /** Draft id the form's attachments were uploaded against, relinked to the

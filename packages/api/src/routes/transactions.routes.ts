@@ -38,9 +38,12 @@ import * as txnListExport from '../services/transaction-list-export.service.js';
 import { auditLog } from '../middleware/audit.js';
 import * as featureFlags from '../services/feature-flags.service.js';
 import { INVENTORY_ROUTE_NOTE } from '../services/inventory-costing.service.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 export const transactionsRouter = Router();
 transactionsRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+transactionsRouter.use(inventoryWarningsContext);
 transactionsRouter.use(companyContext);
 transactionsRouter.use(requireResource('transactions'));
 // Closed-period actor context (TB ADR-TB-04): carries userType +

@@ -16,6 +16,7 @@ import { idempotent } from '../middleware/idempotent.js';
 import { db } from '../db/index.js';
 import * as salesDocs from '../services/sales-docs.service.js';
 import { mountSalesDocEmail } from './sales-doc-email.js';
+import { inventoryWarningsContext } from '../services/inventory-warnings-context.js';
 
 /**
  * Sales receipts (U-143, sales-receipt-lines-v1): a cash sale on the invoice
@@ -25,6 +26,8 @@ import { mountSalesDocEmail } from './sales-doc-email.js';
  */
 export const salesReceiptsRouter = Router();
 salesReceiptsRouter.use(authenticate);
+// NEGATIVE_STOCK warnings of the costing walk on the reply (U-158).
+salesReceiptsRouter.use(inventoryWarningsContext);
 salesReceiptsRouter.use(companyContext);
 salesReceiptsRouter.use(requireResource('transactions'));
 

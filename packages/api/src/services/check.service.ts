@@ -20,6 +20,9 @@ import { env } from '../config/env.js';
 import { deriveHeaderTags } from './tags/derive-header-tags.js';
 import { claimAndRecord } from './idempotency.service.js';
 import crypto from 'crypto';
+import { itemLineDetails } from '../utils/line-amount.js';
+import { assertItemsInScope } from './bill.service.js';
+import { splitDerived } from './inventory-costing.service.js';
 
 // Check numbers are tracked PER BANK ACCOUNT in
 // check_settings.nextCheckNumbers keyed by the bank GL account id. This SQL
@@ -220,6 +223,8 @@ export function buildCheckLines(input: CheckBody) {
       tagId: l.tagId,
       contactId: l.contactId ?? null,
       isBillable: l.isBillable === true,
+      // An inventory item bought on the check (U-158): costed by the ledger core.
+      ...itemLineDetails(l, lineAmounts[i]!, i),
     })),
     { accountId: input.bankAccountId, debit: '0', credit: amount.toFixed(4) },
   ];
@@ -236,6 +241,7 @@ export async function assertCheckRefsInScope(
   input: { lines: WriteCheckInput['lines']; tagIds?: string[] },
 ) {
   await assertLineContacts(tenantId, input.lines, tx, companyId);
+  await assertItemsInScope(tx, tenantId, companyId, input.lines.map((l) => l.itemId ?? null));
   const tagIds = [...new Set(input.tagIds ?? [])];
   if (tagIds.length === 0) return;
   const rows = await tx.select({ id: tags.id, companyId: tags.companyId }).from(tags)
@@ -578,8 +584,9 @@ export async function updateCheck(
       });
     }
 
-    const lines = await tx.select().from(journalLinesTable)
-      .where(and(eq(journalLinesTable.tenantId, tenantId), eq(journalLinesTable.transactionId, checkId)));
+    // Derived costing lines (U-157 B3) come back as inventoryLines, never in lines.
+    const { lines, inventoryLines } = splitDerived(await tx.select().from(journalLinesTable)
+      .where(and(eq(journalLinesTable.tenantId, tenantId), eq(journalLinesTable.transactionId, checkId))));
 
     // Header tags: sent → the set is replaced (with TAGS_SPLIT_LEVEL_V2 the
     // line-derived tags the ledger just wrote stay in it); absent → as the
@@ -609,7 +616,7 @@ export async function updateCheck(
 
     const [txn] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, checkId))).limit(1);
-    return { ...txn!, lines, checkNumber, printStatus, payeeNameOnCheck: input.payeeNameOnCheck };
+    return { ...txn!, lines, inventoryLines, checkNumber, printStatus, payeeNameOnCheck: input.payeeNameOnCheck };
   });
 }
 

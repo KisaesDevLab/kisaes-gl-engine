@@ -35,6 +35,13 @@ export const writeCheckSchema = z.object({
     // Billable to the line's customer (U-50). Requires contactId; the
     // service refuses it otherwise (400 VALIDATION_ERROR).
     isBillable: z.boolean().optional(),
+    // An inventory item bought (U-158, inventory-costing-v1): accountId is
+    // the item's inventory asset account; quantity > 0 (at most 4 places)
+    // is required; with unitPrice the amount must equal round2(quantity x
+    // unitPrice) (400 LINE_AMOUNT_MISMATCH).
+    itemId: z.string().uuid().nullable().optional(),
+    quantity: z.string().min(1).nullable().optional(),
+    unitPrice: z.string().min(1).nullable().optional(),
   })).min(1),
   tagIds: z.array(z.string().uuid()).optional(),
   // Client-generated id the form's attachments were uploaded against while
