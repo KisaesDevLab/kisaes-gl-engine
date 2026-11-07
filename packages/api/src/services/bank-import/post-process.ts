@@ -217,7 +217,7 @@ async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Pr
     if (ruleCounts.size > 0) {
       const counts = [...ruleCounts].map(([id, n]) => ({ id, n }));
       await tx.execute(sql`
-        UPDATE bank_rules r SET times_applied = COALESCE(r.times_applied, 0) + v.n, last_applied_at = now()
+        UPDATE bank_rules r SET times_applied = r.times_applied + v.n, last_applied_at = now()
         FROM jsonb_to_recordset(${JSON.stringify(counts)}::jsonb) AS v(id uuid, n int) WHERE r.id = v.id`);
     }
     if (states.length > 0) {

@@ -314,10 +314,14 @@ describe('bank-import-batch-v1', () => {
     const changed = { line: 1, date: '2026-11-21', amount: '85.00', description: 'HARDWARE STORE 12', fitid: 'CH-1' };
 
     const prev = await preview(batch([changed]));
-    expect(prev.json.rows[0]).toMatchObject({ status: 'changed', existingItemId: item!.id, existingPending: true });
+    // Q-P25af: old vs new side by side (the existing item's values, exact strings).
+    expect(prev.json.rows[0]).toMatchObject({
+      status: 'changed', existingItemId: item!.id, existingPending: true, existingAmount: '80.00', existingDate: '2026-11-20',
+    });
 
     const rep = await commit(batch([{ ...changed, changedAction: 'replace' }]));
-    expect(rep.json.rows[0]).toMatchObject({ status: 'changed', replaced: true, inserted: false });
+    // The values before the replace.
+    expect(rep.json.rows[0]).toMatchObject({ status: 'changed', replaced: true, inserted: false, existingAmount: '80.00', existingDate: '2026-11-20' });
     const [after] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, item!.id));
     expect(after!.amount).toBe('85.0000');
     const audits = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'bank_feed')));
@@ -328,7 +332,9 @@ describe('bank-import-batch-v1', () => {
     const refused = await commit(batch([{ ...again, changedAction: 'replace' }]));
     expect(refused.json.rows[0]).toMatchObject({ status: 'changed', replaced: false, inserted: false });
     const add = await commit(batch([{ ...again, changedAction: 'add' }]));
-    expect(add.json.rows[0]).toMatchObject({ status: 'changed', inserted: true });
+    expect(add.json.rows[0]).toMatchObject({ status: 'changed', inserted: true, existingAmount: '85.00', existingDate: '2026-11-21' });
+    // Only changed rows carry them.
+    expect(Object.keys((await preview(batch(OFX, { sourceFileSha256: '6'.repeat(64) }))).json.rows[0])).not.toContain('existingAmount');
     const [added] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, add.json.insertedItemIds[0]));
     expect(added!.providerTransactionId).toBeNull();
   });

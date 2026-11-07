@@ -108,6 +108,9 @@ export interface RowResult {
   existingItemId?: string;
   existingImportedAt?: string;
   existingPending?: boolean;
+  /** A `changed` row (Q-P25af): the existing item's amount (feed sign, at least 2 decimals) and date before this batch. */
+  existingAmount?: string;
+  existingDate?: string;
   closedPeriod: boolean;
   inserted: boolean;
   /** A `changed` row with changedAction "replace": the existing item was updated. */
@@ -716,6 +719,12 @@ function counts(rows: RowResult[]): BatchResult['counts'] {
   };
 }
 
+/** A stored amount as an exact decimal string with at least 2 decimals ('85.0000' → '85.00', '1.2345' kept). */
+export function exactAmount(a: string): string {
+  const d = new Decimal(a);
+  return d.toFixed(Math.max(2, d.decimalPlaces()));
+}
+
 function rowResult(row: BatchRowInput, c: Classified, lockDate: string | null): RowResult {
   return {
     line: row.line,
@@ -726,6 +735,7 @@ function rowResult(row: BatchRowInput, c: Classified, lockDate: string | null): 
       existingImportedAt: c.existing.createdAt,
       existingPending: c.existing.status === 'pending' || c.existing.status === 'assigned',
     } : {}),
+    ...(c.status === 'changed' && c.existing ? { existingAmount: exactAmount(c.existing.amount), existingDate: c.existing.date } : {}),
     closedPeriod: lockDate !== null && row.date <= lockDate,
     inserted: false,
   };

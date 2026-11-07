@@ -466,6 +466,9 @@ const importRowResultSchema = z.object({
   existingItemId: z.string().uuid().optional(),
   existingImportedAt: z.string().optional(),
   existingPending: z.boolean().optional(),
+  existingAmount: z.string().optional()
+    .describe('changed rows only (Q-P25af): the existing item\'s amount before this batch, decimal string in the feed sign, at least 2 decimals'),
+  existingDate: z.string().optional().describe('changed rows only (Q-P25af): the existing item\'s date (YYYY-MM-DD) before this batch'),
   closedPeriod: z.boolean(),
   inserted: z.boolean(),
   replaced: z.boolean().optional(),
@@ -503,7 +506,8 @@ const IMPORT_BATCH_DESCRIPTION = 'bank-import-batch-v1 (U-06). One account secti
   + 'banking, a commit needs write (Q-P25ab). bankIdentity {bankId?, acctId} is raw (loopback only, Q-P25u): the engine links '
   + 'the account by an HMAC under the company link key (made on the first commit) and the last 4 characters of acctId, and keeps '
   + 'neither raw value. A replay (Idempotency-Key) shows the live postProcessing state (scheduled, done, failed, or cancelled when '
-  + 'an undo stopped it); GET /feed/import-batches shows its progress (processed of total).';
+  + 'an undo stopped it); GET /feed/import-batches shows its progress (processed of total). A changed row carries the existing item\'s '
+  + 'amount and date before this batch (existingAmount, existingDate; dry run and commit) so old and new can be shown side by side.';
 
 const importBatchListSchema = z.object({
   batches: z.array(z.object({

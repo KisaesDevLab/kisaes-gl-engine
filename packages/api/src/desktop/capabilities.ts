@@ -754,7 +754,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * starts), raised after each chunk. postProcessing (list, commit replay) is scheduled | done | failed | cancelled; cancelled = an undo
    * stopped it. DELETE /banking/feed/import-batches/:id while post-processing runs stops it after its current chunk and undoes (200, as
    * before); when the undo does not go through (rows_already_used) post-processing goes on. 409 still_preparing only when it did not
-   * stop within 20 s: nothing was undone, retry.
+   * stop within 20 s: nothing was undone, retry. Rows with status changed also carry existingAmount (the existing item's amount before
+   * this batch: decimal string, feed sign, at least 2 decimals) and existingDate (YYYY-MM-DD), dry run and commit (Q-P25af).
    */
   'bank-import-progress-v1',
 ];
