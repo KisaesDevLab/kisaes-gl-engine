@@ -8,12 +8,12 @@
 // invoices).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import {
   tenants, users, userTenantAccess, sessions, companies, accounts, auditLog, bankConnections, bankFeedItems, bankRules,
   bankImportBatches, transactions, journalLines, transactionClassificationState, categorizationHistory, idempotencyKeys,
-  conditionalRules, conditionalRuleAudit, contacts,
+  conditionalRules, conditionalRuleAudit, contacts, firms, tenantFirmAssignments, tenantFeatureFlags,
 } from '../../db/schema/index.js';
 import * as authService from '../auth.service.js';
 import * as accountsService from '../accounts.service.js';
@@ -27,6 +27,10 @@ let bankId = '';
 let expenseId = '';
 let otherExpenseId = '';
 let vendorId = '';
+let createdFirmId = '';
+let globalRuleIds: string[] = [];
+let sourceTenantId = '';
+const rand = () => `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
 beforeEach(async () => {
   const reg = await authService.register({
@@ -48,6 +52,23 @@ afterEach(async () => {
   await db.delete(transactionClassificationState).where(eq(transactionClassificationState.tenantId, tenantId));
   await db.delete(conditionalRuleAudit).where(eq(conditionalRuleAudit.tenantId, tenantId));
   await db.delete(conditionalRules).where(eq(conditionalRules.tenantId, tenantId));
+  if (globalRuleIds.length > 0) {
+    await db.delete(conditionalRules).where(inArray(conditionalRules.id, globalRuleIds));
+    globalRuleIds = [];
+  }
+  if (sourceTenantId) {
+    await db.delete(tenantFirmAssignments).where(eq(tenantFirmAssignments.tenantId, sourceTenantId));
+    await db.delete(contacts).where(eq(contacts.tenantId, sourceTenantId));
+    await db.delete(accounts).where(eq(accounts.tenantId, sourceTenantId));
+    await db.delete(tenants).where(eq(tenants.id, sourceTenantId));
+    sourceTenantId = '';
+  }
+  await db.delete(tenantFeatureFlags).where(eq(tenantFeatureFlags.tenantId, tenantId));
+  if (createdFirmId) {
+    await db.delete(tenantFirmAssignments).where(eq(tenantFirmAssignments.firmId, createdFirmId));
+    await db.delete(firms).where(eq(firms.id, createdFirmId));
+    createdFirmId = '';
+  }
   await db.delete(categorizationHistory).where(eq(categorizationHistory.tenantId, tenantId));
   await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
   await db.delete(bankImportBatches).where(eq(bankImportBatches.tenantId, tenantId));
@@ -151,9 +172,76 @@ async function ruleCounts(): Promise<Record<string, number>> {
   return Object.fromEntries(r.map((x) => [x.name, x.n ?? 0]));
 }
 
+/**
+ * RULES_TIERED_V1 on, a firm managing the tenant, a global rule whose
+ * account and vendor live in another tenant (resolved through the symbol
+ * caches the batch shares across chunks) and a firm rule on the tenant.
+ */
+async function seedTiered(): Promise<{ mappedAccountId: string }> {
+  await db.insert(tenantFeatureFlags).values({ tenantId, flagKey: 'RULES_TIERED_V1', enabled: true }).onConflictDoNothing();
+  // The firm managing the tenant (registration may already have assigned one).
+  const [managed] = await db.select({ firmId: tenantFirmAssignments.firmId }).from(tenantFirmAssignments)
+    .where(and(eq(tenantFirmAssignments.tenantId, tenantId), eq(tenantFirmAssignments.isActive, true)));
+  let firmId = managed?.firmId;
+  if (!firmId) {
+    const [firm] = await db.insert(firms).values({ name: 'PP Firm', slug: `pp-firm-${rand()}` }).returning();
+    firmId = createdFirmId = firm!.id;
+    await db.insert(tenantFirmAssignments).values({ tenantId, firmId });
+  }
+  const [src] = await db.insert(tenants).values({ name: 'PP Source', slug: `pp-source-${rand()}` }).returning();
+  sourceTenantId = src!.id;
+  await db.insert(tenantFirmAssignments).values({ tenantId: sourceTenantId, firmId });
+  const tag = `pp_fees_${Math.random().toString(36).slice(2, 8)}`;
+  const [srcAccount] = await db.insert(accounts).values({
+    tenantId: sourceTenantId, accountNumber: '6300', name: 'Bank Fees', accountType: 'expense', systemTag: tag, isActive: true,
+  }).returning();
+  const [mapped] = await db.insert(accounts).values({
+    tenantId, accountNumber: '6301', name: 'PP Bank Fees', accountType: 'expense', systemTag: tag, isActive: true,
+  }).returning();
+  const [srcVendor] = await db.insert(contacts).values({ tenantId: sourceTenantId, displayName: 'Deposit Source Co', contactType: 'vendor' }).returning();
+  const [global] = await db.insert(conditionalRules).values({
+    tenantId: null, scope: 'global_firm', ownerFirmId: firmId, name: 'Global deposits', priority: 10,
+    conditions: { type: 'leaf', field: 'descriptor', operator: 'contains', value: 'deposit customer' },
+    actions: [{ type: 'set_account', accountId: srcAccount!.id }, { type: 'set_vendor', vendorId: srcVendor!.id }], active: true,
+  }).returning({ id: conditionalRules.id });
+  globalRuleIds.push(global!.id);
+  await db.insert(conditionalRules).values([
+    { tenantId, scope: 'tenant_firm', ownerFirmId: firmId, name: 'Firm parking', priority: 20, continueAfterMatch: true,
+      conditions: { type: 'leaf', field: 'descriptor', operator: 'contains', value: 'parking' },
+      actions: [{ type: 'set_account', accountId: expenseId }, { type: 'mark_for_review' }], active: true },
+  ]);
+  return { mappedAccountId: mapped!.id };
+}
+
+const itemCols = (i: typeof bankFeedItems.$inferSelect) => ({
+  description: i.description, suggestedAccountId: i.suggestedAccountId, suggestedContactId: i.suggestedContactId,
+  suggestedTagId: i.suggestedTagId, matchType: i.matchType, confidenceScore: i.confidenceScore, skipAi: i.skipAi,
+  splitsConfig: i.splitsConfig, status: i.status, payeeNameOnCheck: i.payeeNameOnCheck,
+});
+const stateCols = (s: typeof transactionClassificationState.$inferSelect) => ({
+  bucket: s.bucket, confidenceScore: s.confidenceScore, suggestedAccountId: s.suggestedAccountId, suggestedVendorId: s.suggestedVendorId,
+  matchedRuleId: s.matchedRuleId, reasoningBlob: s.reasoningBlob, matchCandidates: s.matchCandidates, modelUsed: s.modelUsed, companyId: s.companyId,
+});
+
+/** Batch `b`'s items, state rows and rule fires equal batch `a`'s, line by line. */
+async function expectSameResults(a: string, b: string): Promise<void> {
+  const [ia, ib] = [await itemsByLine(a), await itemsByLine(b)];
+  expect(ib.size).toBe(ia.size);
+  for (const [line, x] of ia) expect({ line, ...itemCols(ib.get(line)!) }).toEqual({ line, ...itemCols(x) });
+  const [sa, sb] = [await statesByLine(a), await statesByLine(b)];
+  expect([...sb.keys()].sort((x, y) => x - y)).toEqual([...sa.keys()].sort((x, y) => x - y));
+  for (const [line, x] of sa) expect({ line, ...stateCols(sb.get(line)!) }).toEqual({ line, ...stateCols(x) });
+  expect((await firesByLine(b)).map(({ line, ruleId, actions, tier }) => ({ line, ruleId, actions, tier })))
+    .toEqual((await firesByLine(a)).map(({ line, ruleId, actions, tier }) => ({ line, ruleId, actions, tier })));
+}
+
 describe('import post-processing (U-06 follow-up)', () => {
-  it('gives the same result as the per-row pipelines on a mixed file (chunks of 7)', async () => {
+  it.each([
+    ['off', false],
+    ['on', true],
+  ])('gives the same result as the per-row pipelines on a mixed file (chunks of 7, RULES_TIERED_V1 %s)', async (_label, tiered) => {
     await seedRulesAndBooks();
+    const tieredSeed = tiered ? await seedTiered() : null;
     // A global rule (account by name, contact found or made), a rule matching a check payee,
     // a journal entry and a pending item of another account for the matchers.
     await db.insert(bankRules).values([
@@ -209,28 +297,20 @@ describe('import post-processing (U-06 follow-up)', () => {
     }
     const after = await ruleCounts();
 
-    const itemCols = (i: typeof bankFeedItems.$inferSelect) => ({
-      description: i.description, suggestedAccountId: i.suggestedAccountId, suggestedContactId: i.suggestedContactId,
-      suggestedTagId: i.suggestedTagId, matchType: i.matchType, confidenceScore: i.confidenceScore, skipAi: i.skipAi,
-      splitsConfig: i.splitsConfig, status: i.status, payeeNameOnCheck: i.payeeNameOnCheck,
-    });
-    const [ia, ib] = [await itemsByLine(a.batchId!), await itemsByLine(b.batchId!)];
-    expect(ib.size).toBe(rows.length);
-    for (const [line, x] of ia) expect({ line, ...itemCols(ib.get(line)!) }).toEqual({ line, ...itemCols(x) });
-
-    const stateCols = (s: typeof transactionClassificationState.$inferSelect) => ({
-      bucket: s.bucket, confidenceScore: s.confidenceScore, suggestedAccountId: s.suggestedAccountId, suggestedVendorId: s.suggestedVendorId,
-      matchedRuleId: s.matchedRuleId, reasoningBlob: s.reasoningBlob, matchCandidates: s.matchCandidates, modelUsed: s.modelUsed, companyId: s.companyId,
-    });
-    const [sa, sb] = [await statesByLine(a.batchId!), await statesByLine(b.batchId!)];
-    expect([...sb.keys()].sort((x, y) => x - y)).toEqual([...sa.keys()].sort((x, y) => x - y));
-    for (const [line, x] of sa) expect({ line, ...stateCols(sb.get(line)!) }).toEqual({ line, ...stateCols(x) });
-
-    expect((await firesByLine(b.batchId!)).map(({ line, ruleId, actions, tier }) => ({ line, ruleId, actions, tier })))
-      .toEqual((await firesByLine(a.batchId!)).map(({ line, ruleId, actions, tier }) => ({ line, ruleId, actions, tier })));
+    await expectSameResults(a.batchId!, b.batchId!);
     for (const name of Object.keys(after)) expect({ name, n: after[name]! - mid[name]! }).toEqual({ name, n: mid[name]! - before[name]! });
 
     // The fixture exercises every stage.
+    const ib = await itemsByLine(b.batchId!);
+    const sb = await statesByLine(b.batchId!);
+    expect(ib.size).toBe(rows.length);
+    if (tieredSeed) {
+      // The global rule, resolved into this tenant (account by system tag, vendor by name), and the firm rule fired.
+      const deposits = [...ib.values()].filter((i) => i.description?.startsWith('DEPOSIT CUSTOMER') || i.originalDescription?.startsWith('DEPOSIT CUSTOMER'));
+      expect(deposits.length).toBeGreaterThan(0);
+      for (const d of deposits) expect(d.suggestedAccountId).toBe(tieredSeed.mappedAccountId);
+      expect(new Set((await firesByLine(b.batchId!)).map((f) => f.tier))).toEqual(new Set(['tenant_user', 'tenant_firm', 'global_firm']));
+    }
     const kinds = new Set([...ib.values()].map((i) => i.matchType));
     expect(kinds).toEqual(new Set(['rule', 'history', null]));
     expect([...sb.values()].some((s) => (s.matchCandidates as unknown[]).length > 0)).toBe(true);
@@ -244,20 +324,130 @@ describe('import post-processing (U-06 follow-up)', () => {
     const { POST_CHUNK } = await import('./post-process.js');
     const size = POST_CHUNK.size;
     POST_CHUNK.size = 100;
-    const seen: number[] = [];
-    const watch = setInterval(() => {
-      void db.select({ p: bankImportBatches.processedRows }).from(bankImportBatches).where(eq(bankImportBatches.id, r.batchId!))
-        .then(([x]) => { if (x) seen.push(x.p); });
-    }, 5);
+    // What another connection sees after each chunk committed.
+    const seen: Array<{ processed: number; total: number | null }> = [];
+    POST_CHUNK.afterChunk = async (id) => {
+      const [x] = await db.select({ processed: bankImportBatches.processedRows, total: bankImportBatches.totalRows })
+        .from(bankImportBatches).where(eq(bankImportBatches.id, id));
+      seen.push(x!);
+    };
     try {
       expect(await importBatch.runImportPostProcessing(tenantId, r.batchId!)).toBe('done');
     } finally {
-      clearInterval(watch);
       POST_CHUNK.size = size;
+      POST_CHUNK.afterChunk = undefined;
     }
     const [listed] = await importBatch.listBatches({ tenantId, companyId }, { accountId: bankId });
     expect(listed).toMatchObject({ postProcessing: 'done', processed: 250, total: 250 });
-    expect(seen.every((p) => [0, 100, 200, 250].includes(p))).toBe(true);
+    expect(seen).toEqual([{ processed: 100, total: 250 }, { processed: 200, total: 250 }, { processed: 250, total: 250 }]);
+  });
+
+  it('a run stopped by an undo that is refused goes on where it stopped: the same result as a straight run', async () => {
+    await seedRulesAndBooks();
+    const rows = mixedRows(2_000);
+    const bankB = (await accountsService.create(tenantId, { name: 'PP Checking B', accountType: 'asset', detailType: 'bank', accountNumber: '1094' })).id;
+    const actor = { tenantId, companyId, userId: ownerId };
+    const assign = (batchId: string) => db.update(bankFeedItems).set({ status: 'assigned', assignedAt: new Date(), assignedAccountId: expenseId })
+      .where(and(eq(bankFeedItems.importBatchId, batchId), eq(bankFeedItems.sourceLine, 5)));
+    const { POST_CHUNK } = await import('./post-process.js');
+    const size = POST_CHUNK.size;
+    POST_CHUNK.size = 100;
+    try {
+      // Straight run; line 5 used afterwards.
+      const a = await importBatch.commitBatch(actor, batchInput(rows, 'j'));
+      const before = await ruleCounts();
+      expect(await importBatch.runImportPostProcessing(tenantId, a.batchId!)).toBe('done');
+      await assign(a.batchId!);
+      const mid = await ruleCounts();
+
+      // Line 5 used once its chunk is done, then an undo: it stops the run and is refused.
+      const b = await importBatch.commitBatch(actor, { ...batchInput(rows, 'k'), accountId: bankB });
+      const running = importBatch.runImportPostProcessing(tenantId, b.batchId!);
+      for (let i = 0; i < 2_000; i++) {
+        const [x] = await db.select({ p: bankImportBatches.processedRows }).from(bankImportBatches).where(eq(bankImportBatches.id, b.batchId!));
+        if (x && x.p >= 100) break;
+        await new Promise((res) => setTimeout(res, 5));
+      }
+      await assign(b.batchId!);
+      await expect(importBatch.undoBatch(actor, b.batchId!, false)).rejects.toMatchObject({ code: 'rows_already_used' });
+      expect(await running).toBe('cancelled');
+      await importBatch.__postProcessing.last;
+      const after = await ruleCounts();
+
+      const [bb] = await db.select().from(bankImportBatches).where(eq(bankImportBatches.id, b.batchId!));
+      expect(bb).toMatchObject({ postProcessing: 'done', cancelRequestedAt: null, undoneAt: null, processedRows: 2_000, totalRows: 2_000 });
+      await expectSameResults(a.batchId!, b.batchId!);
+      for (const name of Object.keys(after)) expect({ name, n: after[name]! - mid[name]! }).toEqual({ name, n: mid[name]! - before[name]! });
+      expect(mid['Acme utilities']! - before['Acme utilities']!).toBe(200);
+    } finally {
+      POST_CHUNK.size = size;
+    }
+  }, 300_000);
+
+  it('a row changed while its chunk is prepared is left as it is; the others are written', async () => {
+    await seedRulesAndBooks();
+    const r = await importBatch.commitBatch({ tenantId, companyId, userId: ownerId }, batchInput(mixedRows(20), 'l'));
+    const lines = await itemsByLine(r.batchId!);
+    const acme = lines.get(2)!; // ACME UTILITIES: a legacy rule hit
+    const hist = lines.get(3)!; // HISTORY PAYEE: trusted history
+    const { pool } = await import('../../db/index.js');
+    const owner = await pool.connect();
+    try {
+      // The owner assigns two rows in a transaction still open while the chunk is read and evaluated.
+      await owner.query('BEGIN');
+      await owner.query(`UPDATE bank_feed_items SET status = 'assigned', assigned_at = now(), assigned_account_id = $1 WHERE id = ANY($2::uuid[])`,
+        [otherExpenseId, [acme.id, hist.id]]);
+      const running = importBatch.runImportPostProcessing(tenantId, r.batchId!);
+      // The chunk's write waits on those rows.
+      for (let i = 0; i < 2_000; i++) {
+        const w = await db.execute(sql`SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND query LIKE '%md5(bank_feed_items::text)%FOR UPDATE%'`);
+        if ((w.rows[0] as { n: number }).n > 0) break;
+        await new Promise((res) => setTimeout(res, 5));
+      }
+      await owner.query('COMMIT');
+      expect(await running).toBe('done');
+    } finally {
+      owner.release();
+    }
+    const after = await itemsByLine(r.batchId!);
+    for (const x of [acme, hist]) {
+      expect(itemCols(after.get(x.sourceLine!)!)).toEqual({ ...itemCols(x), status: 'assigned' });
+    }
+    const states = await statesByLine(r.batchId!);
+    expect(states.has(2)).toBe(false);
+    expect(states.has(3)).toBe(false);
+    // The other rows were written: line 12 (ACME) counted, line 13 (history) suggested.
+    expect(after.get(12)!.suggestedAccountId).toBe(otherExpenseId);
+    expect(after.get(13)!).toMatchObject({ suggestedAccountId: expenseId, matchType: 'history' });
+    expect((await ruleCounts())['Acme utilities']).toBe(1);
+  });
+
+  it('a row that cannot be written is skipped; the rest of its chunk is written and the run is done', async () => {
+    await seedRulesAndBooks();
+    const r = await importBatch.commitBatch({ tenantId, companyId, userId: ownerId }, batchInput(mixedRows(20), 'm'));
+    const bad = (await itemsByLine(r.batchId!)).get(2)!; // ACME UTILITIES: a legacy rule hit
+    const fn = `pp_fail_${Math.random().toString(36).slice(2, 10)}`;
+    await db.execute(sql.raw(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.id = '${bad.id}' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW; END $$`));
+    await db.execute(sql.raw(`CREATE TRIGGER ${fn} BEFORE UPDATE ON bank_feed_items FOR EACH ROW EXECUTE FUNCTION ${fn}()`));
+    try {
+      expect(await importBatch.runImportPostProcessing(tenantId, r.batchId!)).toBe('done');
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${fn} ON bank_feed_items`));
+      await db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${fn}()`));
+    }
+    const [b] = await db.select().from(bankImportBatches).where(eq(bankImportBatches.id, r.batchId!));
+    expect(b).toMatchObject({ postProcessing: 'done', processedRows: 20, totalRows: 20 });
+    const after = await itemsByLine(r.batchId!);
+    expect(itemCols(after.get(2)!)).toEqual(itemCols(bad));
+    expect(after.get(12)!.suggestedAccountId).toBe(otherExpenseId);
+    expect(after.get(3)!).toMatchObject({ suggestedAccountId: expenseId, matchType: 'history' });
+    // The bad row's rule count went back with it.
+    expect((await ruleCounts())['Acme utilities']).toBe(1);
+    const states = await statesByLine(r.batchId!);
+    expect(states.has(1)).toBe(true);
+    expect(states.has(3)).toBe(true);
   });
 
   it('an undo while preparing stops post-processing after its chunk and undoes; reported cancelled', async () => {
