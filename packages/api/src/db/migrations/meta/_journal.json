@@ -1835,6 +1835,13 @@
       "when": 1787500016380,
       "tag": "0261_inventory_position",
       "breakpoints": true
+    },
+    {
+      "idx": 262,
+      "version": "7",
+      "when": 1787500017380,
+      "tag": "0262_bank_feed_fitid_scope",
+      "breakpoints": true
     }
   ]
 }

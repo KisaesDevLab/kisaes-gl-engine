@@ -85,7 +85,12 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   tenantIdx: index('idx_bfi_tenant').on(table.tenantId),
   statusIdx: index('idx_bfi_status').on(table.tenantId, table.status),
   dateIdx: index('idx_bfi_date').on(table.tenantId, table.feedDate),
-  providerTxnIdx: uniqueIndex('idx_bfi_provider_txn').on(table.tenantId, table.providerTransactionId),
+  // A bank's transaction id is unique per bank connection (migration 0262,
+  // U-163); the tenant-wide index serves the Plaid sync's lookups.
+  connectionProviderTxnUniq: uniqueIndex('uq_bfi_connection_provider_txn')
+    .on(table.bankConnectionId, table.providerTransactionId)
+    .where(sql`provider_transaction_id IS NOT NULL`),
+  tenantProviderTxnIdx: index('idx_bfi_tenant_provider_txn').on(table.tenantId, table.providerTransactionId),
 }));
 
 export const reconciliations = pgTable('reconciliations', {
