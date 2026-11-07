@@ -341,7 +341,7 @@ const importBatchRowSchema = z.object({
   line: z.number().int().min(1).describe('line (or entry) number in the source file, echoed in results and errors'),
   date: isoDate,
   amount: z.string().describe('decimal string, feed sign (positive = money out), at most 12 integer digits and 2 decimals, not zero'),
-  description: z.string().describe('bank description (OFX: NAME and MEMO assembled as in dedupe_v1.json), at most 500 characters'),
+  description: z.string().describe('bank description (OFX/QFX: NAME only; MEMO goes in memo, dedupe_v1.json), at most 500 characters'),
   memo: z.string().nullish().describe('at most 1,000 characters; not part of any key'),
   checkNumber: z.number().int().min(0).max(999_999_999).nullish(),
   fitid: z.string().max(255).nullish().describe('the bank transaction id (OFX FITID)'),

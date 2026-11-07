@@ -14521,7 +14521,7 @@
                           "type": "string"
                         },
                         "description": {
-                          "description": "bank description (OFX: NAME and MEMO assembled as in dedupe_v1.json), at most 500 characters",
+                          "description": "bank description (OFX/QFX: NAME only; MEMO goes in memo, dedupe_v1.json), at most 500 characters",
                           "type": "string"
                         },
                         "fitid": {

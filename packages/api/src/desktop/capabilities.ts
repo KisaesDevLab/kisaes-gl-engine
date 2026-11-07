@@ -717,7 +717,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * dryRun, relinkIdentity?, bankIdentity?: {mask, accountKeyHash}, fileEndingBalance?, fileEndingDate?, rows: [{line, date, amount,
    * description, memo?, checkNumber?, fitid?, include?, changedAction?}]}; amounts are decimal strings in the feed sign (positive = money
    * out) matching ^-?\d{1,12}(\.\d{1,2})?$. The engine computes dedupe keys v1 (packages/api/src/services/bank-import/__fixtures__/
-   * dedupe_v1.json) and returns {batchId?, sameFileImportedAt?, identityLinkedElsewhere?, insertedItemIds, postProcessing?, rows: [{line,
+   * dedupe_v1.json; OFX/QFX description = NAME only, MEMO goes in memo and is never keyed) and returns {batchId?, sameFileImportedAt?, identityLinkedElsewhere?, insertedItemIds, postProcessing?, rows: [{line,
    * status new|duplicate|possible_duplicate|changed, reason?, existingItemId?, existingImportedAt?, existingPending?, closedPeriod, inserted,
    * replaced?}], counts, insertedTotal, balanceCheck?}. A commit inserts new rows and possible duplicates (feed items carry
    * possibleDuplicate and possibleDuplicateOf, also on GET /banking/feed; include:false skips a row), never exact duplicates; a matching

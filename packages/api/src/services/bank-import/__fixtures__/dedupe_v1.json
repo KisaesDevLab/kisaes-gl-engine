@@ -6,7 +6,7 @@
     "canonicalAmount": "the decimal with exactly 2 places, feed sign (positive = money out); \"-\" only when negative.",
     "rowKey": "lowercase hex sha256 of UTF-8 \"v1|row|\" + date + \"|\" + canonicalAmount + \"|\" + norm(description) + \"|\" + ordinal; ordinal = 1-based position among the request rows with the same (date, canonicalAmount, norm(description)).",
     "fitidKey": "lowercase hex sha256 of UTF-8 \"v1|fitid|\" + fitid trimmed of U+0009-U+000D, U+0020, U+00A0.",
-    "ofxDescription": "NAME and MEMO trimmed as above; MEMO when NAME is empty; NAME when MEMO is empty or norm(NAME) contains norm(MEMO); else NAME + \" \" + MEMO."
+    "ofxDescription": "OFX/QFX (owner Q-P25r, 2026-11-07): the description is NAME trimmed as above, and only NAME (empty when NAME is absent); MEMO trimmed goes to the row memo (null when empty) and is never part of the description or any key."
   },
   "norm": [
     {
@@ -187,32 +187,38 @@
     {
       "name": "AMAZON MKTPLACE",
       "memo": "",
-      "description": "AMAZON MKTPLACE"
+      "description": "AMAZON MKTPLACE",
+      "memoOut": null
     },
     {
       "name": "",
       "memo": "MEMO ONLY",
-      "description": "MEMO ONLY"
+      "description": "",
+      "memoOut": "MEMO ONLY"
     },
     {
       "name": "POS PURCHASE ACME STORE",
       "memo": "acme store",
-      "description": "POS PURCHASE ACME STORE"
+      "description": "POS PURCHASE ACME STORE",
+      "memoOut": "acme store"
     },
     {
       "name": "CHECK 1234",
       "memo": "RENT NOVEMBER",
-      "description": "CHECK 1234 RENT NOVEMBER"
+      "description": "CHECK 1234",
+      "memoOut": "RENT NOVEMBER"
     },
     {
       "name": "  ZELLE TO J SMITH ",
       "memo": " Ref 99 ",
-      "description": "ZELLE TO J SMITH Ref 99"
+      "description": "ZELLE TO J SMITH",
+      "memoOut": "Ref 99"
     },
     {
       "name": null,
       "memo": null,
-      "description": ""
+      "description": "",
+      "memoOut": null
     }
   ]
 }

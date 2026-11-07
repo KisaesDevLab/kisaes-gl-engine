@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { canonicalAmount, fitidKey, keyRows, norm, ofxDescription, rowKey } from './keys.js';
+import { canonicalAmount, fitidKey, keyRows, norm, ofxDescription, ofxMemo, rowKey } from './keys.js';
 
 const golden = JSON.parse(readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'dedupe_v1.json'), 'utf8',
@@ -49,6 +49,10 @@ describe('dedupe keys v1 (golden)', () => {
   });
 
   it('OFX description assembly', () => {
-    for (const c of golden.ofxDescription) expect(ofxDescription(c.name, c.memo)).toBe(c.description);
+    // Q-P25r: NAME only; MEMO goes to the memo, never the description.
+    for (const c of golden.ofxDescription) {
+      expect(ofxDescription(c.name)).toBe(c.description);
+      expect(ofxMemo(c.memo)).toBe(c.memoOut);
+    }
   });
 });

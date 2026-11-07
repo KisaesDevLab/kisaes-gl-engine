@@ -23,9 +23,9 @@
  *              balance, no memo.
  *   fitid key  sha256 hex of "v1|fitid|" + fitid with surrounding ASCII
  *              whitespace removed.
- *   OFX description  NAME and MEMO trimmed; MEMO alone when NAME is empty;
- *              NAME alone when MEMO is empty or norm(NAME) contains
- *              norm(MEMO); otherwise NAME + " " + MEMO.
+ *   OFX description  NAME only, trimmed (owner Q-P25r, 2026-11-07); MEMO
+ *              trimmed goes to the row memo and never joins the
+ *              description, a key or the fuzzy match.
  */
 
 import { createHash } from 'node:crypto';
@@ -70,13 +70,15 @@ export function fitidKey(fitid: string): string {
   return sha256Hex(`v1|fitid|${trimWs(fitid)}`);
 }
 
-export function ofxDescription(name: string | null | undefined, memo: string | null | undefined): string {
-  const n = trimWs(name ?? '');
+/** OFX/QFX description: NAME only, trimmed (owner Q-P25r). MEMO never joins it. */
+export function ofxDescription(name: string | null | undefined): string {
+  return trimWs(name ?? '');
+}
+
+/** OFX/QFX memo: MEMO trimmed, null when empty (owner Q-P25r). Not part of any key. */
+export function ofxMemo(memo: string | null | undefined): string | null {
   const m = trimWs(memo ?? '');
-  if (!n) return m;
-  if (!m) return n;
-  if (norm(n).includes(norm(m))) return n;
-  return `${n} ${m}`;
+  return m.length > 0 ? m : null;
 }
 
 export interface KeyedRow {
