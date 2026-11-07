@@ -64,7 +64,7 @@ WITH affected AS (
     m.source_movement_date NULLS FIRST, m.source_txn_created_at NULLS FIRST, m.source_transaction_id NULLS FIRST, m.id ROWS UNBOUNDED PRECEDING)
 ), grouped AS (
   -- L: the last positive average round6(V/Q) after the latest row that left Q > 0 and V > 0 (0 before any).
-  SELECT o.*, CASE WHEN o.rq > 0 AND o.rv > 0 THEN round(o.rv::numeric(40,30) / o.rq, 6) END AS avg,
+  SELECT o.*, CASE WHEN o.rq > 0 AND o.rv > 0 THEN round(o.rv::numeric(60,30) / o.rq, 6) END AS avg,
     count(CASE WHEN o.rq > 0 AND o.rv > 0 THEN 1 END) OVER (PARTITION BY o.company_id, o.item_id ORDER BY o.movement_date, o.txn_created_at,
       o.transaction_id, o.source_movement_date NULLS FIRST, o.source_txn_created_at NULLS FIRST, o.source_transaction_id NULLS FIRST, o.id
       ROWS UNBOUNDED PRECEDING) AS grp
