@@ -1332,7 +1332,7 @@ export async function deleteTransactionInTx(
     }
     const releasedLinks = await releaseDepositLinks(tx, tenantId, txnId);
     // U-147: a voided or deleted document owes no tax (its STP lines go with it).
-    await salesTaxRows.deleteTransactionTaxRows(tx, tenantId, txnId);
+    await salesTaxRows.deleteTransactionTaxRows(tx, tenantId, txnId, opts.userId);
 
     // Other records that point at this transaction and would be left
     // pointing at a deleted one (a matched bank-feed item would also stay

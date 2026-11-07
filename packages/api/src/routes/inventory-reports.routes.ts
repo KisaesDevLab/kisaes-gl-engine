@@ -61,7 +61,7 @@ const detailQuery = z.object({
 inventoryReportsRouter.get('/inventory-valuation-detail', describe({
   summary: 'Inventory valuation detail (inventory-reports-v1)',
   description: 'Response {title, from, to, itemId, opening: [{itemId, onHand, value}], data: [{movementId, itemId, date, transactionId, txnType, '
-    + 'txnNumber, kind (receipt | sale | customer_return | vendor_return | adjust_qty | adjust_value), quantity (signed), value, movementValue, '
+    + 'txnNumber, expenseKind (txnType expense only: card_charge when paid from a credit card account, check when it has a check number or print status, else expense; null for other types), kind (receipt | sale | customer_return | vendor_return | adjust_qty | adjust_value), quantity (signed), value, movementValue, '
     + 'correction, residual, runningQuantity, runningValue, averageCost}], total}. Every stock movement dated from..to (both required, to '
     + 'before from is 400 VALIDATION_ERROR) of every inventory item, or of itemId (not an inventory item of this company: 404), in posting '
     + 'order (date, the document\'s entry time, its id). value is the row\'s whole effect on the asset account (movementValue + correction + '

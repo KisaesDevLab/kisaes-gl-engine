@@ -73,6 +73,21 @@ describe('company-inventory-flag-v1 and inventory-account-v1 (U-25, U-156)', () 
     expect([cogs!.name, cogs!.detailType]).toEqual(['Cost of Goods Sold', 'cost_of_goods_sold']);
   });
 
+  it('a service chart\'s other cogs-type accounts are not adopted: turning on makes "Cost of Goods Sold" (PR-4 QA-3); an existing one is kept', async () => {
+    await db.update(accounts).set({ isActive: false }).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountType, 'cogs')));
+    const [sub] = await db.insert(accounts).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: 'Subcontractors', accountType: 'cogs', detailType: 'other_cost_of_service', accountNumber: '5000',
+    }).returning();
+    await turnOn();
+    const made = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountType, 'cogs'), eq(accounts.isActive, true)));
+    expect(made.map((a) => [a.name, a.detailType]).sort()).toEqual([['Cost of Goods Sold', 'cost_of_goods_sold'], ['Subcontractors', 'other_cost_of_service']]);
+    expect(made.find((a) => a.id === sub!.id)).toBeTruthy();
+    // Turning it on again adopts the one it made.
+    await put('/company/settings', { inventoryEnabled: false });
+    await turnOn();
+    expect(await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountType, 'cogs'), eq(accounts.isActive, true)))).toHaveLength(2);
+  });
+
   it('keeps inventory accounts in place: deactivate, delete, merge and type change are 409 ACCOUNT_IN_USE', async () => {
     const acc = await turnOn();
     expect(err(await h.request('DELETE', `/api/v1/accounts/${acc.asset}`, c.token))).toEqual([409, 'ACCOUNT_IN_USE']);

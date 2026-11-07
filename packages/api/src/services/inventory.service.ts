@@ -18,6 +18,7 @@ import type { DbOrTx } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { Decimal } from '../utils/inventory-walk.js';
+import { positionDesc } from './inventory-position.js';
 
 /** The system tag of the inventory asset account (U-156). */
 export const INVENTORY_ASSET_TAG = 'inventory_asset';
@@ -55,8 +56,10 @@ const accountScope = (tenantId: string, companyId: string | null | undefined) =>
  * active other-current-asset account named "Inventory Asset" (the oldest
  * when several carry the name); a new "Inventory Asset" account. It is
  * tagged inventory_asset (not a system account: the ACCOUNT_IN_USE guards
- * keep it in place). The COGS account: any active account of type cogs,
- * else a new "Cost of Goods Sold". Idempotent; runs in the settings
+ * keep it in place). The COGS account: the active cogs-type account named
+ * "Cost of Goods Sold", else one of detail type cost_of_goods_sold, else a
+ * new "Cost of Goods Sold" (PR-4 QA-3: a service chart's other cogs-type
+ * accounts are not adopted). Idempotent; runs in the settings
  * transaction with the company row locked.
  */
 export async function ensureInventoryAccounts(tx: DbOrTx, tenantId: string, companyId: string, userId?: string) {
@@ -81,9 +84,12 @@ export async function ensureInventoryAccounts(tx: DbOrTx, tenantId: string, comp
       if (asset) await auditLog(tenantId, 'create', 'account', asset.id, null, asset, userId, tx);
     }
   }
+  // PR-4 QA-3: a cost-of-goods-sold account proper (detail type cost_of_goods_sold, or named "Cost of Goods Sold"), not
+  // any cogs-type account: a service chart's Subcontractors or Project Supplies stays what it is, and a COGS account is made.
   let [cogs] = await tx.select().from(accounts)
-    .where(and(scope, eq(accounts.isActive, true), eq(accounts.accountType, 'cogs')))
-    .orderBy(accounts.createdAt, accounts.id).limit(1);
+    .where(and(scope, eq(accounts.isActive, true), eq(accounts.accountType, 'cogs'),
+      or(eq(accounts.detailType, 'cost_of_goods_sold'), sql`lower(${accounts.name}) = lower(${DEFAULT_COGS_NAME})`)))
+    .orderBy(sql`lower(${accounts.name}) = lower(${DEFAULT_COGS_NAME}) DESC`, accounts.createdAt, accounts.id).limit(1);
   if (!cogs) {
     [cogs] = await tx.insert(accounts).values({
       tenantId, companyId, name: DEFAULT_COGS_NAME, accountType: 'cogs', detailType: 'cost_of_goods_sold', isSystem: false,
@@ -103,7 +109,7 @@ export async function stockRemains(executor: DbOrTx, tenantId: string, companyId
     SELECT 1 FROM (
       SELECT DISTINCT ON (item_id) running_qty, running_value FROM inventory_movements
       WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND voided = false
-      ORDER BY item_id, movement_date DESC, txn_created_at DESC, transaction_id DESC
+      ORDER BY item_id, ${positionDesc()}
     ) last WHERE last.running_qty <> 0 OR last.running_value <> 0 LIMIT 1`);
   return r.rows.length > 0;
 }
@@ -164,7 +170,7 @@ export async function stockFigures(executor: DbOrTx, tenantId: string, rows: Rea
     FROM inventory_movements
     WHERE tenant_id = ${tenantId} AND company_id = ${company} AND voided = false
       AND item_id IN (${sql.join(partIds.map((i) => sql`${i}::uuid`), sql`, `)})
-    ORDER BY item_id, movement_date DESC, txn_created_at DESC, transaction_id DESC`);
+    ORDER BY item_id, ${positionDesc()}`);
   for (const row of res.rows as Array<{ item_id: string; q: string; p: string; l: string }>) {
     const q = new Decimal(row.q);
     const p = new Decimal(row.p);

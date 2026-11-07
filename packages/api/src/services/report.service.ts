@@ -151,7 +151,15 @@ export async function getFiscalYearStart(tenantId: string, companyId: string | n
 //      (Cr revenue 900 / Cr tax 100) paid $500 in December recognizes
 //      Cr revenue 450 + Cr tax 50 in December. The amount is the cash
 //      plus the early-payment discount (c + D), never the write-off
-//      (Q-SPF3); the A/R reduction of rule 2 uses c + D + W.
+//      (Q-SPF3); the A/R reduction of rule 2 uses c + D + W. The costing
+//      walk's derived lines (COGS and inventory relief, Q-PR4a) scale by
+//      the settled amount c + D + W instead.
+//   3c/3d. Inventory on settlement (Q-PR4a, amends Q-SPF5): a credit memo
+//      applied to an invoice recognises the invoice's and the memo's
+//      derived lines on the application date, scaled by the applied
+//      amount; a $0 invoice or credit memo recognises them in full at its
+//      own date. So COGS and the stock relieved follow every settlement
+//      (cash, write-off, applied credit, $0) in proportion.
 //
 // AR applications come from payment_applications plus the legacy
 // single-invoice link (transactions.applied_to_invoice_id, used by
@@ -163,6 +171,11 @@ export async function getFiscalYearStart(tenantId: string, companyId: string | n
 // a vendor credit (a deposit's A/P line linked to the credit, U-54) is cash
 // back for those expenses: rule 3b (AP) books the credit's lines at the
 // refund date and drops the A/P line, as rule 3b (AR) does for credit memos.
+
+// The costing walk's derived line roles (inventory-costing.service.ts
+// DERIVED_LINE_ROLES): COGS and the stock it takes off, recognised on cash
+// basis as the invoice or credit memo is settled by any means (Q-PR4a).
+const CASH_DERIVED_ROLES = sql.raw(`'cogs', 'inventory_relief', 'cost_correction', 'cost_residual'`);
 
 /**
  * The live A/R settlements of posted invoices (U-132 to U-134, U-152), one
@@ -424,12 +437,16 @@ export function cashBasisLinesWith(
 
       -- Rule 3 (AR): scaled invoice distributions at the payment date (a
       -- credit applied later: at its date), by cash + discount (Q-SPF3).
+      -- Inventory (Q-PR4a, PR-4 S3): the derived costing lines (COGS and
+      -- the stock they take off) follow the settled amount, cash + discount
+      -- + write-off, so goods already gone never stay on the cash balance
+      -- sheet. Each derived pair balances on its own.
       SELECT il.account_id, il.tag_id,
         pay.id AS transaction_id, COALESCE(app.rec_date, pay.txn_date), pay.txn_type, pay.txn_number, pay.memo,
         pay.contact_id AS txn_contact_id, il.contact_id AS line_contact_id,
         il.description, il.item_id, il.line_order,
-        il.debit::numeric  * app.cash_amount / NULLIF(inv.total::numeric, 0) AS debit,
-        il.credit::numeric * app.cash_amount / NULLIF(inv.total::numeric, 0) AS credit
+        il.debit::numeric  * (CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.amount ELSE app.cash_amount END) / NULLIF(inv.total::numeric, 0) AS debit,
+        il.credit::numeric * (CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.amount ELSE app.cash_amount END) / NULLIF(inv.total::numeric, 0) AS credit
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
@@ -439,6 +456,47 @@ export function cashBasisLinesWith(
         AND il.is_void_reversal = false
       JOIN accounts ia ON ia.id = il.account_id AND ia.tenant_id = ${tenantId}
       WHERE ia.detail_type IS DISTINCT FROM 'accounts_receivable'
+
+      UNION ALL
+
+      -- Rule 3c (inventory on settlement, Q-PR4a, PR-4 S3): a credit memo
+      -- applied to an invoice settles both. On the application's date (the
+      -- memo's date when applied at save) the invoice's derived costing lines
+      -- scaled by applied / invoice total, and the memo's (the returned
+      -- units back in stock) scaled by applied / memo total. Income and tax
+      -- of either document stay off cash (no cash moved).
+      SELECT dl.account_id, dl.tag_id,
+        cm.id AS transaction_id, COALESCE(pa.applied_date, cm.txn_date), cm.txn_type, cm.txn_number, cm.memo,
+        cm.contact_id AS txn_contact_id, dl.contact_id AS line_contact_id,
+        dl.description, dl.item_id, dl.line_order,
+        dl.debit::numeric  * pa.amount::numeric / NULLIF(doc.total::numeric, 0) AS debit,
+        dl.credit::numeric * pa.amount::numeric / NULLIF(doc.total::numeric, 0) AS credit
+      FROM payment_applications pa
+      JOIN transactions cm ON cm.id = pa.payment_id AND cm.tenant_id = ${tenantId}
+        AND cm.txn_type = 'credit_memo' AND cm.status = 'posted' AND cm.basis <> 'accrual'
+        AND ${companyId ? sql`cm.company_id = ${companyId}` : sql`TRUE`} AND ${adjustingCond(adjusting, 'cm.is_adjusting')}
+      JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = ${tenantId} AND inv.status = 'posted'
+      JOIN transactions doc ON doc.tenant_id = ${tenantId} AND doc.id IN (inv.id, cm.id) AND NULLIF(doc.total::numeric, 0) IS NOT NULL
+      JOIN journal_lines dl ON dl.transaction_id = doc.id AND dl.tenant_id = ${tenantId}
+        AND dl.is_void_reversal = false AND dl.line_role IN (${CASH_DERIVED_ROLES})
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL
+        AND COALESCE(pa.applied_date, cm.txn_date) >= ${startDate ?? '0001-01-01'} AND COALESCE(pa.applied_date, cm.txn_date) <= ${endDate}
+
+      UNION ALL
+
+      -- Rule 3d (Q-PR4a): a $0 invoice or credit memo is settled when it is
+      -- posted: its derived costing lines in full at its own date.
+      SELECT zl.account_id, zl.tag_id,
+        t.id AS transaction_id, t.txn_date, t.txn_type, t.txn_number, t.memo,
+        t.contact_id AS txn_contact_id, zl.contact_id AS line_contact_id,
+        zl.description, zl.item_id, zl.line_order,
+        zl.debit::numeric AS debit, zl.credit::numeric AS credit
+      FROM transactions t
+      JOIN journal_lines zl ON zl.transaction_id = t.id AND zl.tenant_id = ${tenantId}
+        AND zl.is_void_reversal = false AND zl.line_role IN (${CASH_DERIVED_ROLES})
+      WHERE t.tenant_id = ${tenantId} AND t.status = 'posted' AND t.basis <> 'accrual'
+        AND t.txn_type IN ('invoice', 'credit_memo') AND COALESCE(t.total::numeric, 0) = 0
+        AND ${dateCondT} AND ${companyT} AND ${adjustingCond(adjusting, 't.is_adjusting')}
 
       UNION ALL
 

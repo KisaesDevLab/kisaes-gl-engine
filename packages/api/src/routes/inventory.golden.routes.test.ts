@@ -37,6 +37,7 @@ import { Harness, type Co, key } from './receivables.test-support.js';
 import { postAdjustment } from '../services/inventory-adjustment.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { Decimal } from '../utils/inventory-walk.js';
+import { positionAsc, positionDesc } from '../services/inventory-position.js';
 
 type Body = Record<string, any>;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -145,8 +146,10 @@ async function step(w: World, s: Body, via?: string) {
       break;
     }
     case 'credit_memo': {
-      const body = { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: item, quantity: s['quantity'], unitPrice: golden['seed'].salePrice, isTaxable: false,
-        ...(s['returnOf'] ? { returnOf: { transactionId: w.docs.get(s['returnOf'])! } } : {}) }] };
+      // One line (item, quantity, returnOf), or several (`lines`, PR-4 B1).
+      const memoLines = (s['lines'] as Body[] | undefined) ?? [{ item: s['item'], quantity: s['quantity'], returnOf: s['returnOf'] }];
+      const body = { contactId: c.customer, txnDate: s['date'], lines: memoLines.map((l) => ({ itemId: w.items.get(l['item'])!, quantity: l['quantity'],
+        unitPrice: golden['seed'].salePrice, isTaxable: false, ...(l['returnOf'] ? { returnOf: { transactionId: w.docs.get(l['returnOf'])! } } : {}) })) };
       r = await req('POST', '/credit-memos', body);
       if (expectStatus) {
         expect([r.status, r.json['error']?.code], JSON.stringify(r.json)).toEqual([expectStatus, s['expect'].code]);
@@ -219,7 +222,7 @@ async function step(w: World, s: Body, via?: string) {
 async function rows(itemId: string) {
   return db.select().from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, c.tenantId), eq(inventoryMovements.itemId, itemId), eq(inventoryMovements.voided, false)))
-    .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
+    .orderBy(positionAsc());
 }
 
 const m2 = (v: string) => Number(v).toFixed(2);
@@ -233,7 +236,7 @@ async function invariants(w: World) {
     SELECT COALESCE(SUM(last.running_value), 0)::numeric(19,2)::text AS v FROM (
       SELECT DISTINCT ON (m.item_id) m.running_value FROM inventory_movements m JOIN items i ON i.id = m.item_id
       WHERE m.tenant_id = ${c.tenantId} AND m.voided = false AND i.asset_account_id = ${w.asset}
-      ORDER BY m.item_id, m.movement_date DESC, m.txn_created_at DESC, m.transaction_id DESC) last`)).rows[0] as { v: string };
+      ORDER BY m.item_id, ${positionDesc('m')}) last`)).rows[0] as { v: string };
   expect(valuation.v, 'I2 valuation = accrual GL').toBe((await gl(w.asset)).b);
   for (const id of [w.asset, w.cogs, w.adjustment]) {
     const [a] = await db.select({ balance: accounts.balance }).from(accounts).where(eq(accounts.id, id));
@@ -289,6 +292,7 @@ async function checkRows(w: World, expected: Body[], subset = false) {
   expected.forEach((e, i) => {
     const r = got[i]!;
     expect(m2(r.value), `${e['doc']} value`).toBe(e['value']);
+    if ('returnOf' in e) expect(r.sourceTransactionId, `${e['doc']} returnOf`).toBe(e['returnOf'] ? w.docs.get(e['returnOf']) : null);
     if (e['correction']) expect(m2(r.correction), `${e['doc']} correction`).toBe(e['correction']);
     if (e['onHand']) expect(Number(r.runningQty).toFixed(4), `${e['doc']} onHand`).toBe(e['onHand']);
     if (e['assetValue']) expect(m2(r.runningValue), `${e['doc']} assetValue`).toBe(e['assetValue']);
@@ -356,6 +360,57 @@ describe('inventory-costing-v1 golden cases (U-157)', () => {
     await checkFinal(w, gcase('V')['final']);
     const [m] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get('A2')!));
     expect(m!.voided).toBe(true);
+  });
+
+  it('V2: voiding the receipt that cured negative stock warns, and so does each sale while below 0 (PR-4 S1)', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    await runSteps(w, gcase('V2')['steps']);
+    await checkRows(w, gcase('V2')['rows']);
+    await checkFinal(w, gcase('V2')['final']);
+    await fullReplayMatches(w.items.get('W')!);
+    // The preview of another sale while below 0 warns as the posting does.
+    const pv = await req('POST', '/invoices/preview', { contactId: c.customer, txnDate: '2026-01-27', lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '10.00', isTaxable: false }] });
+    expect((pv.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK'))
+      .toEqual([{ code: 'NEGATIVE_STOCK', itemId: w.items.get('W'), date: '2026-01-27', onHand: '-8.0000' }]);
+  });
+
+  it('V3: the posting\'s own inflow never warns, on the reply or the preview (PR-4 RS1); its own outflow below 0 does', async () => {
+    const w = await setup();
+    const v3 = gcase('V3');
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, v3['fromSteps']));
+    const steps = v3['steps'] as Body[];
+    await runSteps(w, steps.slice(0, 2));
+    // The unlinked return previews as it posts: no warning; a sale of 1 more previews with one.
+    const W = w.items.get('W');
+    const line = { itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false };
+    const cm = await req('POST', '/credit-memos/preview', { contactId: c.customer, txnDate: '2026-01-14', lines: [line] });
+    expect(cm.json['warnings']).toEqual([]);
+    const inv = await req('POST', '/invoices/preview', { contactId: c.customer, txnDate: '2026-01-14', lines: [line] });
+    expect((inv.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK')).toEqual([{ code: 'NEGATIVE_STOCK', itemId: W, date: '2026-01-14', onHand: '-4.0000' }]);
+    await runSteps(w, steps.slice(2));
+    await checkFinal(w, v3['final']);
+    await fullReplayMatches(W!);
+    // Editing the bill down to 1 unit: its own inflow still does not warn (on hand -5 -> -4 on Jan 14, no later row was 0 or more).
+    const b = structuredClone(w.bodies.get('V3b')!) as Body;
+    const edit = await req('PUT', `/bills/${w.docs.get('V3b')}`, { ...b, lines: [{ ...b['lines'][0], quantity: '1', amount: '3.80' }] });
+    expect(edit.status, JSON.stringify(edit.json)).toBe(200);
+    expect(((edit.json['warnings'] ?? []) as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK')).toEqual([]);
+    await invariants(w);
+  });
+
+  it('V4: a value-only adjustment left without stock warns at on hand 0 (PR-4 S1); the preview agrees; one warning per item', async () => {
+    const w = await setup();
+    const v4 = gcase('V4');
+    await runSteps(w, gcase('A')['steps']);
+    const s = (v4['steps'] as Body[])[0]!;
+    const pv = await req('POST', '/invoices/preview', { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: w.items.get('W'), quantity: s['quantity'], unitPrice: '10.00', isTaxable: false }] });
+    expect((pv.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK'))
+      .toEqual([{ code: 'NEGATIVE_STOCK', itemId: w.items.get('W'), date: '2026-01-22', onHand: '0.0000' }]);
+    await runSteps(w, v4['steps']);
+    await checkRows(w, v4['rows'], true);
+    await checkFinal(w, v4['final']);
+    await fullReplayMatches(w.items.get('W')!);
   });
 
   it('X: deleting the Jan 5 bill gives case V numbers, status deleted, reversal lines', async () => {
@@ -503,6 +558,55 @@ describe('inventory-costing-v1 guards (B3, B4)', () => {
     expect((await figures(w))['quantityOnHand']).toBe('11.0000');
   });
 
+  it('inventory off: parts on a new or edited document are 400 INVENTORY_OFF on every path (routes, recurring copy); void stays allowed (PR-4 S2)', async () => {
+    const w = await setup();
+    const W = w.items.get('W')!;
+    const err = (r: { status: number; json: Body }) => [r.status, r.json['error']?.code];
+    await runSteps(w, [{ n: 1, doc: 'S1', event: 'bill', date: '2026-01-02', item: 'W', quantity: '2', unitPrice: '3.00', amount: '6.00' },
+      { n: 2, doc: 'S2', event: 'invoice', date: '2026-01-03', item: 'W', quantity: '2' }]);
+    const off = await req('PUT', '/company/settings', { inventoryEnabled: false });
+    expect(off.status, JSON.stringify(off.json)).toBe(200);
+    const sale = { contactId: c.customer, txnDate: '2026-02-01', lines: [{ itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false }] };
+    expect(err(await req('POST', '/invoices', sale))).toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('POST', '/sales-receipts', { ...sale, depositToAccountId: c.roles['checking'] }))).toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('POST', '/transactions', { txnType: 'cash_sale', contactId: c.customer, txnDate: '2026-02-01', depositToAccountId: c.roles['checking'],
+      lines: [{ accountId: c.roles['income'], itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false }] }))).toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-02-01', lines: [{ accountId: w.asset, amount: '3.00', itemId: W, quantity: '1', unitPrice: '3.00' }] })))
+      .toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('PUT', `/invoices/${w.docs.get('S2')}`, { ...w.bodies.get('S2'), memo: 'edited' }))).toEqual([400, 'INVENTORY_OFF']);
+    // A recurring copy of the sale (the schedule runner's path) is refused too, and nothing posts.
+    const { postLegacyClone } = await import('../services/recurring.service.js');
+    await expect(postLegacyClone(c.tenantId, { id: crypto.randomUUID(), templateTransactionId: w.docs.get('S2')!, nextOccurrence: '2026-03-01' } as never))
+      .rejects.toMatchObject({ code: 'INVENTORY_OFF' });
+    expect(await db.select().from(inventoryMovements).where(and(eq(inventoryMovements.tenantId, c.tenantId), eq(inventoryMovements.voided, false)))).toHaveLength(2);
+    // A document without parts posts as usual; voiding an inventory document stays allowed.
+    expect((await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-02-01', lines: [{ accountId: c.roles['income'], quantity: '1', unitPrice: '10.00', isTaxable: false }] })).status)
+      .toBe(201);
+    expect((await req('POST', `/transactions/${w.docs.get('S2')}/void`, { reason: 'x' })).status).toBe(200);
+    await invariants(w);
+  });
+
+  it('PR-4 notes: a void document deletes in a closed period (N3); opposite-sign adjustment lines (N4) and sub-cent part lines (N5) are refused', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 2));
+    const { postTransaction } = await import('../services/ledger.service.js');
+    const ap = (await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'accounts_payable'))))[0]!.id;
+    await expect(postTransaction(c.tenantId, { txnType: 'bill', txnDate: '2026-01-06', contactId: w.vendor, lines: [
+      { accountId: w.asset, debit: '3.3333', credit: '0', itemId: w.items.get('W'), quantity: '1' }, { accountId: ap, debit: '0', credit: '3.3333' }] } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await expect(postAdjustment(c.tenantId, c.companyId, { txnDate: '2026-01-06', adjustmentAccountId: w.adjustment,
+      lines: [{ itemId: w.items.get('W')!, quantityChange: '-2', valueChange: '5.00' }] }, c.userId)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect((await req('POST', `/transactions/${w.docs.get('A2')}/void`, { reason: 'x' })).status).toBe(200);
+    expect((await req('PUT', '/company/closing-password', { newPassword: 'closing-pass-1' })).status).toBe(200);
+    expect((await req('PUT', '/company/settings', { lockDate: '2026-01-10', closingPassword: 'closing-pass-1' })).status).toBe(200);
+    const del = await req('DELETE', `/transactions/${w.docs.get('A2')}`, { closingPassword: 'closing-pass-1' });
+    expect(del.status, JSON.stringify(del.json)).toBe(200);
+    // A live one in the closed period is still refused, password or not.
+    const del1 = await req('DELETE', `/transactions/${w.docs.get('A1')}`, { closingPassword: 'closing-pass-1' });
+    expect([del1.status, del1.json['error']?.code]).toEqual([409, 'INVENTORY_PERIOD_CLOSED']);
+    await invariants(w);
+  });
+
   it('advertises inventory-costing-v1', () => {
     expect(DESKTOP_CAPABILITIES).toContain('inventory-costing-v1');
   });
@@ -561,6 +665,87 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
     await invariants(w);
   });
 
+  it('R3: a return linked to a sale sold below 0 comes back at the corrected cost; edits and backdated receipts re-derive it (PR-4 S5)', async () => {
+    const w = await setup();
+    const r3 = gcase('R3');
+    await runSteps(w, gcase('A')['steps']);
+    const W = w.items.get('W')!;
+    const share = async (doc: string) => m2((await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get(doc)!)))[0]!.correctionShare);
+    expect(await share('A5'), 'A6 cured A5\'s 3 short units').toBe('0.63');
+    await runSteps(w, (r3['steps'] as Body[]).slice(0, 2));
+    await fullReplayMatches(W);
+    // Engine-only: re-pricing the curing bill walks from it (on hand below 0 before it): the sale sold short is replayed, not rewritten.
+    const a6 = structuredClone(w.bodies.get('A6')!) as Body;
+    expect((await req('PUT', `/bills/${w.docs.get('A6')}`, { ...a6, lines: [{ ...a6['lines'][0], amount: '41.00', unitPrice: '4.10' }] })).status).toBe(200);
+    expect(await share('A5'), 'round2(41.00 x 3 / 10) - 10.77').toBe('1.53');
+    const memo = async () => m2((await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get('R3a')!)))[0]!.value);
+    expect(await memo(), 'round2(12.30 x 2 / 3)').toBe('8.20');
+    await invariants(w);
+    await fullReplayMatches(W);
+    // A walk that starts after the cure (the memo moved a day) reads the stored share.
+    const memoBody = structuredClone(w.bodies.get('R3a')!) as Body;
+    expect((await req('PUT', `/credit-memos/${w.docs.get('R3a')}`, { ...memoBody, txnDate: '2026-01-27' })).status).toBe(200);
+    expect(await memo()).toBe('8.20');
+    expect((await req('PUT', `/credit-memos/${w.docs.get('R3a')}`, memoBody)).status).toBe(200);
+    expect((await req('PUT', `/bills/${w.docs.get('A6')}`, a6)).status).toBe(200);
+    expect(await memo()).toBe('7.60');
+    await runSteps(w, (r3['steps'] as Body[]).slice(2));
+    expect(await share('A5'), 'no longer short').toBe('0.00');
+    await checkRows(w, r3['rows'], true);
+    await checkFinal(w, r3['final']);
+    await fullReplayMatches(W);
+  });
+
+  it('R2: two rows of one part on one credit memo walk in one order everywhere (PR-4 B1); physical row order never matters', async () => {
+    const w = await setup();
+    const r2 = gcase('R2');
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, r2['fromSteps']));
+    await runSteps(w, r2['steps']);
+    await checkRows(w, r2['rows'], true);
+    await checkFinal(w, r2['final']);
+    const W = w.items.get('W')!;
+    await fullReplayMatches(W);
+    const snap = async () => (await rows(W)).map((m) => [m.id, m.value, m.correction, m.residual, m.runningQty, m.runningValue, m.lastCost]);
+    const before = await snap();
+    // Move the unlinked row of the memo to a new heap position (a non-HOT update), so a scan meets it after the linked row.
+    const memoRows = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get('T1')!));
+    expect(memoRows).toHaveLength(2);
+    await db.execute(sql`UPDATE inventory_movements SET updated_at = now(), quantity = quantity WHERE id = ${memoRows.find((m) => m.sourceTransactionId === null)!.id}`);
+    // Every stock read sees the latest row of the memo the same way.
+    expect((await figures(w))['assetValue']).toBe('30.06');
+    // A backdated bill re-walks across the memo, and its void walks back: every row is as before.
+    const b = await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-03', lines: [{ accountId: w.asset, amount: '12.00', itemId: W, quantity: '6', unitPrice: '2.00' }] });
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    await invariants(w);
+    await fullReplayMatches(W);
+    expect((await req('POST', `/transactions/${idOf(b.json)}/void`, { reason: 'x' })).status).toBe(200);
+    await invariants(w);
+    expect(await snap()).toEqual(before);
+    // The count sheet and Stock Status read the same latest row.
+    const sheet = await req('GET', '/inventory/count-sheet?asOf=2026-01-16');
+    expect((sheet.json['items'] as Body[]).find((x) => x['itemId'] === W)).toMatchObject({ onHand: '10.0000', value: '37.58' });
+  });
+
+  for (const id of ['R4', 'R5']) {
+    it(`${id}: ${gcase(id)['title']}`, async () => {
+      const w = await setup();
+      const g = gcase(id);
+      await runSteps(w, g['steps']);
+      await checkFinal(w, g['final']);
+      const W = w.items.get('W')!;
+      await fullReplayMatches(W);
+      for (const [doc, want] of Object.entries(g['correctionShares'] as Record<string, string>)) {
+        const [m] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get(doc)!));
+        expect(m2(m!.correctionShare), `${doc} correction_share`).toBe(want);
+      }
+      // Note 1: the curing bill re-attributed the sales' shares; each sale's document carries an audit row for it.
+      const audited = await db.execute(sql`SELECT entity_id::text AS id, after_data::text AS a FROM audit_log
+        WHERE tenant_id = ${c.tenantId} AND entity_type = 'transaction' AND after_data::text LIKE '%correctionShare%'`);
+      const ids = new Set((audited.rows as Array<{ id: string }>).map((r) => r.id));
+      for (const doc of Object.keys(g['correctionShares'] as Record<string, string>)) expect(ids.has(w.docs.get(doc)!), `${doc} audited`).toBe(true);
+    });
+  }
+
   it('refuses a return dated before its sale, of an item the sale did not sell, or on a document that is not a credit memo', async () => {
     const w = await setup();
     await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 3));
@@ -599,6 +784,11 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
     const sr = (await req('GET', `/sales-receipts/${w.docs.get('A3')}`)).json['salesReceipt'] as Body;
     expect((sr['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cogs', '14.35'], ['inventory_relief', '-14.35']]);
     expect(sr['lines']).toHaveLength(1);
+    // PR-4 QA-9: Valuation Detail tells a card charge from a check (both txnType expense).
+    const vd = await req('GET', '/reports/inventory-valuation-detail?from=2026-01-01&to=2026-01-31');
+    expect(vd.status, JSON.stringify(vd.json)).toBe(200);
+    const kinds = new Map((vd.json['data'] as Body[]).map((r) => [r['transactionId'], [r['txnType'], r['expenseKind']]]));
+    expect(['A1', 'A2', 'A3'].map((doc) => kinds.get(w.docs.get(doc)))).toEqual([['expense', 'check'], ['expense', 'card_charge'], ['cash_sale', null]]);
     // Voiding the card charge (A2) gives case V's numbers and warns on the reply.
     await runSteps(w, [{ n: 10, event: 'void', doc: 'A2', expect: gcase('V')['steps'][0].expect }]);
     await checkRows(w, gcase('V')['rows']);
@@ -631,7 +821,7 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
 });
 
 describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
-  it('G: rule 3 scales the invoice COGS and relief by payment / total; an applied credit memo and a $0 invoice show none', async () => {
+  it('G: rule 3 scales the invoice COGS and relief by payment / total; settlement by credit memo, a $0 sale or a write-off recognises the rest (Q-PR4a)', async () => {
     c = await h.company('0.081000');
     const w = await setup();
     const g = gcase('G');
@@ -669,19 +859,42 @@ describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
     const accrual = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'accrual', c.companyId);
     expect(accrual.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.accrual.glInventory);
     expect((await figures(w))['assetValue']).toBe(want.accrual.valuation);
-    // An applied (not refunded) credit memo is not cash: no inventory or COGS change on cash basis.
-    const cm = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-20',
-      lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '10.00', isTaxable: true, returnOf: { transactionId: w.docs.get('A3') } }],
-      applications: [{ invoiceId: w.docs.get('A3'), amount: '10.81' }] });
-    expect(cm.status, JSON.stringify(cm.json)).toBe(201);
-    // A $0 invoice of the item: its COGS never shows on cash basis (N3).
-    const zero = await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-21', lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '0', isTaxable: false }] });
-    expect(zero.status, JSON.stringify(zero.json)).toBe(201);
-    await invariants(w);
-    const pl2 = await reports.buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-01-31', 'cash', c.companyId, null, null, { exactAmounts: true });
-    expect(pl2.cogs.find((e) => e.accountId === w.cogs)!.amount.toFixed(2)).toBe(want.cash.cogs);
-    const bs2 = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'cash', c.companyId);
-    expect(bs2.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.cash.inventory);
+    // Q-PR4a (PR-4 S3): settlement by an applied credit memo, a $0 sale and a write-off recognise COGS and relief in proportion.
+    const [badDebts] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Bad debts', accountType: 'expense' }).returning();
+    for (const s of g['settlements']['steps'] as Body[]) {
+      if (s['event'] === 'credit_memo') {
+        const cm = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: s['date'],
+          lines: [{ itemId: w.items.get('W'), quantity: s['quantity'], unitPrice: '10.00', isTaxable: s['taxable'], returnOf: { transactionId: w.docs.get(s['returnOf']) } }],
+          applications: [{ invoiceId: w.docs.get(s['applyTo']), amount: s['applied'] }] });
+        expect(cm.status, JSON.stringify(cm.json)).toBe(201);
+        w.docs.set(s['doc'], idOf(cm.json));
+        const [t] = await db.select({ total: transactions.total }).from(transactions).where(eq(transactions.id, w.docs.get(s['doc'])!));
+        expect(m2(t!.total!), 'memo total').toBe(s['total']);
+      } else if (s['event'] === 'invoice') {
+        const zero = await req('POST', '/invoices', { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: w.items.get('W'), quantity: s['quantity'], unitPrice: s['unitPrice'], isTaxable: false }] });
+        expect(zero.status, JSON.stringify(zero.json)).toBe(201);
+        w.docs.set(s['doc'], idOf(zero.json));
+      } else {
+        await receivePayment(c.tenantId, { customerId: c.customer, date: s['date'], amount: '0.00', depositTo: c.roles['checking'], writeOffAccountId: badDebts!.id,
+          applications: [{ invoiceId: w.docs.get(s['invoice'])!, amount: '0.00', writeOffAmount: s['amount'] }] } as never, c.userId, c.companyId);
+      }
+      await invariants(w);
+      const e = s['expect'] as Body;
+      if (e['value']) {
+        const [m] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get(s['doc'])!));
+        expect(m2(m!.value), `${s['doc']} value`).toBe(e['value']);
+      }
+      const plx = await reports.buildProfitAndLoss(c.tenantId, '2026-01-01', e['asOf'], 'cash', c.companyId, null, null, { exactAmounts: true });
+      const cg = plx.cogs.find((x) => x.accountId === w.cogs)!;
+      expect(new Decimal(cg.amountExact!).toString(), `step ${s['n']} cash COGS share`).toBe(new Decimal(e['cash'].cogsShare).toString());
+      if (e['cash'].income) expect(plx.totalRevenue.toFixed(2), `step ${s['n']} cash income`).toBe(e['cash'].income);
+      const bsx = await reports.buildBalanceSheet(c.tenantId, e['asOf'], 'cash', c.companyId);
+      expect(Math.abs(bsx.assets.find((a) => a.accountId === w.asset)!.balance - Number(e['cash'].inventoryShare)), `step ${s['n']} cash inventory`).toBeLessThan(1e-6);
+      expect(Math.abs(bsx.totalAssets - (bsx.totalLiabilities + bsx.totalEquity)), 'the cash balance sheet balances (half-cent shares)').toBeLessThan(1e-6);
+    }
+    // Accrual is untouched by settlements: valuation = accrual GL.
+    const accrual2 = await reports.buildBalanceSheet(c.tenantId, '2026-02-28', 'accrual', c.companyId);
+    expect(accrual2.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe((await figures(w))['assetValue']);
     // U-160 on a cash-basis company: the valuation stays accrual (= accrual GL) and carries basisNote (N3).
     await db.update(companies).set({ accountingMethod: 'cash' }).where(eq(companies.id, c.companyId));
     const v = await req('GET', '/reports/inventory-valuation?asOf=2026-01-19');
@@ -845,7 +1058,7 @@ describe('inventory-costing-v1 write paths (B4)', () => {
       };
       const day = () => `2026-01-${String(r.int(1, 28)).padStart(2, '0')}`;
       for (let n = 0; n < 30; n++) {
-        const op = r.pick(['bill', 'bill', 'invoice', 'invoice', 'receipt', 'return', 'linked', 'vcredit', 'void', 'edit']);
+        const op = r.pick(['bill', 'bill', 'invoice', 'invoice', 'receipt', 'return', 'linked', 'multi', 'vcredit', 'void', 'edit']);
         const doc = `P${seed}-${n}`;
         if (op === 'bill' || op === 'vcredit') {
           const qty = r.int(1, op === 'bill' ? 9 : 2);
@@ -867,6 +1080,14 @@ describe('inventory-costing-v1 write paths (B4)', () => {
           const x = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: date, lines: [{ itemId: W, quantity: String(r.int(1, 2)), unitPrice: '10.00', isTaxable: false,
             ...(sale ? { returnOf: { transactionId: w.docs.get(sale.doc)! } } : {}) }] });
           if (ok(x, ['RETURN_EXCEEDS_SALE'])) w.docs.set(doc, idOf(x.json));
+        } else if (op === 'multi' && sales.length > 0) {
+          // PR-4 B1: one memo, several rows of the part (two linked sales and the unlinked units).
+          const picks = [r.pick(sales), r.pick(sales)];
+          const from = Math.max(...picks.map((s) => Number(s.date.slice(8))));
+          const lines = [...new Set(picks)].map((s) => ({ itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false, returnOf: { transactionId: w.docs.get(s.doc)! } }));
+          const x = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: `2026-01-${String(r.int(from, 28)).padStart(2, '0')}`,
+            lines: [...lines, { itemId: W, quantity: String(r.int(1, 2)), unitPrice: '10.00', isTaxable: false }] });
+          if (ok(x, ['RETURN_EXCEEDS_SALE', 'RETURN_BEFORE_SALE'])) w.docs.set(doc, idOf(x.json));
         } else if (op === 'void' && w.docs.size > 0) {
           const victim = r.pick([...w.docs.keys()]);
           const x = await req('POST', `/transactions/${w.docs.get(victim)}/void`, { reason: 'property' });
@@ -885,11 +1106,13 @@ describe('inventory-costing-v1 write paths (B4)', () => {
         await invariants(w);
       }
       await fullReplayMatches(W);
-      // I7: no sale gives back more than its relief.
+      // I7: no sale gives back more than its relief plus the corrections of the units it sold short (PR-4 S5), and no
+      // linked return comes back at a negative value (RS2).
       const over = await db.execute(sql`
         SELECT s.transaction_id FROM inventory_movements s JOIN inventory_movements r ON r.source_transaction_id = s.transaction_id AND r.item_id = s.item_id AND r.voided = false
         WHERE s.tenant_id = ${c.tenantId} AND s.voided = false AND s.source_transaction_id IS NULL AND s.kind = 'sale'
-        GROUP BY s.transaction_id, s.value, s.quantity HAVING SUM(r.value) > -s.value OR SUM(r.quantity) > -s.quantity`);
+        GROUP BY s.transaction_id, s.value, s.quantity, s.correction_share
+        HAVING SUM(r.value) > -s.value + s.correction_share OR SUM(r.quantity) > -s.quantity OR MIN(r.value) < 0`);
       expect(over.rows, `I7 seed ${seed}`).toEqual([]);
     }
   }, 240_000);
@@ -962,6 +1185,39 @@ describe('inventory-costing-v1 concurrency (P24 §5)', () => {
     expect(codes.some((x) => ['RETURN_EXCEEDS_SALE', 'SALE_HAS_RETURNS', 'RETRY'].includes(x))).toBe(true);
     await invariants(w);
   });
+
+  it('inventory turned off while a posting waits for the companies row: 400 INVENTORY_OFF under the lock, nothing moves (PR-4 RS3)', async () => {
+    const w = await setup();
+    const W = w.items.get('W')!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => { locked = resolve; });
+    // The switch: inventory off on the companies row, not committed yet (a row lock that the request's idempotency-key insert,
+    // a KEY SHARE, passes and the costing lock's FOR UPDATE waits for).
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`UPDATE companies SET inventory_enabled = false WHERE id = ${c.companyId}`);
+      locked();
+      await held;
+    });
+    await isLocked;
+    const posting = req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-02', lines: [{ accountId: w.asset, amount: '6.00', itemId: W, quantity: '2', unitPrice: '3.00' }] });
+    // The bill read inventory on (the switch is not committed) and now waits in the costing lock for the companies row.
+    let waiting = false;
+    let seen: unknown[] = [];
+    for (let i = 0; i < 60 && !waiting; i++) {
+      seen = (await db.execute(sql`SELECT wait_event_type, wait_event, left(query, 160) AS q FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND state <> 'idle'`)).rows;
+      const r = await db.execute(sql`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%lock_date::text AS lock_date FROM companies%'`);
+      waiting = r.rows.length > 0;
+      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    release();
+    await holder;
+    const x = await posting;
+    expect(waiting, JSON.stringify(seen)).toBe(true);
+    expect([x.status, x.json['error']?.code], JSON.stringify(x.json)).toEqual([400, 'INVENTORY_OFF']);
+    expect(await rows(W)).toHaveLength(0);
+  }, 30_000);
 
   it('an item lock held past lock_timeout (5 s) answers 409 RETRY and saves nothing', async () => {
     const w = await setup();
@@ -1409,5 +1665,9 @@ describe('units-of-measure-v1 (golden U, U-161)', () => {
 
   it('advertises units-of-measure-v1 after reorder-alerts-v1', () => {
     expect(DESKTOP_CAPABILITIES.indexOf('units-of-measure-v1')).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('reorder-alerts-v1'));
+  });
+
+  it('advertises inventory-checkpoint-v1 (U-162, PR-4) after units-of-measure-v1', () => {
+    expect(DESKTOP_CAPABILITIES.indexOf('inventory-checkpoint-v1')).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('units-of-measure-v1'));
   });
 });

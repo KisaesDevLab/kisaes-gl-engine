@@ -697,5 +697,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * set, and an item on any line keeps its set (409 UNIT_IN_USE, Q-P24w). GET /reports/reorder adds purchaseUnit and
    * reorderQuantityInPurchaseUnit; stock status adds unitSetId and baseUnit. Migration 0260.
    */
-  'units-of-measure-v1',];
+  'units-of-measure-v1',
+  /**
+   * Inventory checkpoint fixes (U-162, ClientLedger PR-4; migration 0261): one total position order for stock ledger reads (a credit memo's
+   * unlinked row first, then its linked rows by their sale's date and entry order, so the order survives a tenant import; the import
+   * re-walks every item; on hand, valuation, count sheet and walk agree); NEGATIVE_STOCK (one per item) also when a void, delete or
+   * edit takes a later row below 0, when an earlier value-only adjustment is left at on hand 0 or below, and on each sale while already
+   * below 0 (previews too), never for the posting's own inflow; parts on a new or edited document while inventory is off are 400
+   * INVENTORY_OFF (an edit of only the memo of an older document with parts included); a return linked to a sale sold below 0 comes back
+   * at relief + the correction attributed to it (its own returns cure its short units first), never below 0;
+   * cash-basis COGS and inventory relief follow every settlement (payment, write-off, applied credit memo, $0 sale, Q-PR4a);
+   * valuation detail rows carry expenseKind; adjustment lines with opposite-sign quantity and value, and part lines with more than 2
+   * decimals, are 400 VALIDATION_ERROR.
+   */
+  'inventory-checkpoint-v1',];
 

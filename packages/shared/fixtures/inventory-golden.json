@@ -1,18 +1,19 @@
 {
   "description": "Average-cost inventory (P24, U-157 to U-160) shared by the engine (packages/shared/fixtures/inventory-golden.json) and the ClientLedger client (fixtures/inventory/golden.json, byte-identical; the --demo engine runs every case not marked engineOnly). Synthetic. Dates are 2026; quantities are 4-place strings, money 2-place strings, average costs 6-place strings. Values are signed by their effect on the inventory asset account: a receipt is positive, a sale's relief negative, a negative-stock correction C is shown as -C.",
   "rules": [
-    "Position: (date, transaction created_at, transaction id). An edit keeps created_at.",
+    "Position: (date, transaction created_at, transaction id). An edit keeps created_at. Inside one document (a credit memo can carry several rows of one part: one per linked sale, plus the unlinked units) the unlinked row comes first, then the linked rows by their sale's position (the sale's date, then its entry order; the sale's id, then the row's id, only break a tie), so the order survives an export / import that gives every document a new id (PR-4 B1, RB1).",
     "State per item: Q on hand, V value (the GL), L = round6(V/Q) after the latest row that left Q > 0 and V > 0 (the last positive average). The formulas below write T for V.",
     "Outflow at cost of q > 0 units (sale, quantity-only adjustment down), on T: Q > 0 and q <= Q: relief = round2(T x q / Q); q > Q: relief = (Q > 0 ? T : 0) + round2(excess x c), excess = q - max(Q, 0), c = L if L > 0, else the item's purchase cost when the line was posted, else 0.",
     "Inflow at cost of r units (unlinked customer return, quantity-only adjustment up): round2(T x r / Q) if Q > 0, else round2(r x c).",
-    "Linked return (Q-P24e): a credit-memo line with returnOf {transactionId} (an invoice or sales receipt of the same item, dated on or before the credit memo). Sale relief R for S units; returns linked to it, in position order, with cumulative returned quantity N_k: value_k = round2(R x N_k / S) - round2(R x N_(k-1) / S). N <= S (400 RETURN_EXCEEDS_SALE); a credit memo dated before the sale is 400 RETURN_BEFORE_SALE; a sale with linked returns can't be voided, deleted, lose that item, drop below N or move after a return (409 SALE_HAS_RETURNS).",
+    "Linked return (Q-P24e): a credit-memo line with returnOf {transactionId} (an invoice or sales receipt of the same item, dated on or before the credit memo). Sale relief R for S units; returns linked to it, in position order, with cumulative returned quantity N_k: value_k = round2(R x N_k / S) - round2(R x N_(k-1) / S), never below 0 (PR-4 RS2; see the corrected sale cost rule). N <= S (400 RETURN_EXCEEDS_SALE); a credit memo dated before the sale is 400 RETURN_BEFORE_SALE; a sale with linked returns can't be voided, deleted, lose that item, drop below N or move after a return (409 SALE_HAS_RETURNS).",
+    "Corrected sale cost (PR-4 S5): R of a linked return is the sale's relief plus the corrections attributed to the units it sold below 0. Outflows below 0 join a first-short, first-cured queue (excess = q - max(Q, 0); a non-sale outflow joins with no sale); an inflow curing k units with correction C (C = -correction as shown) takes k units from the head (a linked return first takes its own sale's short units, PR-4 RS2) and gives the i-th sale taken round2(C x K_i / k) - round2(C x K_(i-1) / k), K_i the units taken so far. A linked return of q units: value = max(0, round2(R x (N + q) / S) - B), B the value its earlier returns brought back (the same as the cumulative difference while R does not change; R can fall below what earlier returns brought back when units the sale sold below 0 are cured at a lower cost, and a return never comes back at a negative value).",
     "Units (U-161): quantities in movements, on hand and reports are base units; base quantity = round4(quantity x factor); the line amount stays round2(quantity x unitPrice) in the entered unit.",
     "Given value: a receipt adds its line amount, a vendor return takes its line amount off, an adjustment with a value adds that value.",
     "Correction when Q < 0 before an inflow of r units worth A: k = min(r, -Q); C = round2(A x k / r) - round2(-T x k / -Q), posted on the inflow's document (Dr COGS, Cr inventory when C > 0); T := T + A - C.",
     "Residual: a row leaving Q = 0 with T != 0 moves T to the item's COGS account on that document.",
     "round2 and round6 are half away from zero at 40 digits, negatives included (round2(5.015) = 5.02, round2(-0.005) = -0.01).",
     "Closed periods (owner decision 2026-11-06): adding, editing, voiding or deleting a document with inventory lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED, closing-date password or not; so no movement on or before the closing date ever changes and there are no cost restatements.",
-    "NEGATIVE_STOCK {itemId, date, onHand} warns on the first row per item whose running quantity newly goes below 0; posting is allowed.",
+    "NEGATIVE_STOCK {itemId, date, onHand} warns, at most once per item, on the first row the posting changes that is either the posting's own outflow ending below 0 (each sale while stock is already below 0 warns again, PR-4 S1; the posting's own inflows never warn, RS1), or an earlier row whose on hand is below 0 and was 0 or more before the posting, or an earlier value-only adjustment that had stock (on hand above 0) before the posting and now sits at on hand 0 or below; posting is allowed.",
     "Every case starts from an empty company with the seed accounts and items, or from the end state of the case named in `from`. `expect` after a step lists the item's state after that step; `rows` lists every movement row after the case's last step, in position order. Keys and cases marked engineOnly are not checked by the demo engine."
   ],
   "seed": {
@@ -99,6 +100,64 @@
         { "doc": "A9", "value": "-10.60", "onHand": "-1.0000", "assetValue": "-5.30" }
       ],
       "final": { "W": { "onHand": "-1.0000", "assetValue": "-5.30" } }
+    },
+    {
+      "id": "V2",
+      "title": "Void the Jan 15 bill that cured negative stock (from A), then sell again while below 0 (PR-4 S1): both warn",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "void", "doc": "A6", "expect": { "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-20", "onHand": "-4.0000" }],
+          "onHand": "-6.0000", "assetValue": "-20.04", "note": "A7 was 6 on hand before the void; A5 was already -3" } },
+        { "n": 11, "doc": "V2a", "event": "invoice", "date": "2026-01-26", "item": "W", "quantity": "1",
+          "expect": { "value": "-3.59", "onHand": "-7.0000", "assetValue": "-23.63", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-26", "onHand": "-7.0000" }] } }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+        { "doc": "A2", "value": "20.50", "onHand": "15.0000", "assetValue": "53.83" },
+        { "doc": "A3", "value": "-14.35", "onHand": "11.0000", "assetValue": "39.48" },
+        { "doc": "A4", "value": "-39.48", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "A5", "value": "-10.77", "onHand": "-3.0000", "assetValue": "-10.77" },
+        { "doc": "A7", "value": "-3.59", "onHand": "-4.0000", "assetValue": "-14.36" },
+        { "doc": "A8", "value": "1.50", "onHand": "-4.0000", "assetValue": "-12.86" },
+        { "doc": "A9", "value": "-7.18", "onHand": "-6.0000", "assetValue": "-20.04" },
+        { "doc": "V2a", "value": "-3.59", "onHand": "-7.0000", "assetValue": "-23.63" }
+      ],
+      "final": { "W": { "onHand": "-7.0000", "assetValue": "-23.63", "averageCost": "3.589091" } },
+      "note": "A8 (a value-only adjustment) also sits at on hand -4 after the void; the item's one warning (A7) covers it"
+    },
+    {
+      "id": "V3",
+      "title": "A steps 1-5 (on hand -3), a sale to -5 warns; then a bill of 2 and an unlinked return of 1 while below 0: the posting's own inflow never warns (PR-4 RS1)",
+      "from": "A",
+      "fromSteps": 5,
+      "steps": [
+        { "n": 6, "doc": "V3a", "event": "invoice", "date": "2026-01-13", "item": "W", "quantity": "2",
+          "expect": { "value": "-7.18", "onHand": "-5.0000", "assetValue": "-17.95", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-13", "onHand": "-5.0000" }] } },
+        { "n": 7, "doc": "V3b", "event": "bill", "date": "2026-01-14", "item": "W", "quantity": "2", "unitPrice": "3.80", "amount": "7.60",
+          "expect": { "value": "7.60", "correction": "-0.42", "onHand": "-3.0000", "assetValue": "-10.77", "warnings": [],
+            "note": "C = round2(7.60 x 2 / 2) - round2(17.95 x 2 / 5) = 0.42; on hand -5 -> -3: no warning" } },
+        { "n": 8, "doc": "V3c", "event": "credit_memo", "date": "2026-01-14", "item": "W", "quantity": "1",
+          "expect": { "value": "3.59", "onHand": "-2.0000", "assetValue": "-7.18", "warnings": [], "note": "round2(1 x L 3.589091); preview and post agree" } }
+      ],
+      "final": { "W": { "onHand": "-2.0000", "assetValue": "-7.18", "averageCost": "3.589091" } }
+    },
+    {
+      "id": "V4",
+      "title": "A, then an invoice on Jan 21 sells the 6 on hand: the Jan 22 value-only adjustment (A8) no longer has stock and warns at on hand 0 (PR-4 S1); A9 then sells below 0",
+      "from": "A",
+      "steps": [
+        { "n": 10, "doc": "V4a", "event": "invoice", "date": "2026-01-21", "item": "W", "quantity": "6",
+          "expect": { "value": "-22.80", "onHand": "-2.0000", "assetValue": "-7.60",
+            "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-22", "onHand": "0.0000" }],
+            "note": "the invoice itself ends at 0 (no warning); A8 had 6 on hand and now 0: its 1.50 is a residual; A9 sells 2 at L 3.80" } }
+      ],
+      "rows": [
+        { "doc": "A7", "value": "-3.80", "onHand": "6.0000", "assetValue": "22.80" },
+        { "doc": "V4a", "value": "-22.80", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "A8", "value": "1.50", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "A9", "value": "-7.60", "onHand": "-2.0000", "assetValue": "-7.60" }
+      ],
+      "final": { "W": { "onHand": "-2.0000", "assetValue": "-7.60", "averageCost": "3.800000" } }
     },
     {
       "id": "X",
@@ -292,6 +351,91 @@
       "final": { "W": { "onHand": "17.0000", "assetValue": "59.94" } }
     },
     {
+      "id": "R3",
+      "title": "A return linked to a sale sold below 0 comes back at its corrected cost (PR-4 S5): A, then a credit memo returning the Jan 12 invoice's 3 units (relief 10.77 at L; the Jan 15 bill's correction 0.63 makes them 11.40)",
+      "from": "A",
+      "steps": [
+        { "n": 10, "doc": "R3a", "event": "credit_memo", "date": "2026-01-26", "item": "W", "quantity": "3", "returnOf": "A5",
+          "expect": { "value": "11.40", "onHand": "7.0000", "assetValue": "27.60", "averageCost": "3.942857", "note": "10.77 + 0.63; at the sale's relief alone it would be 10.77" } },
+        { "n": 11, "event": "edit", "doc": "R3a", "quantity": "2",
+          "expect": { "value": "7.60", "onHand": "6.0000", "assetValue": "23.80", "note": "round2(11.40 x 2 / 3)" } },
+        { "n": 12, "doc": "B1", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00",
+          "expect": { "onHand": "12.0000", "assetValue": "43.98", "note": "case B: the Jan 12 sale is no longer short (relief 9.41, no correction): round2(9.41 x 2 / 3) = 6.27" } }
+      ],
+      "rows": [
+        { "doc": "A5", "value": "-9.41", "onHand": "3.0000", "assetValue": "9.40" },
+        { "doc": "A6", "value": "38.00", "correction": "0.00", "onHand": "13.0000", "assetValue": "47.40" },
+        { "doc": "A9", "value": "-7.54", "onHand": "10.0000", "assetValue": "37.71" },
+        { "doc": "R3a", "returnOf": "A5", "value": "6.27", "onHand": "12.0000", "assetValue": "43.98" }
+      ],
+      "final": { "W": { "onHand": "12.0000", "assetValue": "43.98", "averageCost": "3.665000" } }
+    },
+    {
+      "id": "R2",
+      "title": "Two rows of one part on one credit memo (PR-4 B1): A steps 1-6, then one credit memo with 2 Widgets returned against the Jan 8 invoice (returnOf A3, relief 14.35 for 4) and 1 with no link; the unlinked row is walked first",
+      "from": "A",
+      "fromSteps": 6,
+      "steps": [
+        { "n": 7, "doc": "T1", "event": "credit_memo", "date": "2026-01-16",
+          "lines": [{ "item": "W", "quantity": "2", "returnOf": "A3" }, { "item": "W", "quantity": "1" }],
+          "expect": { "onHand": "10.0000", "assetValue": "37.58", "note": "unlinked round2(26.60 / 7) = 3.80, then linked round2(14.35 x 2 / 4) = 7.18" } },
+        { "n": 8, "doc": "T2", "event": "invoice", "date": "2026-01-25", "item": "W", "quantity": "2",
+          "expect": { "value": "-7.52", "onHand": "8.0000", "assetValue": "30.06", "note": "round2(37.58 x 2 / 10)" } }
+      ],
+      "rows": [
+        { "doc": "A6", "value": "38.00", "correction": "-0.63", "onHand": "7.0000", "assetValue": "26.60" },
+        { "doc": "T1", "returnOf": null, "value": "3.80", "onHand": "8.0000", "assetValue": "30.40" },
+        { "doc": "T1", "returnOf": "A3", "value": "7.18", "onHand": "10.0000", "assetValue": "37.58" },
+        { "doc": "T2", "value": "-7.52", "onHand": "8.0000", "assetValue": "30.06" }
+      ],
+      "final": { "W": { "onHand": "8.0000", "assetValue": "30.06", "averageCost": "3.757500" } }
+    },
+    {
+      "id": "R4",
+      "title": "A linked return cures its own sale's short units first (PR-4 RS2): L 4, sale Y sells 1 below 0, sale X 3; 2 units back against X; a 1.00 bill of 2 cures the rest; X's last unit comes back at 0.50, not -3.00",
+      "from": null,
+      "steps": [
+        { "n": 1, "doc": "R4a", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "1", "unitPrice": "4.00", "amount": "4.00",
+          "expect": { "onHand": "1.0000", "assetValue": "4.00", "averageCost": "4.000000" } },
+        { "n": 2, "doc": "R4b", "event": "invoice", "date": "2026-01-03", "item": "W", "quantity": "1", "expect": { "value": "-4.00", "onHand": "0.0000", "assetValue": "0.00" } },
+        { "n": 3, "doc": "R4Y", "event": "invoice", "date": "2026-01-04", "item": "W", "quantity": "1",
+          "expect": { "value": "-4.00", "onHand": "-1.0000", "assetValue": "-4.00", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-04", "onHand": "-1.0000" }] } },
+        { "n": 4, "doc": "R4X", "event": "invoice", "date": "2026-01-05", "item": "W", "quantity": "3",
+          "expect": { "value": "-12.00", "onHand": "-4.0000", "assetValue": "-16.00", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-05", "onHand": "-4.0000" }] } },
+        { "n": 5, "doc": "R4c", "event": "credit_memo", "date": "2026-01-06", "item": "W", "quantity": "2", "returnOf": "R4X",
+          "expect": { "value": "8.00", "onHand": "-2.0000", "assetValue": "-8.00", "warnings": [],
+            "note": "round2(12.00 x 2 / 3); C = 8.00 - round2(16.00 x 2 / 4) = 0; cures 2 of X's 3 short units (Y's 1 stays first in line)" } },
+        { "n": 6, "doc": "R4d", "event": "bill", "date": "2026-01-07", "item": "W", "quantity": "2", "unitPrice": "0.50", "amount": "1.00",
+          "expect": { "value": "1.00", "correction": "7.00", "onHand": "0.0000", "assetValue": "0.00",
+            "note": "C = 1.00 - round2(8.00 x 2 / 2) = -7.00, split Y -3.50, X -3.50: X's R = 12.00 - 3.50 = 8.50 (first short, first cured alone would give X all -7.00: R 5.00)" } },
+        { "n": 7, "doc": "R4e", "event": "credit_memo", "date": "2026-01-08", "item": "W", "quantity": "1", "returnOf": "R4X",
+          "expect": { "value": "0.50", "onHand": "1.0000", "assetValue": "0.50", "note": "round2(8.50 x 3 / 3) - 8.00 (it was 5.00 - 8.00 = -3.00)" } }
+      ],
+      "correctionShares": { "R4Y": "-3.50", "R4X": "-3.50" },
+      "final": { "W": { "onHand": "1.0000", "assetValue": "0.50", "averageCost": "0.500000" } }
+    },
+    {
+      "id": "R5",
+      "title": "A linked return never comes back below 0 (PR-4 RS2): sale X sells 4 below 0 at L 4 (R 16.00); 2 back (8.00); a 1.00 bill cures X's other 2 (R 9.00); the next unit back is max(0, round2(9.00 x 3 / 4) - 8.00) = 0.00, the last brings R - B = 1.00",
+      "from": null,
+      "steps": [
+        { "n": 1, "doc": "R5a", "event": "bill", "date": "2026-01-02", "item": "W", "quantity": "1", "unitPrice": "4.00", "amount": "4.00" },
+        { "n": 2, "doc": "R5b", "event": "invoice", "date": "2026-01-03", "item": "W", "quantity": "1", "expect": { "value": "-4.00", "onHand": "0.0000", "assetValue": "0.00" } },
+        { "n": 3, "doc": "R5X", "event": "invoice", "date": "2026-01-04", "item": "W", "quantity": "4",
+          "expect": { "value": "-16.00", "onHand": "-4.0000", "assetValue": "-16.00", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-04", "onHand": "-4.0000" }] } },
+        { "n": 4, "doc": "R5c", "event": "credit_memo", "date": "2026-01-05", "item": "W", "quantity": "2", "returnOf": "R5X",
+          "expect": { "value": "8.00", "onHand": "-2.0000", "assetValue": "-8.00" } },
+        { "n": 5, "doc": "R5d", "event": "bill", "date": "2026-01-06", "item": "W", "quantity": "2", "unitPrice": "0.50", "amount": "1.00",
+          "expect": { "value": "1.00", "correction": "7.00", "onHand": "0.0000", "assetValue": "0.00", "note": "C = 1.00 - 8.00 = -7.00, all X's: R 9.00" } },
+        { "n": 6, "doc": "R5e", "event": "credit_memo", "date": "2026-01-07", "item": "W", "quantity": "1", "returnOf": "R5X",
+          "expect": { "value": "0.00", "onHand": "1.0000", "assetValue": "0.00", "note": "round2(9.00 x 3 / 4) - 8.00 = -1.25, never below 0" } },
+        { "n": 7, "doc": "R5f", "event": "credit_memo", "date": "2026-01-08", "item": "W", "quantity": "1", "returnOf": "R5X",
+          "expect": { "value": "1.00", "onHand": "2.0000", "assetValue": "1.00", "note": "every unit back: 8.00 + 0.00 + 1.00 = R 9.00" } }
+      ],
+      "correctionShares": { "R5X": "-7.00" },
+      "final": { "W": { "onHand": "2.0000", "assetValue": "1.00", "averageCost": "0.500000" } }
+    },
+    {
       "id": "U",
       "title": "Units of measure (U-161): unit set Bottle, base bottle; case = 12, half-case = 6, litre = 1.333333, ml = 0.001333",
       "from": null,
@@ -352,10 +496,21 @@
           "basisNote": true
         }
       },
-      "alsoChecks": [
-        "An applied (not refunded) credit memo shows no inventory or COGS on cash basis.",
-        "A $0 invoice's COGS never shows on cash basis."
-      ]
+      "settlements": {
+        "rule": "Q-PR4a (PR-4 S3, amends Q-SPF5): on cash basis COGS and the stock it takes off are recognised as the sale is settled by any means (cash + discount + write-off, an applied credit memo, or at once for a $0 sale), in proportion to the amount settled; a credit memo's returned units come back as it is applied (or refunded). Shares are unrounded; the reports round at display.",
+        "steps": [
+          { "n": 6, "doc": "G1", "event": "credit_memo", "date": "2026-01-20", "item": "W", "quantity": "1", "returnOf": "A3", "taxable": true, "total": "10.81",
+            "applyTo": "A3", "applied": "10.81",
+            "expect": { "value": "3.59", "asOf": "2026-01-31", "cash": { "cogsShare": "3.585", "inventoryShare": "29.745" },
+              "note": "A3 settled 21.62 / 43.24 = 1/2: 7.175 relieved; the memo (fully applied) puts back 3.59" } },
+          { "n": 7, "doc": "G2", "event": "invoice", "date": "2026-01-21", "item": "W", "quantity": "1", "unitPrice": "0.00", "total": "0.00",
+            "expect": { "value": "-3.59", "asOf": "2026-01-31", "cash": { "cogsShare": "7.175", "inventoryShare": "26.155" },
+              "note": "round2(43.07 / 12) = 3.59, recognised in full on Jan 21" } },
+          { "n": 8, "event": "write_off", "date": "2026-02-28", "invoice": "A3", "amount": "21.62",
+            "expect": { "asOf": "2026-02-28", "cash": { "income": "10.00", "cogsShare": "14.35", "inventoryShare": "18.98" },
+              "note": "A3 fully settled: 14.35 relieved; 33.33 - 14.35 + 3.59 - 3.59" } }
+        ]
+      }
     },
     {
       "id": "S",

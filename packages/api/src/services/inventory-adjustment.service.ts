@@ -29,6 +29,7 @@ import { Decimal } from '../utils/inventory-walk.js';
 import { inventoryAssetAccounts, lockForInventory, splitDerived } from './inventory-costing.service.js';
 import { assertInventoryOn } from './inventory.service.js';
 import { resolveLineUnits } from './unit-lines.service.js';
+import { positionDesc } from './inventory-position.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 
 type Dec = InstanceType<typeof Decimal>;
@@ -108,6 +109,10 @@ async function adjustmentLines(executor: DbOrTx, tenantId: string, companyId: st
     if (l.unitId && !hasQty) throw AppError.badRequest(`lines[${i}].unitId goes with a quantityChange`, 'VALIDATION_ERROR', { lineIndex: i });
     if (hasValue) {
       const v = parseValueChange(l.valueChange, `lines[${i}].valueChange`, opts.openingZero === true);
+      // PR-4 N4: units and value move the same way (units out with value in is refused).
+      if (qty && !v.isZero() && new Decimal(qty).isNegative() !== v.isNegative()) {
+        throw AppError.badRequest(`lines[${i}]: quantityChange and valueChange must have the same sign`, 'VALIDATION_ERROR', { lineIndex: i, field: `lines[${i}].valueChange` });
+      }
       const amt = v.abs().toFixed(2);
       const up = !v.isNegative();
       lines.push({ accountId: part.assetAccountId, itemId: part.id, ...(qty ? { quantity: qty, ...unit } : {}), debit: up ? amt : '0', credit: up ? '0' : amt });
@@ -224,7 +229,7 @@ export async function stockAsOf(executor: DbOrTx, tenantId: string, companyId: s
     WHERE m.tenant_id = ${tenantId} AND m.company_id = ${companyId} AND m.voided = false
       ${asOf === null ? sql`` : sql`AND m.movement_date <= ${asOf}::date`}
       AND m.item_id IN (${sql.join(itemIds.map((i) => sql`${i}::uuid`), sql`, `)})
-    ORDER BY m.item_id, m.movement_date DESC, m.txn_created_at DESC, m.transaction_id DESC`);
+    ORDER BY m.item_id, ${positionDesc('m')}`);
   for (const row of r.rows as Array<{ item_id: string; q: string; v: string; l: string }>) {
     out.set(row.item_id, { onHand: new Decimal(row.q), value: new Decimal(row.v), lastCost: new Decimal(row.l) });
   }
