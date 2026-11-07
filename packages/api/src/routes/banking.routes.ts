@@ -475,7 +475,7 @@ const importBatchResponseSchema = z.object({
   sameFileImportedAt: z.string().optional(),
   identityLinkedElsewhere: z.object({ accountName: z.string(), mask: z.string() }).optional().describe('dry run only'),
   insertedItemIds: z.array(z.string().uuid()),
-  postProcessing: z.enum(['scheduled', 'done', 'failed']).optional(),
+  postProcessing: z.enum(['scheduled', 'done', 'failed', 'cancelled']).optional(),
   rows: z.array(importRowResultSchema),
   counts: z.object({
     inFile: z.number().int(), new: z.number().int(), duplicate: z.number().int(), possibleDuplicate: z.number().int(),
@@ -502,7 +502,27 @@ const IMPORT_BATCH_DESCRIPTION = 'bank-import-batch-v1 (U-06). One account secti
   + 'projected = booksAtDate + pendingTotal + newTotal, difference = -fileBalance - projected. Permission: a dry run needs read on '
   + 'banking, a commit needs write (Q-P25ab). bankIdentity {bankId?, acctId} is raw (loopback only, Q-P25u): the engine links '
   + 'the account by an HMAC under the company link key (made on the first commit) and the last 4 characters of acctId, and keeps '
-  + 'neither raw value. A replay (Idempotency-Key) shows the live postProcessing state.';
+  + 'neither raw value. A replay (Idempotency-Key) shows the live postProcessing state (scheduled, done, failed, or cancelled when '
+  + 'an undo stopped it); GET /feed/import-batches shows its progress (processed of total).';
+
+const importBatchListSchema = z.object({
+  batches: z.array(z.object({
+    id: z.string().uuid(), accountId: z.string().uuid(), bankConnectionId: z.string().uuid(), format: z.enum(['ofx', 'qfx', 'qif', 'csv']),
+    fileName: z.string(), sourceFileSha256: z.string(), sectionIndex: z.number().int(), sectionStart: z.string().nullable(),
+    sectionEnd: z.string().nullable(), amountsFlipped: z.boolean(), csvMapping: z.record(z.unknown()).nullable(),
+    fileEndingBalance: z.string().nullable(), fileEndingDate: z.string().nullable(),
+    counts: z.object({
+      inFile: z.number().int(), new: z.number().int(), duplicate: z.number().int(), possibleDuplicate: z.number().int(),
+      changed: z.number().int(), closedPeriod: z.number().int(), inserted: z.number().int(),
+    }),
+    insertedTotal: z.string(),
+    postProcessing: z.enum(['scheduled', 'done', 'failed', 'cancelled'])
+      .describe('scheduled while suggestions are prepared; cancelled when an undo stopped it'),
+    processed: z.number().int().describe('items post-processed so far (Q-P25ad)'),
+    total: z.number().int().nullable().describe('items to post-process; null until post-processing starts'),
+    undoneAt: z.string().nullable(), createdAt: z.string(),
+  })),
+});
 
 bankingRouter.post('/feed/import-batch', takeBankIdentity, idempotent({
   successStatus: 200,
@@ -540,13 +560,15 @@ bankingRouter.post('/feed/import-batch', takeBankIdentity, idempotent({
 bankingRouter.get('/feed/import-batches', describe({
   summary: 'List bank file import batches, newest first (bank-import-batch-v1)',
   description: 'Response {batches: [{id, accountId, bankConnectionId, format, fileName, sourceFileSha256, sectionIndex, sectionStart, '
-    + 'sectionEnd, amountsFlipped, csvMapping, fileEndingBalance, fileEndingDate, counts, insertedTotal, postProcessing, undoneAt, createdAt}]}. '
-    + 'Amounts are decimal strings.',
+    + 'sectionEnd, amountsFlipped, csvMapping, fileEndingBalance, fileEndingDate, counts, insertedTotal, postProcessing, processed, total, '
+    + 'undoneAt, createdAt}]}. Amounts are decimal strings. processed of total is the post-processing progress, raised after each chunk '
+    + '(total is null until it starts); postProcessing is scheduled, done, failed or cancelled (an undo stopped it).',
   query: z.object({
     accountId: z.string().uuid().optional(),
     format: z.enum(['ofx', 'qfx', 'qif', 'csv']).optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
   }),
+  response: importBatchListSchema,
 }), async (req, res) => {
   const q = z.object({
     accountId: z.string().uuid().optional(),
@@ -563,7 +585,9 @@ bankingRouter.delete('/feed/import-batches/:id', idempotent({ successStatus: 200
     + 'replaced their values back while they are pending, untouched and as the batch left them. Response {batchId, removed, restored, '
     + 'kept, undoneAt}. A replaced item already used counts as used (its line in this batch\'s file). '
     + '409 rows_already_used (details {lines}) when some rows were already used, unless ?pendingOnly=true (then only the untouched rows '
-    + 'go); 409 still_preparing while post-processing runs; 409 already_undone; 404 NOT_FOUND. Audited. Idempotency-Key optional.',
+    + 'go); 409 already_undone; 404 NOT_FOUND. Audited. Idempotency-Key optional. While post-processing runs, the undo stops it after '
+    + 'its current chunk and then undoes (postProcessing becomes cancelled); when the undo does not go through, post-processing goes '
+    + 'on. 409 still_preparing only when post-processing did not stop within 20 s: nothing was undone, try again.',
   params: z.object({ id: z.string().uuid() }),
   query: z.object({ pendingOnly: z.enum(['true', 'false']).optional() }),
 }), async (req, res) => {

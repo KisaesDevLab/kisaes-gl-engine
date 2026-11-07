@@ -227,15 +227,7 @@ export async function gatherSignals(
   });
   if (!item) throw AppError.notFound('Bank feed item not found');
 
-  const storedConfidence = item.confidenceScore ? parseFloat(item.confidenceScore) : 0;
-  const matchType = item.matchType ?? null;
-  const description = (item.originalDescription || item.description || '').toLowerCase().trim();
-
-  // Override rate, recurrence, multi-account history all come from
-  // the `categorization_history` learning layer. A payee with
-  // exactly one row in history that points to one account has
-  // `isMultiAccountHistory = false`; two+ rows for the same
-  // payee pattern pointing to different accounts is multi-account.
+  const description = signalPattern(item);
   const historyRows = await db
     .select({
       accountId: categorizationHistory.accountId,
@@ -249,7 +241,50 @@ export async function gatherSignals(
         eq(categorizationHistory.payeePattern, description),
       ),
     );
+  const signals = signalsFromHistory(item, historyRows);
 
+  // hasPotentialMatch is derived from any candidates already
+  // persisted on the state row by Phase 3's matcher. The upsert
+  // caller can override this when fresher candidates are about
+  // to be written (avoids reading our own pending write).
+  const [existingState] = await db
+    .select({ matchCandidates: transactionClassificationState.matchCandidates })
+    .from(transactionClassificationState)
+    .where(
+      and(
+        eq(transactionClassificationState.tenantId, tenantId),
+        eq(transactionClassificationState.bankFeedItemId, bankFeedItemId),
+      ),
+    )
+    .limit(1);
+  const persistedCandidates = (existingState?.matchCandidates as MatchCandidate[] | null) ?? null;
+  signals.hasPotentialMatch =
+    Array.isArray(persistedCandidates) && persistedCandidates.length > 0;
+  return signals;
+}
+
+/** The categorization_history pattern a feed item's signals read. */
+export function signalPattern(item: { description: string | null; originalDescription: string | null }): string {
+  return (item.originalDescription || item.description || '').toLowerCase().trim();
+}
+
+/**
+ * gatherSignals from the history rows of the item's pattern (shared with
+ * the import batch, which reads them for many items at once).
+ * hasPotentialMatch and matchedRuleId are left for the caller.
+ */
+export function signalsFromHistory(
+  item: { confidenceScore: string | null; matchType: string | null },
+  historyRows: Array<{ accountId: string; timesConfirmed: number | null; timesOverridden: number | null }>,
+): AssignBucketInput {
+  const storedConfidence = item.confidenceScore ? parseFloat(item.confidenceScore) : 0;
+  const matchType = item.matchType ?? null;
+
+  // Override rate, recurrence, multi-account history all come from
+  // the `categorization_history` learning layer. A payee with
+  // exactly one row in history that points to one account has
+  // `isMultiAccountHistory = false`; two+ rows for the same
+  // payee pattern pointing to different accounts is multi-account.
   const totalConfirmed = historyRows.reduce((s, r) => s + (r.timesConfirmed ?? 0), 0);
   const totalOverridden = historyRows.reduce((s, r) => s + (r.timesOverridden ?? 0), 0);
   const isNewVendor = historyRows.length === 0;
@@ -276,29 +311,11 @@ export async function gatherSignals(
         }),
       );
 
-  // hasPotentialMatch is derived from any candidates already
-  // persisted on the state row by Phase 3's matcher. The upsert
-  // caller can override this when fresher candidates are about
-  // to be written (avoids reading our own pending write).
-  const [existingState] = await db
-    .select({ matchCandidates: transactionClassificationState.matchCandidates })
-    .from(transactionClassificationState)
-    .where(
-      and(
-        eq(transactionClassificationState.tenantId, tenantId),
-        eq(transactionClassificationState.bankFeedItemId, bankFeedItemId),
-      ),
-    )
-    .limit(1);
-  const persistedCandidates = (existingState?.matchCandidates as MatchCandidate[] | null) ?? null;
-  const hasPotentialMatch =
-    Array.isArray(persistedCandidates) && persistedCandidates.length > 0;
-
   return {
     storedConfidence,
     matchType,
     matchedRuleId: null, // filled in by the upsert caller if a rule fired
-    hasPotentialMatch,
+    hasPotentialMatch: false, // filled in by the caller
     vendorConsistency,
     isNewVendor,
     isMultiAccountHistory,
@@ -343,23 +360,8 @@ export async function upsertStateForFeedItem(
     signals.hasPotentialMatch = (opts.matchCandidates ?? []).length > 0;
   }
 
-  const assigned = assignBucket(signals, thresholds);
-  const { confidenceScore, reasoning } = assigned;
-  let bucket = assigned.bucket;
-
-  // A suggestion pointing at the suspense account is by definition "we could
-  // not classify this", so it must never sit in an auto bucket where
-  // approve-all would sweep it through as though it were confident. Force it
-  // to needs_review; it still posts to suspense when a human says so, and
-  // shows up on Practice -> Uncategorized either way.
-  if (item.suggestedAccountId) {
-    const suspenseAccountId = await findSystemAccountId(tenantId, SUSPENSE_TAG);
-    if (suspenseAccountId && item.suggestedAccountId === suspenseAccountId && bucket !== 'rule') {
-      bucket = 'needs_review';
-      reasoning.bucket = 'needs_review';
-      reasoning.adjustments.push({ reason: 'suggested_account_is_suspense', delta: 0 });
-    }
-  }
+  const suspenseAccountId = item.suggestedAccountId ? await findSystemAccountId(tenantId, SUSPENSE_TAG) : null;
+  const { bucket, confidenceScore, reasoning } = bucketForItem(item, signals, thresholds, suspenseAccountId);
 
   const values: typeof transactionClassificationState.$inferInsert = {
     tenantId,
@@ -404,6 +406,31 @@ export async function upsertStateForFeedItem(
     })
     .returning();
   return mapRowToState(row!);
+}
+
+/**
+ * assignBucket, then the suspense rule: a suggestion pointing at the
+ * suspense account is by definition "we could not classify this", so it
+ * must never sit in an auto bucket where approve-all would sweep it through
+ * as though it were confident. Force it to needs_review; it still posts to
+ * suspense when a human says so, and shows up on Practice -> Uncategorized
+ * either way.
+ */
+export function bucketForItem(
+  item: { suggestedAccountId: string | null },
+  signals: AssignBucketInput,
+  thresholds: ClassificationThresholds,
+  suspenseAccountId: string | null,
+): AssignBucketOutput {
+  const assigned = assignBucket(signals, thresholds);
+  const { confidenceScore, reasoning } = assigned;
+  let bucket = assigned.bucket;
+  if (item.suggestedAccountId && suspenseAccountId && item.suggestedAccountId === suspenseAccountId && bucket !== 'rule') {
+    bucket = 'needs_review';
+    reasoning.bucket = 'needs_review';
+    reasoning.adjustments.push({ reason: 'suggested_account_is_suspense', delta: 0 });
+  }
+  return { bucket, confidenceScore, reasoning };
 }
 
 // Mark the transaction_id on the state row once the bank feed

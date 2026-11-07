@@ -74,6 +74,26 @@ export function compositeScore(parts: {
   );
 }
 
+/**
+ * A matcher's date window around a feed date, as the matchers have always
+ * computed it (a Date from the YYYY-MM-DD string moved by local days,
+ * read back as a UTC date).
+ */
+export function dateWindow(feedDate: string, days: number): { min: string; max: string } {
+  const minDate = new Date(feedDate);
+  minDate.setDate(minDate.getDate() - days);
+  const maxDate = new Date(feedDate);
+  maxDate.setDate(maxDate.getDate() + days);
+  return { min: minDate.toISOString().slice(0, 10), max: maxDate.toISOString().slice(0, 10) };
+}
+
+// The scorers below turn the rows a matcher read into candidates. They are
+// shared with the import batch (bank-import/post-process.ts), which reads
+// the rows of many feed items at once.
+type TxnRow = typeof transactions.$inferSelect;
+export type OpenTxnRow = { txn: TxnRow; contactName: string | null };
+export type RecurringRow = { schedule: typeof recurringSchedules.$inferSelect; txn: TxnRow; contactName: string | null };
+
 // ─── Open-invoice matcher (§3.1) ───────────────────────────────
 
 // Deposits (negative-amount feed items per the existing
@@ -91,10 +111,7 @@ async function matchOpenInvoices(item: FeedItemForMatching): Promise<MatchCandid
   // 14-day date window — enough to catch the typical
   // invoice-then-deposit lag; the scoring tolerance bands narrow
   // the actual cutoff to ≤7 days for any non-zero score.
-  const minDate = new Date(item.feedDate);
-  minDate.setDate(minDate.getDate() - 14);
-  const maxDate = new Date(item.feedDate);
-  maxDate.setDate(maxDate.getDate() + 14);
+  const w = dateWindow(item.feedDate, 14);
 
   const rows = await db
     .select({
@@ -108,12 +125,16 @@ async function matchOpenInvoices(item: FeedItemForMatching): Promise<MatchCandid
         eq(transactions.tenantId, item.tenantId),
         eq(transactions.txnType, 'invoice'),
         gt(transactions.balanceDue, '0'),
-        gte(transactions.txnDate, minDate.toISOString().slice(0, 10)),
-        lte(transactions.txnDate, maxDate.toISOString().slice(0, 10)),
+        gte(transactions.txnDate, w.min),
+        lte(transactions.txnDate, w.max),
       ),
     )
     .limit(200);
+  return scoreOpenInvoices(item, rows);
+}
 
+export function scoreOpenInvoices(item: FeedItemForMatching, rows: OpenTxnRow[]): MatchCandidate[] {
+  const feedAmount = parseFloat(item.amount);
   const out: MatchCandidate[] = [];
   for (const r of rows) {
     const cAmount = parseFloat(r.txn.balanceDue ?? r.txn.total ?? '0');
@@ -145,10 +166,7 @@ async function matchOpenBills(item: FeedItemForMatching): Promise<MatchCandidate
   // Expenses arrive positive; bills represent money to be paid out.
   if (feedAmount < 0) return [];
 
-  const minDate = new Date(item.feedDate);
-  minDate.setDate(minDate.getDate() - 14);
-  const maxDate = new Date(item.feedDate);
-  maxDate.setDate(maxDate.getDate() + 14);
+  const w = dateWindow(item.feedDate, 14);
 
   const rows = await db
     .select({
@@ -162,12 +180,16 @@ async function matchOpenBills(item: FeedItemForMatching): Promise<MatchCandidate
         eq(transactions.tenantId, item.tenantId),
         eq(transactions.txnType, 'bill'),
         gt(transactions.balanceDue, '0'),
-        gte(transactions.txnDate, minDate.toISOString().slice(0, 10)),
-        lte(transactions.txnDate, maxDate.toISOString().slice(0, 10)),
+        gte(transactions.txnDate, w.min),
+        lte(transactions.txnDate, w.max),
       ),
     )
     .limit(200);
+  return scoreOpenBills(item, rows);
+}
 
+export function scoreOpenBills(item: FeedItemForMatching, rows: OpenTxnRow[]): MatchCandidate[] {
+  const feedAmount = parseFloat(item.amount);
   const out: MatchCandidate[] = [];
   for (const r of rows) {
     const cAmount = parseFloat(r.txn.balanceDue ?? r.txn.total ?? '0');
@@ -204,10 +226,7 @@ async function matchUnpostedJEs(item: FeedItemForMatching): Promise<MatchCandida
   const feedAmount = parseFloat(item.amount);
   if (feedAmount === 0) return [];
 
-  const minDate = new Date(item.feedDate);
-  minDate.setDate(minDate.getDate() - 7);
-  const maxDate = new Date(item.feedDate);
-  maxDate.setDate(maxDate.getDate() + 7);
+  const w = dateWindow(item.feedDate, 7);
 
   const rows = await db
     .select()
@@ -216,13 +235,16 @@ async function matchUnpostedJEs(item: FeedItemForMatching): Promise<MatchCandida
       and(
         eq(transactions.tenantId, item.tenantId),
         eq(transactions.txnType, 'journal_entry'),
-        gte(transactions.txnDate, minDate.toISOString().slice(0, 10)),
-        lte(transactions.txnDate, maxDate.toISOString().slice(0, 10)),
+        gte(transactions.txnDate, w.min),
+        lte(transactions.txnDate, w.max),
         eq(transactions.total, Math.abs(feedAmount).toFixed(4)),
       ),
     )
     .limit(50);
+  return scoreUnpostedJEs(item, rows);
+}
 
+export function scoreUnpostedJEs(item: FeedItemForMatching, rows: TxnRow[]): MatchCandidate[] {
   const out: MatchCandidate[] = [];
   for (const r of rows) {
     const dScore = dateScore(item.feedDate, r.txnDate);
@@ -255,10 +277,7 @@ async function matchInterAccountTransfers(item: FeedItemForMatching): Promise<Ma
   const feedAmount = parseFloat(item.amount);
   if (feedAmount === 0) return [];
 
-  const minDate = new Date(item.feedDate);
-  minDate.setDate(minDate.getDate() - 3);
-  const maxDate = new Date(item.feedDate);
-  maxDate.setDate(maxDate.getDate() + 3);
+  const w = dateWindow(item.feedDate, 3);
   const targetAmount = (-feedAmount).toFixed(4);
 
   // Opposite sign means SUM = 0 between the pair. Match by exact
@@ -274,12 +293,15 @@ async function matchInterAccountTransfers(item: FeedItemForMatching): Promise<Ma
         ne(bankFeedItems.id, item.id),
         ne(bankFeedItems.bankConnectionId, item.bankConnectionId),
         eq(bankFeedItems.amount, targetAmount),
-        gte(bankFeedItems.feedDate, minDate.toISOString().slice(0, 10)),
-        lte(bankFeedItems.feedDate, maxDate.toISOString().slice(0, 10)),
+        gte(bankFeedItems.feedDate, w.min),
+        lte(bankFeedItems.feedDate, w.max),
       ),
     )
     .limit(20);
+  return scoreTransfers(item, rows);
+}
 
+export function scoreTransfers(item: FeedItemForMatching, rows: Array<typeof bankFeedItems.$inferSelect>): MatchCandidate[] {
   const out: MatchCandidate[] = [];
   for (const r of rows) {
     if (r.status !== 'pending') continue;
@@ -307,10 +329,7 @@ async function matchRecurringTemplates(item: FeedItemForMatching): Promise<Match
   const feedAmount = parseFloat(item.amount);
   if (feedAmount === 0) return [];
 
-  const minDate = new Date(item.feedDate);
-  minDate.setDate(minDate.getDate() - 7);
-  const maxDate = new Date(item.feedDate);
-  maxDate.setDate(maxDate.getDate() + 7);
+  const w = dateWindow(item.feedDate, 7);
 
   const rows = await db
     .select({
@@ -325,13 +344,17 @@ async function matchRecurringTemplates(item: FeedItemForMatching): Promise<Match
       and(
         eq(recurringSchedules.tenantId, item.tenantId),
         eq(recurringSchedules.isActive, true),
-        gte(recurringSchedules.nextOccurrence, minDate.toISOString().slice(0, 10)),
-        lte(recurringSchedules.nextOccurrence, maxDate.toISOString().slice(0, 10)),
+        gte(recurringSchedules.nextOccurrence, w.min),
+        lte(recurringSchedules.nextOccurrence, w.max),
         isNotNull(transactions.total),
       ),
     )
     .limit(50);
+  return scoreRecurring(item, rows);
+}
 
+export function scoreRecurring(item: FeedItemForMatching, rows: RecurringRow[]): MatchCandidate[] {
+  const feedAmount = parseFloat(item.amount);
   const out: MatchCandidate[] = [];
   for (const r of rows) {
     const tplAmount = parseFloat(r.txn.total ?? '0');
@@ -387,12 +410,15 @@ export async function findMatches(
     matchRecurringTemplates(input),
   ])).flat();
 
-  const qualifying = all
+  return rankCandidates(all);
+}
+
+/** The qualifying candidates, best first, at most MAX_MATCH_CANDIDATES. */
+export function rankCandidates(all: MatchCandidate[]): MatchCandidate[] {
+  return all
     .filter((c) => c.score >= BUCKET1_QUALIFY_THRESHOLD)
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_MATCH_CANDIDATES);
-
-  return qualifying;
 }
 
 // Exposed for testing the individual matchers in isolation.

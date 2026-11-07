@@ -14405,7 +14405,7 @@
     },
     "/api/v1/banking/feed/import-batch": {
       "post": {
-        "description": "bank-import-batch-v1 (U-06). One account section of a parsed bank file. The engine computes the dedupe keys v1 (dedupe_v1.json), every row's status, the closed-period flag and the balance check; it never posts and never calls AI. dryRun:true previews and changes nothing (an Idempotency-Key is 400 IDEMPOTENCY_KEY_NOT_ALLOWED); dryRun:false commits and requires an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). A commit always records a batch, inserts the new rows, the possible duplicates (flagged possibleDuplicate with possibleDuplicateOf on the feed item; include:false skips a row) and changed rows with changedAction \"add\" into the account's manual bank connection (exact duplicates are never inserted), and schedules post-processing (cleansing without AI; a matching rule is staged as a suggestion, never posted). Errors: 422 account_not_bank_or_card, account_not_in_company, invalid_row (details {line, field}), too_many_rows (over 20,000), batch_total_too_large; 409 identity_linked_elsewhere (details {accountName, mask}) unless relinkIdentity; 400 VALIDATION_ERROR; 413 over the 10 MB body limit; Idempotency-Key: 422 IDEMPOTENCY_KEY_REUSED, 409 IDEMPOTENCY_IN_PROGRESS, 400 IDEMPOTENCY_KEY_INVALID. Balance check (when fileEndingBalance and fileEndingDate are sent): bank projected = booksAtDate - pendingTotal - newTotal; card (amounts owed) projected = booksAtDate + pendingTotal + newTotal, difference = -fileBalance - projected. Permission: a dry run needs read on banking, a commit needs write (Q-P25ab). bankIdentity {bankId?, acctId} is raw (loopback only, Q-P25u): the engine links the account by an HMAC under the company link key (made on the first commit) and the last 4 characters of acctId, and keeps neither raw value. A replay (Idempotency-Key) shows the live postProcessing state.",
+        "description": "bank-import-batch-v1 (U-06). One account section of a parsed bank file. The engine computes the dedupe keys v1 (dedupe_v1.json), every row's status, the closed-period flag and the balance check; it never posts and never calls AI. dryRun:true previews and changes nothing (an Idempotency-Key is 400 IDEMPOTENCY_KEY_NOT_ALLOWED); dryRun:false commits and requires an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). A commit always records a batch, inserts the new rows, the possible duplicates (flagged possibleDuplicate with possibleDuplicateOf on the feed item; include:false skips a row) and changed rows with changedAction \"add\" into the account's manual bank connection (exact duplicates are never inserted), and schedules post-processing (cleansing without AI; a matching rule is staged as a suggestion, never posted). Errors: 422 account_not_bank_or_card, account_not_in_company, invalid_row (details {line, field}), too_many_rows (over 20,000), batch_total_too_large; 409 identity_linked_elsewhere (details {accountName, mask}) unless relinkIdentity; 400 VALIDATION_ERROR; 413 over the 10 MB body limit; Idempotency-Key: 422 IDEMPOTENCY_KEY_REUSED, 409 IDEMPOTENCY_IN_PROGRESS, 400 IDEMPOTENCY_KEY_INVALID. Balance check (when fileEndingBalance and fileEndingDate are sent): bank projected = booksAtDate - pendingTotal - newTotal; card (amounts owed) projected = booksAtDate + pendingTotal + newTotal, difference = -fileBalance - projected. Permission: a dry run needs read on banking, a commit needs write (Q-P25ab). bankIdentity {bankId?, acctId} is raw (loopback only, Q-P25u): the engine links the account by an HMAC under the company link key (made on the first commit) and the last 4 characters of acctId, and keeps neither raw value. A replay (Idempotency-Key) shows the live postProcessing state (scheduled, done, failed, or cancelled when an undo stopped it); GET /feed/import-batches shows its progress (processed of total).",
         "operationId": "post_api_v1_banking_feed_import_batch",
         "parameters": [
           {
@@ -14776,7 +14776,8 @@
                       "enum": [
                         "scheduled",
                         "done",
-                        "failed"
+                        "failed",
+                        "cancelled"
                       ],
                       "type": "string"
                     },
@@ -14873,7 +14874,7 @@
     },
     "/api/v1/banking/feed/import-batches": {
       "get": {
-        "description": "Response {batches: [{id, accountId, bankConnectionId, format, fileName, sourceFileSha256, sectionIndex, sectionStart, sectionEnd, amountsFlipped, csvMapping, fileEndingBalance, fileEndingDate, counts, insertedTotal, postProcessing, undoneAt, createdAt}]}. Amounts are decimal strings.",
+        "description": "Response {batches: [{id, accountId, bankConnectionId, format, fileName, sourceFileSha256, sectionIndex, sectionStart, sectionEnd, amountsFlipped, csvMapping, fileEndingBalance, fileEndingDate, counts, insertedTotal, postProcessing, processed, total, undoneAt, createdAt}]}. Amounts are decimal strings. processed of total is the post-processing progress, raised after each chunk (total is null until it starts); postProcessing is scheduled, done, failed or cancelled (an undo stopped it).",
         "operationId": "get_api_v1_banking_feed_import_batches",
         "parameters": [
           {
@@ -14911,6 +14912,194 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "batches": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "amountsFlipped": {
+                            "type": "boolean"
+                          },
+                          "bankConnectionId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "counts": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "changed": {
+                                "type": "integer"
+                              },
+                              "closedPeriod": {
+                                "type": "integer"
+                              },
+                              "duplicate": {
+                                "type": "integer"
+                              },
+                              "inFile": {
+                                "type": "integer"
+                              },
+                              "inserted": {
+                                "type": "integer"
+                              },
+                              "new": {
+                                "type": "integer"
+                              },
+                              "possibleDuplicate": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "inFile",
+                              "new",
+                              "duplicate",
+                              "possibleDuplicate",
+                              "changed",
+                              "closedPeriod",
+                              "inserted"
+                            ],
+                            "type": "object"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "csvMapping": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": {},
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "fileEndingBalance": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "fileEndingDate": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "fileName": {
+                            "type": "string"
+                          },
+                          "format": {
+                            "enum": [
+                              "ofx",
+                              "qfx",
+                              "qif",
+                              "csv"
+                            ],
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "insertedTotal": {
+                            "type": "string"
+                          },
+                          "postProcessing": {
+                            "description": "scheduled while suggestions are prepared; cancelled when an undo stopped it",
+                            "enum": [
+                              "scheduled",
+                              "done",
+                              "failed",
+                              "cancelled"
+                            ],
+                            "type": "string"
+                          },
+                          "processed": {
+                            "description": "items post-processed so far (Q-P25ad)",
+                            "type": "integer"
+                          },
+                          "sectionEnd": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sectionIndex": {
+                            "type": "integer"
+                          },
+                          "sectionStart": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sourceFileSha256": {
+                            "type": "string"
+                          },
+                          "total": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "items to post-process; null until post-processing starts"
+                          },
+                          "undoneAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "accountId",
+                          "bankConnectionId",
+                          "format",
+                          "fileName",
+                          "sourceFileSha256",
+                          "sectionIndex",
+                          "sectionStart",
+                          "sectionEnd",
+                          "amountsFlipped",
+                          "csvMapping",
+                          "fileEndingBalance",
+                          "fileEndingDate",
+                          "counts",
+                          "insertedTotal",
+                          "postProcessing",
+                          "processed",
+                          "total",
+                          "undoneAt",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "batches"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
@@ -14931,7 +15120,7 @@
     },
     "/api/v1/banking/feed/import-batches/{id}": {
       "delete": {
-        "description": "Removes the batch's untouched pending rows (never assigned, matched or posted) and gives the items its changed rows replaced their values back while they are pending, untouched and as the batch left them. Response {batchId, removed, restored, kept, undoneAt}. A replaced item already used counts as used (its line in this batch's file). 409 rows_already_used (details {lines}) when some rows were already used, unless ?pendingOnly=true (then only the untouched rows go); 409 still_preparing while post-processing runs; 409 already_undone; 404 NOT_FOUND. Audited. Idempotency-Key optional.",
+        "description": "Removes the batch's untouched pending rows (never assigned, matched or posted) and gives the items its changed rows replaced their values back while they are pending, untouched and as the batch left them. Response {batchId, removed, restored, kept, undoneAt}. A replaced item already used counts as used (its line in this batch's file). 409 rows_already_used (details {lines}) when some rows were already used, unless ?pendingOnly=true (then only the untouched rows go); 409 already_undone; 404 NOT_FOUND. Audited. Idempotency-Key optional. While post-processing runs, the undo stops it after its current chunk and then undoes (postProcessing becomes cancelled); when the undo does not go through, post-processing goes on. 409 still_preparing only when post-processing did not stop within 20 s: nothing was undone, try again.",
         "operationId": "delete_api_v1_banking_feed_import_batches_by_id",
         "parameters": [
           {

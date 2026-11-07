@@ -141,7 +141,12 @@ export const bankImportBatches = pgTable('bank_import_batches', {
   result: jsonb('result'),
   // `changed` rows the batch replaced, with their values before (undo restores them).
   replacedItems: jsonb('replaced_items'),
-  postProcessing: varchar('post_processing', { length: 12 }).notNull().default('scheduled'), // scheduled | done | failed
+  postProcessing: varchar('post_processing', { length: 12 }).notNull().default('scheduled'), // scheduled | done | failed (undone while scheduled: reported as cancelled)
+  // Post-processing progress (0264): items to do (set when it starts) and done.
+  totalRows: integer('total_rows'),
+  processedRows: integer('processed_rows').notNull().default(0),
+  // An undo asked the running post-processing to stop after its chunk (0264).
+  cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
   undoneAt: timestamp('undone_at', { withTimezone: true }),
   undoneBy: uuid('undone_by'),
   createdBy: uuid('created_by'),

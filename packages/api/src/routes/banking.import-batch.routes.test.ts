@@ -106,8 +106,9 @@ async function feedCount(): Promise<number> {
 
 async function waitPostProcessing(batchId: string): Promise<string> {
   for (let i = 0; i < 400; i++) {
-    const [b] = await db.select({ p: bankImportBatches.postProcessing }).from(bankImportBatches).where(eq(bankImportBatches.id, batchId));
+    const [b] = await db.select({ p: bankImportBatches.postProcessing, undone: bankImportBatches.undoneAt }).from(bankImportBatches).where(eq(bankImportBatches.id, batchId));
     if (b && b.p !== 'scheduled') return b.p;
+    if (b && b.undone) return 'cancelled';
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error('post-processing did not finish');
@@ -150,7 +151,7 @@ afterEach(async () => {
   server = null;
   // Let detached post-processing finish before the rows go.
   const scheduled = await db.select({ id: bankImportBatches.id }).from(bankImportBatches)
-    .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.postProcessing, 'scheduled')));
+    .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.postProcessing, 'scheduled'), sql`${bankImportBatches.undoneAt} IS NULL`));
   for (const b of scheduled) await waitPostProcessing(b.id).catch(() => undefined);
   await new Promise((r) => setTimeout(r, 50));
   await db.delete(transactionClassificationState).where(eq(transactionClassificationState.tenantId, tenantId));
@@ -188,6 +189,7 @@ const CSV: Row[] = [
 describe('bank-import-batch-v1', () => {
   it('is advertised', () => {
     expect(DESKTOP_CAPABILITIES).toContain('bank-import-batch-v1');
+    expect(DESKTOP_CAPABILITIES).toContain('bank-import-progress-v1');
   });
 
   it('a dry run changes nothing and takes no Idempotency-Key', async () => {
@@ -405,10 +407,23 @@ describe('bank-import-batch-v1', () => {
     expect(list.json.batches).toHaveLength(2);
     expect(list.json.batches[1]).toMatchObject({ amountsFlipped: false, undoneAt: expect.any(String) });
 
+    expect(list.json.batches[0]).toMatchObject({ postProcessing: expect.stringMatching(/^(scheduled|done)$/), processed: expect.any(Number) });
+
+    // U-06 follow-up: an undo while preparing (here: scheduled, no run going on) goes through; reported cancelled.
+    expect(await waitPostProcessing(back.json.batchId)).toBe('done');
     await db.update(bankImportBatches).set({ postProcessing: 'scheduled' }).where(eq(bankImportBatches.id, back.json.batchId));
     const preparing = await call('DELETE', `/api/v1/banking/feed/import-batches/${back.json.batchId}`);
-    expect(preparing.json.error.code).toBe('still_preparing');
-    await db.update(bankImportBatches).set({ postProcessing: 'done' }).where(eq(bankImportBatches.id, back.json.batchId));
+    expect(preparing.status).toBe(200);
+    expect(preparing.json).toMatchObject({ removed: 2, kept: 0 });
+    const after = await call('GET', `/api/v1/banking/feed/import-batches?accountId=${bankId}&format=qfx`);
+    expect(after.json.batches[0]).toMatchObject({ id: back.json.batchId, postProcessing: 'cancelled', undoneAt: expect.any(String) });
+  });
+
+  it('progress (Q-P25ad): GET import-batches shows processed of total once post-processing ran', async () => {
+    const c = await commit(batch(OFX));
+    expect(await waitPostProcessing(c.json.batchId)).toBe('done');
+    const list = await call('GET', `/api/v1/banking/feed/import-batches?accountId=${bankId}`);
+    expect(list.json.batches[0]).toMatchObject({ id: c.json.batchId, postProcessing: 'done', processed: 3, total: 3 });
   });
 
   it('post-processing never posts and never calls AI: an auto-accept rule gives 0 journal lines', async () => {

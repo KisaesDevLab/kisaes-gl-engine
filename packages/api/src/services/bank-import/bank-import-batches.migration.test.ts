@@ -6,8 +6,9 @@
 // (twice is a no-op); feed rows imported through a batch survive the
 // rollback. A dedupe key is unique per connection. A batch left
 // `scheduled` is picked up again on start (resumeScheduledPostProcessing).
-// The forward file is applied again at the end so the rest of the suite
-// sees the schema.
+// The forward files (0263, 0264) are applied again at the end so the rest of
+// the suite sees the schema. Migration 0264 (post-processing progress and
+// cancel requests) is additive, rolls back and re-applies.
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -42,6 +43,7 @@ let userId = '';
 
 afterAll(async () => {
   if (!(await tableExists('bank_import_batches'))) await run('0263_bank_import_batches.sql');
+  await run('0264_bank_import_post_progress.sql');
   if (!tenantId) return;
   await db.delete(transactionClassificationState).where(eq(transactionClassificationState.tenantId, tenantId));
   await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
@@ -94,6 +96,7 @@ describe('migration 0263 bank import batches', () => {
 
     await run('0263_bank_import_batches.sql');
     await run('0263_bank_import_batches.sql');
+    await run('0264_bank_import_post_progress.sql');
     expect(await tableExists('bank_import_batches')).toBe(true);
     expect(await tableExists('bank_link_keys')).toBe(true);
     const cols = await db.execute(sql`SELECT column_name, is_nullable FROM information_schema.columns
@@ -104,5 +107,36 @@ describe('migration 0263 bank import batches', () => {
     const idx = await db.execute(sql`SELECT indexname FROM pg_indexes WHERE tablename = 'bank_feed_items' ORDER BY indexname`);
     expect((idx.rows as Array<{ indexname: string }>).map((r) => r.indexname))
       .toEqual(expect.arrayContaining(['uq_bfi_connection_dedupe_key', 'idx_bfi_connection_row_key', 'idx_bfi_import_batch']));
+  });
+});
+
+describe('migration 0264 bank import post-processing progress', () => {
+  const columns = async () => ((await db.execute(sql`SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'bank_import_batches' AND column_name IN ('total_rows', 'processed_rows', 'cancel_requested_at')
+    ORDER BY column_name`)).rows as Array<{ column_name: string }>).map((r) => r.column_name);
+
+  it('is additive, keeps the batches on rollback and re-applies; twice is a no-op', async () => {
+    const fwd = readFileSync(path.join(MIGRATIONS, '0264_bank_import_post_progress.sql'), 'utf8');
+    expect(fwd).not.toMatch(/drop\s+(table|column|constraint)/i);
+    expect(fwd).not.toMatch(/rename/i);
+    expect(await columns()).toEqual(['cancel_requested_at', 'processed_rows', 'total_rows']);
+
+    const [a] = await db.select().from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.accountType, 'asset')));
+    const [conn] = await db.select().from(bankConnections).where(eq(bankConnections.tenantId, tenantId));
+    const [batch] = await db.insert(bankImportBatches).values({
+      tenantId, bankConnectionId: conn!.id, accountId: a!.id, format: 'csv', fileName: 'y.csv', sourceFileSha256: '1'.repeat(64),
+      postProcessing: 'done', totalRows: 10, processedRows: 10, cancelRequestedAt: new Date(),
+    }).returning();
+
+    await run('0264_bank_import_post_progress.rollback.sql');
+    expect(await columns()).toEqual([]);
+    const back = await db.execute(sql`SELECT post_processing FROM bank_import_batches WHERE id = ${batch!.id}`);
+    expect(back.rows).toEqual([{ post_processing: 'done' }]);
+
+    await run('0264_bank_import_post_progress.sql');
+    await run('0264_bank_import_post_progress.sql');
+    expect(await columns()).toEqual(['cancel_requested_at', 'processed_rows', 'total_rows']);
+    const fresh = await db.execute(sql`SELECT processed_rows, total_rows, cancel_requested_at FROM bank_import_batches WHERE id = ${batch!.id}`);
+    expect(fresh.rows).toEqual([{ processed_rows: 0, total_rows: null, cancel_requested_at: null }]);
   });
 });

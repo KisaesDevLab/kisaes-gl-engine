@@ -222,7 +222,7 @@ async function applyTiered(
 // `mark_for_review` from any tier propagates (the suppression of
 // matchType='rule' in stageOnFeedItem hooks on `mark_for_review`
 // being present anywhere in the merged list).
-function aggregateActionsTiered(
+export function aggregateActionsTiered(
   matches: RuleEvaluationResult[],
   ruleById: Map<string, ConditionalRule>,
 ): Action[] {
@@ -275,7 +275,7 @@ function aggregateActionsTiered(
 // stacked rule chain might produce two `set_account` actions —
 // the later one wins. Splits and flow-control actions are
 // passed through as-is (they don't aggregate).
-function aggregateActions(actions: Action[]): Action[] {
+export function aggregateActions(actions: Action[]): Action[] {
   const out: Action[] = [];
   let setAccount: Action | undefined;
   let setVendor: Action | undefined;
@@ -321,9 +321,17 @@ async function stageOnFeedItem(
   feedItemId: string,
   actions: Action[],
 ): Promise<void> {
-  const updates: Partial<typeof bankFeedItems.$inferInsert> = {
-    updatedAt: new Date(),
-  };
+  await db
+    .update(bankFeedItems)
+    .set({ ...stagePatch(actions), updatedAt: new Date() })
+    .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+}
+
+/** The feed-item columns stageOnFeedItem writes for these aggregated actions. */
+export type StagePatch = Partial<Pick<typeof bankFeedItems.$inferInsert,
+  'suggestedAccountId' | 'matchType' | 'confidenceScore' | 'suggestedContactId' | 'suggestedTagId' | 'description' | 'splitsConfig' | 'skipAi'>>;
+export function stagePatch(actions: Action[]): StagePatch {
+  const updates: StagePatch = {};
   // First pass: detect mark_for_review so we can suppress the
   // matchType='rule' stamp from set_account. Without this, a rule
   // that combined `set_account` + `mark_for_review` would land
@@ -387,10 +395,7 @@ async function stageOnFeedItem(
         break;
     }
   }
-  await db
-    .update(bankFeedItems)
-    .set(updates)
-    .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
+  return updates;
 }
 
 // ─── Read-only evaluation (U-51) ──────────────────────────────
