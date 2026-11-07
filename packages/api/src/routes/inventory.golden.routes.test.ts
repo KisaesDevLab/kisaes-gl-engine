@@ -1048,12 +1048,13 @@ describe('inventory-costing-v1 write paths (B4)', () => {
         await invariants(w);
       }
       await fullReplayMatches(W);
-      // I7: no sale gives back more than its relief plus the corrections of the units it sold short (PR-4 S5).
+      // I7: no sale gives back more than its relief plus the corrections of the units it sold short (PR-4 S5), and no
+      // linked return comes back at a negative value (RS2).
       const over = await db.execute(sql`
         SELECT s.transaction_id FROM inventory_movements s JOIN inventory_movements r ON r.source_transaction_id = s.transaction_id AND r.item_id = s.item_id AND r.voided = false
         WHERE s.tenant_id = ${c.tenantId} AND s.voided = false AND s.source_transaction_id IS NULL AND s.kind = 'sale'
         GROUP BY s.transaction_id, s.value, s.quantity, s.correction_share
-        HAVING SUM(r.value) > -s.value + GREATEST(s.correction_share, 0) OR SUM(r.quantity) > -s.quantity`);
+        HAVING SUM(r.value) > -s.value + s.correction_share OR SUM(r.quantity) > -s.quantity OR MIN(r.value) < 0`);
       expect(over.rows, `I7 seed ${seed}`).toEqual([]);
     }
   }, 240_000);

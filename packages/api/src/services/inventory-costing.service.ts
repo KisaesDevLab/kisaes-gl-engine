@@ -49,7 +49,7 @@ import { inventoryMovements, items, journalLines, transactions } from '../db/sch
 import { AppError } from '../utils/errors.js';
 import { auditLogMany } from '../middleware/audit.js';
 import {
-  Decimal, walk, ZERO_STATE, type Dec, type MovementKind, type SaleLink, type WalkRow, type WalkState,
+  Decimal, round6, walk, ZERO_STATE, type Dec, type MovementKind, type SaleLink, type WalkRow, type WalkState,
 } from '../utils/inventory-walk.js';
 import { INVENTORY_ASSET_TAG, inventoryEnabled } from './inventory.service.js';
 import { noteInventoryWarnings } from './inventory-warnings-context.js';
@@ -360,8 +360,12 @@ async function assertSaleReturnsKept(tx: Tx, tenantId: string, txnId: string,
 /**
  * PR-4 S2: a new or edited document whose lines name an inventory part while
  * the company has inventory turned off is 400 INVENTORY_OFF (recurring runs,
- * the API and MCP included), so stock never moves untracked. A void or delete
- * (prepareExisting) stays allowed. Read before the costing lock.
+ * the API and MCP included), so stock never moves untracked. This holds for
+ * an edit that changes only the memo or another field of an older document
+ * that has parts. A void or delete (prepareExisting) stays allowed. Read
+ * before the costing lock (an early answer) and again under it (RS3: the
+ * settings switch holds the companies row FOR UPDATE, so a switch-off that
+ * committed while this posting waited for the row is seen here).
  */
 async function assertTrackingOn(tx: Tx, tenantId: string, companyId: string | null | undefined) {
   // A posting without a company keeps its stock on the tenant's oldest company (lock()): that company's switch counts.
@@ -383,6 +387,7 @@ export async function prepareNew(tx: Tx, tenantId: string, companyId: string | n
   if (parts.size === 0) return null;
   await assertTrackingOn(tx, tenantId, companyId);
   const held = await lock(tx, tenantId, companyId, [...parts.keys()], [txnDate]);
+  await assertTrackingOn(tx, tenantId, held.companyId);
   held.links = linksOf(lines);
   await assertReturns(tx, tenantId, held, null, txnDate, lines);
   return held;
@@ -398,6 +403,7 @@ export async function prepareEdit(tx: Tx, tenantId: string, companyId: string | 
   if (parts.size > 0) await assertTrackingOn(tx, tenantId, companyId);
   // The old date counts only when the document holds stock today.
   const held = await lock(tx, tenantId, companyId, [...parts.keys(), ...old], [newDate, old.length > 0 ? oldDate : null]);
+  if (parts.size > 0) await assertTrackingOn(tx, tenantId, held.companyId);
   held.links = linksOf(lines);
   await assertReturns(tx, tenantId, held, txnId, newDate, lines);
   if (SALE_TYPES.has(txnType)) {
@@ -525,6 +531,7 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
   const warnings: InventoryWarning[] = [];
   const deltas = new Map<string, Dec>();
   const changedDocs = new Map<string, { itemId: string; before: string; after: string }[]>();
+  const shareDocs = new Map<string, ShareMove[]>();
   // Movements whose derived lines must be reconciled, with their row as written.
   const reconcile = new Map<string, MovementRow>();
   // Per item: where its walk starts, and the document's own movements to reconcile after it.
@@ -587,11 +594,17 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
     const prev = starts.get(itemId);
     starts.set(itemId, prev && cmpPos(prev, startPos) < 0 ? prev : startPos);
   }
+  // RB1: a linked row carries its sale's position (the order of a memo's rows of one part); a sale that moved date
+  // carries the new one to its returns. Its returns sit after it, so the sale's own walk re-walks them in the new order.
+  await syncSalePositions(tx, tenantId, sql`(r.transaction_id = ${txnId} OR r.source_transaction_id = ${txnId})`);
 
   // Phase 2: one walk per item from its earliest affected position.
   for (const itemId of [...starts.keys()].sort()) {
     const res = await walkItem(tx, tenantId, companyId, itemId, starts.get(itemId)!, txnId, opts.lock.lockDate);
     if (res.warning) warnings.push(res.warning);
+    for (const s of res.shares) {
+      if (s.transactionId !== txnId) shareDocs.set(s.transactionId, [...(shareDocs.get(s.transactionId) ?? []), s]);
+    }
     for (const m of res.changed) {
       reconcile.set(m.row.id, m.row);
       if (m.row.transactionId !== txnId) {
@@ -615,19 +628,65 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
   const { applyAccountDeltas } = await import('./ledger.service.js');
   await applyAccountDeltas(tx, tenantId, deltas);
 
-  // One compact audit row per other document whose derived lines the walk changed (S5), in batched inserts.
-  await auditLogMany(tenantId, [...changedDocs].map(([docId, changes]) => ({
-    action: 'update' as const, entityType: 'transaction', entityId: docId,
-    before: { inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c.before })) },
-    after: { inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c.after })), costingTrigger: txnId },
-  })), opts.userId, tx);
+  await auditCostChanges(tx, tenantId, changedDocs, shareDocs, txnId, opts.userId);
   await backstop(tx, tenantId, [...touched]);
   // NEGATIVE_STOCK on the request's reply (U-158): warnings[] of the route.
   noteInventoryWarnings(warnings);
   return warnings;
 }
 
+/**
+ * One compact audit row per other document whose derived lines the walk
+ * changed (S5) or whose sale row's correction_share it changed (PR-4 note 1:
+ * a sale replayed before the walk start included), in batched inserts.
+ * `trigger`: the posting's id, or what started a re-walk (tenant_import).
+ */
+async function auditCostChanges(tx: Tx, tenantId: string, changedDocs: ReadonlyMap<string, ReadonlyArray<{ itemId: string; before: string; after: string }>>,
+  shareDocs: ReadonlyMap<string, readonly ShareMove[]>, trigger: string, userId?: string) {
+  const docIds = [...new Set([...changedDocs.keys(), ...shareDocs.keys()])];
+  await auditLogMany(tenantId, docIds.map((docId) => {
+    const changes = changedDocs.get(docId) ?? [];
+    const shares = shareDocs.get(docId) ?? [];
+    const side = (k: 'before' | 'after') => ({
+      inventoryCost: changes.map((c) => ({ itemId: c.itemId, cents: c[k] })),
+      ...(shares.length > 0 ? { correctionShare: shares.map((s) => ({ itemId: s.itemId, amount: s[k] })) } : {}),
+    });
+    return { action: 'update' as const, entityType: 'transaction', entityId: docId, before: side('before'), after: { ...side('after'), costingTrigger: trigger } };
+  }), userId, tx);
+}
+
+/**
+ * Stores each linked row's sale position (source_movement_date,
+ * source_txn_created_at: the sale row's movement_date and txn_created_at,
+ * RB1) on the linked rows `which` selects (alias r).
+ */
+async function syncSalePositions(tx: Tx, tenantId: string, which: SQL) {
+  await tx.execute(sql`
+    UPDATE inventory_movements r SET source_movement_date = s.movement_date, source_txn_created_at = s.txn_created_at
+    FROM inventory_movements s
+    WHERE r.tenant_id = ${tenantId} AND r.source_transaction_id IS NOT NULL AND ${which}
+      AND s.tenant_id = r.tenant_id AND s.transaction_id = r.source_transaction_id AND s.item_id = r.item_id AND s.source_transaction_id IS NULL
+      AND (r.source_movement_date IS DISTINCT FROM s.movement_date OR r.source_txn_created_at IS DISTINCT FROM s.txn_created_at)`);
+}
+
 interface Changed { row: MovementRow; before: string; after: string }
+
+/** A stored row's figures and running state as the walk reads a fixed (replayed, never rewritten) row. */
+const storedFigures = (m: MovementRow): NonNullable<WalkRow['fixed']> => ({
+  fig: { value: d(m.value), correction: d(m.correction), residual: d(m.residual) },
+  after: { q: d(m.runningQty), v: d(m.runningValue), l: d(m.lastCost) },
+});
+
+/** A movement row as the walk reads it; `fixed`: replayed with these figures, never recomputed. */
+const toWalk = (m: MovementRow, fixed: WalkRow['fixed'] | null): WalkRow => ({
+  id: m.id, transactionId: m.transactionId, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode,
+  given: m.valueMode === 'given' ? d(m.value) : null, sourceId: m.sourceTransactionId,
+  fallbackCost: m.fallbackCost === null ? null : d(m.fallbackCost),
+  ...(fixed ? { fixed } : {}),
+});
+
+/** A sale row whose correction_share a walk changed (audited on its document, PR-4 note 1). */
+interface ShareMove { transactionId: string; itemId: string; before: string; after: string }
 
 const cents = (m: { value: string; correction: string; residual: string }) =>
   [m.value, m.correction, m.residual].map((v) => d(v).times(100).toFixed(0)).join('/');
@@ -640,7 +699,7 @@ const cents = (m: { value: string; correction: string; residual: string }) =>
  * after the closing date (lock() refuses earlier documents).
  */
 async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: string, start: ReturnType<typeof pos>,
-  triggerId: string, lockDate: string | null): Promise<{ changed: Changed[]; warning: InventoryWarning | null }> {
+  triggerId: string, lockDate: string | null): Promise<{ changed: Changed[]; shares: ShareMove[]; warning: InventoryWarning | null }> {
   const [sDate, sCreated, sTxn] = start;
   // I4: no walk starts at or before the closing date (the gate refused those documents).
   if (lockDate && sDate <= lockDate) throw AppError.internal('Costing: a walk would start in a closed period');
@@ -673,15 +732,8 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
     .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, companyId), eq(inventoryMovements.itemId, itemId),
       eq(inventoryMovements.voided, false), sql`${key} >= ${at}`))
     .orderBy(positionAsc());
-  const toWalk = (m: MovementRow, fixed: boolean): WalkRow => ({
-    id: m.id, transactionId: m.transactionId, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode,
-    given: m.valueMode === 'given' ? d(m.value) : null, sourceId: m.sourceTransactionId,
-    fallbackCost: m.fallbackCost === null ? null : d(m.fallbackCost),
-    ...(fixed ? { fixed: { fig: { value: d(m.value), correction: d(m.correction), residual: d(m.residual) },
-      after: { q: d(m.runningQty), v: d(m.runningValue), l: d(m.lastCost) } } } : {}),
-  });
   const all = [...prefix, ...rows];
-  const walkRows: WalkRow[] = [...prefix.map((m) => toWalk(m, true)), ...rows.map((m) => toWalk(m, false))];
+  const walkRows: WalkRow[] = [...prefix.map((m) => toWalk(m, storedFigures(m))), ...rows.map((m) => toWalk(m, null))];
   // Linked returns (Q-P24e) whose sale sits before the rows walked: the sale's stored relief plus its stored
   // correction_share (S5), its quantity, and what its other returns (all before the walk) already took back.
   const walked = new Set(all.map((m) => m.id));
@@ -715,32 +767,17 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
   });
   const share = (m: MovementRow) => (m.kind === 'sale' && m.sourceTransactionId === null ? full.shares.get(m.transactionId) ?? d(m.correctionShare) : d(0));
   const changed: Changed[] = [];
-  const cols: Record<'id' | 'value' | 'correction' | 'residual' | 'q' | 'v' | 'l' | 's', string[]> = { id: [], value: [], correction: [], residual: [], q: [], v: [], l: [], s: [] };
+  const cols = newCols();
   rows.forEach((m, i) => {
     const r = own[i]!;
-    const f = r.fig;
     const a = r.after;
     if (a.q.abs().greaterThanOrEqualTo(QTY_LIMIT) || a.v.abs().greaterThanOrEqualTo(MONEY_LIMIT)) {
       throw AppError.badRequest('The quantity on hand or the inventory value would be too large', 'VALIDATION_ERROR', { itemId });
     }
-    const next = { value: f.value.toFixed(4), correction: f.correction.toFixed(4), residual: f.residual.toFixed(4) };
-    const differs = !d(m.value).equals(f.value) || !d(m.correction).equals(f.correction) || !d(m.residual).equals(f.residual);
-    if (differs || m.transactionId === triggerId) {
-      changed.push({ row: { ...m, ...next }, before: cents(m), after: cents(next) });
-    }
-    cols.id.push(m.id); cols.value.push(next.value); cols.correction.push(next.correction); cols.residual.push(next.residual);
-    cols.q.push(a.q.toFixed(4)); cols.v.push(a.v.toFixed(4)); cols.l.push(a.l.toFixed(6)); cols.s.push(share(m).toFixed(4));
+    const c = pushRow(cols, m, r, share(m));
+    if (c.differs || m.transactionId === triggerId) changed.push(c.changed);
   });
-  // Batched (S13): one UPDATE ... FROM unnest(arrays) per 5,000 rows, eight array parameters each.
-  for (let i = 0; i < cols.id.length; i += BULK) {
-    const part = (xs: string[]) => pgArray(xs.slice(i, i + BULK));
-    await tx.execute(sql`
-      UPDATE inventory_movements m SET value = v.value, correction = v.correction, residual = v.residual, running_qty = v.q,
-        running_value = v.v, last_cost = v.l, correction_share = v.s, updated_at = now()
-      FROM unnest(${part(cols.id)}::uuid[], ${part(cols.value)}::numeric[], ${part(cols.correction)}::numeric[], ${part(cols.residual)}::numeric[],
-        ${part(cols.q)}::numeric[], ${part(cols.v)}::numeric[], ${part(cols.l)}::numeric[], ${part(cols.s)}::numeric[]) AS v(id, value, correction, residual, q, v, l, s)
-      WHERE m.id = v.id AND m.tenant_id = ${tenantId}`);
-  }
+  await writeRows(tx, tenantId, cols);
   // S5: sales before the start whose short units a walked row cured: their correction_share only (their figures never change here).
   const moved = prefix.filter((m) => m.kind === 'sale' && !share(m).equals(d(m.correctionShare)));
   for (let i = 0; i < moved.length; i += BULK) {
@@ -750,26 +787,138 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
       FROM unnest(${pgArray(part.map((m) => m.id))}::uuid[], ${pgArray(part.map((m) => share(m).toFixed(4)))}::numeric[]) AS v(id, s)
       WHERE m.id = v.id AND m.tenant_id = ${tenantId}`);
   }
-  return { changed, warning: negativeWarning(itemId, rows, own, triggerId) };
+  const shares = [...prefix, ...rows].filter((m) => m.kind === 'sale' && !share(m).equals(d(m.correctionShare)))
+    .map((m) => ({ transactionId: m.transactionId, itemId, before: d(m.correctionShare).toFixed(2), after: share(m).toFixed(2) }));
+  return { changed, shares, warning: negativeWarning(itemId, rows, own, triggerId) };
+}
+
+type Cols = Record<'id' | 'value' | 'correction' | 'residual' | 'q' | 'v' | 'l' | 's', string[]>;
+const newCols = (): Cols => ({ id: [], value: [], correction: [], residual: [], q: [], v: [], l: [], s: [] });
+
+/** Queues one walked row's figures, running state and correction_share for writeRows; whether its figures changed. */
+function pushRow(cols: Cols, m: MovementRow, r: { fig: { value: Dec; correction: Dec; residual: Dec }; after: WalkState }, share: Dec): { differs: boolean; changed: Changed } {
+  const f = r.fig;
+  const a = r.after;
+  const next = { value: f.value.toFixed(4), correction: f.correction.toFixed(4), residual: f.residual.toFixed(4) };
+  const differs = !d(m.value).equals(f.value) || !d(m.correction).equals(f.correction) || !d(m.residual).equals(f.residual);
+  cols.id.push(m.id); cols.value.push(next.value); cols.correction.push(next.correction); cols.residual.push(next.residual);
+  cols.q.push(a.q.toFixed(4)); cols.v.push(a.v.toFixed(4)); cols.l.push(a.l.toFixed(6)); cols.s.push(share.toFixed(4));
+  return { differs, changed: { row: { ...m, ...next }, before: cents(m), after: cents(next) } };
+}
+
+/** Batched (S13): one UPDATE ... FROM unnest(arrays) per 5,000 rows, eight array parameters each. */
+async function writeRows(tx: Tx, tenantId: string, cols: Cols) {
+  for (let i = 0; i < cols.id.length; i += BULK) {
+    const part = (xs: string[]) => pgArray(xs.slice(i, i + BULK));
+    await tx.execute(sql`
+      UPDATE inventory_movements m SET value = v.value, correction = v.correction, residual = v.residual, running_qty = v.q,
+        running_value = v.v, last_cost = v.l, correction_share = v.s, updated_at = now()
+      FROM unnest(${part(cols.id)}::uuid[], ${part(cols.value)}::numeric[], ${part(cols.correction)}::numeric[], ${part(cols.residual)}::numeric[],
+        ${part(cols.q)}::numeric[], ${part(cols.v)}::numeric[], ${part(cols.l)}::numeric[], ${part(cols.s)}::numeric[]) AS v(id, value, correction, residual, q, v, l, s)
+      WHERE m.id = v.id AND m.tenant_id = ${tenantId}`);
+  }
 }
 
 /**
- * NEGATIVE_STOCK of one walk (U-158, PR-4 S1): the first walked row whose
- * new on hand is below 0 where the stored on hand (before this posting) was
- * 0 or more, or that is an outflow of the posting itself (a new or edited
- * sale while stock is already below 0 warns each time). A void, delete or
- * edit of a receipt that cured negative stock warns on the first later row it
- * takes below 0. A new row's stored on hand is the column default 0.
+ * NEGATIVE_STOCK of one walk (U-158, PR-4 S1), at most one per item: the
+ * first walked row that
+ * - is the posting's own outflow and leaves on hand below 0 (a new or edited
+ *   sale while stock is already below 0 warns each time). The posting's own
+ *   other rows (its inflows) never warn (RS1: a new row's stored on hand is
+ *   only the column default);
+ * - or is an earlier posting's row whose new on hand is below 0 where its
+ *   stored on hand (before this posting) was 0 or more (a void, delete or
+ *   edit of a receipt that cured negative stock warns on the first later row
+ *   it takes below 0);
+ * - or is an earlier value-only adjustment that had stock (stored on hand
+ *   above 0) and now sits at on hand 0 or below (a new one is 400
+ *   INVENTORY_NO_STOCK).
  */
 function negativeWarning(itemId: string, rows: readonly MovementRow[], walked: readonly { after: WalkState }[], triggerId: string): InventoryWarning | null {
   for (let i = 0; i < rows.length; i++) {
     const m = rows[i]!;
     const q = walked[i]!.after.q;
-    if (!q.lessThan(0)) continue;
-    const own = m.transactionId === triggerId && d(m.quantity).lessThan(0);
-    if (own || d(m.runningQty).greaterThanOrEqualTo(0)) return { code: 'NEGATIVE_STOCK', itemId, date: m.movementDate, onHand: q.toFixed(4) };
+    const warn = (): InventoryWarning => ({ code: 'NEGATIVE_STOCK', itemId, date: m.movementDate, onHand: q.toFixed(4) });
+    if (m.transactionId === triggerId) {
+      if (d(m.quantity).lessThan(0) && q.lessThan(0)) return warn();
+      continue;
+    }
+    const stored = d(m.runningQty);
+    if (q.lessThan(0) && stored.greaterThanOrEqualTo(0)) return warn();
+    if (m.kind === 'adjust_value' && !q.greaterThan(0) && stored.greaterThan(0)) return warn();
   }
   return null;
+}
+
+/**
+ * Re-walks every item of a company from its first row (PR-4 RB1), in the
+ * caller's transaction; after a tenant import (ids are new, so documents that
+ * share a date and created_at may now sort the other way) and for any repair.
+ * Every linked row first gets its sale's position (an archive made before
+ * 0261 carries none). Rows on or before the closing date keep their figures
+ * (closed periods are never restated); only their running figures follow the
+ * order, rebuilt from those figures, and their sales' correction_share is
+ * rebuilt by replaying them. Every later row is walked as a posting would;
+ * the derived lines of documents whose figures changed are rewritten with one
+ * balance delta per account and an audit row per document (trigger
+ * `reason`). The caller holds the company exclusively (the import's tenant
+ * lock); no costing lock is taken. Returns the documents whose figures or
+ * correction_share changed.
+ */
+export async function rewalkCompany(tx: Tx, tenantId: string, companyId: string, reason: string, userId?: string): Promise<{ items: number; changedDocuments: number }> {
+  await syncSalePositions(tx, tenantId, sql`r.company_id = ${companyId}`);
+  const co = (await tx.execute(sql`SELECT lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId}`)).rows[0] as
+    { lock_date: string | null } | undefined;
+  const lockDate = co?.lock_date ? String(co.lock_date).slice(0, 10) : null;
+  const itemIds = ((await tx.execute(sql`SELECT DISTINCT item_id::text AS id FROM inventory_movements
+    WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND voided = false ORDER BY 1`)).rows as Array<{ id: string }>).map((r) => r.id);
+  const changedDocs = new Map<string, { itemId: string; before: string; after: string }[]>();
+  const shareDocs = new Map<string, ShareMove[]>();
+  const reconcile: MovementRow[] = [];
+  for (const itemId of itemIds) {
+    const all = await tx.select().from(inventoryMovements)
+      .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, companyId), eq(inventoryMovements.itemId, itemId),
+        eq(inventoryMovements.voided, false)))
+      .orderBy(positionAsc());
+    let s: WalkState = { ...ZERO_STATE };
+    const walkRows = all.map((m) => {
+      if (!lockDate || m.movementDate > lockDate) return toWalk(m, null);
+      const fig = storedFigures(m).fig;
+      const q = s.q.plus(d(m.quantity));
+      const v = s.v.plus(fig.value).plus(fig.correction).plus(fig.residual);
+      s = { q, v, l: q.greaterThan(0) && v.greaterThan(0) ? round6(v.dividedBy(q)) : s.l };
+      return toWalk(m, { fig, after: s });
+    });
+    // Every sale is registered from its stored row first, so a return that now sorts before its sale (a created_at tie) still has one.
+    const links = new Map<string, SaleLink>(all.filter((m) => m.kind === 'sale' && m.sourceTransactionId === null).map((m) =>
+      [m.transactionId, { r: d(m.value).negated().plus(d(m.correctionShare)), s: d(m.quantity).negated(), n: new Decimal(0), b: new Decimal(0) }]));
+    const full = walk(ZERO_STATE, walkRows, links);
+    const cols = newCols();
+    all.forEach((m, i) => {
+      const r = full.rows[i]!;
+      const share = m.kind === 'sale' && m.sourceTransactionId === null ? full.shares.get(m.transactionId) ?? d(m.correctionShare) : d(0);
+      const same = d(m.runningQty).equals(r.after.q) && d(m.runningValue).equals(r.after.v) && d(m.lastCost).equals(r.after.l)
+        && d(m.correctionShare).equals(share);
+      const c = pushRow(cols, m, r, share);
+      if (c.differs) {
+        reconcile.push(c.changed.row);
+        changedDocs.set(m.transactionId, [...(changedDocs.get(m.transactionId) ?? []), { itemId, before: c.changed.before, after: c.changed.after }]);
+      }
+      if (!share.equals(d(m.correctionShare))) {
+        shareDocs.set(m.transactionId, [...(shareDocs.get(m.transactionId) ?? []),
+          { transactionId: m.transactionId, itemId, before: d(m.correctionShare).toFixed(2), after: share.toFixed(2) }]);
+      }
+      if (same && !c.differs) for (const k of Object.keys(cols) as Array<keyof Cols>) cols[k].pop();
+    });
+    await writeRows(tx, tenantId, cols);
+  }
+  const deltas = new Map<string, Dec>();
+  await reconcileLines(tx, tenantId, reconcile, new Map(), deltas);
+  const { applyAccountDeltas } = await import('./ledger.service.js');
+  await applyAccountDeltas(tx, tenantId, deltas);
+  await auditCostChanges(tx, tenantId, changedDocs, shareDocs, reason, userId);
+  await backstop(tx, tenantId, [...changedDocs.keys()]);
+  return { items: itemIds.length, changedDocuments: new Set([...changedDocs.keys(), ...shareDocs.keys()]).size };
 }
 
 interface LineSpec { role: DerivedLineRole; accountId: string; debit: string; credit: string }
@@ -957,7 +1106,8 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): bil
   + 'A part line needs a quantity above 0; on a purchase document it posts to the part\'s inventory asset account (400 VALIDATION_ERROR otherwise); '
   + 'a line on an inventory asset account without a part is 400 INVENTORY_ACCOUNT_DIRECT outside journal entries; a client-sent lineRole cogs | '
   + 'inventory_relief | cost_correction | cost_residual is 400 VALIDATION_ERROR; parts on any other document type are 400 INVENTORY_DOCUMENT_UNSUPPORTED; '
-  + 'parts on a new or edited document while the company has inventory turned off are 400 INVENTORY_OFF (void and delete stay allowed); '
+  + 'parts on a new or edited document while the company has inventory turned off are 400 INVENTORY_OFF, an edit of an older document with parts '
+  + 'that changes only its memo or another field included (void and delete stay allowed; turn inventory back on to edit it); '
   + 'returnOf off a credit memo, or naming a document that is not a posted sale of the item, is 400 VALIDATION_ERROR; a return dated before its sale '
   + 'is 400 RETURN_BEFORE_SALE; returning more than the sale sold (all its linked returns together) is 400 RETURN_EXCEEDS_SALE; voiding or deleting '
   + 'a sale with live linked returns, taking the item off it, selling fewer units than were returned or dating it after a return is 409 '
@@ -965,8 +1115,9 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): bil
   + 'or not; 409 RETRY after a deadlock or lock timeout (the posting rolled back: resend it under the same Idempotency-Key); editing a document '
   + 'with parts that is part of a completed bank reconciliation is 409 INVENTORY_DOCUMENT. Derived costing lines come back as inventoryLines '
   + '[{role, accountId, amount (debit positive), movementId}], never in lines. NEGATIVE_STOCK is allowed: the reply\'s warnings[] carries '
-  + '{code: NEGATIVE_STOCK, itemId, date, onHand} per item for the first row the posting changes whose on hand is below 0 and was 0 or more before it, '
-  + 'or that is the posting\'s own outflow (each sale while stock is already below 0 warns again; create, edit, void, delete). '
+  + '{code: NEGATIVE_STOCK, itemId, date, onHand}, at most one per item, for the first row the posting changes that is its own outflow ending below 0 '
+  + '(each sale while stock is already below 0 warns again; its own inflows never warn), or an earlier row whose on hand is below 0 and was 0 or more '
+  + 'before it, or an earlier value-only adjustment that had stock and now sits at on hand 0 or below (create, edit, void, delete). '
   + UNIT_LINE_NOTE;
 
 /**
@@ -1010,12 +1161,12 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
   const out: InventoryWarning[] = [];
   for (const [itemId, qty] of [...qtyByItem].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const rows = (await executor.select({ transactionId: inventoryMovements.transactionId, date: inventoryMovements.movementDate,
-      created: inventoryMovements.txnCreatedAt, quantity: inventoryMovements.quantity, stored: inventoryMovements.runningQty }).from(inventoryMovements)
+      created: inventoryMovements.txnCreatedAt, quantity: inventoryMovements.quantity, stored: inventoryMovements.runningQty, kind: inventoryMovements.kind }).from(inventoryMovements)
       .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, co), eq(inventoryMovements.itemId, itemId),
         eq(inventoryMovements.voided, false)))
       .orderBy(positionAsc()))
       .filter((r) => r.transactionId !== doc.editingId);
-    const mine = { transactionId: selfId, date: doc.txnDate, created: createdAt, quantity: qty.toFixed(4), stored: '0' };
+    const mine = { transactionId: selfId, date: doc.txnDate, created: createdAt, quantity: qty.toFixed(4), stored: '0', kind: 'receipt' as const };
     const before = (r: { date: string; created: Date; transactionId: string }) => cmpPos(pos({ movementDate: r.date, txnCreatedAt: r.created, transactionId: r.transactionId }),
       pos({ movementDate: mine.date, txnCreatedAt: mine.created, transactionId: mine.transactionId })) < 0;
     const at = rows.findIndex((r) => !before(r));
@@ -1028,9 +1179,11 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
       q = q.plus(d(r.quantity));
       const inWindow = cmpPos(pos({ movementDate: r.date, txnCreatedAt: r.created, transactionId: r.transactionId }),
         pos({ movementDate: start.date, txnCreatedAt: start.created, transactionId: selfId })) >= 0 || r === mine;
-      // PR-4 S1 (as the walk): the document's own outflow ending below 0 warns every time; a later row warns when it newly goes below 0.
-      const fresh = r === mine ? d(r.quantity).lessThan(0) : d(r.stored).greaterThanOrEqualTo(0);
-      if (inWindow && fresh && q.lessThan(0)) {
+      // PR-4 S1 (as the walk, negativeWarning): the document's own outflow ending below 0 warns every time (its inflow never);
+      // a later row warns when it newly goes below 0, a value-only adjustment when it had stock and no longer has.
+      const fresh = r === mine ? d(r.quantity).lessThan(0) && q.lessThan(0)
+        : (d(r.stored).greaterThanOrEqualTo(0) && q.lessThan(0)) || (r.kind === 'adjust_value' && d(r.stored).greaterThan(0) && !q.greaterThan(0));
+      if (inWindow && fresh) {
         out.push({ code: 'NEGATIVE_STOCK', itemId, date: r.date, onHand: q.toFixed(4) });
         break;
       }
@@ -1040,4 +1193,4 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
 }
 
 /** OpenAPI note for the invoice, credit memo and sales receipt previews (U-158). */
-export const INVENTORY_PREVIEW_NOTE = 'warnings[] (inventory-costing-v1): {code: NEGATIVE_STOCK, itemId, date, onHand} when posting this body would take an item on hand below 0: per item, the body\'s own outflow ending below 0 (each sale while stock is already below 0), or the first later row that was 0 or more and would go below 0 (PR-4 S1), computed from the stock ledger with nothing written; posting is still allowed.';
+export const INVENTORY_PREVIEW_NOTE = 'warnings[] (inventory-costing-v1): {code: NEGATIVE_STOCK, itemId, date, onHand} when posting this body would take an item on hand below 0: per item, the body\'s own outflow ending below 0 (each sale while stock is already below 0; its own inflows never warn), or the first later row that was 0 or more and would go below 0, or a later value-only adjustment that had stock and would sit at 0 or below (PR-4 S1), computed from the stock ledger with nothing written; posting is still allowed.';

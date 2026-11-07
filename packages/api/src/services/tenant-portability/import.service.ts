@@ -21,6 +21,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import type { Tx } from '../../db/index.js';
+import * as dbSchema from '../../db/schema/index.js';
+import { rewalkCompany } from '../inventory-costing.service.js';
 import { getWorkspaceTenantId } from '../../desktop/workspace.js';
 import { readSchemaInfo } from '../../startup/schema-info.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
@@ -364,6 +368,17 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
            SELECT $1, 'create', 'sales_tax_liability_upgrade', $1, sales_tax_liability_upgrade_tenant($1::uuid)`,
           [newTenantId],
         );
+      }
+
+      // The stock ledger (U-157, PR-4 RB1): ids are new, so documents that share a date and created_at may
+      // now sort the other way; every item of every company is re-walked from its first row (closed periods
+      // keep their figures), which also fills the sale position of linked rows and correction_share for an
+      // archive made before 0261. After verification (which compares the rows as archived), before the fingerprint.
+      const stocked = await client.query('SELECT DISTINCT company_id::text AS id FROM inventory_movements WHERE tenant_id = $1 ORDER BY 1', [newTenantId]);
+      if (stocked.rows.length > 0) {
+        step('inventory', 94);
+        const costing = drizzle(client, { schema: dbSchema }) as unknown as Tx;
+        for (const co of stocked.rows as Array<{ id: string }>) await rewalkCompany(costing, newTenantId, co.id, 'tenant_import', options.callerUserId);
       }
 
       // After verification: audit row, fingerprint, provenance.

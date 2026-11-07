@@ -18,6 +18,10 @@ export const inventoryMovements = pgTable('inventory_movements', {
   transactionId: uuid('transaction_id').notNull(),
   // A linked return's sale (Q-P24e, returnOf.transactionId); null otherwise.
   sourceTransactionId: uuid('source_transaction_id'),
+  // A linked return's sale position: the sale row's movement_date and txn_created_at (PR-4 RB1, migration 0261);
+  // orders a credit memo's rows of one part. Null on every other row. Kept current when the sale moves date.
+  sourceMovementDate: date('source_movement_date'),
+  sourceTxnCreatedAt: timestamp('source_txn_created_at', { withTimezone: true }),
   movementDate: date('movement_date').notNull(),
   // The transaction's created_at (position tiebreak; kept on edits).
   txnCreatedAt: timestamp('txn_created_at', { withTimezone: true }).notNull(),
@@ -38,9 +42,10 @@ export const inventoryMovements = pgTable('inventory_movements', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   txnItemIdx: uniqueIndex('idx_inventory_movements_txn_item').on(table.transactionId, table.itemId, table.sourceTransactionId), // NULLS NOT DISTINCT in 0259
-  // PR-4 B1 (0261): source_transaction_id NULLS FIRST, then id, break a document's tie (services/inventory-position.ts).
+  // PR-4 B1 (0261): inside a document, the unlinked row first, then the linked rows by their sale's position, then id
+  // (services/inventory-position.ts).
   positionIdx: index('idx_inventory_movements_position').on(table.companyId, table.itemId, table.movementDate, table.txnCreatedAt, table.transactionId,
-    table.sourceTransactionId.asc().nullsFirst(), table.id),
+    table.sourceMovementDate.asc().nullsFirst(), table.sourceTxnCreatedAt.asc().nullsFirst(), table.sourceTransactionId.asc().nullsFirst(), table.id),
   tenantIdx: index('idx_inventory_movements_tenant').on(table.tenantId),
   sourceIdx: index('idx_inventory_movements_source').on(table.sourceTransactionId).where(sql`source_transaction_id IS NOT NULL`),
 }));

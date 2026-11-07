@@ -173,8 +173,9 @@ export function stepRow(s: WalkState, row: WalkRow): { fig: RowFigures; after: W
  *
  * Corrected sale cost (PR-4 S5, Q-P24e "the original sale cost"): units
  * sold below 0 join a first-short, first-cured queue; an inflow that cures k
- * of them with correction C (the extra cost, -fig.correction) splits C over
- * the units it takes from the queue by cumulative difference
+ * of them with correction C (the extra cost, -fig.correction) takes them
+ * from the head (a linked return takes its own sale's units first, RS2) and
+ * splits C over the units it takes by cumulative difference
  * (round2(C x K_i / k) - round2(C x K_(i-1) / k)), and each sale's share is
  * added to its R. So a return linked to a sale that was sold short and later
  * re-priced comes back at the corrected cost. The queue is empty whenever
@@ -241,23 +242,34 @@ function trackShort(short: Array<{ saleId: string | null; units: Dec }>, before:
   const c = fig.correction.negated();
   let taken = ZERO;
   let given = ZERO;
-  while (taken.lessThan(k) && short.length > 0) {
-    const head = short[0]!;
-    const u = Decimal.min(head.units, k.minus(taken));
+  const take = (e: { saleId: string | null; units: Dec }) => {
+    const u = Decimal.min(e.units, k.minus(taken));
+    if (!u.greaterThan(0)) return;
     taken = taken.plus(u);
     const upTo = round2(c.times(taken).dividedBy(k));
     const share = upTo.minus(given);
     given = upTo;
-    if (head.saleId && !share.isZero()) attribute(head.saleId, share);
-    head.units = head.units.minus(u);
-    if (!head.units.greaterThan(0)) short.shift();
+    if (e.saleId && !share.isZero()) attribute(e.saleId, share);
+    e.units = e.units.minus(u);
+  };
+  // PR-4 RS2: a linked return cures its own sale's short units first (they are the units coming back), then the oldest.
+  if (row.valueMode === 'linked' && row.sourceId) for (const e of short) if (e.saleId === row.sourceId) take(e);
+  for (const e of short) {
+    if (!taken.lessThan(k)) break;
+    take(e);
   }
+  for (let i = short.length - 1; i >= 0; i--) if (!short[i]!.units.greaterThan(0)) short.splice(i, 1);
 }
 
-/** The value of q more units returned against `sale` (cumulative difference, Q-P24e): round2(R x (N + q) / S) - B. */
+/**
+ * The value of q more units returned against `sale` (cumulative difference,
+ * Q-P24e): round2(R x (N + q) / S) - B, never below 0 (PR-4 RS2: R can drop
+ * under what earlier returns brought back when units the sale sold below 0
+ * are later cured at a lower cost; the last unit back brings R - B).
+ */
 export function linkedValue(sale: SaleLink, q: Dec): Dec {
   if (!sale.s.greaterThan(0)) return ZERO;
-  return round2(sale.r.times(sale.n.plus(q)).dividedBy(sale.s)).minus(sale.b);
+  return Decimal.max(ZERO, round2(sale.r.times(sale.n.plus(q)).dividedBy(sale.s)).minus(sale.b));
 }
 
 /** Average cost as GET /items shows it: V/Q to 6 places while Q > 0, else the last positive average. */
