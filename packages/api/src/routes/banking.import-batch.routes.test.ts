@@ -406,7 +406,44 @@ describe('bank-import-batch-v1', () => {
     expect(lines).toHaveLength(0);
     const items = await db.select().from(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
     expect(items.every((i) => i.status === 'pending')).toBe(true);
+    // Q-P25j: the rule's account is staged as a suggestion only.
+    const coffee = items.find((i) => i.originalDescription === 'COFFEE CO')!;
+    expect(coffee).toMatchObject({ suggestedAccountId: expenseId, matchType: 'rule', status: 'pending' });
+    expect(items.filter((i) => i.suggestedAccountId === expenseId)).toHaveLength(1);
     expect(aiCalls).toEqual({ batch: 0, suggest: 0 });
+  });
+
+  it('look-alikes (Q-P25c) are inserted and flagged with the item they resemble; exact duplicates are not; csvMapping is kept', async () => {
+    const mapping = { date: 0, description: 2, amount: 3, dateFormat: 'MM/DD/YYYY' };
+    const csv = await commit(batch([{ line: 2, date: '2026-11-02', amount: '120.00', description: 'AMAZON MKTPLACE' }],
+      { format: 'csv', fileName: 'card.csv', sourceFileSha256: '7'.repeat(64), csvMapping: mapping }));
+    const original = csv.json.insertedItemIds[0];
+    const ofxRows: Row[] = [
+      { line: 1, date: '2026-11-03', amount: '120.00', description: 'AMAZON MKTPLACE PMTS WA', fitid: 'AMZ-1' },
+      { line: 2, date: '2026-11-04', amount: '9.99', description: 'NEW THING', fitid: 'AMZ-2' },
+    ];
+    const r = await commit(batch(ofxRows));
+    expect(r.json.rows.map((x: any) => [x.status, x.inserted, x.existingItemId ?? null]))
+      .toEqual([['possible_duplicate', true, original], ['new', true, null]]);
+    expect(r.json.counts).toMatchObject({ possibleDuplicate: 1, inserted: 2 });
+    const [flagged] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, r.json.insertedItemIds[0]));
+    expect(flagged).toMatchObject({ possibleDuplicate: true, possibleDuplicateOf: original });
+    const feed = await call('GET', '/api/v1/banking/feed?limit=50');
+    expect(feed.json.data.find((i: any) => i.id === flagged!.id)).toMatchObject({ possibleDuplicate: true, possibleDuplicateOf: original });
+    // Re-importing: both rows are now exact duplicates and are skipped.
+    expect((await commit(batch(ofxRows))).json.counts).toMatchObject({ duplicate: 2, inserted: 0 });
+    // include:false skips a look-alike.
+    const skip = await commit(batch([{ line: 1, date: '2026-11-02', amount: '120.00', description: 'AMAZON MKTPLACE STORE', include: false }],
+      { sourceFileSha256: '6'.repeat(64) }));
+    expect(skip.json.rows[0]).toMatchObject({ inserted: false });
+    // csvMapping comes back with the batch (Q-P25f).
+    const list = await call('GET', `/api/v1/banking/feed/import-batches?accountId=${bankId}&format=csv`);
+    expect(list.json.batches[0].csvMapping).toEqual(mapping);
+    // Undoing the original clears the reference, keeps the flag.
+    await waitPostProcessing(csv.json.batchId);
+    expect((await call('DELETE', `/api/v1/banking/feed/import-batches/${csv.json.batchId}`)).status).toBe(200);
+    const [after] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, flagged!.id));
+    expect(after).toMatchObject({ possibleDuplicate: true, possibleDuplicateOf: null });
   });
 
   it('two concurrent first commits make one connection and insert each key once', async () => {

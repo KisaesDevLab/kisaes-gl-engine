@@ -25,9 +25,11 @@
  *        FITID is ignored (reason bank_id_reused) and the row goes on;
  *   iii  an existing dedupe or row key equal to the row key →
  *        duplicate/same_row;
- *   iv   the fuzzy rule (sameAmountNearby) → possible_duplicate/
- *        similar_existing; items matched in ii–iii are used up, each item
- *        is claimed once;
+ *   iv   the fuzzy rule (Q-P25c) → possible_duplicate/similar_existing;
+ *        items matched in ii–iii are used up, each item is claimed once.
+ *        A look-alike is inserted on commit (owner 2026-11-07) with
+ *        possible_duplicate and possible_duplicate_of set; exact duplicates
+ *        (ii, iii) are never inserted;
  *   v    new.
  */
 
@@ -312,7 +314,9 @@ export function classifyRows(
 export function wouldInsert(row: BatchRowInput, c: Classified): boolean {
   switch (c.status) {
     case 'new': return row.include !== false;
-    case 'possible_duplicate': return row.include === true;
+    // Q-P25c (owner 2026-11-07): a look-alike is imported, flagged; include:false
+    // still skips it, like a new row.
+    case 'possible_duplicate': return row.include !== false;
     case 'changed': return row.changedAction === 'add';
     default: return false;
   }
@@ -659,6 +663,8 @@ export async function commitBatch(actor: BatchActor, input: BatchInput): Promise
           rowKey: keyed[i]!.rowKey,
           dedupeVersion: DEDUPE_VERSION,
           sourceLine: row.line,
+          possibleDuplicate: c.status === 'possible_duplicate',
+          possibleDuplicateOf: c.status === 'possible_duplicate' ? c.existing!.id : null,
         },
       });
     });
@@ -851,6 +857,11 @@ export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly:
       await tx.delete(bankFeedItems).where(and(
         eq(bankFeedItems.tenantId, tenantId),
         sql`${bankFeedItems.id} IN ${uuidList(untouched.map((i) => i.id))}`,
+      ));
+      // Look-alikes of a removed row lose the reference, keep the flag.
+      await tx.update(bankFeedItems).set({ possibleDuplicateOf: null }).where(and(
+        eq(bankFeedItems.tenantId, tenantId),
+        sql`${bankFeedItems.possibleDuplicateOf} IN ${uuidList(untouched.map((i) => i.id))}`,
       ));
     }
     const undoneAt = new Date();

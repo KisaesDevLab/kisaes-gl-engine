@@ -340,6 +340,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'bank_connections.account_id': 'tenant-ref:accounts',
   'bank_connections.company_id': 'tenant-ref:companies',
   'bank_feed_items.bank_connection_id': 'tenant-ref:bank_connections',
+  'bank_feed_items.possible_duplicate_of': 'tenant-ref:bank_feed_items',
   'bank_feed_items.matched_transaction_id': 'tenant-ref:transactions',
   'bank_feed_items.suggested_account_id': 'tenant-ref:accounts',
   'bank_feed_items.suggested_contact_id': 'tenant-ref:contacts',

@@ -345,7 +345,7 @@ const importBatchRowSchema = z.object({
   memo: z.string().nullish().describe('at most 1,000 characters; not part of any key'),
   checkNumber: z.number().int().min(0).max(999_999_999).nullish(),
   fitid: z.string().max(255).nullish().describe('the bank transaction id (OFX FITID)'),
-  include: z.boolean().optional().describe('false skips a new row; true adds a possible duplicate ("Add anyway")'),
+  include: z.boolean().optional().describe('false skips a new or possible_duplicate row (both are inserted by default)'),
   changedAction: z.enum(['replace', 'add']).optional().describe('for a changed row: replace the existing pending item, or add the row as new'),
 });
 const importBatchSchema = z.object({
@@ -401,9 +401,10 @@ const importBatchResponseSchema = z.object({
 const IMPORT_BATCH_DESCRIPTION = 'bank-import-batch-v1 (U-06). One account section of a parsed bank file. The engine computes the '
   + 'dedupe keys v1 (dedupe_v1.json), every row\'s status, the closed-period flag and the balance check; it never posts and never '
   + 'calls AI. dryRun:true previews and changes nothing (an Idempotency-Key is 400 IDEMPOTENCY_KEY_NOT_ALLOWED); dryRun:false commits '
-  + 'and requires an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). A commit always records a batch, inserts the new rows (and '
-  + 'possible duplicates with include:true, changed rows with changedAction "add") into the account\'s manual bank connection, and '
-  + 'schedules post-processing (cleansing without AI, rules without posting). Errors: 422 account_not_bank_or_card, '
+  + 'and requires an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). A commit always records a batch, inserts the new rows, the '
+  + 'possible duplicates (flagged possibleDuplicate with possibleDuplicateOf on the feed item; include:false skips a row) and changed '
+  + 'rows with changedAction "add" into the account\'s manual bank connection (exact duplicates are never inserted), and schedules '
+  + 'post-processing (cleansing without AI; a matching rule is staged as a suggestion, never posted). Errors: 422 account_not_bank_or_card, '
   + 'account_not_in_company, invalid_row (details {line, field}), too_many_rows (over 20,000), batch_total_too_large; 409 '
   + 'identity_linked_elsewhere (details {accountName, mask}) unless relinkIdentity; 400 VALIDATION_ERROR; 413 over the 10 MB body '
   + 'limit; Idempotency-Key: 422 IDEMPOTENCY_KEY_REUSED, 409 IDEMPOTENCY_IN_PROGRESS, 400 IDEMPOTENCY_KEY_INVALID. Balance check '

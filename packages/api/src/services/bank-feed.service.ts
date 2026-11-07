@@ -148,6 +148,10 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       payeeNameOnCheck: bankFeedItems.payeeNameOnCheck,
       checkNumber: bankFeedItems.checkNumber,
       memo: bankFeedItems.memo,
+      // U-06 / Q-P25c: imported as a look-alike of possibleDuplicateOf.
+      possibleDuplicate: bankFeedItems.possibleDuplicate,
+      possibleDuplicateOf: bankFeedItems.possibleDuplicateOf,
+      importBatchId: bankFeedItems.importBatchId,
       createdAt: bankFeedItems.createdAt,
       updatedAt: bankFeedItems.updatedAt,
       bankAccountName: accounts.name,
@@ -1690,6 +1694,23 @@ async function runRulesStages(
     if (ruleResult.matched) {
       // Capture which rule fired — even if autoConfirm is false.
       ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null });
+    }
+    // Bank-file import batch (U-06, Q-P25j): a matching rule is staged as a
+    // suggestion only (never categorized, never posted), unless a
+    // conditional rule already staged one.
+    if (opts.autoConfirm === false && ruleResult.matched && ruleResult.assignAccountId && !current.suggestedAccountId) {
+      await db.update(bankFeedItems).set({
+        suggestedAccountId: ruleResult.assignAccountId,
+        ...(ruleResult.assignContactId && !current.suggestedContactId ? { suggestedContactId: ruleResult.assignContactId } : {}),
+        ...(ruleResult.assignTagId && !current.suggestedTagId ? { suggestedTagId: ruleResult.assignTagId } : {}),
+        matchType: 'rule',
+        updatedAt: new Date(),
+      }).where(and(
+        eq(bankFeedItems.tenantId, tenantId),
+        eq(bankFeedItems.id, item.id),
+        eq(bankFeedItems.status, 'pending'),
+        sql`${bankFeedItems.suggestedAccountId} IS NULL`,
+      ));
     }
     if (opts.autoConfirm !== false && ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
       try {

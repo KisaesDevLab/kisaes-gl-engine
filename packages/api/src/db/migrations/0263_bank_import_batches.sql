@@ -16,7 +16,8 @@
 --   bank_feed_items             import_batch_id, dedupe_key (the FITID key
 --                               when the bank id was trusted, else the row
 --                               key), row_key (every imported row),
---                               dedupe_version, source_line. A dedupe key is
+--                               dedupe_version, source_line, possible_duplicate
+--                               and possible_duplicate_of. A dedupe key is
 --                               unique per bank connection, so a re-import
 --                               adds nothing by construction.
 --   bank_connection_identities  which bank connection a file's account
@@ -73,6 +74,12 @@ ALTER TABLE bank_feed_items ADD COLUMN IF NOT EXISTS row_key CHAR(64);
 ALTER TABLE bank_feed_items ADD COLUMN IF NOT EXISTS dedupe_version SMALLINT;
 --> statement-breakpoint
 ALTER TABLE bank_feed_items ADD COLUMN IF NOT EXISTS source_line INTEGER;
+--> statement-breakpoint
+-- Q-P25c (owner 2026-11-07): a fuzzy look-alike is imported, flagged, with
+-- the existing item it resembles (a soft reference; undo clears it).
+ALTER TABLE bank_feed_items ADD COLUMN IF NOT EXISTS possible_duplicate BOOLEAN NOT NULL DEFAULT false;
+--> statement-breakpoint
+ALTER TABLE bank_feed_items ADD COLUMN IF NOT EXISTS possible_duplicate_of UUID;
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS uq_bfi_connection_dedupe_key
   ON bank_feed_items (bank_connection_id, dedupe_key) WHERE dedupe_key IS NOT NULL;

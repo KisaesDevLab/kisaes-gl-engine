@@ -719,7 +719,9 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * out) matching ^-?\d{1,12}(\.\d{1,2})?$. The engine computes dedupe keys v1 (packages/api/src/services/bank-import/__fixtures__/
    * dedupe_v1.json) and returns {batchId?, sameFileImportedAt?, identityLinkedElsewhere?, insertedItemIds, postProcessing?, rows: [{line,
    * status new|duplicate|possible_duplicate|changed, reason?, existingItemId?, existingImportedAt?, existingPending?, closedPeriod, inserted,
-   * replaced?}], counts, insertedTotal, balanceCheck?}. A dry run takes no Idempotency-Key (400 IDEMPOTENCY_KEY_NOT_ALLOWED); a commit
+   * replaced?}], counts, insertedTotal, balanceCheck?}. A commit inserts new rows and possible duplicates (feed items carry
+   * possibleDuplicate and possibleDuplicateOf, also on GET /banking/feed; include:false skips a row), never exact duplicates; a matching
+   * saved rule is staged as a suggestion (suggestedAccountId, matchType "rule"), never posted. A dry run takes no Idempotency-Key (400 IDEMPOTENCY_KEY_NOT_ALLOWED); a commit
    * needs one (400 IDEMPOTENCY_KEY_REQUIRED) and replays its stored result. 422 account_not_bank_or_card, account_not_in_company,
    * invalid_row {line, field}, too_many_rows, batch_total_too_large; 409 identity_linked_elsewhere. Never posts, never calls AI.
    * GET /banking/feed/import-batches, DELETE /banking/feed/import-batches/:id (undo; 409 rows_already_used {lines} unless

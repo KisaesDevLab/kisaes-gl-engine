@@ -88,6 +88,9 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   rowKey: char('row_key', { length: 64 }),
   dedupeVersion: smallint('dedupe_version'),
   sourceLine: integer('source_line'),
+  // Q-P25c: imported as a look-alike of an existing item (soft reference).
+  possibleDuplicate: boolean('possible_duplicate').notNull().default(false),
+  possibleDuplicateOf: uuid('possible_duplicate_of'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

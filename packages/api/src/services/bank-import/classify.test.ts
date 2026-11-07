@@ -86,6 +86,10 @@ describe('classifyRows', () => {
       const e = existing({ date: '2026-11-02', amount: '120.0000', description: 'AMAZON MKTPLACE' });
       const [c] = run([row(1, '2026-11-03', '120.00', 'AMAZON MKTPLACE PMTS WA', { fitid: 'NEW-1' })], [e]);
       expect(c).toMatchObject({ status: 'possible_duplicate', reason: 'similar_existing' });
+      // Q-P25c (owner 2026-11-07): inserted, flagged; include:false skips it.
+      const r = row(1, '2026-11-03', '120.00', 'AMAZON MKTPLACE PMTS WA');
+      expect(wouldInsert(r, c!)).toBe(true);
+      expect(wouldInsert({ ...r, include: false }, c!)).toBe(false);
     });
 
     it('adds month-boundary coffee, Monday and Wednesday ATM, two transfers, two payroll checks', () => {
