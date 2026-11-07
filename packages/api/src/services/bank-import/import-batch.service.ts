@@ -1038,14 +1038,50 @@ export function schedulePostProcessing(tenantId: string, batchId: string): void 
 }
 
 /**
+ * A cancel request older than this was left by an undo that is no longer
+ * waiting (an undo waits UNDO_WAIT at most, then goes through or withdraws
+ * it): an engine that stopped meanwhile.
+ */
+function cancelStaleMs(): number {
+  return UNDO_WAIT.ms + 10_000;
+}
+
+/** Drops stale cancel requests (all batches, or one); returns the batches freed. */
+async function clearStaleCancelRequests(batchId?: string): Promise<Array<{ id: string; tenantId: string }>> {
+  return db.update(bankImportBatches).set({ cancelRequestedAt: null })
+    .where(and(eq(bankImportBatches.postProcessing, 'scheduled'), sql`${bankImportBatches.undoneAt} IS NULL`,
+      sql`${bankImportBatches.cancelRequestedAt} < now() - make_interval(secs => ${cancelStaleMs() / 1000})`,
+      batchId ? eq(bankImportBatches.id, batchId) : undefined))
+    .returning({ id: bankImportBatches.id, tenantId: bankImportBatches.tenantId });
+}
+
+/**
  * On engine start: batches left `scheduled` (a crash or restart) run again,
- * from the start; undone ones are done with. A cancel request left by an
- * undo that did not finish (the engine stopped meanwhile) is dropped.
+ * going on from where they stopped; undone ones are done with. A cancel
+ * request left by an undo that did not finish (the engine stopped
+ * meanwhile) is dropped once it is stale. A younger one may belong to an
+ * undo still waiting on another engine instance (MyBooks Online): it is left
+ * alone and looked at again when it would be stale; by then that undo went
+ * through (undone) or withdrew it (and scheduled the run itself).
  */
 export async function resumeScheduledPostProcessing(): Promise<number> {
-  await db.update(bankImportBatches).set({ cancelRequestedAt: null })
+  await clearStaleCancelRequests();
+  // Wait times from the database clock (the requests carry its now()).
+  const young = await db.select({
+    id: bankImportBatches.id,
+    ms: sql<number>`greatest(0, extract(epoch FROM ${bankImportBatches.cancelRequestedAt} + make_interval(secs => ${cancelStaleMs() / 1000}) - now()) * 1000)::int`,
+  }).from(bankImportBatches)
     .where(and(eq(bankImportBatches.postProcessing, 'scheduled'), sql`${bankImportBatches.undoneAt} IS NULL`,
-      sql`${bankImportBatches.cancelRequestedAt} IS NOT NULL`));
+      sql`${bankImportBatches.cancelRequestedAt} IS NOT NULL`))
+    .limit(500);
+  for (const y of young) {
+    const wait = Number(y.ms) + 1_000;
+    setTimeout(() => {
+      void clearStaleCancelRequests(y.id)
+        .then((freed) => { for (const f of freed) schedulePostProcessing(f.tenantId, f.id); })
+        .catch(() => undefined);
+    }, wait).unref();
+  }
   const rows = await db.select({ id: bankImportBatches.id, tenantId: bankImportBatches.tenantId })
     .from(bankImportBatches)
     .where(and(eq(bankImportBatches.postProcessing, 'scheduled'), sql`${bankImportBatches.undoneAt} IS NULL`))
@@ -1075,8 +1111,8 @@ function pgCode(err: unknown): string | undefined {
  * undoes; the API then reports post-processing `cancelled` (the column stays
  * `scheduled` with undone_at set: migration 0264). A batch whose post-processing
  * has not started yet never starts. When the undo does not go through, the
- * request is withdrawn and post-processing goes on (from the start if it had
- * stopped). 409 still_preparing only when the wait runs out (a chunk still
+ * request is withdrawn and post-processing goes on (from where it stopped, if
+ * it had). 409 still_preparing only when the wait runs out (a chunk still
  * running after UNDO_WAIT): nothing was undone and a retry may succeed.
  */
 export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly: boolean) {
@@ -1088,7 +1124,7 @@ export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly:
     throw AppError.notFound('Import batch not found');
   }
   if (seen.undoneAt) throw AppError.conflict('This import was already undone.', 'already_undone');
-  const requested = await db.update(bankImportBatches).set({ cancelRequestedAt: new Date() })
+  const requested = await db.update(bankImportBatches).set({ cancelRequestedAt: sql`now()` })
     .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId), eq(bankImportBatches.postProcessing, 'scheduled'),
       sql`${bankImportBatches.cancelRequestedAt} IS NULL`, sql`${bankImportBatches.undoneAt} IS NULL`))
     .returning({ id: bankImportBatches.id });
@@ -1103,7 +1139,7 @@ export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly:
   }
 }
 
-/** An undo that did not go through: post-processing goes on, from the start if it had stopped. */
+/** An undo that did not go through: post-processing goes on (from where it stopped, if it had). */
 async function withdrawCancel(tenantId: string, batchId: string): Promise<void> {
   await db.update(bankImportBatches).set({ cancelRequestedAt: null })
     .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId), sql`${bankImportBatches.undoneAt} IS NULL`));
@@ -1122,9 +1158,12 @@ async function undoInTx(actor: BatchActor, batchId: string, pendingOnly: boolean
     // The post-processing run holds this lock (session level) for the whole
     // run: wait until it has stopped. Before the batch row lock, which the
     // run's progress updates need.
+    // The wait is bounded here only; the setting it had before (a server,
+    // database or role default) comes back for the rest of the transaction.
+    const before = (await tx.execute(sql`SELECT current_setting('lock_timeout') AS v`)).rows[0] as { v: string };
     await tx.execute(sql`SELECT set_config('lock_timeout', ${`${UNDO_WAIT.ms}ms`}, true)`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`bank-import-post:${batchId}`}, 0))`);
-    await tx.execute(sql`SELECT set_config('lock_timeout', '0', true)`);
+    await tx.execute(sql`SELECT set_config('lock_timeout', ${before.v}, true)`);
     const [batch] = await tx.select().from(bankImportBatches)
       .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId))).for('update');
     if (!batch || (actor.companyId && batch.companyId && batch.companyId !== actor.companyId)) {

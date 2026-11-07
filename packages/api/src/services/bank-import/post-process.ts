@@ -27,8 +27,21 @@
  * rule counters in bulk, and the batch's progress). Nothing posts and
  * nothing calls AI.
  *
+ * The write changes only the columns the stages changed, and only on rows
+ * nobody changed since the chunk read them (a fingerprint of the whole row:
+ * not every writer of bank_feed_items moves updated_at). A row changed
+ * meanwhile (the owner assigned it, say) is left as it is: no suggestion,
+ * no state row, no fire, no rule count. When the chunk's write fails (one
+ * bad row), it is written again row by row, each in its own savepoint; a row
+ * that fails alone is left without suggestions and the rest go through.
+ *
  * Between chunks the run stops when the batch has a cancel request (an
- * undo while preparing; import-batch.service undoBatch).
+ * undo while preparing; import-batch.service undoBatch). A run started
+ * again (the undo did not go through, or the engine restarted) goes on from
+ * processed_rows: chunk writes and the progress commit together, and the
+ * items are taken in a fixed order (source line, id), so the rows done
+ * before are never processed twice (no second rule count, no description
+ * cleaned again).
  *
  * The per-row pipelines stay in bank-feed.service: the other import paths
  * (Plaid sync, /feed/import, statements) and MyBooks Online use them, and
@@ -39,7 +52,8 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Action, ConditionalRule, MatchCandidate, RuleEvaluationResult } from '@kis-books/shared';
-import { db } from '../../db/index.js';
+import { db, type Tx } from '../../db/index.js';
+import { errorSummaryForLog } from '../../utils/log-safe.js';
 import {
   accounts, bankConnections, bankFeedItems, bankImportBatches, bankRules, conditionalRuleAudit, conditionalRules, contacts,
   recurringSchedules, transactionClassificationState, transactions,
@@ -58,8 +72,8 @@ import { getThresholds } from '../practice-thresholds.service.js';
 import { findSystemAccountId, SUSPENSE_TAG } from '../system-accounts.service.js';
 import { Decimal } from './keys.js';
 
-/** Items per chunk; a test may lower it. */
-export const POST_CHUNK = { size: 1000 };
+/** Items per chunk; a test may lower it, and may watch each chunk commit (`afterChunk`, tests only). */
+export const POST_CHUNK: { size: number; afterChunk?: (batchId: string) => Promise<void> | void } = { size: 1000 };
 
 type Item = typeof bankFeedItems.$inferSelect;
 type LegacyRule = typeof bankRules.$inferSelect;
@@ -86,22 +100,35 @@ async function cancelRequested(tenantId: string, batchId: string): Promise<boole
 }
 
 /**
- * Post-processes the batch's items. Records `total_rows` first and adds
- * each chunk to `processed_rows` in the chunk's transaction. Returns
- * 'cancelled' when a cancel request stopped it between chunks.
+ * Post-processes the batch's items. On the first start records
+ * `total_rows`; a run started again goes on after the `processed_rows`
+ * items already done (same order). Adds each chunk to `processed_rows` in
+ * the chunk's transaction. Returns 'cancelled' when a cancel request
+ * stopped it between chunks.
+ *
+ * The items of a batch do not change while it is scheduled: rows are only
+ * removed by an undo, which ends the batch (undone_at).
  */
 export async function postProcessBatch(tenantId: string, batchId: string): Promise<'done' | 'cancelled'> {
+  const where = and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId));
+  const [b] = await db.select({ total: bankImportBatches.totalRows, processed: bankImportBatches.processedRows })
+    .from(bankImportBatches).where(where);
   const ids = (await db.select({ id: bankFeedItems.id }).from(bankFeedItems)
     .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.importBatchId, batchId)))
     .orderBy(bankFeedItems.sourceLine, bankFeedItems.id)).map((r) => r.id);
-  await db.update(bankImportBatches).set({ totalRows: ids.length, processedRows: 0 })
-    .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
-  if (ids.length === 0) return 'done';
+  let start = 0;
+  if (!b || b.total === null) {
+    await db.update(bankImportBatches).set({ totalRows: ids.length, processedRows: 0 }).where(where);
+  } else {
+    start = Math.min(b.processed, ids.length);
+  }
+  if (start >= ids.length) return 'done';
 
   const ctx = await loadRunContext(tenantId);
-  for (let s = 0; s < ids.length; s += POST_CHUNK.size) {
+  for (let s = start; s < ids.length; s += POST_CHUNK.size) {
     if (await cancelRequested(tenantId, batchId)) return 'cancelled';
     await processChunk(ctx, batchId, ids.slice(s, s + POST_CHUNK.size));
+    await POST_CHUNK.afterChunk?.(batchId);
   }
   return 'done';
 }
@@ -137,11 +164,26 @@ type Writable = (typeof WRITABLE)[number];
 
 interface Fire { ruleId: string; itemId: string; actions: Action[]; tier: string; firmId: string | null }
 
+/** A row's fingerprint: any change to any column changes it. */
+const rowVersion = sql<string>`md5(${bankFeedItems}::text)`;
+
+/** What a chunk (or one row of it) writes. */
+interface ChunkWrite {
+  items: Item[];
+  dirty: Map<string, Set<Writable>>;
+  versions: Map<string, string>;
+  fires: Fire[];
+  /** The legacy bank rule each item was attributed to (times_applied). */
+  legacyRule: Map<string, string>;
+  states: Array<typeof transactionClassificationState.$inferInsert>;
+}
+
 async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Promise<void> {
   const { tenantId } = ctx;
-  const loaded = await db.select().from(bankFeedItems)
+  const loaded = await db.select({ item: bankFeedItems, version: rowVersion }).from(bankFeedItems)
     .where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, ids)));
-  const byId = new Map(loaded.map((i) => [i.id, i]));
+  const byId = new Map(loaded.map((r) => [r.item.id, r.item]));
+  const versions = new Map(loaded.map((r) => [r.item.id, r.version]));
   const items = ids.map((id) => byId.get(id)).filter((i): i is Item => i !== undefined);
   const dirty = new Map<string, Set<Writable>>();
   const patch = (item: Item, values: Partial<Pick<Item, Writable>>) => {
@@ -176,12 +218,12 @@ async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Pr
   }
 
   // Stage 2: legacy bank rules, staged as a suggestion only (Q-P25j).
-  const ruleCounts = new Map<string, number>();
+  const legacyRule = new Map<string, string>();
   for (const item of items) {
     if (shortCircuited.has(item.id) || item.status !== 'pending') continue;
     const r = await evaluateLegacy(ctx, item);
     if (!r) continue;
-    ruleCounts.set(r.rule.id, (ruleCounts.get(r.rule.id) ?? 0) + 1);
+    legacyRule.set(item.id, r.rule.id);
     ruleFired.set(item.id, r.rule.id);
     if (r.accountId && !item.suggestedAccountId) {
       patch(item, {
@@ -198,42 +240,95 @@ async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Pr
   const states = await stateRows(ctx, items, ruleFired, candidates);
 
   await db.transaction(async (tx) => {
-    const changed = items.filter((i) => dirty.has(i.id));
-    if (changed.length > 0) {
-      const rows = changed.map((i) => ({
-        id: i.id, description: i.description, suggested_account_id: i.suggestedAccountId, suggested_contact_id: i.suggestedContactId,
-        suggested_tag_id: i.suggestedTagId, match_type: i.matchType, confidence_score: i.confidenceScore, skip_ai: i.skipAi,
-        splits_config: i.splitsConfig ?? null,
-      }));
-      await tx.execute(sql`
-        UPDATE bank_feed_items b SET description = v.description, suggested_account_id = v.suggested_account_id,
-          suggested_contact_id = v.suggested_contact_id, suggested_tag_id = v.suggested_tag_id, match_type = v.match_type,
-          confidence_score = v.confidence_score, skip_ai = v.skip_ai, splits_config = v.splits_config, updated_at = now()
-        FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS v(id uuid, description text, suggested_account_id uuid,
-          suggested_contact_id uuid, suggested_tag_id uuid, match_type text, confidence_score numeric, skip_ai boolean, splits_config jsonb)
-        WHERE b.tenant_id = ${tenantId} AND b.id = v.id`);
+    // Lock the chunk's rows and leave out those changed since they were read.
+    const current = await tx.execute(sql`
+      SELECT id, md5(bank_feed_items::text) AS v FROM bank_feed_items
+      WHERE tenant_id = ${tenantId} AND id IN (SELECT (jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb))::uuid)
+      ORDER BY id FOR UPDATE`);
+    const now = new Map((current.rows as Array<{ id: string; v: string }>).map((r) => [r.id, r.v]));
+    const fresh = items.filter((i) => now.get(i.id) === versions.get(i.id));
+    if (fresh.length < items.length) {
+      console.warn(`[import-post] ${items.length - fresh.length} item(s) changed while being prepared were left as they are`);
     }
-    await recordFires(tx, tenantId, fires);
-    if (ruleCounts.size > 0) {
-      const counts = [...ruleCounts].map(([id, n]) => ({ id, n }));
-      await tx.execute(sql`
-        UPDATE bank_rules r SET times_applied = r.times_applied + v.n, last_applied_at = now()
-        FROM jsonb_to_recordset(${JSON.stringify(counts)}::jsonb) AS v(id uuid, n int) WHERE r.id = v.id`);
-    }
-    if (states.length > 0) {
-      await tx.insert(transactionClassificationState).values(states).onConflictDoUpdate({
-        target: transactionClassificationState.bankFeedItemId,
-        set: {
-          bucket: sql`excluded.bucket`, confidenceScore: sql`excluded.confidence_score`,
-          suggestedAccountId: sql`excluded.suggested_account_id`, suggestedVendorId: sql`excluded.suggested_vendor_id`,
-          matchedRuleId: sql`excluded.matched_rule_id`, reasoningBlob: sql`excluded.reasoning_blob`, modelUsed: sql`excluded.model_used`,
-          updatedAt: sql`excluded.updated_at`, matchCandidates: sql`excluded.match_candidates`,
-        },
-      });
+    const all = part({ items, dirty, versions, fires, legacyRule, states }, new Set(fresh.map((i) => i.id)));
+    try {
+      await tx.transaction((sp) => writeChunk(sp, tenantId, all));
+    } catch (err) {
+      // One bad row fails the bulk statements: write row by row, each in its own savepoint.
+      console.warn(`[import-post] chunk write failed, writing row by row: ${errorSummaryForLog(err)}`);
+      let failed = 0;
+      for (const item of fresh) {
+        try {
+          await tx.transaction((sp) => writeChunk(sp, tenantId, part(all, new Set([item.id]))));
+        } catch (rowErr) {
+          failed++;
+          console.warn(`[import-post] item ${item.id} could not be written: ${errorSummaryForLog(rowErr)}`);
+        }
+      }
+      if (failed > 0) console.warn(`[import-post] ${failed} item(s) left without suggestions`);
     }
     await tx.update(bankImportBatches).set({ processedRows: sql`${bankImportBatches.processedRows} + ${ids.length}` })
       .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
   });
+}
+
+/** The part of a chunk's write that belongs to the given items. */
+function part(w: ChunkWrite, keep: Set<string>): ChunkWrite {
+  return {
+    items: w.items.filter((i) => keep.has(i.id)),
+    dirty: w.dirty,
+    versions: w.versions,
+    fires: w.fires.filter((f) => keep.has(f.itemId)),
+    legacyRule: new Map([...w.legacyRule].filter(([id]) => keep.has(id))),
+    states: w.states.filter((s) => keep.has(s.bankFeedItemId)),
+  };
+}
+
+/**
+ * Writes a chunk (or a row of it): the changed columns of the changed items
+ * (only while each row is as it was read), the rule fires, the legacy rule
+ * counters and the state rows.
+ */
+async function writeChunk(tx: Tx, tenantId: string, w: ChunkWrite): Promise<void> {
+  const changed = w.items.filter((i) => w.dirty.has(i.id));
+  if (changed.length > 0) {
+    const rows = changed.map((i) => ({
+      id: i.id, version: w.versions.get(i.id), cols: [...w.dirty.get(i.id)!],
+      description: i.description, suggested_account_id: i.suggestedAccountId, suggested_contact_id: i.suggestedContactId,
+      suggested_tag_id: i.suggestedTagId, match_type: i.matchType, confidence_score: i.confidenceScore, skip_ai: i.skipAi,
+      splits_config: i.splitsConfig ?? null,
+    }));
+    const set = (col: string, key: Writable) => sql.raw(`${col} = CASE WHEN v.cols ? '${key}' THEN v.${col} ELSE b.${col} END`);
+    await tx.execute(sql`
+      UPDATE bank_feed_items b SET ${set('description', 'description')}, ${set('suggested_account_id', 'suggestedAccountId')},
+        ${set('suggested_contact_id', 'suggestedContactId')}, ${set('suggested_tag_id', 'suggestedTagId')},
+        ${set('match_type', 'matchType')}, ${set('confidence_score', 'confidenceScore')}, ${set('skip_ai', 'skipAi')},
+        ${set('splits_config', 'splitsConfig')}, updated_at = now()
+      FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS v(id uuid, version text, cols jsonb, description text,
+        suggested_account_id uuid, suggested_contact_id uuid, suggested_tag_id uuid, match_type text, confidence_score numeric,
+        skip_ai boolean, splits_config jsonb)
+      WHERE b.tenant_id = ${tenantId} AND b.id = v.id AND md5(b::text) = v.version`);
+  }
+  await recordFires(tx, tenantId, w.fires);
+  if (w.legacyRule.size > 0) {
+    const n = new Map<string, number>();
+    for (const ruleId of w.legacyRule.values()) n.set(ruleId, (n.get(ruleId) ?? 0) + 1);
+    const counts = [...n].map(([id, c]) => ({ id, n: c }));
+    await tx.execute(sql`
+      UPDATE bank_rules r SET times_applied = r.times_applied + v.n, last_applied_at = now()
+      FROM jsonb_to_recordset(${JSON.stringify(counts)}::jsonb) AS v(id uuid, n int) WHERE r.id = v.id`);
+  }
+  if (w.states.length > 0) {
+    await tx.insert(transactionClassificationState).values(w.states).onConflictDoUpdate({
+      target: transactionClassificationState.bankFeedItemId,
+      set: {
+        bucket: sql`excluded.bucket`, confidenceScore: sql`excluded.confidence_score`,
+        suggestedAccountId: sql`excluded.suggested_account_id`, suggestedVendorId: sql`excluded.suggested_vendor_id`,
+        matchedRuleId: sql`excluded.matched_rule_id`, reasoningBlob: sql`excluded.reasoning_blob`, modelUsed: sql`excluded.model_used`,
+        updatedAt: sql`excluded.updated_at`, matchCandidates: sql`excluded.match_candidates`,
+      },
+    });
+  }
 }
 
 // ─── Cleansing ───────────────────────────────────────────────────────

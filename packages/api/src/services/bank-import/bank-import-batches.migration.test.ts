@@ -127,11 +127,24 @@ describe('migration 0264 bank import post-processing progress', () => {
       tenantId, bankConnectionId: conn!.id, accountId: a!.id, format: 'csv', fileName: 'y.csv', sourceFileSha256: '1'.repeat(64),
       postProcessing: 'done', totalRows: 10, processedRows: 10, cancelRequestedAt: new Date(),
     }).returning();
+    // Undone while preparing (reported cancelled), and one still preparing.
+    const [cancelled] = await db.insert(bankImportBatches).values({
+      tenantId, bankConnectionId: conn!.id, accountId: a!.id, format: 'csv', fileName: 'z.csv', sourceFileSha256: '2'.repeat(64),
+      postProcessing: 'scheduled', totalRows: 10, processedRows: 3, undoneAt: new Date(),
+    }).returning();
+    const [preparing] = await db.insert(bankImportBatches).values({
+      tenantId, bankConnectionId: conn!.id, accountId: a!.id, format: 'csv', fileName: 'w.csv', sourceFileSha256: '3'.repeat(64),
+      postProcessing: 'scheduled', totalRows: 10, processedRows: 3, cancelRequestedAt: new Date(),
+    }).returning();
 
     await run('0264_bank_import_post_progress.rollback.sql');
     expect(await columns()).toEqual([]);
-    const back = await db.execute(sql`SELECT post_processing FROM bank_import_batches WHERE id = ${batch!.id}`);
-    expect(back.rows).toEqual([{ post_processing: 'done' }]);
+    const back = await db.execute(sql`SELECT id, post_processing FROM bank_import_batches
+      WHERE id IN (${batch!.id}, ${cancelled!.id}, ${preparing!.id})`);
+    // The older engine restarts every `scheduled` batch: the undone one must not be.
+    expect(Object.fromEntries((back.rows as Array<{ id: string; post_processing: string }>).map((r) => [r.id, r.post_processing])))
+      .toEqual({ [batch!.id]: 'done', [cancelled!.id]: 'done', [preparing!.id]: 'scheduled' });
+    await db.execute(sql`UPDATE bank_import_batches SET post_processing = 'done' WHERE id = ${preparing!.id}`);
 
     await run('0264_bank_import_post_progress.sql');
     await run('0264_bank_import_post_progress.sql');

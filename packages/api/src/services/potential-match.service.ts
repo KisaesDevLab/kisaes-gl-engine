@@ -129,6 +129,8 @@ async function matchOpenInvoices(item: FeedItemForMatching): Promise<MatchCandid
         lte(transactions.txnDate, w.max),
       ),
     )
+    // Date order (as the import batch reads them): the same rows when more than the limit qualify.
+    .orderBy(transactions.txnDate, transactions.id)
     .limit(200);
   return scoreOpenInvoices(item, rows);
 }
@@ -184,6 +186,7 @@ async function matchOpenBills(item: FeedItemForMatching): Promise<MatchCandidate
         lte(transactions.txnDate, w.max),
       ),
     )
+    .orderBy(transactions.txnDate, transactions.id)
     .limit(200);
   return scoreOpenBills(item, rows);
 }
@@ -240,6 +243,7 @@ async function matchUnpostedJEs(item: FeedItemForMatching): Promise<MatchCandida
         eq(transactions.total, Math.abs(feedAmount).toFixed(4)),
       ),
     )
+    .orderBy(transactions.txnDate, transactions.id)
     .limit(50);
   return scoreUnpostedJEs(item, rows);
 }
@@ -297,6 +301,7 @@ async function matchInterAccountTransfers(item: FeedItemForMatching): Promise<Ma
         lte(bankFeedItems.feedDate, w.max),
       ),
     )
+    .orderBy(bankFeedItems.feedDate, bankFeedItems.id)
     .limit(20);
   return scoreTransfers(item, rows);
 }
@@ -349,6 +354,7 @@ async function matchRecurringTemplates(item: FeedItemForMatching): Promise<Match
         isNotNull(transactions.total),
       ),
     )
+    .orderBy(recurringSchedules.nextOccurrence, recurringSchedules.id)
     .limit(50);
   return scoreRecurring(item, rows);
 }
