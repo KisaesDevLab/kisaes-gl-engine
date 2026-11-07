@@ -69,6 +69,12 @@ export interface WalkRow {
   sourceId?: string | null;
   /** The item's purchase cost when the line was posted or last edited (Q-P24d). */
   fallbackCost: Dec | null;
+  /**
+   * A row before the walk start, replayed only to rebuild the short-units
+   * queue and the sales its linked returns name (S5): its stored figures and
+   * running state are taken as they are, never recomputed.
+   */
+  fixed?: { fig: RowFigures; after: WalkState };
 }
 
 export interface RowFigures {
@@ -89,14 +95,23 @@ export interface RowResult {
 
 export interface NegativeStock { rowId: string; date: string; onHand: Dec }
 
-/** A sale as its linked returns see it: relief R (positive), S units sold, N units already returned. */
-export interface SaleLink { r: Dec; s: Dec; n: Dec }
+/**
+ * A sale as its linked returns see it: R its cost (relief plus the
+ * negative-stock corrections attributed to the units it sold short, S5),
+ * S units sold, N units already returned and B the value they brought back.
+ */
+export interface SaleLink { r: Dec; s: Dec; n: Dec; b: Dec }
 
 export interface WalkResult {
   rows: RowResult[];
   /** The first row whose running quantity newly went below 0. */
   negative: NegativeStock | null;
   final: WalkState;
+  /**
+   * Per sale walked here (its transaction id): the corrections attributed to
+   * the units it sold short (S5), the sale row's correction_share.
+   */
+  shares: Map<string, Dec>;
 }
 
 /** Relief of q > 0 units at cost from state s (Q-P24c, Q-P24d). */
@@ -149,42 +164,100 @@ export function stepRow(s: WalkState, row: WalkRow): { fig: RowFigures; after: W
 /**
  * Walks the rows (in position order, voided rows left out) from `seed`.
  * `links`: for every sale a linked row names that is not itself in `rows`
- * (it sits before the walk start), its stored relief R, quantity S and the
- * quantity N its linked returns before the start already took back. A sale
- * in `rows` registers itself (its returns always come after it). A linked
- * return of q units: value = round2(R x (N + q) / S) - round2(R x N / S),
- * so returning every unit gives back exactly R (I7).
+ * (it sits before the walk start), its cost R (stored relief plus its stored
+ * correction_share), quantity S, and the quantity N and value B its linked
+ * returns before the start already took back. A sale in `rows` registers
+ * itself (its returns always come after it). A linked return of q units:
+ * value = round2(R x (N + q) / S) - B, so returning every unit gives back
+ * exactly R (I7).
+ *
+ * Corrected sale cost (PR-4 S5, Q-P24e "the original sale cost"): units
+ * sold below 0 join a first-short, first-cured queue; an inflow that cures k
+ * of them with correction C (the extra cost, -fig.correction) splits C over
+ * the units it takes from the queue by cumulative difference
+ * (round2(C x K_i / k) - round2(C x K_(i-1) / k)), and each sale's share is
+ * added to its R. So a return linked to a sale that was sold short and later
+ * re-priced comes back at the corrected cost. The queue is empty whenever
+ * on hand is 0 or more; a walk that starts below 0 is given the rows from
+ * the start of that stretch as `fixed` rows (stored figures, not recomputed).
  */
 export function walk(seed: WalkState, rows: readonly WalkRow[], links: ReadonlyMap<string, SaleLink> = new Map()): WalkResult {
   let s: WalkState = { ...seed };
   const out: RowResult[] = [];
   let negative: NegativeStock | null = null;
   const sales = new Map<string, SaleLink>([...links].map(([k, v]) => [k, { ...v }]));
+  const shares = new Map<string, Dec>();
+  // Units sold (or taken out) below 0, oldest first; saleId null for a non-sale outflow.
+  const short: Array<{ saleId: string | null; units: Dec }> = seed.q.lessThan(0) ? [{ saleId: null, units: seed.q.negated() }] : [];
   for (const row of rows) {
     const before = s;
-    let input = row;
-    if (row.valueMode === 'linked') {
-      const sale = row.sourceId ? sales.get(row.sourceId) : undefined;
-      if (!sale) throw new Error('inventory walk: a linked return without its sale');
-      input = { ...row, valueMode: 'given', given: linkedValue(sale, row.quantity) };
-      sale.n = sale.n.plus(row.quantity);
+    let fig: RowFigures;
+    let after: WalkState;
+    if (row.fixed) {
+      ({ fig, after } = row.fixed);
+      if (row.valueMode === 'linked') {
+        const sale = row.sourceId ? sales.get(row.sourceId) : undefined;
+        if (sale) { sale.n = sale.n.plus(row.quantity); sale.b = sale.b.plus(fig.value); }
+      }
+    } else {
+      let input = row;
+      if (row.valueMode === 'linked') {
+        const sale = row.sourceId ? sales.get(row.sourceId) : undefined;
+        if (!sale) throw new Error('inventory walk: a linked return without its sale');
+        const value = linkedValue(sale, row.quantity);
+        input = { ...row, valueMode: 'given', given: value };
+        sale.n = sale.n.plus(row.quantity);
+        sale.b = sale.b.plus(value);
+      }
+      ({ fig, after } = stepRow(s, input));
     }
-    const { fig, after } = stepRow(s, input);
-    s = after;
+    s = { ...after };
     if (row.kind === 'sale' && row.transactionId && row.quantity.lessThan(0)) {
-      sales.set(row.transactionId, { r: fig.value.negated(), s: row.quantity.negated(), n: ZERO });
+      sales.set(row.transactionId, { r: fig.value.negated(), s: row.quantity.negated(), n: ZERO, b: ZERO });
+      shares.set(row.transactionId, ZERO);
     }
+    trackShort(short, before, row, fig, (saleId, share) => {
+      const sale = sales.get(saleId);
+      if (sale) sale.r = sale.r.plus(share);
+      if (shares.has(saleId)) shares.set(saleId, shares.get(saleId)!.plus(share));
+    });
     if (!negative && before.q.greaterThanOrEqualTo(0) && s.q.lessThan(0)) negative = { rowId: row.id, date: row.date, onHand: s.q };
     out.push({ id: row.id, fig, after: { ...s } });
   }
-  return { rows: out, negative, final: s };
+  return { rows: out, negative, final: s, shares };
 }
 
-/** The value of q more units returned against `sale` (cumulative difference, Q-P24e). */
+/** The short-units queue after one row (S5): an outflow below 0 joins it; an inflow while below 0 cures from its head. */
+function trackShort(short: Array<{ saleId: string | null; units: Dec }>, before: WalkState, row: WalkRow, fig: RowFigures,
+  attribute: (saleId: string, share: Dec) => void) {
+  const qty = row.quantity;
+  if (qty.lessThan(0)) {
+    const excess = qty.negated().minus(Decimal.max(before.q, ZERO));
+    if (excess.greaterThan(0)) short.push({ saleId: row.kind === 'sale' && row.transactionId ? row.transactionId : null, units: excess });
+    return;
+  }
+  if (!qty.greaterThan(0) || !before.q.lessThan(0)) return;
+  const k = Decimal.min(qty, before.q.negated());
+  const c = fig.correction.negated();
+  let taken = ZERO;
+  let given = ZERO;
+  while (taken.lessThan(k) && short.length > 0) {
+    const head = short[0]!;
+    const u = Decimal.min(head.units, k.minus(taken));
+    taken = taken.plus(u);
+    const upTo = round2(c.times(taken).dividedBy(k));
+    const share = upTo.minus(given);
+    given = upTo;
+    if (head.saleId && !share.isZero()) attribute(head.saleId, share);
+    head.units = head.units.minus(u);
+    if (!head.units.greaterThan(0)) short.shift();
+  }
+}
+
+/** The value of q more units returned against `sale` (cumulative difference, Q-P24e): round2(R x (N + q) / S) - B. */
 export function linkedValue(sale: SaleLink, q: Dec): Dec {
   if (!sale.s.greaterThan(0)) return ZERO;
-  const upTo = (n: Dec) => round2(sale.r.times(n).dividedBy(sale.s));
-  return upTo(sale.n.plus(q)).minus(upTo(sale.n));
+  return round2(sale.r.times(sale.n.plus(q)).dividedBy(sale.s)).minus(sale.b);
 }
 
 /** Average cost as GET /items shows it: V/Q to 6 places while Q > 0, else the last positive average. */

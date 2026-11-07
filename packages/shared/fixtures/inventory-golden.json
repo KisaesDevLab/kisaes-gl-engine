@@ -6,6 +6,7 @@
     "Outflow at cost of q > 0 units (sale, quantity-only adjustment down), on T: Q > 0 and q <= Q: relief = round2(T x q / Q); q > Q: relief = (Q > 0 ? T : 0) + round2(excess x c), excess = q - max(Q, 0), c = L if L > 0, else the item's purchase cost when the line was posted, else 0.",
     "Inflow at cost of r units (unlinked customer return, quantity-only adjustment up): round2(T x r / Q) if Q > 0, else round2(r x c).",
     "Linked return (Q-P24e): a credit-memo line with returnOf {transactionId} (an invoice or sales receipt of the same item, dated on or before the credit memo). Sale relief R for S units; returns linked to it, in position order, with cumulative returned quantity N_k: value_k = round2(R x N_k / S) - round2(R x N_(k-1) / S). N <= S (400 RETURN_EXCEEDS_SALE); a credit memo dated before the sale is 400 RETURN_BEFORE_SALE; a sale with linked returns can't be voided, deleted, lose that item, drop below N or move after a return (409 SALE_HAS_RETURNS).",
+    "Corrected sale cost (PR-4 S5): R of a linked return is the sale's relief plus the corrections attributed to the units it sold below 0. Outflows below 0 join a first-short, first-cured queue (excess = q - max(Q, 0); a non-sale outflow joins with no sale); an inflow curing k units with correction C (C = -correction as shown) takes k units from the head and gives the i-th sale taken round2(C x K_i / k) - round2(C x K_(i-1) / k), K_i the units taken so far. A linked return of q units: value = round2(R x (N + q) / S) - B, B the value its earlier returns brought back (the same as the cumulative difference while R does not change).",
     "Units (U-161): quantities in movements, on hand and reports are base units; base quantity = round4(quantity x factor); the line amount stays round2(quantity x unitPrice) in the entered unit.",
     "Given value: a receipt adds its line amount, a vendor return takes its line amount off, an adjustment with a value adds that value.",
     "Correction when Q < 0 before an inflow of r units worth A: k = min(r, -Q); C = round2(A x k / r) - round2(-T x k / -Q), posted on the inflow's document (Dr COGS, Cr inventory when C > 0); T := T + A - C.",
@@ -313,6 +314,26 @@
         { "doc": "R2", "value": "6.27", "onHand": "17.0000", "assetValue": "59.94" }
       ],
       "final": { "W": { "onHand": "17.0000", "assetValue": "59.94" } }
+    },
+    {
+      "id": "R3",
+      "title": "A return linked to a sale sold below 0 comes back at its corrected cost (PR-4 S5): A, then a credit memo returning the Jan 12 invoice's 3 units (relief 10.77 at L; the Jan 15 bill's correction 0.63 makes them 11.40)",
+      "from": "A",
+      "steps": [
+        { "n": 10, "doc": "R3a", "event": "credit_memo", "date": "2026-01-26", "item": "W", "quantity": "3", "returnOf": "A5",
+          "expect": { "value": "11.40", "onHand": "7.0000", "assetValue": "27.60", "averageCost": "3.942857", "note": "10.77 + 0.63; at the sale's relief alone it would be 10.77" } },
+        { "n": 11, "event": "edit", "doc": "R3a", "quantity": "2",
+          "expect": { "value": "7.60", "onHand": "6.0000", "assetValue": "23.80", "note": "round2(11.40 x 2 / 3)" } },
+        { "n": 12, "doc": "B1", "event": "bill", "date": "2026-01-03", "item": "W", "quantity": "6", "unitPrice": "2.00", "amount": "12.00",
+          "expect": { "onHand": "12.0000", "assetValue": "43.98", "note": "case B: the Jan 12 sale is no longer short (relief 9.41, no correction): round2(9.41 x 2 / 3) = 6.27" } }
+      ],
+      "rows": [
+        { "doc": "A5", "value": "-9.41", "onHand": "3.0000", "assetValue": "9.40" },
+        { "doc": "A6", "value": "38.00", "correction": "0.00", "onHand": "13.0000", "assetValue": "47.40" },
+        { "doc": "A9", "value": "-7.54", "onHand": "10.0000", "assetValue": "37.71" },
+        { "doc": "R3a", "returnOf": "A5", "value": "6.27", "onHand": "12.0000", "assetValue": "43.98" }
+      ],
+      "final": { "W": { "onHand": "12.0000", "assetValue": "43.98", "averageCost": "3.665000" } }
     },
     {
       "id": "R2",

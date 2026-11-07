@@ -43,7 +43,7 @@
  * INVENTORY_DOCUMENT_UNSUPPORTED.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { DbOrTx, Tx } from '../db/index.js';
 import { inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -638,55 +638,77 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
   const startCreated = new Date(sCreated).toISOString();
   const key = sql`(movement_date, txn_created_at, transaction_id)`;
   const at = sql`(${sDate}::date, ${startCreated}::timestamptz, ${sTxn}::uuid)`;
-  const seedRows = await tx.execute(sql`
-    SELECT running_qty::text AS q, running_value::text AS v, last_cost::text AS l
+  const latest = async (cond: SQL) => (await tx.execute(sql`
+    SELECT id, movement_date::text AS d, txn_created_at AS c, transaction_id::text AS t, running_qty::text AS q, running_value::text AS v, last_cost::text AS l
     FROM inventory_movements
-    WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND item_id = ${itemId} AND voided = false AND ${key} < ${at}
-    ORDER BY ${positionDesc()} LIMIT 1`);
-  const seedRow = seedRows.rows[0] as { q: string; v: string; l: string } | undefined;
-  const seed: WalkState = seedRow ? { q: d(seedRow.q), v: d(seedRow.v), l: d(seedRow.l) } : { ...ZERO_STATE };
+    WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND item_id = ${itemId} AND voided = false AND ${key} < ${at} AND ${cond}
+    ORDER BY ${positionDesc()} LIMIT 1`)).rows[0] as { id: string; d: string; c: Date | string; t: string; q: string; v: string; l: string } | undefined;
+  const state = (r: { q: string; v: string; l: string } | undefined): WalkState => (r ? { q: d(r.q), v: d(r.v), l: d(r.l) } : { ...ZERO_STATE });
+  const seedRow = await latest(sql`TRUE`);
+  const seed = state(seedRow);
+  // S5: a walk that starts while on hand is below 0 replays (never rewrites) the rows since on hand was last 0 or more,
+  // so the short-units queue and the sales sold short are rebuilt; that row is the walk's real seed.
+  let walkSeed = seed;
+  let prefix: MovementRow[] = [];
+  if (seedRow && seed.q.lessThan(0)) {
+    const calm = await latest(sql`running_qty >= 0`);
+    walkSeed = state(calm);
+    const from = calm ? sql`${key} >= (${calm.d}::date, ${new Date(calm.c).toISOString()}::timestamptz, ${calm.t}::uuid)` : sql`TRUE`;
+    const before = await tx.select().from(inventoryMovements)
+      .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, companyId), eq(inventoryMovements.itemId, itemId),
+        eq(inventoryMovements.voided, false), sql`${key} < ${at}`, from))
+      .orderBy(positionAsc());
+    prefix = calm ? before.slice(before.findIndex((m) => m.id === calm.id) + 1) : before;
+  }
   const rows = await tx.select().from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, companyId), eq(inventoryMovements.itemId, itemId),
       eq(inventoryMovements.voided, false), sql`${key} >= ${at}`))
     .orderBy(positionAsc());
-  const walkRows: WalkRow[] = rows.map((m) => ({
+  const toWalk = (m: MovementRow, fixed: boolean): WalkRow => ({
     id: m.id, transactionId: m.transactionId, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode,
     given: m.valueMode === 'given' ? d(m.value) : null, sourceId: m.sourceTransactionId,
     fallbackCost: m.fallbackCost === null ? null : d(m.fallbackCost),
-  }));
-  // Linked returns (Q-P24e) whose sale sits before the walk start: the sale's
-  // stored relief and quantity, and what earlier returns already took back.
-  const inWindow = new Set(rows.filter((m) => m.kind === 'sale').map((m) => m.transactionId));
-  const outside = [...new Set(rows.filter((m) => m.valueMode === 'linked' && m.sourceTransactionId && !inWindow.has(m.sourceTransactionId))
+    ...(fixed ? { fixed: { fig: { value: d(m.value), correction: d(m.correction), residual: d(m.residual) },
+      after: { q: d(m.runningQty), v: d(m.runningValue), l: d(m.lastCost) } } } : {}),
+  });
+  const all = [...prefix, ...rows];
+  const walkRows: WalkRow[] = [...prefix.map((m) => toWalk(m, true)), ...rows.map((m) => toWalk(m, false))];
+  // Linked returns (Q-P24e) whose sale sits before the rows walked: the sale's stored relief plus its stored
+  // correction_share (S5), its quantity, and what its other returns (all before the walk) already took back.
+  const walked = new Set(all.map((m) => m.id));
+  const inWalk = new Set(all.filter((m) => m.kind === 'sale').map((m) => m.transactionId));
+  const outside = [...new Set(all.filter((m) => m.valueMode === 'linked' && m.sourceTransactionId && !inWalk.has(m.sourceTransactionId))
     .map((m) => m.sourceTransactionId!))];
   const links = new Map<string, SaleLink>();
   for (const saleId of outside) {
-    const r = await tx.execute(sql`
-      SELECT (SELECT -value FROM inventory_movements WHERE tenant_id = ${tenantId} AND transaction_id = ${saleId} AND item_id = ${itemId}
-          AND source_transaction_id IS NULL AND voided = false)::text AS r,
-        (SELECT -quantity FROM inventory_movements WHERE tenant_id = ${tenantId} AND transaction_id = ${saleId} AND item_id = ${itemId}
-          AND source_transaction_id IS NULL AND voided = false)::text AS s,
-        (SELECT COALESCE(SUM(quantity), 0) FROM inventory_movements WHERE tenant_id = ${tenantId} AND source_transaction_id = ${saleId}
-          AND item_id = ${itemId} AND voided = false AND ${key} < ${at})::text AS n`);
-    const row = r.rows[0] as { r: string | null; s: string | null; n: string };
-    if (row.r === null || row.s === null) throw AppError.internal('Costing: a linked return without its sale');
-    links.set(saleId, { r: d(row.r), s: d(row.s), n: d(row.n) });
+    const [sale] = await tx.select().from(inventoryMovements).where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.transactionId, saleId),
+      eq(inventoryMovements.itemId, itemId), sql`${inventoryMovements.sourceTransactionId} IS NULL`, eq(inventoryMovements.voided, false))).limit(1);
+    if (!sale) throw AppError.internal('Costing: a linked return without its sale');
+    const back = (await tx.select({ id: inventoryMovements.id, quantity: inventoryMovements.quantity, value: inventoryMovements.value }).from(inventoryMovements)
+      .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.sourceTransactionId, saleId), eq(inventoryMovements.itemId, itemId),
+        eq(inventoryMovements.voided, false)))).filter((m) => !walked.has(m.id));
+    links.set(saleId, {
+      r: d(sale.value).negated().plus(d(sale.correctionShare)), s: d(sale.quantity).negated(),
+      n: back.reduce((acc, m) => acc.plus(d(m.quantity)), new Decimal(0)), b: back.reduce((acc, m) => acc.plus(d(m.value)), new Decimal(0)),
+    });
   }
-  const result = walk(seed, walkRows, links);
+  const full = walk(walkSeed, walkRows, links);
+  const own = full.rows.slice(prefix.length);
   // Q-P24s: a value-only adjustment of the posting itself needs stock on hand at its date (400 INVENTORY_NO_STOCK).
   // Only the trigger is checked: later walks carry rows that were accepted when they were posted.
   rows.forEach((m, i) => {
     if (m.transactionId !== triggerId || m.kind !== 'adjust_value') return;
-    const before = i === 0 ? seed : result.rows[i - 1]!.after;
+    const before = i === 0 ? seed : own[i - 1]!.after;
     if (!before.q.greaterThan(0)) {
       throw AppError.badRequest('A value-only adjustment needs the item in stock on its date. Adjust the quantity too, or date it when there is stock.',
         'INVENTORY_NO_STOCK', { itemId, date: m.movementDate, onHand: before.q.toFixed(4) });
     }
   });
+  const share = (m: MovementRow) => (m.kind === 'sale' && m.sourceTransactionId === null ? full.shares.get(m.transactionId) ?? d(m.correctionShare) : d(0));
   const changed: Changed[] = [];
-  const cols: Record<'id' | 'value' | 'correction' | 'residual' | 'q' | 'v' | 'l', string[]> = { id: [], value: [], correction: [], residual: [], q: [], v: [], l: [] };
+  const cols: Record<'id' | 'value' | 'correction' | 'residual' | 'q' | 'v' | 'l' | 's', string[]> = { id: [], value: [], correction: [], residual: [], q: [], v: [], l: [], s: [] };
   rows.forEach((m, i) => {
-    const r = result.rows[i]!;
+    const r = own[i]!;
     const f = r.fig;
     const a = r.after;
     if (a.q.abs().greaterThanOrEqualTo(QTY_LIMIT) || a.v.abs().greaterThanOrEqualTo(MONEY_LIMIT)) {
@@ -698,19 +720,28 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
       changed.push({ row: { ...m, ...next }, before: cents(m), after: cents(next) });
     }
     cols.id.push(m.id); cols.value.push(next.value); cols.correction.push(next.correction); cols.residual.push(next.residual);
-    cols.q.push(a.q.toFixed(4)); cols.v.push(a.v.toFixed(4)); cols.l.push(a.l.toFixed(6));
+    cols.q.push(a.q.toFixed(4)); cols.v.push(a.v.toFixed(4)); cols.l.push(a.l.toFixed(6)); cols.s.push(share(m).toFixed(4));
   });
-  // Batched (S13): one UPDATE ... FROM unnest(arrays) per 5,000 rows, seven array parameters each.
+  // Batched (S13): one UPDATE ... FROM unnest(arrays) per 5,000 rows, eight array parameters each.
   for (let i = 0; i < cols.id.length; i += BULK) {
     const part = (xs: string[]) => pgArray(xs.slice(i, i + BULK));
     await tx.execute(sql`
       UPDATE inventory_movements m SET value = v.value, correction = v.correction, residual = v.residual, running_qty = v.q,
-        running_value = v.v, last_cost = v.l, updated_at = now()
+        running_value = v.v, last_cost = v.l, correction_share = v.s, updated_at = now()
       FROM unnest(${part(cols.id)}::uuid[], ${part(cols.value)}::numeric[], ${part(cols.correction)}::numeric[], ${part(cols.residual)}::numeric[],
-        ${part(cols.q)}::numeric[], ${part(cols.v)}::numeric[], ${part(cols.l)}::numeric[]) AS v(id, value, correction, residual, q, v, l)
+        ${part(cols.q)}::numeric[], ${part(cols.v)}::numeric[], ${part(cols.l)}::numeric[], ${part(cols.s)}::numeric[]) AS v(id, value, correction, residual, q, v, l, s)
       WHERE m.id = v.id AND m.tenant_id = ${tenantId}`);
   }
-  return { changed, warning: negativeWarning(itemId, rows, result.rows, triggerId) };
+  // S5: sales before the start whose short units a walked row cured: their correction_share only (their figures never change here).
+  const moved = prefix.filter((m) => m.kind === 'sale' && !share(m).equals(d(m.correctionShare)));
+  for (let i = 0; i < moved.length; i += BULK) {
+    const part = moved.slice(i, i + BULK);
+    await tx.execute(sql`
+      UPDATE inventory_movements m SET correction_share = v.s, updated_at = now()
+      FROM unnest(${pgArray(part.map((m) => m.id))}::uuid[], ${pgArray(part.map((m) => share(m).toFixed(4)))}::numeric[]) AS v(id, s)
+      WHERE m.id = v.id AND m.tenant_id = ${tenantId}`);
+  }
+  return { changed, warning: negativeWarning(itemId, rows, own, triggerId) };
 }
 
 /**

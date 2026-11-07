@@ -606,6 +606,37 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
     await invariants(w);
   });
 
+  it('R3: a return linked to a sale sold below 0 comes back at the corrected cost; edits and backdated receipts re-derive it (PR-4 S5)', async () => {
+    const w = await setup();
+    const r3 = gcase('R3');
+    await runSteps(w, gcase('A')['steps']);
+    const W = w.items.get('W')!;
+    const share = async (doc: string) => m2((await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get(doc)!)))[0]!.correctionShare);
+    expect(await share('A5'), 'A6 cured A5\'s 3 short units').toBe('0.63');
+    await runSteps(w, (r3['steps'] as Body[]).slice(0, 2));
+    await fullReplayMatches(W);
+    // Engine-only: re-pricing the curing bill walks from it (on hand below 0 before it): the sale sold short is replayed, not rewritten.
+    const a6 = structuredClone(w.bodies.get('A6')!) as Body;
+    expect((await req('PUT', `/bills/${w.docs.get('A6')}`, { ...a6, lines: [{ ...a6['lines'][0], amount: '41.00', unitPrice: '4.10' }] })).status).toBe(200);
+    expect(await share('A5'), 'round2(41.00 x 3 / 10) - 10.77').toBe('1.53');
+    const memo = async () => m2((await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get('R3a')!)))[0]!.value);
+    expect(await memo(), 'round2(12.30 x 2 / 3)').toBe('8.20');
+    await invariants(w);
+    await fullReplayMatches(W);
+    // A walk that starts after the cure (the memo moved a day) reads the stored share.
+    const memoBody = structuredClone(w.bodies.get('R3a')!) as Body;
+    expect((await req('PUT', `/credit-memos/${w.docs.get('R3a')}`, { ...memoBody, txnDate: '2026-01-27' })).status).toBe(200);
+    expect(await memo()).toBe('8.20');
+    expect((await req('PUT', `/credit-memos/${w.docs.get('R3a')}`, memoBody)).status).toBe(200);
+    expect((await req('PUT', `/bills/${w.docs.get('A6')}`, a6)).status).toBe(200);
+    expect(await memo()).toBe('7.60');
+    await runSteps(w, (r3['steps'] as Body[]).slice(2));
+    expect(await share('A5'), 'no longer short').toBe('0.00');
+    await checkRows(w, r3['rows'], true);
+    await checkFinal(w, r3['final']);
+    await fullReplayMatches(W);
+  });
+
   it('R2: two rows of one part on one credit memo walk in one order everywhere (PR-4 B1); physical row order never matters', async () => {
     const w = await setup();
     const r2 = gcase('R2');
@@ -991,11 +1022,12 @@ describe('inventory-costing-v1 write paths (B4)', () => {
         await invariants(w);
       }
       await fullReplayMatches(W);
-      // I7: no sale gives back more than its relief.
+      // I7: no sale gives back more than its relief plus the corrections of the units it sold short (PR-4 S5).
       const over = await db.execute(sql`
         SELECT s.transaction_id FROM inventory_movements s JOIN inventory_movements r ON r.source_transaction_id = s.transaction_id AND r.item_id = s.item_id AND r.voided = false
         WHERE s.tenant_id = ${c.tenantId} AND s.voided = false AND s.source_transaction_id IS NULL AND s.kind = 'sale'
-        GROUP BY s.transaction_id, s.value, s.quantity HAVING SUM(r.value) > -s.value OR SUM(r.quantity) > -s.quantity`);
+        GROUP BY s.transaction_id, s.value, s.quantity, s.correction_share
+        HAVING SUM(r.value) > -s.value + GREATEST(s.correction_share, 0) OR SUM(r.quantity) > -s.quantity`);
       expect(over.rows, `I7 seed ${seed}`).toEqual([]);
     }
   }, 240_000);
