@@ -37,6 +37,7 @@ import { Harness, type Co, key } from './receivables.test-support.js';
 import { postAdjustment } from '../services/inventory-adjustment.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { Decimal } from '../utils/inventory-walk.js';
+import { positionAsc, positionDesc } from '../services/inventory-position.js';
 
 type Body = Record<string, any>;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -145,8 +146,10 @@ async function step(w: World, s: Body, via?: string) {
       break;
     }
     case 'credit_memo': {
-      const body = { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: item, quantity: s['quantity'], unitPrice: golden['seed'].salePrice, isTaxable: false,
-        ...(s['returnOf'] ? { returnOf: { transactionId: w.docs.get(s['returnOf'])! } } : {}) }] };
+      // One line (item, quantity, returnOf), or several (`lines`, PR-4 B1).
+      const memoLines = (s['lines'] as Body[] | undefined) ?? [{ item: s['item'], quantity: s['quantity'], returnOf: s['returnOf'] }];
+      const body = { contactId: c.customer, txnDate: s['date'], lines: memoLines.map((l) => ({ itemId: w.items.get(l['item'])!, quantity: l['quantity'],
+        unitPrice: golden['seed'].salePrice, isTaxable: false, ...(l['returnOf'] ? { returnOf: { transactionId: w.docs.get(l['returnOf'])! } } : {}) })) };
       r = await req('POST', '/credit-memos', body);
       if (expectStatus) {
         expect([r.status, r.json['error']?.code], JSON.stringify(r.json)).toEqual([expectStatus, s['expect'].code]);
@@ -219,7 +222,7 @@ async function step(w: World, s: Body, via?: string) {
 async function rows(itemId: string) {
   return db.select().from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, c.tenantId), eq(inventoryMovements.itemId, itemId), eq(inventoryMovements.voided, false)))
-    .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
+    .orderBy(positionAsc());
 }
 
 const m2 = (v: string) => Number(v).toFixed(2);
@@ -233,7 +236,7 @@ async function invariants(w: World) {
     SELECT COALESCE(SUM(last.running_value), 0)::numeric(19,2)::text AS v FROM (
       SELECT DISTINCT ON (m.item_id) m.running_value FROM inventory_movements m JOIN items i ON i.id = m.item_id
       WHERE m.tenant_id = ${c.tenantId} AND m.voided = false AND i.asset_account_id = ${w.asset}
-      ORDER BY m.item_id, m.movement_date DESC, m.txn_created_at DESC, m.transaction_id DESC) last`)).rows[0] as { v: string };
+      ORDER BY m.item_id, ${positionDesc('m')}) last`)).rows[0] as { v: string };
   expect(valuation.v, 'I2 valuation = accrual GL').toBe((await gl(w.asset)).b);
   for (const id of [w.asset, w.cogs, w.adjustment]) {
     const [a] = await db.select({ balance: accounts.balance }).from(accounts).where(eq(accounts.id, id));
@@ -289,6 +292,7 @@ async function checkRows(w: World, expected: Body[], subset = false) {
   expected.forEach((e, i) => {
     const r = got[i]!;
     expect(m2(r.value), `${e['doc']} value`).toBe(e['value']);
+    if ('returnOf' in e) expect(r.sourceTransactionId, `${e['doc']} returnOf`).toBe(e['returnOf'] ? w.docs.get(e['returnOf']) : null);
     if (e['correction']) expect(m2(r.correction), `${e['doc']} correction`).toBe(e['correction']);
     if (e['onHand']) expect(Number(r.runningQty).toFixed(4), `${e['doc']} onHand`).toBe(e['onHand']);
     if (e['assetValue']) expect(m2(r.runningValue), `${e['doc']} assetValue`).toBe(e['assetValue']);
@@ -559,6 +563,36 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
     expect((await req('POST', `/transactions/${w.docs.get('R1')}/void`, { reason: 'x' })).status).toBe(200);
     expect((await req('POST', `/transactions/${w.docs.get('A3')}/void`, { reason: 'x' })).status).toBe(200);
     await invariants(w);
+  });
+
+  it('R2: two rows of one part on one credit memo walk in one order everywhere (PR-4 B1); physical row order never matters', async () => {
+    const w = await setup();
+    const r2 = gcase('R2');
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, r2['fromSteps']));
+    await runSteps(w, r2['steps']);
+    await checkRows(w, r2['rows'], true);
+    await checkFinal(w, r2['final']);
+    const W = w.items.get('W')!;
+    await fullReplayMatches(W);
+    const snap = async () => (await rows(W)).map((m) => [m.id, m.value, m.correction, m.residual, m.runningQty, m.runningValue, m.lastCost]);
+    const before = await snap();
+    // Move the unlinked row of the memo to a new heap position (a non-HOT update), so a scan meets it after the linked row.
+    const memoRows = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get('T1')!));
+    expect(memoRows).toHaveLength(2);
+    await db.execute(sql`UPDATE inventory_movements SET updated_at = now(), quantity = quantity WHERE id = ${memoRows.find((m) => m.sourceTransactionId === null)!.id}`);
+    // Every stock read sees the latest row of the memo the same way.
+    expect((await figures(w))['assetValue']).toBe('30.06');
+    // A backdated bill re-walks across the memo, and its void walks back: every row is as before.
+    const b = await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-03', lines: [{ accountId: w.asset, amount: '12.00', itemId: W, quantity: '6', unitPrice: '2.00' }] });
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    await invariants(w);
+    await fullReplayMatches(W);
+    expect((await req('POST', `/transactions/${idOf(b.json)}/void`, { reason: 'x' })).status).toBe(200);
+    await invariants(w);
+    expect(await snap()).toEqual(before);
+    // The count sheet and Stock Status read the same latest row.
+    const sheet = await req('GET', '/inventory/count-sheet?asOf=2026-01-16');
+    expect((sheet.json['items'] as Body[]).find((x) => x['itemId'] === W)).toMatchObject({ onHand: '10.0000', value: '37.58' });
   });
 
   it('refuses a return dated before its sale, of an item the sale did not sell, or on a document that is not a credit memo', async () => {
@@ -845,7 +879,7 @@ describe('inventory-costing-v1 write paths (B4)', () => {
       };
       const day = () => `2026-01-${String(r.int(1, 28)).padStart(2, '0')}`;
       for (let n = 0; n < 30; n++) {
-        const op = r.pick(['bill', 'bill', 'invoice', 'invoice', 'receipt', 'return', 'linked', 'vcredit', 'void', 'edit']);
+        const op = r.pick(['bill', 'bill', 'invoice', 'invoice', 'receipt', 'return', 'linked', 'multi', 'vcredit', 'void', 'edit']);
         const doc = `P${seed}-${n}`;
         if (op === 'bill' || op === 'vcredit') {
           const qty = r.int(1, op === 'bill' ? 9 : 2);
@@ -867,6 +901,14 @@ describe('inventory-costing-v1 write paths (B4)', () => {
           const x = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: date, lines: [{ itemId: W, quantity: String(r.int(1, 2)), unitPrice: '10.00', isTaxable: false,
             ...(sale ? { returnOf: { transactionId: w.docs.get(sale.doc)! } } : {}) }] });
           if (ok(x, ['RETURN_EXCEEDS_SALE'])) w.docs.set(doc, idOf(x.json));
+        } else if (op === 'multi' && sales.length > 0) {
+          // PR-4 B1: one memo, several rows of the part (two linked sales and the unlinked units).
+          const picks = [r.pick(sales), r.pick(sales)];
+          const from = Math.max(...picks.map((s) => Number(s.date.slice(8))));
+          const lines = [...new Set(picks)].map((s) => ({ itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false, returnOf: { transactionId: w.docs.get(s.doc)! } }));
+          const x = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: `2026-01-${String(r.int(from, 28)).padStart(2, '0')}`,
+            lines: [...lines, { itemId: W, quantity: String(r.int(1, 2)), unitPrice: '10.00', isTaxable: false }] });
+          if (ok(x, ['RETURN_EXCEEDS_SALE', 'RETURN_BEFORE_SALE'])) w.docs.set(doc, idOf(x.json));
         } else if (op === 'void' && w.docs.size > 0) {
           const victim = r.pick([...w.docs.keys()]);
           const x = await req('POST', `/transactions/${w.docs.get(victim)}/void`, { reason: 'property' });

@@ -54,6 +54,7 @@ import {
 import { INVENTORY_ASSET_TAG } from './inventory.service.js';
 import { noteInventoryWarnings } from './inventory-warnings-context.js';
 import { resolveLineUnits, UNIT_LINE_NOTE } from './unit-lines.service.js';
+import { positionAsc, positionDesc } from './inventory-position.js';
 
 /** Line roles only the costing walk writes (U-157). */
 export const DERIVED_LINE_ROLES = ['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'] as const;
@@ -624,13 +625,13 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
     SELECT running_qty::text AS q, running_value::text AS v, last_cost::text AS l
     FROM inventory_movements
     WHERE tenant_id = ${tenantId} AND company_id = ${companyId} AND item_id = ${itemId} AND voided = false AND ${key} < ${at}
-    ORDER BY movement_date DESC, txn_created_at DESC, transaction_id DESC LIMIT 1`);
+    ORDER BY ${positionDesc()} LIMIT 1`);
   const seedRow = seedRows.rows[0] as { q: string; v: string; l: string } | undefined;
   const seed: WalkState = seedRow ? { q: d(seedRow.q), v: d(seedRow.v), l: d(seedRow.l) } : { ...ZERO_STATE };
   const rows = await tx.select().from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, companyId), eq(inventoryMovements.itemId, itemId),
       eq(inventoryMovements.voided, false), sql`${key} >= ${at}`))
-    .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId);
+    .orderBy(positionAsc());
   const walkRows: WalkRow[] = rows.map((m) => ({
     id: m.id, transactionId: m.transactionId, date: m.movementDate, kind: m.kind, quantity: d(m.quantity), valueMode: m.valueMode,
     given: m.valueMode === 'given' ? d(m.value) : null, sourceId: m.sourceTransactionId,
@@ -938,7 +939,7 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
       created: inventoryMovements.txnCreatedAt, quantity: inventoryMovements.quantity }).from(inventoryMovements)
       .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, co), eq(inventoryMovements.itemId, itemId),
         eq(inventoryMovements.voided, false)))
-      .orderBy(inventoryMovements.movementDate, inventoryMovements.txnCreatedAt, inventoryMovements.transactionId))
+      .orderBy(positionAsc()))
       .filter((r) => r.transactionId !== doc.editingId);
     const mine = { transactionId: selfId, date: doc.txnDate, created: createdAt, quantity: qty.toFixed(4) };
     const before = (r: { date: string; created: Date; transactionId: string }) => cmpPos(pos({ movementDate: r.date, txnCreatedAt: r.created, transactionId: r.transactionId }),

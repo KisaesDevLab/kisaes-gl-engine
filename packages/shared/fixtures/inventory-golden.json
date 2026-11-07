@@ -1,7 +1,7 @@
 {
   "description": "Average-cost inventory (P24, U-157 to U-160) shared by the engine (packages/shared/fixtures/inventory-golden.json) and the ClientLedger client (fixtures/inventory/golden.json, byte-identical; the --demo engine runs every case not marked engineOnly). Synthetic. Dates are 2026; quantities are 4-place strings, money 2-place strings, average costs 6-place strings. Values are signed by their effect on the inventory asset account: a receipt is positive, a sale's relief negative, a negative-stock correction C is shown as -C.",
   "rules": [
-    "Position: (date, transaction created_at, transaction id). An edit keeps created_at.",
+    "Position: (date, transaction created_at, transaction id). An edit keeps created_at. Inside one document (a credit memo can carry several rows of one part: one per linked sale, plus the unlinked units) the unlinked row comes first, then the linked rows by their sale (PR-4 B1).",
     "State per item: Q on hand, V value (the GL), L = round6(V/Q) after the latest row that left Q > 0 and V > 0 (the last positive average). The formulas below write T for V.",
     "Outflow at cost of q > 0 units (sale, quantity-only adjustment down), on T: Q > 0 and q <= Q: relief = round2(T x q / Q); q > Q: relief = (Q > 0 ? T : 0) + round2(excess x c), excess = q - max(Q, 0), c = L if L > 0, else the item's purchase cost when the line was posted, else 0.",
     "Inflow at cost of r units (unlinked customer return, quantity-only adjustment up): round2(T x r / Q) if Q > 0, else round2(r x c).",
@@ -290,6 +290,26 @@
         { "doc": "R2", "value": "6.27", "onHand": "17.0000", "assetValue": "59.94" }
       ],
       "final": { "W": { "onHand": "17.0000", "assetValue": "59.94" } }
+    },
+    {
+      "id": "R2",
+      "title": "Two rows of one part on one credit memo (PR-4 B1): A steps 1-6, then one credit memo with 2 Widgets returned against the Jan 8 invoice (returnOf A3, relief 14.35 for 4) and 1 with no link; the unlinked row is walked first",
+      "from": "A",
+      "fromSteps": 6,
+      "steps": [
+        { "n": 7, "doc": "T1", "event": "credit_memo", "date": "2026-01-16",
+          "lines": [{ "item": "W", "quantity": "2", "returnOf": "A3" }, { "item": "W", "quantity": "1" }],
+          "expect": { "onHand": "10.0000", "assetValue": "37.58", "note": "unlinked round2(26.60 / 7) = 3.80, then linked round2(14.35 x 2 / 4) = 7.18" } },
+        { "n": 8, "doc": "T2", "event": "invoice", "date": "2026-01-25", "item": "W", "quantity": "2",
+          "expect": { "value": "-7.52", "onHand": "8.0000", "assetValue": "30.06", "note": "round2(37.58 x 2 / 10)" } }
+      ],
+      "rows": [
+        { "doc": "A6", "value": "38.00", "correction": "-0.63", "onHand": "7.0000", "assetValue": "26.60" },
+        { "doc": "T1", "returnOf": null, "value": "3.80", "onHand": "8.0000", "assetValue": "30.40" },
+        { "doc": "T1", "returnOf": "A3", "value": "7.18", "onHand": "10.0000", "assetValue": "37.58" },
+        { "doc": "T2", "value": "-7.52", "onHand": "8.0000", "assetValue": "30.06" }
+      ],
+      "final": { "W": { "onHand": "8.0000", "assetValue": "30.06", "averageCost": "3.757500" } }
     },
     {
       "id": "U",

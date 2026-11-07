@@ -178,7 +178,7 @@ export async function valuationDetail(tenantId: string, q: { from: string; to: s
       m.running_qty::text AS rq, m.running_value::text AS rv, m.last_cost::text AS l, t.txn_type, t.txn_number
     FROM inventory_movements m JOIN transactions t ON t.id = m.transaction_id
     WHERE ${where}
-    ORDER BY m.movement_date, m.txn_created_at, m.transaction_id, m.item_id, m.id
+    ORDER BY m.movement_date, m.txn_created_at, m.transaction_id, m.item_id, m.source_transaction_id NULLS FIRST, m.id
     ${q.limit !== undefined ? sql`LIMIT ${q.limit}` : sql``} OFFSET ${q.offset ?? 0}`);
   const data = (r.rows as Array<Record<string, string>>).map((m) => {
     const v = new Decimal(m['v']!); const c = new Decimal(m['c']!); const res = new Decimal(m['r']!);

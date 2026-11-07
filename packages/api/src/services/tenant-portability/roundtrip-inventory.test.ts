@@ -59,7 +59,7 @@ async function stockShape(tid: string) {
       m.running_qty::text AS rq, m.running_value::text AS rv, m.last_cost::text AS l, m.voided
     FROM inventory_movements m JOIN items i ON i.id = m.item_id JOIN transactions t ON t.id = m.transaction_id
     LEFT JOIN transactions src ON src.id = m.source_transaction_id
-    WHERE m.tenant_id = $1 ORDER BY m.movement_date, m.txn_created_at, 2`, [tid]);
+    WHERE m.tenant_id = $1 ORDER BY m.movement_date, m.txn_created_at, 2, 3 NULLS FIRST`, [tid]);
   const lines = await q(`
     SELECT COALESCE(t.txn_number, t.vendor_invoice_number) AS doc, jl.line_role AS role, a.name AS account, jl.debit::text AS dr, jl.credit::text AS cr,
       (mt.id = jl.transaction_id) AS movement_same_doc
@@ -74,7 +74,7 @@ async function stockShape(tid: string) {
 async function invariantsHold(tid: string) {
   const i2 = await q<{ v: string; gl: string }>(`
     SELECT (SELECT COALESCE(SUM(x.running_value), 0) FROM (SELECT DISTINCT ON (m.item_id) m.running_value FROM inventory_movements m
-        WHERE m.tenant_id = $1 AND m.voided = false ORDER BY m.item_id, m.movement_date DESC, m.txn_created_at DESC, m.transaction_id DESC) x)::numeric(19,2)::text AS v,
+        WHERE m.tenant_id = $1 AND m.voided = false ORDER BY m.item_id, m.movement_date DESC, m.txn_created_at DESC, m.transaction_id DESC, m.source_transaction_id DESC NULLS LAST, m.id DESC) x)::numeric(19,2)::text AS v,
       (SELECT COALESCE(SUM(jl.debit - jl.credit), 0) FROM journal_lines jl JOIN accounts a ON a.id = jl.account_id
         JOIN transactions t ON t.id = jl.transaction_id
         WHERE jl.tenant_id = $1 AND a.system_tag = 'inventory_asset' AND t.status = 'posted')::numeric(19,2)::text AS gl`, [tid]);
@@ -82,7 +82,7 @@ async function invariantsHold(tid: string) {
   const i1 = await q<{ n: number }>(`
     SELECT count(*)::int AS n FROM (
       SELECT m.running_value, SUM(m.value + m.correction + m.residual) OVER (PARTITION BY m.item_id
-        ORDER BY m.movement_date, m.txn_created_at, m.transaction_id) AS s
+        ORDER BY m.movement_date, m.txn_created_at, m.transaction_id, m.source_transaction_id NULLS FIRST, m.id) AS s
       FROM inventory_movements m WHERE m.tenant_id = $1 AND m.voided = false) x WHERE x.running_value <> x.s`, [tid]);
   expect(i1[0]!.n, 'I1').toBe(0);
 }

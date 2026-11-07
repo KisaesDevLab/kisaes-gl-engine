@@ -31,12 +31,16 @@ export const inventoryMovements = pgTable('inventory_movements', {
   runningQty: decimal('running_qty', { precision: 12, scale: 4 }).notNull().default('0'),
   runningValue: decimal('running_value', { precision: 19, scale: 4 }).notNull().default('0'),
   lastCost: decimal('last_cost', { precision: 19, scale: 6 }).notNull().default('0'),
+  // A sale row's share of the negative-stock corrections of the units it sold short (PR-4 S5, migration 0261); 0 otherwise.
+  correctionShare: decimal('correction_share', { precision: 19, scale: 4 }).notNull().default('0'),
   voided: boolean('voided').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   txnItemIdx: uniqueIndex('idx_inventory_movements_txn_item').on(table.transactionId, table.itemId, table.sourceTransactionId), // NULLS NOT DISTINCT in 0259
-  positionIdx: index('idx_inventory_movements_position').on(table.companyId, table.itemId, table.movementDate, table.txnCreatedAt, table.transactionId),
+  // PR-4 B1 (0261): source_transaction_id NULLS FIRST, then id, break a document's tie (services/inventory-position.ts).
+  positionIdx: index('idx_inventory_movements_position').on(table.companyId, table.itemId, table.movementDate, table.txnCreatedAt, table.transactionId,
+    table.sourceTransactionId.asc().nullsFirst(), table.id),
   tenantIdx: index('idx_inventory_movements_tenant').on(table.tenantId),
   sourceIdx: index('idx_inventory_movements_source').on(table.sourceTransactionId).where(sql`source_transaction_id IS NOT NULL`),
 }));
