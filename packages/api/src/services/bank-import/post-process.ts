@@ -106,8 +106,10 @@ async function cancelRequested(tenantId: string, batchId: string): Promise<boole
  * the chunk's transaction. Returns 'cancelled' when a cancel request
  * stopped it between chunks.
  *
- * The items of a batch do not change while it is scheduled: rows are only
- * removed by an undo, which ends the batch (undone_at).
+ * A batch's rows are removed by an undo, which ends the batch (undone_at).
+ * A row removed otherwise while the run is stopped (an admin purge of a
+ * date range) shifts the count: the run may then skip a row it had not
+ * done, never do one twice.
  */
 export async function postProcessBatch(tenantId: string, batchId: string): Promise<'done' | 'cancelled'> {
   const where = and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId));
