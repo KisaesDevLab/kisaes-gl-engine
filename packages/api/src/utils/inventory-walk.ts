@@ -104,7 +104,7 @@ export interface SaleLink { r: Dec; s: Dec; n: Dec; b: Dec }
 
 export interface WalkResult {
   rows: RowResult[];
-  /** The first row whose running quantity newly went below 0. */
+  /** The first row whose running quantity went below 0 from 0 or more in this walk (the costing service warns against the stored state instead, PR-4 S1). */
   negative: NegativeStock | null;
   final: WalkState;
   /**

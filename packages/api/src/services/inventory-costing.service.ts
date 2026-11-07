@@ -1040,4 +1040,4 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
 }
 
 /** OpenAPI note for the invoice, credit memo and sales receipt previews (U-158). */
-export const INVENTORY_PREVIEW_NOTE = 'warnings[] (inventory-costing-v1): {code: NEGATIVE_STOCK, itemId, date, onHand} when posting this body would take an item on hand below 0 (the first row per item, computed from the stock ledger with nothing written); posting is still allowed.';
+export const INVENTORY_PREVIEW_NOTE = 'warnings[] (inventory-costing-v1): {code: NEGATIVE_STOCK, itemId, date, onHand} when posting this body would take an item on hand below 0: per item, the body\'s own outflow ending below 0 (each sale while stock is already below 0), or the first later row that was 0 or more and would go below 0 (PR-4 S1), computed from the stock ledger with nothing written; posting is still allowed.';
