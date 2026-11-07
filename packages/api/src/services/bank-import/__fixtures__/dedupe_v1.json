@@ -1,0 +1,218 @@
+{
+  "version": 1,
+  "description": "Dedupe keys v1 for bank-import-batch-v1 (U-06). Read by the engine tests (keys.golden.test.ts) and by ClientLedger cargo tests through the engine submodule. Never edit values: a changed rule is a new version (v2), a new file.",
+  "rules": {
+    "norm": "Unicode NFC; ASCII a-z upper-cased only; every run of U+0009-U+000D, U+0020 or U+00A0 becomes one U+0020; trimmed of those; cut to 500 code points.",
+    "canonicalAmount": "the decimal with exactly 2 places, feed sign (positive = money out); \"-\" only when negative.",
+    "rowKey": "lowercase hex sha256 of UTF-8 \"v1|row|\" + date + \"|\" + canonicalAmount + \"|\" + norm(description) + \"|\" + ordinal; ordinal = 1-based position among the request rows with the same (date, canonicalAmount, norm(description)).",
+    "fitidKey": "lowercase hex sha256 of UTF-8 \"v1|fitid|\" + fitid trimmed of U+0009-U+000D, U+0020, U+00A0.",
+    "ofxDescription": "NAME and MEMO trimmed as above; MEMO when NAME is empty; NAME when MEMO is empty or norm(NAME) contains norm(MEMO); else NAME + \" \" + MEMO."
+  },
+  "norm": [
+    {
+      "input": "  coffee   shop ",
+      "output": "COFFEE SHOP"
+    },
+    {
+      "input": "Café ünïcode",
+      "output": "CAFé üNïCODE"
+    },
+    {
+      "input": "a\tb\r\nc\u000b\fd",
+      "output": "A B C D"
+    },
+    {
+      "input": "a b",
+      "output": "A B"
+    },
+    {
+      "input": "Mixed Case 123 #45",
+      "output": "MIXED CASE 123 #45"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "output": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    },
+    {
+      "input": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééab",
+      "output": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééA"
+    },
+    {
+      "input": "",
+      "output": ""
+    }
+  ],
+  "canonicalAmount": [
+    {
+      "input": "12.3",
+      "output": "12.30"
+    },
+    {
+      "input": "-0.5",
+      "output": "-0.50"
+    },
+    {
+      "input": "100",
+      "output": "100.00"
+    },
+    {
+      "input": "0.01",
+      "output": "0.01"
+    },
+    {
+      "input": "-12.00",
+      "output": "-12.00"
+    },
+    {
+      "input": "999999999999.99",
+      "output": "999999999999.99"
+    },
+    {
+      "input": "-999999999999.99",
+      "output": "-999999999999.99"
+    },
+    {
+      "input": "45.10",
+      "output": "45.10"
+    }
+  ],
+  "rowKey": [
+    {
+      "date": "2026-11-03",
+      "amount": "45.1",
+      "description": "POS PURCHASE  Coffee Co",
+      "ordinal": 1,
+      "canonicalAmount": "45.10",
+      "normDescription": "POS PURCHASE COFFEE CO",
+      "rowKey": "f0674215e081fe76083493b984c7dd387a649b883b67ddd43868f7b3470e0632"
+    },
+    {
+      "date": "2026-11-03",
+      "amount": "-2500",
+      "description": "DEPOSIT PAYROLL",
+      "ordinal": 1,
+      "canonicalAmount": "-2500.00",
+      "normDescription": "DEPOSIT PAYROLL",
+      "rowKey": "62f1fc71594fe6db8cd88363e7289b6db7ab2154880b6a7a2a65f18a9e1945a0"
+    },
+    {
+      "date": "2026-01-31",
+      "amount": "0.01",
+      "description": "",
+      "ordinal": 1,
+      "canonicalAmount": "0.01",
+      "normDescription": "",
+      "rowKey": "6f27591499d67e89e70075e3291b30e3d668ef9d3602168b7d65a70178ef5b36"
+    },
+    {
+      "date": "2026-12-31",
+      "amount": "-999999999999.99",
+      "description": "Café über",
+      "ordinal": 1,
+      "canonicalAmount": "-999999999999.99",
+      "normDescription": "CAFé üBER",
+      "rowKey": "215364f160337b8a2e80fe514c9e28beff2eaaff45fdf9d05e5f4a4273b5e707"
+    }
+  ],
+  "ordinals": {
+    "rows": [
+      {
+        "date": "2026-11-01",
+        "amount": "4.50",
+        "description": "COFFEE"
+      },
+      {
+        "date": "2026-11-01",
+        "amount": "4.5",
+        "description": "coffee "
+      },
+      {
+        "date": "2026-11-01",
+        "amount": "4.50",
+        "description": "TEA"
+      },
+      {
+        "date": "2026-11-02",
+        "amount": "4.50",
+        "description": "COFFEE"
+      },
+      {
+        "date": "2026-11-01",
+        "amount": "4.50",
+        "description": " Coffee"
+      }
+    ],
+    "expected": [
+      {
+        "ordinal": 1,
+        "rowKey": "244b5b81df5afc9529eff70412e8ac8109ee6be1f6786c369a978391663d0b95"
+      },
+      {
+        "ordinal": 2,
+        "rowKey": "a9e6a7fd2d359696b92378a09637c4a94f6210eaec5e46b3d0f732428e2dfe41"
+      },
+      {
+        "ordinal": 1,
+        "rowKey": "f949035e0a33a3b682133eeac80a46f5e5f49d9545c580404b25792a72338a40"
+      },
+      {
+        "ordinal": 1,
+        "rowKey": "ee2aca379d674b8061991f02154726f32abdab053ca7301740a8a13d397ac86d"
+      },
+      {
+        "ordinal": 3,
+        "rowKey": "5e616c637e4f2fccb8062facfa03626c12421b488d57b1e779c586ff1240b4c1"
+      }
+    ]
+  },
+  "fitidKey": [
+    {
+      "fitid": "ABC123",
+      "key": "cf7d29aa6ced3f1d30cef519fba5e9aa8a93078ea203353ec2323ae24a75802e"
+    },
+    {
+      "fitid": "  ABC123\t",
+      "key": "cf7d29aa6ced3f1d30cef519fba5e9aa8a93078ea203353ec2323ae24a75802e"
+    },
+    {
+      "fitid": "0001",
+      "key": "11ab1b4aa6376780404c471509d173f7880f94075bb23e1449059a1c42a3d6e3"
+    },
+    {
+      "fitid": "20261103-000045",
+      "key": "963206f7164b2078ee03783348cbe3be8bfc622de2e55d62111291704c7b1b4c"
+    }
+  ],
+  "ofxDescription": [
+    {
+      "name": "AMAZON MKTPLACE",
+      "memo": "",
+      "description": "AMAZON MKTPLACE"
+    },
+    {
+      "name": "",
+      "memo": "MEMO ONLY",
+      "description": "MEMO ONLY"
+    },
+    {
+      "name": "POS PURCHASE ACME STORE",
+      "memo": "acme store",
+      "description": "POS PURCHASE ACME STORE"
+    },
+    {
+      "name": "CHECK 1234",
+      "memo": "RENT NOVEMBER",
+      "description": "CHECK 1234 RENT NOVEMBER"
+    },
+    {
+      "name": "  ZELLE TO J SMITH ",
+      "memo": " Ref 99 ",
+      "description": "ZELLE TO J SMITH Ref 99"
+    },
+    {
+      "name": null,
+      "memo": null,
+      "description": ""
+    }
+  ]
+}
