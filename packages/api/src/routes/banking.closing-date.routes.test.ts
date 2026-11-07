@@ -219,4 +219,25 @@ describe('Bank Feed closed period (U-165)', () => {
     expect(sOk.status).toBe(200);
     expect(sOk.json.posted).toBe(1);
   });
+
+  it('bulk: wrong passwords are rate limited per user (429 CLOSING_PASSWORD_RATE_LIMIT after 10), nothing posts', async () => {
+    const closed = await feedItem('2026-06-13', '13.0000');
+    for (let i = 0; i < 10; i++) {
+      const r = await call('POST', '/api/v1/banking/feed/bulk-categorize', {
+        feedItemIds: [closed], accountId: expenseId, closingPassword: `wrong-${i}-wrong`,
+      });
+      expect(r.status).toBe(403);
+      expect(r.json.error.code).toBe('CLOSING_PASSWORD_INVALID');
+    }
+    // The 11th attempt is refused before the password is checked, also the right one.
+    const limited = await call('POST', '/api/v1/banking/feed/bulk-approve', { feedItemIds: [closed], closingPassword: PASSWORD });
+    expect(limited.status).toBe(429);
+    expect(limited.json.error.code).toBe('CLOSING_PASSWORD_RATE_LIMIT');
+    expect(await status(closed)).toBe('pending');
+    expect(await auditRows('closing_date_override')).toHaveLength(0);
+    // A request without a password is not limited.
+    const open = await feedItem('2026-07-13', '14.0000');
+    const plain = await call('POST', '/api/v1/banking/feed/bulk-categorize', { feedItemIds: [open], accountId: expenseId });
+    expect([plain.status, plain.json.categorized]).toEqual([200, 1]);
+  });
 });
