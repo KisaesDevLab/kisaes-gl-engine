@@ -2221,27 +2221,25 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
 
   if (items.length === 0) throw AppError.badRequest('No transactions found in OFX file');
 
-  // A FITID that occurs more than once in this file can't identify a
-  // transaction (U-163): it is ignored on every occurrence, and those rows
-  // dedupe by date, amount and description like a file without FITIDs.
-  const fitidCounts = new Map<string, number>();
-  for (const item of items) {
-    if (item.providerTransactionId) {
-      fitidCounts.set(item.providerTransactionId, (fitidCounts.get(item.providerTransactionId) ?? 0) + 1);
-    }
-  }
-  for (const item of items) {
-    if (item.providerTransactionId && (fitidCounts.get(item.providerTransactionId) ?? 0) > 1) {
-      item.providerTransactionId = null;
-    }
-  }
+  // A FITID that occurs more than once in this file: this route keeps its
+  // long-standing rule (owner Q-P25z, 2026-11-07) — the first row with the
+  // FITID imports, the later rows with it are skipped. Before U-163 the
+  // repeats reached the insert and the unique index failed the whole file
+  // with a 500. (The bank-import-batch route keeps both rows instead.)
+  const seenFitids = new Set<string>();
+  const firstOccurrences = items.filter((item) => {
+    if (!item.providerTransactionId) return true;
+    if (seenFitids.has(item.providerTransactionId)) return false;
+    seenFitids.add(item.providerTransactionId);
+    return true;
+  });
 
   // Duplicate detection: OFX has FITID (provider transaction ID) — skip if
   // this connection already imported it. A FITID is unique per bank
   // account, not per tenant: another account's transaction with the same
   // FITID is not a duplicate (U-163, migration 0262).
   const dedupedOfx = [];
-  for (const item of items) {
+  for (const item of firstOccurrences) {
     if (item.providerTransactionId) {
       const existing = await db.query.bankFeedItems.findFirst({
         where: and(

@@ -6,9 +6,9 @@
 //   - two accounts of one tenant may each import a transaction with the
 //     same FITID (the old tenant-wide lookup dropped the second);
 //   - re-importing a file into one account adds nothing;
-//   - a FITID repeated inside one file is ignored on every occurrence: the
-//     rows import (no 500 from the unique index) and dedupe by date, amount
-//     and description on the next import.
+//   - a FITID repeated inside one file (owner Q-P25z): the first row with it
+//     imports and the later rows are skipped, as before U-163, but without
+//     the 500 the unique index used to give; a re-import adds nothing.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
@@ -92,30 +92,30 @@ describe('importFromOfx FITID scope (U-163)', () => {
     expect(await feedRows(connA)).toHaveLength(1);
   });
 
-  it('ignores a FITID repeated in one file on every occurrence (different rows)', async () => {
+  it('keeps the first row of a FITID repeated in one file and skips the repeats (different rows, Q-P25z)', async () => {
     const file = ofx([
       { fitid: 'DUP', date: '20261102', amount: '-5.00', name: 'PARKING' },
       { fitid: 'DUP', date: '20261103', amount: '-7.50', name: 'TOLL' },
       { fitid: 'OK-1', date: '20261104', amount: '100.00', name: 'DEPOSIT' },
     ]);
     const first = await bankFeedService.importFromOfx(tenantId, connA, file);
-    expect(first.items).toHaveLength(3);
+    expect(first.items).toHaveLength(2);
     const rows = await feedRows(connA);
-    expect(rows.filter((r) => r.providerTransactionId === null)).toHaveLength(2);
+    expect(rows.map((r) => [r.providerTransactionId, r.originalDescription]).sort())
+      .toEqual([['DUP', 'PARKING'], ['OK-1', 'DEPOSIT']]);
     expect(rows.find((r) => r.providerTransactionId === 'OK-1')!.amount).toBe('-100.0000');
 
-    // The rows without a FITID dedupe by date, amount and description.
     const again = await bankFeedService.importFromOfx(tenantId, connA, file);
     expect(again.items).toHaveLength(0);
-    expect(await feedRows(connA)).toHaveLength(3);
+    expect(await feedRows(connA)).toHaveLength(2);
   });
 
-  it('ignores a FITID repeated in one file on every occurrence (identical rows)', async () => {
+  it('keeps the first of two identical rows sharing a FITID (Q-P25z), no 500', async () => {
     const row = { fitid: 'SAME', date: '20261105', amount: '-3.25', name: 'VENDING' };
     const file = ofx([row, row]);
     const first = await bankFeedService.importFromOfx(tenantId, connA, file);
-    expect(first.items).toHaveLength(2);
-    expect((await feedRows(connA)).every((r) => r.providerTransactionId === null)).toBe(true);
+    expect(first.items).toHaveLength(1);
+    expect((await feedRows(connA)).map((r) => r.providerTransactionId)).toEqual(['SAME']);
     const again = await bankFeedService.importFromOfx(tenantId, connA, file);
     expect(again.items).toHaveLength(0);
   });
