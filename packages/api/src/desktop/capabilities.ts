@@ -710,5 +710,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * valuation detail rows carry expenseKind; adjustment lines with opposite-sign quantity and value, and part lines with more than 2
    * decimals, are 400 VALIDATION_ERROR.
    */
-  'inventory-checkpoint-v1',];
+  'inventory-checkpoint-v1',
+  /**
+   * Bank file import batches (U-06; migrations 0262 U-163 and 0263): POST /banking/feed/import-batch takes one account section of a
+   * parsed bank file {accountId, format, fileName, sourceFileSha256, sectionIndex, sectionStart, sectionEnd, amountsFlipped, csvMapping?,
+   * dryRun, relinkIdentity?, bankIdentity?: {mask, accountKeyHash}, fileEndingBalance?, fileEndingDate?, rows: [{line, date, amount,
+   * description, memo?, checkNumber?, fitid?, include?, changedAction?}]}; amounts are decimal strings in the feed sign (positive = money
+   * out) matching ^-?\d{1,12}(\.\d{1,2})?$. The engine computes dedupe keys v1 (packages/api/src/services/bank-import/__fixtures__/
+   * dedupe_v1.json) and returns {batchId?, sameFileImportedAt?, identityLinkedElsewhere?, insertedItemIds, postProcessing?, rows: [{line,
+   * status new|duplicate|possible_duplicate|changed, reason?, existingItemId?, existingImportedAt?, existingPending?, closedPeriod, inserted,
+   * replaced?}], counts, insertedTotal, balanceCheck?}. A dry run takes no Idempotency-Key (400 IDEMPOTENCY_KEY_NOT_ALLOWED); a commit
+   * needs one (400 IDEMPOTENCY_KEY_REQUIRED) and replays its stored result. 422 account_not_bank_or_card, account_not_in_company,
+   * invalid_row {line, field}, too_many_rows, batch_total_too_large; 409 identity_linked_elsewhere. Never posts, never calls AI.
+   * GET /banking/feed/import-batches, DELETE /banking/feed/import-batches/:id (undo; 409 rows_already_used {lines} unless
+   * ?pendingOnly=true, 409 still_preparing, 409 already_undone), GET /banking/connections/lookup?accountKeyHash=|mask=. A bank
+   * transaction id is unique per bank connection (U-163).
+   */
+  'bank-import-batch-v1',
+];
 

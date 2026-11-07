@@ -1450,7 +1450,13 @@ function applyCleanseContactName(contactName: string, contactId: string | null |
   return null;
 }
 
-export async function runCleansingPipeline(tenantId: string, items: any[]): Promise<CleansingAggregate> {
+export async function runCleansingPipeline(
+  tenantId: string,
+  items: any[],
+  // `llm: false` (the bank-file import batch, U-06) skips the LLM pass
+  // whatever the AI settings say; deterministic cleaning still runs.
+  opts: { llm?: boolean } = {},
+): Promise<CleansingAggregate> {
   const agg = emptyCleansingAggregate();
 
   // M1: the LLM cleansing step is a real paid AI call, so it honors the
@@ -1458,8 +1464,8 @@ export async function runCleansingPipeline(tenantId: string, items: any[]): Prom
   // (ai_config.autoCategorizeOnImport). When off, skip the LLM entirely
   // (counted as `disabled`) — deterministic rules + regex cleaning still run.
   const { getConfig } = await import('./ai-config.service.js');
-  const aiCfg = await getConfig().catch(() => null);
-  const aiDisabled = !(aiCfg?.autoCategorizeOnImport ?? true);
+  const aiCfg = opts.llm === false ? null : await getConfig().catch(() => null);
+  const aiDisabled = opts.llm === false || !(aiCfg?.autoCategorizeOnImport ?? true);
 
   const { resolvePreAiLayers, categorizeFeedItemsBatch } = await import('./ai-categorization.service.js');
 
@@ -1602,7 +1608,9 @@ interface RulesStagesOutcome {
 async function runRulesStages(
   tenantId: string,
   items: Array<{ id: string }>,
-  opts: { userId?: string; companyId?: string } = {},
+  // `autoConfirm: false` (the bank-file import batch, U-06): a legacy rule
+  // match is attributed but never posted.
+  opts: { userId?: string; companyId?: string; autoConfirm?: boolean } = {},
 ): Promise<RulesStagesOutcome> {
   const bankRulesService = await import('./bank-rules.service.js');
   const conditionalRulesApply = await import('./conditional-rules-apply.service.js');
@@ -1683,7 +1691,7 @@ async function runRulesStages(
       // Capture which rule fired — even if autoConfirm is false.
       ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null });
     }
-    if (ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
+    if (opts.autoConfirm !== false && ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
       try {
         await categorize(tenantId, item.id, {
           accountId: ruleResult.assignAccountId,
@@ -1713,14 +1721,21 @@ async function runRulesStages(
  *   1. Bank rules with autoConfirm → auto-categorize matching items
  *   2. AI suggestions on remaining pending items
  */
-export async function runCategorizationPipeline(tenantId: string, items: any[]) {
+export async function runCategorizationPipeline(
+  tenantId: string,
+  items: any[],
+  // The bank-file import batch (U-06) passes { llm: false, autoConfirm:
+  // false }: no AI suggestions and no rule posting; rule attribution,
+  // potential-match detection and the classification state still run.
+  opts: { llm?: boolean; autoConfirm?: boolean } = {},
+) {
   const categorizationService = await import('./categorization-ai.service.js');
   const classificationStateService = await import('./practice-classification.service.js');
 
   // RULES stages — conditional rules, then legacy bank rules (with
   // autoConfirm posting). Shared with reprocessRules() so the "run the
   // rules again later" bulk action can never drift from import behavior.
-  const { ruleFiredByItem } = await runRulesStages(tenantId, items);
+  const { ruleFiredByItem } = await runRulesStages(tenantId, items, { autoConfirm: opts.autoConfirm });
 
   // AI suggestions on remaining pending items.
   // Phase 4 — items with skip_ai=true (set by a conditional
@@ -1739,7 +1754,7 @@ export async function runCategorizationPipeline(tenantId: string, items: any[]) 
       pendingIds.push(item.id);
     }
   }
-  if (pendingIds.length > 0) {
+  if (pendingIds.length > 0 && opts.llm !== false) {
     // Honor the "Auto-categorize bank feed transactions" setting
     // (ai_config.autoCategorizeOnImport, default on). This pipeline runs for
     // EVERY import path — CSV/OFX, Plaid sync, AND bank-statement import — so
