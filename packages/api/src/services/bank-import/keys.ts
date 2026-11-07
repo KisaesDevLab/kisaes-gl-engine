@@ -47,7 +47,7 @@ function sha256Hex(s: string): string {
 }
 
 /** Trims ASCII whitespace (and U+00A0) only, the same set norm() collapses. */
-function trimWs(s: string): string {
+export function trimWs(s: string): string {
   return s.replace(/^[\t\n\v\f\r  ]+|[\t\n\v\f\r  ]+$/g, '');
 }
 

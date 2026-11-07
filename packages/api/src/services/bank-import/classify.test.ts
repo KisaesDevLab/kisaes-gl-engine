@@ -8,10 +8,11 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  classifyRows, validateBatch, descriptionsMatch, wouldInsert,
+  classifyRows, validateBatch, descriptionsMatch, wouldInsert, countLikelyInBooks,
   type BatchInput, type BatchRowInput, type ExistingItem,
 } from './import-batch.service.js';
 import { fitidKey, keyRows, norm } from './keys.js';
+import { accountKeyHash, isMasked, maskedAccount } from './link-key.js';
 
 let n = 0;
 function existing(p: Partial<ExistingItem> & Pick<ExistingItem, 'date' | 'amount' | 'description'>): ExistingItem {
@@ -126,6 +127,85 @@ describe('classifyRows', () => {
       expect(descriptionsMatch(norm('SNACK'), norm('SNACK BAR'))).toBe(false);
       expect(descriptionsMatch(norm('SNACKBAR'), norm('SNACKBAR 22'))).toBe(true);
     });
+  });
+});
+
+describe('classifyRows: order independence and changed rows (P25 review)', () => {
+  it('EB1: a newest-first download never drops a row with its own FITID', () => {
+    const [ka] = keyRows([row(1, '2026-11-02', '4.50', 'COFFEE')]);
+    const a = existing({ fitid: 'X', date: '2026-11-02', amount: '4.5000', description: 'COFFEE', rowKey: ka!.rowKey, dedupeKey: fitidKey('X') });
+    const A = row(2, '2026-11-02', '4.50', 'COFFEE', { fitid: 'X' });
+    const B = row(1, '2026-11-02', '4.50', 'COFFEE', { fitid: 'Y' });
+    for (const rows of [[B, A], [A, B]]) {
+      const out = run(rows, [a]);
+      const byFitid = Object.fromEntries(rows.map((r, i) => [r.fitid, out[i]!]));
+      expect(byFitid['X']).toMatchObject({ status: 'duplicate', reason: 'same_bank_id' });
+      expect(byFitid['Y']).toMatchObject({ status: 'new', fitidUsed: 'Y' });
+    }
+    // B alone: the row key matches A's item, but two bank ids are two transactions → look-alike, not same_row.
+    expect(run([B], [a])[0]).toMatchObject({ status: 'possible_duplicate', reason: 'similar_existing' });
+  });
+
+  it('ES1: an unclaimed row-key match wins over changed (a re-import after "add")', () => {
+    const orig = existing({ fitid: 'CH', date: '2026-11-20', amount: '80.0000', description: 'HARDWARE STORE 12' });
+    const r = row(1, '2026-11-21', '85.00', 'HARDWARE STORE 12', { fitid: 'CH' });
+    const [k] = keyRows([r]);
+    const added = existing({ date: '2026-11-21', amount: '85.0000', description: 'HARDWARE STORE 12', rowKey: k!.rowKey, dedupeKey: k!.rowKey });
+    expect(run([r], [orig])[0]).toMatchObject({ status: 'changed' });
+    const [c] = run([r], [orig, added]);
+    expect(c).toMatchObject({ status: 'duplicate', reason: 'same_row' });
+    expect(c!.existing!.id).toBe(added.id);
+  });
+
+  it('ES3: 20,000 rows against 50,000 same-amount items on the same days classify in seconds, not minutes', () => {
+    const items = Array.from({ length: 50_000 }, (_, i) => existing({
+      fitid: `P-${i}`, date: `2026-10-${String((i % 7) + 10).padStart(2, '0')}`, amount: '1.2500', description: `SQUARE COFFEE ${i % 50}`,
+    }));
+    const rows = Array.from({ length: 20_000 }, (_, i) => row(i + 1, `2026-10-${String((i % 7) + 10).padStart(2, '0')}`, '1.25',
+      `SQUARE COFFEE ${i % 50} STORE`, i % 2 === 0 ? { fitid: `F-${i}` } : {}));
+    const started = Date.now();
+    const out = run(rows, items);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // Rows without a FITID claim a look-alike each; rows with a new FITID never match another bank id.
+    expect(out.filter((o) => o.status === 'possible_duplicate')).toHaveLength(10_000);
+    expect(out.filter((o) => o.status === 'new')).toHaveLength(10_000);
+  });
+});
+
+describe('countLikelyInBooks', () => {
+  const line = (id: string, txn_date: string, out: string, check_number: number | null = null) => ({ id, txn_date, out, check_number });
+  it('a check number match needs the same amount; each line counts once; amount within 5 days', () => {
+    const lines = [line('a', '2026-09-02', '75.0000', 1201), line('b', '2026-09-03', '20.0000'), line('c', '2026-09-20', '20.0000')];
+    expect(countLikelyInBooks([{ date: '2026-09-05', amount: '57.00', checkNumber: 1201 }], lines).count).toBe(0);
+    expect(countLikelyInBooks([{ date: '2026-09-05', amount: '75.00', checkNumber: 1201 }], lines).count).toBe(1);
+    const r = countLikelyInBooks([
+      { date: '2026-09-04', amount: '20.00', checkNumber: null },
+      { date: '2026-09-04', amount: '20.00', checkNumber: null },
+    ], lines);
+    expect([r.count, r.total.toFixed(2)]).toEqual([1, '20.00']);
+  });
+
+  it('is fast for 50,000 candidates against 50,000 lines of one amount', () => {
+    const lines = Array.from({ length: 50_000 }, (_, i) => line(String(i).padStart(6, '0'), `2026-0${(i % 9) + 1}-15`, '9.9900', i % 3 === 0 ? i : null));
+    const cands = Array.from({ length: 50_000 }, (_, i) => ({ date: `2026-0${(i % 9) + 1}-14`, amount: '9.99', checkNumber: i % 5 === 0 ? i : null }));
+    const started = Date.now();
+    expect(countLikelyInBooks(cands, lines).count).toBe(50_000);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
+describe('link key (Q-P25u)', () => {
+  it('masks to the last 4, hashes v1|BANKID|ACCTID trimmed under the key', () => {
+    expect(maskedAccount(' 000123456789 ')).toBe('6789');
+    expect(maskedAccount('12')).toBe('12');
+    expect(isMasked('…6789')).toBe(true);
+    expect(isMasked('123456')).toBe(false);
+    const key = Buffer.alloc(32, 7);
+    const h = accountKeyHash(key, { bankId: '021000021', acctId: '6789' });
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
+    expect(accountKeyHash(key, { bankId: ' 021000021\t', acctId: ' 6789 ' })).toBe(h);
+    expect(accountKeyHash(key, { acctId: '6789' })).not.toBe(h);
+    expect(accountKeyHash(Buffer.alloc(32, 8), { bankId: '021000021', acctId: '6789' })).not.toBe(h);
   });
 });
 

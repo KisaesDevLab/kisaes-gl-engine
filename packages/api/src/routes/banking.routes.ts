@@ -23,6 +23,9 @@ import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { idempotent } from '../middleware/idempotent.js';
 import * as importBatchService from '../services/bank-import/import-batch.service.js';
+import { bankIdentityOf, IDENTITY_FIELD_MAX, type RawBankIdentity } from '../services/bank-import/link-key.js';
+import { db as bankImportDb } from '../db/index.js';
+import type { Request as ExpressRequest, Response as ExpressResponse, NextFunction as ExpressNext } from 'express';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as depositSuggestions from '../services/deposit-suggestions.service.js';
@@ -44,7 +47,18 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 export const bankingRouter = Router();
 bankingRouter.use(authenticate);
 bankingRouter.use(companyContext);
-bankingRouter.use(requireResource('banking'));
+// Banking permission from the method (requireResource), except two POSTs
+// that only read (owner Q-P25ab): a bank file import dry run (dryRun: true
+// exactly; a commit is a write) and the connection lookup, which take raw
+// account numbers in the body rather than the query string (Q-P25u).
+const bankingWrite = requireResource('banking');
+const bankingRead = requirePermission('banking', 'read');
+bankingRouter.use((req, res, next) => {
+  const body = req.body as { dryRun?: unknown } | undefined;
+  const readOnlyPost = req.method === 'POST'
+    && (req.path === '/connections/lookup' || (req.path === '/feed/import-batch' && body?.dryRun === true));
+  return (readOnlyPost ? bankingRead : bankingWrite)(req, res, next);
+});
 
 // ─── Bank Connections ────────────────────────────────────────────
 
@@ -337,6 +351,40 @@ bankingRouter.post('/feed/import', upload.single('file'), async (req, res) => {
 // ─── Bank file import batches (U-06, bank-import-batch-v1) ───────
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
+const CSV_MAPPING_MAX = 16_384;
+const identityField = z.string().max(IDENTITY_FIELD_MAX);
+const rawBankIdentitySchema = z.object({
+  bankId: identityField.nullish().describe('OFX BANKID (routing number); optional'),
+  acctId: identityField.refine((s) => s.trim() !== '', 'acctId is empty').describe('OFX ACCTID (account number)'),
+}).strict();
+
+/**
+ * Takes the raw BANKID / ACCTID out of the request body before anything
+ * else reads it (Q-P25u): the Idempotency-Key request hash, validation
+ * errors and logs never see them. They wait in res.locals for the handler;
+ * the body keeps an HMAC under the company's link key (when the company
+ * has one) so a retry with another account is still a different request.
+ */
+async function takeBankIdentity(req: ExpressRequest, res: ExpressResponse, next: ExpressNext): Promise<void> {
+  const body = req.body as Record<string, unknown> | undefined;
+  if (!body || typeof body !== 'object' || !('bankIdentity' in body)) { next(); return; }
+  const raw = body['bankIdentity'];
+  delete body['bankIdentity'];
+  if (raw == null) { next(); return; }
+  const parsed = rawBankIdentitySchema.safeParse(raw);
+  if (!parsed.success) {
+    // No input values in the message or details.
+    throw AppError.badRequest('bankIdentity needs acctId (and optionally bankId), each at most 64 characters.', 'VALIDATION_ERROR', {
+      field: 'bankIdentity',
+    });
+  }
+  res.locals['bankIdentity'] = parsed.data;
+  if (body['dryRun'] === false && req.companyId) {
+    const ident = await bankIdentityOf(bankImportDb, req.tenantId, req.companyId, parsed.data, true);
+    body['bankIdentityRef'] = ident.accountKeyHash;
+  }
+  next();
+}
 const importBatchRowSchema = z.object({
   line: z.number().int().min(1).describe('line (or entry) number in the source file, echoed in results and errors'),
   date: isoDate,
@@ -357,14 +405,18 @@ const importBatchSchema = z.object({
   sectionStart: isoDate.nullish(),
   sectionEnd: isoDate.nullish(),
   amountsFlipped: z.boolean(),
-  csvMapping: z.record(z.unknown()).nullish(),
+  csvMapping: z.record(z.unknown()).nullish()
+    .refine((m) => m == null || JSON.stringify(m).length <= CSV_MAPPING_MAX, `at most ${CSV_MAPPING_MAX} characters as JSON`)
+    .describe(`the CSV column mapping, kept with the batch; at most ${CSV_MAPPING_MAX} characters as JSON`),
   dryRun: z.boolean(),
   relinkIdentity: z.boolean().optional(),
-  bankIdentity: z.object({
-    mask: z.string().min(1).max(10),
-    accountKeyHash: z.string().regex(/^[0-9a-f]{64}$/).describe('keyed hash of the account number computed by the client; never the number'),
-  }).nullish(),
-  fileEndingBalance: z.string().nullish().describe("decimal string in the holder's sign (after any flip)"),
+  bankIdentity: rawBankIdentitySchema.nullish().describe(
+    'the file\'s raw OFX BANKID and ACCTID (loopback only, Q-P25u). The engine keeps only the last 4 characters of ACCTID '
+    + 'and an HMAC of "v1|" + trim(bankId or "") + "|" + trim(acctId) under the company\'s link key; the raw values are never '
+    + 'stored, logged, audited or kept with an Idempotency-Key',
+  ),
+  fileEndingBalance: z.string().regex(importBatchService.AMOUNT_RE, 'at most 12 digits before and 2 after the decimal point').nullish()
+    .describe("decimal string in the holder's sign (after any flip)"),
   fileEndingDate: isoDate.nullish(),
   rows: z.array(importBatchRowSchema),
 });
@@ -409,10 +461,14 @@ const IMPORT_BATCH_DESCRIPTION = 'bank-import-batch-v1 (U-06). One account secti
   + 'identity_linked_elsewhere (details {accountName, mask}) unless relinkIdentity; 400 VALIDATION_ERROR; 413 over the 10 MB body '
   + 'limit; Idempotency-Key: 422 IDEMPOTENCY_KEY_REUSED, 409 IDEMPOTENCY_IN_PROGRESS, 400 IDEMPOTENCY_KEY_INVALID. Balance check '
   + '(when fileEndingBalance and fileEndingDate are sent): bank projected = booksAtDate - pendingTotal - newTotal; card (amounts owed) '
-  + 'projected = booksAtDate + pendingTotal + newTotal, difference = -fileBalance - projected.';
+  + 'projected = booksAtDate + pendingTotal + newTotal, difference = -fileBalance - projected. Permission: a dry run needs read on '
+  + 'banking, a commit needs write (Q-P25ab). bankIdentity {bankId?, acctId} is raw (loopback only, Q-P25u): the engine links '
+  + 'the account by an HMAC under the company link key (made on the first commit) and the last 4 characters of acctId, and keeps '
+  + 'neither raw value. A replay (Idempotency-Key) shows the live postProcessing state.';
 
-bankingRouter.post('/feed/import-batch', idempotent({
+bankingRouter.post('/feed/import-batch', takeBankIdentity, idempotent({
   successStatus: 200,
+  liveReplay: true,
   replay: async (req, entity) => importBatchService.readBatchResult(req.tenantId, entity!.id),
 }), validate(importBatchSchema), describe({
   summary: 'Import a bank file section: preview (dry run) or commit',
@@ -420,7 +476,10 @@ bankingRouter.post('/feed/import-batch', idempotent({
   body: importBatchSchema,
   response: importBatchResponseSchema,
 }), async (req, res) => {
-  const input = req.body as importBatchService.BatchInput;
+  const input: importBatchService.BatchInput = {
+    ...(req.body as importBatchService.BatchInput),
+    bankIdentity: (res.locals['bankIdentity'] as RawBankIdentity | undefined) ?? null,
+  };
   const hasKey = req.get('Idempotency-Key') !== undefined;
   if (input.dryRun && hasKey) {
     throw AppError.badRequest('A dry run takes no Idempotency-Key.', 'IDEMPOTENCY_KEY_NOT_ALLOWED');
@@ -462,7 +521,9 @@ bankingRouter.get('/feed/import-batches', describe({
 
 bankingRouter.delete('/feed/import-batches/:id', idempotent({ successStatus: 200 }), describe({
   summary: 'Undo a bank file import batch (bank-import-batch-v1)',
-  description: 'Removes the batch\'s untouched pending rows (never assigned, matched or posted). Response {batchId, removed, kept, undoneAt}. '
+  description: 'Removes the batch\'s untouched pending rows (never assigned, matched or posted) and gives the items its changed rows '
+    + 'replaced their values back while they are pending, untouched and as the batch left them. Response {batchId, removed, restored, '
+    + 'kept, undoneAt}. A replaced item already used counts as used (its line in this batch\'s file). '
     + '409 rows_already_used (details {lines}) when some rows were already used, unless ?pendingOnly=true (then only the untouched rows '
     + 'go); 409 still_preparing while post-processing runs; 409 already_undone; 404 NOT_FOUND. Audited. Idempotency-Key optional.',
   params: z.object({ id: z.string().uuid() }),
@@ -474,18 +535,24 @@ bankingRouter.delete('/feed/import-batches/:id', idempotent({ successStatus: 200
   res.json(await importBatchService.undoBatch({ tenantId: req.tenantId, companyId: req.companyId, userId: req.userId }, id.data, pendingOnly));
 });
 
-bankingRouter.get('/connections/lookup', describe({
+const connectionLookupSchema = z.object({
+  bankId: identityField.nullish().describe('OFX BANKID; optional'),
+  acctId: identityField.optional().describe('OFX ACCTID: matched through the company link key; never kept'),
+  mask: z.string().min(1).max(10).optional().describe('a masked number (at most 4 digits); default: the last 4 of acctId'),
+}).strict();
+
+bankingRouter.post('/connections/lookup', describe({
   summary: 'Find the bank connection a bank file belongs to (bank-import-batch-v1)',
-  description: 'By the keyed hash of the account number saved by an earlier import, else by the masked number. '
-    + 'Response {matches: [{connectionId, accountId, accountName, mask, via: "hash"|"mask"}]}. 400 when neither is given.',
-  query: z.object({ accountKeyHash: z.string().regex(/^[0-9a-f]{64}$/).optional(), mask: z.string().min(1).max(10).optional() }),
+  description: 'Body {bankId?, acctId?, mask?} (raw numbers travel in the body, never the query string; Q-P25u). First the '
+    + 'connections whose identity saved by an earlier import matches bankId/acctId (an HMAC under the company link key; never '
+    + 'creates the key), else the connections with the mask (default: the last 4 characters of acctId). Company-scoped. Needs '
+    + 'read permission on banking (Q-P25ab). Response {matches: [{connectionId, accountId, accountName, mask, via: "hash"|"mask"}]}. '
+    + '400 VALIDATION_ERROR when neither acctId nor mask is given, or the mask shows more than 4 digits. Nothing is stored.',
+  body: connectionLookupSchema,
 }), async (req, res) => {
-  const q = z.object({
-    accountKeyHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
-    mask: z.string().min(1).max(10).optional(),
-  }).safeParse(req.query);
-  if (!q.success || (!q.data.accountKeyHash && !q.data.mask)) {
-    throw AppError.badRequest('Give accountKeyHash or mask', 'VALIDATION_ERROR');
+  const q = connectionLookupSchema.safeParse(req.body ?? {});
+  if (!q.success || (!q.data.acctId?.trim() && !q.data.mask)) {
+    throw AppError.badRequest('Give acctId or mask', 'VALIDATION_ERROR');
   }
   res.json({ matches: await importBatchService.lookupConnections({ tenantId: req.tenantId, companyId: req.companyId }, q.data) });
 });

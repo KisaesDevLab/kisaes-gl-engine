@@ -139,6 +139,8 @@ export const bankImportBatches = pgTable('bank_import_batches', {
   fileEndingBalance: decimal('file_ending_balance', { precision: 19, scale: 4 }),
   fileEndingDate: date('file_ending_date'),
   result: jsonb('result'),
+  // `changed` rows the batch replaced, with their values before (undo restores them).
+  replacedItems: jsonb('replaced_items'),
   postProcessing: varchar('post_processing', { length: 12 }).notNull().default('scheduled'), // scheduled | done | failed
   undoneAt: timestamp('undone_at', { withTimezone: true }),
   undoneBy: uuid('undone_by'),
@@ -150,9 +152,10 @@ export const bankImportBatches = pgTable('bank_import_batches', {
 }));
 
 // Which bank connection a bank file's account identity belongs to
-// (migration 0263, U-06). account_key_hash is a keyed hash the client
-// computes from the account number; the number itself never reaches the
-// engine. Unique per tenant.
+// (migration 0263, U-06). account_key_hash is an HMAC of the bank file's
+// BANKID and ACCTID under the company's link key (bank_link_keys, owner
+// Q-P25u), computed by the engine; the account number is never stored.
+// Unique per tenant (the key differs per company).
 export const bankConnectionIdentities = pgTable('bank_connection_identities', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull(),
@@ -165,6 +168,20 @@ export const bankConnectionIdentities = pgTable('bank_connection_identities', {
 }, (table) => ({
   hashUniq: uniqueIndex('uq_bank_connection_identities_hash').on(table.tenantId, table.accountKeyHash),
   connectionIdx: index('idx_bank_connection_identities_connection').on(table.bankConnectionId),
+}));
+
+// One bank-file link key per company (migration 0263, owner Q-P25u): the
+// HMAC key of bank_connection_identities.account_key_hash, encrypted with
+// utils/encryption.ts; re-encrypted for the importing install by a tenant
+// export (SECRET_COLUMNS). FKs (tenant, company) in the SQL.
+export const bankLinkKeys = pgTable('bank_link_keys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  keyEncrypted: text('key_encrypted'), // NULL: none yet or unreadable after a restore
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  companyUniq: uniqueIndex('uq_bank_link_keys_company').on(table.companyId),
 }));
 
 export const reconciliations = pgTable('reconciliations', {

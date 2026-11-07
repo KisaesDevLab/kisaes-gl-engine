@@ -713,20 +713,28 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'inventory-checkpoint-v1',
   /**
    * Bank file import batches (U-06; migrations 0262 U-163 and 0263): POST /banking/feed/import-batch takes one account section of a
-   * parsed bank file {accountId, format, fileName, sourceFileSha256, sectionIndex, sectionStart, sectionEnd, amountsFlipped, csvMapping?,
-   * dryRun, relinkIdentity?, bankIdentity?: {mask, accountKeyHash}, fileEndingBalance?, fileEndingDate?, rows: [{line, date, amount,
-   * description, memo?, checkNumber?, fitid?, include?, changedAction?}]}; amounts are decimal strings in the feed sign (positive = money
-   * out) matching ^-?\d{1,12}(\.\d{1,2})?$. The engine computes dedupe keys v1 (packages/api/src/services/bank-import/__fixtures__/
-   * dedupe_v1.json; OFX/QFX description = NAME only, MEMO goes in memo and is never keyed) and returns {batchId?, sameFileImportedAt?, identityLinkedElsewhere?, insertedItemIds, postProcessing?, rows: [{line,
-   * status new|duplicate|possible_duplicate|changed, reason?, existingItemId?, existingImportedAt?, existingPending?, closedPeriod, inserted,
-   * replaced?}], counts, insertedTotal, balanceCheck?}. A commit inserts new rows and possible duplicates (feed items carry
-   * possibleDuplicate and possibleDuplicateOf, also on GET /banking/feed; include:false skips a row), never exact duplicates; a matching
-   * saved rule is staged as a suggestion (suggestedAccountId, matchType "rule"), never posted. A dry run takes no Idempotency-Key (400 IDEMPOTENCY_KEY_NOT_ALLOWED); a commit
-   * needs one (400 IDEMPOTENCY_KEY_REQUIRED) and replays its stored result. 422 account_not_bank_or_card, account_not_in_company,
-   * invalid_row {line, field}, too_many_rows, batch_total_too_large; 409 identity_linked_elsewhere. Never posts, never calls AI.
-   * GET /banking/feed/import-batches, DELETE /banking/feed/import-batches/:id (undo; 409 rows_already_used {lines} unless
-   * ?pendingOnly=true, 409 still_preparing, 409 already_undone), GET /banking/connections/lookup?accountKeyHash=|mask=. A bank
-   * transaction id is unique per bank connection (U-163).
+   * parsed bank file {accountId, format, fileName, sourceFileSha256, sectionIndex, sectionStart, sectionEnd, amountsFlipped, csvMapping?
+   * (at most 16,384 characters as JSON), dryRun, relinkIdentity?, bankIdentity?: {bankId?, acctId} (the raw OFX BANKID/ACCTID, loopback
+   * only, Q-P25u: the engine keeps the last 4 characters of acctId as the mask and an HMAC-SHA256 of "v1|" + trim(bankId or "") + "|" +
+   * trim(acctId) under a per-company link key that it makes on the first commit, stores encrypted and carries in a tenant export; the raw
+   * values are never stored, logged, audited or kept with an Idempotency-Key), fileEndingBalance? (400 VALIDATION_ERROR unless
+   * ^-?\d{1,12}(\.\d{1,2})?$), fileEndingDate?, rows: [{line, date, amount, description, memo?, checkNumber?, fitid?, include?,
+   * changedAction?}]}; amounts are decimal strings in the feed sign (positive = money out) matching ^-?\d{1,12}(\.\d{1,2})?$. The engine
+   * computes dedupe keys v1 (packages/api/src/services/bank-import/__fixtures__/dedupe_v1.json; OFX/QFX description = NAME only, MEMO goes
+   * in memo and is never keyed) and returns {batchId?, sameFileImportedAt?, identityLinkedElsewhere?, insertedItemIds, postProcessing?,
+   * rows: [{line, status new|duplicate|possible_duplicate|changed, reason?, existingItemId?, existingImportedAt?, existingPending?,
+   * closedPeriod, inserted, replaced?}], counts, insertedTotal, balanceCheck?}. Classification runs step by step over all rows (order
+   * independent): same FITID + same amount + posted date within 5 days = duplicate; then same row key = duplicate (not when the row has a
+   * new FITID and the item another one); then same FITID with another amount = changed; then look-alikes. A commit inserts new rows and
+   * possible duplicates (feed items carry possibleDuplicate and possibleDuplicateOf, also on GET /banking/feed; include:false skips a row),
+   * never exact duplicates; "replace" keeps the item with its own batch and undo of the replacing batch restores it. A matching saved
+   * rule is staged as a suggestion (suggestedAccountId, matchType "rule"), never posted. A dry run needs read permission on banking, a
+   * commit write (Q-P25ab); a dry run takes no Idempotency-Key (400 IDEMPOTENCY_KEY_NOT_ALLOWED); a commit needs one (400
+   * IDEMPOTENCY_KEY_REQUIRED) and replays its stored result with the live postProcessing. 422 account_not_bank_or_card,
+   * account_not_in_company, invalid_row {line, field}, too_many_rows, batch_total_too_large; 409 identity_linked_elsewhere. Never
+   * posts, never calls AI. GET /banking/feed/import-batches, DELETE /banking/feed/import-batches/:id (undo {batchId, removed, restored,
+   * kept, undoneAt}; 409 rows_already_used {lines} unless ?pendingOnly=true, 409 still_preparing, 409 already_undone), POST
+   * /banking/connections/lookup {bankId?, acctId?, mask?} (read permission). A bank transaction id is unique per bank connection (U-163).
    */
   'bank-import-batch-v1',
 ];

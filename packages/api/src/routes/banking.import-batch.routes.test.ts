@@ -20,7 +20,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, userTenantAccess, sessions, companies, accounts, auditLog, bankConnections, bankFeedItems, bankRules,
-  bankImportBatches, bankConnectionIdentities, transactions, journalLines, transactionClassificationState, categorizationHistory,
+  bankImportBatches, bankConnectionIdentities, bankLinkKeys, transactions, journalLines, transactionClassificationState, categorizationHistory,
   idempotencyKeys,
 } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
@@ -30,6 +30,7 @@ import { bankingRouter } from './banking.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import * as importBatchService from '../services/bank-import/import-batch.service.js';
+import { accountKeyHash, companyLinkKey } from '../services/bank-import/link-key.js';
 
 const aiCalls = vi.hoisted(() => ({ batch: 0, suggest: 0 }));
 vi.mock('../services/ai-categorization.service.js', async (importOriginal) => {
@@ -54,7 +55,7 @@ let expenseId = '';
 
 interface Res { status: number; json: any; headers: http.IncomingHttpHeaders }
 
-function call(method: string, path: string, body?: unknown, opts: { key?: string; token?: string } = {}): Promise<Res> {
+function call(method: string, path: string, body?: unknown, opts: { key?: string; token?: string; company?: string } = {}): Promise<Res> {
   return new Promise((resolve, reject) => {
     const data = body !== undefined ? Buffer.from(JSON.stringify(body)) : undefined;
     const req = http.request({
@@ -63,6 +64,7 @@ function call(method: string, path: string, body?: unknown, opts: { key?: string
         'Content-Type': 'application/json',
         Authorization: `Bearer ${opts.token ?? token}`,
         ...(opts.key ? { 'Idempotency-Key': opts.key } : {}),
+        ...(opts.company ? { 'X-Company-Id': opts.company } : {}),
         ...(data ? { 'Content-Length': String(data.length) } : {}),
       },
     }, (res) => {
@@ -90,8 +92,12 @@ function batch(rows: Row[], extra: Record<string, unknown> = {}) {
   };
 }
 
-const commit = (body: unknown, key = randomUUID()) => call('POST', '/api/v1/banking/feed/import-batch', body, { key });
-const preview = (body: Record<string, unknown>) => call('POST', '/api/v1/banking/feed/import-batch', { ...body, dryRun: true });
+const commit = (body: unknown, key = randomUUID(), opts: { company?: string; token?: string } = {}) =>
+  call('POST', '/api/v1/banking/feed/import-batch', body, { key, ...opts });
+const preview = (body: Record<string, unknown>, opts: { company?: string; token?: string } = {}) =>
+  call('POST', '/api/v1/banking/feed/import-batch', { ...body, dryRun: true }, opts);
+const lookup = (body: Record<string, unknown>, opts: { company?: string; token?: string } = {}) =>
+  call('POST', '/api/v1/banking/connections/lookup', body, opts);
 
 async function feedCount(): Promise<number> {
   const r = await db.execute(sql`SELECT count(*)::int AS n FROM bank_feed_items WHERE tenant_id = ${tenantId}`);
@@ -151,6 +157,7 @@ afterEach(async () => {
   await db.delete(categorizationHistory).where(eq(categorizationHistory.tenantId, tenantId));
   await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
   await db.delete(bankConnectionIdentities).where(eq(bankConnectionIdentities.tenantId, tenantId));
+  await db.delete(bankLinkKeys).where(eq(bankLinkKeys.tenantId, tenantId));
   await db.delete(bankImportBatches).where(eq(bankImportBatches.tenantId, tenantId));
   await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
   await db.delete(bankRules).where(eq(bankRules.tenantId, tenantId));
@@ -190,11 +197,12 @@ describe('bank-import-batch-v1', () => {
         (SELECT count(*) FROM bank_feed_items WHERE tenant_id = ${tenantId})::int AS i,
         (SELECT count(*) FROM bank_connections WHERE tenant_id = ${tenantId})::int AS c,
         (SELECT count(*) FROM bank_connection_identities WHERE tenant_id = ${tenantId})::int AS d,
+        (SELECT count(*) FROM bank_link_keys WHERE tenant_id = ${tenantId})::int AS k,
         (SELECT count(*) FROM audit_log WHERE tenant_id = ${tenantId})::int AS a`);
       return r.rows[0];
     };
     const before = await counts();
-    const r = await preview(batch(OFX, { bankIdentity: { mask: '…6789', accountKeyHash: 'b'.repeat(64) } }));
+    const r = await preview(batch(OFX, { bankIdentity: { bankId: '021000021', acctId: '000123456789' } }));
     expect(r.status).toBe(200);
     expect(r.json.batchId).toBeUndefined();
     expect(r.json.rows.map((x: any) => x.status)).toEqual(['new', 'new', 'new']);
@@ -249,7 +257,9 @@ describe('bank-import-batch-v1', () => {
     const b = await commit(body, key);
     expect(b.status).toBe(200);
     expect(b.headers['idempotent-replayed']).toBe('true');
-    expect(b.json).toEqual(a.json);
+    // Identical apart from the live post-processing state.
+    expect({ ...b.json, postProcessing: 'x' }).toEqual({ ...a.json, postProcessing: 'x' });
+    expect(['scheduled', 'done']).toContain(b.json.postProcessing);
 
     const big: Row[] = Array.from({ length: 5600 }, (_, i) => ({
       line: i + 1, date: '2026-10-01', amount: `${(i % 97) + 1}.${String(i % 100).padStart(2, '0')}`, description: `ROW ${i}`, fitid: `BIG-${i}`,
@@ -261,7 +271,10 @@ describe('bank-import-batch-v1', () => {
     expect(JSON.stringify(c.json).length).toBeGreaterThan(512 * 1024);
     const d = await commit(bigBody, bigKey);
     expect(d.headers['idempotent-replayed']).toBe('true');
-    expect(d.json).toEqual(c.json);
+    expect({ ...d.json, postProcessing: 'x' }).toEqual({ ...c.json, postProcessing: 'x' });
+    // The batch reader path shows the live state too.
+    expect(await waitPostProcessing(c.json.batchId)).toBe('done');
+    expect((await commit(bigBody, bigKey)).json.postProcessing).toBe('done');
     expect(await feedCount()).toBe(5603);
   });
 
@@ -455,12 +468,24 @@ describe('bank-import-batch-v1', () => {
     expect(await feedCount()).toBe(3);
   });
 
-  it('identities: link on commit (audited, mask only), report elsewhere on a dry run, 409 unless relink, lookup by hash or mask', async () => {
-    const ident = { mask: '6789', accountKeyHash: '1'.repeat(64) };
+  it('identities (Q-P25u): raw BANKID/ACCTID hashed under the company link key; link on commit, elsewhere on a dry run, 409 unless relink, lookup', async () => {
+    const ident = { bankId: '021000021', acctId: '0012346789' };
     await commit(batch(OFX, { bankIdentity: ident }));
-    const hit = await call('GET', `/api/v1/banking/connections/lookup?accountKeyHash=${'1'.repeat(64)}`);
+    const [saved] = await db.select().from(bankConnectionIdentities).where(eq(bankConnectionIdentities.tenantId, tenantId));
+    expect(saved!.mask).toBe('6789');
+    // The engine's hash: HMAC-SHA256 under the company key of "v1|" + bankId + "|" + acctId (trimmed).
+    const key = await companyLinkKey(db, tenantId, companyId, false);
+    expect(saved!.accountKeyHash.trim()).toBe(accountKeyHash(key!, { bankId: ' 021000021 ', acctId: '0012346789\t' }));
+    expect(saved!.accountKeyHash.trim()).not.toBe(accountKeyHash(key!, { bankId: null, acctId: '0012346789' }));
+
+    const hit = await lookup(ident);
+    expect(hit.status).toBe(200);
     expect(hit.json.matches).toEqual([expect.objectContaining({ accountId: bankId, mask: '6789', via: 'hash' })]);
-    expect((await call('GET', '/api/v1/banking/connections/lookup?mask=6789')).json.matches[0]).toMatchObject({ accountId: bankId, via: 'mask' });
+    // Another bank's account with the same number: no hash match; the mask still finds it.
+    expect((await lookup({ bankId: '999999999', acctId: '0012346789' })).json.matches[0]).toMatchObject({ accountId: bankId, via: 'mask' });
+    expect((await lookup({ mask: '6789' })).json.matches[0]).toMatchObject({ accountId: bankId, via: 'mask' });
+    expect((await lookup({ mask: '123456789' })).status).toBe(400);
+    expect((await lookup({})).status).toBe(400);
 
     const toCard = batch(OFX, { accountId: cardId, bankIdentity: ident });
     const p = await preview(toCard);
@@ -472,7 +497,89 @@ describe('bank-import-batch-v1', () => {
     expect(relinked.status).toBe(200);
     const audits = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'bank_connection_identity')));
     expect(audits.map((x) => x.action).sort()).toEqual(['create', 'update']);
-    expect(JSON.stringify(audits)).not.toContain('1'.repeat(64));
+    expect(JSON.stringify(audits)).not.toContain(saved!.accountKeyHash.trim());
+
+    const bad = await commit(batch(OFX, { bankIdentity: { acctId: '   ' } }));
+    expect([bad.status, bad.json.error.code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect(JSON.stringify(bad.json)).not.toContain('acctId":');
+  });
+
+  it('the raw ACCTID and BANKID are nowhere in the database or the logs after a commit (Q-P25u)', async () => {
+    const acctId = '7319028846551';
+    const bankIdRaw = '064108972';
+    const logged: string[] = [];
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); }));
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => { logged.push(String(chunk)); return true; }) as never);
+    const errOut = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => { logged.push(String(chunk)); return true; }) as never);
+    let c: Res;
+    try {
+      const key = randomUUID();
+      c = await commit(batch(OFX, { bankIdentity: { bankId: bankIdRaw, acctId } }), key);
+      // A replay and a bad request with the same values too.
+      await commit(batch(OFX, { bankIdentity: { bankId: bankIdRaw, acctId } }), key);
+      await commit(batch(OFX, { bankIdentity: { bankId: bankIdRaw, acctId, extra: 1 } }));
+      await preview(batch(OFX, { bankIdentity: { bankId: bankIdRaw, acctId } }));
+      await lookup({ bankId: bankIdRaw, acctId });
+      expect(await waitPostProcessing(c.json.batchId)).toBe('done');
+    } finally {
+      for (const s of [...spies, out, errOut]) s.mockRestore();
+    }
+    expect(c!.status).toBe(200);
+    expect(JSON.stringify(c!.json)).not.toContain(acctId);
+    for (const line of logged) {
+      expect(line).not.toContain(acctId);
+      expect(line).not.toContain(bankIdRaw);
+    }
+    // Every table with a tenant_id, every column as text.
+    const tables = await db.execute(sql`SELECT table_name FROM information_schema.columns
+      WHERE column_name = 'tenant_id' AND table_schema = 'public' ORDER BY table_name`);
+    for (const { table_name: name } of tables.rows as Array<{ table_name: string }>) {
+      const r = await db.execute(sql.raw(`SELECT count(*)::int AS n FROM "${name}" t WHERE t.tenant_id = '${tenantId}'
+        AND (t::text LIKE '%${acctId}%' OR t::text LIKE '%${bankIdRaw}%')`));
+      expect({ name, n: (r.rows[0] as { n: number }).n }).toEqual({ name, n: 0 });
+    }
+    const [k] = await db.select().from(bankLinkKeys).where(eq(bankLinkKeys.tenantId, tenantId));
+    expect(k!.keyEncrypted).toMatch(/^[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
+  });
+
+  it('identities are per company (ES2): another company of the tenant sees no link, no account name, links its own', async () => {
+    await db.update(accounts).set({ companyId }).where(eq(accounts.id, bankId));
+    const [coB] = await db.insert(companies).values({ tenantId, businessName: 'Second Co', setupComplete: true }).returning();
+    const bankB = (await accountsService.create(tenantId, { name: 'Second Checking', accountType: 'asset', detailType: 'bank', accountNumber: '1092' })).id;
+    await db.update(accounts).set({ companyId: coB!.id }).where(eq(accounts.id, bankB));
+    const ident = { bankId: '021000021', acctId: '5550001234' };
+    expect((await commit(batch(OFX, { bankIdentity: ident }))).status).toBe(200);
+
+    const asB = { company: coB!.id };
+    const p = await preview(batch(OFX, { accountId: bankB, bankIdentity: ident }), asB);
+    expect(p.status).toBe(200);
+    expect(p.json.identityLinkedElsewhere).toBeUndefined();
+    expect((await lookup(ident, asB)).json.matches).toEqual([]);
+    expect((await lookup({ mask: '1234' }, asB)).json.matches).toEqual([]);
+    const c = await commit(batch(OFX, { accountId: bankB, bankIdentity: ident }), randomUUID(), asB);
+    expect(c.status).toBe(200);
+    const idents = await db.select().from(bankConnectionIdentities).where(eq(bankConnectionIdentities.tenantId, tenantId));
+    expect(idents).toHaveLength(2);
+    expect(new Set(idents.map((i) => i.accountKeyHash)).size).toBe(2);
+    expect(await db.select().from(bankLinkKeys).where(eq(bankLinkKeys.tenantId, tenantId))).toHaveLength(2);
+    // Company A still finds its own.
+    expect((await lookup(ident)).json.matches).toEqual([expect.objectContaining({ accountId: bankId, via: 'hash' })]);
+  });
+
+  it('permissions (Q-P25ab): read-only may preview and look up; commit and undo need write', async () => {
+    const ro = { token: readonlyToken };
+    const p = await preview(batch(OFX), ro);
+    expect(p.status).toBe(200);
+    expect(p.json.counts.new).toBe(3);
+    expect((await lookup({ mask: '6789' }, ro)).status).toBe(200);
+    // dryRun must be exactly true; anything else is a commit (write).
+    expect((await call('POST', '/api/v1/banking/feed/import-batch', batch(OFX, { dryRun: 'true' }), ro)).status).toBe(403);
+    expect((await commit(batch(OFX), randomUUID(), ro)).status).toBe(403);
+    const c = await commit(batch(OFX));
+    expect(await waitPostProcessing(c.json.batchId)).toBe('done');
+    expect((await call('DELETE', `/api/v1/banking/feed/import-batches/${c.json.batchId}`, undefined, ro)).status).toBe(403);
+    expect(await feedCount()).toBe(3);
   });
 
   it('422s: not a bank or card account, invalid rows with their line, too large; 403 for a role without access', async () => {
@@ -487,6 +594,164 @@ describe('bank-import-batch-v1', () => {
     const ro = await call('POST', '/api/v1/banking/feed/import-batch', batch(OFX), { key: randomUUID(), token: readonlyToken });
     expect(ro.status).toBe(403);
   });
+
+  it('EB1: a newest-first download keeps a real transaction that has its own FITID (order-independent)', async () => {
+    const a = { line: 1, date: '2026-11-02', amount: '4.50', description: 'COFFEE', fitid: 'X' };
+    expect((await commit(batch([a]))).json.counts.inserted).toBe(1);
+    // Download 2, newest first: B (FITID Y, same date, amount and description), then A again.
+    const b = { line: 1, date: '2026-11-02', amount: '4.50', description: 'COFFEE', fitid: 'Y' };
+    for (const rows of [[b, { ...a, line: 2 }], [{ ...a, line: 1 }, { ...b, line: 2 }]]) {
+      const p = await preview(batch(rows, { sourceFileSha256: '3'.repeat(64) }));
+      const byFitid = Object.fromEntries(rows.map((r, i) => [r.fitid, p.json.rows[i]]));
+      expect(byFitid['X']).toMatchObject({ status: 'duplicate', reason: 'same_bank_id' });
+      expect(byFitid['Y']).toMatchObject({ status: 'new' });
+    }
+    const c = await commit(batch([b, { ...a, line: 2 }], { sourceFileSha256: '3'.repeat(64) }));
+    expect(c.json.counts).toMatchObject({ inserted: 1, duplicate: 1 });
+    const items = await db.select().from(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
+    expect(items.map((i) => i.providerTransactionId).sort()).toEqual(['X', 'Y']);
+    // B alone (A not in the file): a look-alike (identical date, amount, description), flagged and inserted.
+    await db.delete(bankFeedItems).where(eq(bankFeedItems.providerTransactionId, 'Y'));
+    const alone = await commit(batch([b], { sourceFileSha256: '4'.repeat(64) }));
+    expect(alone.json.rows[0]).toMatchObject({ status: 'possible_duplicate', inserted: true });
+  });
+
+  it('EB2: undoing a batch that replaced an item restores the item; the item stays with its own batch', async () => {
+    const first = await commit(batch([{ line: 1, date: '2026-11-20', amount: '80.00', description: 'HARDWARE STORE 12', fitid: 'CH-1' }]));
+    const itemId = first.json.insertedItemIds[0];
+    const rep = await commit(batch([{ line: 7, date: '2026-11-21', amount: '85.00', description: 'HARDWARE STORE 12', fitid: 'CH-1', changedAction: 'replace' }],
+      { sourceFileSha256: '5'.repeat(64) }));
+    expect(rep.json.rows[0]).toMatchObject({ status: 'changed', replaced: true });
+    const [mid] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, itemId));
+    expect(mid).toMatchObject({ amount: '85.0000', feedDate: '2026-11-21', importBatchId: first.json.batchId, sourceLine: 1 });
+    await waitPostProcessing(first.json.batchId);
+    const undo = await call('DELETE', `/api/v1/banking/feed/import-batches/${rep.json.batchId}`);
+    expect(undo.status).toBe(200);
+    expect(undo.json).toMatchObject({ removed: 0, restored: 1, kept: 0 });
+    const [back] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, itemId));
+    expect(back).toMatchObject({ amount: '80.0000', feedDate: '2026-11-20', importBatchId: first.json.batchId });
+    // The file of batch 1 is a duplicate again (row key restored too).
+    expect((await commit(batch([{ line: 1, date: '2026-11-20', amount: '80.00', description: 'HARDWARE STORE 12', fitid: 'CH-1' }]))).json.counts.duplicate).toBe(1);
+
+    // A replaced item used since: 409 with the replacing row's line, unless pendingOnly (then kept as it is).
+    const rep2 = await commit(batch([{ line: 9, date: '2026-11-21', amount: '86.00', description: 'HARDWARE STORE 12', fitid: 'CH-1', changedAction: 'replace' }],
+      { sourceFileSha256: '6'.repeat(64) }));
+    await db.update(bankFeedItems).set({ status: 'assigned', assignedAt: new Date(), assignedAccountId: expenseId }).where(eq(bankFeedItems.id, itemId));
+    const refused = await call('DELETE', `/api/v1/banking/feed/import-batches/${rep2.json.batchId}`);
+    expect([refused.status, refused.json.error.code, refused.json.error.details.lines]).toEqual([409, 'rows_already_used', [9]]);
+    const partial = await call('DELETE', `/api/v1/banking/feed/import-batches/${rep2.json.batchId}?pendingOnly=true`);
+    expect(partial.json).toMatchObject({ restored: 0, kept: 1 });
+    expect((await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, itemId)))[0]!.amount).toBe('86.0000');
+  });
+
+  it('ES1: re-importing after "add" is a duplicate, not changed again; replace updates the row key', async () => {
+    await commit(batch([{ line: 1, date: '2026-11-20', amount: '80.00', description: 'HARDWARE STORE 12', fitid: 'CH-2' }]));
+    const changed = { line: 1, date: '2026-11-21', amount: '85.00', description: 'HARDWARE STORE 12', fitid: 'CH-2' };
+    const add = await commit(batch([{ ...changed, changedAction: 'add' }], { sourceFileSha256: '5'.repeat(64) }));
+    expect(add.json.rows[0]).toMatchObject({ status: 'changed', inserted: true });
+    const again = await preview(batch([changed], { sourceFileSha256: '5'.repeat(64) }));
+    expect(again.json.rows[0]).toMatchObject({ status: 'duplicate', reason: 'same_row', existingItemId: add.json.insertedItemIds[0] });
+    const rep = await commit(batch([{ ...changed, changedAction: 'replace' }], { sourceFileSha256: '5'.repeat(64) }));
+    expect(rep.json.rows[0]).toMatchObject({ status: 'duplicate', inserted: false });
+    const amounts = (await db.select().from(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId))).map((i) => i.amount).sort();
+    expect(amounts).toEqual(['80.0000', '85.0000']);
+
+    // Replace: the item's row key follows the new values, so the replacing file is a duplicate afterwards.
+    await commit(batch([{ line: 1, date: '2026-11-25', amount: '10.00', description: 'PAINT SHOP 4', fitid: 'CH-3' }]));
+    const r = { line: 1, date: '2026-11-26', amount: '12.00', description: 'PAINT SHOP 4', fitid: 'CH-3' };
+    expect((await commit(batch([{ ...r, changedAction: 'replace' }]))).json.rows[0].replaced).toBe(true);
+    const [k] = await (await import('../services/bank-import/keys.js')).keyRows([r]);
+    const [item] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.providerTransactionId, 'CH-3'));
+    expect(item!.rowKey!.trim()).toBe(k!.rowKey);
+    expect((await commit(batch([r]))).json.rows[0]).toMatchObject({ status: 'duplicate', reason: 'same_bank_id' });
+  });
+
+  it('400s: fileEndingBalance, csvMapping over 16 KB (ES4, notes)', async () => {
+    const bal = await commit(batch(OFX, { fileEndingBalance: '12.345', fileEndingDate: '2026-11-30' }));
+    expect([bal.status, bal.json.error.code]).toEqual([400, 'VALIDATION_ERROR']);
+    const prev = await preview(batch(OFX, { fileEndingBalance: '1e5', fileEndingDate: '2026-11-30' }));
+    expect([prev.status, prev.json.error.code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect(() => importBatchService.validateBatch(batch(OFX, { fileEndingBalance: '1.234' }) as importBatchService.BatchInput))
+      .toThrow(expect.objectContaining({ statusCode: 400, code: 'VALIDATION_ERROR' }));
+    const big = await commit(batch(CSV, { format: 'csv', csvMapping: { note: 'x'.repeat(16_400) } }));
+    expect([big.status, big.json.error.code]).toEqual([400, 'VALIDATION_ERROR']);
+    expect((await commit(batch(CSV, { format: 'csv', csvMapping: { note: 'x'.repeat(16_000) } }))).status).toBe(200);
+  });
+
+  it('a replay of a stored body shows the live postProcessing; the first connection is audited', async () => {
+    const key = randomUUID();
+    const body = batch(OFX);
+    const a = await commit(body, key);
+    expect(a.json.postProcessing).toBe('scheduled');
+    expect(await waitPostProcessing(a.json.batchId)).toBe('done');
+    const b = await commit(body, key);
+    expect(b.headers['idempotent-replayed']).toBe('true');
+    expect(b.json).toEqual({ ...a.json, postProcessing: 'done' });
+    const conn = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'bank_connection')));
+    expect(conn).toHaveLength(1);
+    expect(conn[0]!.action).toBe('create');
+    // A second import into the same account makes no new connection, no new audit row.
+    await commit(batch(CSV, { format: 'csv', sourceFileSha256: 'c'.repeat(64) }));
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'bank_connection')))).toHaveLength(1);
+  });
+
+  it('likelyInBooks: a check number match needs the same amount too', async () => {
+    const t = await ledger.postTransaction(tenantId, {
+      txnType: 'journal_entry', txnDate: '2026-09-02', total: '75.0000',
+      lines: [{ accountId: expenseId, debit: '75.0000', credit: '0' }, { accountId: bankId, debit: '0', credit: '75.0000' }],
+    } as never, ownerId, companyId);
+    await db.update(transactions).set({ checkNumber: 1301 }).where(eq(transactions.id, t.id));
+    const r = await preview(batch([{ line: 1, date: '2026-09-05', amount: '57.00', description: 'CHECK 1301', checkNumber: 1301 }],
+      { fileEndingBalance: '-132.00', fileEndingDate: '2026-09-30' }));
+    expect(r.json.balanceCheck.likelyInBooks).toEqual({ count: 0, total: '0.00' });
+  });
+
+  it('post-processing runs once per batch when two engines start it together', async () => {
+    const r = await importBatchService.commitBatch({ tenantId, companyId, userId: ownerId }, batch(OFX) as importBatchService.BatchInput);
+    const states = await Promise.all([
+      importBatchService.runImportPostProcessing(tenantId, r.batchId!),
+      importBatchService.runImportPostProcessing(tenantId, r.batchId!),
+    ]);
+    expect(states.slice().sort()).toEqual(['done', 'skipped']);
+    expect(await importBatchService.runImportPostProcessing(tenantId, r.batchId!)).toBe('skipped');
+  });
+
+  it('a 20,000-row commit against 20,000 look-alike Plaid items on the same days stays fast (ES3)', async () => {
+    await db.update(companies).set({ lockDate: null }).where(eq(companies.id, companyId));
+    const [plaid] = await db.insert(bankConnections).values({ tenantId, companyId, accountId: bankId, provider: 'plaid' }).returning();
+    const N = 20_000;
+    for (let s = 0; s < N; s += 1000) {
+      await db.insert(bankFeedItems).values(Array.from({ length: 1000 }, (_, j) => {
+        const i = s + j;
+        return {
+          tenantId, companyId, bankConnectionId: plaid!.id, providerTransactionId: `plaid-${i}`, status: 'pending',
+          feedDate: `2026-10-${String((i % 7) + 10).padStart(2, '0')}`, amount: '1.2500',
+          description: `SQUARE COFFEE ${i % 50}`, originalDescription: `SQUARE COFFEE ${i % 50}`,
+        };
+      }));
+    }
+    // Uncleared register lines of the same amount for likelyInBooks.
+    for (let i = 0; i < 300; i++) {
+      const t = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry', txnDate: '2026-10-12', total: '1.2500',
+        lines: [{ accountId: expenseId, debit: '1.2500', credit: '0' }, { accountId: bankId, debit: '0', credit: '1.2500' }],
+      } as never, ownerId, companyId);
+      expect(t.id).toBeTruthy();
+    }
+    const rows: Row[] = Array.from({ length: N }, (_, i) => ({
+      line: i + 1, date: `2026-10-${String((i % 7) + 10).padStart(2, '0')}`, amount: '1.25', description: `SQUARE COFFEE ${i % 50} STORE`,
+      fitid: `file-${i}`,
+    }));
+    const started = Date.now();
+    const r = await importBatchService.commitBatch({ tenantId, companyId, userId: ownerId },
+      batch(rows, { sourceFileSha256: '8'.repeat(64), fileEndingBalance: '0.00', fileEndingDate: '2026-10-31' }) as importBatchService.BatchInput);
+    const took = Date.now() - started;
+    await db.update(bankImportBatches).set({ postProcessing: 'done' }).where(eq(bankImportBatches.id, r.batchId!));
+    // Different trusted bank ids never match unless identical, so all are new; every one was a candidate.
+    expect(r.counts.inserted).toBe(N);
+    expect(r.balanceCheck!.likelyInBooks.count).toBe(300);
+    expect(took).toBeLessThan(60_000);
+  }, 240_000);
 
   it('a 20,000-row commit finishes in time and a posting to the account is not blocked meanwhile', async () => {
     const rows: Row[] = Array.from({ length: 20_000 }, (_, i) => ({

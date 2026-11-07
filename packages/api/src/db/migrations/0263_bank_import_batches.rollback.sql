@@ -8,8 +8,12 @@
 -- (undo is no longer possible), the rows' dedupe and row keys and their
 -- possible-duplicate flags (a re-import
 -- through the older /feed/import dedupes by date, amount and description
--- only) and the saved account identities (the next import asks for the
+-- only) and the saved account identities and the companies' link keys (the next import asks for the
 -- account again).
+DROP INDEX IF EXISTS uq_bank_link_keys_company;
+--> statement-breakpoint
+DROP TABLE IF EXISTS bank_link_keys;
+--> statement-breakpoint
 DROP INDEX IF EXISTS idx_bank_connection_identities_connection;
 --> statement-breakpoint
 DROP INDEX IF EXISTS uq_bank_connection_identities_hash;

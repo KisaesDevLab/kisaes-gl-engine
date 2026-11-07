@@ -88,12 +88,19 @@ describe('migration 0263 bank import batches', () => {
     await run('0263_bank_import_batches.rollback.sql');
     expect(await tableExists('bank_import_batches')).toBe(false);
     expect(await tableExists('bank_connection_identities')).toBe(false);
+    expect(await tableExists('bank_link_keys')).toBe(false);
     const kept = await db.execute(sql`SELECT count(*)::int AS n FROM bank_feed_items WHERE tenant_id = ${tenantId}`);
     expect((kept.rows[0] as { n: number }).n).toBe(1);
 
     await run('0263_bank_import_batches.sql');
     await run('0263_bank_import_batches.sql');
     expect(await tableExists('bank_import_batches')).toBe(true);
+    expect(await tableExists('bank_link_keys')).toBe(true);
+    const cols = await db.execute(sql`SELECT column_name, is_nullable FROM information_schema.columns
+      WHERE (table_name = 'bank_import_batches' AND column_name = 'replaced_items')
+         OR (table_name = 'bank_link_keys' AND column_name = 'key_encrypted') ORDER BY column_name`);
+    // key_encrypted is nullable text: the tenant export re-encrypts it (SECRET_COLUMNS reencrypt).
+    expect(cols.rows).toEqual([{ column_name: 'key_encrypted', is_nullable: 'YES' }, { column_name: 'replaced_items', is_nullable: 'YES' }]);
     const idx = await db.execute(sql`SELECT indexname FROM pg_indexes WHERE tablename = 'bank_feed_items' ORDER BY indexname`);
     expect((idx.rows as Array<{ indexname: string }>).map((r) => r.indexname))
       .toEqual(expect.arrayContaining(['uq_bfi_connection_dedupe_key', 'idx_bfi_connection_row_key', 'idx_bfi_import_batch']));

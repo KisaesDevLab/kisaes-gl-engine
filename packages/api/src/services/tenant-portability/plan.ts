@@ -784,7 +784,11 @@ export const SECRET_COLUMNS: Record<string, SecretColumnRule> = {
   'ai_usage_log.output_tokens': { action: 'keep', reason: 'LLM token count, not a credential' },
   'chat_messages.input_tokens': { action: 'keep', reason: 'LLM token count, not a credential' },
   'chat_messages.output_tokens': { action: 'keep', reason: 'LLM token count, not a credential' },
-  'bank_connection_identities.account_key_hash': { action: 'keep', reason: 'keyed hash of a bank account number computed by the client (U-06), not a credential; auto-links the next bank file import' },
+  'bank_connection_identities.account_key_hash': { action: 'keep', reason: 'HMAC of a bank file\'s account id under the company link key (U-06, Q-P25u), not a credential; auto-links the next bank file import' },
+  'bank_link_keys.key_encrypted': {
+    action: 'reencrypt',
+    reason: 'company bank-file link key (Q-P25u): travels with the company so a restored company auto-links its bank files; encrypted again under the importing install key',
+  },
   'bank_connections.access_token_encrypted': { action: 'redact', reason: 'bank feed provider access token (the connection record itself is business data)' },
   'companies.smtp_pass': { action: 'redact', reason: 'SMTP password (owner re-enters it after a restore)' },
   'companies.closing_password_hash': { action: 'redact', reason: 'closing-date password hash (owner sets it again after a restore; closed periods stay locked by the closing date)' },

@@ -21,11 +21,15 @@
 --                               unique per bank connection, so a re-import
 --                               adds nothing by construction.
 --   bank_connection_identities  which bank connection a file's account
---                               identity (a keyed hash computed by the
---                               client, never the account number) belongs
---                               to, with the masked number for display.
+--                               identity belongs to: a keyed hash (HMAC
+--                               under the company's link key, computed by
+--                               the engine; never the account number) and
+--                               the masked number for display.
+--   bank_link_keys              one link key per company (owner Q-P25u),
+--                               encrypted like the engine's other stored
+--                               secrets; travels with a tenant export.
 --
--- Additive only: two new tables, nullable columns, new indexes.
+-- Additive only: three new tables, nullable columns, new indexes.
 CREATE TABLE IF NOT EXISTS bank_import_batches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -51,6 +55,9 @@ CREATE TABLE IF NOT EXISTS bank_import_batches (
   file_ending_balance NUMERIC(19,4),
   file_ending_date DATE,
   result JSONB,
+  -- `changed` rows the batch replaced: [{id, line, before: {amount,
+  -- feedDate, rowKey}, after: {amount, feedDate}}], so undo restores them.
+  replaced_items JSONB,
   post_processing VARCHAR(12) NOT NULL DEFAULT 'scheduled'
     CHECK (post_processing IN ('scheduled', 'done', 'failed')),
   undone_at TIMESTAMPTZ,
@@ -106,3 +113,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_bank_connection_identities_hash
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_bank_connection_identities_connection
   ON bank_connection_identities (bank_connection_id);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS bank_link_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  key_encrypted TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS uq_bank_link_keys_company
+  ON bank_link_keys (company_id);

@@ -16,34 +16,40 @@
  * after the commit runs cleansing without the LLM and the rule stages
  * without posting (runImportPostProcessing).
  *
- * Row classification (first match wins):
+ * Row classification. Each step runs over every row before the next, so
+ * the result does not depend on row order (except which of two equal rows
+ * claims a candidate); each existing item is claimed once:
  *   i    a FITID that occurs more than once in the request is ignored on
  *        every occurrence (reason repeated_bank_id);
- *   ii   an existing item of the account with the FITID: same amount and
- *        date within 5 days → duplicate/same_bank_id; another amount, date
- *        within 5 days and a matching description → changed; otherwise the
- *        FITID is ignored (reason bank_id_reused) and the row goes on;
- *   iii  an existing dedupe or row key equal to the row key →
- *        duplicate/same_row;
- *   iv   the fuzzy rule (Q-P25c) → possible_duplicate/similar_existing;
- *        items matched in ii–iii are used up, each item is claimed once.
- *        A look-alike is inserted on commit (owner 2026-11-07) with
+ *   ii   an existing item of the account with the FITID, the same amount
+ *        and a date within 5 days (posted dates) → duplicate/same_bank_id;
+ *   iii  an unclaimed existing item whose dedupe or row key equals the row
+ *        key → duplicate/same_row; skipped when the row's FITID is trusted
+ *        (no existing item has it) and the item has another FITID — two
+ *        bank ids are two transactions (they go on to the fuzzy rule);
+ *   iv   an existing item with the FITID, another amount, a date within 5
+ *        days and a matching description, still unclaimed → changed;
+ *        otherwise the FITID is ignored (reason bank_id_reused);
+ *   v    the fuzzy rule (Q-P25c) → possible_duplicate/similar_existing. A
+ *        look-alike is inserted on commit (owner 2026-11-07) with
  *        possible_duplicate and possible_duplicate_of set; exact duplicates
  *        (ii, iii) are never inserted;
- *   v    new.
+ *   vi   new.
  */
 
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { db, type Tx, type DbOrTx } from '../../db/index.js';
+import { db, pool as pgPool, type Tx, type DbOrTx } from '../../db/index.js';
 import { bankConnections, bankFeedItems, bankImportBatches, bankConnectionIdentities } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
+import { errorSummaryForLog } from '../../utils/log-safe.js';
 import { auditLog } from '../../middleware/audit.js';
 import { claimAndRecord } from '../idempotency.service.js';
 import { runWithoutIdempotency } from '../idempotency-context.js';
 import {
   Decimal, DEDUPE_VERSION, NORM_MAX_CODE_POINTS, cleanFitid, fitidKey, keyRows, norm, type KeyedRow,
 } from './keys.js';
+import { bankIdentityOf, isMasked, maskedAccount, type BankIdentity, type RawBankIdentity } from './link-key.js';
 
 // ─── Contract ────────────────────────────────────────────────────────
 
@@ -88,7 +94,8 @@ export interface BatchInput {
   csvMapping?: Record<string, unknown> | null;
   dryRun: boolean;
   relinkIdentity?: boolean;
-  bankIdentity?: { mask: string; accountKeyHash: string } | null;
+  /** The file's raw BANKID / ACCTID (Q-P25u): hashed under the company link key, never kept. */
+  bankIdentity?: RawBankIdentity | null;
   fileEndingBalance?: string | null;
   fileEndingDate?: string | null;
   rows: BatchRowInput[];
@@ -105,6 +112,14 @@ export interface RowResult {
   inserted: boolean;
   /** A `changed` row with changedAction "replace": the existing item was updated. */
   replaced?: boolean;
+}
+
+/** A `changed` row's existing item that a batch replaced (bank_import_batches.replaced_items). */
+export interface ReplacedItem {
+  id: string;
+  line: number;
+  before: { amount: string; feedDate: string; rowKey: string | null };
+  after: { amount: string; feedDate: string };
 }
 
 export interface BalanceCheck {
@@ -171,7 +186,7 @@ export function validateBatch(input: BatchInput): void {
     throw AppError.unprocessableEntity('The batch total is too large.', 'batch_total_too_large');
   }
   if (input.fileEndingBalance != null && !AMOUNT_RE.test(input.fileEndingBalance)) {
-    throw AppError.unprocessableEntity('fileEndingBalance must have at most 12 digits before and 2 after the decimal point.', 'VALIDATION_ERROR');
+    throw AppError.badRequest('fileEndingBalance must have at most 12 digits before and 2 after the decimal point.', 'VALIDATION_ERROR');
   }
 }
 
@@ -220,15 +235,58 @@ function amountEq(a: string, b: string): boolean {
   return new Decimal(a).eq(new Decimal(b));
 }
 
+/** One string per numeric value ('45.1000' and '45.10' agree). */
+export function amountKey(a: string): string {
+  return new Decimal(a).toFixed();
+}
+
 function byAge(a: ExistingItem, b: ExistingItem): number {
   return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+interface PoolEntry { item: ExistingItem; normDescription: string }
+
 /**
- * Classifies every row. `byFitid` holds the account's existing items per
- * FITID, `byKey` its items per dedupe and row key, `pool` the existing items
- * dated near the request (fuzzy candidates). The result does not depend on
- * row order except for which of two equal rows claims a fuzzy candidate.
+ * The fuzzy candidates of one amount on one day, by normalized
+ * description: `byNorm` (entries oldest first), `norms` sorted (for the
+ * descriptions a row's description is a prefix of) and the code-point
+ * `lengths` present (for those that are a prefix of the row's).
+ */
+interface DayBucket { byNorm: Map<string, PoolEntry[]>; norms: string[]; lengths: number[] }
+
+/**
+ * The entry lists of a bucket whose description matches `r` under
+ * descriptionsMatch: equal; a prefix of `r` at least 8 code points long;
+ * or longer than `r` with `r` (at least 8 long) as a prefix.
+ */
+function matchingLists(bucket: DayBucket, r: string, rLength: number): PoolEntry[][] {
+  const lists: PoolEntry[][] = [];
+  const same = bucket.byNorm.get(r);
+  if (same) lists.push(same);
+  if (rLength < 8) return lists;
+  const cps = Array.from(r);
+  for (const len of bucket.lengths) {
+    if (len < 8 || len >= rLength) continue;
+    const l = bucket.byNorm.get(cps.slice(0, len).join(''));
+    if (l) lists.push(l);
+  }
+  let lo = 0;
+  let hi = bucket.norms.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bucket.norms[mid]! <= r) lo = mid + 1; else hi = mid;
+  }
+  for (let j = lo; j < bucket.norms.length && bucket.norms[j]!.startsWith(r); j++) lists.push(bucket.byNorm.get(bucket.norms[j]!)!);
+  return lists;
+}
+
+/**
+ * Classifies every row (steps i–vi in the header). `byFitid` holds the
+ * account's existing items per FITID, `byKey` its items per dedupe and row
+ * key, `pool` the existing items dated near the request (fuzzy candidates).
+ * Linear in rows + pool apart from look-alikes sharing amount, description
+ * prefix and day: the pool is indexed by (amount, description prefix, day),
+ * every description is normalized once and a claimed item leaves the index.
  */
 export function classifyRows(
   rows: ReadonlyArray<BatchRowInput>,
@@ -246,63 +304,112 @@ export function classifyRows(
   const out: Array<Classified | null> = rows.map(() => null);
   const fallbackReason: Array<RowReason | undefined> = rows.map(() => undefined);
   const trusted: Array<string | null> = rows.map(() => null);
+  /** The existing item with the row's FITID when its amount differs (step iv). */
+  const sameFitid: Array<ExistingItem | undefined> = rows.map(() => undefined);
 
-  // Pass 1: exact matches (ii, iii).
+  // ii: the same bank id, the same amount.
   rows.forEach((row, i) => {
     const k = keyed[i]!;
     const fitid = fitids[i];
-    if (fitid && (occurrences.get(fitid) ?? 0) > 1) {
+    if (!fitid) return;
+    if ((occurrences.get(fitid) ?? 0) > 1) {
       fallbackReason[i] = 'repeated_bank_id';
-    } else if (fitid) {
-      const existing = (byFitid.get(fitid) ?? []).slice().sort(byAge)[0];
-      if (existing) {
-        const near = dayDiff(row.date, existing.date) <= FITID_DAYS;
-        if (near && amountEq(existing.amount, k.canonicalAmount)) {
-          usedUp.add(existing.id);
-          out[i] = { status: 'duplicate', reason: 'same_bank_id', existing, fitidUsed: fitid, dedupeKey: fitidKey(fitid) };
-          return;
-        }
-        if (near && descriptionsMatch(k.normDescription, norm(existing.description))) {
-          usedUp.add(existing.id);
-          // "Add as new" stores the row without the FITID (it stays with the existing item).
-          out[i] = { status: 'changed', existing, fitidUsed: null, dedupeKey: k.rowKey };
-          return;
-        }
-        fallbackReason[i] = 'bank_id_reused';
-      } else {
-        trusted[i] = fitid;
-      }
+      return;
     }
-    const byRow = byKey.get(k.rowKey);
-    if (byRow && !usedUp.has(byRow.id)) {
-      usedUp.add(byRow.id);
-      out[i] = { status: 'duplicate', reason: 'same_row', existing: byRow, fitidUsed: trusted[i] ?? null, dedupeKey: k.rowKey };
+    const existing = (byFitid.get(fitid) ?? []).slice().sort(byAge)[0];
+    if (!existing) {
+      trusted[i] = fitid;
+      return;
     }
+    if (dayDiff(row.date, existing.date) <= FITID_DAYS && amountEq(existing.amount, k.canonicalAmount)) {
+      usedUp.add(existing.id);
+      out[i] = { status: 'duplicate', reason: 'same_bank_id', existing, fitidUsed: fitid, dedupeKey: fitidKey(fitid) };
+      return;
+    }
+    sameFitid[i] = existing;
   });
 
-  // Pass 2: fuzzy (iv), then new (v).
+  // iii: the same row key, on an item not claimed in ii.
+  rows.forEach((row, i) => {
+    if (out[i]) return;
+    const k = keyed[i]!;
+    const byRow = byKey.get(k.rowKey);
+    if (!byRow || usedUp.has(byRow.id)) return;
+    const fitid = trusted[i];
+    if (fitid && byRow.fitid && byRow.fitid !== fitid) return;
+    usedUp.add(byRow.id);
+    out[i] = { status: 'duplicate', reason: 'same_row', existing: byRow, fitidUsed: fitid ?? null, dedupeKey: k.rowKey };
+  });
+
+  // iv: the same bank id, another amount → changed, else the id was reused.
+  rows.forEach((row, i) => {
+    const existing = sameFitid[i];
+    if (out[i] || !existing) return;
+    const k = keyed[i]!;
+    if (!usedUp.has(existing.id) && dayDiff(row.date, existing.date) <= FITID_DAYS
+      && descriptionsMatch(k.normDescription, norm(existing.description))) {
+      usedUp.add(existing.id);
+      // "Add as new" stores the row without the FITID (it stays with the existing item).
+      out[i] = { status: 'changed', existing, fitidUsed: null, dedupeKey: k.rowKey };
+      return;
+    }
+    fallbackReason[i] = 'bank_id_reused';
+  });
+
+  // v: the fuzzy rule. Index: amount → day → description → entries, oldest first.
+  const index = new Map<string, Map<number, DayBucket>>();
+  for (const item of pool.slice().sort(byAge)) {
+    if (usedUp.has(item.id)) continue;
+    const normDescription = norm(item.description);
+    const amount = amountKey(item.amount);
+    let days = index.get(amount);
+    if (!days) index.set(amount, (days = new Map()));
+    const day = dayNumber(item.date);
+    let bucket = days.get(day);
+    if (!bucket) days.set(day, (bucket = { byNorm: new Map(), norms: [], lengths: [] }));
+    const list = bucket.byNorm.get(normDescription);
+    if (list) list.push({ item, normDescription }); else bucket.byNorm.set(normDescription, [{ item, normDescription }]);
+  }
+  for (const days of index.values()) {
+    for (const bucket of days.values()) {
+      bucket.norms = [...bucket.byNorm.keys()].sort();
+      bucket.lengths = [...new Set(bucket.norms.map((s) => Array.from(s).length))];
+    }
+  }
+
   rows.forEach((row, i) => {
     if (out[i]) return;
     const k = keyed[i]!;
     const fitidUsed = trusted[i] ?? null;
     const dedupeKey = fitidUsed ? fitidKey(fitidUsed) : k.rowKey;
-    let best: ExistingItem | undefined;
-    for (const e of pool) {
-      if (usedUp.has(e.id)) continue;
-      if (!amountEq(e.amount, k.canonicalAmount)) continue;
-      const days = dayDiff(row.date, e.date);
-      if (days > FUZZY_DAYS) continue;
-      if (section.start && e.date < section.start) continue;
-      if (section.end && e.date > section.end) continue;
-      const eNorm = norm(e.description);
-      if (fitidUsed && e.fitid && e.fitid !== fitidUsed && !(days === 0 && eNorm === k.normDescription)) continue;
-      if (row.checkNumber != null && e.checkNumber != null && row.checkNumber !== e.checkNumber) continue;
-      if (!descriptionsMatch(k.normDescription, eNorm)) continue;
-      if (!best || days < dayDiff(row.date, best.date) || (days === dayDiff(row.date, best.date) && byAge(e, best) < 0)) best = e;
+    const days = index.get(amountKey(k.canonicalAmount));
+    const rowDay = dayNumber(row.date);
+    const rLength = Array.from(k.normDescription).length;
+    // The description already matches (matchingLists); the other conditions.
+    const fits = (e: PoolEntry, distance: number): boolean => {
+      const it = e.item;
+      if (section.start && it.date < section.start) return false;
+      if (section.end && it.date > section.end) return false;
+      if (fitidUsed && it.fitid && it.fitid !== fitidUsed && !(distance === 0 && e.normDescription === k.normDescription)) return false;
+      return !(row.checkNumber != null && it.checkNumber != null && row.checkNumber !== it.checkNumber);
+    };
+    // Nearest date first, then the oldest item.
+    let best: { list: PoolEntry[]; at: number } | undefined;
+    for (let distance = 0; days && !best && distance <= FUZZY_DAYS; distance++) {
+      for (const day of distance === 0 ? [rowDay] : [rowDay - distance, rowDay + distance]) {
+        const bucket = days.get(day);
+        if (!bucket) continue;
+        for (const list of matchingLists(bucket, k.normDescription, rLength)) {
+          const at = list.findIndex((e) => fits(e, distance));
+          if (at < 0) continue;
+          if (!best || byAge(list[at]!.item, best.list[best.at]!.item) < 0) best = { list, at };
+        }
+      }
     }
     if (best) {
-      usedUp.add(best.id);
-      out[i] = { status: 'possible_duplicate', reason: 'similar_existing', existing: best, fitidUsed, dedupeKey };
+      const [claimed] = best.list.splice(best.at, 1);
+      usedUp.add(claimed!.item.id);
+      out[i] = { status: 'possible_duplicate', reason: 'similar_existing', existing: claimed!.item, fitidUsed, dedupeKey };
       return;
     }
     out[i] = { status: 'new', ...(fallbackReason[i] ? { reason: fallbackReason[i] } : {}), fitidUsed, dedupeKey };
@@ -442,14 +549,86 @@ async function sameFileImportedAt(ex: DbOrTx, tenantId: string, input: BatchInpu
 
 interface IdentityRow { id: string; bank_connection_id: string; account_id: string; account_name: string; mask: string }
 
-async function readIdentity(ex: DbOrTx, tenantId: string, hash: string): Promise<IdentityRow | undefined> {
+/**
+ * The saved identity with this hash, in this company only (an account of
+ * the company or one without a company, as lookupConnections). The hash is
+ * keyed per company already; the filter keeps another company's account
+ * name out of reach regardless.
+ */
+async function readIdentity(ex: DbOrTx, tenantId: string, companyId: string | null, hash: string): Promise<IdentityRow | undefined> {
+  const companyClause = companyId ? sql`AND (a.company_id = ${companyId} OR a.company_id IS NULL)` : sql``;
   const r = await ex.execute(sql`
     SELECT i.id, i.bank_connection_id, c.account_id, a.name AS account_name, i.mask
     FROM bank_connection_identities i
     JOIN bank_connections c ON c.id = i.bank_connection_id AND c.tenant_id = i.tenant_id
     JOIN accounts a ON a.id = c.account_id AND a.tenant_id = c.tenant_id
-    WHERE i.tenant_id = ${tenantId} AND i.account_key_hash = ${hash}`);
+    WHERE i.tenant_id = ${tenantId} AND i.account_key_hash = ${hash} ${companyClause}`);
   return (r.rows as unknown as IdentityRow[])[0];
+}
+
+// ─── Likely in the books ─────────────────────────────────────────────
+
+export interface LikelyCandidate { date: string; amount: string; checkNumber: number | null }
+export interface RegisterLine { id: string; txn_date: string; out: string; check_number: number | null }
+
+/**
+ * likelyInBooks: new and pending rows matching an uncleared register line
+ * of the account (money out = credit - debit for a bank and a card alike):
+ * the same check number and amount, else the same amount within
+ * LIKELY_DAYS. Each line counts once, the earliest (date, id) first. Lines
+ * are indexed by check number and by amount (sorted by date), so this is
+ * linear in candidates + lines apart from equal amounts on near dates.
+ */
+export function countLikelyInBooks(
+  candidates: ReadonlyArray<LikelyCandidate>, lines: ReadonlyArray<RegisterLine>,
+): { count: number; total: Decimal } {
+  const sorted = lines.slice().sort((a, b) => (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const byCheck = new Map<string, RegisterLine[]>();
+  const byAmount = new Map<string, Array<{ line: RegisterLine; day: number }>>();
+  for (const l of sorted) {
+    const amount = amountKey(l.out);
+    if (l.check_number != null) {
+      const k = `${l.check_number}|${amount}`;
+      const list = byCheck.get(k);
+      if (list) list.push(l); else byCheck.set(k, [l]);
+    }
+    const list = byAmount.get(amount);
+    const entry = { line: l, day: dayNumber(l.txn_date) };
+    if (list) list.push(entry); else byAmount.set(amount, [entry]);
+  }
+  const claimed = new Set<string>();
+  let count = 0;
+  let total = new Decimal(0);
+  for (const c of candidates) {
+    const amount = amountKey(c.amount);
+    let hit: RegisterLine | undefined;
+    if (c.checkNumber != null) hit = byCheck.get(`${c.checkNumber}|${amount}`)?.find((l) => !claimed.has(l.id));
+    if (!hit) {
+      const list = byAmount.get(amount);
+      if (list) {
+        const day = dayNumber(c.date);
+        // First entry at or after day - LIKELY_DAYS (binary search), then forward.
+        let lo = 0;
+        let hi = list.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (list[mid]!.day < day - LIKELY_DAYS) lo = mid + 1; else hi = mid;
+        }
+        for (let j = lo; j < list.length && list[j]!.day <= day + LIKELY_DAYS; j++) {
+          if (claimed.has(list[j]!.line.id)) continue;
+          hit = list[j]!.line;
+          list.splice(j, 1);
+          break;
+        }
+      }
+    }
+    if (hit) {
+      claimed.add(hit.id);
+      count++;
+      total = total.plus(c.amount);
+    }
+  }
+  return { count, total };
 }
 
 // ─── Balance check ───────────────────────────────────────────────────
@@ -482,10 +661,8 @@ async function balanceCheck(
     .filter(({ r, c }) => r.date <= fileDate && wouldInsert(r, c));
   const newTotal = added.reduce((s, a) => s.plus(a.k.canonicalAmount), new Decimal(0));
 
-  // likelyInBooks: new and pending rows matching an uncleared register line
-  // of the account (money out = credit - debit for a bank and a card alike)
-  // by check number, or by amount within LIKELY_DAYS. Each line counts once.
-  const candidates = [
+  // likelyInBooks (countLikelyInBooks).
+  const candidates: LikelyCandidate[] = [
     ...added.map(({ r, k }) => ({ date: r.date, amount: k.canonicalAmount, checkNumber: r.checkNumber ?? null })),
     ...pending.map((p) => ({ date: p.feed_date, amount: p.amount, checkNumber: p.check_number })),
   ];
@@ -503,19 +680,9 @@ async function balanceCheck(
         AND NOT EXISTS (SELECT 1 FROM reconciliation_lines rl WHERE rl.journal_line_id = jl.id AND rl.is_cleared = true)
       ORDER BY t.txn_date, jl.id
       LIMIT 50000`);
-    const lines = (reg.rows as Array<{ id: string; txn_date: string; out: string; check_number: number | null }>)
-      .map((l) => ({ ...l, outDec: new Decimal(l.out) }));
-    const claimed = new Set<string>();
-    for (const c of candidates) {
-      const amt = new Decimal(c.amount);
-      const hit = (c.checkNumber != null ? lines.find((l) => !claimed.has(l.id) && l.check_number === c.checkNumber) : undefined)
-        ?? lines.find((l) => !claimed.has(l.id) && l.outDec.eq(amt) && dayDiff(l.txn_date, c.date) <= LIKELY_DAYS);
-      if (hit) {
-        claimed.add(hit.id);
-        likelyCount++;
-        likelyTotal = likelyTotal.plus(amt);
-      }
-    }
+    const likely = countLikelyInBooks(candidates, reg.rows as unknown as RegisterLine[]);
+    likelyCount = likely.count;
+    likelyTotal = likely.total;
   }
 
   const fileBalance = new Decimal(input.fileEndingBalance);
@@ -576,7 +743,11 @@ export async function previewBatch(actor: BatchActor, input: BatchInput): Promis
   const { byFitid, byKey, pool } = await lookups(db, actor.tenantId, conns, input.rows, keyed);
   const classified = classifyRows(input.rows, keyed, byFitid, byKey, pool, { start: input.sectionStart, end: input.sectionEnd });
   const rows = input.rows.map((r, i) => rowResult(r, classified[i]!, lockDate));
-  const identity = input.bankIdentity ? await readIdentity(db, actor.tenantId, input.bankIdentity.accountKeyHash) : undefined;
+  // A dry run never creates the company's link key: without one nothing is linked yet.
+  const companyId = actor.companyId ?? account.company_id;
+  const ident = input.bankIdentity && companyId
+    ? await bankIdentityOf(db, actor.tenantId, companyId, input.bankIdentity, false) : undefined;
+  const identity = ident?.keyed ? await readIdentity(db, actor.tenantId, companyId, ident.accountKeyHash) : undefined;
   const sameFile = await sameFileImportedAt(db, actor.tenantId, input);
   const balance = await balanceCheck(db, actor.tenantId, account, conns, input, input.rows, keyed, classified);
   return {
@@ -619,10 +790,15 @@ export async function commitBatch(actor: BatchActor, input: BatchInput): Promise
       }).returning({ id: bankConnections.id, provider: bankConnections.provider });
       conn = created!;
       conns = [...conns, conn];
+      await auditLog(tenantId, 'create', 'bank_connection', conn.id, null,
+        { accountId: input.accountId, provider: 'manual', source: 'bank_import_batch' }, actor.userId, tx);
     }
     const connIds = conns.map((c) => c.id);
 
-    if (input.bankIdentity) await linkIdentity(tx, actor, conn.id, input);
+    if (input.bankIdentity && companyId) {
+      const ident = await bankIdentityOf(tx, tenantId, companyId, input.bankIdentity, true);
+      await linkIdentity(tx, actor, companyId, conn.id, input, ident);
+    }
 
     const lockDate = await readLockDate(tx, tenantId, actor.companyId ?? account.company_id);
     const { byFitid, byKey, pool } = await lookups(tx, tenantId, connIds, input.rows, keyed);
@@ -687,7 +863,11 @@ export async function commitBatch(actor: BatchActor, input: BatchInput): Promise
     }
 
     // `changed` rows with "replace": update the existing item while it is
-    // pending and untouched (not assigned, not matched), audited.
+    // pending and untouched (not assigned, not matched), audited. The item
+    // stays with the batch (or Plaid sync) that brought it: import_batch_id
+    // and source_line are kept, and this batch records the values before,
+    // so undoing it restores them instead of removing the item.
+    const replacedItems: ReplacedItem[] = [];
     for (let i = 0; i < input.rows.length; i++) {
       const row = input.rows[i]!;
       const c = classified[i]!;
@@ -698,11 +878,17 @@ export async function commitBatch(actor: BatchActor, input: BatchInput): Promise
         rows[i]!.replaced = false;
         continue;
       }
+      // The row key follows the new values (a re-import of this file is then same_row).
       const [after] = await tx.update(bankFeedItems).set({
-        amount: keyed[i]!.canonicalAmount, feedDate: row.date, importBatchId: batchId, sourceLine: row.line, updatedAt: new Date(),
+        amount: keyed[i]!.canonicalAmount, feedDate: row.date, rowKey: keyed[i]!.rowKey, updatedAt: new Date(),
       }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, c.existing.id))).returning();
+      replacedItems.push({
+        id: c.existing.id, line: row.line,
+        before: { amount: before.amount, feedDate: before.feedDate, rowKey: before.rowKey?.trim() ?? null },
+        after: { amount: after!.amount, feedDate: after!.feedDate },
+      });
       await auditLog(tenantId, 'update', 'bank_feed', c.existing.id,
-        { amount: before.amount, feedDate: before.feedDate }, { amount: after!.amount, feedDate: after!.feedDate, importBatchId: batchId },
+        { amount: before.amount, feedDate: before.feedDate }, { amount: after!.amount, feedDate: after!.feedDate, replacedByBatchId: batchId },
         actor.userId, tx);
       rows[i]!.replaced = true;
     }
@@ -721,6 +907,7 @@ export async function commitBatch(actor: BatchActor, input: BatchInput): Promise
     await tx.update(bankImportBatches).set({
       newCount: c.new, duplicateCount: c.duplicate, possibleDuplicateCount: c.possibleDuplicate, changedCount: c.changed,
       closedPeriodCount: c.closedPeriod, insertedCount: c.inserted, insertedTotal: out.insertedTotal, result: out,
+      replacedItems: replacedItems.length > 0 ? replacedItems : null,
       ...(insertedIds.length === 0 ? { postProcessing: 'done' } : {}),
     }).where(eq(bankImportBatches.id, batchId));
     if (insertedIds.length === 0) out.postProcessing = 'done';
@@ -733,9 +920,10 @@ export async function commitBatch(actor: BatchActor, input: BatchInput): Promise
   return result;
 }
 
-async function linkIdentity(tx: Tx, actor: BatchActor, connectionId: string, input: BatchInput): Promise<void> {
-  const ident = input.bankIdentity!;
-  const existing = await readIdentity(tx, actor.tenantId, ident.accountKeyHash);
+async function linkIdentity(
+  tx: Tx, actor: BatchActor, companyId: string, connectionId: string, input: BatchInput, ident: BankIdentity,
+): Promise<void> {
+  const existing = await readIdentity(tx, actor.tenantId, companyId, ident.accountKeyHash);
   if (!existing) {
     const [row] = await tx.insert(bankConnectionIdentities).values({
       tenantId: actor.tenantId, bankConnectionId: connectionId, mask: ident.mask, accountKeyHash: ident.accountKeyHash,
@@ -763,12 +951,17 @@ async function linkIdentity(tx: Tx, actor: BatchActor, connectionId: string, inp
   }
 }
 
-/** The stored response of a committed batch (Idempotency-Key replay). */
+/**
+ * The response of a committed batch for an Idempotency-Key replay: the
+ * stored result with the live post-processing state (the stored one is
+ * the state at commit, usually `scheduled`).
+ */
 export async function readBatchResult(tenantId: string, batchId: string): Promise<BatchResult> {
-  const [b] = await db.select({ result: bankImportBatches.result }).from(bankImportBatches)
+  const [b] = await db.select({ result: bankImportBatches.result, postProcessing: bankImportBatches.postProcessing })
+    .from(bankImportBatches)
     .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
   if (!b?.result) throw AppError.notFound('Import batch not found');
-  return b.result as BatchResult;
+  return { ...(b.result as BatchResult), postProcessing: b.postProcessing as BatchResult['postProcessing'] };
 }
 
 // ─── Post-processing ─────────────────────────────────────────────────
@@ -778,24 +971,46 @@ export async function readBatchResult(tenantId: string, batchId: string): Promis
  * without posting, potential-match detection and the classification state
  * (bank-feed.service pipelines with { llm: false, autoConfirm: false }).
  * Sets the batch's post_processing to done or failed. The A05 hook.
+ *
+ * Runs once per batch also with several engine instances on one database
+ * (MyBooks Online): a session advisory lock on the batch is held for the
+ * run (released when the connection ends, so a crash never leaves it
+ * held); another instance skips the batch, and a batch no longer
+ * `scheduled` once the lock is taken is skipped too. 'skipped' then.
  */
-export async function runImportPostProcessing(tenantId: string, batchId: string): Promise<'done' | 'failed'> {
-  const bankFeed = await import('../bank-feed.service.js');
-  let state: 'done' | 'failed' = 'done';
+export async function runImportPostProcessing(tenantId: string, batchId: string): Promise<'done' | 'failed' | 'skipped'> {
+  const client = await pgPool.connect();
+  const lockKey = `bank-import-post:${batchId}`;
+  let locked = false;
   try {
-    const items = await db.select().from(bankFeedItems)
-      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.importBatchId, batchId)));
-    if (items.length > 0) {
-      await bankFeed.runCleansingPipeline(tenantId, items, { llm: false });
-      await bankFeed.runCategorizationPipeline(tenantId, items, { llm: false, autoConfirm: false });
+    const got = await client.query<{ ok: boolean }>('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok', [lockKey]);
+    locked = got.rows[0]?.ok === true;
+    if (!locked) return 'skipped';
+    const [b] = await db.select({ p: bankImportBatches.postProcessing }).from(bankImportBatches)
+      .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
+    if (!b || b.p !== 'scheduled') return 'skipped';
+
+    const bankFeed = await import('../bank-feed.service.js');
+    let state: 'done' | 'failed' = 'done';
+    try {
+      const items = await db.select().from(bankFeedItems)
+        .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.importBatchId, batchId)));
+      if (items.length > 0) {
+        await bankFeed.runCleansingPipeline(tenantId, items, { llm: false });
+        await bankFeed.runCategorizationPipeline(tenantId, items, { llm: false, autoConfirm: false });
+      }
+    } catch (err) {
+      state = 'failed';
+      // Name, code and a short message only: never a query's parameters (descriptions, amounts).
+      console.warn(`[bank-import] post-processing failed for batch ${batchId}: ${errorSummaryForLog(err)}`);
     }
-  } catch (err) {
-    state = 'failed';
-    console.warn(`[bank-import] post-processing failed for batch ${batchId}:`, err instanceof Error ? err.message : String(err));
+    await db.update(bankImportBatches).set({ postProcessing: state })
+      .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
+    return state;
+  } finally {
+    if (locked) await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]).catch(() => undefined);
+    client.release();
   }
-  await db.update(bankImportBatches).set({ postProcessing: state })
-    .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
-  return state;
 }
 
 /** Test hook: the promise of the last scheduled post-processing run. */
@@ -848,10 +1063,43 @@ export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly:
       .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.importBatchId, batchId))).for('update');
     const untouched = items.filter((i) => i.status === 'pending' && !i.assignedAt && !i.matchedTransactionId);
     const used = items.filter((i) => !untouched.includes(i));
-    if (used.length > 0 && !pendingOnly) {
+
+    // Items this batch replaced (changed rows, "replace") get their values
+    // back while still pending, untouched and as this batch left them;
+    // otherwise they count as used. An item removed since is skipped.
+    const replaced = (batch.replacedItems as ReplacedItem[] | null) ?? [];
+    const restorable: ReplacedItem[] = [];
+    const usedReplaced: ReplacedItem[] = [];
+    if (replaced.length > 0) {
+      const current = await tx.select({
+        id: bankFeedItems.id, status: bankFeedItems.status, assignedAt: bankFeedItems.assignedAt,
+        matchedTransactionId: bankFeedItems.matchedTransactionId, amount: bankFeedItems.amount, feedDate: bankFeedItems.feedDate,
+      }).from(bankFeedItems)
+        .where(and(eq(bankFeedItems.tenantId, tenantId), sql`${bankFeedItems.id} IN ${uuidList(replaced.map((r) => r.id))}`))
+        .for('update');
+      const byId = new Map(current.map((c) => [c.id, c]));
+      for (const r of replaced) {
+        const c = byId.get(r.id);
+        if (!c) continue;
+        const asLeft = c.status === 'pending' && !c.assignedAt && !c.matchedTransactionId
+          && new Decimal(c.amount).eq(r.after.amount) && c.feedDate === r.after.feedDate;
+        (asLeft ? restorable : usedReplaced).push(r);
+      }
+    }
+
+    if ((used.length > 0 || usedReplaced.length > 0) && !pendingOnly) {
       throw AppError.conflict('Some rows of this import were already used.', 'rows_already_used', {
-        lines: used.map((i) => i.sourceLine).filter((l): l is number => l !== null).sort((a, b) => a - b),
+        lines: [...used.map((i) => i.sourceLine).filter((l): l is number => l !== null), ...usedReplaced.map((r) => r.line)]
+          .sort((a, b) => a - b),
       });
+    }
+    for (const r of restorable) {
+      await tx.update(bankFeedItems).set({
+        amount: r.before.amount, feedDate: r.before.feedDate, rowKey: r.before.rowKey, updatedAt: new Date(),
+      }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, r.id)));
+      await auditLog(tenantId, 'update', 'bank_feed', r.id,
+        { amount: r.after.amount, feedDate: r.after.feedDate }, { amount: r.before.amount, feedDate: r.before.feedDate, undoneBatchId: batchId },
+        actor.userId, tx);
     }
     if (untouched.length > 0) {
       await tx.delete(bankFeedItems).where(and(
@@ -866,10 +1114,11 @@ export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly:
     }
     const undoneAt = new Date();
     await tx.update(bankImportBatches).set({ undoneAt, undoneBy: actor.userId ?? null }).where(eq(bankImportBatches.id, batchId));
+    const kept = used.length + usedReplaced.length;
     await auditLog(tenantId, 'delete', 'bank_import_batch', batchId, null, {
-      removed: untouched.length, kept: used.length, pendingOnly,
+      removed: untouched.length, restored: restorable.length, kept, pendingOnly,
     }, actor.userId, tx);
-    return { batchId, removed: untouched.length, kept: used.length, undoneAt: undoneAt.toISOString() };
+    return { batchId, removed: untouched.length, restored: restorable.length, kept, undoneAt: undoneAt.toISOString() };
   });
 }
 
@@ -905,28 +1154,40 @@ export async function listBatches(actor: BatchActor, filters: { accountId?: stri
   }));
 }
 
-/** Connections whose saved identity has this hash (first), else this mask. */
-export async function lookupConnections(actor: BatchActor, q: { accountKeyHash?: string; mask?: string }) {
+/**
+ * Connections of the company whose saved identity matches the file's raw
+ * BANKID / ACCTID (hashed under the company link key; first), else those
+ * with this mask (the given one, or the ACCTID's last 4). Never creates a
+ * link key. The raw values are not kept.
+ */
+export async function lookupConnections(actor: BatchActor, q: { bankId?: string | null; acctId?: string; mask?: string }) {
   const companyClause = actor.companyId ? sql`AND (a.company_id = ${actor.companyId} OR a.company_id IS NULL)` : sql``;
-  if (q.accountKeyHash) {
+  let accountKeyHash: string | undefined;
+  if (q.acctId && actor.companyId) {
+    const ident = await bankIdentityOf(db, actor.tenantId, actor.companyId, { bankId: q.bankId ?? null, acctId: q.acctId }, false);
+    if (ident.keyed) accountKeyHash = ident.accountKeyHash;
+  }
+  const mask = q.mask ?? (q.acctId ? maskedAccount(q.acctId) : undefined);
+  if (mask !== undefined && !isMasked(mask)) throw AppError.badRequest('mask shows at most 4 digits', 'VALIDATION_ERROR');
+  if (accountKeyHash) {
     const r = await db.execute(sql`
       SELECT c.id AS connection_id, c.account_id, a.name AS account_name, i.mask
       FROM bank_connection_identities i
       JOIN bank_connections c ON c.id = i.bank_connection_id AND c.tenant_id = i.tenant_id
       JOIN accounts a ON a.id = c.account_id AND a.tenant_id = c.tenant_id
-      WHERE i.tenant_id = ${actor.tenantId} AND i.account_key_hash = ${q.accountKeyHash} ${companyClause}`);
+      WHERE i.tenant_id = ${actor.tenantId} AND i.account_key_hash = ${accountKeyHash} ${companyClause}`);
     const rows = r.rows as Array<{ connection_id: string; account_id: string; account_name: string; mask: string }>;
-    if (rows.length > 0 || !q.mask) {
+    if (rows.length > 0 || mask === undefined) {
       return rows.map((x) => ({ connectionId: x.connection_id, accountId: x.account_id, accountName: x.account_name, mask: x.mask, via: 'hash' as const }));
     }
   }
-  if (!q.mask) return [];
+  if (mask === undefined) return [];
   const r = await db.execute(sql`
     SELECT DISTINCT ON (c.id) c.id AS connection_id, c.account_id, a.name AS account_name, COALESCE(i.mask, c.mask) AS mask
     FROM bank_connections c
     JOIN accounts a ON a.id = c.account_id AND a.tenant_id = c.tenant_id
-    LEFT JOIN bank_connection_identities i ON i.bank_connection_id = c.id AND i.tenant_id = c.tenant_id AND i.mask = ${q.mask}
-    WHERE c.tenant_id = ${actor.tenantId} AND (i.id IS NOT NULL OR c.mask = ${q.mask}) ${companyClause}
+    LEFT JOIN bank_connection_identities i ON i.bank_connection_id = c.id AND i.tenant_id = c.tenant_id AND i.mask = ${mask}
+    WHERE c.tenant_id = ${actor.tenantId} AND (i.id IS NOT NULL OR c.mask = ${mask}) ${companyClause}
     ORDER BY c.id`);
   return (r.rows as Array<{ connection_id: string; account_id: string; account_name: string; mask: string }>)
     .map((x) => ({ connectionId: x.connection_id, accountId: x.account_id, accountName: x.account_name, mask: x.mask, via: 'mask' as const }));
