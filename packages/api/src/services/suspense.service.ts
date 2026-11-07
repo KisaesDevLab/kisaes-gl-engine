@@ -32,7 +32,7 @@ export interface PostToSuspenseResult {
   posted: number;
   /** Rows that were not in `pending` status, so bulkCategorize ignored them. */
   skipped: Array<{ id: string; reason: string }>;
-  failures: Array<{ id: string; error: string }>;
+  failures: Array<{ id: string; error: string; code?: string }>;
 }
 
 /**

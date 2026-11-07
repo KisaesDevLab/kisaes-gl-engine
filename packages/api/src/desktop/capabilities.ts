@@ -710,5 +710,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * valuation detail rows carry expenseKind; adjustment lines with opposite-sign quantity and value, and part lines with more than 2
    * decimals, are 400 VALIDATION_ERROR.
    */
-  'inventory-checkpoint-v1',];
+  'inventory-checkpoint-v1',
+  /**
+   * Bank Feed closed period (U-165): PUT /banking/feed/:id/categorize, POST /banking/feed/:id/approve, POST /banking/feed/bulk-approve,
+   * POST /banking/feed/bulk-categorize and POST /banking/feed/bulk-post-to-suspense take `closingPassword` (or a staff
+   * `overrideConfirmed: true` when the company has no closing-date password) like POST /transactions. Single item: 423
+   * TB_PERIOD_LOCKED (details lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429
+   * CLOSING_PASSWORD_RATE_LIMIT; an allowed posting writes a closing_date_override audit row. Bulk: a wrong password is 403 before any
+   * item posts; a closed-period item without one is a `failures` entry {id, error, code: 'TB_PERIOD_LOCKED'}; every failure carries
+   * its error `code` when there is one.
+   */
+  'feed-closing-date-v1',
+];
 

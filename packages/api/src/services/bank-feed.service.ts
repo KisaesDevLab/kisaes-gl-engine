@@ -960,7 +960,8 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[], userI
 
   let approved = 0;
   let skipped = 0;
-  const failures: Array<{ id: string; error: string }> = [];
+  // `code` (U-165): the failed item's error code, e.g. TB_PERIOD_LOCKED.
+  const failures: Array<{ id: string; error: string; code?: string }> = [];
   for (const id of feedItemIds) {
     try {
       const item = await db.query.bankFeedItems.findFirst({
@@ -988,7 +989,7 @@ export async function bulkApprove(tenantId: string, feedItemIds: string[], userI
         skipped++;
       }
     } catch (err: any) {
-      failures.push({ id, error: err?.message || 'unknown error' });
+      failures.push({ id, error: err?.message || 'unknown error', ...(typeof err?.code === 'string' ? { code: err.code } : {}) });
     }
   }
   return { approved, skipped, failed: failures.length, failures };
@@ -1033,7 +1034,7 @@ export async function bulkAssign(tenantId: string, feedItemIds: string[], input:
 
 export async function bulkCategorize(tenantId: string, feedItemIds: string[], accountId: string, contactId?: string, memo?: string, tagId?: string | null, userId?: string, companyId?: string) {
   let categorized = 0;
-  const failures: Array<{ id: string; error: string }> = [];
+  const failures: Array<{ id: string; error: string; code?: string }> = [];
   for (const id of feedItemIds) {
     try {
       const item = await db.query.bankFeedItems.findFirst({
@@ -1044,7 +1045,7 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
         categorized++;
       }
     } catch (err: any) {
-      failures.push({ id, error: err?.message || 'unknown error' });
+      failures.push({ id, error: err?.message || 'unknown error', ...(typeof err?.code === 'string' ? { code: err.code } : {}) });
     }
   }
   return { categorized, failures };
