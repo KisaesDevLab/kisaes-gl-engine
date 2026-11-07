@@ -21,9 +21,6 @@ import { requirePermission, requireResource, resolvePermissionsForRequest } from
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
-import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
-import { lockContextMiddleware, getLockContext } from '../services/lock-context.js';
-import { precheckClosingPassword } from '../services/closing-password.service.js';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as depositSuggestions from '../services/deposit-suggestions.service.js';
@@ -33,6 +30,9 @@ import * as reconciliationSignoffService from '../services/reconciliation-signof
 import { buildReconciliationProof } from '../services/reconciliation-proof.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware, getLockContext } from '../services/lock-context.js';
+import { precheckClosingPassword } from '../services/closing-password.service.js';
 import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/check-payee-backfill.service.js';
 // Reuses the batch categorizer's contact→account resolver (contact default
 // → most-recently-used category account) so the feed and batch entry share
