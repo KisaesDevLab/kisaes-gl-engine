@@ -2185,13 +2185,32 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
 
   if (items.length === 0) throw AppError.badRequest('No transactions found in OFX file');
 
-  // Duplicate detection: OFX has FITID (provider transaction ID) — skip if already imported
+  // A FITID that occurs more than once in this file can't identify a
+  // transaction (U-163): it is ignored on every occurrence, and those rows
+  // dedupe by date, amount and description like a file without FITIDs.
+  const fitidCounts = new Map<string, number>();
+  for (const item of items) {
+    if (item.providerTransactionId) {
+      fitidCounts.set(item.providerTransactionId, (fitidCounts.get(item.providerTransactionId) ?? 0) + 1);
+    }
+  }
+  for (const item of items) {
+    if (item.providerTransactionId && (fitidCounts.get(item.providerTransactionId) ?? 0) > 1) {
+      item.providerTransactionId = null;
+    }
+  }
+
+  // Duplicate detection: OFX has FITID (provider transaction ID) — skip if
+  // this connection already imported it. A FITID is unique per bank
+  // account, not per tenant: another account's transaction with the same
+  // FITID is not a duplicate (U-163, migration 0262).
   const dedupedOfx = [];
   for (const item of items) {
     if (item.providerTransactionId) {
       const existing = await db.query.bankFeedItems.findFirst({
         where: and(
           eq(bankFeedItems.tenantId, tenantId),
+          eq(bankFeedItems.bankConnectionId, bankConnectionId),
           eq(bankFeedItems.providerTransactionId, item.providerTransactionId),
         ),
       });
@@ -2214,7 +2233,14 @@ export async function importFromOfx(tenantId: string, bankConnectionId: string, 
   if (dedupedOfx.length === 0) return { items: [], cleansing: emptyCleansingAggregate() };
 
   const ofxCompanyId = await resolveCompanyForConnection(tenantId, bankConnectionId);
-  const insertedOfx = await db.insert(bankFeedItems).values(dedupedOfx.map((d) => ({ ...d, companyId: ofxCompanyId }))).returning();
+  // A concurrent import of the same file may have inserted a FITID since
+  // the lookup above: the unique index skips it instead of failing the
+  // whole import.
+  const insertedOfx = await db.insert(bankFeedItems)
+    .values(dedupedOfx.map((d) => ({ ...d, companyId: ofxCompanyId })))
+    .onConflictDoNothing()
+    .returning();
+  if (insertedOfx.length === 0) return { items: [], cleansing: emptyCleansingAggregate() };
 
   // Run full cleansing pipeline on each item
   const cleansing = await runCleansingPipeline(tenantId, insertedOfx);
