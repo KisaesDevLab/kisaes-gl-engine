@@ -74,6 +74,13 @@ export interface IdempotentOptions {
    * recorded nothing); routes on `/:id` may read `req.params` instead.
    */
   replay?: (req: Request, entity: IdemEntity | null) => Promise<unknown>;
+  /**
+   * Replay a success through `replay` even when a body was stored, for a
+   * response with a field that changes after the request (bank import
+   * batches: postProcessing). The stored body is the fallback when the
+   * reader fails; a stored error is always replayed as stored.
+   */
+  liveReplay?: boolean;
 }
 
 /** 'POST /transactions/:id/void' from the router mount and the route path, without the /api/vN prefix. */
@@ -91,10 +98,17 @@ function entityOf(row: Pick<IdempotencyRow, 'entityType' | 'entityId'>): IdemEnt
 
 /** The status and body a replay of `row` sends. */
 async function replayOf(req: Request, row: IdempotencyRow, opts: IdempotentOptions): Promise<{ status: number; body: unknown }> {
+  const entity = entityOf(row);
   if (row.state === 'done' && row.responseStatus !== null && !row.responseTruncated && row.responseBody !== null) {
+    if (opts.liveReplay && opts.replay && entity && isSuccess(row.responseStatus)) {
+      try {
+        return { status: row.responseStatus, body: await opts.replay(req, entity) };
+      } catch {
+        // The record is gone: the stored body.
+      }
+    }
     return { status: row.responseStatus, body: row.responseBody };
   }
-  const entity = entityOf(row);
   if (opts.replay) {
     try {
       return { status: row.successStatus, body: await opts.replay(req, entity) };

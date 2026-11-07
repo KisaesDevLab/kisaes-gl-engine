@@ -22,6 +22,10 @@ paths = [
   '''packages/api/src/routes/closing-password\.aje\.routes\.test\.ts''',
   '''packages/api/src/routes/transactions\.delete\.routes\.test\.ts''',
   '''packages/api/src/services/lock-context\.test\.ts''',
+  # U-06 dedupe keys v1 golden file: SHA-256 row and FITID keys of synthetic
+  # test rows (the "rowKey"/"fitidKey" hex is misread as an API key). Not
+  # secrets; the file is read by the engine and ClientLedger tests.
+  '''packages/api/src/services/bank-import/__fixtures__/dedupe_v1\.json''',
 ]
 # Closing-date password placeholders in packages/api/src/routes/checks.routes.edit.test.ts
 # (current lines carry gitleaks:allow; these two exact values also cover the

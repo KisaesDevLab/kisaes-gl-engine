@@ -310,6 +310,11 @@ async function start() {
     void import('./services/idempotency.service.js')
       .then((m) => { m.startIdempotencySweeper(); })
       .catch((err) => { console.error('Idempotency-Key sweeper failed to start:', errorSummaryForLog(err)); });
+    // Bank file import batches (U-06) whose post-processing was cut short
+    // (a crash or restart after the commit) run it again.
+    void import('./services/bank-import/import-batch.service.js')
+      .then((m) => m.resumeScheduledPostProcessing())
+      .catch((err) => { console.error('Bank import post-processing resume failed:', errorSummaryForLog(err)); });
     // MIG-2: router mode only; non-blocking with retry — AI features fail
     // closed at the router until registration lands, which is correct.
     // Load the Admin -> AI router connection (overrides env) before registering.

@@ -1842,6 +1842,13 @@
       "when": 1787500017380,
       "tag": "0262_bank_feed_fitid_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 263,
+      "version": "7",
+      "when": 1787500018380,
+      "tag": "0263_bank_import_batches",
+      "breakpoints": true
     }
   ]
 }

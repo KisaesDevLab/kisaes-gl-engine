@@ -117,6 +117,8 @@ async function seedTenant(): Promise<Seed> {
   // M5: a vendor TIN encrypted under this install's key, and one this install cannot read.
   await q(`INSERT INTO vendor_1099_profile (contact_id, tenant_id, tin_encrypted) VALUES ($1, $2, $3)`, [vendor!.id, tenantId, encrypt(`12-${stamp.slice(0, 7)}`)]);
   await q(`INSERT INTO vendor_1099_profile (contact_id, tenant_id, tin_encrypted) VALUES ($1, $2, 'not:valid:ciphertext')`, [customer!.id, tenantId]);
+  // Q-P25u: the company's bank-file link key travels re-encrypted like the TIN.
+  await q(`INSERT INTO bank_link_keys (tenant_id, company_id, key_encrypted) VALUES ($1, $2, $3)`, [tenantId, c1!.id, encrypt(`${'ab'.repeat(16)}${crypto.createHash('sha256').update(stamp).digest('hex').slice(0, 32)}`)]);
   const txn = async (company: string, type: string, date: string, status: string, memo: string | null, contact: string | null) =>
     (await q<{ id: string }>(`INSERT INTO transactions (tenant_id, company_id, txn_type, txn_date, status, memo, contact_id, total) VALUES ($1, $2, $3, $4, $5, $6, $7, 100) RETURNING id`, [tenantId, company, type, date, status, memo, contact]))[0]!.id;
   const line = async (t: string, company: string, account: string, debit: string, credit: string, extra = '') =>
@@ -550,6 +552,17 @@ describe('import', () => {
     const tagRows = await q<{ name: string; tag_number: string | null }>(`SELECT name, tag_number FROM tags WHERE tenant_id = $1 ORDER BY name`, [imported.tenantId]);
     expect(tagRows).toEqual([{ name: 'rt-tag', tag_number: 'RT-07' }, { name: 'rt-tag-no-number', tag_number: null }]);
   }, 60_000);
+
+  it('the company bank-file link key travels: encrypted again under this install key, same key (Q-P25u)', async () => {
+    const [source] = await q<{ key_encrypted: string }>(`SELECT key_encrypted FROM bank_link_keys WHERE tenant_id = $1`, [seed.tenantId]);
+    const rows = await q<{ company_id: string; key_encrypted: string }>(`SELECT company_id, key_encrypted FROM bank_link_keys WHERE tenant_id = $1`, [imported.tenantId]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.key_encrypted).not.toBe(source!.key_encrypted);
+    expect(decrypt(rows[0]!.key_encrypted)).toBe(decrypt(source!.key_encrypted));
+    const [co] = await q<{ business_name: string }>(`SELECT business_name FROM companies WHERE id = $1`, [rows[0]!.company_id]);
+    expect(co!.business_name).toBe('RT Co One');
+    expect(fs.readFileSync(exported.path!).includes(decrypt(source!.key_encrypted))).toBe(false);
+  });
 
   it('the vendor TIN is encrypted again under this install key and an unreadable one became NULL (M5)', async () => {
     const rows = await q<{ contact_id: string; tin_encrypted: string | null }>(`SELECT contact_id, tin_encrypted FROM vendor_1099_profile WHERE tenant_id = $1`, [imported.tenantId]);

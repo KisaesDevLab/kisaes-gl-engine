@@ -160,7 +160,14 @@ export const IDEMPOTENCY_INVENTORY_V1_ROUTES = [
 /** Keyed by units-of-measure-v1, with idempotency-v1's contract (U-161): create a unit set. */
 export const IDEMPOTENCY_UNIT_SETS_V1_ROUTES = ['post /api/v1/unit-sets'];
 
+/** Keyed by bank-import-batch-v1 (U-06): a commit needs the key; undo takes one. */
+export const IDEMPOTENCY_BANK_IMPORT_V1_ROUTES = [
+  'post /api/v1/banking/feed/import-batch',
+  'delete /api/v1/banking/feed/import-batches/{id}',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_BANK_IMPORT_V1_ROUTES,
   ...IDEMPOTENCY_UNIT_SETS_V1_ROUTES,
   ...IDEMPOTENCY_INVENTORY_V1_ROUTES,
   ...IDEMPOTENCY_SALES_TAX_V1_ROUTES, ...IDEMPOTENCY_SALES_TAX_PAY_V1_ROUTES, ...IDEMPOTENCY_RECOVERY_V1_ROUTES,

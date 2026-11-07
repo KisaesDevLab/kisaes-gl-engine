@@ -3,7 +3,7 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, text, decimal, boolean, date, timestamp, index, uniqueIndex, jsonb, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, decimal, numeric, boolean, date, timestamp, index, uniqueIndex, jsonb, integer, char, smallint } from 'drizzle-orm/pg-core';
 
 export const bankConnections = pgTable('bank_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -79,6 +79,18 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // matched / excluded item. NULL = not yet reviewed for the close.
   closeReviewedAt: timestamp('close_reviewed_at', { withTimezone: true }),
   closeReviewedBy: uuid('close_reviewed_by'),
+  // Migration 0263 (U-06, bank-import-batch-v1): the import batch a row came
+  // from (FK ON DELETE SET NULL in SQL), its dedupe key (the FITID key when
+  // the bank id was trusted, else the row key; unique per connection), its
+  // row key, the key version and the line in the source file.
+  importBatchId: uuid('import_batch_id'),
+  dedupeKey: char('dedupe_key', { length: 64 }),
+  rowKey: char('row_key', { length: 64 }),
+  dedupeVersion: smallint('dedupe_version'),
+  sourceLine: integer('source_line'),
+  // Q-P25c: imported as a look-alike of an existing item (soft reference).
+  possibleDuplicate: boolean('possible_duplicate').notNull().default(false),
+  possibleDuplicateOf: uuid('possible_duplicate_of'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
@@ -91,6 +103,85 @@ export const bankFeedItems = pgTable('bank_feed_items', {
     .on(table.bankConnectionId, table.providerTransactionId)
     .where(sql`provider_transaction_id IS NOT NULL`),
   tenantProviderTxnIdx: index('idx_bfi_tenant_provider_txn').on(table.tenantId, table.providerTransactionId),
+  connectionDedupeKeyUniq: uniqueIndex('uq_bfi_connection_dedupe_key')
+    .on(table.bankConnectionId, table.dedupeKey)
+    .where(sql`dedupe_key IS NOT NULL`),
+  connectionRowKeyIdx: index('idx_bfi_connection_row_key').on(table.bankConnectionId, table.rowKey)
+    .where(sql`row_key IS NOT NULL`),
+  importBatchIdx: index('idx_bfi_import_batch').on(table.importBatchId).where(sql`import_batch_id IS NOT NULL`),
+}));
+
+// Bank file import batches (migration 0263, U-06). One row per committed
+// batch, also when nothing was inserted. `result` is the response, kept for
+// an Idempotency-Key replay. FKs (tenant, company, connection) in the SQL.
+export const bankImportBatches = pgTable('bank_import_batches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id'),
+  bankConnectionId: uuid('bank_connection_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  format: varchar('format', { length: 8 }).notNull(), // ofx | qfx | qif | csv
+  fileName: varchar('file_name', { length: 255 }).notNull(),
+  sourceFileSha256: char('source_file_sha256', { length: 64 }).notNull(),
+  sectionIndex: integer('section_index').notNull().default(0),
+  sectionStart: date('section_start'),
+  sectionEnd: date('section_end'),
+  amountsFlipped: boolean('amounts_flipped').notNull().default(false),
+  csvMapping: jsonb('csv_mapping'),
+  rowsInFile: integer('rows_in_file').notNull().default(0),
+  newCount: integer('new_count').notNull().default(0),
+  duplicateCount: integer('duplicate_count').notNull().default(0),
+  possibleDuplicateCount: integer('possible_duplicate_count').notNull().default(0),
+  changedCount: integer('changed_count').notNull().default(0),
+  closedPeriodCount: integer('closed_period_count').notNull().default(0),
+  insertedCount: integer('inserted_count').notNull().default(0),
+  insertedTotal: numeric('inserted_total').notNull().default('0'),
+  fileEndingBalance: decimal('file_ending_balance', { precision: 19, scale: 4 }),
+  fileEndingDate: date('file_ending_date'),
+  result: jsonb('result'),
+  // `changed` rows the batch replaced, with their values before (undo restores them).
+  replacedItems: jsonb('replaced_items'),
+  postProcessing: varchar('post_processing', { length: 12 }).notNull().default('scheduled'), // scheduled | done | failed
+  undoneAt: timestamp('undone_at', { withTimezone: true }),
+  undoneBy: uuid('undone_by'),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  accountIdx: index('idx_bank_import_batches_account').on(table.tenantId, table.accountId, table.format, table.createdAt),
+  scheduledIdx: index('idx_bank_import_batches_scheduled').on(table.createdAt).where(sql`post_processing = 'scheduled'`),
+}));
+
+// Which bank connection a bank file's account identity belongs to
+// (migration 0263, U-06). account_key_hash is an HMAC of the bank file's
+// BANKID and ACCTID under the company's link key (bank_link_keys, owner
+// Q-P25u), computed by the engine; the account number is never stored.
+// Unique per tenant (the key differs per company).
+export const bankConnectionIdentities = pgTable('bank_connection_identities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  bankConnectionId: uuid('bank_connection_id').notNull(),
+  mask: varchar('mask', { length: 10 }).notNull(),
+  accountKeyHash: char('account_key_hash', { length: 64 }).notNull(),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  hashUniq: uniqueIndex('uq_bank_connection_identities_hash').on(table.tenantId, table.accountKeyHash),
+  connectionIdx: index('idx_bank_connection_identities_connection').on(table.bankConnectionId),
+}));
+
+// One bank-file link key per company (migration 0263, owner Q-P25u): the
+// HMAC key of bank_connection_identities.account_key_hash, encrypted with
+// utils/encryption.ts; re-encrypted for the importing install by a tenant
+// export (SECRET_COLUMNS). FKs (tenant, company) in the SQL.
+export const bankLinkKeys = pgTable('bank_link_keys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id').notNull(),
+  keyEncrypted: text('key_encrypted'), // NULL: none yet or unreadable after a restore
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  companyUniq: uniqueIndex('uq_bank_link_keys_company').on(table.companyId),
 }));
 
 export const reconciliations = pgTable('reconciliations', {
