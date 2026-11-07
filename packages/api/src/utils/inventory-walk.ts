@@ -214,7 +214,10 @@ export function walk(seed: WalkState, rows: readonly WalkRow[], links: ReadonlyM
     }
     s = { ...after };
     if (row.kind === 'sale' && row.transactionId && row.quantity.lessThan(0)) {
-      sales.set(row.transactionId, { r: fig.value.negated(), s: row.quantity.negated(), n: ZERO, b: ZERO });
+      // A return that sorts before its sale (a re-walk after an import, when they tie on date and created_at) already took
+      // units back against the sale as `links` gave it: those units and their value carry over (#230 residual).
+      const prev = sales.get(row.transactionId);
+      sales.set(row.transactionId, { r: fig.value.negated(), s: row.quantity.negated(), n: prev?.n ?? ZERO, b: prev?.b ?? ZERO });
       shares.set(row.transactionId, ZERO);
     }
     trackShort(short, before, row, fig, (saleId, share) => {

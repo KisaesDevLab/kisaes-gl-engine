@@ -355,4 +355,33 @@ describe('the import re-walks every item (PR-4 RB1: documents that tie on date a
     await bill(await companyOf(imported.tenantId), '2026-02-10', '1', '5.00', '5.00', 'T3');
     await invariantsHold(imported.tenantId);
   }, 600_000);
+
+  it('a linked return that ties with its sale: on whichever side it sorts first, every unit back still brings exactly the sale\'s R (#230 residual)', async () => {
+    expect(callerId).not.toBe('');
+    const co = await stockedTenant('tie-return');
+    await bill(co, '2026-02-01', '1', '4.00', '4.00', 'L1');
+    await sell(co, '2026-02-02', '1', 'L0');
+    const sale = await sell(co, '2026-02-03', '2', 'LS');
+    const memo = async (date: string, num: string) => (await salesDocs.createCreditMemoDocument(co.tenantId, { contactId: co.customer, txnDate: date,
+      txnNumber: `${num}-${stamp}`, lines: [{ itemId: co.itemId, quantity: '1', unitPrice: '10.00', isTaxable: false, returnOf: { transactionId: sale.id } }] } as never,
+    undefined, co.companyId)).creditMemo;
+    const first = await memo('2026-02-03', 'LM1');
+    await bill(co, '2026-02-04', '1', '10.00', '10.00', 'L2');
+    await memo('2026-02-05', 'LM2');
+    // The sale and its first return as if entered in one database transaction: the ids decide which comes first.
+    const tied = '2026-02-03T12:00:00.000Z';
+    await q(`UPDATE transactions SET created_at = $1::timestamptz WHERE id IN ($2, $3)`, [tied, sale.id, first.id]);
+    await q(`UPDATE inventory_movements SET txn_created_at = $1::timestamptz WHERE transaction_id IN ($2, $3)`, [tied, sale.id, first.id]);
+    await db.transaction(async (tx) => { await rewalkCompany(tx, co.tenantId, co.companyId, 'test'); });
+    const file = (await runExport(co.tenantId, callerId, { passphrase: PASS, host: { app: 'ClientLedger', kind: 'backup' } })).path!;
+    const imported = await importFlipped(file, [sale.id, first.id]);
+    // One side walks the return before its sale. On both, all units are back, so the returns add up to relief + correction_share.
+    for (const tid of [co.tenantId, imported.tenantId]) {
+      const r = await q<{ back: string; r: string }>(`SELECT (SELECT SUM(m.value) FROM inventory_movements m WHERE m.tenant_id = $1 AND m.source_transaction_id = s.transaction_id
+          AND m.voided = false)::numeric(19,2)::text AS back, (-s.value + s.correction_share)::numeric(19,2)::text AS r
+        FROM inventory_movements s JOIN transactions t ON t.id = s.transaction_id WHERE s.tenant_id = $1 AND t.txn_number = $2`, [tid, `LS-${stamp}`]);
+      expect(r[0]!.back, tid === co.tenantId ? 'original' : 'imported').toBe(r[0]!.r);
+      await invariantsHold(tid);
+    }
+  }, 600_000);
 });
