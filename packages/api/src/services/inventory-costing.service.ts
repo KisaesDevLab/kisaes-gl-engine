@@ -187,6 +187,10 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
       throw AppError.badRequest(`Line ${i + 1}: inventory items can't be used on this kind of transaction yet`, 'INVENTORY_DOCUMENT_UNSUPPORTED',
         { lineIndex: i, txnType });
     }
+    // PR-4 N5: a part line's amount is whole cents (it is the movement's given value on purchases and adjustments).
+    if (d(l.debit).decimalPlaces() > 2 || d(l.credit).decimalPlaces() > 2) {
+      throw AppError.badRequest(`Line ${i + 1}: an inventory item line's amount has at most 2 decimal places`, 'VALIDATION_ERROR', { lineIndex: i });
+    }
     const hasQty = l.quantity !== undefined && l.quantity !== null && l.quantity !== '';
     if (!ADJUST_TYPES.has(txnType) && (!hasQty || !baseQuantity(l).greaterThan(0))) {
       throw AppError.badRequest(`Line ${i + 1}: an inventory item line needs a quantity above 0`, 'VALIDATION_ERROR', { lineIndex: i });
@@ -410,6 +414,11 @@ export async function prepareEdit(tx: Tx, tenantId: string, companyId: string | 
 export async function prepareExisting(tx: Tx, tenantId: string, companyId: string | null | undefined, txnId: string, txnDate: string): Promise<CostingLock | null> {
   const old = await movementItemIds(tx, tenantId, txnId);
   if (old.length === 0) return null;
+  // PR-4 N3: a document whose movements are all voided already (deleting a void document) moves nothing: no costing
+  // lock and no INVENTORY_PERIOD_CLOSED; the ledger's own closing-date check applies.
+  const live = await tx.select({ id: inventoryMovements.id }).from(inventoryMovements)
+    .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.transactionId, txnId), eq(inventoryMovements.voided, false))).limit(1);
+  if (live.length === 0) return null;
   const held = await lock(tx, tenantId, companyId, old, [txnDate]);
   await assertSaleReturnsKept(tx, tenantId, txnId, null);
   return held;

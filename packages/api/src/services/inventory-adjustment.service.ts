@@ -109,6 +109,10 @@ async function adjustmentLines(executor: DbOrTx, tenantId: string, companyId: st
     if (l.unitId && !hasQty) throw AppError.badRequest(`lines[${i}].unitId goes with a quantityChange`, 'VALIDATION_ERROR', { lineIndex: i });
     if (hasValue) {
       const v = parseValueChange(l.valueChange, `lines[${i}].valueChange`, opts.openingZero === true);
+      // PR-4 N4: units and value move the same way (units out with value in is refused).
+      if (qty && !v.isZero() && new Decimal(qty).isNegative() !== v.isNegative()) {
+        throw AppError.badRequest(`lines[${i}]: quantityChange and valueChange must have the same sign`, 'VALIDATION_ERROR', { lineIndex: i, field: `lines[${i}].valueChange` });
+      }
       const amt = v.abs().toFixed(2);
       const up = !v.isNegative();
       lines.push({ accountId: part.assetAccountId, itemId: part.id, ...(qty ? { quantity: qty, ...unit } : {}), debit: up ? amt : '0', credit: up ? '0' : amt });

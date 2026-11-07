@@ -14,7 +14,8 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, companies, contacts, inventoryMovements, items, journalLines, reconciliationLines, reconciliations, transactions } from '../db/schema/index.js';
+import { accounts, companies, contacts, inventoryMovements, items, journalLines, reconciliationLines, reconciliations, transactions,
+  transactionTaxLines, salesTaxPaymentLines, salesTaxGroupMembers, salesTaxItems, salesTaxAgencies } from '../db/schema/index.js';
 import { itemsRouter } from './items.routes.js';
 import { companyRouter } from './company.routes.js';
 import { billsRouter } from './bills.routes.js';
@@ -26,6 +27,9 @@ import { checksRouter } from './checks.routes.js';
 import { inventoryRouter } from './inventory.routes.js';
 import { inventoryReportsRouter } from './inventory-reports.routes.js';
 import { unitSetsRouter } from './unit-sets.routes.js';
+import { salesTaxRouter, salesTaxReportsRouter } from './sales-tax.routes.js';
+import { reportsRouter } from './reports.routes.js';
+import { paymentsRouter } from './payments.routes.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
@@ -40,11 +44,13 @@ beforeEach(async () => {
     const recs = await db.select({ id: reconciliations.id }).from(reconciliations).where(eq(reconciliations.tenantId, tid));
     for (const r of recs) await db.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, r.id));
     await db.delete(reconciliations).where(eq(reconciliations.tenantId, tid));
+    for (const t of [transactionTaxLines, salesTaxPaymentLines, salesTaxGroupMembers, salesTaxItems, salesTaxAgencies]) await db.delete(t).where(eq(t.tenantId, tid));
   }];
   await h.start([['/api/v1/items', itemsRouter], ['/api/v1/company', companyRouter], ['/api/v1/bills', billsRouter],
     ['/api/v1/invoices', invoicesRouter], ['/api/v1/transactions', transactionsRouter], ['/api/v1/credit-memos', creditMemosRouter],
     ['/api/v1/sales-receipts', salesReceiptsRouter], ['/api/v1/checks', checksRouter], ['/api/v1/inventory', inventoryRouter],
-    ['/api/v1/reports', inventoryReportsRouter], ['/api/v1/unit-sets', unitSetsRouter]]);
+    ['/api/v1/reports', inventoryReportsRouter], ['/api/v1/unit-sets', unitSetsRouter], ['/api/v1/sales-tax', salesTaxRouter],
+    ['/api/v1/reports', salesTaxReportsRouter], ['/api/v1/reports', reportsRouter], ['/api/v1/payments', paymentsRouter]]);
   c = await h.company();
 });
 afterEach(async () => { await h.stop(); });
@@ -344,7 +350,7 @@ describe('P24 review: returns, checks, cash sales and copies (E2b)', () => {
         .filter((l) => !['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'].includes(l.lineRole ?? ''))
         .map((l) => JSON.stringify(l)).sort(),
       txn: await db.execute(sql`SELECT total::text, tax_amount::text, balance_due::text, updated_at::text FROM transactions WHERE id = ${inv}`).then((x) => x.rows),
-      tax: await db.execute(sql`SELECT * FROM transaction_tax_lines WHERE transaction_id = ${inv} ORDER BY id`).then((x) => x.rows.map((row) => JSON.stringify(row))).catch(() => []),
+      tax: await db.execute(sql`SELECT * FROM transaction_tax_lines WHERE transaction_id = ${inv} ORDER BY id`).then((x) => x.rows.map((row) => JSON.stringify(row))),
     });
     const before = await snap();
     const cogsBefore = (await db.select().from(journalLines).where(and(eq(journalLines.transactionId, inv), eq(journalLines.lineRole, 'cogs'))))[0]!.debit;
@@ -421,5 +427,73 @@ describe('P24 review: units of measure (E5)', () => {
     expect([...err(big), big.json['error']?.details?.field], JSON.stringify(big.json)).toEqual([400, 'VALIDATION_ERROR', 'quantity']);
     const ok = await req('POST', '/bills', line('99.9999'));
     expect(ok.status, JSON.stringify(ok.json)).toBe(201);
+  });
+});
+describe('PR-4 missing tests 5 and 6: sales tax items (U-147) with inventory', () => {
+  /** An agency and an 8.25 % tax item (U-147) as the company default. */
+  async function salesTaxItem() {
+    const [v] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Sample Revenue Dept.' }).returning();
+    const ag = await req('POST', '/sales-tax/agencies', { vendorId: v!.id });
+    expect(ag.status, JSON.stringify(ag.json)).toBe(201);
+    const it = await req('POST', '/sales-tax/items', { name: 'State', rate: '0.082500', agencyId: ag.json['id'] });
+    expect(it.status, JSON.stringify(it.json)).toBe(201);
+    await db.update(companies).set({ defaultSalesTaxId: it.json['id'] }).where(eq(companies.id, c.companyId));
+    return { agency: String(ag.json['id']), tax: String(it.json['id']) };
+  }
+  const sale = (w: World, date: string, quantity: string) => req('POST', '/invoices', { contactId: c.customer, txnDate: date,
+    lines: [{ itemId: w.part, quantity, unitPrice: '10.00', isTaxable: true }] });
+  const idOf = (j: Body) => String(j['invoice']?.id ?? j['creditMemo']?.id ?? j['id']);
+
+  it('5: the liability report (accrual and cash), sales tax owed and A/R aging are byte-identical before and after a walk re-costs a taxed sale', async () => {
+    const w = await setup();
+    const st = await salesTaxItem();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '10', amount: '30.00' }]);
+    const inv = await sale(w, '2026-01-08', '3');
+    expect(inv.status, JSON.stringify(inv.json)).toBe(201);
+    const invId = idOf(inv.json);
+    const pay = await req('POST', '/payments/receive', { customerId: c.customer, date: '2026-01-09', amount: '16.24', depositTo: c.roles['checking'],
+      applications: [{ invoiceId: invId, amount: '16.24' }] });
+    expect(pay.status, JSON.stringify(pay.json)).toBe(201);
+    const get = async (p: string) => { const r = await req('GET', p); expect(r.status, `${p} ${JSON.stringify(r.json)}`).toBe(200); return JSON.stringify(r.json); };
+    const snap = async () => ({
+      accrual: await get('/reports/sales-tax-liability?start_date=2026-01-01&end_date=2026-01-31&basis=accrual'),
+      cash: await get('/reports/sales-tax-liability?start_date=2026-01-01&end_date=2026-01-31&basis=cash'),
+      owed: await get(`/sales-tax/owed?asOf=2026-01-31&agencyId=${st.agency}`),
+      aging: await get('/reports/ar-aging-summary?as_of_date=2026-01-31'),
+      tax: (await db.execute(sql`SELECT * FROM transaction_tax_lines WHERE transaction_id = ${invId} ORDER BY id`)).rows.map((row) => JSON.stringify(row)),
+      lines: (await db.select().from(journalLines).where(eq(journalLines.transactionId, invId)))
+        .filter((l) => !['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'].includes(l.lineRole ?? '')).map((l) => JSON.stringify(l)).sort(),
+    });
+    const before = await snap();
+    expect(before.tax.length, 'the U-147 path writes tax rows').toBeGreaterThan(0);
+    const cogs = async () => (await db.select().from(journalLines).where(and(eq(journalLines.transactionId, invId), eq(journalLines.lineRole, 'cogs'))))[0]!.debit;
+    const cogsBefore = await cogs();
+    await bill(w, '2026-01-02', [{ itemId: w.part, quantity: '10', amount: '50.00' }]);
+    expect(await cogs()).not.toBe(cogsBefore);
+    expect(await snap()).toEqual(before);
+  });
+
+  it('6: Pay Sales Tax after a linked return of a taxed part: owed drops by the memo\'s tax; at or below 0 it can\'t be paid; the next period nets', async () => {
+    const w = await setup();
+    const st = await salesTaxItem();
+    await bill(w, '2026-01-05', [{ itemId: w.part, quantity: '10', amount: '30.00' }]);
+    const inv = await sale(w, '2026-01-08', '3');
+    const invId = idOf(inv.json);
+    const owed = async (asOf: string) => (await req('GET', `/sales-tax/owed?asOf=${asOf}&agencyId=${st.agency}`)).json['total'] as string;
+    expect(await owed('2026-01-31')).toBe('2.48');
+    const base = { agencyId: st.agency, bankAccountId: c.roles['checking'], method: 'electronic' };
+    const paid = await req('POST', '/sales-tax/payments', { ...base, throughDate: '2026-01-31', date: '2026-02-05', expectedOwed: '2.48' });
+    expect(paid.status, JSON.stringify(paid.json)).toBe(201);
+    const memo = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-02-10',
+      lines: [{ itemId: w.part, quantity: '3', unitPrice: '10.00', isTaxable: true, returnOf: { transactionId: invId } }] });
+    expect(memo.status, JSON.stringify(memo.json)).toBe(201);
+    expect(await owed('2026-02-28'), 'the memo\'s tax comes off').toBe('-2.48');
+    const none = await req('POST', '/sales-tax/payments', { ...base, throughDate: '2026-02-28', date: '2026-03-05', expectedOwed: '-2.48' });
+    expect([none.status, none.json['error']?.code]).toEqual([400, 'PAYMENT_TOTAL_NOT_POSITIVE']);
+    await sale(w, '2026-03-08', '4');
+    expect(await owed('2026-03-31'), '-2.48 + round2(40.00 x 8.25 %)').toBe('0.82');
+    const next = await req('POST', '/sales-tax/payments', { ...base, throughDate: '2026-03-31', date: '2026-04-05', expectedOwed: '0.82' });
+    expect(next.status, JSON.stringify(next.json)).toBe(201);
+    expect(await owed('2026-03-31')).toBe('0.00');
   });
 });

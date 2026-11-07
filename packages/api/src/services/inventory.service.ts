@@ -56,8 +56,10 @@ const accountScope = (tenantId: string, companyId: string | null | undefined) =>
  * active other-current-asset account named "Inventory Asset" (the oldest
  * when several carry the name); a new "Inventory Asset" account. It is
  * tagged inventory_asset (not a system account: the ACCOUNT_IN_USE guards
- * keep it in place). The COGS account: any active account of type cogs,
- * else a new "Cost of Goods Sold". Idempotent; runs in the settings
+ * keep it in place). The COGS account: the active cogs-type account named
+ * "Cost of Goods Sold", else one of detail type cost_of_goods_sold, else a
+ * new "Cost of Goods Sold" (PR-4 QA-3: a service chart's other cogs-type
+ * accounts are not adopted). Idempotent; runs in the settings
  * transaction with the company row locked.
  */
 export async function ensureInventoryAccounts(tx: DbOrTx, tenantId: string, companyId: string, userId?: string) {
@@ -82,9 +84,12 @@ export async function ensureInventoryAccounts(tx: DbOrTx, tenantId: string, comp
       if (asset) await auditLog(tenantId, 'create', 'account', asset.id, null, asset, userId, tx);
     }
   }
+  // PR-4 QA-3: a cost-of-goods-sold account proper (detail type cost_of_goods_sold, or named "Cost of Goods Sold"), not
+  // any cogs-type account: a service chart's Subcontractors or Project Supplies stays what it is, and a COGS account is made.
   let [cogs] = await tx.select().from(accounts)
-    .where(and(scope, eq(accounts.isActive, true), eq(accounts.accountType, 'cogs')))
-    .orderBy(accounts.createdAt, accounts.id).limit(1);
+    .where(and(scope, eq(accounts.isActive, true), eq(accounts.accountType, 'cogs'),
+      or(eq(accounts.detailType, 'cost_of_goods_sold'), sql`lower(${accounts.name}) = lower(${DEFAULT_COGS_NAME})`)))
+    .orderBy(sql`lower(${accounts.name}) = lower(${DEFAULT_COGS_NAME}) DESC`, accounts.createdAt, accounts.id).limit(1);
   if (!cogs) {
     [cogs] = await tx.insert(accounts).values({
       tenantId, companyId, name: DEFAULT_COGS_NAME, accountType: 'cogs', detailType: 'cost_of_goods_sold', isSystem: false,

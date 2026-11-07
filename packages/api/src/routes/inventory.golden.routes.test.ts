@@ -548,6 +548,27 @@ describe('inventory-costing-v1 guards (B3, B4)', () => {
     await invariants(w);
   });
 
+  it('PR-4 notes: a void document deletes in a closed period (N3); opposite-sign adjustment lines (N4) and sub-cent part lines (N5) are refused', async () => {
+    const w = await setup();
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, 2));
+    const { postTransaction } = await import('../services/ledger.service.js');
+    const ap = (await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'accounts_payable'))))[0]!.id;
+    await expect(postTransaction(c.tenantId, { txnType: 'bill', txnDate: '2026-01-06', contactId: w.vendor, lines: [
+      { accountId: w.asset, debit: '3.3333', credit: '0', itemId: w.items.get('W'), quantity: '1' }, { accountId: ap, debit: '0', credit: '3.3333' }] } as never, c.userId, c.companyId))
+      .rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await expect(postAdjustment(c.tenantId, c.companyId, { txnDate: '2026-01-06', adjustmentAccountId: w.adjustment,
+      lines: [{ itemId: w.items.get('W')!, quantityChange: '-2', valueChange: '5.00' }] }, c.userId)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect((await req('POST', `/transactions/${w.docs.get('A2')}/void`, { reason: 'x' })).status).toBe(200);
+    expect((await req('PUT', '/company/closing-password', { newPassword: 'closing-pass-1' })).status).toBe(200);
+    expect((await req('PUT', '/company/settings', { lockDate: '2026-01-10', closingPassword: 'closing-pass-1' })).status).toBe(200);
+    const del = await req('DELETE', `/transactions/${w.docs.get('A2')}`, { closingPassword: 'closing-pass-1' });
+    expect(del.status, JSON.stringify(del.json)).toBe(200);
+    // A live one in the closed period is still refused, password or not.
+    const del1 = await req('DELETE', `/transactions/${w.docs.get('A1')}`, { closingPassword: 'closing-pass-1' });
+    expect([del1.status, del1.json['error']?.code]).toEqual([409, 'INVENTORY_PERIOD_CLOSED']);
+    await invariants(w);
+  });
+
   it('advertises inventory-costing-v1', () => {
     expect(DESKTOP_CAPABILITIES).toContain('inventory-costing-v1');
   });
@@ -705,6 +726,11 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
     const sr = (await req('GET', `/sales-receipts/${w.docs.get('A3')}`)).json['salesReceipt'] as Body;
     expect((sr['inventoryLines'] as Body[]).map((l) => [l['role'], l['amount']]).sort()).toEqual([['cogs', '14.35'], ['inventory_relief', '-14.35']]);
     expect(sr['lines']).toHaveLength(1);
+    // PR-4 QA-9: Valuation Detail tells a card charge from a check (both txnType expense).
+    const vd = await req('GET', '/reports/inventory-valuation-detail?from=2026-01-01&to=2026-01-31');
+    expect(vd.status, JSON.stringify(vd.json)).toBe(200);
+    const kinds = new Map((vd.json['data'] as Body[]).map((r) => [r['transactionId'], [r['txnType'], r['expenseKind']]]));
+    expect(['A1', 'A2', 'A3'].map((doc) => kinds.get(w.docs.get(doc)))).toEqual([['expense', 'check'], ['expense', 'card_charge'], ['cash_sale', null]]);
     // Voiding the card charge (A2) gives case V's numbers and warns on the reply.
     await runSteps(w, [{ n: 10, event: 'void', doc: 'A2', expect: gcase('V')['steps'][0].expect }]);
     await checkRows(w, gcase('V')['rows']);

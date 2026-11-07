@@ -142,7 +142,9 @@ export async function valuationSummary(tenantId: string, asOf: string, companyId
 // ─── Valuation detail ────────────────────────────────────────────────
 
 export interface ValuationDetailRow {
-  movementId: string; itemId: string; date: string; transactionId: string; txnType: string; txnNumber: string | null; kind: string;
+  movementId: string; itemId: string; date: string; transactionId: string; txnType: string; txnNumber: string | null;
+  /** txnType expense only (QA-9): card_charge (paid from a credit card account), check (a check number or print status) or expense; else null. */
+  expenseKind: 'card_charge' | 'check' | 'expense' | null; kind: string;
   quantity: string; value: string; movementValue: string; correction: string; residual: string;
   runningQuantity: string; runningValue: string; averageCost: string;
 }
@@ -176,7 +178,12 @@ export async function valuationDetail(tenantId: string, q: { from: string; to: s
   const r = await db.execute(sql`
     SELECT m.id::text AS id, m.item_id::text AS item_id, m.movement_date::text AS date, m.transaction_id::text AS txn_id, m.kind,
       m.quantity::text AS q, m.value::text AS v, m.correction::text AS c, m.residual::text AS r,
-      m.running_qty::text AS rq, m.running_value::text AS rv, m.last_cost::text AS l, t.txn_type, t.txn_number
+      m.running_qty::text AS rq, m.running_value::text AS rv, m.last_cost::text AS l, t.txn_type, t.txn_number,
+      CASE WHEN t.txn_type <> 'expense' THEN NULL
+        WHEN EXISTS (SELECT 1 FROM journal_lines pl JOIN accounts pa ON pa.id = pl.account_id AND pa.tenant_id = pl.tenant_id
+          WHERE pl.tenant_id = t.tenant_id AND pl.transaction_id = t.id AND pl.is_void_reversal = false AND pl.credit > 0 AND pa.detail_type = 'credit_card') THEN 'card_charge'
+        WHEN t.check_number IS NOT NULL OR t.print_status IS NOT NULL THEN 'check'
+        ELSE 'expense' END AS expense_kind
     FROM inventory_movements m JOIN transactions t ON t.id = m.transaction_id
     WHERE ${where}
     ORDER BY m.movement_date, m.txn_created_at, m.transaction_id, m.item_id, m.source_transaction_id NULLS FIRST, m.id
@@ -186,7 +193,7 @@ export async function valuationDetail(tenantId: string, q: { from: string; to: s
     const rq = new Decimal(m['rq']!); const rv = new Decimal(m['rv']!);
     return {
       movementId: m['id']!, itemId: m['item_id']!, date: String(m['date']).slice(0, 10), transactionId: m['txn_id']!, txnType: m['txn_type']!,
-      txnNumber: m['txn_number'] ?? null, kind: m['kind']!, quantity: qty(new Decimal(m['q']!)),
+      txnNumber: m['txn_number'] ?? null, expenseKind: (m['expense_kind'] ?? null) as ValuationDetailRow['expenseKind'], kind: m['kind']!, quantity: qty(new Decimal(m['q']!)),
       value: money(v.plus(c).plus(res)), movementValue: money(v), correction: money(c), residual: money(res),
       runningQuantity: qty(rq), runningValue: money(rv), averageCost: averageOf(rq, rv, new Decimal(m['l']!)),
     };
