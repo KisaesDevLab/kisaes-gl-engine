@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import {
@@ -35,6 +35,9 @@ import * as reconciliationSignoffService from '../services/reconciliation-signof
 import { buildReconciliationProof } from '../services/reconciliation-proof.service.js';
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware, getLockContext } from '../services/lock-context.js';
+import { precheckClosingPassword } from '../services/closing-password.service.js';
 import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/check-payee-backfill.service.js';
 // Reuses the batch categorizer's contact→account resolver (contact default
 // → most-recently-used category account) so the feed and batch entry share
@@ -124,7 +127,30 @@ bankingRouter.get('/feed/:id/payroll-overlap', async (req, res) => {
   res.json({ overlaps });
 });
 
-bankingRouter.put('/feed/:id/categorize', validate(categorizeSchema), async (req, res) => {
+// Closed period (U-165, feed-closing-date-v1): the routes that post a feed
+// item take the same `closingPassword` (or a staff `overrideConfirmed`) as
+// POST /transactions. closingPasswordLimiter runs before lockContextMiddleware
+// takes the password out of the body. The bulk routes check the password
+// once up front (a wrong one is 403 before anything posts, so the limiter
+// counts it) and report a closed-period item as a failure with its code.
+const FEED_CLOSED_PERIOD_NOTE = 'An item dated on or before the closing date needs `closingPassword` in the body (or a staff '
+  + '`overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, '
+  + 'canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a '
+  + 'closing_date_override audit row (feed-closing-date-v1).';
+const FEED_BULK_CLOSED_PERIOD_NOTE = 'Closed period (feed-closing-date-v1): optional `closingPassword` (or a staff `overrideConfirmed: true`). '
+  + 'A wrong password is 403 CLOSING_PASSWORD_INVALID before any item posts (429 CLOSING_PASSWORD_RATE_LIMIT after repeated failures). '
+  + 'An item dated on or before the closing date without it is reported in `failures` as {id, error, code: "TB_PERIOD_LOCKED"}; '
+  + 'every failure carries the error `code` when there is one.';
+
+async function bulkClosingPasswordPrecheck(req: Request, _res: Response, next: NextFunction) {
+  await precheckClosingPassword(req.tenantId, req.companyId, getLockContext());
+  next();
+}
+
+bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMiddleware, validate(categorizeSchema), describe({
+  summary: 'Categorize (post) a bank feed item',
+  description: 'Response {transaction}. ' + FEED_CLOSED_PERIOD_NOTE,
+}), async (req, res) => {
   const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ transaction: txn });
 });
@@ -136,7 +162,10 @@ bankingRouter.put('/feed/:id/assign', validate(assignSchema), async (req, res) =
   res.json({ item });
 });
 
-bankingRouter.post('/feed/:id/approve', async (req, res) => {
+bankingRouter.post('/feed/:id/approve', closingPasswordLimiter, lockContextMiddleware, describe({
+  summary: 'Approve (post) a bank feed item\'s assigned category',
+  description: 'Response {transaction}. ' + FEED_CLOSED_PERIOD_NOTE,
+}), async (req, res) => {
   const txn = await bankFeedService.approve(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ transaction: txn });
 });
@@ -186,7 +215,10 @@ bankingRouter.post('/feed/bulk-unexclude', validate(bulkExcludeSchema), async (r
   res.json(result);
 });
 
-bankingRouter.post('/feed/bulk-approve', validate(bulkApproveSchema), async (req, res) => {
+bankingRouter.post('/feed/bulk-approve', closingPasswordLimiter, lockContextMiddleware, validate(bulkApproveSchema), describe({
+  summary: 'Approve (post) many bank feed items',
+  description: 'Response {approved, skipped, failed, failures: [{id, error, code?}]}. ' + FEED_BULK_CLOSED_PERIOD_NOTE,
+}), bulkClosingPasswordPrecheck, async (req, res) => {
   // Now posts STAGED ('assigned') items (two-phase workflow); items not yet
   // assigned are skipped, never posted.
   const result = await bankFeedService.bulkApprove(req.tenantId, req.body.feedItemIds, req.userId, req.companyId);
@@ -202,7 +234,10 @@ bankingRouter.post('/feed/bulk-assign', validate(bulkAssignSchema), async (req, 
   res.json(result);
 });
 
-bankingRouter.post('/feed/bulk-categorize', validate(bulkCategorizeSchema), async (req, res) => {
+bankingRouter.post('/feed/bulk-categorize', closingPasswordLimiter, lockContextMiddleware, validate(bulkCategorizeSchema), describe({
+  summary: 'Categorize (post) many bank feed items to one account',
+  description: 'Response {categorized, failures: [{id, error, code?}]}. ' + FEED_BULK_CLOSED_PERIOD_NOTE,
+}), bulkClosingPasswordPrecheck, async (req, res) => {
   const { feedItemIds, accountId, contactId, memo, tagId } = req.body;
   const result = await bankFeedService.bulkCategorize(req.tenantId, feedItemIds, accountId, contactId, memo, tagId, req.userId, req.companyId);
   res.json(result);
@@ -212,7 +247,10 @@ bankingRouter.post('/feed/bulk-categorize', validate(bulkCategorizeSchema), asyn
 // complete (the bank reconciles) while the classification work moves to
 // Practice -> Uncategorized. The destination account is resolved by role
 // server-side; the request carries no account id.
-bankingRouter.post('/feed/bulk-post-to-suspense', validate(bulkPostToSuspenseSchema), async (req, res) => {
+bankingRouter.post('/feed/bulk-post-to-suspense', closingPasswordLimiter, lockContextMiddleware, validate(bulkPostToSuspenseSchema), describe({
+  summary: 'Post many pending bank feed items to the suspense account',
+  description: 'Response {suspenseAccountId, posted, skipped, failures: [{id, error, code?}]}. ' + FEED_BULK_CLOSED_PERIOD_NOTE,
+}), bulkClosingPasswordPrecheck, async (req, res) => {
   const result = await suspenseService.postFeedItemsToSuspense(
     req.tenantId, req.body.feedItemIds, req.userId, req.companyId,
   );

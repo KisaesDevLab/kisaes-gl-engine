@@ -11,7 +11,7 @@
 // are exactly as before (ADR-TB-04).
 
 import bcrypt from 'bcrypt';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { db, type Tx } from '../db/index.js';
 import { companies, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
@@ -73,6 +73,42 @@ export async function closingPasswordMatches(hash: string | null | undefined, pa
   if (!hash || typeof password !== 'string' || password.length === 0) return false;
   if (Buffer.byteLength(password, 'utf8') > CLOSING_PASSWORD_MAX_BYTES) return false;
   return bcrypt.compare(password, hash);
+}
+
+/**
+ * Checks the request's closing-date password once, before a bulk action
+ * posts its items one at a time (U-165, the Bank Feed bulk routes). A bulk
+ * route reports per-item failures in a 200 body, which the rate limiter
+ * would not count, so a wrong password must fail the whole request first:
+ * 403 CLOSING_PASSWORD_INVALID (audited), nothing posted. Checked against
+ * the company's password (`companyId`), or every company of the tenant
+ * with a closing date and a password. A company without a password can't
+ * be opened with one. A verified hash is remembered in the lock context,
+ * so the per-item checks don't hash again. No password: nothing to do.
+ */
+export async function precheckClosingPassword(
+  tenantId: string,
+  companyId: string | null | undefined,
+  ctx: { closingPassword?: string; verifiedClosingPasswordHashes?: Set<string>; userId?: string } | undefined,
+): Promise<void> {
+  if (!ctx || ctx.closingPassword === undefined) return;
+  const rows = companyId
+    ? await db.select({ hash: companies.closingPasswordHash }).from(companies)
+      .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
+    : await db.select({ hash: companies.closingPasswordHash }).from(companies)
+      .where(and(eq(companies.tenantId, tenantId), isNotNull(companies.lockDate), isNotNull(companies.closingPasswordHash)));
+  const hashes = rows.map((r) => r.hash);
+  let ok = hashes.length > 0;
+  for (const hash of hashes) {
+    if (!ok) break;
+    if (hash && ctx.verifiedClosingPasswordHashes?.has(hash)) continue;
+    ok = await closingPasswordMatches(hash, ctx.closingPassword);
+    if (ok && hash) (ctx.verifiedClosingPasswordHashes ??= new Set()).add(hash);
+  }
+  if (!ok) {
+    await auditClosingPasswordFailed(tenantId, companyId ?? null, ctx.userId, 'posting');
+    throw closingPasswordInvalid();
+  }
 }
 
 /** Reads the hash and locks the company row until `tx` ends. */

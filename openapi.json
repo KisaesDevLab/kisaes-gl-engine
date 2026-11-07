@@ -13844,6 +13844,7 @@
     },
     "/api/v1/banking/feed/bulk-approve": {
       "post": {
+        "description": "Response {approved, skipped, failed, failures: [{id, error, code?}]}. Closed period (feed-closing-date-v1): optional `closingPassword` (or a staff `overrideConfirmed: true`). A wrong password is 403 CLOSING_PASSWORD_INVALID before any item posts (429 CLOSING_PASSWORD_RATE_LIMIT after repeated failures). An item dated on or before the closing date without it is reported in `failures` as {id, error, code: \"TB_PERIOD_LOCKED\"}; every failure carries the error `code` when there is one.",
         "operationId": "post_api_v1_banking_feed_bulk_approve",
         "requestBody": {
           "content": {
@@ -13883,6 +13884,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Approve (post) many bank feed items",
         "tags": [
           "banking"
         ]
@@ -13974,6 +13976,7 @@
     },
     "/api/v1/banking/feed/bulk-categorize": {
       "post": {
+        "description": "Response {categorized, failures: [{id, error, code?}]}. Closed period (feed-closing-date-v1): optional `closingPassword` (or a staff `overrideConfirmed: true`). A wrong password is 403 CLOSING_PASSWORD_INVALID before any item posts (429 CLOSING_PASSWORD_RATE_LIMIT after repeated failures). An item dated on or before the closing date without it is reported in `failures` as {id, error, code: \"TB_PERIOD_LOCKED\"}; every failure carries the error `code` when there is one.",
         "operationId": "post_api_v1_banking_feed_bulk_categorize",
         "requestBody": {
           "content": {
@@ -14037,6 +14040,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Categorize (post) many bank feed items to one account",
         "tags": [
           "banking"
         ]
@@ -14090,6 +14094,7 @@
     },
     "/api/v1/banking/feed/bulk-post-to-suspense": {
       "post": {
+        "description": "Response {suspenseAccountId, posted, skipped, failures: [{id, error, code?}]}. Closed period (feed-closing-date-v1): optional `closingPassword` (or a staff `overrideConfirmed: true`). A wrong password is 403 CLOSING_PASSWORD_INVALID before any item posts (429 CLOSING_PASSWORD_RATE_LIMIT after repeated failures). An item dated on or before the closing date without it is reported in `failures` as {id, error, code: \"TB_PERIOD_LOCKED\"}; every failure carries the error `code` when there is one.",
         "operationId": "post_api_v1_banking_feed_bulk_post_to_suspense",
         "requestBody": {
           "content": {
@@ -14129,6 +14134,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Post many pending bank feed items to the suspense account",
         "tags": [
           "banking"
         ]
@@ -15073,6 +15079,7 @@
     },
     "/api/v1/banking/feed/{id}/approve": {
       "post": {
+        "description": "Response {transaction}. An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
         "operationId": "post_api_v1_banking_feed_by_id_approve",
         "parameters": [
           {
@@ -15097,6 +15104,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Approve (post) a bank feed item's assigned category",
         "tags": [
           "banking"
         ]
@@ -15188,6 +15196,7 @@
     },
     "/api/v1/banking/feed/{id}/categorize": {
       "put": {
+        "description": "Response {transaction}. An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
         "operationId": "put_api_v1_banking_feed_by_id_categorize",
         "parameters": [
           {
@@ -15250,6 +15259,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Categorize (post) a bank feed item",
         "tags": [
           "banking"
         ]
