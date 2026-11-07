@@ -375,6 +375,44 @@ describe('inventory-costing-v1 golden cases (U-157)', () => {
       .toEqual([{ code: 'NEGATIVE_STOCK', itemId: w.items.get('W'), date: '2026-01-27', onHand: '-8.0000' }]);
   });
 
+  it('V3: the posting\'s own inflow never warns, on the reply or the preview (PR-4 RS1); its own outflow below 0 does', async () => {
+    const w = await setup();
+    const v3 = gcase('V3');
+    await runSteps(w, (gcase('A')['steps'] as Body[]).slice(0, v3['fromSteps']));
+    const steps = v3['steps'] as Body[];
+    await runSteps(w, steps.slice(0, 2));
+    // The unlinked return previews as it posts: no warning; a sale of 1 more previews with one.
+    const W = w.items.get('W');
+    const line = { itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false };
+    const cm = await req('POST', '/credit-memos/preview', { contactId: c.customer, txnDate: '2026-01-14', lines: [line] });
+    expect(cm.json['warnings']).toEqual([]);
+    const inv = await req('POST', '/invoices/preview', { contactId: c.customer, txnDate: '2026-01-14', lines: [line] });
+    expect((inv.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK')).toEqual([{ code: 'NEGATIVE_STOCK', itemId: W, date: '2026-01-14', onHand: '-4.0000' }]);
+    await runSteps(w, steps.slice(2));
+    await checkFinal(w, v3['final']);
+    await fullReplayMatches(W!);
+    // Editing the bill down to 1 unit: its own inflow still does not warn (on hand -5 -> -4 on Jan 14, no later row was 0 or more).
+    const b = structuredClone(w.bodies.get('V3b')!) as Body;
+    const edit = await req('PUT', `/bills/${w.docs.get('V3b')}`, { ...b, lines: [{ ...b['lines'][0], quantity: '1', amount: '3.80' }] });
+    expect(edit.status, JSON.stringify(edit.json)).toBe(200);
+    expect(((edit.json['warnings'] ?? []) as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK')).toEqual([]);
+    await invariants(w);
+  });
+
+  it('V4: a value-only adjustment left without stock warns at on hand 0 (PR-4 S1); the preview agrees; one warning per item', async () => {
+    const w = await setup();
+    const v4 = gcase('V4');
+    await runSteps(w, gcase('A')['steps']);
+    const s = (v4['steps'] as Body[])[0]!;
+    const pv = await req('POST', '/invoices/preview', { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: w.items.get('W'), quantity: s['quantity'], unitPrice: '10.00', isTaxable: false }] });
+    expect((pv.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK'))
+      .toEqual([{ code: 'NEGATIVE_STOCK', itemId: w.items.get('W'), date: '2026-01-22', onHand: '0.0000' }]);
+    await runSteps(w, v4['steps']);
+    await checkRows(w, v4['rows'], true);
+    await checkFinal(w, v4['final']);
+    await fullReplayMatches(w.items.get('W')!);
+  });
+
   it('X: deleting the Jan 5 bill gives case V numbers, status deleted, reversal lines', async () => {
     const w = await setup();
     await runSteps(w, gcase('A')['steps']);
@@ -687,6 +725,26 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
     const sheet = await req('GET', '/inventory/count-sheet?asOf=2026-01-16');
     expect((sheet.json['items'] as Body[]).find((x) => x['itemId'] === W)).toMatchObject({ onHand: '10.0000', value: '37.58' });
   });
+
+  for (const id of ['R4', 'R5']) {
+    it(`${id}: ${gcase(id)['title']}`, async () => {
+      const w = await setup();
+      const g = gcase(id);
+      await runSteps(w, g['steps']);
+      await checkFinal(w, g['final']);
+      const W = w.items.get('W')!;
+      await fullReplayMatches(W);
+      for (const [doc, want] of Object.entries(g['correctionShares'] as Record<string, string>)) {
+        const [m] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get(doc)!));
+        expect(m2(m!.correctionShare), `${doc} correction_share`).toBe(want);
+      }
+      // Note 1: the curing bill re-attributed the sales' shares; each sale's document carries an audit row for it.
+      const audited = await db.execute(sql`SELECT entity_id::text AS id, after_data::text AS a FROM audit_log
+        WHERE tenant_id = ${c.tenantId} AND entity_type = 'transaction' AND after_data::text LIKE '%correctionShare%'`);
+      const ids = new Set((audited.rows as Array<{ id: string }>).map((r) => r.id));
+      for (const doc of Object.keys(g['correctionShares'] as Record<string, string>)) expect(ids.has(w.docs.get(doc)!), `${doc} audited`).toBe(true);
+    });
+  }
 
   it('refuses a return dated before its sale, of an item the sale did not sell, or on a document that is not a credit memo', async () => {
     const w = await setup();
@@ -1127,6 +1185,39 @@ describe('inventory-costing-v1 concurrency (P24 §5)', () => {
     expect(codes.some((x) => ['RETURN_EXCEEDS_SALE', 'SALE_HAS_RETURNS', 'RETRY'].includes(x))).toBe(true);
     await invariants(w);
   });
+
+  it('inventory turned off while a posting waits for the companies row: 400 INVENTORY_OFF under the lock, nothing moves (PR-4 RS3)', async () => {
+    const w = await setup();
+    const W = w.items.get('W')!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => { locked = resolve; });
+    // The switch: inventory off on the companies row, not committed yet (a row lock that the request's idempotency-key insert,
+    // a KEY SHARE, passes and the costing lock's FOR UPDATE waits for).
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`UPDATE companies SET inventory_enabled = false WHERE id = ${c.companyId}`);
+      locked();
+      await held;
+    });
+    await isLocked;
+    const posting = req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-01-02', lines: [{ accountId: w.asset, amount: '6.00', itemId: W, quantity: '2', unitPrice: '3.00' }] });
+    // The bill read inventory on (the switch is not committed) and now waits in the costing lock for the companies row.
+    let waiting = false;
+    let seen: unknown[] = [];
+    for (let i = 0; i < 60 && !waiting; i++) {
+      seen = (await db.execute(sql`SELECT wait_event_type, wait_event, left(query, 160) AS q FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND state <> 'idle'`)).rows;
+      const r = await db.execute(sql`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%lock_date::text AS lock_date FROM companies%'`);
+      waiting = r.rows.length > 0;
+      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    release();
+    await holder;
+    const x = await posting;
+    expect(waiting, JSON.stringify(seen)).toBe(true);
+    expect([x.status, x.json['error']?.code], JSON.stringify(x.json)).toEqual([400, 'INVENTORY_OFF']);
+    expect(await rows(W)).toHaveLength(0);
+  }, 30_000);
 
   it('an item lock held past lock_timeout (5 s) answers 409 RETRY and saves nothing', async () => {
     const w = await setup();
