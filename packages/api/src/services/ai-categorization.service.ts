@@ -231,16 +231,29 @@ function historyOverrideRate(row: { timesConfirmed: number | null; timesOverridd
 // to the legacy raw `description.toLowerCase().trim()` key so rows written
 // before the unification still match. Writers migrate legacy rows to the
 // new key in place (see recordUserDecision) — no migration needed.
+/**
+ * The two history keys of a feed item and whether either may be read:
+ * "check", "deposit", a bare card mask give the same key for every such
+ * line, so a match on it is a coin toss between unrelated payees. Refuse to
+ * read (and, at the write sites, to learn) anything keyed this way.
+ */
+export function historyKeysFor(item: { description: string | null; originalDescription?: string | null }) {
+  const currentKey = normalizePayeePattern(item.originalDescription || item.description || '');
+  const legacyKey = (item.description || '').toLowerCase().trim();
+  return { currentKey, legacyKey, readable: isIdentifyingPattern(currentKey) || isIdentifyingPattern(legacyKey) };
+}
+
+/** A history mapping trusted past the confirmation and override-rate guards. */
+export function isTrustedHistory(row: { timesConfirmed: number | null; timesOverridden: number | null }): boolean {
+  return (row.timesConfirmed ?? 0) >= HISTORY_MIN_CONFIRMATIONS && historyOverrideRate(row) < HISTORY_MAX_OVERRIDE_RATE;
+}
+
 async function findHistoryDualKey(
   tenantId: string,
   item: { description: string | null; originalDescription?: string | null },
 ) {
-  const currentKey = normalizePayeePattern(item.originalDescription || item.description || '');
-  const legacyKey = (item.description || '').toLowerCase().trim();
-  // "check", "deposit", a bare card mask: the same key for every such line,
-  // so a match on it is a coin toss between unrelated payees. Refuse to read
-  // (and, at the write sites, to learn) anything keyed this way.
-  if (!isIdentifyingPattern(currentKey) && !isIdentifyingPattern(legacyKey)) {
+  const { currentKey, legacyKey, readable } = historyKeysFor(item);
+  if (!readable) {
     return { row: null, currentKey };
   }
   let row = currentKey
@@ -367,11 +380,7 @@ export async function resolvePreAiLayers(
   // Layer 2: Categorization history — trusted only past the confirmation
   // AND override-rate guards (same bar as suggestCategorization).
   const { row: history } = await findHistoryDualKey(tenantId, item);
-  if (
-    history &&
-    (history.timesConfirmed ?? 0) >= HISTORY_MIN_CONFIRMATIONS &&
-    historyOverrideRate(history) < HISTORY_MAX_OVERRIDE_RATE
-  ) {
+  if (history && isTrustedHistory(history)) {
     await db.update(bankFeedItems).set({
       suggestedAccountId: history.accountId,
       suggestedContactId: history.contactId,

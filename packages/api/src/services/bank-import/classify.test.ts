@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  classifyRows, validateBatch, descriptionsMatch, wouldInsert, countLikelyInBooks,
+  classifyRows, validateBatch, descriptionsMatch, wouldInsert, countLikelyInBooks, exactAmount,
   type BatchInput, type BatchRowInput, type ExistingItem,
 } from './import-batch.service.js';
 import { fitidKey, keyRows, norm } from './keys.js';
@@ -235,5 +235,19 @@ describe('validateBatch', () => {
     expect(() => validateBatch(base(many))).toThrow(expect.objectContaining({ code: 'too_many_rows' }));
     const big = Array.from({ length: 1001 }, (_, i) => row(i + 1, '2026-01-01', '999999999999.99', 'X'));
     expect(() => validateBatch(base(big))).toThrow(expect.objectContaining({ code: 'batch_total_too_large' }));
+  });
+});
+
+describe('exactAmount (the existing amount of a changed row, Q-P25af)', () => {
+  it('keeps the sign and at least 2 decimals, never rounds', () => {
+    expect(exactAmount('85.0000')).toBe('85.00');
+    expect(exactAmount('-85.0000')).toBe('-85.00');
+    expect(exactAmount('1.2345')).toBe('1.2345');
+    expect(exactAmount('-1.2345')).toBe('-1.2345');
+    expect(exactAmount('-0.1230')).toBe('-0.123');
+    expect(exactAmount('-0.0050')).toBe('-0.005');
+    expect(exactAmount('12.3400')).toBe('12.34');
+    expect(exactAmount('0.0000')).toBe('0.00');
+    expect(exactAmount('999999999999.9999')).toBe('999999999999.9999');
   });
 });

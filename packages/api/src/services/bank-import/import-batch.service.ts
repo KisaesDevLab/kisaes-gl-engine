@@ -108,6 +108,9 @@ export interface RowResult {
   existingItemId?: string;
   existingImportedAt?: string;
   existingPending?: boolean;
+  /** A `changed` row (Q-P25af): the existing item's amount (feed sign, at least 2 decimals) and date before this batch. */
+  existingAmount?: string;
+  existingDate?: string;
   closedPeriod: boolean;
   inserted: boolean;
   /** A `changed` row with changedAction "replace": the existing item was updated. */
@@ -138,7 +141,7 @@ export interface BatchResult {
   sameFileImportedAt?: string;
   identityLinkedElsewhere?: { accountName: string; mask: string };
   insertedItemIds: string[];
-  postProcessing?: 'scheduled' | 'done' | 'failed';
+  postProcessing?: 'scheduled' | 'done' | 'failed' | 'cancelled';
   rows: RowResult[];
   counts: { inFile: number; new: number; duplicate: number; possibleDuplicate: number; changed: number; closedPeriod: number; inserted: number };
   insertedTotal: string;
@@ -716,6 +719,12 @@ function counts(rows: RowResult[]): BatchResult['counts'] {
   };
 }
 
+/** A stored amount as an exact decimal string with at least 2 decimals ('85.0000' → '85.00', '1.2345' kept). */
+export function exactAmount(a: string): string {
+  const d = new Decimal(a);
+  return d.toFixed(Math.max(2, d.decimalPlaces()));
+}
+
 function rowResult(row: BatchRowInput, c: Classified, lockDate: string | null): RowResult {
   return {
     line: row.line,
@@ -726,6 +735,7 @@ function rowResult(row: BatchRowInput, c: Classified, lockDate: string | null): 
       existingImportedAt: c.existing.createdAt,
       existingPending: c.existing.status === 'pending' || c.existing.status === 'assigned',
     } : {}),
+    ...(c.status === 'changed' && c.existing ? { existingAmount: exactAmount(c.existing.amount), existingDate: c.existing.date } : {}),
     closedPeriod: lockDate !== null && row.date <= lockDate,
     inserted: false,
   };
@@ -957,28 +967,32 @@ async function linkIdentity(
  * the state at commit, usually `scheduled`).
  */
 export async function readBatchResult(tenantId: string, batchId: string): Promise<BatchResult> {
-  const [b] = await db.select({ result: bankImportBatches.result, postProcessing: bankImportBatches.postProcessing })
+  const [b] = await db.select({ result: bankImportBatches.result, postProcessing: bankImportBatches.postProcessing, undoneAt: bankImportBatches.undoneAt })
     .from(bankImportBatches)
     .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
   if (!b?.result) throw AppError.notFound('Import batch not found');
-  return { ...(b.result as BatchResult), postProcessing: b.postProcessing as BatchResult['postProcessing'] };
+  return { ...(b.result as BatchResult), postProcessing: postProcessingState(b.postProcessing, b.undoneAt) };
 }
 
 // ─── Post-processing ─────────────────────────────────────────────────
 
 /**
  * After the commit: deterministic cleansing (no LLM), the rule stages
- * without posting, potential-match detection and the classification state
- * (bank-feed.service pipelines with { llm: false, autoConfirm: false }).
- * Sets the batch's post_processing to done or failed. The A05 hook.
+ * without posting, potential-match detection and the classification state,
+ * in chunks (./post-process.ts; the same results as the bank-feed.service
+ * pipelines with { llm: false, autoConfirm: false }). Records progress
+ * (total_rows, processed_rows) and sets the batch's post_processing to done
+ * or failed. An undo stops it between chunks ('cancelled': the state stays
+ * `scheduled` and the undo marks the batch undone). The A05 hook.
  *
  * Runs once per batch also with several engine instances on one database
  * (MyBooks Online): a session advisory lock on the batch is held for the
  * run (released when the connection ends, so a crash never leaves it
  * held); another instance skips the batch, and a batch no longer
  * `scheduled` once the lock is taken is skipped too. 'skipped' then.
+ * undoBatch waits on the same lock.
  */
-export async function runImportPostProcessing(tenantId: string, batchId: string): Promise<'done' | 'failed' | 'skipped'> {
+export async function runImportPostProcessing(tenantId: string, batchId: string): Promise<'done' | 'failed' | 'cancelled' | 'skipped'> {
   const client = await pgPool.connect();
   const lockKey = `bank-import-post:${batchId}`;
   let locked = false;
@@ -986,24 +1000,22 @@ export async function runImportPostProcessing(tenantId: string, batchId: string)
     const got = await client.query<{ ok: boolean }>('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok', [lockKey]);
     locked = got.rows[0]?.ok === true;
     if (!locked) return 'skipped';
-    const [b] = await db.select({ p: bankImportBatches.postProcessing }).from(bankImportBatches)
+    const [b] = await db.select({ p: bankImportBatches.postProcessing, cancel: bankImportBatches.cancelRequestedAt })
+      .from(bankImportBatches)
       .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
-    if (!b || b.p !== 'scheduled') return 'skipped';
+    if (!b || b.p !== 'scheduled' || b.cancel !== null) return 'skipped';
 
-    const bankFeed = await import('../bank-feed.service.js');
-    let state: 'done' | 'failed' = 'done';
+    const { postProcessBatch } = await import('./post-process.js');
+    let state: 'done' | 'failed' | 'cancelled' = 'done';
     try {
-      const items = await db.select().from(bankFeedItems)
-        .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.importBatchId, batchId)));
-      if (items.length > 0) {
-        await bankFeed.runCleansingPipeline(tenantId, items, { llm: false });
-        await bankFeed.runCategorizationPipeline(tenantId, items, { llm: false, autoConfirm: false });
-      }
+      state = await postProcessBatch(tenantId, batchId);
     } catch (err) {
       state = 'failed';
       // Name, code and a short message only: never a query's parameters (descriptions, amounts).
       console.warn(`[bank-import] post-processing failed for batch ${batchId}: ${errorSummaryForLog(err)}`);
     }
+    // Stopped by an undo: the undo finishes the batch (undone_at).
+    if (state === 'cancelled') return state;
     await db.update(bankImportBatches).set({ postProcessing: state })
       .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
     return state;
@@ -1025,10 +1037,54 @@ export function schedulePostProcessing(tenantId: string, batchId: string): void 
   }));
 }
 
-/** On engine start: batches left `scheduled` (a crash or restart) run again. */
+/**
+ * A cancel request older than this was left by an undo that is no longer
+ * waiting (an undo waits UNDO_WAIT at most, then goes through or withdraws
+ * it): an engine that stopped meanwhile.
+ */
+function cancelStaleMs(): number {
+  return UNDO_WAIT.ms + 10_000;
+}
+
+/** Drops stale cancel requests (all batches, or one); returns the batches freed. */
+async function clearStaleCancelRequests(batchId?: string): Promise<Array<{ id: string; tenantId: string }>> {
+  return db.update(bankImportBatches).set({ cancelRequestedAt: null })
+    .where(and(eq(bankImportBatches.postProcessing, 'scheduled'), sql`${bankImportBatches.undoneAt} IS NULL`,
+      sql`${bankImportBatches.cancelRequestedAt} < now() - make_interval(secs => ${cancelStaleMs() / 1000})`,
+      batchId ? eq(bankImportBatches.id, batchId) : undefined))
+    .returning({ id: bankImportBatches.id, tenantId: bankImportBatches.tenantId });
+}
+
+/**
+ * On engine start: batches left `scheduled` (a crash or restart) run again,
+ * going on from where they stopped; undone ones are done with. A cancel
+ * request left by an undo that did not finish (the engine stopped
+ * meanwhile) is dropped once it is stale. A younger one may belong to an
+ * undo still waiting on another engine instance (MyBooks Online): it is left
+ * alone and looked at again when it would be stale; by then that undo went
+ * through (undone) or withdrew it (and scheduled the run itself).
+ */
 export async function resumeScheduledPostProcessing(): Promise<number> {
+  await clearStaleCancelRequests();
+  // Wait times from the database clock (the requests carry its now()).
+  const young = await db.select({
+    id: bankImportBatches.id,
+    ms: sql<number>`greatest(0, extract(epoch FROM ${bankImportBatches.cancelRequestedAt} + make_interval(secs => ${cancelStaleMs() / 1000}) - now()) * 1000)::int`,
+  }).from(bankImportBatches)
+    .where(and(eq(bankImportBatches.postProcessing, 'scheduled'), sql`${bankImportBatches.undoneAt} IS NULL`,
+      sql`${bankImportBatches.cancelRequestedAt} IS NOT NULL`))
+    .limit(500);
+  for (const y of young) {
+    const wait = Number(y.ms) + 1_000;
+    setTimeout(() => {
+      void clearStaleCancelRequests(y.id)
+        .then((freed) => { for (const f of freed) schedulePostProcessing(f.tenantId, f.id); })
+        .catch(() => undefined);
+    }, wait).unref();
+  }
   const rows = await db.select({ id: bankImportBatches.id, tenantId: bankImportBatches.tenantId })
-    .from(bankImportBatches).where(eq(bankImportBatches.postProcessing, 'scheduled'))
+    .from(bankImportBatches)
+    .where(and(eq(bankImportBatches.postProcessing, 'scheduled'), sql`${bankImportBatches.undoneAt} IS NULL`))
     .orderBy(bankImportBatches.createdAt).limit(500);
   for (const r of rows) await runImportPostProcessing(r.tenantId, r.id);
   return rows.length;
@@ -1036,24 +1092,84 @@ export async function resumeScheduledPostProcessing(): Promise<number> {
 
 // ─── Undo, list, lookup ──────────────────────────────────────────────
 
+/** How long an undo waits for running post-processing to stop after its current chunk. */
+export const UNDO_WAIT = { ms: 20_000 };
+
+function pgCode(err: unknown): string | undefined {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  const code = e?.code ?? e?.cause?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 /**
  * Undo a batch: removes its untouched pending rows (pending, never assigned
  * or matched). Rows already used block it (409 rows_already_used with their
- * lines) unless `pendingOnly`. 409 still_preparing while post-processing
- * runs; 409 already_undone. Audited (counts only).
+ * lines) unless `pendingOnly`. 409 already_undone. Audited (counts only).
+ *
+ * While post-processing runs, the undo asks it to stop (cancel_requested_at),
+ * waits on its lock until it has finished its current chunk (UNDO_WAIT), then
+ * undoes; the API then reports post-processing `cancelled` (the column stays
+ * `scheduled` with undone_at set: migration 0264). A batch whose post-processing
+ * has not started yet never starts. When the undo does not go through, the
+ * request is withdrawn and post-processing goes on (from where it stopped, if
+ * it had). 409 still_preparing only when the wait runs out (a chunk still
+ * running after UNDO_WAIT): nothing was undone and a retry may succeed.
  */
 export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly: boolean) {
   const { tenantId } = actor;
+  const [seen] = await db.select({ companyId: bankImportBatches.companyId, undoneAt: bankImportBatches.undoneAt })
+    .from(bankImportBatches)
+    .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId)));
+  if (!seen || (actor.companyId && seen.companyId && seen.companyId !== actor.companyId)) {
+    throw AppError.notFound('Import batch not found');
+  }
+  if (seen.undoneAt) throw AppError.conflict('This import was already undone.', 'already_undone');
+  const requested = await db.update(bankImportBatches).set({ cancelRequestedAt: sql`now()` })
+    .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId), eq(bankImportBatches.postProcessing, 'scheduled'),
+      sql`${bankImportBatches.cancelRequestedAt} IS NULL`, sql`${bankImportBatches.undoneAt} IS NULL`))
+    .returning({ id: bankImportBatches.id });
+  try {
+    return await undoInTx(actor, batchId, pendingOnly);
+  } catch (err) {
+    if (requested.length > 0) await withdrawCancel(tenantId, batchId);
+    if (pgCode(err) === '55P03') {
+      throw AppError.conflict('This import is still being prepared. Try again in a moment.', 'still_preparing');
+    }
+    throw err;
+  }
+}
+
+/** An undo that did not go through: post-processing goes on (from where it stopped, if it had). */
+async function withdrawCancel(tenantId: string, batchId: string): Promise<void> {
+  await db.update(bankImportBatches).set({ cancelRequestedAt: null })
+    .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId), sql`${bankImportBatches.undoneAt} IS NULL`));
+  // A run still going on keeps the lock and this one is skipped.
+  schedulePostProcessing(tenantId, batchId);
+}
+
+/** The post-processing state the API reports: a batch undone while still scheduled was cancelled. */
+export function postProcessingState(p: string, undoneAt: Date | null): 'scheduled' | 'done' | 'failed' | 'cancelled' {
+  return (p === 'scheduled' && undoneAt ? 'cancelled' : p) as 'scheduled' | 'done' | 'failed' | 'cancelled';
+}
+
+async function undoInTx(actor: BatchActor, batchId: string, pendingOnly: boolean) {
+  const { tenantId } = actor;
   return db.transaction(async (tx) => {
+    // The post-processing run holds this lock (session level) for the whole
+    // run: wait until it has stopped. Before the batch row lock, which the
+    // run's progress updates need.
+    // The wait is bounded here only; the setting it had before (a server,
+    // database or role default) comes back for the rest of the transaction.
+    const before = (await tx.execute(sql`SELECT current_setting('lock_timeout') AS v`)).rows[0] as { v: string };
+    await tx.execute(sql`SELECT set_config('lock_timeout', ${`${UNDO_WAIT.ms}ms`}, true)`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`bank-import-post:${batchId}`}, 0))`);
+    await tx.execute(sql`SELECT set_config('lock_timeout', ${before.v}, true)`);
     const [batch] = await tx.select().from(bankImportBatches)
       .where(and(eq(bankImportBatches.tenantId, tenantId), eq(bankImportBatches.id, batchId))).for('update');
     if (!batch || (actor.companyId && batch.companyId && batch.companyId !== actor.companyId)) {
       throw AppError.notFound('Import batch not found');
     }
     if (batch.undoneAt) throw AppError.conflict('This import was already undone.', 'already_undone');
-    if (batch.postProcessing === 'scheduled') {
-      throw AppError.conflict('This import is still being prepared. Try again in a moment.', 'still_preparing');
-    }
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`bank-import:${tenantId}:${batch.accountId}`}, 0))`);
     await claimAndRecord(tx, 'bank_import_batch', batchId);
     const items = await tx.select({
@@ -1113,6 +1229,7 @@ export async function undoBatch(actor: BatchActor, batchId: string, pendingOnly:
       ));
     }
     const undoneAt = new Date();
+    // Post-processing stopped or never started: nothing more runs for this batch.
     await tx.update(bankImportBatches).set({ undoneAt, undoneBy: actor.userId ?? null }).where(eq(bankImportBatches.id, batchId));
     const kept = used.length + usedReplaced.length;
     await auditLog(tenantId, 'delete', 'bank_import_batch', batchId, null, {
@@ -1148,7 +1265,10 @@ export async function listBatches(actor: BatchActor, filters: { accountId?: stri
       changed: b.changedCount, closedPeriod: b.closedPeriodCount, inserted: b.insertedCount,
     },
     insertedTotal: new Decimal(b.insertedTotal).toFixed(2),
-    postProcessing: b.postProcessing,
+    postProcessing: postProcessingState(b.postProcessing, b.undoneAt),
+    // Post-processing progress (Q-P25ad): items done of total (null until it starts).
+    processed: b.processedRows,
+    total: b.totalRows,
     undoneAt: b.undoneAt ? b.undoneAt.toISOString() : null,
     createdAt: b.createdAt.toISOString(),
   }));

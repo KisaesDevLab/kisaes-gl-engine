@@ -1441,7 +1441,7 @@ const CLEANSE_DISABLED_CODES = new Set([
 // Apply an AI/history contact name to a feed item description, mirroring the
 // single path's validated/unvalidated handling. Returns the name to write, or
 // null when the (unvalidated) model text isn't a plausible name.
-function applyCleanseContactName(contactName: string, contactId: string | null | undefined): string | null {
+export function applyCleanseContactName(contactName: string, contactId: string | null | undefined): string | null {
   if (contactId) {
     // VALIDATED: resolved to a real tenant contact — trusted as-is.
     return String(contactName).slice(0, 255);

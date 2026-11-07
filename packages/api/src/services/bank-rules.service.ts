@@ -41,12 +41,22 @@ function fuzzyScore(needle: string, haystack: string): number {
 // first: an exact account NUMBER or system_tag match (both survive a firm
 // renaming an account) wins outright over fuzzy-name scoring.
 async function fuzzyMatchAccount(tenantId: string, target: string): Promise<string | null> {
-  const needle = target.trim().toLowerCase();
-  if (!needle) return null;
-  const allAccounts = await db
+  if (!target.trim()) return null;
+  return pickAccountForTarget(await activeAccountsForMatch(tenantId), target);
+}
+
+/** The tenant's active accounts, as fuzzyMatchAccount reads them. */
+export interface AccountForMatch { id: string; name: string; accountNumber: string | null; systemTag: string | null }
+export async function activeAccountsForMatch(tenantId: string): Promise<AccountForMatch[]> {
+  return db
     .select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, systemTag: accounts.systemTag })
     .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true)));
+}
 
+/** fuzzyMatchAccount over accounts already read (the import batch reads them once). */
+export function pickAccountForTarget(allAccounts: AccountForMatch[], target: string): string | null {
+  const needle = target.trim().toLowerCase();
+  if (!needle) return null;
   // Exact match on a stable key → definitive.
   for (const acct of allAccounts) {
     if (acct.accountNumber && acct.accountNumber.toLowerCase() === needle) return acct.id;
@@ -79,7 +89,7 @@ interface RuleCondition {
   amountMax?: string | null;
 }
 
-function matchesConditions(rule: RuleCondition, desc: string, direction: string, absAmount: number, bankAccountId?: string): boolean {
+export function matchesConditions(rule: RuleCondition, desc: string, direction: string, absAmount: number, bankAccountId?: string): boolean {
   if (rule.applyTo !== 'both' && rule.applyTo !== direction) return false;
   if (rule.bankAccountId && rule.bankAccountId !== bankAccountId) return false;
   if (rule.descriptionContains && !desc.includes(rule.descriptionContains.toLowerCase())) return false;
@@ -192,14 +202,27 @@ export async function evaluateRules(tenantId: string, feedItem: { description: s
  * no rule matches, so the caller can fall back to its own cleaning.
  */
 export async function cleanNameViaRules(tenantId: string, rawDescription: string): Promise<string | null> {
+  return cleanNameFromRules(await loadLegacyRules(tenantId), rawDescription);
+}
+
+/** The active tenant and global bank rules, highest priority first (as evaluateRules reads them). */
+export interface LegacyRuleSet { tenant: Array<typeof bankRules.$inferSelect>; global: Array<typeof bankRules.$inferSelect> }
+export async function loadLegacyRules(tenantId: string): Promise<LegacyRuleSet> {
+  const tenant = await db.select().from(bankRules)
+    .where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.isActive, true), eq(bankRules.isGlobal, false)))
+    .orderBy(sql`${bankRules.priority} DESC`);
+  const global = await db.select().from(bankRules)
+    .where(and(eq(bankRules.isGlobal, true), eq(bankRules.isActive, true)))
+    .orderBy(sql`${bankRules.priority} DESC`);
+  return { tenant, global };
+}
+
+/** cleanNameViaRules over rules already read (the import batch reads them once). */
+export function cleanNameFromRules(rules: LegacyRuleSet, rawDescription: string): string | null {
   const desc = rawDescription.toLowerCase();
 
   // 1. Tenant rules first
-  const tenantRules = await db.select().from(bankRules)
-    .where(and(eq(bankRules.tenantId, tenantId), eq(bankRules.isActive, true), eq(bankRules.isGlobal, false)))
-    .orderBy(sql`${bankRules.priority} DESC`);
-
-  for (const rule of tenantRules) {
+  for (const rule of rules.tenant) {
     if (rule.descriptionExact && desc === rule.descriptionExact.toLowerCase()) {
       return rule.assignContactName || rule.name;
     }
@@ -209,11 +232,7 @@ export async function cleanNameViaRules(tenantId: string, rawDescription: string
   }
 
   // 2. Global rules as fallback
-  const globalRules = await db.select().from(bankRules)
-    .where(and(eq(bankRules.isGlobal, true), eq(bankRules.isActive, true)))
-    .orderBy(sql`${bankRules.priority} DESC`);
-
-  for (const rule of globalRules) {
+  for (const rule of rules.global) {
     if (rule.descriptionExact && desc === rule.descriptionExact.toLowerCase()) {
       return rule.assignContactName || rule.name;
     }
