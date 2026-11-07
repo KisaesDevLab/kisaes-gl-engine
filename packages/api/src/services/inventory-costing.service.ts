@@ -51,7 +51,7 @@ import { auditLogMany } from '../middleware/audit.js';
 import {
   Decimal, walk, ZERO_STATE, type Dec, type MovementKind, type SaleLink, type WalkRow, type WalkState,
 } from '../utils/inventory-walk.js';
-import { INVENTORY_ASSET_TAG } from './inventory.service.js';
+import { INVENTORY_ASSET_TAG, inventoryEnabled } from './inventory.service.js';
 import { noteInventoryWarnings } from './inventory-warnings-context.js';
 import { resolveLineUnits, UNIT_LINE_NOTE } from './unit-lines.service.js';
 import { positionAsc, positionDesc } from './inventory-position.js';
@@ -96,7 +96,7 @@ interface PartRow { id: string; assetAccountId: string | null; cogsAccountId: st
  */
 export interface CostingLock { companyId: string; lockDate: string | null; itemIds: string[]; links: Map<number, string> }
 
-/** NEGATIVE_STOCK (U-158): the first row per item whose running quantity newly went below 0. */
+/** NEGATIVE_STOCK (U-158, PR-4 S1): per item, the first changed row below 0 that was 0 or more before, or the posting's own outflow. */
 export interface InventoryWarning { code: 'NEGATIVE_STOCK'; itemId: string; date: string; onHand: string }
 
 const d = (v: unknown) => new Decimal(v === null || v === undefined || v === '' ? '0' : String(v));
@@ -354,6 +354,21 @@ async function assertSaleReturnsKept(tx: Tx, tenantId: string, txnId: string,
 }
 
 /**
+ * PR-4 S2: a new or edited document whose lines name an inventory part while
+ * the company has inventory turned off is 400 INVENTORY_OFF (recurring runs,
+ * the API and MCP included), so stock never moves untracked. A void or delete
+ * (prepareExisting) stays allowed. Read before the costing lock.
+ */
+async function assertTrackingOn(tx: Tx, tenantId: string, companyId: string | null | undefined) {
+  // A posting without a company keeps its stock on the tenant's oldest company (lock()): that company's switch counts.
+  const co = companyId ?? ((await tx.execute(sql`SELECT id FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id LIMIT 1`)).rows[0] as { id: string } | undefined)?.id;
+  if (!co) return;
+  if (!(await inventoryEnabled(tx, tenantId, co))) {
+    throw AppError.badRequest('Inventory is turned off for this company, so inventory items can\'t be bought or sold. Turn inventory on in company settings, or use a non-inventory item.', 'INVENTORY_OFF');
+  }
+}
+
+/**
  * Before a new posting writes anything: the line guards, then the costing
  * lock when a part is involved, then the linked-return checks. Null when
  * nothing moves stock.
@@ -362,6 +377,7 @@ export async function prepareNew(tx: Tx, tenantId: string, companyId: string | n
   const parts = await lineParts(tx, tenantId, lines.map((l) => l.itemId));
   await assertLines(tx, tenantId, txnType, lines, parts);
   if (parts.size === 0) return null;
+  await assertTrackingOn(tx, tenantId, companyId);
   const held = await lock(tx, tenantId, companyId, [...parts.keys()], [txnDate]);
   held.links = linksOf(lines);
   await assertReturns(tx, tenantId, held, null, txnDate, lines);
@@ -375,6 +391,7 @@ export async function prepareEdit(tx: Tx, tenantId: string, companyId: string | 
   await assertLines(tx, tenantId, txnType, lines, parts);
   const old = await movementItemIds(tx, tenantId, txnId);
   if (parts.size === 0 && old.length === 0) return null;
+  if (parts.size > 0) await assertTrackingOn(tx, tenantId, companyId);
   // The old date counts only when the document holds stock today.
   const held = await lock(tx, tenantId, companyId, [...parts.keys(), ...old], [newDate, old.length > 0 ? oldDate : null]);
   held.links = linksOf(lines);
@@ -693,11 +710,26 @@ async function walkItem(tx: Tx, tenantId: string, companyId: string, itemId: str
         ${part(cols.q)}::numeric[], ${part(cols.v)}::numeric[], ${part(cols.l)}::numeric[]) AS v(id, value, correction, residual, q, v, l)
       WHERE m.id = v.id AND m.tenant_id = ${tenantId}`);
   }
-  const neg = result.negative;
-  const warning: InventoryWarning | null = neg
-    ? { code: 'NEGATIVE_STOCK', itemId, date: neg.date, onHand: neg.onHand.toFixed(4) }
-    : null;
-  return { changed, warning };
+  return { changed, warning: negativeWarning(itemId, rows, result.rows, triggerId) };
+}
+
+/**
+ * NEGATIVE_STOCK of one walk (U-158, PR-4 S1): the first walked row whose
+ * new on hand is below 0 where the stored on hand (before this posting) was
+ * 0 or more, or that is an outflow of the posting itself (a new or edited
+ * sale while stock is already below 0 warns each time). A void, delete or
+ * edit of a receipt that cured negative stock warns on the first later row it
+ * takes below 0. A new row's stored on hand is the column default 0.
+ */
+function negativeWarning(itemId: string, rows: readonly MovementRow[], walked: readonly { after: WalkState }[], triggerId: string): InventoryWarning | null {
+  for (let i = 0; i < rows.length; i++) {
+    const m = rows[i]!;
+    const q = walked[i]!.after.q;
+    if (!q.lessThan(0)) continue;
+    const own = m.transactionId === triggerId && d(m.quantity).lessThan(0);
+    if (own || d(m.runningQty).greaterThanOrEqualTo(0)) return { code: 'NEGATIVE_STOCK', itemId, date: m.movementDate, onHand: q.toFixed(4) };
+  }
+  return null;
 }
 
 interface LineSpec { role: DerivedLineRole; accountId: string; debit: string; credit: string }
@@ -885,6 +917,7 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): bil
   + 'A part line needs a quantity above 0; on a purchase document it posts to the part\'s inventory asset account (400 VALIDATION_ERROR otherwise); '
   + 'a line on an inventory asset account without a part is 400 INVENTORY_ACCOUNT_DIRECT outside journal entries; a client-sent lineRole cogs | '
   + 'inventory_relief | cost_correction | cost_residual is 400 VALIDATION_ERROR; parts on any other document type are 400 INVENTORY_DOCUMENT_UNSUPPORTED; '
+  + 'parts on a new or edited document while the company has inventory turned off are 400 INVENTORY_OFF (void and delete stay allowed); '
   + 'returnOf off a credit memo, or naming a document that is not a posted sale of the item, is 400 VALIDATION_ERROR; a return dated before its sale '
   + 'is 400 RETURN_BEFORE_SALE; returning more than the sale sold (all its linked returns together) is 400 RETURN_EXCEEDS_SALE; voiding or deleting '
   + 'a sale with live linked returns, taking the item off it, selling fewer units than were returned or dating it after a return is 409 '
@@ -892,7 +925,8 @@ export const INVENTORY_ROUTE_NOTE = 'Inventory parts (inventory-costing-v1): bil
   + 'or not; 409 RETRY after a deadlock or lock timeout (the posting rolled back: resend it under the same Idempotency-Key); editing a document '
   + 'with parts that is part of a completed bank reconciliation is 409 INVENTORY_DOCUMENT. Derived costing lines come back as inventoryLines '
   + '[{role, accountId, amount (debit positive), movementId}], never in lines. NEGATIVE_STOCK is allowed: the reply\'s warnings[] carries '
-  + '{code: NEGATIVE_STOCK, itemId, date, onHand} for the first row per item whose on hand newly went below 0 (create, edit, void, delete). '
+  + '{code: NEGATIVE_STOCK, itemId, date, onHand} per item for the first row the posting changes whose on hand is below 0 and was 0 or more before it, '
+  + 'or that is the posting\'s own outflow (each sale while stock is already below 0 warns again; create, edit, void, delete). '
   + UNIT_LINE_NOTE;
 
 /**
@@ -936,12 +970,12 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
   const out: InventoryWarning[] = [];
   for (const [itemId, qty] of [...qtyByItem].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const rows = (await executor.select({ transactionId: inventoryMovements.transactionId, date: inventoryMovements.movementDate,
-      created: inventoryMovements.txnCreatedAt, quantity: inventoryMovements.quantity }).from(inventoryMovements)
+      created: inventoryMovements.txnCreatedAt, quantity: inventoryMovements.quantity, stored: inventoryMovements.runningQty }).from(inventoryMovements)
       .where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.companyId, co), eq(inventoryMovements.itemId, itemId),
         eq(inventoryMovements.voided, false)))
       .orderBy(positionAsc()))
       .filter((r) => r.transactionId !== doc.editingId);
-    const mine = { transactionId: selfId, date: doc.txnDate, created: createdAt, quantity: qty.toFixed(4) };
+    const mine = { transactionId: selfId, date: doc.txnDate, created: createdAt, quantity: qty.toFixed(4), stored: '0' };
     const before = (r: { date: string; created: Date; transactionId: string }) => cmpPos(pos({ movementDate: r.date, txnCreatedAt: r.created, transactionId: r.transactionId }),
       pos({ movementDate: mine.date, txnCreatedAt: mine.created, transactionId: mine.transactionId })) < 0;
     const at = rows.findIndex((r) => !before(r));
@@ -951,11 +985,12 @@ export async function previewInventoryWarnings(executor: DbOrTx, tenantId: strin
       ? { date: old.date, created: old.created } : { date: mine.date, created: mine.created } : { date: mine.date, created: mine.created };
     let q = new Decimal(0);
     for (const r of merged) {
-      const prior = q;
       q = q.plus(d(r.quantity));
       const inWindow = cmpPos(pos({ movementDate: r.date, txnCreatedAt: r.created, transactionId: r.transactionId }),
         pos({ movementDate: start.date, txnCreatedAt: start.created, transactionId: selfId })) >= 0 || r === mine;
-      if (inWindow && prior.greaterThanOrEqualTo(0) && q.lessThan(0)) {
+      // PR-4 S1 (as the walk): the document's own outflow ending below 0 warns every time; a later row warns when it newly goes below 0.
+      const fresh = r === mine ? d(r.quantity).lessThan(0) : d(r.stored).greaterThanOrEqualTo(0);
+      if (inWindow && fresh && q.lessThan(0)) {
         out.push({ code: 'NEGATIVE_STOCK', itemId, date: r.date, onHand: q.toFixed(4) });
         break;
       }

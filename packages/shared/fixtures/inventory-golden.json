@@ -12,7 +12,7 @@
     "Residual: a row leaving Q = 0 with T != 0 moves T to the item's COGS account on that document.",
     "round2 and round6 are half away from zero at 40 digits, negatives included (round2(5.015) = 5.02, round2(-0.005) = -0.01).",
     "Closed periods (owner decision 2026-11-06): adding, editing, voiding or deleting a document with inventory lines dated on or before the closing date is 409 INVENTORY_PERIOD_CLOSED, closing-date password or not; so no movement on or before the closing date ever changes and there are no cost restatements.",
-    "NEGATIVE_STOCK {itemId, date, onHand} warns on the first row per item whose running quantity newly goes below 0; posting is allowed.",
+    "NEGATIVE_STOCK {itemId, date, onHand} warns, per item, on the first row the posting changes whose on hand is below 0 and either was 0 or more before the posting, or is the posting's own outflow (each sale while stock is already below 0 warns again, PR-4 S1); posting is allowed.",
     "Every case starts from an empty company with the seed accounts and items, or from the end state of the case named in `from`. `expect` after a step lists the item's state after that step; `rows` lists every movement row after the case's last step, in position order. Keys and cases marked engineOnly are not checked by the demo engine."
   ],
   "seed": {
@@ -99,6 +99,29 @@
         { "doc": "A9", "value": "-10.60", "onHand": "-1.0000", "assetValue": "-5.30" }
       ],
       "final": { "W": { "onHand": "-1.0000", "assetValue": "-5.30" } }
+    },
+    {
+      "id": "V2",
+      "title": "Void the Jan 15 bill that cured negative stock (from A), then sell again while below 0 (PR-4 S1): both warn",
+      "from": "A",
+      "steps": [
+        { "n": 10, "event": "void", "doc": "A6", "expect": { "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-20", "onHand": "-4.0000" }],
+          "onHand": "-6.0000", "assetValue": "-20.04", "note": "A7 was 6 on hand before the void; A5 was already -3" } },
+        { "n": 11, "doc": "V2a", "event": "invoice", "date": "2026-01-26", "item": "W", "quantity": "1",
+          "expect": { "value": "-3.59", "onHand": "-7.0000", "assetValue": "-23.63", "warnings": [{ "code": "NEGATIVE_STOCK", "item": "W", "date": "2026-01-26", "onHand": "-7.0000" }] } }
+      ],
+      "rows": [
+        { "doc": "A1", "value": "33.33", "onHand": "10.0000", "assetValue": "33.33" },
+        { "doc": "A2", "value": "20.50", "onHand": "15.0000", "assetValue": "53.83" },
+        { "doc": "A3", "value": "-14.35", "onHand": "11.0000", "assetValue": "39.48" },
+        { "doc": "A4", "value": "-39.48", "onHand": "0.0000", "assetValue": "0.00" },
+        { "doc": "A5", "value": "-10.77", "onHand": "-3.0000", "assetValue": "-10.77" },
+        { "doc": "A7", "value": "-3.59", "onHand": "-4.0000", "assetValue": "-14.36" },
+        { "doc": "A8", "value": "1.50", "onHand": "-4.0000", "assetValue": "-12.86" },
+        { "doc": "A9", "value": "-7.18", "onHand": "-6.0000", "assetValue": "-20.04" },
+        { "doc": "V2a", "value": "-3.59", "onHand": "-7.0000", "assetValue": "-23.63" }
+      ],
+      "final": { "W": { "onHand": "-7.0000", "assetValue": "-23.63", "averageCost": "3.589091" } }
     },
     {
       "id": "X",

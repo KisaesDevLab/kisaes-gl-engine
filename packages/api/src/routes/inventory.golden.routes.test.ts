@@ -362,6 +362,19 @@ describe('inventory-costing-v1 golden cases (U-157)', () => {
     expect(m!.voided).toBe(true);
   });
 
+  it('V2: voiding the receipt that cured negative stock warns, and so does each sale while below 0 (PR-4 S1)', async () => {
+    const w = await setup();
+    await runSteps(w, gcase('A')['steps']);
+    await runSteps(w, gcase('V2')['steps']);
+    await checkRows(w, gcase('V2')['rows']);
+    await checkFinal(w, gcase('V2')['final']);
+    await fullReplayMatches(w.items.get('W')!);
+    // The preview of another sale while below 0 warns as the posting does.
+    const pv = await req('POST', '/invoices/preview', { contactId: c.customer, txnDate: '2026-01-27', lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '10.00', isTaxable: false }] });
+    expect((pv.json['warnings'] as Body[]).filter((x) => x['code'] === 'NEGATIVE_STOCK'))
+      .toEqual([{ code: 'NEGATIVE_STOCK', itemId: w.items.get('W'), date: '2026-01-27', onHand: '-8.0000' }]);
+  });
+
   it('X: deleting the Jan 5 bill gives case V numbers, status deleted, reversal lines', async () => {
     const w = await setup();
     await runSteps(w, gcase('A')['steps']);
@@ -505,6 +518,34 @@ describe('inventory-costing-v1 guards (B3, B4)', () => {
     const off = await req('PUT', '/company/settings', { inventoryEnabled: false });
     expect([off.status, off.json['error']?.code]).toEqual([409, 'INVENTORY_IN_USE']);
     expect((await figures(w))['quantityOnHand']).toBe('11.0000');
+  });
+
+  it('inventory off: parts on a new or edited document are 400 INVENTORY_OFF on every path (routes, recurring copy); void stays allowed (PR-4 S2)', async () => {
+    const w = await setup();
+    const W = w.items.get('W')!;
+    const err = (r: { status: number; json: Body }) => [r.status, r.json['error']?.code];
+    await runSteps(w, [{ n: 1, doc: 'S1', event: 'bill', date: '2026-01-02', item: 'W', quantity: '2', unitPrice: '3.00', amount: '6.00' },
+      { n: 2, doc: 'S2', event: 'invoice', date: '2026-01-03', item: 'W', quantity: '2' }]);
+    const off = await req('PUT', '/company/settings', { inventoryEnabled: false });
+    expect(off.status, JSON.stringify(off.json)).toBe(200);
+    const sale = { contactId: c.customer, txnDate: '2026-02-01', lines: [{ itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false }] };
+    expect(err(await req('POST', '/invoices', sale))).toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('POST', '/sales-receipts', { ...sale, depositToAccountId: c.roles['checking'] }))).toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('POST', '/transactions', { txnType: 'cash_sale', contactId: c.customer, txnDate: '2026-02-01', depositToAccountId: c.roles['checking'],
+      lines: [{ accountId: c.roles['income'], itemId: W, quantity: '1', unitPrice: '10.00', isTaxable: false }] }))).toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('POST', '/bills', { contactId: w.vendor, txnDate: '2026-02-01', lines: [{ accountId: w.asset, amount: '3.00', itemId: W, quantity: '1', unitPrice: '3.00' }] })))
+      .toEqual([400, 'INVENTORY_OFF']);
+    expect(err(await req('PUT', `/invoices/${w.docs.get('S2')}`, { ...w.bodies.get('S2'), memo: 'edited' }))).toEqual([400, 'INVENTORY_OFF']);
+    // A recurring copy of the sale (the schedule runner's path) is refused too, and nothing posts.
+    const { postLegacyClone } = await import('../services/recurring.service.js');
+    await expect(postLegacyClone(c.tenantId, { id: crypto.randomUUID(), templateTransactionId: w.docs.get('S2')!, nextOccurrence: '2026-03-01' } as never))
+      .rejects.toMatchObject({ code: 'INVENTORY_OFF' });
+    expect(await db.select().from(inventoryMovements).where(and(eq(inventoryMovements.tenantId, c.tenantId), eq(inventoryMovements.voided, false)))).toHaveLength(2);
+    // A document without parts posts as usual; voiding an inventory document stays allowed.
+    expect((await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-02-01', lines: [{ accountId: c.roles['income'], quantity: '1', unitPrice: '10.00', isTaxable: false }] })).status)
+      .toBe(201);
+    expect((await req('POST', `/transactions/${w.docs.get('S2')}/void`, { reason: 'x' })).status).toBe(200);
+    await invariants(w);
   });
 
   it('advertises inventory-costing-v1', () => {
