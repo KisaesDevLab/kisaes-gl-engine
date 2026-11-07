@@ -173,7 +173,18 @@ describe('desktop engine as a NOSUPERUSER database owner, pg-boss backend', () =
 
   it('the in-process worker consumes a job enqueued as the role (round trip)', async () => {
     if (!ready) return;
-    expect(stdout.some((l) => l.includes('[in-process-worker] started on pgboss'))).toBe(true);
+    // The worker starts after `listening` (getJobQueue, then one queue.work
+    // per job type) and may finish after the tests above: wait for its line,
+    // failing at once if it reported that it could not start.
+    const started = await waitFor(async () => {
+      if (stderr.some((l) => l.includes('[in-process-worker] failed to start'))) {
+        throw new Error(`the in-process worker failed to start: ${stderr.slice(-20).join(' | ')}`);
+      }
+      return stdout.some((l) => l.includes('[in-process-worker] started on pgboss')) ? true : undefined;
+    }, 30_000, 'the in-process worker to start').catch((err: unknown) => {
+      throw new Error(`${(err as Error).message}; stdout tail: ${stdout.slice(-20).join(' | ')}; stderr tail: ${stderr.slice(-20).join(' | ')}`);
+    });
+    expect(started).toBe(true);
     // A report-pack run that does not exist: the engine's handler settles it
     // (completed or failed). Either way the job left the queue through the
     // engine process, which is the round trip under test.
