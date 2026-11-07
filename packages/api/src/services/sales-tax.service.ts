@@ -829,10 +829,16 @@ export async function codesById(executor: DbOrTx, tenantId: string, ids: Array<s
   const rows = list.length === 0 ? [] : await executor.select().from(salesTaxCodes).where(and(eq(salesTaxCodes.tenantId, tenantId), inArray(salesTaxCodes.id, list)));
   return new Map(rows.map((r) => [r.id, { id: r.id, code: r.code, taxable: r.taxable }]));
 }
-/** A delete removes the transaction's tax rows and payment lines (a void keeps them; readers filter on status 'posted'). */
-export async function deleteTransactionTaxRows(tx: Tx, tenantId: string, txnId: string): Promise<void> {
+/**
+ * A delete removes the transaction's tax rows and payment lines (a void keeps them; readers filter on status 'posted'). The payment
+ * lines it removes (the tax becomes owed again) are audited as their own delete row (PR-4 N6): the transaction's before-image does not hold them.
+ */
+export async function deleteTransactionTaxRows(tx: Tx, tenantId: string, txnId: string, userId?: string): Promise<void> {
   await tx.delete(transactionTaxLines).where(and(eq(transactionTaxLines.tenantId, tenantId), eq(transactionTaxLines.transactionId, txnId)));
-  await tx.delete(salesTaxPaymentLines).where(and(eq(salesTaxPaymentLines.tenantId, tenantId), eq(salesTaxPaymentLines.transactionId, txnId)));
+  const gone = await tx.delete(salesTaxPaymentLines).where(and(eq(salesTaxPaymentLines.tenantId, tenantId), eq(salesTaxPaymentLines.transactionId, txnId))).returning();
+  if (gone.length > 0) {
+    await auditLog(tenantId, 'delete', 'sales_tax_payment_lines', txnId, { transactionId: txnId, lines: gone }, null, userId, tx);
+  }
 }
 
 /** Runs migration 0252's backfill for one company (a pre-0252 archive import, tests). */

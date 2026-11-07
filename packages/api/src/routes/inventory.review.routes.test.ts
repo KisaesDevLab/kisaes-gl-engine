@@ -492,8 +492,23 @@ describe('PR-4 missing tests 5 and 6: sales tax items (U-147) with inventory', (
     expect([none.status, none.json['error']?.code]).toEqual([400, 'PAYMENT_TOTAL_NOT_POSITIVE']);
     await sale(w, '2026-03-08', '4');
     expect(await owed('2026-03-31'), '-2.48 + round2(40.00 x 8.25 %)').toBe('0.82');
-    const next = await req('POST', '/sales-tax/payments', { ...base, throughDate: '2026-03-31', date: '2026-04-05', expectedOwed: '0.82' });
-    expect(next.status, JSON.stringify(next.json)).toBe(201);
+    // The next period nets: paid by a check written outside Pay Sales Tax and linked to the agency.
+    const chk = await req('POST', '/checks', { bankAccountId: c.roles['checking'], payeeNameOnCheck: 'Sample Revenue Dept.', txnDate: '2026-04-05', amount: '0.82',
+      printLater: true, lines: [{ accountId: c.roles['sales_tax_payable'], amount: '0.82' }] });
+    expect(chk.status, JSON.stringify(chk.json)).toBe(201);
+    const chkId = String(chk.json['check']?.id ?? chk.json['id']);
+    const link = await req('POST', '/sales-tax/payments/link', { transactionId: chkId, agencyId: st.agency, lines: [{ taxItemId: st.tax, amount: '0.82' }] });
+    expect(link.status, JSON.stringify(link.json)).toBe(201);
     expect(await owed('2026-03-31')).toBe('0.00');
+    // N6: deleting the linked check owes the tax again, and its payment lines are in the audit trail.
+    const del = await req('DELETE', `/transactions/${chkId}`, {});
+    expect(del.status, JSON.stringify(del.json)).toBe(200);
+    expect(await owed('2026-03-31')).toBe('0.82');
+    const trail = await db.execute(sql`SELECT before_data FROM audit_log WHERE tenant_id = ${c.tenantId} AND entity_type = 'sales_tax_payment_lines'
+      AND entity_id = ${chkId}::uuid AND action = 'delete'`);
+    expect(trail.rows).toHaveLength(1);
+    const image = (trail.rows[0] as { before_data: unknown }).before_data;
+    const parsed = (typeof image === 'string' ? JSON.parse(image) : image) as Body;
+    expect((parsed['lines'] as Body[]).map((l) => [l['taxItemId'], l['amount']])).toEqual([[st.tax, '0.8200']]);
   });
 });

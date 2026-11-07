@@ -1574,4 +1574,8 @@ describe('units-of-measure-v1 (golden U, U-161)', () => {
   it('advertises units-of-measure-v1 after reorder-alerts-v1', () => {
     expect(DESKTOP_CAPABILITIES.indexOf('units-of-measure-v1')).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('reorder-alerts-v1'));
   });
+
+  it('advertises inventory-checkpoint-v1 (U-162, PR-4) after units-of-measure-v1', () => {
+    expect(DESKTOP_CAPABILITIES.indexOf('inventory-checkpoint-v1')).toBeGreaterThan(DESKTOP_CAPABILITIES.indexOf('units-of-measure-v1'));
+  });
 });
