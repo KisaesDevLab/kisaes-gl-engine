@@ -494,7 +494,7 @@ async function balanceCheck(
       SELECT jl.id, t.txn_date::text AS txn_date, (jl.credit - jl.debit)::text AS out, t.check_number
       FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = jl.tenant_id
       WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${account.id} AND t.status = 'posted'
-        AND t.txn_date BETWEEN ${from}::date AND (${fileDate}::date + ${LIKELY_DAYS})
+        AND t.txn_date BETWEEN ${from}::date AND (${fileDate}::date + ${LIKELY_DAYS}::int)
         AND NOT EXISTS (SELECT 1 FROM bank_feed_items b WHERE b.tenant_id = t.tenant_id AND b.matched_transaction_id = t.id)
         AND NOT EXISTS (SELECT 1 FROM reconciliation_lines rl WHERE rl.journal_line_id = jl.id AND rl.is_cleared = true)
       ORDER BY t.txn_date, jl.id
