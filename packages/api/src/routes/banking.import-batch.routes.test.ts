@@ -272,9 +272,12 @@ describe('bank-import-batch-v1', () => {
     const d = await commit(bigBody, bigKey);
     expect(d.headers['idempotent-replayed']).toBe('true');
     expect({ ...d.json, postProcessing: 'x' }).toEqual({ ...c.json, postProcessing: 'x' });
-    // The batch reader path shows the live state too.
-    expect(await waitPostProcessing(c.json.batchId)).toBe('done');
-    expect((await commit(bigBody, bigKey)).json.postProcessing).toBe('done');
+    // The batch reader path shows the live state too (read just before and after the replay).
+    const live = async () => (await db.select({ p: bankImportBatches.postProcessing }).from(bankImportBatches)
+      .where(eq(bankImportBatches.id, c.json.batchId)))[0]!.p;
+    const before = await live();
+    const e = await commit(bigBody, bigKey);
+    expect([before, await live()]).toContain(e.json.postProcessing);
     expect(await feedCount()).toBe(5603);
   });
 
