@@ -706,7 +706,7 @@ describe('inventory-costing-v1 returns, cash sales, checks and card charges (U-1
 });
 
 describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
-  it('G: rule 3 scales the invoice COGS and relief by payment / total; an applied credit memo and a $0 invoice show none', async () => {
+  it('G: rule 3 scales the invoice COGS and relief by payment / total; settlement by credit memo, a $0 sale or a write-off recognises the rest (Q-PR4a)', async () => {
     c = await h.company('0.081000');
     const w = await setup();
     const g = gcase('G');
@@ -744,19 +744,42 @@ describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
     const accrual = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'accrual', c.companyId);
     expect(accrual.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.accrual.glInventory);
     expect((await figures(w))['assetValue']).toBe(want.accrual.valuation);
-    // An applied (not refunded) credit memo is not cash: no inventory or COGS change on cash basis.
-    const cm = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: '2026-01-20',
-      lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '10.00', isTaxable: true, returnOf: { transactionId: w.docs.get('A3') } }],
-      applications: [{ invoiceId: w.docs.get('A3'), amount: '10.81' }] });
-    expect(cm.status, JSON.stringify(cm.json)).toBe(201);
-    // A $0 invoice of the item: its COGS never shows on cash basis (N3).
-    const zero = await req('POST', '/invoices', { contactId: c.customer, txnDate: '2026-01-21', lines: [{ itemId: w.items.get('W'), quantity: '1', unitPrice: '0', isTaxable: false }] });
-    expect(zero.status, JSON.stringify(zero.json)).toBe(201);
-    await invariants(w);
-    const pl2 = await reports.buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-01-31', 'cash', c.companyId, null, null, { exactAmounts: true });
-    expect(pl2.cogs.find((e) => e.accountId === w.cogs)!.amount.toFixed(2)).toBe(want.cash.cogs);
-    const bs2 = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'cash', c.companyId);
-    expect(bs2.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe(want.cash.inventory);
+    // Q-PR4a (PR-4 S3): settlement by an applied credit memo, a $0 sale and a write-off recognise COGS and relief in proportion.
+    const [badDebts] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Bad debts', accountType: 'expense' }).returning();
+    for (const s of g['settlements']['steps'] as Body[]) {
+      if (s['event'] === 'credit_memo') {
+        const cm = await req('POST', '/credit-memos', { contactId: c.customer, txnDate: s['date'],
+          lines: [{ itemId: w.items.get('W'), quantity: s['quantity'], unitPrice: '10.00', isTaxable: s['taxable'], returnOf: { transactionId: w.docs.get(s['returnOf']) } }],
+          applications: [{ invoiceId: w.docs.get(s['applyTo']), amount: s['applied'] }] });
+        expect(cm.status, JSON.stringify(cm.json)).toBe(201);
+        w.docs.set(s['doc'], idOf(cm.json));
+        const [t] = await db.select({ total: transactions.total }).from(transactions).where(eq(transactions.id, w.docs.get(s['doc'])!));
+        expect(m2(t!.total!), 'memo total').toBe(s['total']);
+      } else if (s['event'] === 'invoice') {
+        const zero = await req('POST', '/invoices', { contactId: c.customer, txnDate: s['date'], lines: [{ itemId: w.items.get('W'), quantity: s['quantity'], unitPrice: s['unitPrice'], isTaxable: false }] });
+        expect(zero.status, JSON.stringify(zero.json)).toBe(201);
+        w.docs.set(s['doc'], idOf(zero.json));
+      } else {
+        await receivePayment(c.tenantId, { customerId: c.customer, date: s['date'], amount: '0.00', depositTo: c.roles['checking'], writeOffAccountId: badDebts!.id,
+          applications: [{ invoiceId: w.docs.get(s['invoice'])!, amount: '0.00', writeOffAmount: s['amount'] }] } as never, c.userId, c.companyId);
+      }
+      await invariants(w);
+      const e = s['expect'] as Body;
+      if (e['value']) {
+        const [m] = await db.select().from(inventoryMovements).where(eq(inventoryMovements.transactionId, w.docs.get(s['doc'])!));
+        expect(m2(m!.value), `${s['doc']} value`).toBe(e['value']);
+      }
+      const plx = await reports.buildProfitAndLoss(c.tenantId, '2026-01-01', e['asOf'], 'cash', c.companyId, null, null, { exactAmounts: true });
+      const cg = plx.cogs.find((x) => x.accountId === w.cogs)!;
+      expect(new Decimal(cg.amountExact!).toString(), `step ${s['n']} cash COGS share`).toBe(new Decimal(e['cash'].cogsShare).toString());
+      if (e['cash'].income) expect(plx.totalRevenue.toFixed(2), `step ${s['n']} cash income`).toBe(e['cash'].income);
+      const bsx = await reports.buildBalanceSheet(c.tenantId, e['asOf'], 'cash', c.companyId);
+      expect(Math.abs(bsx.assets.find((a) => a.accountId === w.asset)!.balance - Number(e['cash'].inventoryShare)), `step ${s['n']} cash inventory`).toBeLessThan(1e-6);
+      expect(Math.abs(bsx.totalAssets - (bsx.totalLiabilities + bsx.totalEquity)), 'the cash balance sheet balances (half-cent shares)').toBeLessThan(1e-6);
+    }
+    // Accrual is untouched by settlements: valuation = accrual GL.
+    const accrual2 = await reports.buildBalanceSheet(c.tenantId, '2026-02-28', 'accrual', c.companyId);
+    expect(accrual2.assets.find((a) => a.accountId === w.asset)!.balance.toFixed(2)).toBe((await figures(w))['assetValue']);
     // U-160 on a cash-basis company: the valuation stays accrual (= accrual GL) and carries basisNote (N3).
     await db.update(companies).set({ accountingMethod: 'cash' }).where(eq(companies.id, c.companyId));
     const v = await req('GET', '/reports/inventory-valuation?asOf=2026-01-19');

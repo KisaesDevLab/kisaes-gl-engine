@@ -36,8 +36,9 @@ function averageOf(onHand: Dec, value: Dec, lastCost: Dec): string {
 
 /** The cash-basis note of the valuation summary (N3, Q-P24m). */
 export const CASH_BASIS_NOTE = 'This report shows inventory at average cost as of the date (accrual). On cash basis, the balance sheet and '
-  + 'profit and loss show inventory and cost of goods sold only as the bills and invoices that moved them are paid, so they can differ '
-  + 'from this report.';
+  + 'profit and loss add inventory as the bills that bought it are paid, and take it off as cost of goods sold as the sales that sold it '
+  + 'are settled: paid, written off, credited with a credit memo, or at once for a $0 sale, in proportion to the amount settled. So they '
+  + 'can differ from this report.';
 
 interface PartInfo {
   id: string; name: string; description: string | null; isActive: boolean; assetAccountId: string | null;
