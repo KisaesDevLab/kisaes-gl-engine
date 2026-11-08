@@ -94,8 +94,9 @@ async function insertPendingItem(
     bankConnectionId: connectionId,
     feedDate: '2026-06-15',
     description: 'CHECK #1042',
-    // Signed: money leaving the account. matchCandidateCount compares on ABS.
-    amount: '-250.0000',
+    // Feed sign: positive = money leaving the account (U-166 fixed the U-136
+    // sign); an expense's credit line on the bank matches it.
+    amount: '250.0000',
     status: 'pending',
     ...extra,
   }).returning();

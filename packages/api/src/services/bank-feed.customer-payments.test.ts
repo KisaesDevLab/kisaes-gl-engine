@@ -81,26 +81,28 @@ describe('feed-customer-payments-v1 (U-136)', () => {
   it('candidates include the payment deposited straight to the bank (money in) and its bounce (money out), exactly', async () => {
     const inv = await invoice('100.00');
     const payment = await receive(inv);
-    const moneyIn = await feed('100.0000');
+    const moneyIn = await feed('-100.0000');
     let c = await findMatchCandidates(tenantId, moneyIn);
     expect(c.map((x) => [x.id, x.txnType])).toEqual([[payment.id, 'customer_payment']]);
+    // Feed sign (U-166 sign fix): money in is negative.
     // Less than a cent apart is not the same amount any more.
-    const near = await feed('99.9950');
+    const near = await feed('-99.9950');
     expect(await findMatchCandidates(tenantId, near)).toEqual([]);
     // A payment never matches money going out.
-    expect(await findMatchCandidates(tenantId, await feed('-100.0000'))).toEqual([]);
+    expect(await findMatchCandidates(tenantId, await feed('100.0000'))).toEqual([]);
 
     const b = await paymentService.bouncePayment(tenantId, payment.id, { date: '2026-11-10' }, undefined, companyId);
-    const moneyOut = await feed('-100.0000', '2026-11-11');
+    const moneyOut = await feed('100.0000', '2026-11-11');
     c = await findMatchCandidates(tenantId, moneyOut);
     expect(c.map((x) => [x.id, x.txnType])).toEqual([[b.returnId, 'returned_payment']]);
-    // The bounced payment is no longer a money-in candidate.
-    expect(await findMatchCandidates(tenantId, moneyIn)).toEqual([]);
+    // U-166: the payment's own bank line still matches the money that came in
+    // (the bank shows both the deposit and the return).
+    expect((await findMatchCandidates(tenantId, moneyIn)).map((x) => x.id)).toEqual([payment.id]);
   });
 
   it('receive with bankFeedItemId matches the line in the same transaction; a mismatch or a second use posts nothing', async () => {
     const inv = await invoice('100.00');
-    const item = await feed('100.0000');
+    const item = await feed('-100.0000');
     await expect(receive(inv, { bankFeedItemId: item, amount: '99.99', applications: [{ invoiceId: inv, amount: '99.99' }] }))
       .rejects.toMatchObject({ code: 'FEED_ITEM_MISMATCH' });
     const other = (await accountsService.create(tenantId, { name: 'Savings', accountType: 'asset', detailType: 'bank', accountNumber: '1010' })).id;
@@ -118,10 +120,10 @@ describe('feed-customer-payments-v1 (U-136)', () => {
 
   it('review SF10: a money-out feed line is never a payment; a held deposit received with bankFeedItemId matches its line', async () => {
     const inv = await invoice('100.00');
-    const out = await feed('-100.0000');
+    const out = await feed('100.0000');
     await expect(receive(inv, { bankFeedItemId: out })).rejects.toMatchObject({ code: 'FEED_ITEM_MISMATCH' });
     expect((await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, out)))[0]!.status).toBe('pending');
-    const item = await feed('250.0000');
+    const item = await feed('-250.0000');
     const held = await paymentService.receivePayment(tenantId, {
       customerId, date: '2026-11-04', amount: '250.00', depositTo: bankId, applications: [], holdAsDeposit: true, bankFeedItemId: item,
     } as never, undefined, companyId);

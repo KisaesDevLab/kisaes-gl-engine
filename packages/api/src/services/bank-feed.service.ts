@@ -464,9 +464,9 @@ interface PostAssignmentValues {
 }
 
 /** 409 FEED_ITEM_NOT_PENDING {status} (U-173): the item isn't waiting for this action any more. */
-export function feedItemNotPending(status: string | null): AppError {
+export function feedItemNotPending(status: string | null, message?: string): AppError {
   return AppError.conflict(
-    `Bank feed item is not pending (current status: ${status}). It may already be posted, matched, excluded or in progress.`,
+    message ?? `Bank feed item is not pending (current status: ${status}). It may already be posted, matched, excluded or in progress.`,
     'FEED_ITEM_NOT_PENDING', { status },
   );
 }
@@ -499,7 +499,10 @@ async function postFeedItem(
       .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
       .for('update');
     if (!item) throw AppError.notFound('Bank feed item not found');
-    if (!allowed.includes(item.status ?? '')) throw feedItemNotPending(item.status);
+    if (!allowed.includes(item.status ?? '')) {
+      throw feedItemNotPending(item.status, item.status === 'pending' && !allowed.includes('pending')
+        ? 'Bank feed item is not assigned (current status: pending). Assign a category before approving.' : undefined);
+    }
     const values = resolve(item);
 
     // Determine if this is an expense (positive amount = money out) or deposit
