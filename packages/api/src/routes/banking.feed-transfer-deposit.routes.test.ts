@@ -263,6 +263,9 @@ describe('POST /feed/:id/transfer (U-171)', () => {
       { feedItemId: inn, journalLineId: lineOn(c.savings) },
       { feedItemId: out, journalLineId: lineOn(c.checking) },
     ]);
+    // ...and stores it (U-166 matched_journal_line_id).
+    expect((await item(inn)).matchedJournalLineId).toBe(lineOn(c.savings));
+    expect((await item(out)).matchedJournalLineId).toBe(lineOn(c.checking));
 
     const audits = await db.select().from(auditLog)
       .where(and(eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'bank_feed')));
@@ -458,6 +461,7 @@ describe('POST /feed/:id/deposit (U-171, Q-P26t)', () => {
     const bankLine = (await db.select().from(journalLines).where(eq(journalLines.transactionId, dep.id)))
       .find((l) => l.accountId === c.checking)!;
     expect(res.json.items).toEqual([{ feedItemId: line, journalLineId: bankLine.id }]);
+    expect((await item(line)).matchedJournalLineId).toBe(bankLine.id);
 
     // Already deposited: not waiting any more.
     const other = await feed(c.checkingConn, '-413.2700');

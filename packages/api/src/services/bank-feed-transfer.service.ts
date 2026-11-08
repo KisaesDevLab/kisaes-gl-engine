@@ -30,9 +30,9 @@
 //     posts through here too, so it is atomic as well.
 //
 // Line-level links: the posted transfer has exactly one line on each side's
-// account; the response names it per item (journalLineId). Storing it on the
-// feed row arrives with bank_feed_items.matched_journal_line_id (U-166);
-// linkFeedItemToEntry is the one place that will write it.
+// account; the response names it per item (journalLineId) and
+// linkFeedItemToEntry stores it in bank_feed_items.matched_journal_line_id
+// (U-166), so the line is never offered to another feed item.
 
 import { and, eq, gte, inArray, lte, ne, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
@@ -110,16 +110,17 @@ export async function feedAccountOf(tx: Tx, tenantId: string, item: FeedRow): Pr
 /**
  * Links a feed row to the entry that records it, in the caller's
  * transaction: status matched, the entry id, the classification state's
- * transaction id. `journalLineId` is the entry's line on the row's own
- * account; it is stored once bank_feed_items.matched_journal_line_id exists
- * (U-166).
+ * transaction id, and `journalLineId` (the entry's line on the row's own
+ * account) in matched_journal_line_id (U-166; one item per line).
  */
 export async function linkFeedItemToEntry(
-  tx: Tx, tenantId: string, feedItemId: string, transactionId: string, _journalLineId: string,
+  tx: Tx, tenantId: string, feedItemId: string, transactionId: string, journalLineId: string,
 ): Promise<void> {
   const [updated] = await tx.update(bankFeedItems).set({
     status: 'matched',
     matchedTransactionId: transactionId,
+    matchedJournalLineId: journalLineId,
+    entryVoidedAt: null,
     updatedAt: new Date(),
   }).where(and(
     eq(bankFeedItems.tenantId, tenantId),

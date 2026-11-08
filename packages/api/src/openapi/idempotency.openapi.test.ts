@@ -172,7 +172,20 @@ export const IDEMPOTENCY_FEED_MATCH_POST_V1_ROUTES = [
   'post /api/v1/banking/feed/{id}/deposit',
 ].sort();
 
+/**
+ * Keyed by feed-idempotency-v1 and feed-review-v1 (U-173, U-174, U-166): optional on categorize, approve and match;
+ * required on the duplicate decision and Review again.
+ */
+export const IDEMPOTENCY_FEED_REVIEW_V1_ROUTES = [
+  'put /api/v1/banking/feed/{id}/categorize',
+  'post /api/v1/banking/feed/{id}/approve',
+  'put /api/v1/banking/feed/{id}/match',
+  'post /api/v1/banking/feed/{id}/duplicate',
+  'post /api/v1/banking/feed/{id}/review-again',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_FEED_REVIEW_V1_ROUTES,
   ...IDEMPOTENCY_FEED_MATCH_POST_V1_ROUTES,
   ...IDEMPOTENCY_BANK_IMPORT_V1_ROUTES,
   ...IDEMPOTENCY_UNIT_SETS_V1_ROUTES,
