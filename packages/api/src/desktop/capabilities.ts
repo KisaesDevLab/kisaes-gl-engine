@@ -892,11 +892,12 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * sets every document draft converted onto the entry (convert, attach or a feed accept with documentDraft) back to
    * status ready with convertedTransactionId / convertedType / convertedAt cleared and a new updatedAt (kind and reading
    * kept), and moves its own file, when still on the entry, back onto a draft key (the key it was relinked from, else the
-   * draft's id); other files on the entry stay. Same database transaction, audited (`reopened: true`); a draft whose file
-   * was deleted reopens without one. DELETE /transactions/:id answers {transaction, reopenedDrafts: [id]} and the undo
-   * response adds reopenedDrafts (sorted). A void keeps the entry and its drafts stay converted (an attach to a void entry
-   * stays 409 TRANSACTION_NOT_POSTED); an Undo that keeps the entry (a match) keeps its documents. Migration 0269: index
-   * idx_document_drafts_converted.
+   * draft's id), together with every other file on the entry that the same relink took off that key (U-183,
+   * attachments.source_draft_key); files filed on the entry by hand stay. Same database transaction, audited
+   * (`reopened: true`); a draft whose file was deleted reopens without one. DELETE /transactions/:id answers
+   * {transaction, reopenedDrafts: [id]} and the undo response adds reopenedDrafts (sorted). A void keeps the entry and its
+   * drafts stay converted (an attach to a void entry stays 409 TRANSACTION_NOT_POSTED); an Undo that keeps the entry (a
+   * match) keeps its documents. Migration 0269: index idx_document_drafts_converted; 0270: attachments.source_draft_key.
    */
   'document-drafts-reopen-v1',
   /**

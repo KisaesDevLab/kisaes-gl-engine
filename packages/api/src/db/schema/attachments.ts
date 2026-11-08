@@ -19,6 +19,12 @@ export const attachments = pgTable('attachments', {
   // pre-existing row. The portal lists back only its own uploads: filenames
   // the firm chose can disclose more than a client should see.
   uploadedByContactId: uuid('uploaded_by_contact_id'),
+  // Migration 0270 (U-183) — the draft key the file was relinked from by a
+  // draft-key relink (convert, attach, bank feed accept, draftAttachmentId),
+  // so deleting the entry can move it back (document-drafts-reopen-v1).
+  // NULL when the file never came off a draft key, was filed by hand
+  // afterwards, or was moved back.
+  sourceDraftKey: uuid('source_draft_key'),
   ocrStatus: varchar('ocr_status', { length: 20 }),
   ocrVendor: varchar('ocr_vendor', { length: 255 }),
   ocrDate: date('ocr_date'),

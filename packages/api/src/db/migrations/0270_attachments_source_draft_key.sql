@@ -1,0 +1,18 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
+--
+-- The draft key an attachment was relinked from (U-183,
+-- document-drafts-reopen-v1). Additive: one nullable column, no backfill.
+--
+--   attachments.source_draft_key  set by every draft-key relink (convert,
+--                                 attach, bank feed accept,
+--                                 draftAttachmentId), cleared when the file
+--                                 is filed by hand or moved back. Deleting
+--                                 an entry moves every file a reopened
+--                                 draft's relink took off its key back onto
+--                                 that key. Rows from before this migration
+--                                 stay NULL; the reopen falls back to the
+--                                 relink's audit row for the draft's own
+--                                 file, as before.
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS source_draft_key uuid;

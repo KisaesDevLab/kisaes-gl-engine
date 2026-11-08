@@ -811,11 +811,23 @@ export async function attachLockedInTx(
  * another company's, 422 ATTACHMENT_NOT_DRAFT (filed on a record). The file
  * is read, not locked (attachLockedInTx locks it after the target, the
  * attach lock order).
+ *
+ * The caller keeps its transaction after a refusal (the row fails, others
+ * post), so a draft that is not live is refused from an unlocked read and
+ * never locked (U-182): a lock held on a converted draft would wait on, and
+ * deadlock with, a delete of its entry (which locks the entry, then its
+ * converted drafts). Only a live draft is locked, and every check runs again
+ * under the lock.
  */
 export async function lockDraftForAttach(
   tx: Tx, tenantId: string, companyId: string, id: string, expectedUpdatedAt: string,
   canKind: (kind: DocumentDraftKind) => Promise<boolean>,
 ): Promise<DocumentDraftRow> {
+  if (!UUID_RE.test(id)) throw notFound();
+  const [seen] = await tx.select().from(documentDrafts).where(scopeOf(tenantId, companyId, id));
+  if (!seen) throw notFound();
+  if (!(await canKind(seen.kind))) throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+  if (!isLive(seen.status)) throw closed(seen);
   const before = await lockDraft(tx, tenantId, companyId, id);
   if (!(await canKind(before.kind))) throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
   if (!isLive(before.status)) throw closed(before);
