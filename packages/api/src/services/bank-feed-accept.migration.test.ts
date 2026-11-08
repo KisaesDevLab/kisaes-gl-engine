@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Small Business License 1.0.0.
 // Free for small businesses; see LICENSE for terms.
 //
-// migration.0268-0269.rollback (U-169, U-170; S14): the forward files are
+// migration.0267-0268.rollback (U-169, U-170; S14): the forward files are
 // additive, roll back cleanly (newest first) and re-apply; a rule keeps its
 // row through the round trip and an accepted feed item keeps its entry and
 // link when the accept records go. The forward files are applied again at the
@@ -42,7 +42,7 @@ async function indexes(table: string): Promise<string[]> {
   return (r.rows as Array<{ indexname: string }>).map((x) => x.indexname);
 }
 
-const FORWARD = ['0268_conditional_rule_auto_accept.sql', '0269_bank_feed_accept_groups.sql'];
+const FORWARD = ['0267_conditional_rule_auto_accept.sql', '0268_bank_feed_accept_groups.sql'];
 
 let tenantId = '';
 let userId = '';
@@ -60,7 +60,7 @@ afterAll(async () => {
   await db.delete(tenants).where(eq(tenants.id, tenantId));
 });
 
-describe('migrations 0268-0269 (bank feed accept and undo)', () => {
+describe('migrations 0267-0268 (bank feed accept and undo)', () => {
   it('are additive', () => {
     for (const f of FORWARD) {
       const fwd = readFileSync(path.join(MIGRATIONS, f), 'utf8');
@@ -71,7 +71,7 @@ describe('migrations 0268-0269 (bank feed accept and undo)', () => {
 
   it('roll back newest first and re-apply; a rule keeps its row', async () => {
     const { user } = await authService.register({
-      email: `mig-0269-${Date.now()}-${Math.random().toString(36).slice(2, 6)}@example.com`,
+      email: `mig-0268-${Date.now()}-${Math.random().toString(36).slice(2, 6)}@example.com`,
       password: 'password123', displayName: 'Mig', companyName: 'Mig Co',
     });
     tenantId = user.tenantId;
@@ -82,8 +82,8 @@ describe('migrations 0268-0269 (bank feed accept and undo)', () => {
       actions: [{ type: 'skip_ai' }], active: true,
     }).returning();
 
-    await run('0269_bank_feed_accept_groups.rollback.sql');
-    await run('0268_conditional_rule_auto_accept.rollback.sql');
+    await run('0268_bank_feed_accept_groups.rollback.sql');
+    await run('0267_conditional_rule_auto_accept.rollback.sql');
     expect(await tableExists('bank_feed_accept_groups')).toBe(false);
     expect(await tableExists('bank_feed_accept_group_items')).toBe(false);
     expect(await columns('conditional_rules')).not.toContain('auto_accept');

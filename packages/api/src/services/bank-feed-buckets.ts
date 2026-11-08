@@ -83,7 +83,7 @@ export function matchSignalSql(tenantId: string): SQL {
         AND r.txn_type = 'returned_payment' AND r.status = 'posted')
   ))`;
   // The other side of a transfer (feed-accept-v1; U-171's candidate rule):
-  // served by idx_bfi_waiting_amount (0269).
+  // served by idx_bfi_waiting_amount (0268).
   const tdays = sql.raw(String(TRANSFER_WINDOW_DAYS));
   // The uncorrelated IN runs once as a hashed subplan, so a row without any
   // waiting opposite amount never reaches the correlated EXISTS (20k-row

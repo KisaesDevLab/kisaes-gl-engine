@@ -127,7 +127,7 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   matchedTxnIdx: index('idx_bfi_matched_txn').on(table.tenantId, table.matchedTransactionId)
     .where(sql`matched_transaction_id IS NOT NULL`),
   entryVoidedIdx: index('idx_bfi_entry_voided').on(table.tenantId, table.entryVoidedAt).where(sql`entry_voided_at IS NOT NULL`),
-  // Migration 0269: the transfer-twin match signal (bank-feed-buckets.ts).
+  // Migration 0268: the transfer-twin match signal (bank-feed-buckets.ts).
   waitingAmountIdx: index('idx_bfi_waiting_amount').on(table.tenantId, table.amount)
     .where(sql`status IN ('pending', 'assigned')`),
   suggestedRuleIdx: index('idx_bfi_suggested_rule').on(table.tenantId, table.suggestedRuleKind, table.suggestedRuleId)
@@ -337,7 +337,7 @@ export const bankStatementLines = pgTable('bank_statement_lines', {
   tenantMatchedJlIdx: index('idx_bsl_tenant_matched_jl').on(table.tenantId, table.matchedJournalLineId),
 }));
 
-// Bank feed accept records (migration 0269, U-169, feed-undo-v1; review B5).
+// Bank feed accept records (migration 0268, U-169, feed-undo-v1; review B5).
 // One group per accept request (POST /banking/feed/accept, /:id/transfer,
 // /:id/deposit, a match, a payment received for a bank line); one item row
 // per feed item it linked. Undo acts only on item rows whose feed item still

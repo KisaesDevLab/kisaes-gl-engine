@@ -239,8 +239,8 @@ export const EXCLUDED_TENANT_ARCHIVE_TABLES: Record<string, ExcludedTable> = {
   storage_migrations: { category: 'job-bookkeeping', scope: 'tenant', reason: 'storage-provider migration job records' },
   batch_save_requests: { category: 'job-bookkeeping', scope: 'tenant', reason: 'POST /batch/save Idempotency-Key replay records (0226); a restored company starts with none' },
   idempotency_keys: { category: 'job-bookkeeping', scope: 'tenant', reason: 'Idempotency-Key replay records (0229, U-18); a restored company starts with none' },
-  bank_feed_accept_groups: { category: 'job-bookkeeping', scope: 'tenant', reason: 'bank feed Accept/Undo records (0269, U-169); a restored company starts with none: its accepted rows stay accepted and Undo answers FEED_ITEM_NOT_ACCEPTED for them' },
-  bank_feed_accept_group_items: { category: 'job-bookkeeping', scope: 'tenant', reason: 'bank feed Undo records (0269, U-169): prior_state holds ids an archive import does not remap, so a restored company starts with none' },
+  bank_feed_accept_groups: { category: 'job-bookkeeping', scope: 'tenant', reason: 'bank feed Accept/Undo records (0268, U-169); a restored company starts with none: its accepted rows stay accepted and Undo answers FEED_ITEM_NOT_ACCEPTED for them' },
+  bank_feed_accept_group_items: { category: 'job-bookkeeping', scope: 'tenant', reason: 'bank feed Undo records (0268, U-169): prior_state holds ids an archive import does not remap, so a restored company starts with none' },
   // derived ──────────────────────────────────────────────────────────
   gl_version_stamps: { category: 'derived', scope: 'tenant', reason: 'rebuilt by the 0144 triggers on insert; archived rows would violate uniq_gl_version_stamps' },
   // provenance ───────────────────────────────────────────────────────

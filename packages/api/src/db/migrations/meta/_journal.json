@@ -1872,17 +1872,17 @@
       "breakpoints": true
     },
     {
-      "idx": 268,
+      "idx": 267,
       "version": "7",
       "when": 1787500023380,
-      "tag": "0268_conditional_rule_auto_accept",
+      "tag": "0267_conditional_rule_auto_accept",
       "breakpoints": true
     },
     {
-      "idx": 269,
+      "idx": 268,
       "version": "7",
       "when": 1787500024380,
-      "tag": "0269_bank_feed_accept_groups",
+      "tag": "0268_bank_feed_accept_groups",
       "breakpoints": true
     }
   ]
