@@ -85,7 +85,12 @@ export function matchSignalSql(tenantId: string): SQL {
   // The other side of a transfer (feed-accept-v1; U-171's candidate rule):
   // served by idx_bfi_waiting_amount (0269).
   const tdays = sql.raw(String(TRANSFER_WINDOW_DAYS));
-  const transfer = sql`EXISTS (
+  // The uncorrelated IN runs once as a hashed subplan, so a row without any
+  // waiting opposite amount never reaches the correlated EXISTS (20k-row
+  // counts stay fast even before the table is analyzed).
+  const transfer = sql`(-${bankFeedItems.amount}) IN (
+    SELECT o2.amount FROM bank_feed_items o2 WHERE o2.tenant_id = ${tenantId} AND o2.status IN ('pending', 'assigned')
+  ) AND EXISTS (
     SELECT 1 FROM bank_feed_items o
     JOIN bank_connections oc ON oc.id = o.bank_connection_id AND oc.tenant_id = ${tenantId}
     WHERE o.tenant_id = ${tenantId} AND o.status IN ('pending', 'assigned')
