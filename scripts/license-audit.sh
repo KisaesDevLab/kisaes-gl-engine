@@ -55,7 +55,7 @@ else
   bump_fail
 fi
 
-if [[ -f "$ROOT/NOTICE" ]]; then
+if [[ -f "$ROOT/NOTICE" || -f "$ROOT/NOTICE.md" ]]; then
   pass "NOTICE file present"
 else
   warn "NOTICE file missing — recommended for attribution"
@@ -100,10 +100,15 @@ fi
 header "3. Source code visibility"
 
 S13_PATTERN="source|Source|github|GitHub|repository|git\.io"
-S13_HITS=$(grep -r -l -E "$S13_PATTERN" \
-  "$ROOT/packages/web/src" 2>/dev/null | wc -l | tr -d ' ')
+S13_HITS=0
+if [[ -d "$ROOT/packages/web/src" ]]; then
+  S13_HITS=$(grep -r -l -E "$S13_PATTERN" \
+    "$ROOT/packages/web/src" 2>/dev/null | wc -l | tr -d ' ')
+fi
 
-if [[ "$S13_HITS" -gt 0 ]]; then
+if [[ ! -d "$ROOT/packages/web/src" ]]; then
+  info "No client UI source in this repository (engine only); each app checks its own UI source link"
+elif [[ "$S13_HITS" -gt 0 ]]; then
   pass "Found source-code link in client source ($S13_HITS file(s))"
   info "Verify a visible link to the source repo exists in the UI (footer, About page, etc.)"
 else
