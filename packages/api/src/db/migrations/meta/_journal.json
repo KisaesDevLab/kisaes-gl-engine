@@ -1898,6 +1898,13 @@
       "when": 1787700024380,
       "tag": "0270_attachments_source_draft_key",
       "breakpoints": true
+    },
+    {
+      "idx": 271,
+      "version": "7",
+      "when": 1787800024380,
+      "tag": "0271_percent_splits_normalize",
+      "breakpoints": true
     }
   ]
 }

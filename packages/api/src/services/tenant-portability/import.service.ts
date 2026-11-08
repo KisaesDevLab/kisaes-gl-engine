@@ -34,7 +34,10 @@ import { AppError } from '../../utils/errors.js';
 import { ArchiveReader } from './archive-reader.js';
 import { withScrubbedPassphrase } from './archive-crypto.js';
 import { sha256File } from './archive-container.js';
-import { checkSchemaCompatibility, SALES_TAX_BACKFILL_SCHEMA_VERSION, SALES_TAX_LIABILITY_SCHEMA_VERSION, type CompatResult } from './compat.js';
+import {
+  checkSchemaCompatibility, PERCENT_SPLITS_NORMALIZE_SCHEMA_VERSION, SALES_TAX_BACKFILL_SCHEMA_VERSION, SALES_TAX_LIABILITY_SCHEMA_VERSION,
+  type CompatResult,
+} from './compat.js';
 import { ArchiveError } from './errors.js';
 import { resolveForImport } from './files.js';
 import { computeTenantFingerprint } from './fingerprint.js';
@@ -366,6 +369,17 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         await client.query(
           `INSERT INTO audit_log (tenant_id, action, entity_type, entity_id, after_data)
            SELECT $1, 'create', 'sales_tax_liability_upgrade', $1, sales_tax_liability_upgrade_tenant($1::uuid)`,
+          [newTenantId],
+        );
+      }
+
+      // An archive made before 0271: its percentage splits (conditional rules,
+      // staged feed items) within the old 0.01 tolerance are normalized to
+      // exactly 100 as the migration did for live tenants, so they post.
+      if (manifest.schema.version < PERCENT_SPLITS_NORMALIZE_SCHEMA_VERSION) {
+        await client.query(
+          `INSERT INTO audit_log (tenant_id, action, entity_type, entity_id, after_data)
+           SELECT $1, 'update', 'percent_splits_normalize', $1, percent_splits_normalize_tenant($1::uuid)`,
           [newTenantId],
         );
       }
