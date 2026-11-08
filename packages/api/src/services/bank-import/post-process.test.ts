@@ -534,8 +534,10 @@ describe('import post-processing (U-06 follow-up)', () => {
     console.log(`[perf] post-processing of 20,000 rows: ${took} ms`);
     expect(state).toBe('done');
     const n = ((await db.execute(sql`SELECT count(*)::int AS n FROM transaction_classification_state WHERE tenant_id = ${tenantId}`)).rows[0] as { n: number }).n;
-    // Rows a legacy bank rule attributed get no state row (matched_rule_id references conditional_rules), as per row.
-    expect(n).toBe(20_000 - 2_000);
+    // U-168: rows a legacy bank rule attributed get their state row too, with matched_bank_rule_id.
+    expect(n).toBe(20_000);
+    const legacy = ((await db.execute(sql`SELECT count(*)::int AS n FROM transaction_classification_state WHERE tenant_id = ${tenantId} AND matched_bank_rule_id IS NOT NULL`)).rows[0] as { n: number }).n;
+    expect(legacy).toBe(2_000);
     const lines = await db.select().from(journalLines).where(and(eq(journalLines.tenantId, tenantId)));
     expect(lines).toHaveLength(0); // nothing posted (the seeded bills and invoices have no lines)
     expect(took).toBeLessThan(30_000);

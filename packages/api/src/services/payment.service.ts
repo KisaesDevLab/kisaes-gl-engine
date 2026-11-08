@@ -939,8 +939,10 @@ async function matchFeedItem(tx: Tx, tenantId: string, input: ReceivePaymentInpu
   `);
   const item = (res.rows as Array<{ id: string; amount: string; status: string; company_id: string | null; account_id: string }>)[0];
   if (!item || (companyId && item.company_id && item.company_id !== companyId)) throw AppError.notFound('Bank feed item not found');
-  // Money in only (review SF10): a positive feed amount, exactly the payment's.
-  if (item.account_id !== input.depositTo || !dec(item.amount).greaterThan(0) || !dec(item.amount).equals(dec(input.amount))) {
+  // Money in only (review SF10): in the feed sign money in is a NEGATIVE
+  // amount (U-166 sign fix; positive = money out everywhere else), exactly
+  // the payment's.
+  if (item.account_id !== input.depositTo || !dec(item.amount).lessThan(0) || !dec(item.amount).abs().equals(dec(input.amount))) {
     throw AppError.badRequest(
       'The payment must go to the bank account of the feed line, for exactly its amount.',
       'FEED_ITEM_MISMATCH',
@@ -948,7 +950,8 @@ async function matchFeedItem(tx: Tx, tenantId: string, input: ReceivePaymentInpu
     );
   }
   const { matchInTx } = await import('./bank-feed.service.js');
-  await matchInTx(tx, tenantId, item.id, paymentId, { conflictCode: true });
+  // U-169: recorded as a 'payment' link; Undo unlinks it and keeps the payment.
+  await matchInTx(tx, tenantId, item.id, paymentId, { companyId, recordKind: 'payment' });
 }
 
 /** Receives a payment in its own database transaction (routes, api-v2, MCP, Stripe, bank feed). */

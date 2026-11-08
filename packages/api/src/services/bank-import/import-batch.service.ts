@@ -50,6 +50,7 @@ import {
   Decimal, DEDUPE_VERSION, NORM_MAX_CODE_POINTS, cleanFitid, fitidKey, keyRows, norm, type KeyedRow,
 } from './keys.js';
 import { bankIdentityOf, isMasked, maskedAccount, type BankIdentity, type RawBankIdentity } from './link-key.js';
+import { BANK_DETAIL_TYPES } from '../bank-account-types.js';
 
 // ─── Contract ────────────────────────────────────────────────────────
 
@@ -447,7 +448,8 @@ async function readAccount(ex: DbOrTx, tenantId: string, companyId: string | und
   if (!a || (companyId && a.company_id && a.company_id !== companyId)) {
     throw AppError.unprocessableEntity('The account is not in this company.', 'account_not_in_company');
   }
-  const kind: AccountKind | null = a.account_type === 'asset' && a.detail_type === 'bank'
+  // U-175: every bank register detail type (bank, checking, savings, cash, petty_cash), as deposits and batch groups.
+  const kind: AccountKind | null = a.account_type === 'asset' && BANK_DETAIL_TYPES.includes(a.detail_type ?? '')
     ? 'bank'
     : a.account_type === 'liability' && a.detail_type === 'credit_card' ? 'card' : null;
   if (!kind || a.is_active === false) {
@@ -1175,9 +1177,13 @@ async function undoInTx(actor: BatchActor, batchId: string, pendingOnly: boolean
     const items = await tx.select({
       id: bankFeedItems.id, status: bankFeedItems.status, assignedAt: bankFeedItems.assignedAt,
       matchedTransactionId: bankFeedItems.matchedTransactionId, sourceLine: bankFeedItems.sourceLine,
+      exclusionReason: bankFeedItems.exclusionReason,
     }).from(bankFeedItems)
       .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.importBatchId, batchId))).for('update');
-    const untouched = items.filter((i) => i.status === 'pending' && !i.assignedAt && !i.matchedTransactionId);
+    // A row the owner removed as a duplicate (U-174, S4) counts as untouched:
+    // undoing the import takes it away with the rest.
+    const untouched = items.filter((i) => !i.matchedTransactionId
+      && ((i.status === 'pending' && !i.assignedAt) || (i.status === 'excluded' && i.exclusionReason === 'duplicate')));
     const used = items.filter((i) => !untouched.includes(i));
 
     // Items this batch replaced (changed rows, "replace") get their values

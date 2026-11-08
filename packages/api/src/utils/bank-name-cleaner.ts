@@ -79,6 +79,58 @@ const MERCHANT_MAP: Record<string, string> = {
   'scribe': 'Scribe',
 };
 
+// Banking words that alone don't name anyone (U-176): a cut that would leave
+// only these ("ONLINE TRANSFER TO CARD" → "Online") is not made.
+const GENERIC_WORDS = new Set([
+  'ONLINE', 'MOBILE', 'INTERNET', 'WEB', 'PHONE', 'ELECTRONIC', 'CHECK', 'CHK', 'CK', 'DEPOSIT', 'ATM', 'BRANCH',
+  'TELLER', 'TRANSFER', 'XFER', 'PAYMENT', 'PAYMENTREC', 'PMT', 'AUTOPAY', 'PURCHASE', 'DEBIT', 'CREDIT', 'TRANSACTION',
+  'CARD', 'BANK', 'ACCOUNT', 'ACCT', 'POS', 'ACH', 'WIRE', 'EFT', 'PENDING', 'HOLD', 'RECURRING', 'TO', 'FROM', 'FOR',
+  'THE', 'OF', 'ON', 'AT', 'THANK', 'YOU', 'ID', 'REF', 'CONF', 'NO', 'NUM', 'NUMBER',
+]);
+
+/** True when `s` has a word with a letter that isn't a generic banking word. */
+function hasMeaningfulWord(s: string): boolean {
+  return s.split(/\s+/).some((w) => {
+    const letters = w.replace(/[^\p{L}]/gu, '').toUpperCase();
+    return letters.length > 0 && !GENERIC_WORDS.has(letters);
+  });
+}
+
+/** A word cut is made only when something meaningful is left (U-176). */
+function cutWords(s: string, pattern: RegExp): string {
+  const next = s.replace(pattern, '');
+  return next !== s && !hasMeaningfulWord(next) ? s : next;
+}
+
+/** A trailing-number cut is made unless it leaves a bare check word: "CHECK 1005" keeps its number (U-176). */
+function cutNumber(s: string, pattern: RegExp): string {
+  const next = s.replace(pattern, '');
+  return next !== s && /^(CHECK|CHK|CK)\s*(NO\.?|#)?$/i.test(next.trim()) ? s : next;
+}
+
+// Transaction words that end a descriptor: everything from the first of
+// them with a meaningful name before it is dropped ("COMCAST PAYMENT
+// 123456" → "COMCAST"); a cut that would leave only banking words is not
+// made ("ONLINE TRANSFER TO CARD" stays whole).
+const SUFFIX_WORD = /\s+(PAYMENTREC|PAYMENT|PMT|AUTOPAY|PURCHASE|DEBIT|CREDIT|TRANSACTION|TRANSFER)/gi;
+
+function cutTransactionSuffix(s: string): string {
+  for (const m of s.matchAll(SUFFIX_WORD)) {
+    const head = s.slice(0, m.index);
+    if (hasMeaningfulWord(head)) return head;
+  }
+  return s;
+}
+
+/** Unicode title case: "CAFÉ LUMIÈRE" → "Café Lumière", "JOE'S" → "Joe's", "O'REILLY" → "O'Reilly". */
+function titleCase(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/(^|[^\p{L}\p{N}'’])(\p{L})/gu, (_m, before: string, ch: string) => before + ch.toUpperCase())
+    .replace(/(^|[^\p{L}\p{N}])(\p{L})(['’])(\p{L}{2,})/gu,
+      (_m, before: string, a: string, q: string, rest: string) => before + a + q + rest.charAt(0).toUpperCase() + rest.slice(1));
+}
+
 export function cleanBankDescription(raw: string): string {
   if (!raw) return raw;
 
@@ -96,7 +148,7 @@ export function cleanBankDescription(raw: string): string {
 
   // ── Phase 2: Strip bank-added prefixes ──
   for (const pattern of STRIP_PREFIXES) {
-    cleaned = cleaned.replace(pattern, '');
+    cleaned = cutWords(cleaned, pattern);
   }
 
   // Clean up asterisks used as separators: "FUBO*TV" → "FUBO TV"
@@ -105,51 +157,52 @@ export function cleanBankDescription(raw: string): string {
   // ── Phase 3: Strip trailing noise ──
 
   // Phone numbers (full and partial/truncated): 800-123-4567, 877-33239, 603-324-0, 866-665-278
-  cleaned = cleaned.replace(/\s+\d{3}[-.]?\d{3,}[-.]?\d*$/i, '');
+  // A check keeps its number; a word cut never leaves only banking words (U-176).
+  cleaned = cutNumber(cleaned, /\s+\d{3}[-.]?\d{3,}[-.]?\d*$/i);
   // Toll-free and common prefixes that might remain after other stripping
-  cleaned = cleaned.replace(/\s+\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{1,4}$/i, '');
+  cleaned = cutNumber(cleaned, /\s+\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{1,4}$/i);
 
   // Trailing numeric-heavy codes: 7704, 180-09680, etc.
-  cleaned = cleaned.replace(/\s+\d{3,}[-]\d+$/i, '');
+  cleaned = cutNumber(cleaned, /\s+\d{3,}[-]\d+$/i);
 
   // Trailing reference/order codes — only if they contain digits (pure-alpha words are likely real names)
-  cleaned = cleaned.replace(/\s+(?=[A-Z0-9]*\d)[A-Z0-9]{5,}$/i, '');
-  cleaned = cleaned.replace(/\s+#?[A-Z]*\d{4,}[A-Z0-9]*$/i, '');
+  cleaned = cutNumber(cleaned, /\s+(?=[A-Z0-9]*\d)[A-Z0-9]{5,}$/i);
+  cleaned = cutNumber(cleaned, /\s+#?[A-Z]*\d{4,}[A-Z0-9]*$/i);
 
   // Dates: 04/03, 01-05
-  cleaned = cleaned.replace(/\s+\d{2}[/\-]\d{2}$/i, '');
-  cleaned = cleaned.replace(/\s+\d{4}$/i, '');
+  cleaned = cutNumber(cleaned, /\s+\d{2}[/\-]\d{2}$/i);
+  cleaned = cutNumber(cleaned, /\s+\d{4}$/i);
 
   // Country/state codes at end
-  cleaned = cleaned.replace(/\s+(US|CA|GB|AU|NZ|IN|XX)\s*$/i, '');
-  cleaned = cleaned.replace(/\s+[A-Z]{2}\s*$/i, '');
+  cleaned = cutWords(cleaned, /\s+(US|CA|GB|AU|NZ|IN|XX)\s*$/i);
+  cleaned = cutWords(cleaned, /\s+[A-Z]{2}\s*$/i);
 
   // Zip codes
-  cleaned = cleaned.replace(/\s+\d{5}(-\d{4})?\s*$/i, '');
+  cleaned = cutNumber(cleaned, /\s+\d{5}(-\d{4})?\s*$/i);
 
   // Common transaction suffixes
-  cleaned = cleaned.replace(/\s+(PAYMENTREC|PAYMENT|PMT|AUTOPAY|PURCHASE|DEBIT|CREDIT|TRANSACTION|TRANSFER).*$/i, '');
+  cleaned = cutTransactionSuffix(cleaned);
 
   // Masked card/ref numbers
-  cleaned = cleaned.replace(/\s+\*+\d+.*$/i, '');
+  cleaned = cutWords(cleaned, /\s+\*+\d+.*$/i);
 
   // ── Phase 4: Strip truncated/duplicate URLs and names ──
 
   // URLs and partial URLs: "Amzn.com/", "WWW.ACCOU", "CL.INTUIT", "ZENWORK.C"
-  cleaned = cleaned.replace(/\s+(https?:\/\/)?[\w.-]+\.(com|org|net|io|co)\S*$/i, '');
-  cleaned = cleaned.replace(/\s+WWW\.\S*$/i, '');
-  cleaned = cleaned.replace(/\s+[A-Z]{2,}\.[A-Z]+$/i, '');  // "CL.INTUIT", "ZENWORK.C"
+  cleaned = cutWords(cleaned, /\s+(https?:\/\/)?[\w.-]+\.(com|org|net|io|co)\S*$/i);
+  cleaned = cutWords(cleaned, /\s+WWW\.\S*$/i);
+  cleaned = cutWords(cleaned, /\s+[A-Z]{2,}\.[A-Z]+$/i);  // "CL.INTUIT", "ZENWORK.C"
 
   // ── Phase 5: Strip business entity and noise suffixes ──
-  cleaned = cleaned.replace(/\s*,?\s*\b(Inc\.?|LLC\.?|Corp\.?|Ltd\.?|L\.?L\.?C\.?|Incorporated|Corporation|Limited)\s*$/i, '');
+  cleaned = cutWords(cleaned, /\s*,?\s*\b(Inc\.?|LLC\.?|Corp\.?|Ltd\.?|L\.?L\.?C\.?|Incorporated|Corporation|Limited)\s*$/i);
 
   // Strip "Bill Pay" suffix (common for utility payments, keep the vendor name)
-  cleaned = cleaned.replace(/\s+Bill\s+Pay\s*$/i, '');
+  cleaned = cutWords(cleaned, /\s+Bill\s+Pay\s*$/i);
 
   // ── Phase 6: Clean up random auth/reference codes ──
   // Only strip trailing words that have no vowels (likely random codes like TYWPYJ, BXKRM)
   // or are a single consonant-heavy token that doesn't look like English
-  cleaned = cleaned.replace(/\s+[^aeiouAEIOU\s]{5,}$/i, '');
+  cleaned = cutWords(cleaned, /\s+[^aeiouàáâãäåæèéêëìíîïòóôõöøœùúûüAEIOU\s]{5,}$/i);
 
   // ── Phase 7: Remove duplicate/truncated repetitions ──
   // "APPSUMO.COM APPSUMO.C" → "APPSUMO.COM", "TAXSPEAKER TAXSPEAKE" → "TAXSPEAKER"
@@ -158,8 +211,8 @@ export function cleanBankDescription(raw: string): string {
   if (words.length >= 2) {
     const deduped: string[] = [words[0]!];
     for (let i = 1; i < words.length; i++) {
-      const prev = deduped[deduped.length - 1]!.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const curr = words[i]!.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const prev = deduped[deduped.length - 1]!.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+      const curr = words[i]!.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
       // Skip if current word is a prefix/truncation of prev or vice versa (3+ char overlap)
       if (curr.length >= 3 && prev.length >= 3 && (prev.startsWith(curr) || curr.startsWith(prev))) {
         // Keep the longer one
@@ -184,9 +237,7 @@ export function cleanBankDescription(raw: string): string {
   }
 
   // ── Phase 10: Title case ──
-  cleaned = cleaned
-    .toLowerCase()
-    .replace(/\b\w/g, (c) => c.toUpperCase())
+  cleaned = titleCase(cleaned)
     .replace(/\bLlc\b/g, 'LLC')
     .replace(/\bInc\b/g, 'Inc.')
     .replace(/\bCo\b/g, 'Co.')

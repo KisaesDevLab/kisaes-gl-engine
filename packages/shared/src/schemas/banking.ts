@@ -6,8 +6,20 @@ import { z } from 'zod';
 
 const bankFeedStatuses = ['pending', 'assigned', 'matched', 'categorized', 'excluded'] as const;
 
+// A tri-state query flag: absent (no filter), 'true' or 'false'.
+const optionalQueryBoolean = z
+  .union([z.boolean(), z.enum(['true', 'false'])])
+  .optional()
+  .transform((v) => (v === undefined ? undefined : v === true || v === 'true'));
+
+// U-177 (feed-transfer-window-v1): days either side for the other side of a
+// transfer (as GET /banking/feed/:id/transfer-candidates windowDays).
+const transferWindowDaysQuery = z.coerce.number().int().min(1).max(10).optional();
+
 export const bankFeedFiltersSchema = z.object({
-  status: z.enum(bankFeedStatuses).optional(),
+  // A stored status, or 'accepted' (feed-accept-v1, Q-P26y): every accepted
+  // row, categorized and matched (entryVoided included), as /counts accepted.
+  status: z.enum([...bankFeedStatuses, 'accepted']).optional(),
   bankConnectionId: z.string().uuid().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
@@ -38,6 +50,14 @@ export const bankFeedFiltersSchema = z.object({
     'name', 'originalDescription', 'confidence',
   ]).optional(),
   sortDir: z.enum(['asc', 'desc']).optional(),
+  // U-174 (feed-review-v1) and U-166 (feed-match-v2). Absent = no filter;
+  // 'true' / 'false' as query strings or booleans.
+  bucket: z.enum(['ready', 'review', 'matches']).optional(),
+  possibleDuplicate: optionalQueryBoolean,
+  entryVoided: optionalQueryBoolean,
+  // U-177 (feed-transfer-window-v1): the transfer window for bucket, the
+  // matches filter and transferCandidate. Absent = 3 days.
+  transferWindowDays: transferWindowDaysQuery,
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -73,6 +93,23 @@ export const categorizeSchema = z.object({
 
 export const matchSchema = z.object({
   transactionId: z.string().uuid(),
+  // U-166 (feed-match-v2): the entry's line on the bank account. Optional
+  // when only one line fits (else 400 LINE_REQUIRED).
+  journalLineId: z.string().uuid().optional(),
+});
+
+// U-174 (feed-review-v1): the owner's decision on a possible duplicate.
+export const feedDuplicateDecisionSchema = z.object({
+  decision: z.enum(['keep', 'remove']),
+});
+
+// U-174: GET /banking/feed/counts takes the list's scope.
+export const bankFeedCountsQuerySchema = z.object({
+  bankConnectionId: z.string().uuid().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  // U-177: the list's transfer window, so the counts equal the list totals.
+  transferWindowDays: transferWindowDaysQuery,
 });
 
 // Two-phase workflow (migration 0119) — ASSIGN stages a category on a feed

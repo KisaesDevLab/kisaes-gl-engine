@@ -91,6 +91,18 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // Q-P25c: imported as a look-alike of an existing item (soft reference).
   possibleDuplicate: boolean('possible_duplicate').notNull().default(false),
   possibleDuplicateOf: uuid('possible_duplicate_of'),
+  // Migration 0265 (U-166, feed-match-v2): the journal line on the item's
+  // bank account this item is (one item per line, partial unique index;
+  // NULL for items matched before 0265, which hold the whole transaction),
+  // and when the entry the item points at was voided (Q-P26u).
+  matchedJournalLineId: uuid('matched_journal_line_id'),
+  entryVoidedAt: timestamp('entry_voided_at', { withTimezone: true }),
+  // Migration 0266 (U-168, U-174): the rule that staged the suggestion
+  // ('conditional' = conditional_rules, 'legacy' = bank_rules), written with
+  // the suggestion; why an excluded item was excluded ('duplicate' or NULL).
+  suggestedRuleId: uuid('suggested_rule_id'),
+  suggestedRuleKind: varchar('suggested_rule_kind', { length: 12 }),
+  exclusionReason: varchar('exclusion_reason', { length: 20 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
@@ -109,6 +121,17 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   connectionRowKeyIdx: index('idx_bfi_connection_row_key').on(table.bankConnectionId, table.rowKey)
     .where(sql`row_key IS NOT NULL`),
   importBatchIdx: index('idx_bfi_import_batch').on(table.importBatchId).where(sql`import_batch_id IS NOT NULL`),
+  // Migrations 0265 and 0266.
+  matchedJournalLineUniq: uniqueIndex('uq_bfi_matched_journal_line').on(table.tenantId, table.matchedJournalLineId)
+    .where(sql`matched_journal_line_id IS NOT NULL`),
+  matchedTxnIdx: index('idx_bfi_matched_txn').on(table.tenantId, table.matchedTransactionId)
+    .where(sql`matched_transaction_id IS NOT NULL`),
+  entryVoidedIdx: index('idx_bfi_entry_voided').on(table.tenantId, table.entryVoidedAt).where(sql`entry_voided_at IS NOT NULL`),
+  // Migration 0268: the transfer-twin match signal (bank-feed-buckets.ts).
+  waitingAmountIdx: index('idx_bfi_waiting_amount').on(table.tenantId, table.amount)
+    .where(sql`status IN ('pending', 'assigned')`),
+  suggestedRuleIdx: index('idx_bfi_suggested_rule').on(table.tenantId, table.suggestedRuleKind, table.suggestedRuleId)
+    .where(sql`suggested_rule_id IS NOT NULL`),
 }));
 
 // Bank file import batches (migration 0263, U-06). One row per committed
@@ -312,4 +335,49 @@ export const bankStatementLines = pgTable('bank_statement_lines', {
 }, (table) => ({
   tenantStatementIdx: index('idx_bsl_tenant_statement').on(table.tenantId, table.statementId),
   tenantMatchedJlIdx: index('idx_bsl_tenant_matched_jl').on(table.tenantId, table.matchedJournalLineId),
+}));
+
+// Bank feed accept records (migration 0268, U-169, feed-undo-v1; review B5).
+// One group per accept request (POST /banking/feed/accept, /:id/transfer,
+// /:id/deposit, a match, a payment received for a bank line); one item row
+// per feed item it linked. Undo acts only on item rows whose feed item still
+// points at transaction_id and that are not undone.
+export const bankFeedAcceptGroups = pgTable('bank_feed_accept_groups', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id'),
+  userId: uuid('user_id'),
+  /** accept | transfer | deposit | match | payment */
+  source: varchar('source', { length: 20 }).notNull(),
+  ruleId: uuid('rule_id'),
+  ruleKind: varchar('rule_kind', { length: 12 }),
+  /** The accept response (GET /banking/feed/accept-groups/:id). */
+  result: jsonb('result'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  tenantCreatedIdx: index('idx_bfag_tenant_created').on(table.tenantId, table.createdAt),
+}));
+
+export const bankFeedAcceptGroupItems = pgTable('bank_feed_accept_group_items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull(),
+  companyId: uuid('company_id'),
+  groupId: uuid('group_id').notNull(),
+  feedItemId: uuid('feed_item_id').notNull(),
+  /** post | match | transfer | deposit | payment */
+  kind: varchar('kind', { length: 12 }).notNull(),
+  transactionId: uuid('transaction_id').notNull(),
+  journalLineId: uuid('journal_line_id'),
+  /** sha256 of the entry's date, contact, memo and lines at commit (FEED_UNDO_CHANGED). */
+  txnFingerprint: char('txn_fingerprint', { length: 64 }),
+  /** The feed item's review state before the accept, restored by Undo and Review again. */
+  priorState: jsonb('prior_state').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  undoneAt: timestamp('undone_at', { withTimezone: true }),
+  undoneBy: uuid('undone_by'),
+}, (table) => ({
+  groupIdx: index('idx_bfagi_group').on(table.tenantId, table.groupId),
+  itemLiveIdx: index('idx_bfagi_item_live').on(table.tenantId, table.feedItemId, table.createdAt)
+    .where(sql`undone_at IS NULL`),
+  txnIdx: index('idx_bfagi_txn').on(table.tenantId, table.transactionId),
 }));

@@ -26,14 +26,14 @@ describe('isSecretKey', () => {
     for (const k of [
       'fileHash', 'file_hash', 'sourceFileHash', 'numbersHash', 'contentHash',
       'tokenExpiresAt', 'accessTokenExpiresAt', 'monthlyTokenLimit',
-      'tfaTotpVerified', 'tfaTotpLastStep', 'credentialId', 'credential_id',
+      'tfaTotpVerified', 'tfaTotpLastStep', 'credentialId', 'credential_id', 'closingPasswordRequired', 'closing_password_required',
     ]) {
       expect(isSecretKey(k), k).toBe(false);
     }
   });
 
   it('still strips secrets that merely resemble an exempt name', () => {
-    for (const k of ['fileHashSecret', 'passwordHash', 'tokenExpiresAtToken', 'credentialIdSecret', 'refreshTokenExpiresAt', 'tfaTotpSecret']) {
+    for (const k of ['fileHashSecret', 'passwordHash', 'tokenExpiresAtToken', 'credentialIdSecret', 'refreshTokenExpiresAt', 'tfaTotpSecret', 'closingPassword', 'closingPasswordRequiredHash']) {
       expect(isSecretKey(k), k).toBe(true);
     }
   });

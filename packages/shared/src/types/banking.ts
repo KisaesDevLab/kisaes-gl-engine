@@ -91,10 +91,24 @@ export interface BankFeedItem {
   // in-system transactions (e.g. checks written in the ledger) aren't duplicated.
   // 0 for non-pending / already-matched rows.
   matchCandidateCount?: number;
+  // feed-accept-v1 (Q-P26y): on a waiting row, the other side of a transfer
+  // when exactly one exists (the transfer-candidates rule, default 3-day
+  // window: another GL account, the exact opposite amount, waiting); else null.
+  transferCandidate?: BankFeedTransferCandidate | null;
+  // feed-accept-kind-v1 (U-178): what the row's live accept record did (the
+  // record Undo acts on); null when the row has no entry or no live record.
+  acceptKind?: 'post' | 'match' | 'transfer' | 'deposit' | 'payment' | null;
+}
+
+export interface BankFeedTransferCandidate {
+  feedItemId: string;
+  accountId: string;
+  accountName: string;
 }
 
 export interface BankFeedFilters {
-  status?: BankFeedStatus;
+  // 'accepted' (feed-accept-v1): categorized and matched rows, entryVoided included.
+  status?: BankFeedStatus | 'accepted';
   bankConnectionId?: string;
   startDate?: string;
   endDate?: string;
@@ -105,6 +119,16 @@ export interface BankFeedFilters {
   // When true, restrict the feed to rows a RULE mapped (match_type = 'rule').
   // Filtered in the service WHERE so pagination/counts stay correct.
   ruleOnly?: boolean;
+  // U-174 (feed-review-v1): the review bucket of waiting rows (the same
+  // predicate as GET /banking/feed/counts); possible duplicates waiting for
+  // a decision (true) or every row that isn't flagged (false).
+  bucket?: 'ready' | 'review' | 'matches';
+  possibleDuplicate?: boolean;
+  // U-166 (feed-match-v2, Q-P26u): rows whose entry was voided (true) or
+  // the others (false).
+  entryVoided?: boolean;
+  // U-177 (feed-transfer-window-v1): transfer window in days (1-10, default 3).
+  transferWindowDays?: number;
   // Server-side column sort — the list paginates, so ordering must happen
   // in SQL, not on the loaded page.
   sortBy?: 'feedDate' | 'description' | 'category' | 'status' | 'amount' | 'checkNumber' | 'payee'

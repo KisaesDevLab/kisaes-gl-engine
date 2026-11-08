@@ -60,6 +60,7 @@ import {
 } from '../../db/schema/index.js';
 import { cleanBankDescription } from '../../utils/bank-name-cleaner.js';
 import * as bankRulesService from '../bank-rules.service.js';
+import type { RuleFire } from '../bank-feed.service.js';
 import * as conditionalApply from '../conditional-rules-apply.service.js';
 import * as conditionalEngine from '../conditional-rules-engine.service.js';
 import * as symbolResolution from '../rule-symbol-resolution.service.js';
@@ -142,7 +143,8 @@ async function loadRunContext(tenantId: string): Promise<RunContext> {
     ruleSet = await conditionalApply.loadRuleSet(tenantId, null);
   } catch (err) {
     // As applyForFeedItem failing per item: the conditional stage is skipped.
-    console.warn('[import-post] conditional rules could not be loaded:', err instanceof Error ? err.message : String(err));
+    // U-167: the error code only (a rule's pattern or a Drizzle param may hold a payee).
+    console.warn(`[import-post] conditional rules could not be loaded: ${errorSummaryForLog(err)}`);
   }
   return {
     tenantId,
@@ -161,7 +163,7 @@ async function loadRunContext(tenantId: string): Promise<RunContext> {
 
 /** The item columns the stages may change, written back once per chunk. */
 const WRITABLE = ['description', 'suggestedAccountId', 'suggestedContactId', 'suggestedTagId', 'matchType', 'confidenceScore',
-  'skipAi', 'splitsConfig'] as const;
+  'skipAi', 'splitsConfig', 'suggestedRuleId', 'suggestedRuleKind'] as const;
 type Writable = (typeof WRITABLE)[number];
 
 interface Fire { ruleId: string; itemId: string; actions: Action[]; tier: string; firmId: string | null }
@@ -201,7 +203,7 @@ async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Pr
   await cleanse(ctx, items, patch);
 
   // Stage 1: conditional rules (pending items).
-  const ruleFired = new Map<string, string | null>();
+  const ruleFired = new Map<string, RuleFire>();
   const shortCircuited = new Set<string>();
   const fires: Fire[] = [];
   await connectionAccounts(ctx, items);
@@ -210,12 +212,14 @@ async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Pr
     try {
       const r = await applyConditional(ctx, ctx.ruleSet, item);
       if (!r) continue;
-      patch(item, conditionalApply.stagePatch(r.aggregated));
+      // U-168: the attribution goes in the same write as the suggestion.
+      const staged = conditionalApply.stagePatch(r.aggregated);
+      patch(item, { ...staged, ...conditionalApply.ruleAttribution(staged, r.fires[0]?.ruleId ?? null) });
       for (const f of r.fires) fires.push(f);
       if (r.shortCircuited) shortCircuited.add(item.id);
-      if (r.fires.length > 0 && !ruleFired.has(item.id)) ruleFired.set(item.id, r.fires[0]!.ruleId);
+      if (r.fires.length > 0 && !ruleFired.has(item.id)) ruleFired.set(item.id, { ruleId: r.fires[0]!.ruleId, kind: 'conditional' });
     } catch (err) {
-      console.warn(`[import-post] conditional-rules apply failed for item ${item.id}:`, err instanceof Error ? err.message : String(err));
+      console.warn(`[import-post] conditional-rules apply failed for item ${item.id}: ${errorSummaryForLog(err)}`);
     }
   }
 
@@ -226,10 +230,12 @@ async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Pr
     const r = await evaluateLegacy(ctx, item);
     if (!r) continue;
     legacyRule.set(item.id, r.rule.id);
-    ruleFired.set(item.id, r.rule.id);
+    ruleFired.set(item.id, { ruleId: r.rule.id, kind: 'legacy' });
     if (r.accountId && !item.suggestedAccountId) {
       patch(item, {
         suggestedAccountId: r.accountId,
+        suggestedRuleId: r.rule.id,
+        suggestedRuleKind: 'legacy',
         ...(r.contactId && !item.suggestedContactId ? { suggestedContactId: r.contactId } : {}),
         ...(r.tagId && !item.suggestedTagId ? { suggestedTagId: r.tagId } : {}),
         matchType: 'rule',
@@ -298,17 +304,18 @@ async function writeChunk(tx: Tx, tenantId: string, w: ChunkWrite): Promise<void
       id: i.id, version: w.versions.get(i.id), cols: [...w.dirty.get(i.id)!],
       description: i.description, suggested_account_id: i.suggestedAccountId, suggested_contact_id: i.suggestedContactId,
       suggested_tag_id: i.suggestedTagId, match_type: i.matchType, confidence_score: i.confidenceScore, skip_ai: i.skipAi,
-      splits_config: i.splitsConfig ?? null,
+      splits_config: i.splitsConfig ?? null, suggested_rule_id: i.suggestedRuleId ?? null, suggested_rule_kind: i.suggestedRuleKind ?? null,
     }));
     const set = (col: string, key: Writable) => sql.raw(`${col} = CASE WHEN v.cols ? '${key}' THEN v.${col} ELSE b.${col} END`);
     await tx.execute(sql`
       UPDATE bank_feed_items b SET ${set('description', 'description')}, ${set('suggested_account_id', 'suggestedAccountId')},
         ${set('suggested_contact_id', 'suggestedContactId')}, ${set('suggested_tag_id', 'suggestedTagId')},
         ${set('match_type', 'matchType')}, ${set('confidence_score', 'confidenceScore')}, ${set('skip_ai', 'skipAi')},
-        ${set('splits_config', 'splitsConfig')}, updated_at = now()
+        ${set('splits_config', 'splitsConfig')}, ${set('suggested_rule_id', 'suggestedRuleId')},
+        ${set('suggested_rule_kind', 'suggestedRuleKind')}, updated_at = now()
       FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS v(id uuid, version text, cols jsonb, description text,
         suggested_account_id uuid, suggested_contact_id uuid, suggested_tag_id uuid, match_type text, confidence_score numeric,
-        skip_ai boolean, splits_config jsonb)
+        skip_ai boolean, splits_config jsonb, suggested_rule_id uuid, suggested_rule_kind text)
       WHERE b.tenant_id = ${tenantId} AND b.id = v.id AND md5(b::text) = v.version`);
   }
   await recordFires(tx, tenantId, w.fires);
@@ -326,7 +333,8 @@ async function writeChunk(tx: Tx, tenantId: string, w: ChunkWrite): Promise<void
       set: {
         bucket: sql`excluded.bucket`, confidenceScore: sql`excluded.confidence_score`,
         suggestedAccountId: sql`excluded.suggested_account_id`, suggestedVendorId: sql`excluded.suggested_vendor_id`,
-        matchedRuleId: sql`excluded.matched_rule_id`, reasoningBlob: sql`excluded.reasoning_blob`, modelUsed: sql`excluded.model_used`,
+        matchedRuleId: sql`excluded.matched_rule_id`, matchedBankRuleId: sql`excluded.matched_bank_rule_id`,
+        reasoningBlob: sql`excluded.reasoning_blob`, modelUsed: sql`excluded.model_used`,
         updatedAt: sql`excluded.updated_at`, matchCandidates: sql`excluded.match_candidates`,
       },
     });
@@ -602,7 +610,7 @@ async function findMatchesForItems(tenantId: string, items: Item[]): Promise<Map
       }
       out.set(item.id, potentialMatch.rankCandidates(all));
     } catch (err) {
-      console.warn(`[import-post] potential-match find failed for item ${item.id}:`, err instanceof Error ? err.message : String(err));
+      console.warn(`[import-post] potential-match find failed for item ${item.id}: ${errorSummaryForLog(err)}`);
     }
   }
   return out;
@@ -612,12 +620,11 @@ async function findMatchesForItems(tenantId: string, items: Item[]): Promise<Map
 
 /**
  * upsertStateForFeedItem's values for every item. An item attributed to a
- * legacy bank rule gets no row: matched_rule_id references
- * conditional_rules, so the per-row upsert fails on it and only logs
- * (kept as is; see the PR notes).
+ * legacy bank rule gets its row with matched_bank_rule_id (U-168);
+ * matched_rule_id holds conditional rules only.
  */
 async function stateRows(
-  ctx: RunContext, items: Item[], ruleFired: Map<string, string | null>, candidates: Map<string, MatchCandidate[]>,
+  ctx: RunContext, items: Item[], ruleFired: Map<string, RuleFire>, candidates: Map<string, MatchCandidate[]>,
 ): Promise<Array<typeof transactionClassificationState.$inferInsert>> {
   const { tenantId } = ctx;
   const patterns = [...new Set(items.map((i) => classification.signalPattern(i)))];
@@ -630,19 +637,18 @@ async function stateRows(
     list.push({ accountId: r.account_id, timesConfirmed: r.times_confirmed, timesOverridden: r.times_overridden });
     byPattern.set(r.payee_pattern, list);
   }
-  const ruleIds = [...new Set([...ruleFired.values()].filter((r): r is string => r !== null))];
+  const ruleIds = [...new Set([...ruleFired.values()].filter((r) => r.kind === 'conditional' && r.ruleId !== null).map((r) => r.ruleId!))];
   const conditionalIds = new Set(ruleIds.length === 0 ? [] : (await db.select({ id: conditionalRules.id }).from(conditionalRules)
     .where(inArray(conditionalRules.id, ruleIds))).map((r) => r.id));
 
   const out: Array<typeof transactionClassificationState.$inferInsert> = [];
   const now = new Date();
-  let skipped = 0;
   for (const item of items) {
-    const matchedRuleId = ruleFired.get(item.id) ?? null;
-    if (matchedRuleId !== null && !conditionalIds.has(matchedRuleId)) {
-      skipped++;
-      continue;
-    }
+    const fired = ruleFired.get(item.id);
+    const legacy = fired?.kind === 'legacy' ? fired.ruleId : null;
+    // A conditional rule deleted since it fired is left off the row.
+    const conditional = fired?.kind === 'conditional' && fired.ruleId && conditionalIds.has(fired.ruleId) ? fired.ruleId : null;
+    const matchedRuleId = conditional ?? legacy;
     const matchCandidates = candidates.get(item.id) ?? [];
     const signals = classification.signalsFromHistory(item, byPattern.get(classification.signalPattern(item)) ?? []);
     signals.matchedRuleId = matchedRuleId;
@@ -651,9 +657,8 @@ async function stateRows(
     out.push({
       tenantId, companyId: item.companyId, bankFeedItemId: item.id, bucket, confidenceScore: confidenceScore.toFixed(3),
       suggestedAccountId: item.suggestedAccountId ?? null, suggestedVendorId: item.suggestedContactId ?? null,
-      matchedRuleId, reasoningBlob: reasoning, modelUsed: null, updatedAt: now, matchCandidates,
+      matchedRuleId: conditional, matchedBankRuleId: legacy, reasoningBlob: reasoning, modelUsed: null, updatedAt: now, matchCandidates,
     });
   }
-  if (skipped > 0) console.warn(`[import-post] classification state not written for ${skipped} item(s) a legacy bank rule attributed`);
   return out;
 }

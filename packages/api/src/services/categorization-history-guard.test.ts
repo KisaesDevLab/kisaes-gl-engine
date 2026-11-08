@@ -57,8 +57,12 @@ describe('isIdentifyingPattern', () => {
   });
 
   it('is what a cheque description actually reduces to', () => {
-    // The whole reason this guard exists: every cheque shares one key.
-    expect(normalizePayeePattern('CHECK 3662')).toBe(normalizePayeePattern('CHECK 3584'));
-    expect(isIdentifyingPattern(normalizePayeePattern('CHECK 3662'))).toBe(false);
+    // The whole reason this guard exists: a cheque's key names nobody. Since
+    // U-176 the cleaned name keeps the cheque number ("check 3662"), and the
+    // key is still refused, so no cheque ever learns another's payee.
+    expect(normalizePayeePattern('CHECK 3662')).toBe('check 3662');
+    for (const raw of ['CHECK 3662', 'CHECK 3584', 'CHECK #3584', 'CHK 1005', 'DEPOSIT 12345', 'CREDIT CARD PAYMENT']) {
+      expect(isIdentifyingPattern(normalizePayeePattern(raw)), raw).toBe(false);
+    }
   });
 });

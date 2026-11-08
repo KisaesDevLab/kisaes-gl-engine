@@ -39,6 +39,7 @@ import * as checkService from './check.service.js';
 import * as expenseService from './expense.service.js';
 import * as depositService from './deposit.service.js';
 import * as journalEntryService from './journal-entry.service.js';
+import { BANK_DETAIL_TYPES } from './bank-account-types.js';
 
 // 40 significant digits: a money value is at most 15 integer + 4 decimal
 // digits (numeric(19,4)), and the sum of 10,000 of them is at most 23 + 4
@@ -94,10 +95,6 @@ const CONTACT_TYPE: Record<BatchGroupTxnType, 'vendor' | 'customer' | null> = {
   deposit: 'customer', journal_entry: null,
 };
 
-// Bank-like registers (both detail-type vocabularies in use: the default
-// chart's umbrella 'bank' and the import path's 'checking' / 'savings';
-// cash on hand and petty cash are registers too).
-const BANK_DETAIL_TYPES = ['bank', 'checking', 'savings', 'cash', 'petty_cash'];
 const CARD_DETAIL_TYPES = ['credit_card'];
 type ContextKind = 'bank' | 'card';
 

@@ -352,3 +352,80 @@ export async function getActionItems(tenantId: string, companyId?: string, opts:
     printQueueAmount: money(dec(printQueue?.total), opts.exact),
   };
 }
+
+// ─── Bank-file balance next to the books (U-77, account-balances-v1) ──
+//
+// Per active bank, cash and credit card account of the company: the books
+// balance and the ending balance of the latest bank file imported into it
+// (bank_import_batches, U-06): the latest file_ending_date, then the latest
+// created time, skipping undone batches and files without a balance.
+// booksBalanceAtFileDate is the books on that date (posted entries dated on
+// or before it), so the two compare like for like.
+//
+// Register sign: a bank account's balance is what it holds; a card's is what
+// is owed (positive = owed). A bank file's balance is stored in the holder's
+// sign with the batch's sign flip already applied (the import's balance
+// check reads it the same way), so a card's file balance is negated here.
+// Decimal strings, at least 2 places.
+
+export interface AccountBalanceRow {
+  accountId: string;
+  name: string;
+  accountNumber: string | null;
+  kind: 'bank' | 'card';
+  booksBalance: string;
+  bankFileBalance: string | null;
+  bankFileDate: string | null;
+  booksBalanceAtFileDate: string | null;
+}
+
+function wireMoney(d: DecimalT): string {
+  return d.toFixed(Math.max(2, Math.min(4, d.decimalPlaces())));
+}
+
+export async function getAccountBalances(tenantId: string, companyId?: string): Promise<AccountBalanceRow[]> {
+  const companyCond = companyId ? sql`AND (a.company_id = ${companyId} OR a.company_id IS NULL)` : sql``;
+  const rows = await db.execute(sql`
+    SELECT a.id, a.name, a.account_number, a.detail_type, a.balance::text AS balance,
+           f.file_ending_balance::text AS file_balance, f.file_ending_date::text AS file_date,
+           CASE WHEN f.file_ending_date IS NULL THEN NULL ELSE (
+             SELECT COALESCE(SUM(jl.debit - jl.credit), 0)::text
+             FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = jl.tenant_id
+             WHERE jl.tenant_id = ${tenantId} AND jl.account_id = a.id AND t.status = 'posted'
+               AND t.txn_date <= f.file_ending_date
+           ) END AS books_at_date
+    FROM accounts a
+    LEFT JOIN LATERAL (
+      SELECT b.file_ending_balance, b.file_ending_date
+      FROM bank_import_batches b
+      WHERE b.tenant_id = ${tenantId} AND b.account_id = a.id AND b.undone_at IS NULL
+        AND b.file_ending_balance IS NOT NULL AND b.file_ending_date IS NOT NULL
+      ORDER BY b.file_ending_date DESC, b.created_at DESC, b.id DESC
+      LIMIT 1
+    ) f ON TRUE
+    WHERE a.tenant_id = ${tenantId} AND a.is_active = true ${companyCond}
+      AND (
+        (a.account_type = 'asset' AND a.detail_type IN ('bank', 'checking', 'savings', 'cash', 'petty_cash'))
+        OR (a.account_type = 'liability' AND a.detail_type = 'credit_card')
+      )
+    ORDER BY a.account_type, a.account_number, a.name, a.id
+  `);
+  return rowsOf<{
+    id: string; name: string; account_number: string | null; detail_type: string | null; balance: string | null;
+    file_balance: string | null; file_date: string | null; books_at_date: string | null;
+  }>(rows).map((r) => {
+    const card = r.detail_type === 'credit_card';
+    // Books are debit - credit; a card shows what is owed.
+    const reg = (d: DecimalT) => (card ? d.neg() : d);
+    return {
+      accountId: String(r.id),
+      name: r.name,
+      accountNumber: r.account_number ?? null,
+      kind: card ? 'card' as const : 'bank' as const,
+      booksBalance: wireMoney(reg(dec(r.balance))),
+      bankFileBalance: r.file_balance === null ? null : wireMoney(reg(dec(r.file_balance))),
+      bankFileDate: r.file_date ?? null,
+      booksBalanceAtFileDate: r.books_at_date === null ? null : wireMoney(reg(dec(r.books_at_date))),
+    };
+  });
+}

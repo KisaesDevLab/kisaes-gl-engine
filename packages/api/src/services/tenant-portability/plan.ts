@@ -239,6 +239,8 @@ export const EXCLUDED_TENANT_ARCHIVE_TABLES: Record<string, ExcludedTable> = {
   storage_migrations: { category: 'job-bookkeeping', scope: 'tenant', reason: 'storage-provider migration job records' },
   batch_save_requests: { category: 'job-bookkeeping', scope: 'tenant', reason: 'POST /batch/save Idempotency-Key replay records (0226); a restored company starts with none' },
   idempotency_keys: { category: 'job-bookkeeping', scope: 'tenant', reason: 'Idempotency-Key replay records (0229, U-18); a restored company starts with none' },
+  bank_feed_accept_groups: { category: 'job-bookkeeping', scope: 'tenant', reason: 'bank feed Accept/Undo records (0268, U-169); a restored company starts with none: its accepted rows stay accepted and Undo answers FEED_ITEM_NOT_ACCEPTED for them' },
+  bank_feed_accept_group_items: { category: 'job-bookkeeping', scope: 'tenant', reason: 'bank feed Undo records (0268, U-169): prior_state holds ids an archive import does not remap, so a restored company starts with none' },
   // derived ──────────────────────────────────────────────────────────
   gl_version_stamps: { category: 'derived', scope: 'tenant', reason: 'rebuilt by the 0144 triggers on insert; archived rows would violate uniq_gl_version_stamps' },
   // provenance ───────────────────────────────────────────────────────
@@ -350,6 +352,10 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'bank_feed_items.assigned_tag_id': 'tenant-ref:tags',
   'bank_feed_items.assigned_by': 'identity',
   'bank_feed_items.close_reviewed_by': 'identity',
+  // U-166 (0265): the matched bank line; U-168 (0266): the staging rule, a
+  // conditional_rules or bank_rules id by suggested_rule_kind.
+  'bank_feed_items.matched_journal_line_id': 'tenant-ref:journal_lines',
+  'bank_feed_items.suggested_rule_id': 'polymorphic',
   'bank_rules.bank_account_id': 'tenant-ref:accounts',
   'bank_rules.assign_account_id': 'tenant-ref:accounts',
   'bank_rules.assign_contact_id': 'tenant-ref:contacts',
@@ -731,6 +737,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'transaction_classification_state.transaction_id': 'tenant-ref:transactions',
   'transaction_classification_state.suggested_account_id': 'tenant-ref:accounts',
   'transaction_classification_state.suggested_vendor_id': 'tenant-ref:contacts',
+  'transaction_classification_state.matched_bank_rule_id': 'tenant-ref:bank_rules',
   'transaction_tags.transaction_id': 'tenant-ref:transactions',
   'transaction_tags.tag_id': 'tenant-ref:tags',
   'transaction_tags.company_id': 'tenant-ref:companies',

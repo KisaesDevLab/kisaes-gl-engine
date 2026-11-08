@@ -37,7 +37,7 @@ export function normalizePayeePattern(description: string): string {
  * have it inferred invisibly from one confirmation.
  */
 const NON_IDENTIFYING_WORDS = new Set([
-  'check', 'checks', 'cheque', 'cheques', 'draft', 'drafts',
+  'check', 'checks', 'chk', 'ck', 'cheque', 'cheques', 'draft', 'drafts',
   'deposit', 'deposits', 'withdrawal', 'withdrawals', 'withdrawl',
   'transfer', 'transfers', 'payment', 'payments', 'pay',
   'debit', 'debits', 'credit', 'credits', 'card', 'purchase', 'purchases',

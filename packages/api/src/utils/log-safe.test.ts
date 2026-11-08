@@ -8,6 +8,7 @@ import { format } from 'node:util';
 import type { Request, Response } from 'express';
 import { accessLogUrl, errorSummaryForLog } from './log-safe.js';
 import { scrubSecrets } from './secret-scrubber.js';
+import { AppError } from './errors.js';
 import { loadDesktopProfile, _resetDesktopProfileForTests } from '../desktop/profile.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
@@ -69,6 +70,24 @@ describe('errorSummaryForLog', () => {
     );
     const long = errorSummaryForLog(Object.assign(new Error('x'.repeat(500)), { stack: '' }));
     expect(long.length).toBeLessThan(220);
+  });
+
+  it('an AppError with a code prints its code, status and ids, never the message or amounts in details', () => {
+    const id = '0b6f7f1e-3c1a-4d55-9a8e-2f1d7c9b1a01';
+    const other = '7a1c2b3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+    const err = Object.assign(
+      new AppError(400, 'Splits add up to 4821.37 but the bank line is 4800.00 (Acme Plumbing LLC).', 'SPLITS_DONT_BALANCE',
+        { id, paymentIds: [other], difference: '21.37', total: '4821.37', name: 'Acme Plumbing LLC', accountId: 'not-a-uuid' }),
+      { stack: '' },
+    );
+    const line = errorSummaryForLog(err);
+    expect(line).toBe(`AppError code=SPLITS_DONT_BALANCE status=400 id=${id} paymentIds=${other}`);
+    for (const leak of ['4821.37', '4800.00', '21.37', 'Acme', 'not-a-uuid']) expect(line).not.toContain(leak);
+    // As a cause too.
+    const wrapped = Object.assign(new Error('Batch failed'), { cause: err, stack: '' });
+    expect(errorSummaryForLog(wrapped)).toBe(`Error Batch failed (cause: AppError code=SPLITS_DONT_BALANCE status=400 id=${id} paymentIds=${other})`);
+    // No code: the short message, as before.
+    expect(errorSummaryForLog(Object.assign(new AppError(500, 'plain'), { stack: '' }))).toBe('AppError plain');
   });
 
   it('copes with non-errors', () => {

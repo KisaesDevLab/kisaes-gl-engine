@@ -1856,6 +1856,34 @@
       "when": 1787500019380,
       "tag": "0264_bank_import_post_progress",
       "breakpoints": true
+    },
+    {
+      "idx": 265,
+      "version": "7",
+      "when": 1787500020380,
+      "tag": "0265_bank_feed_line_match",
+      "breakpoints": true
+    },
+    {
+      "idx": 266,
+      "version": "7",
+      "when": 1787500021380,
+      "tag": "0266_bank_feed_rule_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 267,
+      "version": "7",
+      "when": 1787500023380,
+      "tag": "0267_conditional_rule_auto_accept",
+      "breakpoints": true
+    },
+    {
+      "idx": 268,
+      "version": "7",
+      "when": 1787500024380,
+      "tag": "0268_bank_feed_accept_groups",
+      "breakpoints": true
     }
   ]
 }

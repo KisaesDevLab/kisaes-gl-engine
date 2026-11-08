@@ -20,7 +20,7 @@ import { AppError } from '../utils/errors.js';
 // (conditional-rules-engine.service.ts) is a pure separate
 // module; this service handles persistence + audit.
 
-function mapRow(row: typeof conditionalRules.$inferSelect): ConditionalRule {
+export function mapRow(row: typeof conditionalRules.$inferSelect): ConditionalRule {
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -36,6 +36,7 @@ function mapRow(row: typeof conditionalRules.$inferSelect): ConditionalRule {
     ownerUserId: row.ownerUserId,
     ownerFirmId: row.ownerFirmId,
     forkedFromGlobalId: row.forkedFromGlobalId,
+    autoAccept: row.autoAccept,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -266,6 +267,7 @@ function buildInsertForScope(
     actions: input.actions,
     continueAfterMatch: input.continueAfterMatch ?? false,
     active: input.active ?? true,
+    autoAccept: input.autoAccept ?? false,
     createdBy: createdBy ?? null,
     scope: ctx.scope,
   };
@@ -335,6 +337,7 @@ export async function update(
   if (input.actions !== undefined) set.actions = input.actions;
   if (input.continueAfterMatch !== undefined) set.continueAfterMatch = input.continueAfterMatch;
   if (input.active !== undefined) set.active = input.active;
+  if (input.autoAccept !== undefined) set.autoAccept = input.autoAccept;
 
   const [row] = await db
     .update(conditionalRules)

@@ -1,0 +1,15 @@
+-- Copyright 2026 Kisaes LLC
+-- Licensed under the PolyForm Small Business License 1.0.0.
+-- Free for small businesses; see LICENSE for terms.
+--
+-- Conditional rules: "Accept all from this rule" (U-170, feed-accept-v1).
+-- Additive.
+--
+--   conditional_rules.auto_accept  the rule's suggestions may be accepted
+--                                  together with POST /banking/feed/accept
+--                                  {ruleId}. It never posts on its own: the
+--                                  rows wait for the owner everywhere
+--                                  (desktop and MyBooks Online). A legacy
+--                                  bank rule's auto_confirm reads as the same
+--                                  flag.
+ALTER TABLE conditional_rules ADD COLUMN IF NOT EXISTS auto_accept BOOLEAN NOT NULL DEFAULT false;

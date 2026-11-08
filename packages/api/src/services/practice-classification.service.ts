@@ -338,6 +338,8 @@ export async function upsertStateForFeedItem(
   bankFeedItemId: string,
   opts?: {
     matchedRuleId?: string | null;
+    /** U-168: 'legacy' = matchedRuleId is a bank_rules id (stored in matched_bank_rule_id). */
+    matchedRuleKind?: 'conditional' | 'legacy';
     modelUsed?: string | null;
     matchCandidates?: MatchCandidate[] | null;
   },
@@ -371,7 +373,10 @@ export async function upsertStateForFeedItem(
     confidenceScore: confidenceScore.toFixed(3),
     suggestedAccountId: item.suggestedAccountId ?? null,
     suggestedVendorId: item.suggestedContactId ?? null,
-    matchedRuleId: opts?.matchedRuleId ?? null,
+    // U-168: a legacy bank rule goes in its own column (matched_rule_id
+    // references conditional_rules, 0160); the bucket signal is the same.
+    matchedRuleId: opts?.matchedRuleKind === 'legacy' ? null : (opts?.matchedRuleId ?? null),
+    matchedBankRuleId: opts?.matchedRuleKind === 'legacy' ? (opts?.matchedRuleId ?? null) : null,
     reasoningBlob: reasoning,
     modelUsed: opts?.modelUsed ?? null,
     updatedAt: new Date(),
@@ -389,6 +394,7 @@ export async function upsertStateForFeedItem(
     suggestedAccountId: values.suggestedAccountId,
     suggestedVendorId: values.suggestedVendorId,
     matchedRuleId: values.matchedRuleId,
+    matchedBankRuleId: values.matchedBankRuleId,
     reasoningBlob: values.reasoningBlob,
     modelUsed: values.modelUsed,
     updatedAt: values.updatedAt,

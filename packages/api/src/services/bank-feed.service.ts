@@ -3,11 +3,11 @@
 // Free for small businesses; see LICENSE for terms.
 
 import { resolveCompanyForConnection } from './feed-item-company.service.js';
-import { eq, and, sql, count, gte, lte, inArray } from 'drizzle-orm';
+import { eq, and, sql, count, inArray, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping, FeedSplitLine } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
-import { db, type DbOrTx } from '../db/index.js';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, tags, transactionTags as transactionTagsTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -21,6 +21,12 @@ import { assertTagsInTenant } from './tags.service.js';
 import type { StatementCheckImage } from './ai-statement-parser.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { computeSplitLines, type StagedSplitsConfig } from './bank-feed-splits.js';
+import { lineCandidatePredicate, resolveMatchLine, matchMismatch } from './bank-feed-lines.js';
+import { claimIdempotency } from './idempotency.service.js';
+import { errorSummaryForLog } from '../utils/log-safe.js';
+import { isDesktop } from '../desktop/profile.js';
+import { bucketSql, transferCandidateSql, waitingSql } from './bank-feed-buckets.js';
+import { recordAcceptGroup, recordAcceptItem } from './bank-feed-accept-records.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -38,9 +44,48 @@ async function assertConnectionInTenant(tenantId: string, bankConnectionId: stri
   if (!conn) throw AppError.notFound('Bank connection not found');
 }
 
+/** The scope GET /feed and GET /feed/counts share (connection and dates). */
+function scopeConditions(tenantId: string, filters: Pick<BankFeedFilters, 'bankConnectionId' | 'startDate' | 'endDate'>): SQL[] {
+  const conditions: SQL[] = [eq(bankFeedItems.tenantId, tenantId)];
+  if (filters.bankConnectionId) conditions.push(eq(bankFeedItems.bankConnectionId, filters.bankConnectionId));
+  if (filters.startDate) conditions.push(sql`${bankFeedItems.feedDate} >= ${filters.startDate}`);
+  if (filters.endDate) conditions.push(sql`${bankFeedItems.feedDate} <= ${filters.endDate}`);
+  return conditions;
+}
+
+/**
+ * Counts per review bucket and state (U-174, feed-review-v1), with the same
+ * predicates as GET /feed?bucket= / status / entryVoided / possibleDuplicate,
+ * so each count equals that list's total. `waiting` = ready + review +
+ * matches (pending and assigned rows); `accepted` = categorized and matched
+ * rows, `entryVoided` included (Accepted · Entry voided); `inProgress` =
+ * rows being posted right now.
+ */
+export async function counts(
+  tenantId: string, filters: Pick<BankFeedFilters, 'bankConnectionId' | 'startDate' | 'endDate' | 'transferWindowDays'> = {},
+) {
+  const bucket = bucketSql(tenantId, filters.transferWindowDays);
+  const [row] = await db.select({
+    ready: sql<number>`COUNT(*) FILTER (WHERE ${bucket} = 'ready')::int`,
+    review: sql<number>`COUNT(*) FILTER (WHERE ${bucket} = 'review')::int`,
+    matches: sql<number>`COUNT(*) FILTER (WHERE ${bucket} = 'matches')::int`,
+    possibleDuplicate: sql<number>`COUNT(*) FILTER (WHERE ${waitingSql()} AND ${bankFeedItems.possibleDuplicate})::int`,
+    accepted: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.status} IN ('categorized', 'matched'))::int`,
+    entryVoided: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.entryVoidedAt} IS NOT NULL)::int`,
+    excluded: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.status} = 'excluded')::int`,
+    inProgress: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.status} = 'categorizing')::int`,
+  }).from(bankFeedItems).where(and(...scopeConditions(tenantId, filters)));
+  const r = row ?? { ready: 0, review: 0, matches: 0, possibleDuplicate: 0, accepted: 0, entryVoided: 0, excluded: 0, inProgress: 0 };
+  return { waiting: r.ready + r.review + r.matches, ...r };
+}
+
 export async function list(tenantId: string, filters: BankFeedFilters) {
-  const conditions = [eq(bankFeedItems.tenantId, tenantId)];
-  if (filters.status) {
+  const conditions = scopeConditions(tenantId, filters);
+  if (filters.status === 'accepted') {
+    // feed-accept-v1 (Q-P26y): every accepted row, paged in SQL like the rest
+    // (the predicate /counts accepted uses, entryVoided included).
+    conditions.push(inArray(bankFeedItems.status, ['categorized', 'matched']));
+  } else if (filters.status) {
     // An explicit single-status filter takes precedence over actionableOnly.
     conditions.push(eq(bankFeedItems.status, filters.status));
   } else if (filters.actionableOnly) {
@@ -54,9 +99,17 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
     // pagination/total counts reflect the constrained set.
     conditions.push(eq(bankFeedItems.matchType, 'rule'));
   }
-  if (filters.bankConnectionId) conditions.push(eq(bankFeedItems.bankConnectionId, filters.bankConnectionId));
-  if (filters.startDate) conditions.push(sql`${bankFeedItems.feedDate} >= ${filters.startDate}`);
-  if (filters.endDate) conditions.push(sql`${bankFeedItems.feedDate} <= ${filters.endDate}`);
+  // U-174 / U-166 filters, the predicates GET /feed/counts uses.
+  const bucket = bucketSql(tenantId, filters.transferWindowDays);
+  if (filters.bucket) conditions.push(sql`${bucket} = ${filters.bucket}`);
+  if (filters.possibleDuplicate !== undefined) {
+    conditions.push(filters.possibleDuplicate
+      ? sql`(${waitingSql()} AND ${bankFeedItems.possibleDuplicate})`
+      : sql`NOT ${bankFeedItems.possibleDuplicate}`);
+  }
+  if (filters.entryVoided !== undefined) {
+    conditions.push(filters.entryVoided ? sql`${bankFeedItems.entryVoidedAt} IS NOT NULL` : sql`${bankFeedItems.entryVoidedAt} IS NULL`);
+  }
 
   // Separate aliases for the payee/vendor contact display names so the
   // feed's NAME column can show the resolved payee (rule- or AI-set, or
@@ -152,6 +205,34 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       // U-06 / Q-P25c: imported as a look-alike of possibleDuplicateOf.
       possibleDuplicate: bankFeedItems.possibleDuplicate,
       possibleDuplicateOf: bankFeedItems.possibleDuplicateOf,
+      // U-174: the row it looks like (null when it has none or it was removed).
+      duplicateOf: sql<{ id: string; date: string; amount: string; description: string | null; memo: string | null; status: string | null } | null>`(
+        SELECT json_build_object('id', d.id, 'date', to_char(d.feed_date, 'YYYY-MM-DD'), 'amount', d.amount::text,
+          'description', d.description, 'memo', d.memo, 'status', d.status)
+        FROM bank_feed_items d
+        WHERE d.tenant_id = ${tenantId} AND d.id = ${bankFeedItems.possibleDuplicateOf}
+      )`,
+      // U-174 (U-168): the rule that staged the suggestion. autoAccept is a
+      // conditional rule's auto_accept (feed-accept-v1) or a legacy rule's
+      // auto_confirm: "Accept all from this rule" is offered.
+      suggestedRule: sql<{ id: string; kind: 'conditional' | 'legacy'; name: string; autoAccept: boolean; updatedAt: string | null } | null>`(
+        CASE ${bankFeedItems.suggestedRuleKind}
+          WHEN 'conditional' THEN (SELECT json_build_object('id', cr.id, 'kind', 'conditional', 'name', cr.name,
+            'autoAccept', cr.auto_accept, 'updatedAt', cr.updated_at)
+            FROM conditional_rules cr WHERE cr.id = ${bankFeedItems.suggestedRuleId})
+          WHEN 'legacy' THEN (SELECT json_build_object('id', br.id, 'kind', 'legacy', 'name', br.name,
+            'autoAccept', COALESCE(br.auto_confirm, false), 'updatedAt', br.updated_at)
+            FROM bank_rules br WHERE br.id = ${bankFeedItems.suggestedRuleId}
+              AND (br.tenant_id = ${tenantId} OR br.tenant_id IS NULL))
+        END
+      )`,
+      // U-166: the entry's line this row is, and the voided-entry flag.
+      matchedJournalLineId: bankFeedItems.matchedJournalLineId,
+      entryVoided: sql<boolean>`(${bankFeedItems.entryVoidedAt} IS NOT NULL)`,
+      entryVoidedAt: bankFeedItems.entryVoidedAt,
+      exclusionReason: bankFeedItems.exclusionReason,
+      // U-174: the waiting row's review bucket (null when not waiting).
+      bucket,
       importBatchId: bankFeedItems.importBatchId,
       createdAt: bankFeedItems.createdAt,
       updatedAt: bankFeedItems.updatedAt,
@@ -190,39 +271,36 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       // flag rows (e.g. checks written in-system) that already exist in the
       // ledger. Guarded by a CASE so it only runs for actionable rows; 0 for
       // matched/categorized/excluded/assigned or amount-zero items.
+      // U-166: candidate journal LINES (the predicate findMatchCandidates
+      // uses), for pending and assigned rows.
       matchCandidateCount: sql<number>`(
-        CASE WHEN ${bankFeedItems.status} = 'pending'
+        CASE WHEN ${bankFeedItems.status} IN ('pending', 'assigned')
               AND ${bankFeedItems.matchedTransactionId} IS NULL
-              AND ${bankFeedItems.bankConnectionId} IS NOT NULL
+              AND ${accounts.id} IS NOT NULL
               AND CAST(${bankFeedItems.amount} AS DECIMAL) <> 0
         THEN COALESCE((
-          SELECT COUNT(*)::int FROM transactions mt
-          WHERE mt.tenant_id = ${tenantId}
-            AND mt.status = 'posted'
-            AND mt.txn_date >= (${bankFeedItems.feedDate}::date - INTERVAL '15 days')
-            AND mt.txn_date <= (${bankFeedItems.feedDate}::date + INTERVAL '15 days')
-            AND CAST(mt.total AS DECIMAL) = ABS(CAST(${bankFeedItems.amount} AS DECIMAL))
-            AND (mt.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
-              -- U-136: a customer payment deposited straight to this bank (money in, not
-              -- in a deposit, not bounced); a bounced-payment entry (money out).
-              OR (mt.txn_type = 'customer_payment' AND CAST(${bankFeedItems.amount} AS DECIMAL) > 0
-                AND NOT EXISTS (SELECT 1 FROM deposit_lines dl3 JOIN transactions d3 ON d3.id = dl3.deposit_id
-                                WHERE dl3.source_transaction_id = mt.id AND d3.tenant_id = ${tenantId} AND d3.status = 'posted')
-                AND NOT EXISTS (SELECT 1 FROM transactions r3 WHERE r3.tenant_id = ${tenantId} AND r3.source_txn_id = mt.id
-                                AND r3.txn_type = 'returned_payment' AND r3.status = 'posted'))
-              OR (mt.txn_type = 'returned_payment' AND CAST(${bankFeedItems.amount} AS DECIMAL) < 0))
-            AND EXISTS (
-              SELECT 1 FROM journal_lines jl2
-              WHERE jl2.transaction_id = mt.id
-                AND jl2.tenant_id = ${tenantId}
-                AND jl2.account_id = ${accounts.id}
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM bank_feed_items bfi2
-              WHERE bfi2.tenant_id = ${tenantId}
-                AND bfi2.matched_transaction_id = mt.id
-            )
+          SELECT COUNT(*)::int FROM journal_lines jl, transactions t
+          WHERE ${lineCandidatePredicate({
+            tenantId,
+            bankAccountId: sql`${accounts.id}`,
+            amount: sql`${bankFeedItems.amount}`,
+            feedDate: sql`${bankFeedItems.feedDate}`,
+            itemId: sql`${bankFeedItems.id}`,
+          })}
         ), 0) ELSE 0 END
+      )`,
+      // feed-accept-v1 (Q-P26y): the other side of a transfer when exactly
+      // one is waiting (the "matches" bucket's transfer rule), else null.
+      transferCandidate: transferCandidateSql(tenantId, sql`${accounts.id}`, filters.transferWindowDays),
+      // feed-accept-kind-v1 (U-178): what the row's live accept record did
+      // (post | match | transfer | deposit | payment), the record Undo acts on
+      // (liveRecordFor: this item, its current entry, not undone, newest);
+      // null when the row has no entry or no live record.
+      acceptKind: sql<'post' | 'match' | 'transfer' | 'deposit' | 'payment' | null>`(
+        SELECT r.kind FROM bank_feed_accept_group_items r
+        WHERE r.tenant_id = ${tenantId} AND r.feed_item_id = ${bankFeedItems.id}
+          AND r.transaction_id = ${bankFeedItems.matchedTransactionId} AND r.undone_at IS NULL
+        ORDER BY r.created_at DESC, r.id DESC LIMIT 1
       )`,
     }).from(bankFeedItems)
       .leftJoin(bankConnections, eq(bankFeedItems.bankConnectionId, bankConnections.id))
@@ -289,52 +367,43 @@ export async function getConnectionForItem(tenantId: string, connectionId: strin
 
 // ── Payroll Overlap Check ──
 
+/**
+ * Payroll entries a money-out feed line may already be (U-172, Q-P26r):
+ * posted payroll-import entries within ±5 days with a credit line on the
+ * item's bank account for exactly the amount, not held by another feed item
+ * (the U-166 line predicate). Each bank line of a payroll entry (net pay,
+ * taxes) is its own overlap, matched to its own feed item with
+ * PUT /feed/:id/match {transactionId, journalLineId}. `amount` is in the
+ * feed sign (positive = money out). Money in is never a payroll overlap.
+ */
 export async function checkPayrollOverlap(
   tenantId: string,
-  feedDate: string,
-  absAmount: number,
+  item: { id: string; feedDate: string; amount: string },
   bankAccountId: string,
-): Promise<Array<{ txnId: string; memo: string; date: string; amount: string }>> {
-  // Look for payroll-sourced transactions within ±5 days that have a journal
-  // line touching the bank account with a matching amount.
-  const startDate = new Date(feedDate);
-  startDate.setDate(startDate.getDate() - 5);
-  const endDate = new Date(feedDate);
-  endDate.setDate(endDate.getDate() + 5);
-
-  const matches = await db
-    .select({
-      txnId: transactions.id,
-      memo: transactions.memo,
-      txnDate: transactions.txnDate,
-      credit: journalLines.credit,
-      debit: journalLines.debit,
-    })
-    .from(transactions)
-    .innerJoin(journalLines, and(
-      eq(journalLines.transactionId, transactions.id),
-      eq(journalLines.accountId, bankAccountId),
-    ))
-    .where(and(
-      eq(transactions.tenantId, tenantId),
-      eq(transactions.source, 'payroll_import'),
-      eq(transactions.status, 'posted'),
-      gte(transactions.txnDate, startDate.toISOString().split('T')[0]!),
-      lte(transactions.txnDate, endDate.toISOString().split('T')[0]!),
-    ));
-
-  // Filter by matching amount (within $0.01)
-  return matches
-    .filter(m => {
-      const lineAmount = Math.abs(parseFloat(m.credit || '0')) + Math.abs(parseFloat(m.debit || '0'));
-      return Math.abs(lineAmount - absAmount) < 0.01;
-    })
-    .map(m => ({
-      txnId: m.txnId,
-      memo: m.memo || 'Payroll JE',
-      date: m.txnDate,
-      amount: (parseFloat(m.credit || '0') || parseFloat(m.debit || '0')).toFixed(2),
-    }));
+): Promise<Array<{ txnId: string; journalLineId: string; memo: string; date: string; amount: string }>> {
+  if (!new Decimal(item.amount).gt(0)) return [];
+  const rows = await db.execute(sql`
+    SELECT t.id AS txn_id, jl.id AS journal_line_id, t.memo, t.txn_date
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id
+    WHERE t.source = 'payroll_import'
+      AND ${lineCandidatePredicate({
+        tenantId,
+        bankAccountId: sql`${bankAccountId}`,
+        amount: sql`${item.amount}`,
+        feedDate: sql`${item.feedDate}`,
+        itemId: sql`${item.id}`,
+        windowDays: 5,
+      })}
+    ORDER BY ABS(t.txn_date - CAST(${item.feedDate} AS date)), t.id, jl.line_order NULLS LAST, jl.id`);
+  const amount = new Decimal(item.amount).toFixed(2);
+  return (rows.rows as Array<{ txn_id: string; journal_line_id: string; memo: string | null; txn_date: string }>).map((r) => ({
+    txnId: r.txn_id,
+    journalLineId: r.journal_line_id,
+    memo: r.memo || 'Payroll JE',
+    date: r.txn_date,
+    amount,
+  }));
 }
 
 // Phase 4 conditional split_by_* action: a JSONB blob staged on the feed
@@ -404,7 +473,7 @@ export function resolveFeedMemo(
 // resolved the tag (an explicit id, or null for untagged — the
 // undefined→suggestedTagId fallback lives in categorize()), the contact, and
 // the memo, so this helper never guesses.
-interface PostAssignmentValues {
+export interface PostAssignmentValues {
   accountId: string;
   contactId?: string | null;
   tagId?: string | null;
@@ -412,91 +481,218 @@ interface PostAssignmentValues {
   splitsConfig?: FeedSplitsConfig;
 }
 
+/** 409 FEED_ITEM_NOT_PENDING {status} (U-173): the item isn't waiting for this action any more. */
+export function feedItemNotPending(status: string | null, message?: string): AppError {
+  return AppError.conflict(
+    message ?? `Bank feed item is not pending (current status: ${status}). It may already be posted, matched, excluded or in progress.`,
+    'FEED_ITEM_NOT_PENDING', { status },
+  );
+}
+
 /**
  * Shared posting body for BOTH the direct-post path (categorize(), used by
- * autoConfirm legacy rules + bulkCategorize) and the two-phase approve()
- * path. Builds the user + cash journal lines, posts the ledger transaction,
- * transitions the feed item to 'categorized' + stamps matchedTransactionId,
- * and feeds categorization learning.
+ * bulkCategorize, bulk approve and rule posting outside desktop mode) and the
+ * two-phase approve() path.
  *
- * The CALLER owns the atomic status claim (pending/assigned → 'categorizing')
- * and its revert on failure; this helper only runs the ledger post + final
- * status flip together in one DB transaction (a crash between them would
- * leave a posted transaction with the feed item stuck 'categorizing').
+ * One database transaction (S9, U-173): lock the item (FOR UPDATE), check its
+ * status is one of `allowed` (else 409 FEED_ITEM_NOT_PENDING {status}),
+ * resolve what to post from the locked row, post the ledger transaction,
+ * flip the item to 'categorized' and stamp the transaction and its bank line
+ * (U-166). Nothing is claimed outside the transaction, so a failure or a
+ * crash leaves the item exactly as it was (no 'categorizing' row to recover),
+ * and two concurrent posts of one item serialize on the row lock.
+ * Categorization learning is fed after the commit.
  */
-async function postAssignment(
+async function postFeedItem(
   tenantId: string,
   feedItemId: string,
+  allowed: readonly string[],
+  resolve: (item: typeof bankFeedItems.$inferSelect) => PostAssignmentValues,
+  userId?: string,
+  companyId?: string,
+) {
+  let learn: FeedLearning | null = null;
+  const txn = await db.transaction(async (tx) => {
+    const [item] = await tx.select().from(bankFeedItems)
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
+      .for('update');
+    if (!item) throw AppError.notFound('Bank feed item not found');
+    if (!allowed.includes(item.status ?? '')) {
+      throw feedItemNotPending(item.status, item.status === 'pending' && !allowed.includes('pending')
+        ? 'Bank feed item is not assigned (current status: pending). Assign a category before approving.' : undefined);
+    }
+    const posted = await postFeedItemInTx(tx, tenantId, item, resolve(item), userId, companyId);
+    // U-169: the accept record Undo works from (B5).
+    await recordAcceptGroup(tx, {
+      tenantId, companyId, userId, source: allowed.includes('pending') ? 'categorize' : 'approve',
+      items: [{ kind: 'post', before: item, transactionId: posted.transaction.id, journalLineId: posted.journalLineId }],
+    });
+    learn = posted.learn;
+    return posted.transaction;
+  });
+
+  // Update categorization learning history. Fire-and-forget — the
+  // transaction has already posted; this only feeds future suggestions.
+  const l = learn as FeedLearning | null;
+  if (l) learnFromFeed(tenantId, feedItemId, l, true);
+
+  return txn;
+}
+
+/** What a posted feed item teaches the categorization history (after the commit). */
+export interface FeedLearning { text: string; accountId: string; contactId: string | null }
+
+/**
+ * Feeds the categorization history after a commit, fire-and-forget:
+ * `accepted` true confirms the account, false counts an override (an Undo,
+ * Q-P26k). Logs only a code and the item id (U-167).
+ */
+export function learnFromFeed(tenantId: string, feedItemId: string, l: FeedLearning, accepted: boolean): void {
+  updateLearning(tenantId, l.text, l.accountId, l.contactId, accepted).catch((err) => {
+    // U-167: the error code and the item id only (Drizzle errors carry the description in params).
+    // eslint-disable-next-line no-console
+    console.warn(`[bank-feed] updateLearning failed for item ${feedItemId}: ${errorSummaryForLog(err)}`);
+  });
+}
+
+/** The values an Accept sends for one row (feed-accept-v1). */
+export interface AcceptRowInput {
+  accountId?: string;
+  contactId?: string | null;
+  tagId?: string | null;
+  memo?: string | null;
+  splits?: FeedSplitLine[];
+}
+
+/**
+ * What an Accept posts for a waiting row (feed-accept-v1), or null when
+ * there is nothing to post (no account anywhere): the owner's values when
+ * sent (as PUT /categorize with ownerChoice: an account without splits is
+ * one line), else the owner's staged values on an assigned row (as
+ * approve), else the suggestion as staged (as bulk approve).
+ */
+export function acceptValuesFor(item: typeof bankFeedItems.$inferSelect, input: AcceptRowInput): PostAssignmentValues | null {
+  const tagOr = (fallback: string | null | undefined) => (input.tagId === undefined ? (fallback ?? null) : (input.tagId ?? null));
+  const ownSplits = input.splits && input.splits.length > 0 ? manualSplitsConfig(input.splits) : null;
+  if (input.accountId || ownSplits) {
+    return {
+      accountId: input.accountId ?? ownSplits!.splits[0]!.accountId,
+      contactId: input.contactId || (item.suggestedContactId ?? undefined),
+      tagId: tagOr(item.suggestedTagId),
+      memo: resolveFeedMemo(item, input.memo),
+      splitsConfig: ownSplits,
+    };
+  }
+  if (item.status === 'assigned' && item.assignedAccountId) {
+    return {
+      accountId: item.assignedAccountId,
+      contactId: input.contactId || item.assignedContactId || item.suggestedContactId || undefined,
+      tagId: tagOr(item.assignedTagId),
+      memo: resolveFeedMemo(item, input.memo ?? (item.assignedMemo as string | null)),
+      splitsConfig: item.splitsConfig as FeedSplitsConfig,
+    };
+  }
+  const staged = (item.splitsConfig as FeedSplitsConfig) ?? null;
+  const account = item.suggestedAccountId ?? (staged && staged.splits.length > 0 ? staged.splits[0]!.accountId : null);
+  if (!account) return null;
+  return {
+    accountId: account,
+    contactId: input.contactId || (item.suggestedContactId ?? undefined),
+    tagId: tagOr(item.suggestedTagId),
+    memo: resolveFeedMemo(item, input.memo),
+    splitsConfig: staged,
+  };
+}
+
+/** Throws the posting's split refusal (SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS) without posting anything. */
+export function assertFeedSplitsPost(item: typeof bankFeedItems.$inferSelect, values: PostAssignmentValues): void {
+  const cfg = values.splitsConfig ?? null;
+  if (cfg && cfg.splits.length > 0) computeSplitLines(item.amount, cfg);
+}
+
+/** Every account and tag of an Accept's owner split must be in this tenant (400 otherwise). */
+export async function assertAcceptSplitRefs(tenantId: string, splits: FeedSplitLine[] | undefined): Promise<void> {
+  if (splits && splits.length > 0) await assertSplitRefsInTenant(tenantId, splits);
+}
+
+/**
+ * Posts a feed row the caller locked (FOR UPDATE) and checked, in the
+ * caller's database transaction: the ledger entry, the check stamp, status
+ * 'categorized' and the entry's bank line (U-166). The caller feeds the
+ * learning (`learn`) after the commit.
+ */
+export async function postFeedItemInTx(
+  tx: Tx,
+  tenantId: string,
   item: typeof bankFeedItems.$inferSelect,
   values: PostAssignmentValues,
   userId?: string,
   companyId?: string,
-) {
-  // Determine if this is an expense (positive amount = money out) or deposit
-  // (negative = money in). Exact decimals (U-164): the amount posts as
-  // stored, never through a JavaScript number.
-  const signed = new Decimal(item.amount);
-  const amount = signed.abs();
-  const isExpense = signed.gt(0);
-  const amountStr = amount.toFixed(4);
+): Promise<{ transaction: Awaited<ReturnType<typeof ledger.postTransaction>>; journalLineId: string | null; learn: FeedLearning }> {
+  const feedItemId = item.id;
+  {
 
-  // Split lines are worked out (and refused with a code) before any read,
-  // so an unbalanced split never reaches the ledger's generic message.
-  const splitsConfig = values.splitsConfig ?? null;
-  const splitLines = splitsConfig && splitsConfig.splits.length > 0
-    ? computeSplitLines(item.amount, splitsConfig)
-    : null;
+    // Determine if this is an expense (positive amount = money out) or deposit
+    // (negative = money in). Exact decimals (U-164): the amount posts as
+    // stored, never through a JavaScript number.
+    const signed = new Decimal(item.amount);
+    const amount = signed.abs();
+    const isExpense = signed.gt(0);
+    const amountStr = amount.toFixed(4);
 
-  // Get the bank account from the connection. Tenant-scoped via a join on
-  // accounts.tenant_id for defense in depth (CLAUDE.md rule #17).
-  const conn = await db.query.bankConnections.findFirst({
-    where: eq(bankConnections.id, item.bankConnectionId),
-  });
-  if (!conn) throw AppError.notFound('Bank connection not found');
-  const connAccount = await db.query.accounts.findFirst({
-    where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, conn.accountId)),
-  });
-  if (!connAccount) {
-    throw AppError.notFound('Bank connection does not belong to this tenant');
-  }
+    // Split lines are worked out (and refused with a code) before any read,
+    // so an unbalanced split never reaches the ledger's generic message.
+    const splitsConfig = values.splitsConfig ?? null;
+    const splitLines = splitsConfig && splitsConfig.splits.length > 0
+      ? computeSplitLines(item.amount, splitsConfig)
+      : null;
 
-  const userLines: Array<{ accountId: string; debit: string; credit: string; description?: string; tagId?: string }> = [];
-  if (splitLines) {
-    for (const s of splitLines) {
-      // A negative line (a fixed rule split may have one) goes on the other
-      // side of the entry, so the user lines still net to |amount|.
-      const userSideDebit = isExpense !== s.amount.isNegative();
-      const lineAmt = s.amount.abs().toFixed(4);
+    // Get the bank account from the connection. Tenant-scoped via a join on
+    // accounts.tenant_id for defense in depth (CLAUDE.md rule #17).
+    const [conn] = await tx.select().from(bankConnections).where(eq(bankConnections.id, item.bankConnectionId)).limit(1);
+    if (!conn) throw AppError.notFound('Bank connection not found');
+    const [connAccount] = await tx.select({ id: accounts.id }).from(accounts)
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, conn.accountId))).limit(1);
+    if (!connAccount) {
+      throw AppError.notFound('Bank connection does not belong to this tenant');
+    }
+
+    const userLines: Array<{ accountId: string; debit: string; credit: string; description?: string; tagId?: string }> = [];
+    if (splitLines) {
+      for (const s of splitLines) {
+        // A negative line (a fixed rule split may have one) goes on the other
+        // side of the entry, so the user lines still net to |amount|.
+        const userSideDebit = isExpense !== s.amount.isNegative();
+        const lineAmt = s.amount.abs().toFixed(4);
+        userLines.push({
+          accountId: s.accountId,
+          debit: userSideDebit ? lineAmt : '0',
+          credit: userSideDebit ? '0' : lineAmt,
+          // Falls back through the resolved transaction memo so a check payee
+          // reaches the GL line description, not just the header memo.
+          description: s.memo ?? values.memo ?? item.description ?? undefined,
+          tagId: s.tagId ?? values.tagId ?? undefined,
+        });
+      }
+    } else {
       userLines.push({
-        accountId: s.accountId,
-        debit: userSideDebit ? lineAmt : '0',
-        credit: userSideDebit ? '0' : lineAmt,
-        // Falls back through the resolved transaction memo so a check payee
-        // reaches the GL line description, not just the header memo.
-        description: s.memo ?? values.memo ?? item.description ?? undefined,
-        tagId: s.tagId ?? values.tagId ?? undefined,
+        accountId: values.accountId,
+        debit: isExpense ? amountStr : '0',
+        credit: isExpense ? '0' : amountStr,
+        // Same reason as the split branch: reports that read the line
+        // description showed the bank descriptor instead of the payee.
+        description: values.memo || item.description || undefined,
+        // The tag is already resolved by the caller (id or null).
+        tagId: values.tagId ?? undefined,
       });
     }
-  } else {
-    userLines.push({
-      accountId: values.accountId,
-      debit: isExpense ? amountStr : '0',
-      credit: isExpense ? '0' : amountStr,
-      // Same reason as the split branch: reports that read the line
-      // description showed the bank descriptor instead of the payee.
-      description: values.memo || item.description || undefined,
-      // The tag is already resolved by the caller (id or null).
-      tagId: values.tagId ?? undefined,
-    });
-  }
 
-  const cashLine = {
-    accountId: conn.accountId,
-    debit: isExpense ? '0' : amountStr,
-    credit: isExpense ? amountStr : '0',
-  };
+    const cashLine = {
+      accountId: conn.accountId,
+      debit: isExpense ? '0' : amountStr,
+      credit: isExpense ? amountStr : '0',
+    };
 
-  const txn = await db.transaction(async (tx) => {
     const t = await ledger.postTransaction(tenantId, {
       txnType: isExpense ? 'expense' : 'deposit',
       txnDate: item.feedDate,
@@ -523,36 +719,38 @@ async function postAssignment(
       }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
     }
 
+    // U-166: the item is the entry's (single) line on the bank account.
+    const [cash] = await tx.select({ id: journalLines.id }).from(journalLines)
+      .where(and(
+        eq(journalLines.tenantId, tenantId),
+        eq(journalLines.transactionId, t.id),
+        eq(journalLines.accountId, conn.accountId),
+        eq(journalLines.isVoidReversal, false),
+      ))
+      .orderBy(journalLines.lineOrder)
+      .limit(1);
+
     await tx.update(bankFeedItems).set({
       status: 'categorized',
       matchedTransactionId: t.id,
+      matchedJournalLineId: cash?.id ?? null,
+      entryVoidedAt: null,
       updatedAt: new Date(),
     }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
-    return t;
-  });
-
-  // Update categorization learning history. Fire-and-forget — the
-  // transaction has already posted; this only feeds future suggestions.
-  updateLearning(
-    tenantId,
-    item.originalDescription || item.description || '',
-    values.accountId,
-    values.contactId || null,
-    true,
-  ).catch((err) => {
-    // eslint-disable-next-line no-console
-    console.warn(`[bank-feed] updateLearning failed for tenant ${tenantId}:`, err?.message ?? err);
-  });
-
-  return txn;
+    return {
+      transaction: t,
+      journalLineId: cash?.id ?? null,
+      learn: { text: item.originalDescription || item.description || '', accountId: values.accountId, contactId: values.contactId || null },
+    };
+  }
 }
 
 /**
  * DIRECT-POST path. Posts a feed item to the ledger the moment a category is
  * chosen. Retained for the callers that post-on-match BY DESIGN — legacy
- * autoConfirm bank rules and conditional split rules in runRulesStages, plus
- * bulkCategorize. The interactive UI now stages via assign()/approve()
- * instead of calling this.
+ * autoConfirm bank rules outside desktop mode (S6: desktop rules only
+ * stage), plus bulkCategorize. The interactive UI now stages via
+ * assign()/approve() instead of calling this.
  */
 export interface CategorizeOptions {
   /**
@@ -566,38 +764,19 @@ export interface CategorizeOptions {
   ownerChoice?: boolean;
 }
 
+/**
+ * Posts a pending or assigned item (U-173: an assigned item may be
+ * categorized with other values) on the given account. 409
+ * FEED_ITEM_NOT_PENDING {status} otherwise. The claim, the post and the
+ * status flip are one database transaction (postFeedItem).
+ */
 export async function categorize(
   tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string, companyId?: string,
   opts: CategorizeOptions = {},
 ) {
   if (input.splits && input.splits.length > 0) await assertSplitRefsInTenant(tenantId, input.splits);
 
-  // Atomic claim: flip the feed item from 'pending' to 'categorizing' in one
-  // UPDATE. Two concurrent categorize calls serialize here — only one gets a
-  // row back, the other throws cleanly (no duplicate ledger posts).
-  const [claimed] = await db.update(bankFeedItems)
-    .set({ status: 'categorizing', updatedAt: new Date() })
-    .where(and(
-      eq(bankFeedItems.tenantId, tenantId),
-      eq(bankFeedItems.id, feedItemId),
-      eq(bankFeedItems.status, 'pending'),
-    ))
-    .returning();
-
-  if (!claimed) {
-    const existing = await db.query.bankFeedItems.findFirst({
-      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
-    });
-    if (!existing) throw AppError.notFound('Bank feed item not found');
-    throw AppError.badRequest(
-      `Bank feed item is not pending (current status: ${existing.status}). ` +
-      `It may already be categorized or in progress.`,
-    );
-  }
-
-  const item = claimed;
-
-  try {
+  return postFeedItem(tenantId, feedItemId, ['pending', 'assigned'], (item) => {
     // The owner's split wins; with ownerChoice and no split, one line on the
     // owner's account (a rule's staged split is not used); otherwise the
     // staged split, as before.
@@ -612,26 +791,14 @@ export async function categorize(
     const resolvedTagId = input.tagId === undefined
       ? (item.suggestedTagId ?? null)
       : (input.tagId ?? null);
-
-    return await postAssignment(tenantId, feedItemId, item, {
+    return {
       accountId: input.accountId,
       contactId: input.contactId || (item.suggestedContactId ?? undefined),
       tagId: resolvedTagId,
       memo: resolveFeedMemo(item, input.memo),
       splitsConfig,
-    }, userId, companyId);
-  } catch (err) {
-    // Revert the claim so the user can retry (only if we still own it).
-    await db.update(bankFeedItems).set({
-      status: 'pending',
-      updatedAt: new Date(),
-    }).where(and(
-      eq(bankFeedItems.tenantId, tenantId),
-      eq(bankFeedItems.id, feedItemId),
-      eq(bankFeedItems.status, 'categorizing'),
-    ));
-    throw err;
-  }
+    };
+  }, userId, companyId);
 }
 
 // ── Two-phase workflow: ASSIGN (stage) then APPROVE (post) ──
@@ -654,7 +821,8 @@ export interface AssignInput {
  * Persists the chosen account/contact/tag/memo in the assigned_* columns and
  * transitions pending → 'assigned' (an actionable, "ready to approve" state).
  * Re-assigning an already-'assigned' item overwrites the staged values;
- * anything already posted/handled (categorized/matched/excluded) is rejected.
+ * anything already posted/handled (categorized/matched/excluded) is 409
+ * FEED_ITEM_NOT_PENDING {status} (U-173).
  * NO postTransaction, NO matchedTransactionId — that only happens on approve.
  */
 export async function assign(tenantId: string, feedItemId: string, input: AssignInput, userId?: string) {
@@ -681,12 +849,7 @@ export async function assign(tenantId: string, feedItemId: string, input: Assign
   if (!item) throw AppError.notFound('Bank feed item not found');
   // Only a fresh (pending) or already-staged (assigned) item can be assigned.
   // categorized/matched are already posted; excluded is not applicable.
-  if (item.status !== 'pending' && item.status !== 'assigned') {
-    throw AppError.badRequest(
-      `Bank feed item cannot be assigned (current status: ${item.status}). ` +
-      `It may already be posted or excluded.`,
-    );
-  }
+  if (item.status !== 'pending' && item.status !== 'assigned') throw feedItemNotPending(item.status);
   // U-164: the owner's split must add up exactly to |amount| now, not only
   // at approve (400 SPLITS_DONT_BALANCE / AMOUNT_NOT_CENTS).
   const stagedSplits = hasSplits ? manualSplitsConfig(input.splits!) : null;
@@ -715,7 +878,9 @@ export async function assign(tenantId: string, feedItemId: string, input: Assign
     .returning();
 
   if (!updated) {
-    throw AppError.badRequest('Bank feed item changed state; reload and try again.');
+    const [now] = await db.select({ status: bankFeedItems.status }).from(bankFeedItems)
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId))).limit(1);
+    throw feedItemNotPending(now?.status ?? null);
   }
 
   await auditLog(tenantId, 'update', 'bank_feed', feedItemId, item, updated, userId);
@@ -725,50 +890,16 @@ export async function assign(tenantId: string, feedItemId: string, input: Assign
 /**
  * APPROVE — post a previously-staged ('assigned') feed item to the ledger
  * using its assigned_* values. Transitions assigned → 'categorized' and
- * stamps matchedTransactionId. Requires status 'assigned' with an
- * assigned_account_id; otherwise rejects with a clear error. Lock dates are
- * enforced by the underlying ledger post.
+ * stamps matchedTransactionId. Requires status 'assigned' (else 409
+ * FEED_ITEM_NOT_PENDING {status}, U-173) with an assigned_account_id (else
+ * 400). Lock dates are enforced by the underlying ledger post.
  */
 export async function approve(tenantId: string, feedItemId: string, userId?: string, companyId?: string) {
-  // Atomic claim assigned → 'categorizing' (same anti-double-post guard as
-  // categorize). Only one concurrent approve wins.
-  const [claimed] = await db.update(bankFeedItems)
-    .set({ status: 'categorizing', updatedAt: new Date() })
-    .where(and(
-      eq(bankFeedItems.tenantId, tenantId),
-      eq(bankFeedItems.id, feedItemId),
-      eq(bankFeedItems.status, 'assigned'),
-    ))
-    .returning();
-
-  if (!claimed) {
-    const existing = await db.query.bankFeedItems.findFirst({
-      where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
-    });
-    if (!existing) throw AppError.notFound('Bank feed item not found');
-    throw AppError.badRequest(
-      `Bank feed item is not assigned (current status: ${existing.status}). ` +
-      `Assign a category before approving.`,
-    );
-  }
-
-  const item = claimed;
-
-  // Defensive: assign() always sets assigned_account_id, but guard anyway so
-  // a hand-edited row can't post an empty category.
-  if (!item.assignedAccountId) {
-    await db.update(bankFeedItems).set({ status: 'assigned', updatedAt: new Date() })
-      .where(and(
-        eq(bankFeedItems.tenantId, tenantId),
-        eq(bankFeedItems.id, feedItemId),
-        eq(bankFeedItems.status, 'categorizing'),
-      ));
-    throw AppError.badRequest('No staged category to approve. Assign an account first.');
-  }
-
-  try {
-    const splitsConfig = item.splitsConfig as FeedSplitsConfig;
-    return await postAssignment(tenantId, feedItemId, item, {
+  return postFeedItem(tenantId, feedItemId, ['assigned'], (item) => {
+    // Defensive: assign() always sets assigned_account_id, but guard anyway so
+    // a hand-edited row can't post an empty category.
+    if (!item.assignedAccountId) throw AppError.badRequest('No staged category to approve. Assign an account first.');
+    return {
       accountId: item.assignedAccountId,
       // Fall back to the rule/AI/check-image suggested payee when assign()
       // staged none. assign() writes assigned_contact_id from the request and
@@ -781,76 +912,125 @@ export async function approve(tenantId: string, feedItemId: string, userId?: str
       // suggested-tag fallback; the user already made the choice at assign).
       tagId: item.assignedTagId ?? null,
       memo: resolveFeedMemo(item, item.assignedMemo as string | null),
-      splitsConfig,
-    }, userId, companyId);
-  } catch (err) {
-    // Revert the claim back to 'assigned' so the staged values survive and
-    // the user can retry (e.g. after a lock-date fix).
-    await db.update(bankFeedItems).set({
-      status: 'assigned',
-      updatedAt: new Date(),
-    }).where(and(
-      eq(bankFeedItems.tenantId, tenantId),
-      eq(bankFeedItems.id, feedItemId),
-      eq(bankFeedItems.status, 'categorizing'),
-    ));
-    throw err;
-  }
+      splitsConfig: item.splitsConfig as FeedSplitsConfig,
+    };
+  }, userId, companyId);
 }
 
-export async function match(tenantId: string, feedItemId: string, transactionId: string) {
-  return matchInTx(db, tenantId, feedItemId, transactionId);
+export interface MatchOptions {
+  /** The entry's line on the bank account (U-166); inferred when only one fits. */
+  journalLineId?: string;
+  /** Kept for callers of the U-136 era: not pending is always 409 now (U-173). */
+  conflictCode?: boolean;
+  userId?: string;
+  companyId?: string;
+  /** U-169: record the link in this accept group (POST /accept) instead of a group of its own. */
+  acceptGroupId?: string;
+  /** U-169: the record kind: 'payment' for POST /payments/receive with bankFeedItemId (U-136). */
+  recordKind?: 'match' | 'payment';
+  /** Called with the accept group the link was recorded in (the Undo toast's group). */
+  onRecorded?: (undoGroupId: string) => void;
+}
+
+/**
+ * Match a pending or assigned feed item to one journal line of a posted
+ * entry (U-166, feed-match-v2), in one database transaction (claims the
+ * Idempotency-Key). See matchInTx.
+ */
+export async function match(tenantId: string, feedItemId: string, transactionId: string, opts: MatchOptions = {}) {
+  return db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    return matchInTx(tx, tenantId, feedItemId, transactionId, opts);
+  });
 }
 
 /**
  * match() on the caller's executor (U-136): POST /payments/receive with
  * bankFeedItemId matches the feed line in the payment's own database
- * transaction, so both commit or neither. Not pending is 409
- * FEED_ITEM_NOT_PENDING there (400 on the old match route).
+ * transaction, so both commit or neither.
+ *
+ * U-166: the item (FOR UPDATE) must be pending or assigned (else 409
+ * FEED_ITEM_NOT_PENDING {status}); the entry (FOR SHARE) must be posted and
+ * have a line on the item's bank account on the right side for exactly the
+ * amount (400 MATCH_MISMATCH {field}); with more than one such line the
+ * caller names it (400 LINE_REQUIRED); a line another item holds is 409
+ * LINE_ALREADY_MATCHED. Audited.
  */
 export async function matchInTx(
-  executor: DbOrTx, tenantId: string, feedItemId: string, transactionId: string, opts: { conflictCode?: boolean } = {},
+  executor: DbOrTx, tenantId: string, feedItemId: string, transactionId: string, opts: MatchOptions = {},
 ) {
-  // Claim atomically in the same style as categorize: only transition
-  // from 'pending' → 'matched'. Prevents double-matching the same feed
-  // item if the user clicks "Match" twice or two users race.
-  const [matched] = await executor.update(bankFeedItems)
-    .set({
-      status: 'matched',
-      matchedTransactionId: transactionId,
-      updatedAt: new Date(),
-    })
-    .where(and(
-      eq(bankFeedItems.tenantId, tenantId),
-      eq(bankFeedItems.id, feedItemId),
-      eq(bankFeedItems.status, 'pending'),
-    ))
-    .returning();
-  if (!matched) {
-    const [existing] = await executor.select({ status: bankFeedItems.status }).from(bankFeedItems)
-      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId))).limit(1);
-    if (!existing) throw AppError.notFound('Bank feed item not found');
-    if (opts.conflictCode) {
-      throw AppError.conflict(`Bank feed item is not pending (current status: ${existing.status}).`, 'FEED_ITEM_NOT_PENDING',
-        { status: existing.status });
-    }
-    throw AppError.badRequest(`Bank feed item is not pending (current status: ${existing.status}).`);
+  const [item] = await executor.select().from(bankFeedItems)
+    .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
+    .for('update');
+  if (!item || (opts.companyId && item.companyId && item.companyId !== opts.companyId)) {
+    throw AppError.notFound('Bank feed item not found');
   }
+  if (item.status !== 'pending' && item.status !== 'assigned') throw feedItemNotPending(item.status);
+  const [conn] = await executor.select({ accountId: bankConnections.accountId }).from(bankConnections)
+    .where(and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, item.bankConnectionId))).limit(1);
+  if (!conn) throw AppError.notFound('Bank connection not found');
+
+  // S2: the entry can't be voided or deleted under the match.
+  const [txn] = await executor.select({ id: transactions.id, status: transactions.status, companyId: transactions.companyId })
+    .from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId)))
+    .for('share');
+  if (!txn || txn.status !== 'posted' || (opts.companyId && txn.companyId && txn.companyId !== opts.companyId)) {
+    throw matchMismatch('transactionId');
+  }
+  const lineId = await resolveMatchLine(executor, tenantId,
+    { id: item.id, amount: item.amount, feedDate: item.feedDate }, conn.accountId, transactionId, opts.journalLineId);
+
+  let matched: typeof bankFeedItems.$inferSelect | undefined;
+  try {
+    [matched] = await executor.update(bankFeedItems)
+      .set({
+        status: 'matched',
+        matchedTransactionId: transactionId,
+        matchedJournalLineId: lineId,
+        entryVoidedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
+      .returning();
+  } catch (err) {
+    // Another item took the line between the check and here (uq_bfi_matched_journal_line).
+    if ((err as { code?: string; cause?: { code?: string } })?.cause?.code === '23505'
+      || (err as { code?: string })?.code === '23505') {
+      throw AppError.conflict('Another bank line is already matched to this entry line.', 'LINE_ALREADY_MATCHED',
+        { journalLineId: lineId });
+    }
+    throw err;
+  }
+  await auditLog(tenantId, 'update', 'bank_feed', feedItemId,
+    { status: item.status, matchedTransactionId: item.matchedTransactionId },
+    { status: 'matched', matchedTransactionId: transactionId, matchedJournalLineId: lineId,
+      ...(opts.acceptGroupId ? { undoGroupId: opts.acceptGroupId } : {}) }, opts.userId, executor);
+  // U-169: the accept record Undo works from (B5): in the caller's group, or one of its own.
+  const record = { kind: opts.recordKind ?? 'match', before: item, transactionId, journalLineId: lineId } as const;
+  if (opts.acceptGroupId) {
+    await recordAcceptItem(executor, { tenantId, companyId: opts.companyId, groupId: opts.acceptGroupId, ...record });
+    opts.onRecorded?.(opts.acceptGroupId);
+  } else {
+    opts.onRecorded?.(await recordAcceptGroup(executor, {
+      tenantId, companyId: opts.companyId, userId: opts.userId, source: record.kind, items: [record],
+    }));
+  }
+  return matched;
 }
 
 /**
- * Find candidate transactions that could match a bank feed item.
+ * Find candidate journal lines that could match a bank feed item (U-166,
+ * feed-match-v2): lines on the item's bank account, on the right side (a
+ * credit for money out, a debit for money in), for exactly |amount|, on a
+ * posted entry within ±15 days, not held by another feed item. One row per
+ * line (`id` is the entry, `journalLineId` its line): a payroll entry with
+ * two bank lines is two candidates. `amount` is in the feed sign.
  *
- * Heuristic: same dollar amount, within ±15 days of the feed item's date,
- * not already matched to another feed item, and on the same bank account.
  * (Was ±5; widened 2026-08-11 — printed checks routinely take longer than a
- * week to clear, which left real matches invisible. Must stay in step with
- * the matchCandidateCount badge window in the list query above.)
- *
- * Returns bill payments, write-checks (expense txns with check fields), and
- * other expense/deposit txns that touch the connected bank account. Bill
- * payments are prioritized so users can avoid creating duplicate expenses
- * for invoices they already paid through Pay Bills.
+ * week to clear. The list's matchCandidateCount uses the same predicate.)
+ * Bill payments are listed first so users can avoid creating duplicate
+ * expenses for bills they already paid through Pay Bills.
  */
 export async function findMatchCandidates(tenantId: string, feedItemId: string) {
   const item = await db.query.bankFeedItems.findFirst({
@@ -858,11 +1038,11 @@ export async function findMatchCandidates(tenantId: string, feedItemId: string) 
   });
   if (!item) return [];
 
-  // Resolve the connected bank account so we only suggest transactions that
+  // Resolve the connected bank account so we only suggest lines that
   // touched the same physical account.
   if (!item.bankConnectionId) return [];
   const conn = await db.query.bankConnections.findFirst({
-    where: eq(bankConnections.id, item.bankConnectionId),
+    where: and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, item.bankConnectionId)),
   });
   if (!conn) return [];
 
@@ -870,83 +1050,81 @@ export async function findMatchCandidates(tenantId: string, feedItemId: string) 
   const feedAmount = new Decimal(String(item.amount || '0'));
   if (feedAmount.isZero()) return [];
 
-  // ±15-day window
-  const feedDate = new Date(item.feedDate);
-  const start = new Date(feedDate);
-  start.setDate(start.getDate() - 15);
-  const end = new Date(feedDate);
-  end.setDate(end.getDate() + 15);
-  const startStr = start.toISOString().split('T')[0]!;
-  const endStr = end.toISOString().split('T')[0]!;
-
-  // Bank feed amounts are signed: negative = money leaving (expense, check,
-  // bill payment), positive = money in (deposit). For matching we compare
-  // absolute value against the txn total.
-  const absAmount = feedAmount.abs().toFixed(4);
-  const moneyIn = feedAmount.greaterThan(0) ? sql`TRUE` : sql`FALSE`;
-
   const rows = await db.execute(sql`
-    SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo,
-      t.check_number, t.print_status,
+    SELECT t.id, jl.id AS journal_line_id, t.txn_type, t.txn_number, t.txn_date, t.total, t.memo,
+      t.check_number, t.print_status, t.source, jl.description AS line_description,
       c.display_name AS contact_name
-    FROM transactions t
+    FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id
-    WHERE t.tenant_id = ${tenantId}
-      AND t.status = 'posted'
-      AND t.txn_date >= ${startStr} AND t.txn_date <= ${endStr}
-      AND CAST(t.total AS DECIMAL) = CAST(${absAmount} AS DECIMAL)
-      AND (t.txn_type IN ('bill_payment', 'expense', 'deposit', 'transfer')
-        -- U-136: money in may be a customer payment deposited straight to this
-        -- bank (not in a deposit, not bounced); money out a bounced-payment entry.
-        OR (t.txn_type = 'customer_payment' AND ${moneyIn}
-          AND NOT EXISTS (SELECT 1 FROM deposit_lines dl JOIN transactions d ON d.id = dl.deposit_id
-                          WHERE dl.source_transaction_id = t.id AND d.tenant_id = ${tenantId} AND d.status = 'posted')
-          AND NOT EXISTS (SELECT 1 FROM transactions r WHERE r.tenant_id = ${tenantId} AND r.source_txn_id = t.id
-                          AND r.txn_type = 'returned_payment' AND r.status = 'posted'))
-        OR (t.txn_type = 'returned_payment' AND NOT ${moneyIn}))
-      AND t.id IN (
-        SELECT transaction_id FROM journal_lines
-        WHERE tenant_id = ${tenantId}
-          AND account_id = ${conn.accountId}
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM bank_feed_items bfi
-        WHERE bfi.tenant_id = ${tenantId}
-          AND bfi.matched_transaction_id = t.id
-          AND bfi.id != ${feedItemId}
-      )
+    WHERE ${lineCandidatePredicate({
+      tenantId,
+      bankAccountId: sql`${conn.accountId}`,
+      amount: sql`${item.amount}`,
+      feedDate: sql`${item.feedDate}`,
+      itemId: sql`${feedItemId}`,
+    })}
     ORDER BY
       CASE t.txn_type WHEN 'bill_payment' THEN 0 ELSE 1 END,
-      ABS(EXTRACT(EPOCH FROM (t.txn_date::timestamp - ${item.feedDate}::timestamp))) ASC
-    LIMIT 10
+      ABS(t.txn_date - CAST(${item.feedDate} AS date)) ASC,
+      t.id, jl.line_order NULLS LAST, jl.id
+    LIMIT 20
   `);
 
+  const feedSign = feedAmount.toFixed(2);
   return (rows.rows as any[]).map((r) => ({
     id: r.id,
+    journalLineId: r.journal_line_id,
     txnType: r.txn_type,
     txnNumber: r.txn_number,
     txnDate: r.txn_date,
     total: r.total,
+    // The line's amount in the feed sign (equal to the item's amount).
+    amount: feedSign,
     memo: r.memo,
+    lineDescription: r.line_description,
     checkNumber: r.check_number,
     printStatus: r.print_status,
+    source: r.source,
     contactName: r.contact_name,
   }));
 }
 
-export async function exclude(tenantId: string, feedItemId: string, userId?: string) {
-  const [updated] = await db.update(bankFeedItems).set({
-    status: 'excluded',
-    updatedAt: new Date(),
-  }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
-    .returning();
+/** The current status of an item (null when it doesn't exist in this tenant). */
+async function statusOf(executor: DbOrTx, tenantId: string, feedItemId: string): Promise<string | null | undefined> {
+  const [row] = await executor.select({ status: bankFeedItems.status }).from(bankFeedItems)
+    .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId))).limit(1);
+  return row ? row.status : undefined;
+}
 
+/**
+ * Exclude a pending or assigned item (U-173): anything else (posted,
+ * matched, already excluded, in progress) is 409 FEED_ITEM_NOT_PENDING
+ * {status}, so a posted entry is never stranded behind an excluded line.
+ * `reason` 'duplicate' is the possible-duplicate "Remove this one" (U-174).
+ */
+export async function exclude(tenantId: string, feedItemId: string, userId?: string, opts: { reason?: 'duplicate'; executor?: DbOrTx } = {}) {
+  const executor = opts.executor ?? db;
+  const [updated] = await executor.update(bankFeedItems).set({
+    status: 'excluded',
+    exclusionReason: opts.reason ?? null,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(bankFeedItems.tenantId, tenantId),
+    eq(bankFeedItems.id, feedItemId),
+    sql`${bankFeedItems.status} IN ('pending', 'assigned')`,
+  )).returning();
+
+  if (!updated) {
+    const status = await statusOf(executor, tenantId, feedItemId);
+    if (status === undefined) throw AppError.notFound('Bank feed item not found');
+    throw feedItemNotPending(status);
+  }
   // Excluding is how a whole batch of bank activity gets taken out of the
   // books' path, and it left no trace at all beyond updated_at. Every other
   // state change on a feed item is audited; this one was not.
-  if (updated) {
-    await auditLog(tenantId, 'update', 'bank_feed', feedItemId, null, { status: 'excluded' }, userId);
-  }
+  await auditLog(tenantId, 'update', 'bank_feed', feedItemId, null,
+    { status: 'excluded', ...(opts.reason ? { exclusionReason: opts.reason } : {}) }, userId, executor);
   return updated;
 }
 
@@ -957,13 +1135,16 @@ export async function exclude(tenantId: string, feedItemId: string, userId?: str
  * from the Excluded filter", and that was not true: excluded rows had no
  * restore path at all, so undoing a mistaken bulk exclude meant direct SQL.
  *
- * Only touches rows that are actually 'excluded'. It must never resurrect a
+ * Only touches rows that are actually 'excluded' (else 409
+ * FEED_ITEM_NOT_PENDING {status}, U-173). It must never resurrect a
  * categorized or matched row, which would strand a posted transaction against
- * a feed line that thinks it is unhandled.
+ * a feed line that thinks it is unhandled. A row removed as a duplicate
+ * (U-174) comes back undecided: still flagged as a possible duplicate.
  */
 export async function unexclude(tenantId: string, feedItemId: string, userId?: string) {
   const [updated] = await db.update(bankFeedItems).set({
     status: 'pending',
+    exclusionReason: null,
     updatedAt: new Date(),
   }).where(and(
     eq(bankFeedItems.tenantId, tenantId),
@@ -972,10 +1153,126 @@ export async function unexclude(tenantId: string, feedItemId: string, userId?: s
   )).returning();
 
   if (!updated) {
-    throw AppError.badRequest('That bank line is not excluded, so there is nothing to restore.');
+    const status = await statusOf(db, tenantId, feedItemId);
+    if (status === undefined) throw AppError.notFound('Bank feed item not found');
+    throw feedItemNotPending(status);
   }
   await auditLog(tenantId, 'update', 'bank_feed', feedItemId, { status: 'excluded' }, { status: 'pending' }, userId);
   return updated;
+}
+
+/**
+ * The owner's decision on a possible duplicate (U-174, feed-review-v1;
+ * Q-P26b, Q-P26g): `keep` clears the flag (both rows stay, this one waits
+ * for review as usual); `remove` excludes this row with reason 'duplicate'
+ * (the flag stays, so Restore brings it back undecided). Only a waiting
+ * (pending or assigned) row flagged as a possible duplicate: else 409
+ * NOT_A_POSSIBLE_DUPLICATE {status, possibleDuplicate}. One database
+ * transaction (claims the Idempotency-Key), audited.
+ */
+export async function decideDuplicate(
+  tenantId: string, feedItemId: string, decision: 'keep' | 'remove', userId?: string, companyId?: string,
+) {
+  return db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const [item] = await tx.select().from(bankFeedItems)
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
+      .for('update');
+    if (!item || (companyId && item.companyId && item.companyId !== companyId)) throw AppError.notFound('Bank feed item not found');
+    if (!item.possibleDuplicate || (item.status !== 'pending' && item.status !== 'assigned')) {
+      throw AppError.conflict('This bank line is not waiting as a possible duplicate.', 'NOT_A_POSSIBLE_DUPLICATE',
+        { status: item.status, possibleDuplicate: item.possibleDuplicate });
+    }
+    if (decision === 'remove') {
+      const updated = await exclude(tenantId, feedItemId, userId, { reason: 'duplicate', executor: tx });
+      return { item: updated, decision };
+    }
+    const [updated] = await tx.update(bankFeedItems).set({ possibleDuplicate: false, updatedAt: new Date() })
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
+      .returning();
+    await auditLog(tenantId, 'update', 'bank_feed', feedItemId,
+      { possibleDuplicate: true, possibleDuplicateOf: item.possibleDuplicateOf },
+      { possibleDuplicate: false, duplicateDecision: 'keep' }, userId, tx);
+    return { item: updated!, decision };
+  });
+}
+
+/**
+ * Flags the feed items linked to an entry being voided (Q-P26u, review B4,
+ * U-166): the void goes ahead; every item pointing at the entry (both sides
+ * of a transfer) keeps its status and its link, gets entry_voided_at, and an
+ * audit row (bank_feed, entry_voided). The bank line is never lost: it is
+ * listed with entryVoided (filter entryVoided=true, /counts entryVoided)
+ * until "Review again". Called inside the void's database transaction.
+ */
+export async function flagEntryVoidedInTx(tx: DbOrTx, tenantId: string, transactionId: string, userId?: string): Promise<string[]> {
+  const flagged = await tx.update(bankFeedItems).set({ entryVoidedAt: new Date(), updatedAt: new Date() })
+    .where(and(
+      eq(bankFeedItems.tenantId, tenantId),
+      eq(bankFeedItems.matchedTransactionId, transactionId),
+      sql`${bankFeedItems.entryVoidedAt} IS NULL`,
+    ))
+    .returning({ id: bankFeedItems.id, status: bankFeedItems.status });
+  for (const f of flagged) {
+    await auditLog(tenantId, 'update', 'bank_feed', f.id, { status: f.status, matchedTransactionId: transactionId },
+      { action: 'entry_voided', status: f.status, matchedTransactionId: transactionId }, userId, tx);
+  }
+  return flagged.map((f) => f.id);
+}
+
+/**
+ * Hook for the accept records of E3 (U-169): restores the row exactly as it
+ * was before its accept. Until those records exist, the row goes back to
+ * pending with its suggestion and without staged values (so a row that was
+ * untouched before it was accepted is untouched again for import Undo).
+ */
+export type PriorStateRestorer = (tx: DbOrTx, tenantId: string, item: typeof bankFeedItems.$inferSelect)
+  => Promise<Partial<typeof bankFeedItems.$inferInsert> | null>;
+let priorStateRestorer: PriorStateRestorer | null = null;
+export function setPriorStateRestorer(fn: PriorStateRestorer | null): void {
+  priorStateRestorer = fn;
+}
+
+/**
+ * "Review again" on a row whose entry was voided (Q-P26u, U-166): unlinks
+ * it (clears the entry, its line and entry_voided_at) and puts it back to
+ * waiting, audited, in one database transaction (claims the
+ * Idempotency-Key). 409 ENTRY_NOT_VOIDED {status} on any other row. The void
+ * entry itself stays as it is (void, in the audit trail).
+ */
+export async function reviewAgain(tenantId: string, feedItemId: string, userId?: string, companyId?: string) {
+  return db.transaction(async (tx) => {
+    await claimIdempotency(tx);
+    const [item] = await tx.select().from(bankFeedItems)
+      .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
+      .for('update');
+    if (!item || (companyId && item.companyId && item.companyId !== companyId)) throw AppError.notFound('Bank feed item not found');
+    if (!item.entryVoidedAt) {
+      throw AppError.conflict('The entry for this bank line was not voided, so there is nothing to review again.', 'ENTRY_NOT_VOIDED',
+        { status: item.status });
+    }
+    const restored = priorStateRestorer ? await priorStateRestorer(tx, tenantId, item) : null;
+    const [updated] = await tx.update(bankFeedItems).set({
+      status: 'pending',
+      assignedAccountId: null,
+      assignedContactId: null,
+      assignedTagId: null,
+      assignedMemo: null,
+      assignedBy: null,
+      assignedAt: null,
+      ...(restored ?? {}),
+      matchedTransactionId: null,
+      matchedJournalLineId: null,
+      entryVoidedAt: null,
+      closeReviewedAt: null,
+      closeReviewedBy: null,
+      updatedAt: new Date(),
+    }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId))).returning();
+    await auditLog(tenantId, 'update', 'bank_feed', feedItemId,
+      { status: item.status, matchedTransactionId: item.matchedTransactionId, entryVoidedAt: item.entryVoidedAt },
+      { action: 'review_again', status: updated!.status }, userId, tx);
+    return updated!;
+  });
 }
 
 /** Restore many at once, mirroring bulkExclude's per-row tolerance. */
@@ -1435,7 +1732,8 @@ async function applyCheckImagePayees(
         contact = { id: created.id, displayName: created.displayName };
         tenantContacts.push(contact); // reuse for another check with the same payee
       } catch (err) {
-        console.warn(`[applyCheckImagePayees] contact create failed for "${payee}":`, err instanceof Error ? err.message : err);
+        // U-167: never the payee itself, only the error code and the item id.
+        console.warn(`[applyCheckImagePayees] contact create failed for item ${item.id}: ${errorSummaryForLog(err)}`);
       }
     }
     const update: Partial<typeof bankFeedItems.$inferInsert> = {
@@ -1524,8 +1822,11 @@ export async function runCleansingPipeline(
   // (ai_config.autoCategorizeOnImport). When off, skip the LLM entirely
   // (counted as `disabled`) — deterministic rules + regex cleaning still run.
   const { getConfig } = await import('./ai-config.service.js');
-  const aiCfg = opts.llm === false ? null : await getConfig().catch(() => null);
-  const aiDisabled = opts.llm === false || !(aiCfg?.autoCategorizeOnImport ?? true);
+  // Desktop mode (Q-P26c, S6): AI runs only when the owner asks, never in
+  // the unattended cleansing (imports, recleanse).
+  const llmOff = opts.llm === false || isDesktop();
+  const aiCfg = llmOff ? null : await getConfig().catch(() => null);
+  const aiDisabled = llmOff || !(aiCfg?.autoCategorizeOnImport ?? true);
 
   const { resolvePreAiLayers, categorizeFeedItemsBatch } = await import('./ai-categorization.service.js');
 
@@ -1607,7 +1908,8 @@ export async function runCleansingPipeline(
             agg.aiFailed++;
             if (!agg.firstError) agg.firstError = r.error.message;
             // eslint-disable-next-line no-console
-            console.warn(`[cleanse] AI step failed for item ${s.item.id}: ${r.error.message}`);
+            // U-167: the provider's error text may echo the description; the code only.
+            console.warn(`[cleanse] AI step failed for item ${s.item.id}: code=${r.error.code}`);
           }
         } else if (r?.skipped) {
           // The batch covering this item was abandoned by the outage
@@ -1634,6 +1936,9 @@ export async function runCleansingPipeline(
  *  rules). Shared by the import-time categorization pipeline and the
  *  bank-feed "Reprocess Rules" bulk action so rule semantics can never
  *  drift between the two entry points. */
+/** A rule that fired for an item (U-168): its id and which table it is in. */
+export interface RuleFire { ruleId: string | null; kind: 'conditional' | 'legacy' }
+
 interface RulesStagesOutcome {
   /** Ids of items that were still 'pending' when rule evaluation ran. */
   processedIds: string[];
@@ -1641,12 +1946,12 @@ interface RulesStagesOutcome {
    *  match otherwise). The pipeline feeds this into the
    *  classification-state upsert so Bucket 2 can render "grouped by
    *  rule"; a rule that doesn't auto-confirm still gets attributed. */
-  ruleFiredByItem: Map<string, { ruleId: string | null }>;
+  ruleFiredByItem: Map<string, RuleFire>;
   /** Items where a Phase-4 conditional rule fired without
    *  continue_after_match — legacy bank-rule eval was skipped for
    *  these (build plan §4.5). */
   conditionalShortCircuited: Set<string>;
-  /** Items posted to the ledger via a legacy autoConfirm rule. */
+  /** Items posted to the ledger via a legacy autoConfirm rule (never in desktop mode, S6). */
   autoCategorizedIds: string[];
   /** Per-item autoConfirm posting failures. categorize() reverts the
    *  claim on failure, so these items stay pending and retryable. */
@@ -1660,7 +1965,9 @@ interface RulesStagesOutcome {
  *      splits_config on the feed item. A rule that fires without
  *      continue_after_match short-circuits stage 2 for that item.
  *   2. Legacy bank rules — a match records attribution; a match with
- *      autoConfirm + assignAccountId posts the item via categorize().
+ *      autoConfirm + assignAccountId posts the item via categorize(),
+ *      except in desktop mode (Q-P26o, S6) and the bank-file import batch,
+ *      where a rule only stages its suggestion.
  *
  * Runs at import time (inside runCategorizationPipeline) and again on
  * demand via reprocessRules(). Items no rule matches are left untouched.
@@ -1672,11 +1979,14 @@ async function runRulesStages(
   // match is attributed but never posted.
   opts: { userId?: string; companyId?: string; autoConfirm?: boolean } = {},
 ): Promise<RulesStagesOutcome> {
+  // S6, Q-P26o: rules never post in desktop mode (legacy auto_confirm and
+  // split rules only stage); the owner accepts what they staged.
+  const stageOnly = opts.autoConfirm === false || isDesktop();
   const bankRulesService = await import('./bank-rules.service.js');
   const conditionalRulesApply = await import('./conditional-rules-apply.service.js');
 
   const processedIds: string[] = [];
-  const ruleFiredByItem = new Map<string, { ruleId: string | null }>();
+  const ruleFiredByItem = new Map<string, RuleFire>();
   const conditionalShortCircuited = new Set<string>();
   const autoCategorizedIds: string[] = [];
   const failures: Array<{ id: string; error: string }> = [];
@@ -1719,15 +2029,12 @@ async function runRulesStages(
       if (result.fires.length > 0) {
         const firstFire = result.fires[0]!;
         if (!ruleFiredByItem.has(item.id)) {
-          ruleFiredByItem.set(item.id, { ruleId: firstFire.ruleId });
+          ruleFiredByItem.set(item.id, { ruleId: firstFire.ruleId, kind: 'conditional' });
         }
       }
     } catch (err) {
       // Engine failures shouldn't abort the run.
-      console.warn(
-        `[runRulesStages] conditional-rules apply failed for item ${item.id}:`,
-        err instanceof Error ? err.message : String(err),
-      );
+      console.warn(`[runRulesStages] conditional-rules apply failed for item ${item.id}: ${errorSummaryForLog(err)}`);
     }
   }
 
@@ -1749,14 +2056,16 @@ async function runRulesStages(
     });
     if (ruleResult.matched) {
       // Capture which rule fired — even if autoConfirm is false.
-      ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null });
+      ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null, kind: 'legacy' });
     }
     // Bank-file import batch (U-06, Q-P25j): a matching rule is staged as a
     // suggestion only (never categorized, never posted), unless a
     // conditional rule already staged one.
-    if (opts.autoConfirm === false && ruleResult.matched && ruleResult.assignAccountId && !current.suggestedAccountId) {
+    if (stageOnly && ruleResult.matched && ruleResult.assignAccountId && !current.suggestedAccountId) {
       await db.update(bankFeedItems).set({
         suggestedAccountId: ruleResult.assignAccountId,
+        // U-168: the attribution, in the same UPDATE as the suggestion.
+        ...(ruleResult.ruleId ? { suggestedRuleId: ruleResult.ruleId, suggestedRuleKind: 'legacy' } : {}),
         ...(ruleResult.assignContactId && !current.suggestedContactId ? { suggestedContactId: ruleResult.assignContactId } : {}),
         ...(ruleResult.assignTagId && !current.suggestedTagId ? { suggestedTagId: ruleResult.assignTagId } : {}),
         matchType: 'rule',
@@ -1768,7 +2077,7 @@ async function runRulesStages(
         sql`${bankFeedItems.suggestedAccountId} IS NULL`,
       ));
     }
-    if (opts.autoConfirm !== false && ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
+    if (!stageOnly && ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
       try {
         await categorize(tenantId, item.id, {
           accountId: ruleResult.assignAccountId,
@@ -1785,7 +2094,7 @@ async function runRulesStages(
         // pending and can be retried.
         const msg = err instanceof Error ? err.message : String(err);
         failures.push({ id: item.id, error: msg });
-        console.warn(`[runRulesStages] autoConfirm categorize failed for item ${item.id}: ${msg}`);
+        console.warn(`[runRulesStages] autoConfirm categorize failed for item ${item.id}: ${errorSummaryForLog(err)}`);
       }
     }
   }
@@ -1831,7 +2140,9 @@ export async function runCategorizationPipeline(
       pendingIds.push(item.id);
     }
   }
-  if (pendingIds.length > 0 && opts.llm !== false) {
+  // Q-P26c: in desktop mode AI runs only when the owner asks (Suggest with
+  // AI), never unattended after an import.
+  if (pendingIds.length > 0 && opts.llm !== false && !isDesktop()) {
     // Honor the "Auto-categorize bank feed transactions" setting
     // (ai_config.autoCategorizeOnImport, default on). This pipeline runs for
     // EVERY import path — CSV/OFX, Plaid sync, AND bank-statement import — so
@@ -1845,7 +2156,7 @@ export async function runCategorizationPipeline(
       // outage is visible to operators.
       await categorizationService.suggestForBatch(tenantId, pendingIds).catch((err) => {
         // eslint-disable-next-line no-console
-        console.warn(`[bank-feed] AI batch suggest failed for tenant ${tenantId}:`, err?.message ?? err);
+        console.warn(`[bank-feed] AI batch suggest failed for tenant ${tenantId}: ${errorSummaryForLog(err)}`);
       });
     }
   }
@@ -1871,10 +2182,7 @@ export async function runCategorizationPipeline(
       // pipeline — log and move on with no candidates for that
       // item. The state-row upsert below still runs so the row
       // ends up in some non-Bucket-1 bucket.
-      console.warn(
-        `[runCategorizationPipeline] potential-match find failed for item ${item.id}:`,
-        err instanceof Error ? err.message : String(err),
-      );
+      console.warn(`[runCategorizationPipeline] potential-match find failed for item ${item.id}: ${errorSummaryForLog(err)}`);
     }
   }
 
@@ -1894,6 +2202,7 @@ export async function runCategorizationPipeline(
     try {
       await classificationStateService.upsertStateForFeedItem(tenantId, item.id, {
         matchedRuleId: matched?.ruleId ?? null,
+        matchedRuleKind: matched?.kind,
         matchCandidates: candidates,
       });
     } catch {
@@ -1908,11 +2217,8 @@ export async function runCategorizationPipeline(
           matchCandidates: candidates,
         });
       } catch (err) {
-        console.warn(
-          `[runCategorizationPipeline] classification-state upsert failed for item ${item.id}:`,
-          err instanceof Error ? err.message : String(err),
-          'cause:', (err as { cause?: Error })?.cause?.message ?? '(none)',
-        );
+        // errorSummaryForLog carries the cause's code and message, never the params.
+        console.warn(`[runCategorizationPipeline] classification-state upsert failed for item ${item.id}: ${errorSummaryForLog(err)}`);
       }
     }
   }
@@ -1926,7 +2232,8 @@ export async function bulkRecleanse(tenantId: string, feedItemIds: string[]) {
     });
     if (item) items.push(item);
   }
-  const cleansing = await runCleansingPipeline(tenantId, items);
+  // S6: recleanse never calls AI in desktop mode (Q-P26c: AI only on request).
+  const cleansing = await runCleansingPipeline(tenantId, items, isDesktop() ? { llm: false } : {});
   return { cleansed: items.length, cleansing };
 }
 
@@ -2011,6 +2318,7 @@ export async function reprocessRules(
       try {
         await classificationStateService.upsertStateForFeedItem(tenantId, itemId, {
           matchedRuleId: fired.ruleId,
+          matchedRuleKind: fired.kind,
         });
       } catch {
         // Same transient-failure retry + cause logging as the
@@ -2021,11 +2329,7 @@ export async function reprocessRules(
             matchedRuleId: fired.ruleId,
           });
         } catch (err) {
-          console.warn(
-            `[reprocessRules] classification-state upsert failed for item ${itemId}:`,
-            err instanceof Error ? err.message : String(err),
-            'cause:', (err as { cause?: Error })?.cause?.message ?? '(none)',
-          );
+          console.warn(`[reprocessRules] classification-state upsert failed for item ${itemId}: ${errorSummaryForLog(err)}`);
         }
       }
     }
@@ -2433,3 +2737,26 @@ export async function importStatementItems(
   return { imported: insertedStmt.length, skipped: transactions.length - insertedStmt.length, cleansing };
 }
 
+
+/**
+ * Engine start (U-173, S9): rows left in 'categorizing' by an older engine
+ * (or a crash during the separate claim it used) for more than 5 minutes go
+ * back to where they were: 'assigned' when they carry a staged account, else
+ * 'pending'; a row that has its posted entry is 'categorized'. Feed posting
+ * no longer leaves this state behind (the claim is inside the posting
+ * transaction). Every tenant; returns how many rows moved.
+ */
+export const STUCK_CATEGORIZING_MS = 5 * 60 * 1000;
+export async function recoverStuckCategorizing(olderThanMs = STUCK_CATEGORIZING_MS): Promise<number> {
+  const cutoff = new Date(Date.now() - olderThanMs);
+  const res = await db.execute(sql`
+    UPDATE bank_feed_items SET
+      status = CASE
+        WHEN matched_transaction_id IS NOT NULL THEN 'categorized'
+        WHEN assigned_account_id IS NOT NULL AND assigned_at IS NOT NULL THEN 'assigned'
+        ELSE 'pending' END,
+      updated_at = now()
+    WHERE status = 'categorizing' AND (updated_at IS NULL OR updated_at < ${cutoff})
+    RETURNING id`);
+  return (res.rows as unknown[]).length;
+}

@@ -174,7 +174,7 @@ describe('bank-feed assign() — stages without posting', () => {
     await bankFeedService.approve(tenantId, item.id, userId, companyId);
     await expect(
       bankFeedService.assign(tenantId, item.id, { accountId: expenseAccountId }, userId),
-    ).rejects.toThrow(/cannot be assigned/i);
+    ).rejects.toMatchObject({ statusCode: 409, code: 'FEED_ITEM_NOT_PENDING', details: { status: 'categorized' } });
   });
 });
 
@@ -210,7 +210,7 @@ describe('bank-feed approve() — posts the staged assignment', () => {
     const item = await insertPendingItem();
     await expect(
       bankFeedService.approve(tenantId, item.id, userId, companyId),
-    ).rejects.toThrow(/not assigned/i);
+    ).rejects.toMatchObject({ statusCode: 409, code: 'FEED_ITEM_NOT_PENDING', details: { status: 'pending' } });
     // Still pending, nothing posted.
     const after = await db.query.bankFeedItems.findFirst({ where: eq(bankFeedItems.id, item.id) });
     expect(after!.status).toBe('pending');

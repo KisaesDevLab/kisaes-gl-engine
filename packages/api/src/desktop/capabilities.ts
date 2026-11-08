@@ -721,6 +721,48 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'feed-exact-v1',
   /**
+   * Line-level bank feed matches (U-166, U-172; migration 0265): a feed item matches one journal line on its own bank account, a
+   * credit for money out (feed amount > 0) or a debit for money in (< 0), for exactly |amount|, on a posted entry, not held by another
+   * item (bank_feed_items.matched_journal_line_id, unique). The same predicate drives GET /banking/feed/:id/match-candidates (one row
+   * per line: id = the entry, journalLineId, amount in the feed sign), the list's matchCandidateCount, the review buckets and GET
+   * /banking/feed/:id/payroll-overlap ({overlaps: [{txnId, journalLineId, memo, date, amount}]}, money out only, exact; each payroll
+   * bank line matches its own item). PUT /banking/feed/:id/match {transactionId, journalLineId?} on a pending or assigned item: 400
+   * LINE_REQUIRED {journalLineIds} when more than one line fits, 400 MATCH_MISMATCH {field}, 409 LINE_ALREADY_MATCHED; audited;
+   * response {message, item}. U-136 sign fix: money in is a negative feed amount (match candidates, POST /payments/receive
+   * bankFeedItemId). Categorize and approve stamp the posted entry's bank line. Voiding an entry a feed item points at is allowed
+   * (Q-P26u): every such item keeps its status and link, gets entryVoided / entryVoidedAt (list filter entryVoided=true|false,
+   * GET /banking/feed/counts entryVoided) and an audit row (bank_feed, entry_voided). POST /banking/feed/:id/review-again (Idempotency-Key
+   * required) unlinks it back to pending with its suggestion and no staged values, audited; 409 ENTRY_NOT_VOIDED otherwise.
+   */
+  'feed-match-v2',
+  /**
+   * Feed review states and keys (U-173): categorize, approve, assign, match, exclude and unexclude answer 409 FEED_ITEM_NOT_PENDING
+   * {status} (was 400) for an item not waiting for that action; categorize takes pending or assigned items; categorize and approve
+   * claim, post and flip the item in one database transaction (no 'categorizing' left behind); on engine start rows left
+   * 'categorizing' for more than 5 minutes go back to assigned or pending. Idempotency-Key (`x-idempotency: true`) is optional on PUT
+   * /banking/feed/:id/categorize, POST /banking/feed/:id/approve and PUT /banking/feed/:id/match, and required (400
+   * IDEMPOTENCY_KEY_REQUIRED) on POST /banking/feed/:id/duplicate and /review-again; none on the bulk routes. Rules never post in
+   * desktop mode (legacy auto_confirm rules only stage, Q-P26o), and AI never runs unattended there (imports, recleanse; Q-P26c).
+   */
+  'feed-idempotency-v1',
+  /**
+   * Bank feed review (U-174, U-168; migration 0266): POST /banking/feed/:id/duplicate {decision: keep | remove} (Idempotency-Key
+   * required): keep clears possibleDuplicate, remove excludes the row with exclusionReason 'duplicate' (unexclude brings it back
+   * still flagged); 409 NOT_A_POSSIBLE_DUPLICATE; an import Undo counts removed duplicates as untouched. GET /banking/feed rows add
+   * duplicateOf {id, date, amount, description, memo, status} | null, suggestedRule {id, kind: conditional | legacy, name, autoAccept,
+   * updatedAt} | null (the rule that staged the suggestion, bank_feed_items.suggested_rule_id / _kind, written with the suggestion;
+   * autoAccept = a legacy rule's auto_confirm, false for conditional rules until feed-accept-v1), bucket, entryVoided, entryVoidedAt,
+   * matchedJournalLineId and exclusionReason; filters bucket=ready|review|matches, possibleDuplicate=true|false, entryVoided=true|false.
+   * GET /banking/feed/counts {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, excluded, inProgress} uses the
+   * same predicates (scope bankConnectionId, startDate, endDate). Buckets, first match wins: possible duplicate = review; a match signal
+   * (a candidate line, or one Payments Clearing item for exactly a money-in amount within 10 days) = matches; no account, a non-rule
+   * suggestion under 0.80, mark_for_review or a staged split that can't post = review; else ready. Classification rows of legacy rules
+   * carry matched_bank_rule_id. Waiting conditional-rule rows of earlier imports were backfilled; legacy-rule rows get their
+   * attribution on the next Reprocess Rules.
+   */
+  'feed-review-v1',
+
+  /**
    * Inventory checkpoint fixes (U-162, ClientLedger PR-4; migration 0261): one total position order for stock ledger reads (a credit memo's
    * unlinked row first, then its linked rows by their sale's date and entry order, so the order survives a tenant import; the import
    * re-walks every item; on hand, valuation, count sheet and walk agree); NEGATIVE_STOCK (one per item) also when a void, delete or
@@ -770,5 +812,79 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * this batch: decimal string, feed sign, at least 2 decimals) and existingDate (YYYY-MM-DD), dry run and commit (Q-P25af).
    */
   'bank-import-progress-v1',
+  /**
+   * Bank file import account types (U-175): POST /banking/feed/import-batch takes an asset account with any bank register
+   * detail type (bank, checking, savings, cash, petty_cash; the set bank deposits and batch groups use) or a credit_card
+   * liability. Bank register types are balance-checked as a bank (debit balance). Other accounts stay 422
+   * account_not_bank_or_card.
+   */
+  'bank-import-account-types-v1',
+  /**
+   * Feed transfers and deposits (U-171). GET /banking/feed/:id/transfer-candidates?windowDays=1..10 (default 3) → {candidates:
+   * [{feedItemId, accountId, accountName, date, amount}]}: pending or assigned items on another GL account with the exact opposite
+   * amount (feed sign, decimal string), closest date first. POST /banking/feed/:id/transfer {otherFeedItemId | toAccountId,
+   * closingPassword?} posts ONE transfer (source bank_feed) dated on the money-out side (the closing date is checked against it)
+   * and matches every item to it in one database transaction; 400 TRANSFER_MISMATCH {field}. POST /banking/feed/:id/deposit
+   * {sourceTransactionIds (1-100), feeLines?: [{accountId, amount ^\d{1,12}(\.\d{1,2})?$ > 0, memo? ≤ 500}] (≤ 10),
+   * closingPassword?} posts ONE deposit from the payments' live Payments Clearing amounts (Dr bank, Cr Clearing per payment, Dr
+   * each fee account) and matches it; payments − fees must equal the bank amount exactly (400 FEED_ITEM_MISMATCH {difference}),
+   * 400 FEE_ACCOUNT_INVALID {accountId} (bank/card, Payments Clearing, A/R, A/P or another company), 400
+   * PAYMENT_NOT_PENDING_DEPOSIT {id}, 409 PAYMENT_BOUNCED. Both posts: response {transaction, items: [{feedItemId,
+   * journalLineId}]} (deposit adds payments [{id, amount}]); Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED); 409
+   * FEED_ITEM_NOT_PENDING {id, status}, 409 FEED_ITEM_IN_USE {id}, 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf} (an
+   * item still flagged; keep or remove it first); closed period as feed-closing-date-v1; audited. Practice
+   * match-apply transfers post the same way; its amounts are exact decimals.
+   */
+  'feed-match-post-v1',
+  /**
+   * GET /dashboard/account-balances (U-77) → [{accountId, name, accountNumber, kind bank|card, booksBalance, bankFileBalance|null,
+   * bankFileDate|null, booksBalanceAtFileDate|null}] per active bank, cash and card account: the latest bank file by file ending
+   * date, then import time, undone imports skipped. Register sign (a card: positive = owed). Decimal strings.
+   */
+  'account-balances-v1',
+  /**
+   * POST /banking/feed/accept (U-170): {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?,
+   * journalLineId?}] (1-500) | ruleId + ruleKind (conditional|legacy) + ruleUpdatedAt + bankConnectionId? + afterId?,
+   * closingPassword?} → {undoGroupId, posted, matched, skipped: [{id, reason}], failures: [{id, code, error, details?}],
+   * remaining, nextAfterId}. Validate then post in ONE database transaction under one required Idempotency-Key (replay
+   * identical; GET /banking/feed/accept-groups/:id over 512 KB). Skips not_found, in_use, not_pending, possible_duplicate,
+   * has_match (any match signal, incl. the other side of a transfer, unless values or a match are sent), incomplete,
+   * staging_differs; failures TB_PERIOD_LOCKED, SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS, MATCH_MISMATCH, LINE_REQUIRED,
+   * LINE_ALREADY_MATCHED. Rule mode: 409 RULE_CHANGED {updatedAt}, 409 RULE_NOT_AUTO_ACCEPT, 404 RULE_NOT_FOUND; 500 rows per
+   * call, continue with afterId = nextAfterId. conditional_rules.auto_accept (CRUD autoAccept; list suggestedRule.autoAccept)
+   * never posts on its own. Rule conditions: amount_abs, exact decimal amount comparisons. Desktop mode skips the
+   * CONDITIONAL_RULES_V1 flag check. The other side of a transfer is a match signal (bucket "matches").
+   * GET /banking/feed (Q-P26y): status=accepted lists every categorized and matched row (entryVoided included; total =
+   * /counts accepted), paged; rows carry transferCandidate {feedItemId, accountId, accountName} | null, the other side of a
+   * transfer when exactly one waits (the matches bucket's transfer rule, 3 days or transferWindowDays, feed-transfer-window-v1), null on rows that aren't waiting.
+   */
+  'feed-accept-v1',
+  /**
+   * POST /banking/feed/undo (U-169): {feedItemIds (1-500) | undoGroupId, force?, closingPassword?} → {undone: [{id, kind,
+   * transactionId, entry: deleted|kept, undoGroupId}], failures: [{id, code, error, details?}]}. Works only from accept records
+   * (every accept, categorize, approve, match, payment, transfer and deposit writes one; transfer, deposit and PUT match return
+   * undoGroupId) whose row still points at the recorded entry. Deletes a posted entry after unlinking every row on it (both
+   * transfer sides; a deposit's payments go back to Payments Clearing exactly) whenever the posting row is in the request, also
+   * with a later match selected; a request of only matches / payments, or a voided entry, is only unlinked. The changed check
+   * covers date, contact, memo and each line's account, debit, credit and tag; a held entry is FEED_ITEM_IN_USE. Restores each
+   * row's prior review state (Review again too); counts a learning override. 409 FEED_UNDO_CHANGED {ids}
+   * (the entry changed since; nothing undone; resend with force); failures FEED_UNDO_RECONCILED, TB_PERIOD_LOCKED,
+   * PAYMENT_BOUNCED, FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Idempotency-Key required.
+   */
+  'feed-undo-v1',
+  /**
+   * GET /banking/feed and GET /banking/feed/counts take transferWindowDays (U-177): an integer 1-10, default 3 (400
+   * VALIDATION_ERROR otherwise). It is the transfer twin window of the matches bucket (bucket, ?bucket=matches, /counts matches)
+   * and of the list's transferCandidate, as GET /banking/feed/:id/transfer-candidates windowDays; send the same value to both so
+   * the counts equal the list totals. POST /banking/feed/accept's has_match skip keeps the 3-day window.
+   */
+  'feed-transfer-window-v1',
+  /**
+   * GET /banking/feed rows carry acceptKind (U-178): post | match | transfer | deposit | payment, the kind of the row's live accept
+   * record (this item, its current entry, not undone, newest; the record POST /banking/feed/undo acts on), else null (waiting,
+   * excluded, or accepted before accept records existed). A matched row with acceptKind transfer or deposit was posted by that
+   * accept; match means it was linked to an entry already in the books.
+   */
+  'feed-accept-kind-v1',
 ];
 

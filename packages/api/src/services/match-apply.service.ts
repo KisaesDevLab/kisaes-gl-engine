@@ -15,8 +15,12 @@ import { AppError } from '../utils/errors.js';
 import * as paymentService from './payment.service.js';
 import * as billPaymentService from './bill-payment.service.js';
 import * as bankFeedService from './bank-feed.service.js';
-import * as ledger from './ledger.service.js';
 import * as classificationService from './practice-classification.service.js';
+import { postFeedTransfer } from './bank-feed-transfer.service.js';
+import DecimalLib from 'decimal.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
+type DecimalValue = InstanceType<typeof Decimal>;
 
 // Phase 3 §3.4 "Apply match" handler. Loads the state row, picks
 // the requested candidate index, dispatches by the candidate's
@@ -78,9 +82,9 @@ export async function applyMatch(
   });
   if (!conn) throw AppError.notFound('Bank connection not found');
 
-  const feedAmount = parseFloat(item.amount);
-  const absAmount = Math.abs(feedAmount).toFixed(4);
-  const feedAmountAbs = Math.abs(feedAmount);
+  // Exact decimals (U-171): the amount as stored, never a JavaScript number.
+  const feedAmountAbs = new Decimal(item.amount).abs();
+  const absAmount = feedAmountAbs.toFixed(4);
 
   switch (candidate.kind) {
     case 'invoice':
@@ -90,7 +94,7 @@ export async function applyMatch(
     case 'journal_entry':
       return applyJournalEntryMatch(tenantId, candidate, item.id);
     case 'transfer':
-      return applyTransferMatch(tenantId, candidate, item, conn.accountId, absAmount, userId, state.companyId);
+      return applyTransferMatch(tenantId, candidate, item, absAmount, userId, state.companyId);
     case 'recurring':
       return applyRecurringMatch(tenantId, candidate, item, absAmount, userId);
     default:
@@ -104,7 +108,7 @@ async function applyInvoiceMatch(
   item: typeof bankFeedItems.$inferSelect,
   bankAccountId: string,
   applyAmount: string,
-  applyAmountNum: number,
+  applyAmountNum: DecimalValue,
   userId: string,
   companyId: string | null,
 ): Promise<ApplyMatchResult> {
@@ -139,13 +143,16 @@ async function applyInvoiceMatch(
       depositTo: bankAccountId,
       memo: item.description ?? undefined,
       applications: appliedDec.greaterThan(0) ? [{ invoiceId: invoice.id, amount: application }] : [],
+      // Matched in the payment's own database transaction (U-136, U-166): a
+      // feed line that is not money in for exactly this amount posts nothing
+      // (400 FEED_ITEM_MISMATCH). It used to post the payment, then fail.
+      bankFeedItemId: item.id,
     },
     userId,
     companyId ?? undefined,
     { allowUnapplied: true },
   );
 
-  await bankFeedService.match(tenantId, item.id, payment.id);
   await classificationService.stampTransactionId(tenantId, item.id, payment.id);
 
   return {
@@ -162,7 +169,7 @@ async function applyBillMatch(
   item: typeof bankFeedItems.$inferSelect,
   bankAccountId: string,
   applyAmount: string,
-  applyAmountNum: number,
+  applyAmountNum: DecimalValue,
   userId: string,
   companyId: string | null,
 ): Promise<ApplyMatchResult> {
@@ -172,9 +179,10 @@ async function applyBillMatch(
   if (!bill || bill.txnType !== 'bill') {
     throw AppError.notFound('Bill candidate no longer exists');
   }
-  const balanceDue = parseFloat(bill.balanceDue ?? '0');
-  const application = Math.min(applyAmountNum, balanceDue).toFixed(4);
-  const partial = applyAmountNum < balanceDue;
+  // Exact decimals (U-171): min(feed amount, balance due), no float.
+  const balanceDue = new Decimal(bill.balanceDue ?? '0');
+  const application = Decimal.min(applyAmountNum, balanceDue).toFixed(4);
+  const partial = applyAmountNum.lessThan(balanceDue);
 
   const result = await billPaymentService.payBills(
     tenantId,
@@ -190,7 +198,11 @@ async function applyBillMatch(
     },
     userId,
     companyId ?? undefined,
-    { source: 'bank_feed', sourceId: item.id, alreadyCleared: { checkNumber: item.checkNumber } },
+    // feedItemId: matched in the payment's database transaction (U-166). The
+    // bank line must be money out for exactly the payment, so a feed amount
+    // above the bill's balance is 400 MATCH_MISMATCH and posts nothing (it
+    // used to post a smaller payment, then fail or link the wrong amount).
+    { source: 'bank_feed', sourceId: item.id, alreadyCleared: { checkNumber: item.checkNumber, feedItemId: item.id } },
   );
 
   // One bill, so one vendor, so exactly one payment. (This read three result
@@ -201,7 +213,6 @@ async function applyBillMatch(
     throw AppError.internal('payBills did not return a payment transaction id');
   }
 
-  await bankFeedService.match(tenantId, item.id, paymentId);
   await classificationService.stampTransactionId(tenantId, item.id, paymentId);
 
   return {
@@ -232,70 +243,20 @@ async function applyTransferMatch(
   tenantId: string,
   candidate: MatchCandidate,
   item: typeof bankFeedItems.$inferSelect,
-  bankAccountIdA: string,
   amountStr: string,
   userId: string,
   companyId: string | null,
 ): Promise<ApplyMatchResult> {
-  // The candidate's targetId is the OTHER feed item we paired
-  // with. Pull it, verify it's still pending, and post a single
-  // transfer txn against both bank accounts.
-  const otherItem = await db.query.bankFeedItems.findFirst({
-    where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, candidate.targetId)),
-  });
-  if (!otherItem) throw AppError.notFound('Transfer pair no longer exists');
-  if (otherItem.status !== 'pending') {
-    throw AppError.badRequest(
-      `Transfer pair is not pending (status: ${otherItem.status})`,
-      'PAIR_NOT_PENDING',
-    );
-  }
-
-  const otherConn = await db.query.bankConnections.findFirst({
-    where: eq(bankConnections.id, otherItem.bankConnectionId),
-  });
-  if (!otherConn) throw AppError.notFound('Other bank connection not found');
-
-  // Direction: positive feedAmount = money out → debit the other
-  // account, credit this account. Negative feedAmount = money in
-  // here → debit this account, credit the other.
-  const thisIsExpense = parseFloat(item.amount) > 0;
-  const debitAccountId = thisIsExpense ? otherConn.accountId : bankAccountIdA;
-  const creditAccountId = thisIsExpense ? bankAccountIdA : otherConn.accountId;
-
-  const txn = await ledger.postTransaction(
-    tenantId,
-    {
-      txnType: 'transfer',
-      txnDate: item.feedDate,
-      memo: `Transfer: ${item.description ?? otherItem.description ?? ''}`.trim(),
-      total: amountStr,
-      lines: [
-        { accountId: debitAccountId, debit: amountStr, credit: '0' },
-        { accountId: creditAccountId, debit: '0', credit: amountStr },
-      ],
-    },
-    userId,
-    companyId ?? undefined,
-  );
-
-  // Link both feed items.
-  await bankFeedService.match(tenantId, item.id, txn.id);
-  await bankFeedService.match(tenantId, otherItem.id, txn.id);
-  await classificationService.stampTransactionId(tenantId, item.id, txn.id);
-
-  // The other side's classification state may not have an entry
-  // yet (it could've been re-ingested separately). Best-effort:
-  // try stamping it, ignore not-found.
-  try {
-    await classificationService.stampTransactionId(tenantId, otherItem.id, txn.id);
-  } catch {
-    // The other side's state row will be rebuilt on the next
-    // categorization sweep with transaction_id already linked.
-  }
-
+  // The candidate's targetId is the OTHER feed item we paired with. One
+  // transfer for both sides, posted and matched in one database transaction
+  // (U-171): dated on the money-out side, exact amounts, source bank_feed,
+  // the same checks as POST /banking/feed/:id/transfer (409
+  // FEED_ITEM_NOT_PENDING when the pair was already used, 400
+  // TRANSFER_MISMATCH). Before, the transfer posted first and each side was
+  // matched after it, so a failure on the second left one side pending.
+  const result = await postFeedTransfer(tenantId, companyId ?? undefined, item.id, { otherFeedItemId: candidate.targetId }, userId);
   return {
-    appliedTransactionId: txn.id,
+    appliedTransactionId: result.transaction.id,
     kind: 'transfer',
     appliedAmount: amountStr,
     partial: false,

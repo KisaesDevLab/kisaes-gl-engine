@@ -21,10 +21,12 @@
 
 // Whole-key exemptions for names that only contain a secret-looking word:
 // content digests (`fileHash`), expiry/limit/step bookkeeping, and public
-// identifiers. They are anchored with `$`, so `fileHashSecret` is still a
+// identifiers, the closed-period flag `closingPasswordRequired` (a boolean in every
+// 423 TB_PERIOD_LOCKED body, kept in Idempotency-Key replays, feed-accept-v1).
+// They are anchored with `$`, so `fileHashSecret` is still a
 // secret. Keep the list short and exact; when in doubt a key is stripped.
 const EXEMPT_KEYS =
-  '(file_?hash|source_?file_?hash|numbers_?hash|content_?hash|(access_?)?token_?expires_?at|monthly_?token_?limit|tfa_?totp_?verified|tfa_?totp_?last_?step|credential_?id)';
+  '(file_?hash|source_?file_?hash|numbers_?hash|content_?hash|(access_?)?token_?expires_?at|monthly_?token_?limit|tfa_?totp_?verified|tfa_?totp_?last_?step|credential_?id|closing_?password_?required)';
 
 export const SECRET_KEY_PATTERN =
   `^(?!${EXEMPT_KEYS}$).*(secret|token(?!s$)|password|pass$|passwd|passphrase|api_?key|encrypted|hash|otp|refresh|credential|remote_?backup_?config|intake_?settings)`;

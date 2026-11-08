@@ -45,6 +45,10 @@ export const conditionalRules = pgTable('conditional_rules', {
   // When true, this rule does NOT short-circuit subsequent rules
   // — it stacks. Default false (first match wins).
   continueAfterMatch: boolean('continue_after_match').notNull().default(false),
+  // Migration 0267 (U-170, feed-accept-v1): the owner may accept this rule's
+  // suggestions together ("Accept all from this rule"). Never posts on its
+  // own; the rows wait for the owner.
+  autoAccept: boolean('auto_accept').notNull().default(false),
   active: boolean('active').notNull().default(true),
   createdBy: uuid('created_by'),
   // 3-tier rules plan, Phase 2 — tier discriminator. Enum-like

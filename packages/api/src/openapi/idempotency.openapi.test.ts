@@ -166,7 +166,34 @@ export const IDEMPOTENCY_BANK_IMPORT_V1_ROUTES = [
   'delete /api/v1/banking/feed/import-batches/{id}',
 ].sort();
 
+/** Keyed by feed-match-post-v1, with idempotency-v1's contract (U-171): both need the key. */
+export const IDEMPOTENCY_FEED_MATCH_POST_V1_ROUTES = [
+  'post /api/v1/banking/feed/{id}/transfer',
+  'post /api/v1/banking/feed/{id}/deposit',
+].sort();
+
+/**
+ * Keyed by feed-idempotency-v1 and feed-review-v1 (U-173, U-174, U-166): optional on categorize, approve and match;
+ * required on the duplicate decision and Review again.
+ */
+export const IDEMPOTENCY_FEED_REVIEW_V1_ROUTES = [
+  'put /api/v1/banking/feed/{id}/categorize',
+  'post /api/v1/banking/feed/{id}/approve',
+  'put /api/v1/banking/feed/{id}/match',
+  'post /api/v1/banking/feed/{id}/duplicate',
+  'post /api/v1/banking/feed/{id}/review-again',
+].sort();
+
+/** Keyed by feed-accept-v1 and feed-undo-v1 (U-170, U-169): both need the key; one transaction per request. */
+export const IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES = [
+  'post /api/v1/banking/feed/accept',
+  'post /api/v1/banking/feed/undo',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES,
+  ...IDEMPOTENCY_FEED_REVIEW_V1_ROUTES,
+  ...IDEMPOTENCY_FEED_MATCH_POST_V1_ROUTES,
   ...IDEMPOTENCY_BANK_IMPORT_V1_ROUTES,
   ...IDEMPOTENCY_UNIT_SETS_V1_ROUTES,
   ...IDEMPOTENCY_INVENTORY_V1_ROUTES,

@@ -263,6 +263,9 @@ const baseConditionalRuleObject = z.object({
   actions: actionsFieldSchema,
   continueAfterMatch: z.boolean().optional(),
   active: z.boolean().optional(),
+  // feed-accept-v1 (U-170): "Accept all from this rule" allowed. Never
+  // posts on its own. Default false.
+  autoAccept: z.boolean().optional(),
   // Optional in the wire schema. Defaults to 'tenant_user' on the
   // server when omitted, which preserves Phase-1 behavior for
   // existing clients that don't know about scope yet.

@@ -26,6 +26,9 @@ export const transactionClassificationState = pgTable('transaction_classificatio
   // 0160): the categorization pipeline records conditional-rule ids
   // here, and the old FK made every attribution upsert fail silently.
   matchedRuleId: uuid('matched_rule_id').references(() => conditionalRules.id, { onDelete: 'set null' }),
+  // Migration 0266 (U-168): the legacy bank rule (bank_rules) a row was
+  // attributed to; matched_rule_id holds conditional rules only.
+  matchedBankRuleId: uuid('matched_bank_rule_id'),
   reasoningBlob: jsonb('reasoning_blob'),
   modelUsed: varchar('model_used', { length: 100 }),
   matchCandidates: jsonb('match_candidates'),

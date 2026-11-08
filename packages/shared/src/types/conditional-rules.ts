@@ -94,6 +94,11 @@ export interface ConditionalRule {
   ownerUserId: string | null;
   ownerFirmId: string | null;
   forkedFromGlobalId: string | null;
+  /**
+   * feed-accept-v1 (U-170): the owner may accept this rule's suggestions
+   * together ("Accept all from this rule"). Never posts on its own.
+   */
+  autoAccept: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -136,6 +141,14 @@ export interface ConditionalRuleContext {
   descriptor: string;
   amount: number;
   amount_sign: -1 | 0 | 1;
+  /** |amount| (feed-accept-v1). */
+  amount_abs?: number;
+  /**
+   * The signed amount as its exact decimal string (feed-accept-v1, U-170).
+   * When present, the amount and amount_abs comparisons are exact decimals
+   * (no floating point); a context without it compares the numbers.
+   */
+  amount_text?: string;
   account_source_id: string;
   date: string;        // YYYY-MM-DD
   day_of_week: number; // 0=Sun..6=Sat
