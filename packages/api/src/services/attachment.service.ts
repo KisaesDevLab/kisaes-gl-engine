@@ -493,7 +493,8 @@ export interface DraftRelinkGuard {
  * reads (U-95, review M2): those stay on the key, so the draft can still be
  * converted with its file. The key's rows are locked FOR UPDATE, the live
  * drafts read in the next statement, then exactly the locked rows minus
- * those are updated. Returns the moved ids.
+ * those are updated, each recording `draftKey` as its source_draft_key
+ * (U-183: deleting the entry moves them back). Returns the moved ids.
  */
 async function moveDraftKeyFiles(
   tx: Tx, tenantId: string, draftKey: string, newType: string, newId: string,
@@ -516,7 +517,7 @@ async function moveDraftKeyFiles(
   const moving = lockedIds.filter((id) => !inUse.has(id));
   if (moving.length === 0) return [];
   const rows = await tx.update(attachments)
-    .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
+    .set({ attachableType: newType, attachableId: newId, sourceDraftKey: draftKey, ...fillCompany(companyId) })
     .where(and(eq(attachments.tenantId, tenantId), inArray(attachments.id, moving)))
     .returning({ id: attachments.id });
   return rows.map((r) => r.id);
@@ -725,7 +726,7 @@ export async function linkAttachment(
     }
     // The row already passed companyScope; fillCompany keeps a company it has.
     await tx.update(attachments)
-      .set({ attachableType: newType, attachableId: newId, ...fillCompany(companyId) })
+      .set({ attachableType: newType, attachableId: newId, sourceDraftKey: null, ...fillCompany(companyId) })
       .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, row.id)));
     return row;
   });

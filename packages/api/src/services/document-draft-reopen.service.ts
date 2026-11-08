@@ -19,12 +19,18 @@
  *     status `ready` with converted_transaction_id / type / at / by cleared
  *     and a new updatedAt (its kind and reading are kept);
  *   - its own file (attachment_id), when it is still filed on the deleted
- *     entry, moves back onto a draft key: the key it was relinked from (the
- *     relink's audit row), else the draft's id. Other files on the entry
- *     (added by hand, or another draft's) stay where they are;
+ *     entry, moves back onto a draft key: the key it was relinked from
+ *     (attachments.source_draft_key, U-183; for a file relinked before
+ *     migration 0270, the relink's audit row), else the draft's id;
+ *   - with it, every other file on the entry that a relink took off that
+ *     same key (source_draft_key, U-183): the convert's or attach's other
+ *     files of the key. Files filed on the entry by hand (no
+ *     source_draft_key) or from another key stay where they are; files moved
+ *     back have source_draft_key cleared;
  *   - one audit row per file moved and one per draft (`reopened: true`).
  * A draft whose file was deleted after it was entered (attachment_id null)
- * is reopened without a file.
+ * is reopened without a file, and the other files of its key stay on the
+ * entry (the key is known only through the own file).
  *
  * A void keeps the entry, so it leaves its drafts converted (attaching to a
  * void entry is 409 TRANSACTION_NOT_POSTED, so nothing new links to it).
@@ -33,7 +39,7 @@
  * calls it, and document-draft.service imports the ledger.
  */
 
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import type { Tx } from '../db/index.js';
 import { attachments, documentDrafts } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
@@ -77,18 +83,36 @@ export async function reopenDraftsOfDeletedTransaction(
   for (const before of drafts) {
     let fileMoved = false;
     if (before.attachmentId) {
-      const [file] = await tx.select({ id: attachments.id, attachableType: attachments.attachableType, attachableId: attachments.attachableId })
+      const [file] = await tx.select({
+        id: attachments.id, attachableType: attachments.attachableType, attachableId: attachments.attachableId,
+        sourceDraftKey: attachments.sourceDraftKey,
+      })
         .from(attachments)
         .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, before.attachmentId)))
         .for('update');
       if (file && file.attachableType !== 'draft' && file.attachableId === txnId) {
-        const key = (await originalDraftKey(tx, tenantId, file.id, txnId)) ?? before.id;
-        await tx.update(attachments).set({ attachableType: 'draft', attachableId: key })
-          .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, file.id)));
-        await auditLog(tenantId, 'update', 'attachment', file.id,
-          { attachableType: file.attachableType, attachableId: file.attachableId },
-          { attachableType: 'draft', attachableId: key, reopenedDraftId: before.id },
-          userId, tx);
+        const key = file.sourceDraftKey ?? (await originalDraftKey(tx, tenantId, file.id, txnId)) ?? before.id;
+        // The own file, then (U-183) every other file on the entry the same
+        // relink took off that key, in id order (the relink's lock order).
+        const others = file.sourceDraftKey === null ? [] : await tx.select({ id: attachments.id })
+          .from(attachments)
+          .where(and(
+            eq(attachments.tenantId, tenantId),
+            eq(attachments.attachableType, file.attachableType),
+            eq(attachments.attachableId, txnId),
+            eq(attachments.sourceDraftKey, key),
+            ne(attachments.id, file.id),
+          ))
+          .orderBy(asc(attachments.id))
+          .for('update');
+        for (const id of [file.id, ...others.map((o) => o.id)]) {
+          await tx.update(attachments).set({ attachableType: 'draft', attachableId: key, sourceDraftKey: null })
+            .where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, id)));
+          await auditLog(tenantId, 'update', 'attachment', id,
+            { attachableType: file.attachableType, attachableId: txnId },
+            { attachableType: 'draft', attachableId: key, reopenedDraftId: before.id },
+            userId, tx);
+        }
         fileMoved = true;
       }
     }

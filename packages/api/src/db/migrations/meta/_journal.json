@@ -1891,6 +1891,13 @@
       "when": 1787600024380,
       "tag": "0269_document_drafts_converted_index",
       "breakpoints": true
+    },
+    {
+      "idx": 270,
+      "version": "7",
+      "when": 1787700024380,
+      "tag": "0270_attachments_source_draft_key",
+      "breakpoints": true
     }
   ]
 }

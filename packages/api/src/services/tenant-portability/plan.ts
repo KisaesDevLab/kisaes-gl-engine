@@ -332,6 +332,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'annual_1099_filings.firm_id': 'excluded-ref:firms',
   'attachments.attachable_id': 'polymorphic',
   'attachments.company_id': 'tenant-ref:companies',
+  // A draft key (U-183), like attachable_id of a 'draft' row: remapped the same way, so the two still agree.
+  'attachments.source_draft_key': 'polymorphic',
   'audit_log.user_id': 'identity',
   'audit_log.entity_id': 'polymorphic',
   'audit_log.company_id': 'tenant-ref:companies',
