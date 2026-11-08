@@ -20,6 +20,14 @@
  *      savepoints. An unexpected error fails the whole call, so a request
  *      commits whole or not at all.
  *
+ * Document drafts (U-181, feed-accept-draft-v1): an item's documentDraft is
+ * locked in step 1 after the feed rows and before any entry (the attach
+ * lock order draft, entry, file) and checked there with its target, so a
+ * draft that can't be attached fails its row and nothing posts for it. In
+ * step 2 it is filed on the entry right after the row posts or matches
+ * (document-draft.service attachLockedInTx). Undo of a posted entry deletes
+ * it, which reopens its drafts (U-180, ledger deleteTransactionInTx).
+ *
  * Several postings under one Idempotency-Key in one database transaction are
  * fine: claimIdempotency is a no-op for a second claim on the same
  * transaction (idempotency.service.ts). The key names the accept group
