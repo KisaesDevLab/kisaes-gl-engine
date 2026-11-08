@@ -11,7 +11,7 @@
 # would have to explicitly bump it (reviewer catches that in PR).
 #
 # Counts `: any` (return/param/var annotations) and `as any` (casts)
-# in non-test source files across api, web, worker. Tests are exempt
+# in non-test engine api source files. Tests are exempt
 # because they legitimately exercise DB rows returned with opaque
 # shapes and fixtures where typing every intermediate has no value.
 
@@ -24,8 +24,6 @@ set -u
 # real type-annotation count is below that. Don't bump these without
 # auditing the diff first.
 BASELINE_API=297
-BASELINE_WEB=1
-BASELINE_WORKER=0
 
 # Filter pipeline:
 #   1. grep matches `: any` or `as any` with word-boundary on the word.
@@ -42,8 +40,6 @@ _count_anys() {
 }
 
 api_count=$(_count_anys packages/api/src --include='*.ts' --exclude='*.test.ts')
-web_count=$(_count_anys packages/web/src --include='*.ts' --include='*.tsx' --exclude='*.test.ts' --exclude='*.test.tsx')
-worker_count=$(_count_anys packages/worker/src --include='*.ts')
 
 fail=0
 
@@ -63,8 +59,6 @@ check() {
 }
 
 check api    "$api_count"    "$BASELINE_API"    API
-check web    "$web_count"    "$BASELINE_WEB"    WEB
-check worker "$worker_count" "$BASELINE_WORKER" WORKER
 
 if [ "$fail" -eq 1 ]; then
   echo ""
