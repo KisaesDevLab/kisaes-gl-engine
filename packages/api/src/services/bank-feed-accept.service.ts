@@ -27,6 +27,15 @@
  * step 2 it is filed on the entry right after the row posts or matches
  * (document-draft.service attachLockedInTx). Undo of a posted entry deletes
  * it, which reopens its drafts (U-180, ledger deleteTransactionInTx).
+ * A row that would post an expense with a draft runs convert's duplicate
+ * check (U-185, feed-accept-draft-duplicates-v1) at the end of step 1, under
+ * convert's company + vendor advisory lock: a posted bill or expense of the
+ * vendor (the row's contact, else the draft's suggested vendor) with the
+ * draft's reference, or the same total within 60 days of the row's date,
+ * that is not in documentDraft.acknowledgeDuplicateOf fails the row
+ * DOCUMENT_POSSIBLE_DUPLICATE {draftId, matches} with nothing posted.
+ * Matches and money-in rows are not checked (nothing new posts as a bill or
+ * expense).
  *
  * Several postings under one Idempotency-Key in one database transaction are
  * fine: claimIdempotency is a no-op for a second claim on the same
@@ -104,7 +113,15 @@ export interface AcceptItemInput extends feed.AcceptRowInput {
    * row posts or matches, in the same database transaction; a draft that
    * can't be attached fails the row (nothing posted).
    */
-  documentDraft?: { id: string; expectedUpdatedAt: string };
+  documentDraft?: {
+    id: string;
+    expectedUpdatedAt: string;
+    /**
+     * feed-accept-draft-duplicates-v1 (U-185): posted entries the owner
+     * confirmed are not this document (as convert's acknowledgeDuplicateOf).
+     */
+    acknowledgeDuplicateOf?: string[];
+  };
 }
 
 /** The permission checks of a document attach (the route's; a service caller that checked them may omit them). */
@@ -461,14 +478,44 @@ export async function acceptFeedItems(
       plan.push({ kind: 'post', row, values, draft });
     }
 
+    // Document duplicates (U-185, feed-accept-draft-duplicates-v1): a row
+    // that would post an expense with a document runs convert's duplicate
+    // check on what it will post, before anything posts. Vendor advisory
+    // locks first, once per vendor in sorted order (convert takes the same
+    // lock after its draft lock: draft, then vendor, then the posting).
+    const dupChecks = plan
+      .filter((p): p is Extract<AcceptPlan, { kind: 'post' }> => p.kind === 'post' && !!p.draft && postedTxnType(p.row) === 'expense')
+      .map((p) => ({ p, contactId: p.values.contactId || p.draft!.suggestedContactId || null }))
+      .filter((x): x is { p: Extract<AcceptPlan, { kind: 'post' }>; contactId: string } => !!x.contactId);
+    for (const vendor of [...new Set(dupChecks.map((x) => x.contactId))].sort()) {
+      await draftService.vendorAdvisoryLock(tx, companyId!, vendor);
+    }
+    const refused = new Set<string>();
+    for (const { p, contactId } of dupChecks) {
+      const matches = await draftService.feedPostDuplicates(tx, tenantId, companyId!, p.draft!, {
+        contactId, total: new Decimal(p.row.amount).abs().toFixed(4), date: p.row.feedDate,
+      }, inputs.get(p.row.id)!.documentDraft?.acknowledgeDuplicateOf ?? []);
+      if (matches.length === 0) continue;
+      refused.add(p.row.id);
+      failures.push({
+        id: p.row.id, code: 'DOCUMENT_POSSIBLE_DUPLICATE',
+        error: 'This document may already be entered. Check the matching entries, then confirm to use it anyway.',
+        details: { draftId: p.draft!.id, matches },
+      });
+    }
+    if (refused.size > 0) {
+      for (let i = plan.length - 1; i >= 0; i--) if (refused.has(plan[i]!.row.id)) plan.splice(i, 1);
+    }
+
     // 2. Post: same transaction, no savepoints.
     let posted = 0;
     let matched = 0;
     /** Files the row's draft on its entry (feed-accept-draft-v1), checked in step 1. */
     const attachDraft = async (p: AcceptPlan, transactionId: string, txnType: string) => {
       if (!p.draft) return;
+      const acknowledged = inputs.get(p.row.id)!.documentDraft?.acknowledgeDuplicateOf ?? [];
       await draftService.attachLockedInTx(tx, tenantId, companyId!, userId, p.draft, { id: transactionId, txnType }, {
-        feedItemId: p.row.id, undoGroupId,
+        feedItemId: p.row.id, undoGroupId, ...(acknowledged.length > 0 ? { acknowledgedDuplicates: acknowledged } : {}),
       });
     };
     for (const p of plan) {

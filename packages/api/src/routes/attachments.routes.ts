@@ -253,19 +253,10 @@ attachmentsRouter.post('/', describe({
   // use, the same check as POST /:id/link (404, nothing stored).
   await attachmentService.assertAttachTarget(req.tenantId, attachableType, attachableId, req.companyId);
 
+  // U-186: the audit row is written in the insert's transaction.
   const attachment = await attachmentService.upload(
     req.tenantId, req.file, attachableType, attachableId,
-    { skipAutoClassify: !autoOcr, companyId: req.companyId },
-  );
-
-  await auditLog(
-    req.tenantId,
-    'create',
-    'attachment',
-    attachment?.id ?? null,
-    null,
-    { attachableType, attachableId, fileName: attachment?.fileName, mimeType: attachment?.mimeType, fileSize: attachment?.fileSize },
-    req.userId,
+    { skipAutoClassify: !autoOcr, companyId: req.companyId, audit: { userId: req.userId } },
   );
 
   // Auto-trigger OCR for receipt images. Fire-and-forget by design (the
@@ -387,17 +378,8 @@ attachmentsRouter.get('/:id', async (req, res) => {
 
 attachmentsRouter.delete('/:id', async (req, res) => {
   const attachmentId = req.params['id']!;
-  const before = await attachmentService.getById(req.tenantId, attachmentId, req.companyId).catch(() => null);
-  await attachmentService.remove(req.tenantId, attachmentId, req.companyId);
-  await auditLog(
-    req.tenantId,
-    'delete',
-    'attachment',
-    attachmentId,
-    before,
-    null,
-    req.userId,
-  );
+  // U-186: the audit row (before-image: the locked row) is written in the delete's transaction.
+  await attachmentService.remove(req.tenantId, attachmentId, req.companyId, { userId: req.userId });
   res.json({ message: 'Attachment deleted' });
 });
 

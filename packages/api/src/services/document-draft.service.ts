@@ -557,7 +557,7 @@ export async function convert(
       // The vendor must be tenant-wide or this company's (404), before it
       // names a lock or a posting.
       await assertContactInScope(tx, tenantId, companyId, contactId);
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${companyId}:${contactId}`}, 0))`);
+      await vendorAdvisoryLock(tx, companyId, contactId);
     }
 
     let txnId: string;
@@ -623,6 +623,40 @@ export async function convert(
     }, userId, tx);
     return { draft: toDto(after!), transactionId: txnId };
   });
+}
+
+/**
+ * The convert duplicate check for an entry a bank feed accept is about to
+ * post with this draft (U-185, feed-accept-draft-duplicates-v1), on the
+ * caller's transaction and before anything posts. The probe is what the
+ * accept will post: `contactId` the row's contact, else the draft's
+ * suggested vendor; `total` and `date` the row's amount and date; the
+ * draft's own reference. Returns the posted bills and expenses of that
+ * vendor that match (transactionMatches) and are not in `acknowledged`;
+ * empty without a vendor.
+ *
+ * The caller takes vendorAdvisoryLock for the vendor first (sorted vendor
+ * order across a request), so an accept and a convert of two copies of one
+ * invoice run one after the other, as two converts do.
+ */
+export async function feedPostDuplicates(
+  tx: Tx, tenantId: string, companyId: string, draft: DocumentDraftRow,
+  posted: { contactId: string | null; total: string; date: string }, acknowledged: readonly string[],
+): Promise<DuplicateMatch[]> {
+  if (!posted.contactId) return [];
+  const matches = await transactionMatches(tx, tenantId, companyId, {
+    contactId: posted.contactId,
+    reference: draft.docReference,
+    total: sql`${posted.total}::text`,
+    date: sql`${posted.date}::text`,
+  });
+  const ack = new Set(acknowledged.map((x) => x.toLowerCase()));
+  return matches.filter((m) => !ack.has(m.id.toLowerCase()));
+}
+
+/** The company + vendor advisory lock convert takes before its duplicate check (transaction-scoped). */
+export async function vendorAdvisoryLock(tx: Tx, companyId: string, contactId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${companyId}:${contactId}`}, 0))`);
 }
 
 /** The duplicate probe of a posted row as the engine stored it: total, date and reference. */
