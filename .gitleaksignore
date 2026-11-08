@@ -1,0 +1,23 @@
+# gitleaks fingerprints (commit:file:rule:line) of reviewed false positives in
+# history that came over from Vibe-MyBooks. A full-history scan (gitleaks on
+# workflow_dispatch) reports them; push and PR scans never re-read these commits.
+# None is a secret:
+# - tax-estimator tests and rivera-estimate.test-fixture.json: dotted parameter
+#   keys (retirement.401k.deferral, sch1a.senior.amount, ...) holding public tax
+#   amounts, the same pattern .gitleaks.toml allows for the seeds;
+# - recovery-key.service.ts: the recovery-key alphabet constant;
+# - env-recovery.service.test.ts / recovery-key.service.test.ts: fake keys
+#   built for the tests ('0123456789abcdef'.repeat(4), RKVMB-ABCDE-...).
+# Add an entry only after checking the finding by hand.
+326ef2388318c7f8b70c0f9986ae2b4278e5a297:packages/api/src/services/env-recovery.service.test.ts:generic-api-key:27
+326ef2388318c7f8b70c0f9986ae2b4278e5a297:packages/api/src/services/recovery-key.service.test.ts:generic-api-key:62
+326ef2388318c7f8b70c0f9986ae2b4278e5a297:packages/api/src/services/recovery-key.service.ts:generic-api-key:30
+892fa5d5eee068496dcd42ae228974b54d843a3f:packages/api/src/services/tax-estimator/rivera-estimate.test-fixture.json:generic-api-key:1
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/deductions.test.ts:generic-api-key:17
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/deductions.test.ts:generic-api-key:18
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/deductions.test.ts:generic-api-key:37
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/owner-deductions.test.ts:generic-api-key:14
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/owner-deductions.test.ts:generic-api-key:15
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/owner-deductions.test.ts:generic-api-key:16
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/owner-deductions.test.ts:generic-api-key:21
+a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/parameters.test.ts:generic-api-key:15
