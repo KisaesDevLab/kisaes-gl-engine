@@ -46,11 +46,12 @@ const NEXT_UPDATED_AT = sql`date_trunc('milliseconds', greatest(clock_timestamp(
  * its newest relink audit row, else null.
  */
 async function originalDraftKey(tx: Tx, tenantId: string, attachmentId: string, txnId: string): Promise<string | null> {
-  const r = await tx.execute(sql`SELECT before_data->>'attachableId' AS key FROM audit_log
-    WHERE tenant_id = ${tenantId} AND entity_type = 'attachment' AND entity_id = ${attachmentId}
-      AND action = 'update'
-      AND before_data->>'attachableType' = 'draft'
-      AND after_data->>'attachableId' = ${txnId}
+  // auditLog() stores a JSON text, so the column holds a JSON string scalar; read either form.
+  const doc = (col: string) => sql.raw(`(CASE WHEN jsonb_typeof(${col}) = 'string' THEN (${col} #>> '{}')::jsonb ELSE ${col} END)`);
+  const r = await tx.execute(sql`SELECT b->>'attachableId' AS key
+    FROM (SELECT id, ${doc('before_data')} AS b, ${doc('after_data')} AS a FROM audit_log
+      WHERE tenant_id = ${tenantId} AND entity_type = 'attachment' AND entity_id = ${attachmentId} AND action = 'update') x
+    WHERE b->>'attachableType' = 'draft' AND a->>'attachableId' = ${txnId}
     ORDER BY id DESC
     LIMIT 1`);
   const key = (r.rows[0] as { key: string | null } | undefined)?.key ?? null;
