@@ -715,7 +715,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * splitTotal, amount}; an amount with more than 2 decimals can't be split (400 AMOUNT_NOT_CENTS). The owner's account overrides a
    * rule's staged split: categorize or assign without `splits` posts or stages one line on accountId (assign clears the staged split).
    * Staged percentage splits must total exactly 100 as decimals (400 SPLITS_DONT_BALANCE {kind: 'percentage', percentTotal}; rule
-   * create/update also refuses any other total) and are allocated in cents by largest remainder, equal remainders by line order
+   * create and update also refuse any other total) and are allocated in cents by largest remainder, equal remainders by line order
    * (100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); staged fixed splits round to cents half away from zero and must add up exactly
    * (400 SPLITS_DONT_BALANCE); a negative fixed line posts on the other side; 0.00 lines are left off.
    */

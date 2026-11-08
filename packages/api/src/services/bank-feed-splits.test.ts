@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { percentsTotalExactly100 } from '@kis-books/shared';
-import { computeSplitLines, allocatePercentCents, type StagedSplitsConfig } from './bank-feed-splits.js';
+import { computeSplitLines, type StagedSplitsConfig } from './bank-feed-splits.js';
 
 const A = '00000000-0000-0000-0000-00000000000a';
 const B = '00000000-0000-0000-0000-00000000000b';
@@ -91,12 +91,11 @@ describe('percentage splits (largest remainder, ties by line order)', () => {
     expect(sum.toFixed(2)).toBe('999999999999.99');
   });
 
-  it('allocatePercentCents always hands out every cent', () => {
+  it('always hands out every cent', () => {
     for (const total of ['1', '7', '101', '99999', '100000000000001']) {
       const lines = computeSplitLines(`${total}.00`, pct('12.5', '37.5', '50'));
       expect(lines.reduce((s, l) => s.plus(l.amount), lines[0]!.amount.minus(lines[0]!.amount)).toFixed(2)).toBe(total + '.00');
     }
-    expect(allocatePercentCents).toBeTypeOf('function');
   });
 });
 

@@ -310,7 +310,18 @@ export const createConditionalRuleSchema = baseConditionalRuleObject.superRefine
 });
 export type CreateConditionalRuleInput = z.infer<typeof createConditionalRuleSchema>;
 
-export const updateConditionalRuleSchema = baseConditionalRuleObject.partial();
+// U-164: an update that sends actions gets the same exact-100 check as
+// create, so a rule that can't post can't be saved either way.
+export const updateConditionalRuleSchema = baseConditionalRuleObject.partial().superRefine((rule, ctx) => {
+  if (rule.actions === undefined) return;
+  const all: Array<z.infer<typeof actionSchema>> = [];
+  collectActions(rule.actions, all);
+  for (const action of all) {
+    if (action.type === 'split_by_percentage' && !percentsTotalExactly100(action.splits.map((x) => x.percent))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Percentage splits must sum to 100', path: ['actions'] });
+    }
+  }
+});
 export type UpdateConditionalRuleInput = z.infer<typeof updateConditionalRuleSchema>;
 
 export const reorderConditionalRulesSchema = z.object({
