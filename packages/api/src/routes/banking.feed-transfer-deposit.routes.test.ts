@@ -345,7 +345,7 @@ describe('POST /feed/:id/transfer (U-171)', () => {
     ]));
   });
 
-  it('a busy row is 409 FEED_ITEM_IN_USE, never a wait', async () => {
+  it('a busy row is 409 FEED_ITEM_IN_USE after a short look (FEED_ROW_WAIT, U-187), never a lock wait', async () => {
     const out = await feed(c.checkingConn, '60.0000');
     const inn = await feed(c.savingsConn, '-60.0000');
     await db.transaction(async (tx) => {
