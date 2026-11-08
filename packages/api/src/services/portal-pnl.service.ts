@@ -7,6 +7,7 @@ import { db } from '../db/index.js';
 import { accounts, companies, portalContactCompanies } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as reportSvc from './report.service.js';
+import { tenantHasSingleCompany } from './portal-banking.service.js';
 
 // Portal live Profit & Loss. Read-only: the P&L itself is the staff
 // builder (so the numbers match to the cent) and the drill-down lists the
@@ -68,6 +69,50 @@ async function companyBasis(tenantId: string, companyId: string): Promise<'cash'
   return row[0]?.method === 'cash' ? 'cash' : 'accrual';
 }
 
+export interface PortalUnpostedBankFeed {
+  /** Open (pending or assigned) feed items dated inside the report range. */
+  count: number;
+  /** Sum of their absolute amounts — gross activity, never netted. */
+  amount: number;
+}
+
+/**
+ * Bank feed activity the P&L does not yet include. Items are "unposted"
+ * while status is pending or assigned (assigned = a category chosen but
+ * not yet approved and posted) — the same definition as the close review
+ * and the practice classification queue. Matched and categorized items
+ * already point at posted transactions that ARE in the P&L, so counting
+ * them would double up; excluded items are out on purpose.
+ *
+ * Scoped by feed_date to the report's inclusive range, and to the
+ * company the same way the portal's banking pages scope feed items: an
+ * item belongs to the company when company_id matches, or when
+ * company_id is NULL and the tenant has exactly one company.
+ *
+ * Amounts are summed as absolute values. Feed amounts are signed
+ * (positive = money out), and a net figure could read $0 when a deposit
+ * and a payment offset — which is exactly the activity this line exists
+ * to surface.
+ */
+export async function getUnpostedBankFeed(
+  tenantId: string,
+  companyId: string,
+  startDate: string,
+  endDate: string,
+): Promise<PortalUnpostedBankFeed> {
+  const singleCompany = await tenantHasSingleCompany(tenantId);
+  const res = await db.execute(sql`
+    SELECT COUNT(*)::int AS count, COALESCE(SUM(ABS(amount)), 0) AS sum
+    FROM bank_feed_items
+    WHERE tenant_id = ${tenantId}
+      AND (company_id = ${companyId} OR (company_id IS NULL AND ${singleCompany}))
+      AND status IN ('pending', 'assigned')
+      AND feed_date >= ${startDate}::date AND feed_date <= ${endDate}::date
+  `);
+  const row = (res.rows as unknown as Array<{ count: number; sum: string }>)[0];
+  return { count: row?.count ?? 0, amount: Number(row?.sum ?? 0) };
+}
+
 export async function getPortalProfitAndLoss(
   tenantId: string,
   companyId: string,
@@ -75,7 +120,14 @@ export async function getPortalProfitAndLoss(
   endDate: string,
 ) {
   const basis = await companyBasis(tenantId, companyId);
-  return reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId);
+  const [pl, unpostedBankFeed] = await Promise.all([
+    reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId),
+    getUnpostedBankFeed(tenantId, companyId, startDate, endDate),
+  ]);
+  // Additive: the P&L itself is untouched so it still equals the staff
+  // builder to the cent. The unposted line is a memo beneath it, never
+  // folded into net income.
+  return { ...pl, unpostedBankFeed };
 }
 
 export interface PortalPlTransactionLine {
