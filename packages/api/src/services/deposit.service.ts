@@ -168,7 +168,7 @@ export function planDeposit(input: CreateDepositInput): DepositPlan {
   };
 }
 
-async function systemAccountId(tx: Tx, tenantId: string, tag: string): Promise<string | null> {
+export async function systemAccountId(tx: Tx, tenantId: string, tag: string): Promise<string | null> {
   const [row] = await tx.select({ id: accounts.id }).from(accounts)
     .where(and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, tag)))
     .limit(1);
@@ -313,7 +313,7 @@ async function lockAndValidateSources(
 }
 
 /** Net Payments Clearing debit an item holds (its undeposited amount). */
-async function clearingAmount(tx: Tx, tenantId: string, txnId: string, clearingId: string): Promise<DecimalValue> {
+export async function clearingAmount(tx: Tx, tenantId: string, txnId: string, clearingId: string): Promise<DecimalValue> {
   const res = await tx.execute(sql`
     SELECT COALESCE(SUM(debit - credit), 0) AS net
     FROM journal_lines
@@ -382,8 +382,12 @@ export interface DepositResult {
  */
 export async function createDepositWithWarnings(
   tenantId: string, input: CreateDepositInput, userId?: string, companyId?: string, outerTx?: Tx,
+  // Where the deposit came from (U-171: a bank feed deposit is source
+  // 'bank_feed', source id = the feed item). Omitted: as before.
+  origin?: { source: string; sourceId: string },
 ): Promise<DepositResult> {
   const plan = planDeposit(input);
+  if (origin) Object.assign(plan.payload, origin);
   const post = async (tx: Tx): Promise<DepositResult> => {
     await validateCashBackAccount(tx, tenantId, input);
     await lockAndValidateSources(tx, tenantId, companyId, input, plan, null);

@@ -31,6 +31,8 @@ import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
 import * as ledgerService from '../services/ledger.service.js';
 import * as depositSuggestions from '../services/deposit-suggestions.service.js';
+import * as feedTransfer from '../services/bank-feed-transfer.service.js';
+import * as feedDeposit from '../services/bank-feed-deposit.service.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
 import * as reconciliationSignoffService from '../services/reconciliation-signoff.service.js';
@@ -291,6 +293,122 @@ bankingRouter.get('/feed/:id/deposit-groupings', requirePermission('receive_paym
   if (!limit.success) throw AppError.badRequest('limit must be 1 to 20', 'VALIDATION_ERROR');
   res.json(await depositSuggestions.findDepositGroupings(req.tenantId, req.companyId, id.data, { limit: limit.data }));
 });
+
+// ─── Transfers and deposits from the feed (U-171, feed-match-post-v1) ───
+// One database transaction each: post, then match the feed item(s) to the
+// entry. Exact decimals; amounts in the feed sign (positive = money out).
+// Feed rows locked in id order FOR UPDATE SKIP LOCKED: a row another request
+// holds is 409 FEED_ITEM_IN_USE {id}; a row not pending or assigned is 409
+// FEED_ITEM_NOT_PENDING {id, status}. Idempotency-Key required on the posts.
+
+const feedItemIdParam = z.object({ id: z.string().uuid() });
+const transferCandidatesQuery = z.object({
+  windowDays: z.coerce.number().int().min(1).max(feedTransfer.TRANSFER_WINDOW_MAX).optional(),
+});
+const feedTransferSchema = z.object({
+  otherFeedItemId: z.string().uuid().optional(),
+  toAccountId: z.string().uuid().optional(),
+  closingPassword: z.string().optional(),
+  overrideConfirmed: z.boolean().optional(),
+}).strict().refine((b) => (b.otherFeedItemId ? 1 : 0) + (b.toAccountId ? 1 : 0) === 1, {
+  message: 'Send exactly one of otherFeedItemId or toAccountId',
+});
+const feeAmount = z.string().regex(/^\d{1,12}(\.\d{1,2})?$/, 'an amount like 20.54 (at most 12 digits and 2 decimals)')
+  .refine((s) => /[1-9]/.test(s), 'must be more than 0');
+const feedDepositSchema = z.object({
+  sourceTransactionIds: z.array(z.string().uuid()).min(1).max(feedDeposit.MAX_DEPOSIT_PAYMENTS)
+    .refine((ids) => new Set(ids).size === ids.length, 'the same payment is listed twice'),
+  feeLines: z.array(z.object({
+    accountId: z.string().uuid(),
+    amount: feeAmount,
+    memo: z.string().max(500).optional(),
+  }).strict()).max(feedDeposit.MAX_FEE_LINES).optional(),
+  closingPassword: z.string().optional(),
+  overrideConfirmed: z.boolean().optional(),
+}).strict();
+
+function parseFeedItemId(req: Request): string {
+  const id = feedItemIdParam.shape.id.safeParse(req.params['id']);
+  if (!id.success) throw AppError.badRequest('Invalid feed item id', 'VALIDATION_ERROR');
+  return id.data;
+}
+
+bankingRouter.get('/feed/:id/transfer-candidates', describe({
+  summary: 'Bank lines on another account that could be the other side of a transfer (feed-match-post-v1)',
+  description: 'Response {candidates: [{feedItemId, accountId, accountName, date, amount}]}: pending or assigned feed items of '
+    + 'this company on another GL account (pairs on the same account are left out, also across two connections) with the exact '
+    + 'opposite amount, dated within windowDays (1-10, default 3) of this item, closest date first, at most 50. amount is the other '
+    + 'item\'s amount in the feed sign (positive = money out), a decimal string. 404 when the item is not in this company.',
+  params: feedItemIdParam,
+  query: transferCandidatesQuery,
+}), async (req, res) => {
+  const id = parseFeedItemId(req);
+  const q = transferCandidatesQuery.safeParse(req.query);
+  if (!q.success) throw AppError.badRequest('windowDays must be 1 to 10', 'VALIDATION_ERROR');
+  const candidates = await feedTransfer.listTransferCandidates(
+    req.tenantId, req.companyId, id, q.data.windowDays ?? feedTransfer.TRANSFER_WINDOW_DEFAULT,
+  );
+  res.json({ candidates });
+});
+
+const feedPostedItemsDoc = z.array(z.object({ feedItemId: z.string().uuid(), journalLineId: z.string().uuid() }));
+
+bankingRouter.post('/feed/:id/transfer', requireIdempotencyKey, closingPasswordLimiter, lockContextMiddleware,
+  idempotent({ successStatus: 200 }), validate(feedTransferSchema), describe({
+    summary: 'Post one transfer for a bank line and its other side, and match it (feed-match-post-v1)',
+    description: 'Body {otherFeedItemId | toAccountId, closingPassword?}. Posts ONE transfer (source bank_feed, source id = this '
+      + 'item) and matches this item, and otherFeedItemId when sent, to it in one database transaction: both or nothing. The '
+      + 'transfer is dated on the money-out side (the item with the positive amount; with toAccountId, this item\'s date) and the '
+      + 'closing date is checked against that date. Amounts post exactly as stored. otherFeedItemId must be a pending or assigned '
+      + 'item of this company on another GL account with the exact opposite amount, at most 10 days apart; toAccountId a balance '
+      + 'sheet account of this company other than this item\'s account, Payments Clearing, A/R and A/P. Otherwise 400 '
+      + 'TRANSFER_MISMATCH {field: otherFeedItemId | account | amount | date | toAccountId}. Response {transaction, items: '
+      + '[{feedItemId, journalLineId}]} (the transfer line on each item\'s account). 409 FEED_ITEM_NOT_PENDING {id, status}, 409 '
+      + 'FEED_ITEM_IN_USE {id}. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited per item. '
+      + FEED_CLOSED_PERIOD_NOTE,
+    params: feedItemIdParam,
+    body: feedTransferSchema,
+    response: z.object({ transaction: z.record(z.string(), z.unknown()), items: feedPostedItemsDoc }),
+  }), async (req, res) => {
+    const id = parseFeedItemId(req);
+    const body = req.body as z.infer<typeof feedTransferSchema>;
+    const target: feedTransfer.TransferRequest = body.otherFeedItemId
+      ? { otherFeedItemId: body.otherFeedItemId }
+      : { toAccountId: body.toAccountId! };
+    res.json(await feedTransfer.postFeedTransfer(req.tenantId, req.companyId, id, target, req.userId));
+  });
+
+bankingRouter.post('/feed/:id/deposit', requirePermission('receive_payment', 'read'), requireIdempotencyKey, closingPasswordLimiter,
+  lockContextMiddleware, idempotent({ successStatus: 200 }), validate(feedDepositSchema), describe({
+    summary: 'Record a bank deposit of waiting payments, net of fees, for a money-in bank line, and match it (feed-match-post-v1)',
+    description: 'Body {sourceTransactionIds (1-100, no repeats), feeLines?: [{accountId, amount ^\\d{1,12}(\\.\\d{1,2})?$ more than 0, '
+      + 'memo? at most 500}] (at most 10), closingPassword?}. The engine reads each payment\'s live Payments Clearing amount and '
+      + 'posts ONE deposit dated on this item\'s date (source bank_feed, source id = this item): Dr the bank account (the bank '
+      + 'amount), Cr Payments Clearing per payment (linked to it, so it leaves the waiting list exactly), Dr each fee account. '
+      + 'The payments less the fees must equal the bank amount exactly, else 400 FEED_ITEM_MISMATCH {difference = bank amount - '
+      + '(payments - fees), paymentsTotal, feesTotal, amount}; a money-out item is 400 FEED_ITEM_MISMATCH {reason: not_money_in}. '
+      + 'A fee account must be in this company and not a bank or card account, Payments Clearing, A/R or A/P: 400 '
+      + 'FEE_ACCOUNT_INVALID {accountId}. A payment not waiting in Payments Clearing (not found, not posted, already deposited, '
+      + 'nothing left) is 400 PAYMENT_NOT_PENDING_DEPOSIT {id}; a bounced one 409 PAYMENT_BOUNCED {paymentId}. Matches this item '
+      + 'to the deposit in the same database transaction. Response {transaction, items: [{feedItemId, journalLineId}], payments: '
+      + '[{id, amount}]}. Voiding or deleting the deposit puts the payments back in Payments Clearing. 409 FEED_ITEM_NOT_PENDING '
+      + '{id, status}, 409 FEED_ITEM_IN_USE {id}. Permissions: banking and receive_payment (read). Idempotency-Key required (400 '
+      + 'IDEMPOTENCY_KEY_REQUIRED). Audited. ' + FEED_CLOSED_PERIOD_NOTE,
+    params: feedItemIdParam,
+    body: feedDepositSchema,
+    response: z.object({
+      transaction: z.record(z.string(), z.unknown()),
+      items: feedPostedItemsDoc,
+      payments: z.array(z.object({ id: z.string().uuid(), amount: z.string() })),
+    }),
+  }), async (req, res) => {
+    const id = parseFeedItemId(req);
+    const body = req.body as z.infer<typeof feedDepositSchema>;
+    res.json(await feedDeposit.postFeedDeposit(req.tenantId, req.companyId, id, {
+      sourceTransactionIds: body.sourceTransactionIds,
+      feeLines: body.feeLines,
+    }, req.userId));
+  });
 
 bankingRouter.get('/feed/:id/match-candidates', describe({
   summary: 'Journal lines a bank feed item may match (feed-match-v2)',

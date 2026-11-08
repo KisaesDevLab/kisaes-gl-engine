@@ -15626,6 +15626,171 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/banking/feed/{id}/deposit": {
+      "post": {
+        "description": "Body {sourceTransactionIds (1-100, no repeats), feeLines?: [{accountId, amount ^\\d{1,12}(\\.\\d{1,2})?$ more than 0, memo? at most 500}] (at most 10), closingPassword?}. The engine reads each payment's live Payments Clearing amount and posts ONE deposit dated on this item's date (source bank_feed, source id = this item): Dr the bank account (the bank amount), Cr Payments Clearing per payment (linked to it, so it leaves the waiting list exactly), Dr each fee account. The payments less the fees must equal the bank amount exactly, else 400 FEED_ITEM_MISMATCH {difference = bank amount - (payments - fees), paymentsTotal, feesTotal, amount}; a money-out item is 400 FEED_ITEM_MISMATCH {reason: not_money_in}. A fee account must be in this company and not a bank or card account, Payments Clearing, A/R or A/P: 400 FEE_ACCOUNT_INVALID {accountId}. A payment not waiting in Payments Clearing (not found, not posted, already deposited, nothing left) is 400 PAYMENT_NOT_PENDING_DEPOSIT {id}; a bounced one 409 PAYMENT_BOUNCED {paymentId}. Matches this item to the deposit in the same database transaction. Response {transaction, items: [{feedItemId, journalLineId}], payments: [{id, amount}]}. Voiding or deleting the deposit puts the payments back in Payments Clearing. 409 FEED_ITEM_NOT_PENDING {id, status}, 409 FEED_ITEM_IN_USE {id}. Permissions: banking and receive_payment (read). Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited. An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
+        "operationId": "post_api_v1_banking_feed_by_id_deposit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "feeLines": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "amount": {
+                          "pattern": "^\\d{1,12}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "memo": {
+                          "maxLength": 500,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "accountId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 10,
+                    "type": "array"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "sourceTransactionIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 100,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "sourceTransactionIds"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "feedItemId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "journalLineId": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "feedItemId",
+                          "journalLineId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "payments": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "amount": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "amount"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "transaction": {
+                      "additionalProperties": {},
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "transaction",
+                    "items",
+                    "payments"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Record a bank deposit of waiting payments, net of fees, for a money-in bank line, and match it (feed-match-post-v1)",
+        "tags": [
+          "banking"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/banking/feed/{id}/deposit-groupings": {
       "get": {
         "description": "Permissions: banking and receive_payment (read).",
@@ -15946,6 +16111,164 @@
           "banking"
         ],
         "x-idempotency": true
+      }
+    },
+    "/api/v1/banking/feed/{id}/transfer": {
+      "post": {
+        "description": "Body {otherFeedItemId | toAccountId, closingPassword?}. Posts ONE transfer (source bank_feed, source id = this item) and matches this item, and otherFeedItemId when sent, to it in one database transaction: both or nothing. The transfer is dated on the money-out side (the item with the positive amount; with toAccountId, this item's date) and the closing date is checked against that date. Amounts post exactly as stored. otherFeedItemId must be a pending or assigned item of this company on another GL account with the exact opposite amount, at most 10 days apart; toAccountId a balance sheet account of this company other than this item's account, Payments Clearing, A/R and A/P. Otherwise 400 TRANSFER_MISMATCH {field: otherFeedItemId | account | amount | date | toAccountId}. Response {transaction, items: [{feedItemId, journalLineId}]} (the transfer line on each item's account). 409 FEED_ITEM_NOT_PENDING {id, status}, 409 FEED_ITEM_IN_USE {id}. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited per item. An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
+        "operationId": "post_api_v1_banking_feed_by_id_transfer",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "otherFeedItemId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "toAccountId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "feedItemId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "journalLineId": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "feedItemId",
+                          "journalLineId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "transaction": {
+                      "additionalProperties": {},
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "transaction",
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Post one transfer for a bank line and its other side, and match it (feed-match-post-v1)",
+        "tags": [
+          "banking"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/banking/feed/{id}/transfer-candidates": {
+      "get": {
+        "description": "Response {candidates: [{feedItemId, accountId, accountName, date, amount}]}: pending or assigned feed items of this company on another GL account (pairs on the same account are left out, also across two connections) with the exact opposite amount, dated within windowDays (1-10, default 3) of this item, closest date first, at most 50. amount is the other item's amount in the feed sign (positive = money out), a decimal string. 404 when the item is not in this company.",
+        "operationId": "get_api_v1_banking_feed_by_id_transfer_candidates",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "windowDays",
+            "required": false,
+            "schema": {
+              "maximum": 10,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Bank lines on another account that could be the other side of a transfer (feed-match-post-v1)",
+        "tags": [
+          "banking"
+        ]
       }
     },
     "/api/v1/banking/feed/{id}/unexclude": {
@@ -30530,6 +30853,96 @@
         ],
         "tags": [
           "daily-sales"
+        ]
+      }
+    },
+    "/api/v1/dashboard/account-balances": {
+      "get": {
+        "description": "Response: an array [{accountId, name, accountNumber, kind (bank | card), booksBalance, bankFileBalance, bankFileDate, booksBalanceAtFileDate}] for the active bank, cash and credit card accounts of the company. bankFileBalance is the ending balance of the latest bank file imported into the account (the latest file ending date, then the latest import; undone imports and files without a balance are skipped); bankFileDate its date; booksBalanceAtFileDate the books on that date (posted entries dated on or before it). All three are null when no file with a balance was imported. Register sign: a bank account shows what it holds, a card what is owed (positive = owed). Decimal strings, at least 2 places; never floating point.",
+        "operationId": "get_api_v1_dashboard_account_balances",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "properties": {
+                      "accountId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "accountNumber": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "bankFileBalance": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "bankFileDate": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "booksBalance": {
+                        "type": "string"
+                      },
+                      "booksBalanceAtFileDate": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "kind": {
+                        "enum": [
+                          "bank",
+                          "card"
+                        ],
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "accountId",
+                      "name",
+                      "accountNumber",
+                      "kind",
+                      "booksBalance",
+                      "bankFileBalance",
+                      "bankFileDate",
+                      "booksBalanceAtFileDate"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Books balance and latest bank-file balance per bank and card account (account-balances-v1)",
+        "tags": [
+          "dashboard"
         ]
       }
     },

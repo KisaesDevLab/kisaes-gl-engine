@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permission.js';
+import { companyContext } from '../middleware/company.js';
 import { describe } from '../middleware/describe.js';
 import * as dashboardService from '../services/dashboard.service.js';
 import * as budgetService from '../services/budget.service.js';
@@ -454,6 +455,26 @@ dashboardRouter.get('/cash-position', describe({
   const q = readDashboardQuery(req);
   const data = await dashboardService.getCashPosition(req.tenantId, q);
   res.json(data);
+});
+
+// U-77 (account-balances-v1): books balance next to the latest bank file's
+// ending balance, per bank and card account of the active company.
+dashboardRouter.get('/account-balances', companyContext, describe({
+  summary: 'Books balance and latest bank-file balance per bank and card account (account-balances-v1)',
+  description: 'Response: an array [{accountId, name, accountNumber, kind (bank | card), booksBalance, bankFileBalance, '
+    + 'bankFileDate, booksBalanceAtFileDate}] for the active bank, cash and credit card accounts of the company. bankFileBalance '
+    + 'is the ending balance of the latest bank file imported into the account (the latest file ending date, then the latest '
+    + 'import; undone imports and files without a balance are skipped); bankFileDate its date; booksBalanceAtFileDate the books '
+    + 'on that date (posted entries dated on or before it). All three are null when no file with a balance was imported. '
+    + 'Register sign: a bank account shows what it holds, a card what is owed (positive = owed). Decimal strings, at least 2 '
+    + 'places; never floating point.',
+  response: z.array(z.object({
+    accountId: z.string().uuid(), name: z.string(), accountNumber: z.string().nullable(), kind: z.enum(['bank', 'card']),
+    booksBalance: z.string(), bankFileBalance: z.string().nullable(), bankFileDate: z.string().nullable(),
+    booksBalanceAtFileDate: z.string().nullable(),
+  })),
+}), async (req, res) => {
+  res.json(await dashboardService.getAccountBalances(req.tenantId, req.companyId));
 });
 
 dashboardRouter.get('/receivables', describe({
