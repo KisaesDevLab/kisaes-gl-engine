@@ -13,6 +13,7 @@ import {
   bulkReprocessRulesSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
   confirmStatementLineSchema, createFromStatementLineSchema, importOfxStatementSchema,
+  feedDuplicateDecisionSchema, bankFeedCountsQuerySchema,
   can,
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
@@ -28,6 +29,7 @@ import { db as bankImportDb } from '../db/index.js';
 import type { Request as ExpressRequest, Response as ExpressResponse, NextFunction as ExpressNext } from 'express';
 import * as bankConnectionService from '../services/bank-connection.service.js';
 import * as bankFeedService from '../services/bank-feed.service.js';
+import * as ledgerService from '../services/ledger.service.js';
 import * as depositSuggestions from '../services/deposit-suggestions.service.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
@@ -116,14 +118,36 @@ bankingRouter.get('/feed/suggest-account', async (req, res) => {
   res.json(result);
 });
 
-bankingRouter.get('/feed/:id/payroll-overlap', async (req, res) => {
+// U-174 (feed-review-v1): counts per review bucket and state, the same
+// predicates as the list filters (one SQL builder), so they always agree.
+bankingRouter.get('/feed/counts', describe({
+  summary: 'Bank feed counts per review bucket and state (feed-review-v1)',
+  description: 'Response {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, excluded, inProgress}. '
+    + 'waiting = ready + review + matches (pending and assigned rows), each equal to the total of GET /banking/feed?bucket=<b>. '
+    + 'Buckets, first match wins: a possible duplicate is review; any match signal (a candidate journal line on the bank account, '
+    + 'payroll lines included, or one Payments Clearing item for exactly a money-in amount within 10 days) is matches; no account, '
+    + 'a non-rule suggestion under 0.80 confidence, a rule mark_for_review, or a staged split that cannot post is review; the rest '
+    + 'is ready. accepted = categorized and matched rows (entryVoided included: Accepted, Entry voided, never waiting); inProgress = '
+    + 'rows being posted. Scope: bankConnectionId, startDate, endDate.',
+  query: bankFeedCountsQuerySchema,
+}), async (req, res) => {
+  const q = bankFeedCountsQuerySchema.parse(req.query);
+  res.json(await bankFeedService.counts(req.tenantId, q));
+});
+
+// U-172: payroll entries this money-out line may already be, one row per
+// bank line of the entry (exact, the U-166 line predicate).
+bankingRouter.get('/feed/:id/payroll-overlap', describe({
+  summary: 'Payroll bank lines a money-out feed item may already be (feed-match-v2)',
+  description: 'Response {overlaps: [{txnId, journalLineId, memo, date, amount}]}: posted payroll-import entries within 5 days with a '
+    + 'credit line on the bank account for exactly the amount (feed sign; money in has none), not held by another feed item. Each '
+    + 'bank line of an entry (net pay, taxes) is its own row; match it with PUT /banking/feed/:id/match {transactionId, journalLineId}.',
+}), async (req, res) => {
   const item = await bankFeedService.getFeedItem(req.tenantId, req.params['id']!);
   if (!item) { res.json({ overlaps: [] }); return; }
   const conn = await bankFeedService.getConnectionForItem(req.tenantId, item.bankConnectionId);
   if (!conn) { res.json({ overlaps: [] }); return; }
-  const overlaps = await bankFeedService.checkPayrollOverlap(
-    req.tenantId, item.feedDate, Math.abs(parseFloat(item.amount)), conn.accountId,
-  );
+  const overlaps = await bankFeedService.checkPayrollOverlap(req.tenantId, item, conn.accountId);
   res.json({ overlaps });
 });
 
@@ -157,9 +181,33 @@ const FEED_SPLITS_NOTE = 'Optional `splits`: 2-50 lines {accountId, amount (^\\d
   + '(100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must '
   + 'add up exactly. Amounts post exactly as stored (no floating point).';
 
-bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMiddleware, validate(categorizeSchema), describe({
+// Idempotency-Key (feed-idempotency-v1, U-173): optional on the single-item
+// posting and matching routes, required on the review decisions. Each route
+// claims the key in its one database transaction; a retry with the key
+// replays the stored response. Not on the bulk routes (the desktop doesn't
+// post through them).
+const FEED_NOT_PENDING_NOTE = 'An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; '
+  + 'was 400).';
+const feedKeyedTxn = idempotent({
+  successStatus: 200,
+  replay: async (req, entity) => ({
+    transaction: entity ? await ledgerService.getTransaction(req.tenantId, entity.id, req.companyId) : null,
+  }),
+});
+const feedKeyed = idempotent({ successStatus: 200 });
+
+/** The review decisions take an Idempotency-Key always (400 IDEMPOTENCY_KEY_REQUIRED). */
+function requireIdempotencyKey(req: Request, _res: Response, next: NextFunction) {
+  if (req.get('Idempotency-Key') === undefined) {
+    throw AppError.badRequest('This action needs an Idempotency-Key header.', 'IDEMPOTENCY_KEY_REQUIRED');
+  }
+  next();
+}
+
+bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMiddleware, feedKeyedTxn, validate(categorizeSchema), describe({
   summary: 'Categorize (post) a bank feed item',
-  description: 'Response {transaction}. ' + FEED_SPLITS_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
+  description: 'Response {transaction}. Takes a pending or assigned item (feed-idempotency-v1); the claim, the posting and the '
+    + 'status change are one database transaction. ' + FEED_NOT_PENDING_NOTE + ' ' + FEED_SPLITS_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
 }), async (req, res) => {
   const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId, { ownerChoice: true });
   res.json({ transaction: txn });
@@ -170,23 +218,60 @@ bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMid
 bankingRouter.put('/feed/:id/assign', validate(assignSchema), describe({
   summary: 'Stage a category (and optional split) on a bank feed item without posting',
   description: 'Response {item}. Approve posts what is staged. ' + FEED_SPLITS_NOTE
-    + ' Without `splits`, any staged split is cleared.',
+    + ' Without `splits`, any staged split is cleared. ' + FEED_NOT_PENDING_NOTE,
 }), async (req, res) => {
   const item = await bankFeedService.assign(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ item });
 });
 
-bankingRouter.post('/feed/:id/approve', closingPasswordLimiter, lockContextMiddleware, describe({
+bankingRouter.post('/feed/:id/approve', closingPasswordLimiter, lockContextMiddleware, feedKeyedTxn, describe({
   summary: 'Approve (post) a bank feed item\'s assigned category',
-  description: 'Response {transaction}. ' + FEED_CLOSED_PERIOD_NOTE,
+  description: 'Response {transaction}. Takes an assigned item; the claim, the posting and the status change are one database '
+    + 'transaction. ' + FEED_NOT_PENDING_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
 }), async (req, res) => {
   const txn = await bankFeedService.approve(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ transaction: txn });
 });
 
-bankingRouter.put('/feed/:id/match', validate(matchSchema), async (req, res) => {
-  await bankFeedService.match(req.tenantId, req.params['id']!, req.body.transactionId);
-  res.json({ message: 'Matched' });
+bankingRouter.put('/feed/:id/match', feedKeyed, validate(matchSchema), describe({
+  summary: 'Match a bank feed item to a line of a posted entry (feed-match-v2)',
+  description: 'Body {transactionId, journalLineId?}. Response {message, item}. The item is pending or assigned; it matches one '
+    + 'journal line of the posted entry: on the item\'s bank account, a credit for money out (feed amount > 0) or a debit for money '
+    + 'in (< 0), for exactly the amount. journalLineId may be left out when only one line fits (else 400 LINE_REQUIRED '
+    + '{journalLineIds}). 400 MATCH_MISMATCH {field: transactionId | journalLineId | account | amount}; 409 LINE_ALREADY_MATCHED '
+    + '{journalLineId} when another item holds the line; ' + FEED_NOT_PENDING_NOTE + ' Audited.',
+  body: matchSchema,
+}), async (req, res) => {
+  const item = await bankFeedService.match(req.tenantId, req.params['id']!, req.body.transactionId, {
+    journalLineId: req.body.journalLineId, userId: req.userId, companyId: req.companyId,
+  });
+  res.json({ message: 'Matched', item });
+});
+
+// U-174 (feed-review-v1): Keep both / Remove this one on a possible duplicate.
+bankingRouter.post('/feed/:id/duplicate', requireIdempotencyKey, feedKeyed, validate(feedDuplicateDecisionSchema), describe({
+  summary: 'Decide a possible duplicate: keep both or remove this one (feed-review-v1)',
+  description: 'Body {decision: keep | remove}. Response {item, decision}. keep clears the possible-duplicate flag (the row waits for '
+    + 'review as usual); remove excludes the row with exclusionReason "duplicate" (the flag stays; Restore brings it back undecided). '
+    + 'An import Undo counts a row removed as a duplicate as untouched. Only a waiting (pending or assigned) row flagged as a possible '
+    + 'duplicate: else 409 NOT_A_POSSIBLE_DUPLICATE {status, possibleDuplicate}. Needs an Idempotency-Key (400 '
+    + 'IDEMPOTENCY_KEY_REQUIRED). Audited.',
+  body: feedDuplicateDecisionSchema,
+}), async (req, res) => {
+  res.json(await bankFeedService.decideDuplicate(req.tenantId, req.params['id']!, req.body.decision, req.userId, req.companyId));
+});
+
+// Q-P26u (feed-match-v2): a row whose entry was voided goes back to waiting.
+bankingRouter.post('/feed/:id/review-again', requireIdempotencyKey, feedKeyed, describe({
+  summary: 'Review again a bank feed item whose entry was voided (feed-match-v2)',
+  description: 'Response {item}. Voiding an entry a feed item points at is allowed: the item keeps its status and link and is flagged '
+    + 'entryVoided (list filter entryVoided=true, /counts entryVoided, audit row). This unlinks it (clears the entry, its line and the '
+    + 'flag) and puts it back to pending with its suggestion and without staged values, audited. The void entry stays void. 409 '
+    + 'ENTRY_NOT_VOIDED {status} on any other row. Needs an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). No closing-date password '
+    + '(nothing in the books changes).',
+}), async (req, res) => {
+  const item = await bankFeedService.reviewAgain(req.tenantId, req.params['id']!, req.userId, req.companyId);
+  res.json({ item });
 });
 
 // Deposit suggestions (U-56, feed-deposit-groupings-v1): sets of items
@@ -207,22 +292,36 @@ bankingRouter.get('/feed/:id/deposit-groupings', requirePermission('receive_paym
   res.json(await depositSuggestions.findDepositGroupings(req.tenantId, req.companyId, id.data, { limit: limit.data }));
 });
 
-bankingRouter.get('/feed/:id/match-candidates', async (req, res) => {
+bankingRouter.get('/feed/:id/match-candidates', describe({
+  summary: 'Journal lines a bank feed item may match (feed-match-v2)',
+  description: 'Response {candidates: [{id (the entry), journalLineId, txnType, txnNumber, txnDate, total, amount (feed sign), memo, '
+    + 'lineDescription, checkNumber, printStatus, source, contactName}]}: lines on the item\'s bank account, a credit for money out '
+    + 'or a debit for money in, for exactly the amount, on posted entries within 15 days, not held by another feed item. One row per '
+    + 'line (a payroll entry with two bank lines is two rows). Bill payments first, then by date distance.',
+}), async (req, res) => {
   const candidates = await bankFeedService.findMatchCandidates(req.tenantId, req.params['id']!);
   res.json({ candidates });
 });
 
-bankingRouter.put('/feed/:id/exclude', async (req, res) => {
+bankingRouter.put('/feed/:id/exclude', describe({
+  summary: 'Exclude a bank feed item',
+  description: 'A pending or assigned item only: ' + FEED_NOT_PENDING_NOTE + ' Audited.',
+}), async (req, res) => {
   await bankFeedService.exclude(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Excluded' });
 });
 
 // Undo an exclusion. The confirm dialog has always promised this was possible;
 // until now nothing implemented it.
-bankingRouter.put('/feed/:id/unexclude', async (req, res) => {
+bankingRouter.put('/feed/:id/unexclude', describe({
+  summary: 'Restore an excluded bank feed item',
+  description: 'An excluded item goes back to pending (a row removed as a duplicate comes back still flagged). Any other item: '
+    + FEED_NOT_PENDING_NOTE + ' Audited.',
+}), async (req, res) => {
   await bankFeedService.unexclude(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Restored' });
 });
+
 
 bankingRouter.post('/feed/bulk-unexclude', validate(bulkExcludeSchema), async (req, res) => {
   const result = await bankFeedService.bulkUnexclude(req.tenantId, req.body.feedItemIds, req.userId);

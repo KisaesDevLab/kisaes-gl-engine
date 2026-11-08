@@ -105,6 +105,14 @@ export interface BankFeedFilters {
   // When true, restrict the feed to rows a RULE mapped (match_type = 'rule').
   // Filtered in the service WHERE so pagination/counts stay correct.
   ruleOnly?: boolean;
+  // U-174 (feed-review-v1): the review bucket of waiting rows (the same
+  // predicate as GET /banking/feed/counts); possible duplicates waiting for
+  // a decision (true) or every row that isn't flagged (false).
+  bucket?: 'ready' | 'review' | 'matches';
+  possibleDuplicate?: boolean;
+  // U-166 (feed-match-v2, Q-P26u): rows whose entry was voided (true) or
+  // the others (false).
+  entryVoided?: boolean;
   // Server-side column sort — the list paginates, so ordering must happen
   // in SQL, not on the loaded page.
   sortBy?: 'feedDate' | 'description' | 'category' | 'status' | 'amount' | 'checkNumber' | 'payee'

@@ -1002,6 +1002,11 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId })
       : [];
 
+    // Bank feed items pointing at the entry stay linked and are flagged
+    // "Entry voided" (Q-P26u, U-166): the void is allowed, the bank line is
+    // never lost silently. Bill payments do this in their own void path.
+    const voidedFeedItems = await (await import('./bank-feed.service.js')).flagEntryVoidedInTx(tx, tenantId, txnId, userId);
+
     // Full before-image: the header AND the lines as they stood before the
     // void (the reversing lines are new rows, so originalLines is exact).
     await auditLog(tenantId, 'void', 'transaction', txnId, { ...txn, lines: originalLines }, {
@@ -1009,6 +1014,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       ...(releasedLinks.length > 0 ? { releasedDepositLinks: releasedLinks } : {}),
       ...(releasedCosts.length > 0 ? { releasedBillableCosts: releasedCosts } : {}),
       ...(voidedBounceFeeId ? { bounceFeeId: voidedBounceFeeId } : {}),
+      ...(voidedFeedItems.length > 0 ? { entryVoidedFeedItems: voidedFeedItems } : {}),
     }, userId, tx);
 
     if (reversal) await voidTransactionInTx(tx, tenantId, reversal.id, reason, userId, { companyId: opts.companyId });

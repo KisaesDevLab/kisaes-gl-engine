@@ -851,6 +851,10 @@ export async function voidBillPaymentInTx(
       await billService.recomputeVendorCreditBalance(tx, tenantId, id);
     }
 
+    // A bank line matched to this payment stays linked and is flagged
+    // "Entry voided" (Q-P26u, U-166).
+    await (await import('./bank-feed.service.js')).flagEntryVoidedInTx(tx, tenantId, paymentId, userId);
+
     // The application rows are deleted above: the before-image carries them,
     // so the audit trail still shows what the payment settled (U-117 S5).
     await auditLog(tenantId, 'void', 'transaction', paymentId, {
