@@ -99,7 +99,19 @@ bankingRouter.post('/connections/:id/sync', async (req, res) => {
 
 // ─── Bank Feed ───────────────────────────────────────────────────
 
-bankingRouter.get('/feed', async (req, res) => {
+bankingRouter.get('/feed', describe({
+  summary: 'List bank feed items (paged)',
+  description: 'Response {data, total}. Filters: status = pending | assigned | matched | categorized | excluded, or accepted '
+    + '(feed-accept-v1: categorized and matched rows, entryVoided included, the same rows as GET /banking/feed/counts accepted); '
+    + 'bucket = ready | review | matches; possibleDuplicate, entryVoided, actionableOnly, ruleOnly; bankConnectionId, startDate, '
+    + 'endDate, search; sortBy, sortDir; limit (1-500, default 50), offset. Rows carry, among others, bucket, matchCandidateCount, '
+    + 'duplicateOf, suggestedRule, entryVoided, entryVoidedAt, matchedJournalLineId and transferCandidate (feed-accept-v1): on a '
+    + 'waiting, unmatched row, {feedItemId, accountId, accountName} of the other side of a transfer when exactly one exists (a waiting '
+    + 'row on another GL account of the company with the exact opposite amount within 3 days, the rule of GET '
+    + '/banking/feed/:id/transfer-candidates and of the matches bucket), else null. Amounts are decimal strings in the feed sign '
+    + '(positive = money out).',
+  query: bankFeedFiltersSchema,
+}), async (req, res) => {
   const filters = bankFeedFiltersSchema.parse(req.query);
   const result = await bankFeedService.list(req.tenantId, filters);
   res.json(result);

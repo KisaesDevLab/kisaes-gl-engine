@@ -13802,7 +13802,201 @@
     },
     "/api/v1/banking/feed": {
       "get": {
+        "description": "Response {data, total}. Filters: status = pending | assigned | matched | categorized | excluded, or accepted (feed-accept-v1: categorized and matched rows, entryVoided included, the same rows as GET /banking/feed/counts accepted); bucket = ready | review | matches; possibleDuplicate, entryVoided, actionableOnly, ruleOnly; bankConnectionId, startDate, endDate, search; sortBy, sortDir; limit (1-500, default 50), offset. Rows carry, among others, bucket, matchCandidateCount, duplicateOf, suggestedRule, entryVoided, entryVoidedAt, matchedJournalLineId and transferCandidate (feed-accept-v1): on a waiting, unmatched row, {feedItemId, accountId, accountName} of the other side of a transfer when exactly one exists (a waiting row on another GL account of the company with the exact opposite amount within 3 days, the rule of GET /banking/feed/:id/transfer-candidates and of the matches bucket), else null. Amounts are decimal strings in the feed sign (positive = money out).",
         "operationId": "get_api_v1_banking_feed",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "pending",
+                "assigned",
+                "matched",
+                "categorized",
+                "excluded",
+                "accepted"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bankConnectionId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actionableOnly",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "enum": [
+                    "true",
+                    "false"
+                  ],
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "ruleOnly",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "enum": [
+                    "true",
+                    "false"
+                  ],
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "feedDate",
+                "description",
+                "category",
+                "status",
+                "amount",
+                "checkNumber",
+                "payee",
+                "name",
+                "originalDescription",
+                "confidence"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "enum": [
+                "ready",
+                "review",
+                "matches"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "possibleDuplicate",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "enum": [
+                    "true",
+                    "false"
+                  ],
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "entryVoided",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "enum": [
+                    "true",
+                    "false"
+                  ],
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -13816,6 +14010,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List bank feed items (paged)",
         "tags": [
           "banking"
         ]

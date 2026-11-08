@@ -846,6 +846,9 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * call, continue with afterId = nextAfterId. conditional_rules.auto_accept (CRUD autoAccept; list suggestedRule.autoAccept)
    * never posts on its own. Rule conditions: amount_abs, exact decimal amount comparisons. Desktop mode skips the
    * CONDITIONAL_RULES_V1 flag check. The other side of a transfer is a match signal (bucket "matches").
+   * GET /banking/feed (Q-P26y): status=accepted lists every categorized and matched row (entryVoided included; total =
+   * /counts accepted), paged; rows carry transferCandidate {feedItemId, accountId, accountName} | null, the other side of a
+   * transfer when exactly one waits (the matches bucket's transfer rule, 3 days), null on rows that aren't waiting.
    */
   'feed-accept-v1',
   /**

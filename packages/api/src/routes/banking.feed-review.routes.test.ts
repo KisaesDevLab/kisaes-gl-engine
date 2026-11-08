@@ -487,6 +487,8 @@ describe('review buckets, duplicates and counts (U-174)', () => {
     });
     const assigned = await feedItem('16.0000', { status: 'assigned', assignedAccountId: supplies, assignedAt: new Date() });
     await feedItem('17.0000', { status: 'excluded' });
+    await feedItem('18.0000', { status: 'categorized' });
+    await feedItem('19.0000', { status: 'matched', entryVoidedAt: new Date() });
 
     const list = (await call('GET', `${base}?limit=100`)).json.data as any[];
     const bucketOf = (id: string) => list.find((r) => r.id === id).bucket;
@@ -506,6 +508,9 @@ describe('review buckets, duplicates and counts (U-174)', () => {
       expect((await call('GET', `${base}?bucket=${b}&limit=1`)).json.total).toBe(counts[b]);
     }
     expect((await call('GET', `${base}?status=excluded&limit=1`)).json.total).toBe(counts.excluded);
+    // feed-accept-v1 (Q-P26y): the accepted list is the accepted count, entry voided included.
+    expect((await call('GET', `${base}?status=accepted&limit=1`)).json.total).toBe(counts.accepted);
+    expect(counts.accepted).toBe(2);
     expect((await call('GET', `${base}?possibleDuplicate=true&limit=1`)).json.total).toBe(counts.possibleDuplicate);
     expect(counts.waiting).toBe(counts.ready + counts.review + counts.matches);
     expect(counts).toMatchObject({ matches: 1, excluded: 1, possibleDuplicate: 1 });

@@ -25,7 +25,7 @@ import { lineCandidatePredicate, resolveMatchLine, matchMismatch } from './bank-
 import { claimIdempotency } from './idempotency.service.js';
 import { errorSummaryForLog } from '../utils/log-safe.js';
 import { isDesktop } from '../desktop/profile.js';
-import { bucketSql, waitingSql } from './bank-feed-buckets.js';
+import { bucketSql, transferCandidateSql, waitingSql } from './bank-feed-buckets.js';
 import { recordAcceptGroup, recordAcceptItem } from './bank-feed-accept-records.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
@@ -81,7 +81,11 @@ export async function counts(
 
 export async function list(tenantId: string, filters: BankFeedFilters) {
   const conditions = scopeConditions(tenantId, filters);
-  if (filters.status) {
+  if (filters.status === 'accepted') {
+    // feed-accept-v1 (Q-P26y): every accepted row, paged in SQL like the rest
+    // (the predicate /counts accepted uses, entryVoided included).
+    conditions.push(inArray(bankFeedItems.status, ['categorized', 'matched']));
+  } else if (filters.status) {
     // An explicit single-status filter takes precedence over actionableOnly.
     conditions.push(eq(bankFeedItems.status, filters.status));
   } else if (filters.actionableOnly) {
@@ -285,6 +289,9 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
           })}
         ), 0) ELSE 0 END
       )`,
+      // feed-accept-v1 (Q-P26y): the other side of a transfer when exactly
+      // one is waiting (the "matches" bucket's transfer rule), else null.
+      transferCandidate: transferCandidateSql(tenantId, sql`${accounts.id}`),
     }).from(bankFeedItems)
       .leftJoin(bankConnections, eq(bankFeedItems.bankConnectionId, bankConnections.id))
       .leftJoin(accounts, eq(bankConnections.accountId, accounts.id))

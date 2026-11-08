@@ -13,7 +13,9 @@ const optionalQueryBoolean = z
   .transform((v) => (v === undefined ? undefined : v === true || v === 'true'));
 
 export const bankFeedFiltersSchema = z.object({
-  status: z.enum(bankFeedStatuses).optional(),
+  // A stored status, or 'accepted' (feed-accept-v1, Q-P26y): every accepted
+  // row, categorized and matched (entryVoided included), as /counts accepted.
+  status: z.enum([...bankFeedStatuses, 'accepted']).optional(),
   bankConnectionId: z.string().uuid().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),

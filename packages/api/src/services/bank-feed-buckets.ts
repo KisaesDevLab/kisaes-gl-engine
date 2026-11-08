@@ -84,7 +84,6 @@ export function matchSignalSql(tenantId: string): SQL {
   ))`;
   // The other side of a transfer (feed-accept-v1; U-171's candidate rule):
   // served by idx_bfi_waiting_amount (0268).
-  const tdays = sql.raw(String(TRANSFER_WINDOW_DAYS));
   // The uncorrelated IN runs once as a hashed subplan, so a row without any
   // waiting opposite amount never reaches the correlated EXISTS (20k-row
   // counts stay fast even before the table is analyzed).
@@ -93,15 +92,55 @@ export function matchSignalSql(tenantId: string): SQL {
   ) AND EXISTS (
     SELECT 1 FROM bank_feed_items o
     JOIN bank_connections oc ON oc.id = o.bank_connection_id AND oc.tenant_id = ${tenantId}
-    WHERE o.tenant_id = ${tenantId} AND o.status IN ('pending', 'assigned')
-      AND o.amount = -${bankFeedItems.amount}
-      AND o.id <> ${bankFeedItems.id}
-      AND oc.account_id IS DISTINCT FROM ${bankAccountOf(tenantId)}
-      AND o.feed_date >= (${bankFeedItems.feedDate}::date - INTERVAL '${tdays} days')
-      AND o.feed_date <= (${bankFeedItems.feedDate}::date + INTERVAL '${tdays} days')
-      AND (${bankFeedItems.companyId} IS NULL OR o.company_id IS NULL OR o.company_id = ${bankFeedItems.companyId})
+    WHERE ${transferTwinWhere(tenantId, bankAccountOf(tenantId))}
   )`;
   return sql`(${bankFeedItems.matchedTransactionId} IS NULL AND ${amount} <> 0 AND (${line} OR ${clearing} OR ${transfer}))`;
+}
+
+/**
+ * WHERE conditions for `o` (bank_feed_items) joined to `oc` (its
+ * bank_connections row) being the other side of a transfer of the outer
+ * bank_feed_items row (feed-accept-v1; U-171's transfer-candidates rule at
+ * its default window): waiting, the exact opposite amount, another GL
+ * account than `bankAccountId` (the outer row's), within
+ * TRANSFER_WINDOW_DAYS, the same company. The "matches" bucket and the
+ * list's transferCandidate both use it, so they never disagree.
+ */
+export function transferTwinWhere(tenantId: string, bankAccountId: SQL): SQL {
+  const tdays = sql.raw(String(TRANSFER_WINDOW_DAYS));
+  return sql`o.tenant_id = ${tenantId} AND o.status IN ('pending', 'assigned')
+      AND o.amount = -${bankFeedItems.amount}
+      AND o.id <> ${bankFeedItems.id}
+      AND oc.account_id IS DISTINCT FROM ${bankAccountId}
+      AND o.feed_date >= (${bankFeedItems.feedDate}::date - INTERVAL '${tdays} days')
+      AND o.feed_date <= (${bankFeedItems.feedDate}::date + INTERVAL '${tdays} days')
+      AND (${bankFeedItems.companyId} IS NULL OR o.company_id IS NULL OR o.company_id = ${bankFeedItems.companyId})`;
+}
+
+/**
+ * The list row's transfer signal (feed-accept-v1, Q-P26y): on a waiting,
+ * unmatched, non-zero row, {feedItemId, accountId, accountName} of the other
+ * side when exactly one exists (transferTwinWhere), else null. `bankAccountId`
+ * is the outer row's bank GL account as the list query joins it. Runs per
+ * listed row only (a page), never in /counts.
+ */
+export function transferCandidateSql(tenantId: string, bankAccountId: SQL): SQL<{ feedItemId: string; accountId: string; accountName: string } | null> {
+  return sql<{ feedItemId: string; accountId: string; accountName: string } | null>`(
+    CASE WHEN ${waitingSql()} AND ${bankFeedItems.matchedTransactionId} IS NULL
+          AND ${bankAccountId} IS NOT NULL AND CAST(${bankFeedItems.amount} AS DECIMAL) <> 0
+    THEN (
+      SELECT CASE WHEN COUNT(*) = 1 THEN json_build_object(
+          'feedItemId', MIN(tc.id::text), 'accountId', MIN(tc.account_id::text), 'accountName', MIN(tc.account_name)) END
+      FROM (
+        SELECT o.id, oa.id AS account_id, oa.name AS account_name
+        FROM bank_feed_items o
+        JOIN bank_connections oc ON oc.id = o.bank_connection_id AND oc.tenant_id = ${tenantId}
+        LEFT JOIN accounts oa ON oa.id = oc.account_id AND oa.tenant_id = ${tenantId}
+        WHERE ${transferTwinWhere(tenantId, bankAccountId)}
+        LIMIT 2
+      ) tc
+    ) END
+  )`;
 }
 
 /** A staged split the posting would refuse (SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS). */

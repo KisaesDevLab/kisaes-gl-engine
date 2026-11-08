@@ -91,10 +91,21 @@ export interface BankFeedItem {
   // in-system transactions (e.g. checks written in the ledger) aren't duplicated.
   // 0 for non-pending / already-matched rows.
   matchCandidateCount?: number;
+  // feed-accept-v1 (Q-P26y): on a waiting row, the other side of a transfer
+  // when exactly one exists (the transfer-candidates rule, default 3-day
+  // window: another GL account, the exact opposite amount, waiting); else null.
+  transferCandidate?: BankFeedTransferCandidate | null;
+}
+
+export interface BankFeedTransferCandidate {
+  feedItemId: string;
+  accountId: string;
+  accountName: string;
 }
 
 export interface BankFeedFilters {
-  status?: BankFeedStatus;
+  // 'accepted' (feed-accept-v1): categorized and matched rows, entryVoided included.
+  status?: BankFeedStatus | 'accepted';
   bankConnectionId?: string;
   startDate?: string;
   endDate?: string;

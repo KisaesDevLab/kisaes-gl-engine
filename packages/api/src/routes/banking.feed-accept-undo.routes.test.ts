@@ -573,3 +573,80 @@ describe('POST /banking/feed/undo (U-169)', () => {
     expect((await undo({ feedItemIds: [randomUUID()] })).json.failures[0].code).toBe('FEED_ITEM_NOT_ACCEPTED');
   });
 });
+
+describe('GET /banking/feed: status=accepted and transferCandidate (Q-P26y)', () => {
+  const list = async (query: string) => {
+    const r = await request('GET', `${BASE}?${query}`);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    return r.json as { data: any[]; total: number };
+  };
+  const byId = (rows: any[]) => Object.fromEntries(rows.map((r) => [r.id, r]));
+
+  it('status=accepted lists every categorized and matched row (entry voided included), paged, = /counts accepted', async () => {
+    // A long history: 620 accepted rows (more than one 500-row page) among waiting and excluded ones.
+    const base = { tenantId: c.tenantId, companyId: c.companyId, bankConnectionId: c.checkingConn, feedDate: '2026-07-01' };
+    const rows = Array.from({ length: 620 }, (_, i) => ({
+      ...base, amount: `${1000 + i}.00`, description: `ZZQX HIST ${i}`,
+      status: (i % 2 === 0 ? 'categorized' : 'matched') as 'categorized' | 'matched',
+      entryVoidedAt: i === 7 ? new Date() : null,
+    }));
+    await db.insert(bankFeedItems).values(rows);
+    const waiting = await feed('21.0000');
+    const assigned = await feed('22.0000', { status: 'assigned', assignedAccountId: c.supplies });
+    const excluded = await feed('23.0000', { status: 'excluded' });
+
+    const first = await list('status=accepted&limit=500&offset=0');
+    const second = await list('status=accepted&limit=500&offset=500');
+    expect(first.total).toBe(620);
+    expect(second.total).toBe(620);
+    expect(first.data).toHaveLength(500);
+    expect(second.data).toHaveLength(120);
+    const ids = new Set([...first.data, ...second.data].map((r) => r.id));
+    expect(ids.size).toBe(620);
+    for (const id of [waiting, assigned, excluded]) expect(ids.has(id)).toBe(false);
+    expect([...first.data, ...second.data].every((r) => r.status === 'categorized' || r.status === 'matched')).toBe(true);
+    expect([...first.data, ...second.data].filter((r) => r.entryVoided)).toHaveLength(1);
+
+    const counts = await request('GET', `${BASE}/counts`);
+    expect(counts.json.accepted).toBe(620);
+    // Combines with the other filters as any status does.
+    expect((await list('status=accepted&entryVoided=true')).total).toBe(1);
+    // A stored status still lists only itself; an unknown one is refused.
+    expect((await list('status=matched&limit=1')).total).toBe(310);
+    expect((await request('GET', `${BASE}?status=done`)).status).toBe(400);
+  });
+
+  it('transferCandidate names the other side when exactly one waits; null for two, the same account, out of window, or not waiting', async () => {
+    const checkingName = (await db.query.accounts.findFirst({ where: eq(accounts.id, c.checking) }))!.name;
+    // One pair: out of checking, into savings a day later.
+    const out = await feed('500.0000', { description: 'ZZQX ONLINE TRANSFER' });
+    const inn = await feed('-500.0000', { bankConnectionId: c.savingsConn, feedDate: '2026-08-15' });
+    // Two possible other sides: ambiguous on the out row, each in-row still has exactly one.
+    const out2 = await feed('700.0000');
+    const in2a = await feed('-700.0000', { bankConnectionId: c.savingsConn, feedDate: '2026-08-13' });
+    const in2b = await feed('-700.0000', { bankConnectionId: c.savingsConn, feedDate: '2026-08-16' });
+    // Same GL account (a refund on checking) and outside the 3-day window: no transfer.
+    const same = await feed('300.0000');
+    const sameBack = await feed('-300.0000');
+    const far = await feed('400.0000');
+    const farIn = await feed('-400.0000', { bankConnectionId: c.savingsConn, feedDate: '2026-08-18' });
+    // An accepted row is never a transfer candidate, nor shows one.
+    const done = await feed('900.0000', { status: 'categorized' });
+    const doneTwin = await feed('-900.0000', { bankConnectionId: c.savingsConn });
+
+    const rows = byId((await list('limit=500')).data);
+    expect(rows[out].transferCandidate).toEqual({ feedItemId: inn, accountId: c.savings, accountName: 'ZZ Savings' });
+    expect(rows[inn].transferCandidate).toEqual({ feedItemId: out, accountId: c.checking, accountName: checkingName });
+    expect(rows[out].bucket).toBe('matches');
+    expect(rows[out2].transferCandidate).toBeNull();
+    expect(rows[out2].bucket).toBe('matches');
+    expect(rows[in2a].transferCandidate).toMatchObject({ feedItemId: out2 });
+    expect(rows[in2b].transferCandidate).toMatchObject({ feedItemId: out2 });
+    for (const id of [same, sameBack, far, farIn, done, doneTwin]) expect(rows[id].transferCandidate, id).toBeNull();
+    expect(rows[far].bucket).not.toBe('matches');
+
+    // Once the other side stops waiting (here: excluded), no candidate is left.
+    await db.update(bankFeedItems).set({ status: 'excluded' }).where(eq(bankFeedItems.id, inn));
+    expect(byId((await list('limit=500')).data)[out].transferCandidate).toBeNull();
+  });
+});
