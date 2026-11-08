@@ -13,8 +13,9 @@
 //     'percentage', percentTotal}. Each line gets floor(total x pct / 100) in
 //     cents; the cents left over (fewer than the number of lines) go one each
 //     to the lines with the largest remainders, and equal remainders are
-//     settled by line order (earlier line first). 100.00 three ways at
-//     33.333...% is 33.34 / 33.33 / 33.33.
+//     settled by line order (earlier line first). 100.00 at 33.334 / 33.333
+//     / 33.333% is 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% is 0.02 / 0.01.
+//     (Three equal thirds can't total exactly 100 as decimals.)
 //   - Fixed splits (a split_by_fixed rule, or the owner's lines) are each
 //     rounded to cents half away from zero and must then add up exactly to
 //     |amount|, else 400 SPLITS_DONT_BALANCE {kind: 'fixed', difference}

@@ -154,7 +154,7 @@ const FEED_SPLITS_NOTE = 'Optional `splits`: 2-50 lines {accountId, amount (^\\d
   + 'be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the '
   + 'item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: '
   + '"percentage", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order '
-  + '(100.00 at 3 x 33.333...% = 33.34 / 33.33 / 33.33); a staged fixed split is rounded to cents half away from zero and must '
+  + '(100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must '
   + 'add up exactly. Amounts post exactly as stored (no floating point).';
 
 bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMiddleware, validate(categorizeSchema), describe({
