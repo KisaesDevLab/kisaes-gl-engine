@@ -11,6 +11,10 @@
 #   - DROP CONSTRAINT (other than recreate-as-in-same-file)
 #   - ALTER COLUMN ... DROP NOT NULL
 #   - ALTER COLUMN ... SET NOT NULL   (can fail on existing NULL rows)
+#   - ALTER COLUMN ... TYPE           (a retype; older archives need a
+#                                      TYPE_CHANGES entry to import)
+#   - DROP INDEX (other than an index the same file creates again under
+#                 the same name, i.e. a rebuild)
 #   - RENAME TO / RENAME COLUMN
 #
 # These aren't always wrong — intentional schema redesigns (e.g. the
@@ -109,6 +113,21 @@ for file in "${files[@]}"; do
   match 'alter\s+column[^;]*set\s+not\s+null'        && report "SET NOT NULL on existing column (may fail on NULL rows)"
   match 'alter\s+table[^;]*rename\s+to'              && report "RENAME TABLE"
   match 'alter\s+table[^;]*rename\s+column'          && report "RENAME COLUMN"
+  match 'alter\s+column[^;]*\s+type\s+'              && report "ALTER COLUMN ... TYPE (column retype)"
+
+  # DROP INDEX is allowed when the same file creates an index of the same
+  # name again (a rebuild with a new definition); any other drop needs the
+  # marker. Names are compared without quotes or a schema prefix.
+  while IFS= read -r dropped; do
+    [[ -n "$dropped" ]] || continue
+    name="${dropped//\"/}"
+    name="${name##*.}"
+    if ! printf '%s' "$content" | grep -qiE "create\s+(unique\s+)?index\s+(concurrently\s+)?(if\s+not\s+exists\s+)?(\"?[A-Za-z0-9_]+\"?\.)?\"?${name}\"?\b"; then
+      report "DROP INDEX ${name} (not recreated under the same name in this file)"
+    fi
+  done < <(printf '%s' "$content" \
+    | grep -oiE 'drop\s+index\s+(concurrently\s+)?(if\s+exists\s+)?("?[A-Za-z0-9_]+"?\.)?"?[A-Za-z0-9_]+"?' \
+    | sed -E 's/^drop\s+index\s+(concurrently\s+)?(if\s+exists\s+)?//I')
 done
 
 if [[ $violations -gt 0 ]]; then

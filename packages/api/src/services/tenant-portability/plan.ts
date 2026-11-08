@@ -1021,10 +1021,11 @@ export const CROSS_TENANT_COLUMNS: Record<string, CrossTenantAction> = {
  * entry is `table.column: { from, to }`; the plan test rejects any pair
  * that `isAllowedWidening` refuses. Empty until a migration widens a column.
  */
-export const TYPE_CHANGES: Record<string, { from: string; to: string }> = {
+export const TYPE_CHANGES: Record<string, { from: string; to: string; changedIn: number }> = {
   // 0252 (U-148): sales tax rates keep 6 places; unconstrained numeric with a scale CHECK (no table rewrite).
-  'journal_lines.tax_rate': { from: 'numeric(5,4)', to: 'numeric' },
-  'companies.default_sales_tax_rate': { from: 'numeric(5,4)', to: 'numeric' },
+  // changedIn = the schema version after the migration (compat.ts records the non-additive step for the policy).
+  'journal_lines.tax_rate': { from: 'numeric(5,4)', to: 'numeric', changedIn: 253 },
+  'companies.default_sales_tax_rate': { from: 'numeric(5,4)', to: 'numeric', changedIn: 253 },
 };
 
 /** The audit entity type only the tenant-portability code writes. */

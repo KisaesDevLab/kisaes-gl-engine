@@ -11,8 +11,8 @@
  * Migration policy note: a non-additive migration (marker
  * `-- migration-policy: non-additive-exception` or an `allow-non-additive_`
  * file name) newer than the E5 baseline must add its DROPPED_TABLES /
- * DROPPED_COLUMNS / TYPE_CHANGES / BACKFILL / RELAXED_COLUMNS / WIDENED_CHECKS entry; archive-reader.test.ts checks
- * this against the migrations journal.
+ * DROPPED_COLUMNS / TYPE_CHANGES (plan.ts, with changedIn) / BACKFILL / RELAXED_COLUMNS / WIDENED_CHECKS /
+ * DROPPED_INDEXES entry; archive-reader.test.ts checks this against the migrations journal.
  */
 
 import { ArchiveError } from './errors.js';
@@ -70,6 +70,19 @@ export const WIDENED_CHECKS: Record<string, { widenedIn: number }> = {
   'document_drafts.document_drafts_kind_ck': { widenedIn: 236 },
   'bill_payment_applications.chk_bpa_amount_positive': { widenedIn: 239 },
   'items.items_item_type_ck': { widenedIn: 259 },
+};
+
+/**
+ * `table.index` dropped by migration `droppedIn` (schema version after it)
+ * and not rebuilt under the same name. An index holds no data of its own,
+ * so nothing is done on import; the entry records the non-additive step
+ * for the policy.
+ * 0262 (U-163): idx_bfi_provider_txn (tenant_id, provider_transaction_id,
+ * unique) gave way to uq_bfi_connection_provider_txn and
+ * idx_bfi_tenant_provider_txn.
+ */
+export const DROPPED_INDEXES: Record<string, { droppedIn: number }> = {
+  'bank_feed_items.idx_bfi_provider_txn': { droppedIn: 263 },
 };
 
 export interface TableCompat {

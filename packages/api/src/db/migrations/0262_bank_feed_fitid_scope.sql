@@ -2,6 +2,11 @@
 -- Licensed under the PolyForm Internal Use License 1.0.0.
 -- See LICENSE and NOTICE.md for terms.
 --
+-- migration-policy: non-additive-exception
+-- Drops idx_bfi_provider_txn, replaced by the two indexes built below under
+-- other names (an index drop loses no data; DROPPED_INDEXES in
+-- tenant-portability/compat.ts records it for the import policy).
+--
 -- A bank's transaction id (OFX FITID, Plaid transaction_id) is unique per
 -- bank account, not per tenant (U-163). The old unique index on
 -- (tenant_id, provider_transaction_id) made a second account's transaction
