@@ -42,6 +42,21 @@ export const bankFeedFiltersSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// Manual split lines on PUT /banking/feed/:id/assign and /categorize
+// (U-164, feed-exact-v1): 2 to 50 lines, each a positive amount in cents.
+// The lines must add up exactly to the item's |amount| (400
+// SPLITS_DONT_BALANCE {kind: 'fixed', difference}, checked by the service,
+// which has the item); an item amount with more than 2 decimals can't be
+// split (400 AMOUNT_NOT_CENTS).
+export const feedSplitLineSchema = z.object({
+  accountId: z.string().uuid(),
+  amount: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/, 'Amount must be a positive number with at most 2 decimals')
+    .refine((v) => /[1-9]/.test(v), 'Amount must be more than 0'),
+  tagId: z.string().uuid().nullable().optional(),
+  memo: z.string().max(500).nullable().optional(),
+});
+export const feedSplitsSchema = z.array(feedSplitLineSchema).min(2).max(50);
+
 export const categorizeSchema = z.object({
   accountId: z.string().uuid(),
   contactId: z.string().uuid().optional(),
@@ -51,6 +66,9 @@ export const categorizeSchema = z.object({
   // picked in the categorize drawer never reached the service. Null means
   // explicitly untagged; omitted falls back to the item's suggested tag.
   tagId: z.string().uuid().nullable().optional(),
+  // U-164: the owner's split. Omitted = one line on accountId; a split a
+  // rule staged on the item is not used (the owner's choice wins).
+  splits: feedSplitsSchema.optional(),
 });
 
 export const matchSchema = z.object({
@@ -66,6 +84,9 @@ export const assignSchema = z.object({
   contactId: z.string().uuid().nullable().optional(),
   tagId: z.string().uuid().nullable().optional(),
   memo: z.string().max(500).nullable().optional(),
+  // U-164: stage the owner's split. Omitted clears any split a rule staged,
+  // so approve posts one line on accountId.
+  splits: feedSplitsSchema.optional(),
 });
 
 // Bulk ASSIGN — stage the SAME assignment across many pending/assigned items

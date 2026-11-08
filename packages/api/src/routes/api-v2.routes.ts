@@ -631,7 +631,7 @@ apiV2Router.get('/banking/feed/:id/match-candidates', async (req, res) => {
 });
 
 apiV2Router.put('/banking/feed/:id/categorize', async (req, res) => {
-  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, categorizeSchema.parse(req.body), req.userId, req.companyId);
+  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, categorizeSchema.parse(req.body), req.userId, req.companyId, { ownerChoice: true });
   res.json({ transaction: txn });
 });
 
@@ -905,7 +905,7 @@ apiV2Router.get('/docs', (_req, res) => {
         'GET /api/v2/banking/connections': 'List bank connections (Plaid + manual)',
         'GET /api/v2/banking/feed': 'List bank feed items (?status, ?accountId, ?startDate, ?endDate)',
         'GET /api/v2/banking/feed/:id/match-candidates': 'Suggest matching transactions',
-        'PUT /api/v2/banking/feed/:id/categorize': 'Categorize feed item { accountId, contactId?, memo? }',
+        'PUT /api/v2/banking/feed/:id/categorize': 'Categorize feed item { accountId, contactId?, memo?, tagId?, splits? }',
         'PUT /api/v2/banking/feed/:id/match': 'Match feed item to existing transaction { transactionId }',
         'PUT /api/v2/banking/feed/:id/exclude': 'Exclude feed item from ledger',
         'POST /api/v2/banking/feed/bulk-approve': 'Bulk approve { feedItemIds: [] }',

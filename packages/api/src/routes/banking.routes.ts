@@ -147,17 +147,31 @@ async function bulkClosingPasswordPrecheck(req: Request, _res: Response, next: N
   next();
 }
 
+// Exact splits (U-164, feed-exact-v1).
+const FEED_SPLITS_NOTE = 'Optional `splits`: 2-50 lines {accountId, amount (^\\d{1,12}(\\.\\d{1,2})?$, more than 0), tagId?|null, memo? '
+  + '(at most 500)} that must add up exactly to the item amount (absolute value), else 400 SPLITS_DONT_BALANCE (details {kind: '
+  + '"fixed", difference, splitTotal, amount}; difference = |amount| - the lines). An item amount with more than 2 decimals cannot '
+  + 'be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the '
+  + 'item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: '
+  + '"percentage", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order '
+  + '(100.00 at 3 x 33.333...% = 33.34 / 33.33 / 33.33); a staged fixed split is rounded to cents half away from zero and must '
+  + 'add up exactly. Amounts post exactly as stored (no floating point).';
+
 bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMiddleware, validate(categorizeSchema), describe({
   summary: 'Categorize (post) a bank feed item',
-  description: 'Response {transaction}. ' + FEED_CLOSED_PERIOD_NOTE,
+  description: 'Response {transaction}. ' + FEED_SPLITS_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
 }), async (req, res) => {
-  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
+  const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId, { ownerChoice: true });
   res.json({ transaction: txn });
 });
 
 // Two-phase workflow: ASSIGN stages a category (no ledger post); APPROVE
 // posts the staged assignment.
-bankingRouter.put('/feed/:id/assign', validate(assignSchema), async (req, res) => {
+bankingRouter.put('/feed/:id/assign', validate(assignSchema), describe({
+  summary: 'Stage a category (and optional split) on a bank feed item without posting',
+  description: 'Response {item}. Approve posts what is staged. ' + FEED_SPLITS_NOTE
+    + ' Without `splits`, any staged split is cleared.',
+}), async (req, res) => {
   const item = await bankFeedService.assign(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ item });
 });

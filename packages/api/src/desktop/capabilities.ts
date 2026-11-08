@@ -709,6 +709,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'feed-closing-date-v1',
   /**
+   * Exact Bank Feed posting (U-164): categorize and approve post the item amount exactly as stored (decimal.js, no floating point).
+   * PUT /banking/feed/:id/categorize and PUT /banking/feed/:id/assign take `splits?: [{accountId, amount ^\d{1,12}(\.\d{1,2})?$ > 0,
+   * tagId?|null, memo? <= 500}]`, 2-50 lines, adding up exactly to |amount|, else 400 SPLITS_DONT_BALANCE {kind: 'fixed', difference,
+   * splitTotal, amount}; an amount with more than 2 decimals can't be split (400 AMOUNT_NOT_CENTS). The owner's account overrides a
+   * rule's staged split: categorize or assign without `splits` posts or stages one line on accountId (assign clears the staged split).
+   * Staged percentage splits must total exactly 100 as decimals (400 SPLITS_DONT_BALANCE {kind: 'percentage', percentTotal}; rule
+   * create/update also refuses any other total) and are allocated in cents by largest remainder, equal remainders by line order
+   * (100.00 x 3 x 33.333...% = 33.34 / 33.33 / 33.33); staged fixed splits round to cents half away from zero and must add up exactly
+   * (400 SPLITS_DONT_BALANCE); a negative fixed line posts on the other side; 0.00 lines are left off.
+   */
+  'feed-exact-v1',
+  /**
    * Inventory checkpoint fixes (U-162, ClientLedger PR-4; migration 0261): one total position order for stock ledger reads (a credit memo's
    * unlinked row first, then its linked rows by their sale's date and entry order, so the order survives a tenant import; the import
    * re-walks every item; on hand, valuation, count sheet and walk agree); NEGATIVE_STOCK (one per item) also when a void, delete or

@@ -5,7 +5,7 @@
 import { resolveCompanyForConnection } from './feed-item-company.service.js';
 import { eq, and, sql, count, gte, lte, inArray } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
-import type { BankFeedFilters, CategorizeInput, CsvColumnMapping } from '@kis-books/shared';
+import type { BankFeedFilters, CategorizeInput, CsvColumnMapping, FeedSplitLine } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
 import { db, type DbOrTx } from '../db/index.js';
 import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, tags, transactionTags as transactionTagsTable } from '../db/schema/index.js';
@@ -20,6 +20,7 @@ import { updateLearning } from './categorization-ai.service.js';
 import { assertTagsInTenant } from './tags.service.js';
 import type { StatementCheckImage } from './ai-statement-parser.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { computeSplitLines, type StagedSplitsConfig } from './bank-feed-splits.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -338,11 +339,28 @@ export async function checkPayrollOverlap(
 
 // Phase 4 conditional split_by_* action: a JSONB blob staged on the feed
 // item that expands into N user-facing journal lines at post time (the cash
-// leg stays a single line so the bank account stays simple).
-type FeedSplitsConfig =
-  | { kind: 'percentage'; splits: Array<{ accountId: string; percent: number; tagId: string | null; memo: string | null }> }
-  | { kind: 'fixed'; splits: Array<{ accountId: string; amount: string; tagId: string | null; memo: string | null }> }
-  | null;
+// leg stays a single line so the bank account stays simple). The owner's own
+// split (U-164) is staged as kind 'fixed'. The math lives in
+// bank-feed-splits.ts.
+type FeedSplitsConfig = StagedSplitsConfig | null;
+
+/** The owner's split lines (U-164) as a staged config. */
+function manualSplitsConfig(splits: FeedSplitLine[]): StagedSplitsConfig {
+  return {
+    kind: 'fixed',
+    splits: splits.map((s) => ({ accountId: s.accountId, amount: s.amount, tagId: s.tagId ?? null, memo: s.memo ?? null })),
+  };
+}
+
+/** Every account and tag an owner's split names must be in this tenant. */
+async function assertSplitRefsInTenant(tenantId: string, splits: FeedSplitLine[]): Promise<void> {
+  const accountIds = [...new Set(splits.map((s) => s.accountId))];
+  const found = await db.select({ id: accounts.id }).from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, accountIds)));
+  if (found.length !== accountIds.length) throw AppError.badRequest('A split account was not found in this tenant');
+  const tagIds = [...new Set(splits.map((s) => s.tagId).filter((t): t is string => !!t))];
+  if (tagIds.length > 0) await assertTagsInTenant(tenantId, tagIds);
+}
 
 /**
  * Resolve the memo that a feed item should post with.
@@ -415,9 +433,19 @@ async function postAssignment(
   companyId?: string,
 ) {
   // Determine if this is an expense (positive amount = money out) or deposit
-  // (negative = money in).
-  const amount = Math.abs(parseFloat(item.amount));
-  const isExpense = parseFloat(item.amount) > 0;
+  // (negative = money in). Exact decimals (U-164): the amount posts as
+  // stored, never through a JavaScript number.
+  const signed = new Decimal(item.amount);
+  const amount = signed.abs();
+  const isExpense = signed.gt(0);
+  const amountStr = amount.toFixed(4);
+
+  // Split lines are worked out (and refused with a code) before any read,
+  // so an unbalanced split never reaches the ledger's generic message.
+  const splitsConfig = values.splitsConfig ?? null;
+  const splitLines = splitsConfig && splitsConfig.splits.length > 0
+    ? computeSplitLines(item.amount, splitsConfig)
+    : null;
 
   // Get the bank account from the connection. Tenant-scoped via a join on
   // accounts.tenant_id for defense in depth (CLAUDE.md rule #17).
@@ -432,27 +460,17 @@ async function postAssignment(
     throw AppError.notFound('Bank connection does not belong to this tenant');
   }
 
-  const splitsConfig = values.splitsConfig ?? null;
   const userLines: Array<{ accountId: string; debit: string; credit: string; description?: string; tagId?: string }> = [];
-  if (splitsConfig && splitsConfig.splits.length > 0) {
-    const totalCents = Math.round(amount * 100);
-    let allocatedCents = 0;
-    for (let i = 0; i < splitsConfig.splits.length; i++) {
-      const s = splitsConfig.splits[i]!;
-      let lineCents: number;
-      if (splitsConfig.kind === 'percentage') {
-        lineCents = i === splitsConfig.splits.length - 1
-          ? totalCents - allocatedCents
-          : Math.round((totalCents * (s as { percent: number }).percent) / 100);
-      } else {
-        lineCents = Math.round(parseFloat((s as { amount: string }).amount) * 100);
-      }
-      allocatedCents += lineCents;
-      const lineAmt = (lineCents / 100).toFixed(4);
+  if (splitLines) {
+    for (const s of splitLines) {
+      // A negative line (a fixed rule split may have one) goes on the other
+      // side of the entry, so the user lines still net to |amount|.
+      const userSideDebit = isExpense !== s.amount.isNegative();
+      const lineAmt = s.amount.abs().toFixed(4);
       userLines.push({
         accountId: s.accountId,
-        debit: isExpense ? lineAmt : '0',
-        credit: isExpense ? '0' : lineAmt,
+        debit: userSideDebit ? lineAmt : '0',
+        credit: userSideDebit ? '0' : lineAmt,
         // Falls back through the resolved transaction memo so a check payee
         // reaches the GL line description, not just the header memo.
         description: s.memo ?? values.memo ?? item.description ?? undefined,
@@ -462,8 +480,8 @@ async function postAssignment(
   } else {
     userLines.push({
       accountId: values.accountId,
-      debit: isExpense ? amount.toFixed(4) : '0',
-      credit: isExpense ? '0' : amount.toFixed(4),
+      debit: isExpense ? amountStr : '0',
+      credit: isExpense ? '0' : amountStr,
       // Same reason as the split branch: reports that read the line
       // description showed the bank descriptor instead of the payee.
       description: values.memo || item.description || undefined,
@@ -474,8 +492,8 @@ async function postAssignment(
 
   const cashLine = {
     accountId: conn.accountId,
-    debit: isExpense ? '0' : amount.toFixed(4),
-    credit: isExpense ? amount.toFixed(4) : '0',
+    debit: isExpense ? '0' : amountStr,
+    credit: isExpense ? amountStr : '0',
   };
 
   const txn = await db.transaction(async (tx) => {
@@ -488,7 +506,7 @@ async function postAssignment(
       // stays out of this chain — it leaked classification codes into the
       // books on every bulk approve.
       memo: values.memo || item.description || undefined,
-      total: amount.toFixed(4),
+      total: amountStr,
       source: 'bank_feed',
       sourceId: item.id,
       // ADR 0XY §3.3 — the tag stamps on the user-facing expense/revenue
@@ -536,7 +554,24 @@ async function postAssignment(
  * bulkCategorize. The interactive UI now stages via assign()/approve()
  * instead of calling this.
  */
-export async function categorize(tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string, companyId?: string) {
+export interface CategorizeOptions {
+  /**
+   * U-164: true when the account (and any `splits`) is the owner's own
+   * choice — the PUT /categorize routes, bulk-categorize and the MCP tool.
+   * The owner's account then overrides a split a rule staged on the item:
+   * no `splits` posts one line on accountId. False (the default) is "accept
+   * the suggestion as staged" (bulk approve, rule auto-posting, Close Review
+   * approve), which keeps posting the staged split as before.
+   */
+  ownerChoice?: boolean;
+}
+
+export async function categorize(
+  tenantId: string, feedItemId: string, input: CategorizeInput, userId?: string, companyId?: string,
+  opts: CategorizeOptions = {},
+) {
+  if (input.splits && input.splits.length > 0) await assertSplitRefsInTenant(tenantId, input.splits);
+
   // Atomic claim: flip the feed item from 'pending' to 'categorizing' in one
   // UPDATE. Two concurrent categorize calls serialize here — only one gets a
   // row back, the other throws cleanly (no duplicate ledger posts).
@@ -563,7 +598,12 @@ export async function categorize(tenantId: string, feedItemId: string, input: Ca
   const item = claimed;
 
   try {
-    const splitsConfig = item.splitsConfig as FeedSplitsConfig;
+    // The owner's split wins; with ownerChoice and no split, one line on the
+    // owner's account (a rule's staged split is not used); otherwise the
+    // staged split, as before.
+    const splitsConfig: FeedSplitsConfig = input.splits && input.splits.length > 0
+      ? manualSplitsConfig(input.splits)
+      : opts.ownerChoice ? null : (item.splitsConfig as FeedSplitsConfig);
     // Tag resolution distinguishes three caller intents:
     //   - key absent (undefined): no explicit choice → fall back to the
     //     rule-staged suggested tag (rule→categorize / "accept as-is").
@@ -601,6 +641,12 @@ export interface AssignInput {
   contactId?: string | null;
   tagId?: string | null;
   memo?: string | null;
+  /**
+   * U-164: the owner's split, staged for approve. Omitted clears a split a
+   * rule staged, so approve posts one line on accountId (the owner's choice
+   * wins over the rule's split).
+   */
+  splits?: FeedSplitLine[];
 }
 
 /**
@@ -626,6 +672,8 @@ export async function assign(tenantId: string, feedItemId: string, input: Assign
     if (!contact) throw AppError.badRequest('Assigned contact not found in this tenant');
   }
   if (input.tagId) await assertTagsInTenant(tenantId, [input.tagId]);
+  const hasSplits = !!input.splits && input.splits.length > 0;
+  if (hasSplits) await assertSplitRefsInTenant(tenantId, input.splits!);
 
   const item = await db.query.bankFeedItems.findFirst({
     where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)),
@@ -639,6 +687,10 @@ export async function assign(tenantId: string, feedItemId: string, input: Assign
       `It may already be posted or excluded.`,
     );
   }
+  // U-164: the owner's split must add up exactly to |amount| now, not only
+  // at approve (400 SPLITS_DONT_BALANCE / AMOUNT_NOT_CENTS).
+  const stagedSplits = hasSplits ? manualSplitsConfig(input.splits!) : null;
+  if (stagedSplits) computeSplitLines(item.amount, stagedSplits);
 
   const [updated] = await db.update(bankFeedItems)
     .set({
@@ -646,6 +698,9 @@ export async function assign(tenantId: string, feedItemId: string, input: Assign
       assignedContactId: input.contactId ?? null,
       assignedTagId: input.tagId ?? null,
       assignedMemo: input.memo ?? null,
+      // The owner's split, or none: an account without splits clears a
+      // split a rule staged (U-164).
+      splitsConfig: stagedSplits,
       assignedBy: userId ?? null,
       assignedAt: new Date(),
       status: 'assigned',
@@ -1045,7 +1100,7 @@ export async function bulkCategorize(tenantId: string, feedItemIds: string[], ac
         where: and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, id)),
       });
       if (item && item.status === 'pending') {
-        await categorize(tenantId, id, { accountId, contactId, memo, tagId }, userId, companyId);
+        await categorize(tenantId, id, { accountId, contactId, memo, tagId }, userId, companyId, { ownerChoice: true });
         categorized++;
       }
     } catch (err: any) {
