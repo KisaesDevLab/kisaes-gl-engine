@@ -226,6 +226,14 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
               AND (br.tenant_id = ${tenantId} OR br.tenant_id IS NULL))
         END
       )`,
+      // A split is staged on the row (by a rule, or the owner's own split):
+      // the same test postAssignment uses (a non-empty `splits` array). Lets
+      // a client warn that assign / categorize without `splits` posts one
+      // line and drops it (U-164 owner's choice; MyBooks E1).
+      hasStagedSplit: sql<boolean>`(
+        jsonb_typeof(${bankFeedItems.splitsConfig}->'splits') = 'array'
+        AND jsonb_array_length(${bankFeedItems.splitsConfig}->'splits') > 0
+      ) IS TRUE`,
       // U-166: the entry's line this row is, and the voided-entry flag.
       matchedJournalLineId: bankFeedItems.matchedJournalLineId,
       entryVoided: sql<boolean>`(${bankFeedItems.entryVoidedAt} IS NOT NULL)`,

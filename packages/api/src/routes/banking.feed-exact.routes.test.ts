@@ -284,6 +284,26 @@ describe('exact Bank Feed posting (U-164)', () => {
     expect((await postedLines(b)).lines.map((l) => l.accountId)).toEqual([supplies, bankId]);
   });
 
+  it('list rows say whether a split is staged (hasStagedSplit), and assign without splits clears it', async () => {
+    const ruleSplit = { kind: 'fixed', splits: [
+      { accountId: travel, amount: '50.00', tagId: null, memo: null }, { accountId: meals, amount: '34.17', tagId: null, memo: null },
+    ] };
+    const split = await feedItem('84.1700', { splitsConfig: ruleSplit, suggestedAccountId: travel });
+    const plain = await feedItem('12.0000', { suggestedAccountId: travel });
+    const empty = await feedItem('13.0000', { splitsConfig: { kind: 'fixed', splits: [] }, suggestedAccountId: travel });
+    const rows = async () => {
+      const r = await call('GET', '/api/v1/banking/feed?limit=500');
+      expect(r.status).toBe(200);
+      return new Map((r.json.data as Array<{ id: string; hasStagedSplit: boolean }>).map((x) => [x.id, x.hasStagedSplit]));
+    };
+    const before = await rows();
+    expect(before.get(split)).toBe(true);
+    expect(before.get(plain)).toBe(false);
+    expect(before.get(empty)).toBe(false);
+    expect((await assign(split, { accountId: supplies })).status).toBe(200);
+    expect((await rows()).get(split)).toBe(false);
+  });
+
   it('bulk approve posts a staged percentage split by largest remainder', async () => {
     const pct = (p: number[]) => ({ kind: 'percentage', splits: [
       { accountId: supplies, percent: p[0], tagId: null, memo: null },

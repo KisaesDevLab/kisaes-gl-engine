@@ -57,6 +57,10 @@ export interface BankFeedItem {
   // descriptor. Joined on list responses; absent on raw inserts.
   suggestedContactName?: string | null;
   matchType?: 'rule' | 'ai' | 'manual' | string | null;
+  // A split is staged on the row (splits_config has splits). Assign or
+  // categorize without `splits` posts one line and drops it (U-164).
+  // List responses only.
+  hasStagedSplit?: boolean;
   // STATEMENT_CHECK_PAYEE_V1 — payee read off a check-image thumbnail and the
   // parsed check number; shown in the UI so they're visible/confirmable.
   payeeNameOnCheck?: string | null;
