@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Tax-basis P&L provider (MODULE.md "Tax-treatment map", "Federal calculation
 // order" steps 1-2, D3, D8, D10). Books → engine input, applied BEFORE the engine:

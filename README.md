@@ -11,10 +11,9 @@ This repository ships three documents. Read all three.
 | `ENGINE-GRANT.md` | The Kisaes Engine Product Grant (Part A): the perpetual grant under which the Engine ships inside official Kisaes products |
 | `NOTICE.md` | The Kisaes Engine Notice (Part B): clarifications and the pointer to the OEM License for anyone who wants to distribute or host the Engine |
 
-`LICENSE` and `NOTICE.md` govern this repository. Some source-file headers and the
-workspace packages' `license` fields still name the PolyForm Small Business License;
-they came over unchanged with the split and will be updated in a follow-up change.
-Where they differ, `LICENSE` and `NOTICE.md` apply.
+`LICENSE` and `NOTICE.md` govern this repository. Source-file headers and the
+workspace packages' `license` fields name the PolyForm Internal Use License 1.0.0
+(SPDX `PolyForm-Internal-Use-1.0.0`); `npm run license:headers` checks the headers.
 
 ## What this is
 

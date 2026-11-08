@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- TB vendor-export history (plan 11.9): one row per generated export
 -- file with the provenance that makes staleness detectable (rule TB11):

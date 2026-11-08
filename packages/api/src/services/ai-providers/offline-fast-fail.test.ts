@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Desktop offline fast-fail for cloud AI (ai-providers/index.ts): the real
 // Anthropic/OpenAI SDK providers, pointed at an `.invalid` base URL or a

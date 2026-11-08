@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Per-client notify list for the "client categorized N transactions" email
 // (migration 0203). Empty list = no email; only listed users; access and

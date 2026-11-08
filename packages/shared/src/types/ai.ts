@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 export type AiProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai_compat' | 'digitalocean';
 export type AiJobType = 'categorize' | 'ocr_receipt' | 'ocr_statement' | 'ocr_invoice' | 'classify_document';

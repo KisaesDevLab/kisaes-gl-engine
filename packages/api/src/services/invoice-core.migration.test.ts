@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-123, U-126: migration 0242 adds journal_lines.service_date,
 // transactions.po_number / customer_message / hide_zero_lines and the

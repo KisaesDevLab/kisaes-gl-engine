@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Inventory reports (U-160, inventory-reports-v1) and the reorder report
 // (U-78, reorder-alerts-v1), mounted under /api/v1/reports before the

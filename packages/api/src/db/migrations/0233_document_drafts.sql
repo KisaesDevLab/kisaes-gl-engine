@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Document drafts, vendor layout templates and card last 4 (U-92, U-92a,
 -- U-92b; capabilities document-drafts-v1 and idempotency-docs-v1).

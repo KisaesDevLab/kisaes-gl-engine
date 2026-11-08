@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Tax Estimator Q54 (Kurt, 2026-10-13): per-taxpayer switch "Show on linked company dashboards".
 -- When false (the default for EVERY existing and new taxpayer) the taxpayer's Q52 company

@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q46 golden test: the engine must match features/tax-estimator/docs/reference-calc/pytrend_expected.json,
 // produced by pytrend_fixture.py (independent Python, no engine code). One seasonal Schedule C (books through

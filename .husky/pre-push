@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Copyright 2026 Kisaes LLC
-# Licensed under the PolyForm Small Business License 1.0.0.
-# Free for small businesses; see LICENSE for terms.
+# Licensed under the PolyForm Internal Use License 1.0.0.
+# See LICENSE and NOTICE.md for terms.
 #
 # Fail the push when openapi.json is out of date (the CI openapi test fails
 # on it, and a v* tag's Docker publish waits on CI). Only runs when the

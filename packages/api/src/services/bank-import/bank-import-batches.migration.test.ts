@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-06: migration 0263 is additive, rolls back and re-applies cleanly
 // (twice is a no-op); feed rows imported through a batch survive the

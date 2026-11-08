@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Rollback for 0268 (U-169). The feed accept/undo code must be rolled back
 -- with it. Accepted items keep their entries and links (the older engine

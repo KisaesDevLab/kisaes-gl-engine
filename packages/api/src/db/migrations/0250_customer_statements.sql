@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Customer statements (U-112, U-140; customer-statement-v1,
 -- customer-statement-send-v1). Finance charges (U-141) follow as 0251.

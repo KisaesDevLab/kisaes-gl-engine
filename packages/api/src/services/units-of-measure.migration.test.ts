@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-161: migration 0260 adds unit_sets, unit_set_units, the items' unit set
 // and default units, and journal_lines.unit_id / base_quantity. Additive; the

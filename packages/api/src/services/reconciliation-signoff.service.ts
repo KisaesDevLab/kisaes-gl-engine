@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Electronic sign-off on completed bank / credit-card reconciliations
 // (migration 0214). Mirrors the TB leadsheet sign-offs (preparer → reviewer,

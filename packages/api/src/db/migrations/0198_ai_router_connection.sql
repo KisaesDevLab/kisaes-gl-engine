@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Vibe AI Router connection set from Admin -> AI (a router on another
 -- local server) instead of only VIBE_AI_ROUTER_URL / VIBE_AI_TOKEN in env.

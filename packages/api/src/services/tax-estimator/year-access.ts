@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Firm-checked loaders shared by the Phase 5 services (years, scenarios, adjustments,
 // state rows). Every Phase 5 row hangs off a taxpayer, and a taxpayer is only ever

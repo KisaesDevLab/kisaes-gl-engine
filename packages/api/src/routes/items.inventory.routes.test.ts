@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-39b item-types-v1, U-156 inventory-account-v1, U-25 company-inventory-flag-v1
 // (ClientLedger P24 E1): inventory part items with the purchase side, the

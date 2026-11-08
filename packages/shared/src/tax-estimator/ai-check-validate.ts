@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Server-side validation of an AI parameter check (OPEN-QUESTIONS Q48). The model's answer is
 // never trusted: this module re-derives the verdict from what the web tools actually returned.

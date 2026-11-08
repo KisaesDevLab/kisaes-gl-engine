@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Adjusting-entry lens (U-60, je-adjusting-v1): adjusting=include|exclude|only
 // on the Profit and Loss, Balance Sheet (with its retained-earnings and

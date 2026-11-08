@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Rule-based TB diagnostics (Phase 6.4) — authoritative for export
 // gating (11.8); AI warnings (6C.5) are advisory and merge in the UI.

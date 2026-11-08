@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // MODULE.md step 5 — self-employment tax per person (Schedule SE):
 //   NESE     = SE income × se.nese_factor (zero when below se.min_nese or ≤ 0)

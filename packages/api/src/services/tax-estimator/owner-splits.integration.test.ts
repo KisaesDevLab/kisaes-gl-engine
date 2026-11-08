@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q50 — owner splits on person-target treatments (OPEN-QUESTIONS Q50). Kurt's screenshot:
 // "6800 Salaries - Officers" (W-2 wages) offered every firm taxpayer. Now:

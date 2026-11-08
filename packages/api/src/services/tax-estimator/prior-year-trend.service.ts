@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q46 prior-year trend inputs (OPEN-QUESTIONS.md Q46). Reads one company's PRIOR calendar year
 // month by month through the SAME P&L provider the current year uses (getTaxBasisPl: tax method,

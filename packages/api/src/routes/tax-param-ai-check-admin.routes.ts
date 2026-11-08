@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // AI parameter check (Tax Estimator, OPEN-QUESTIONS Q48). Super-admin only, the same guard as
 // /admin/tax-parameters and /admin/tax-state-rules: parameters are global reference data.

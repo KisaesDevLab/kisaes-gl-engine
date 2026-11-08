@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q49: display text for the per-tax-year entity type override (OPEN-QUESTIONS.md Q49). One source
 // for the API warning, the Calculation view chip, the assumptions line and the web setup page, so

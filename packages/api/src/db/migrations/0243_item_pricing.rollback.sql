@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Rollback for 0243 (item kinds and pricing: U-39a, U-40, U-129). The code
 -- that reads the columns and tables must be rolled back with it. Lost: item

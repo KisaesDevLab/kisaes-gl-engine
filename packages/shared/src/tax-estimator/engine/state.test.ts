@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Phase 8 state engine: Rivera oracle (features/tax-estimator/docs/reference-calc/
 // rivera_expected.json 'base' block: mo_gross / mo_credit / mo / ar / state_total),

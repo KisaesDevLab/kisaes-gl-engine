@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 /**
  * Application entrypoint. Replaces the pre-Phase-A `src/index.ts` as the
@@ -154,9 +154,9 @@ async function main(): Promise<void> {
   }
 
   // NOTE: the D6 boot-time license-token check was removed entirely
-  // (v0.9.111). It predated the PolyForm Small Business relicense —
-  // the product is free for small businesses, and the check's only
-  // real-world effect was failed installs. Commercial-tier
+  // (v0.9.111). It predated the move away from per-install license
+  // tokens, and the check's only real-world effect was failed
+  // installs. Licensing terms are in LICENSE and NOTICE.md. Commercial-tier
   // enforcement, if it ever returns, gates features, not boot.
   await import('./index.js');
 }

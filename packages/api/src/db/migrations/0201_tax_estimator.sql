@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Tax Estimator (TAX_ESTIMATOR_V1). ONE consolidated, additive migration for
 -- the whole module (features/tax-estimator/MODULE.md D6): each phase appends

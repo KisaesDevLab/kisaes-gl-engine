@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // Grouped batch save (ClientLedger Bulk Entry, U-67–U-74):
 //   - atomic: row 37 of 50 failing at posting leaves nothing (no

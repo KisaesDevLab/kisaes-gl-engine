@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Pure builder for the Calculation view: reads the EstimateResultDTO and returns display lines.
 // ONE source for the web Calculation table (features/tax-estimator/estimate/CalculationTable.tsx)

@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q54 (Kurt, 2026-10-13): firm_staff / firm_readonly members below hold "Tax Estimator: view
 // taxpayers" (capabilities) so these pre-Q54 expectations hold as written; the Q54 matrix itself

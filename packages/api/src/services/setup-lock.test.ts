@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 // withSetupLock against the real test database: the session advisory lock
 // must be taken and released on the same connection, so it never leaks to
 // an idle pooled connection, and a concurrent call is refused.

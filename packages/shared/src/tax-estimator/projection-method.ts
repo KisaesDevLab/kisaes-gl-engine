@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Tax Estimator — projection method per linked business per tax year (OPEN-QUESTIONS Q46, Kurt
 // 2026-10-13: "Add an option to utilize the ordinary net income monthly trends from the prior year

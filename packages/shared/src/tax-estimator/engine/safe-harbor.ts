@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // MODULE.md "Safe harbor" — the required annual payment (Form 2210 Part I):
 //   (a) current-year rule: `safe_harbor.current_pct` × current-year tax;

@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Adjusting journal entries (Phase 5, D10/D17, rule TB3). AJEs are
 // REAL GL transactions (txn_type 'aje') posted through the ledger

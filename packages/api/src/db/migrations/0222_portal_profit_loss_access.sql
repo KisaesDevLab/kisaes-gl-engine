@@ -1,8 +1,8 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
--- Portal live Profit & Loss — a portal contact may view a live P&L for a
+-- Portal live Profit & Loss ï¿½ a portal contact may view a live P&L for a
 -- linked company (date range, row drill-down, ask a question on a transaction).
 -- Per contact per company, like the other portal access flags. Default off.
 

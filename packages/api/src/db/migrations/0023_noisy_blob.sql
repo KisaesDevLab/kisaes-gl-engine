@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 -- migration-policy: non-additive-exception
 -- Global bank rules (is_global = true) have no owning tenant, so
 -- tenant_id must be nullable. The rule engine + route layer enforce

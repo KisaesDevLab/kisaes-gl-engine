@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Rollback for 0201_tax_estimator, children first (Q41 switch, R6 lifecycle, R7 verification, phases 13, 12, 10b, 5, 4, 3, 2, then 1 and 0).
 

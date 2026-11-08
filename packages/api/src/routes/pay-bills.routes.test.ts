@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // Pay Bills (U-101 bill-discounts-v1, U-102 idempotency-pay-bills-v1,
 // U-103 bill-payment-check-number-v1, U-104 company scope) through the

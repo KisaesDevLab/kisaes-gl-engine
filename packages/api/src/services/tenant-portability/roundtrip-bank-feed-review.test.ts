@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // Tenant archive round trip of the P26 E2 columns (migrations 0265-0266):
 // bank_feed_items.matched_journal_line_id (remapped to the imported line),

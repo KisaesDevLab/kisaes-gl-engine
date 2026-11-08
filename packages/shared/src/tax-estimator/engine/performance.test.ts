@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Phase 14 performance guard (PHASES.md Phase 14 "under 500 ms for 10 entities × 24
 // months with the cache"; R7-06 asked for at least a logged measurement). This

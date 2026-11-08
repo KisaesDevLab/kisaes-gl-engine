@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-138 (credit-memo-edit-v1) and U-143 (sales-receipt-lines-v1): credit
 // memos and sales receipts on the invoice line model; golden cases 1, 2, 7.

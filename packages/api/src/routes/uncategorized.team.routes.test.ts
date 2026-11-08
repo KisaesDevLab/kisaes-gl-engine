@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Banking → Uncategorized (team members) on the /practice/uncategorized router.
 //   - a non-firm accountant on a FIRM-MANAGED tenant may suggest (201) but is

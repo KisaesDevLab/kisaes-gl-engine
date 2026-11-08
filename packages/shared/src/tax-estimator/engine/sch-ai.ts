@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // MODULE.md "Schedule AI" (Form 2210 Schedule AI, D7). For each period end
 // (`sch_ai.period_ends`: 3/31, 5/31, 8/31, 12/31) the ACTUAL tax-basis figures

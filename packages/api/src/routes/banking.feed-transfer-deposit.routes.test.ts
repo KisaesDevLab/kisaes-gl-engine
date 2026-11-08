@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-171 (feed-match-post-v1) and U-77 (account-balances-v1):
 //   - GET /banking/feed/:id/transfer-candidates: exact opposite amounts on

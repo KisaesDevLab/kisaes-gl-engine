@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Wire contract for the AI parameter check (OPEN-QUESTIONS Q48). Advisory only: a check never
 // changes a parameter and never marks anything verified; "Apply AI value" writes an audited

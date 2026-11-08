@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-150 (sales-tax-pay-v1, idempotency-sales-tax-pay-v1): golden case 9
 // (Pay Sales Tax with an adjustment, replay, S1 re-preview, stale 409, an

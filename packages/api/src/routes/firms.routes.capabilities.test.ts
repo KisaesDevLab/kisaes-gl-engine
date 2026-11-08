@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // GET/PUT /firms/:firmId/users/:firmUserId/capabilities
 //   - firm_admin of the firm edits; firm_staff 403 NOT_FIRM_ADMIN; outsider 404

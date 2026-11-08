@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // The idempotent() middleware and the claim service on test routes (U-18):
 //   E3  key shape boundaries -> 400 IDEMPOTENCY_KEY_INVALID;

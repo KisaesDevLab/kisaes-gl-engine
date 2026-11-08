@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // Ledger guards (U-80, U-81 — capability ledger-guards-v1):
 //   - PUT /transactions/:id on a deposit refuses an edit that sends a linked

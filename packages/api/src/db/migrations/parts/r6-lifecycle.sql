@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Tax Estimator R6 part: parameter-lifecycle review (docs/reviews/R6-parameter-lifecycle.md).
 -- Assembled AFTER the R7 verification part. Additive only. R6-06: a federal year created from

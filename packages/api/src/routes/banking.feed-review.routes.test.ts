@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // P26 E2 (feed-match-v2, feed-idempotency-v1, feed-review-v1):
 //   U-166 line-level matches (B2) and the U-136 sign fix; void of a linked
