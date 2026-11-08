@@ -42,6 +42,8 @@ import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as expenseService from '../services/expense.service.js';
+import * as billService from '../services/bill.service.js';
+import bcrypt from 'bcrypt';
 import * as ledger from '../services/ledger.service.js';
 import * as bankFeedAccept from '../services/bank-feed-accept.service.js';
 import * as draftService from '../services/document-draft.service.js';
@@ -97,7 +99,7 @@ const undo = (body: unknown, key?: string) => keyed('/api/v1/banking/feed/undo',
 
 type Draft = { id: string; updatedAt: string; status: string };
 
-async function readyDraft(kindHint = 'card_charge') {
+async function readyDraft(kindHint = 'card_charge', reading: { suggestedContactId?: string; docReference?: string; docTotal?: string } = {}) {
   const bytes = Buffer.from(`%PDF-1.4\n% receipt ${crypto.randomUUID()}\n%%EOF\n`);
   const draftKey = crypto.randomUUID();
   const att = await attachmentService.upload(c.tenantId, {
@@ -107,7 +109,7 @@ async function readyDraft(kindHint = 'card_charge') {
   expect(r.status, JSON.stringify(r.json)).toBe(201);
   const d = r.json.draft as Draft;
   const rd = await send('PUT', `/api/v1/document-drafts/${d.id}`, {
-    expectedUpdatedAt: d.updatedAt, status: 'ready', docTotal: '42.17', docDate: '2026-08-14',
+    expectedUpdatedAt: d.updatedAt, status: 'ready', docTotal: '42.17', docDate: '2026-08-14', ...reading,
   });
   expect(rd.status, JSON.stringify(rd.json)).toBe(200);
   return { attachmentId: att!.id as string, draftKey, draft: rd.json.draft as Draft };
@@ -399,6 +401,184 @@ describe('POST /banking/feed/accept with documentDraft (U-181)', () => {
     const r = await accept({ items: [{ id: a, documentDraft: dd }, { id: b, documentDraft: dd }] });
     expect(r.status).toBe(400);
     expect((await item(a)).status).toBe('pending');
+  });
+});
+
+describe('feed accept with a document runs convert\'s duplicate check (U-185, feed-accept-draft-duplicates-v1)', () => {
+  /** A vendor of its own per test, so other tests' entries never match. */
+  async function newVendor() {
+    const [v] = await db.insert(contacts).values({ tenantId: c.tenantId, contactType: 'vendor', displayName: `Ozark Valley Electric ${suffix()}` } as never).returning();
+    return v!.id as string;
+  }
+  async function bill(vendor: string, amount: string, vendorInvoiceNumber: string) {
+    const b = await billService.createBill(c.tenantId, {
+      contactId: vendor, txnDate: '2026-08-02', vendorInvoiceNumber, lines: [{ accountId: c.supplies, amount }],
+    } as Parameters<typeof billService.createBill>[1], c.ownerId, c.companyId);
+    return b.id as string;
+  }
+  async function vendorExpense(vendor: string, amount: string, txnDate: string) {
+    const exp = await expenseService.createExpense(c.tenantId, {
+      txnDate, contactId: vendor, payFromAccountId: c.card, lines: [{ expenseAccountId: c.supplies, amount }],
+    } as Parameters<typeof expenseService.createExpense>[1], c.ownerId, c.companyId);
+    return exp.id as string;
+  }
+  /** Live (not deleted or void) bills and expenses of the vendor. */
+  const entriesOf = async (vendor: string) => ((await db.execute(sql`SELECT count(*)::int AS n FROM transactions
+    WHERE tenant_id = ${c.tenantId} AND contact_id = ${vendor} AND status = 'posted'`)).rows[0] as { n: number }).n;
+  const draftAudits = async (id: string) => (await db.select().from(auditLog).where(and(eq(auditLog.tenantId, c.tenantId),
+    eq(auditLog.entityType, 'document_draft'), eq(auditLog.entityId, id)))).length;
+
+  it('advertises feed-accept-draft-duplicates-v1', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('feed-accept-draft-duplicates-v1');
+  });
+
+  it('T1: a document whose bill is already entered (same reference) fails the row DOCUMENT_POSSIBLE_DUPLICATE; nothing posts; a replay is the same refusal', async () => {
+    const vendor = await newVendor();
+    const billId = await bill(vendor, '685.55', 'INV-33994105');
+    // The read reference differs only in spacing, case and leading zeros.
+    const d = await readyDraft('bill', { suggestedContactId: vendor, docReference: 'inv 033994105', docTotal: '685.55' });
+    const row = await feed('685.55');
+    const auditsBefore = await draftAudits(d.draft.id);
+    const key = crypto.randomUUID();
+    const body = { items: [{ id: row, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } }] };
+    const r = await accept(body, key);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json).toMatchObject({ posted: 0, matched: 0, skipped: [] });
+    expect(r.json.failures).toHaveLength(1);
+    const f = r.json.failures[0];
+    expect(f).toMatchObject({ id: row, code: 'DOCUMENT_POSSIBLE_DUPLICATE', details: { draftId: d.draft.id } });
+    expect(f.code).not.toBe('POSSIBLE_DUPLICATE');
+    expect(f.details.matches).toEqual([{
+      source: 'transaction', id: billId, reason: 'reference', txnType: 'bill', kind: null,
+      date: '2026-08-02', total: '685.5500', reference: 'INV-33994105',
+    }]);
+    // Nothing posted, nothing moved.
+    const it2 = await item(row);
+    expect(it2.status).toBe('pending');
+    expect(it2.matchedTransactionId).toBeNull();
+    expect(await entriesOf(vendor)).toBe(1);
+    const dr = await draftRow(d.draft.id);
+    expect(dr.status).toBe('ready');
+    expect(dr.updatedAt.toISOString()).toBe(d.draft.updatedAt);
+    expect(await fileOf(d.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: d.draftKey });
+    expect(await draftAudits(d.draft.id)).toBe(auditsBefore);
+
+    const again = await accept(body, key);
+    expect(again.headers['idempotent-replayed']).toBe('true');
+    expect(again.json).toEqual(r.json);
+    expect(await entriesOf(vendor)).toBe(1);
+  });
+
+  it('T1: acknowledged matches post exactly once (audited); a replay of that key posts nothing more', async () => {
+    const vendor = await newVendor();
+    const billId = await bill(vendor, '685.55', 'INV-33994106');
+    // Same vendor and total, no reference, 30 days before the bank line: the amount rule.
+    const expId = await vendorExpense(vendor, '685.55', '2026-07-15');
+    const d = await readyDraft('bill', { suggestedContactId: vendor, docReference: 'INV-33994106', docTotal: '685.55' });
+    const row = await feed('685.55');
+    const dd = { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt };
+
+    const first = await accept({ items: [{ id: row, documentDraft: dd }] });
+    const reasons = Object.fromEntries((first.json.failures[0].details.matches as Array<{ id: string; reason: string }>).map((m) => [m.id, m.reason]));
+    expect(reasons).toEqual({ [billId]: 'reference', [expId]: 'amount_date' });
+
+    // Only one acknowledged: the other still refuses.
+    const half = await accept({ items: [{ id: row, documentDraft: { ...dd, acknowledgeDuplicateOf: [billId] } }] });
+    expect(half.json.posted).toBe(0);
+    expect(half.json.failures[0].code).toBe('DOCUMENT_POSSIBLE_DUPLICATE');
+    expect(half.json.failures[0].details.matches.map((m: { id: string }) => m.id)).toEqual([expId]);
+    expect(await entriesOf(vendor)).toBe(2);
+
+    const key = crypto.randomUUID();
+    const body = { items: [{ id: row, documentDraft: { ...dd, acknowledgeDuplicateOf: [billId.toUpperCase(), expId] } }] };
+    const ok = await accept(body, key);
+    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    expect(ok.json.posted).toBe(1);
+    expect(ok.json.failures).toEqual([]);
+    const txnId = (await item(row)).matchedTransactionId!;
+    expect((await draftRow(d.draft.id))).toMatchObject({ status: 'converted', convertedTransactionId: txnId });
+    expect(await fileOf(d.attachmentId)).toMatchObject({ attachableType: 'expense', attachableId: txnId });
+    const audits = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, c.tenantId),
+      eq(auditLog.entityType, 'document_draft'), eq(auditLog.entityId, d.draft.id)));
+    const attached = audits.map((a) => a.afterData as Record<string, unknown>).find((a) => a['attached'] === true);
+    expect(attached?.['acknowledgedDuplicates']).toEqual([billId.toUpperCase(), expId]);
+
+    const again = await accept(body, key);
+    expect(again.headers['idempotent-replayed']).toBe('true');
+    expect(again.json).toEqual(ok.json);
+    // The bank line posted once: the bill, the expense and the one new entry.
+    const posted = await db.execute(sql`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = ${c.tenantId}
+      AND source = 'bank_feed' AND source_id = ${row} AND status = 'posted'`);
+    expect((posted.rows[0] as { n: number }).n).toBe(1);
+  });
+
+  it('T1: the row\'s own contact is the vendor when the draft names none; other rows in the request still post', async () => {
+    const vendor = await newVendor();
+    const billId = await bill(vendor, '120.00', 'R-77');
+    const d = await readyDraft('card_charge', { docReference: 'R-77', docTotal: '120.00' });
+    const dup = await feed('120.00');
+    const plain = await feed('120.01');
+    const r = await accept({ items: [
+      { id: dup, accountId: c.supplies, contactId: vendor, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } },
+      { id: plain },
+    ] });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.posted).toBe(1);
+    expect(r.json.failures).toEqual([expect.objectContaining({ id: dup, code: 'DOCUMENT_POSSIBLE_DUPLICATE' })]);
+    expect(r.json.failures[0].details.matches.map((m: { id: string }) => m.id)).toEqual([billId]);
+    expect((await item(dup)).status).toBe('pending');
+    expect((await item(plain)).matchedTransactionId).toBeTruthy();
+  });
+
+  it('a document with no matching entry posts as before; a draft with no vendor anywhere is not checked', async () => {
+    const vendor = await newVendor();
+    await bill(vendor, '300.00', 'OTHER-1');
+    const d = await readyDraft('bill', { suggestedContactId: vendor, docReference: 'NEW-2', docTotal: '42.17' });
+    const row = await feed('42.17');
+    const r = await accept({ items: [{ id: row, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } }] });
+    expect(r.json.posted, JSON.stringify(r.json)).toBe(1);
+  });
+});
+
+describe('feed accept with a document in a closed period (PR-A1 T3)', () => {
+  const PASSWORD = 'feed-accept-drafts-pass-1';
+  it('without the password the row fails closed and nothing changes; with it the row posts, the draft is filed and the override audited', async () => {
+    const d = await readyDraft();
+    const row = await feed('44.44');
+    const auditCount = async (entityType: string, entityId?: string) => (await db.select().from(auditLog).where(and(
+      eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, entityType), entityId ? eq(auditLog.entityId, entityId) : undefined))).length;
+    const draftAuditsBefore = await auditCount('document_draft', d.draft.id);
+    const overridesBefore = await auditCount('closing_date_override');
+    await db.update(companies).set({ lockDate: '2026-08-31', closingPasswordHash: await bcrypt.hash(PASSWORD, 4) })
+      .where(eq(companies.id, c.companyId));
+    try {
+      const body = { items: [{ id: row, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } }] };
+      const locked = await accept(body);
+      expect(locked.status, JSON.stringify(locked.json)).toBe(200);
+      expect(locked.json.posted).toBe(0);
+      expect(locked.json.failures).toEqual([expect.objectContaining({ id: row, code: 'TB_PERIOD_LOCKED' })]);
+      expect(locked.json.failures[0].details).toMatchObject({ closingPasswordRequired: true });
+      expect((await item(row))).toMatchObject({ status: 'pending', matchedTransactionId: null });
+      const dr = await draftRow(d.draft.id);
+      expect(dr.status).toBe('ready');
+      expect(dr.updatedAt.toISOString()).toBe(d.draft.updatedAt);
+      expect(await fileOf(d.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: d.draftKey });
+      expect(await auditCount('document_draft', d.draft.id)).toBe(draftAuditsBefore);
+      expect(await auditCount('closing_date_override')).toBe(overridesBefore);
+
+      const ok = await accept({ ...body, closingPassword: PASSWORD });
+      expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+      expect(ok.json.posted).toBe(1);
+      expect(ok.json.failures).toEqual([]);
+      const txnId = (await item(row)).matchedTransactionId!;
+      expect(await draftRow(d.draft.id)).toMatchObject({ status: 'converted', convertedTransactionId: txnId });
+      expect(await fileOf(d.attachmentId)).toMatchObject({ attachableType: 'expense', attachableId: txnId });
+      expect(await auditCount('closing_date_override')).toBe(overridesBefore + 1);
+      const all = JSON.stringify(await db.select().from(auditLog).where(eq(auditLog.tenantId, c.tenantId)));
+      expect(all).not.toContain(PASSWORD);
+    } finally {
+      await db.update(companies).set({ lockDate: null, closingPasswordHash: null }).where(eq(companies.id, c.companyId));
+    }
   });
 });
 
