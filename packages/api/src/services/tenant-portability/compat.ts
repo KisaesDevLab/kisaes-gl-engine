@@ -28,6 +28,13 @@ export const SALES_TAX_BACKFILL_SCHEMA_VERSION = 253;
 /** Schema version after 0253 (U-152): an older archive gets the Unapplied receipts account and the sales_tax permission grants on import. */
 export const SALES_TAX_LIABILITY_SCHEMA_VERSION = 254;
 
+/**
+ * Schema version after 0271: an older archive's percentage splits (conditional
+ * rules, staged feed items) within the old 0.01 tolerance get the migration's
+ * normalization (percent_splits_normalize_tenant) on import, so they post.
+ */
+export const PERCENT_SPLITS_NORMALIZE_SCHEMA_VERSION = 272;
+
 /** Archive tables that no longer exist live: skipped with a warning when the archive predates `droppedIn`. */
 export const DROPPED_TABLES: Record<string, { droppedIn: number }> = {};
 
