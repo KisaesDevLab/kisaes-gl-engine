@@ -748,3 +748,101 @@ describe('GET /banking/feed: status=accepted and transferCandidate (Q-P26y)', ()
     expect(byId((await list('limit=500')).data)[out].transferCandidate).toBeNull();
   });
 });
+
+describe('GET /banking/feed and /counts: transferWindowDays (U-177, feed-transfer-window-v1)', () => {
+  const get = async (pathname: string) => {
+    const r = await request('GET', pathname);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    return r.json;
+  };
+
+  it('is advertised', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('feed-transfer-window-v1');
+  });
+
+  it('two sides 5 days apart are a transfer only with a window of 5 or more; list, bucket filter and counts agree', async () => {
+    const out = await feed('777.0000', { description: 'ZZQX ONLINE TRANSFER' });
+    const inn = await feed('-777.0000', { bankConnectionId: c.savingsConn, feedDate: '2026-08-19', description: 'ZZQX ONLINE TRANSFER' });
+
+    for (const q of ['', '&transferWindowDays=3', '&transferWindowDays=4']) {
+      const rows = Object.fromEntries((await get(`${BASE}?limit=500${q}`)).data.map((r: any) => [r.id, r]));
+      expect(rows[out].transferCandidate, q).toBeNull();
+      expect(rows[out].bucket, q).toBe('ready');
+      expect(rows[inn].bucket, q).toBe('ready');
+      expect((await get(`${BASE}/counts?${q.slice(1)}`)).matches, q).toBe(0);
+      expect((await get(`${BASE}?bucket=matches${q}`)).total, q).toBe(0);
+    }
+    for (const w of [5, 7, 10]) {
+      const rows = Object.fromEntries((await get(`${BASE}?limit=500&transferWindowDays=${w}`)).data.map((r: any) => [r.id, r]));
+      expect(rows[out].transferCandidate).toEqual({ feedItemId: inn, accountId: c.savings, accountName: 'ZZ Savings' });
+      expect(rows[inn].transferCandidate).toMatchObject({ feedItemId: out, accountId: c.checking });
+      expect([rows[out].bucket, rows[inn].bucket]).toEqual(['matches', 'matches']);
+      const counts = await get(`${BASE}/counts?transferWindowDays=${w}`);
+      expect(counts).toMatchObject({ matches: 2, ready: 0, waiting: 2 });
+      expect((await get(`${BASE}?bucket=matches&transferWindowDays=${w}`)).total).toBe(2);
+      expect((await get(`${BASE}?bucket=ready&transferWindowDays=${w}`)).total).toBe(0);
+    }
+    // The candidates route at the same window agrees.
+    const cand = await get(`${BASE}/${out}/transfer-candidates?windowDays=5`);
+    expect(cand.candidates.map((x: any) => x.feedItemId)).toEqual([inn]);
+  });
+
+  it('400 VALIDATION_ERROR outside 1-10 or not a whole number, on both endpoints', async () => {
+    for (const v of ['0', '11', '-1', '2.5', 'abc']) {
+      for (const p of [`${BASE}?transferWindowDays=${v}`, `${BASE}/counts?transferWindowDays=${v}`]) {
+        const r = await request('GET', p);
+        expect([r.status, r.json?.error?.code], p).toEqual([400, 'VALIDATION_ERROR']);
+      }
+    }
+  });
+});
+
+describe('GET /banking/feed: acceptKind (U-178, feed-accept-kind-v1)', () => {
+  const rows = async () => Object.fromEntries((await (async () => {
+    const r = await request('GET', `${BASE}?limit=500`);
+    expect(r.status).toBe(200);
+    return r.json.data as any[];
+  })()).map((r) => [r.id, r]));
+
+  it('is advertised', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('feed-accept-kind-v1');
+  });
+
+  it('post, match, transfer (both sides) and deposit; null while waiting, after Undo, and without an accept record', async () => {
+    const posted = await feed('31.0000');
+    const e = await check('262.0000');
+    const matched = await feed('262.0000');
+    const out = await feed('540.0000', { description: 'ZZQX ONLINE TRANSFER' });
+    const inn = await feed('-540.0000', { bankConnectionId: c.savingsConn, feedDate: '2026-08-15', description: 'ZZQX ONLINE TRANSFER' });
+    const p = await payment('615.0000');
+    const dep = await feed('-615.0000', { description: 'ZZQX DEPOSIT', originalDescription: 'ZZQX DEPOSIT' });
+    const waiting = await feed('32.0000');
+    // Matched before accept records existed (no record): null.
+    const e2 = await check('263.0000');
+    const legacy = await feed('263.0000', { status: 'matched', matchedTransactionId: e2 });
+
+    const a = await accept({ items: [{ id: posted }, { id: matched, matchTransactionId: e }] });
+    expect(a.json).toMatchObject({ posted: 1, matched: 1, failures: [] });
+    expect((await keyed(`${BASE}/${out}/transfer`, { otherFeedItemId: inn })).status).toBe(200);
+    expect((await keyed(`${BASE}/${dep}/deposit`, { sourceTransactionIds: [p] })).status).toBe(200);
+
+    let r = await rows();
+    expect(r[posted].acceptKind).toBe('post');
+    expect(r[matched].acceptKind).toBe('match');
+    expect([r[out].acceptKind, r[inn].acceptKind]).toEqual(['transfer', 'transfer']);
+    expect(r[dep].acceptKind).toBe('deposit');
+    expect(r[dep].status).toBe('matched');
+    expect(r[waiting].acceptKind).toBeNull();
+    expect(r[legacy].acceptKind).toBeNull();
+    // The same field on status=accepted.
+    const acc = await request('GET', `${BASE}?status=accepted&limit=500`);
+    expect(acc.json.data.find((x: any) => x.id === dep).acceptKind).toBe('deposit');
+
+    // Undo clears it; a new accept of the same row reads the new record.
+    expect((await undo({ feedItemIds: [posted, matched] })).status).toBe(200);
+    r = await rows();
+    expect([r[posted].acceptKind, r[matched].acceptKind]).toEqual([null, null]);
+    expect((await accept({ items: [{ id: matched, matchTransactionId: e }] })).json.matched).toBe(1);
+    expect((await rows())[matched].acceptKind).toBe('match');
+  });
+});

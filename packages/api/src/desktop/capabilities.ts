@@ -856,7 +856,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * CONDITIONAL_RULES_V1 flag check. The other side of a transfer is a match signal (bucket "matches").
    * GET /banking/feed (Q-P26y): status=accepted lists every categorized and matched row (entryVoided included; total =
    * /counts accepted), paged; rows carry transferCandidate {feedItemId, accountId, accountName} | null, the other side of a
-   * transfer when exactly one waits (the matches bucket's transfer rule, 3 days), null on rows that aren't waiting.
+   * transfer when exactly one waits (the matches bucket's transfer rule, 3 days or transferWindowDays, feed-transfer-window-v1), null on rows that aren't waiting.
    */
   'feed-accept-v1',
   /**
@@ -872,5 +872,19 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * PAYMENT_BOUNCED, FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Idempotency-Key required.
    */
   'feed-undo-v1',
+  /**
+   * GET /banking/feed and GET /banking/feed/counts take transferWindowDays (U-177): an integer 1-10, default 3 (400
+   * VALIDATION_ERROR otherwise). It is the transfer twin window of the matches bucket (bucket, ?bucket=matches, /counts matches)
+   * and of the list's transferCandidate, as GET /banking/feed/:id/transfer-candidates windowDays; send the same value to both so
+   * the counts equal the list totals. POST /banking/feed/accept's has_match skip keeps the 3-day window.
+   */
+  'feed-transfer-window-v1',
+  /**
+   * GET /banking/feed rows carry acceptKind (U-178): post | match | transfer | deposit | payment, the kind of the row's live accept
+   * record (this item, its current entry, not undone, newest; the record POST /banking/feed/undo acts on), else null (waiting,
+   * excluded, or accepted before accept records existed). A matched row with acceptKind transfer or deposit was posted by that
+   * accept; match means it was linked to an entry already in the books.
+   */
+  'feed-accept-kind-v1',
 ];
 

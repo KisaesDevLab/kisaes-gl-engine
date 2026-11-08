@@ -62,9 +62,9 @@ function scopeConditions(tenantId: string, filters: Pick<BankFeedFilters, 'bankC
  * rows being posted right now.
  */
 export async function counts(
-  tenantId: string, filters: Pick<BankFeedFilters, 'bankConnectionId' | 'startDate' | 'endDate'> = {},
+  tenantId: string, filters: Pick<BankFeedFilters, 'bankConnectionId' | 'startDate' | 'endDate' | 'transferWindowDays'> = {},
 ) {
-  const bucket = bucketSql(tenantId);
+  const bucket = bucketSql(tenantId, filters.transferWindowDays);
   const [row] = await db.select({
     ready: sql<number>`COUNT(*) FILTER (WHERE ${bucket} = 'ready')::int`,
     review: sql<number>`COUNT(*) FILTER (WHERE ${bucket} = 'review')::int`,
@@ -100,7 +100,7 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
     conditions.push(eq(bankFeedItems.matchType, 'rule'));
   }
   // U-174 / U-166 filters, the predicates GET /feed/counts uses.
-  const bucket = bucketSql(tenantId);
+  const bucket = bucketSql(tenantId, filters.transferWindowDays);
   if (filters.bucket) conditions.push(sql`${bucket} = ${filters.bucket}`);
   if (filters.possibleDuplicate !== undefined) {
     conditions.push(filters.possibleDuplicate
@@ -291,7 +291,17 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       )`,
       // feed-accept-v1 (Q-P26y): the other side of a transfer when exactly
       // one is waiting (the "matches" bucket's transfer rule), else null.
-      transferCandidate: transferCandidateSql(tenantId, sql`${accounts.id}`),
+      transferCandidate: transferCandidateSql(tenantId, sql`${accounts.id}`, filters.transferWindowDays),
+      // feed-accept-kind-v1 (U-178): what the row's live accept record did
+      // (post | match | transfer | deposit | payment), the record Undo acts on
+      // (liveRecordFor: this item, its current entry, not undone, newest);
+      // null when the row has no entry or no live record.
+      acceptKind: sql<'post' | 'match' | 'transfer' | 'deposit' | 'payment' | null>`(
+        SELECT r.kind FROM bank_feed_accept_group_items r
+        WHERE r.tenant_id = ${tenantId} AND r.feed_item_id = ${bankFeedItems.id}
+          AND r.transaction_id = ${bankFeedItems.matchedTransactionId} AND r.undone_at IS NULL
+        ORDER BY r.created_at DESC, r.id DESC LIMIT 1
+      )`,
     }).from(bankFeedItems)
       .leftJoin(bankConnections, eq(bankFeedItems.bankConnectionId, bankConnections.id))
       .leftJoin(accounts, eq(bankConnections.accountId, accounts.id))

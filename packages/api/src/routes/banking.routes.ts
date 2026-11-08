@@ -108,8 +108,11 @@ bankingRouter.get('/feed', describe({
     + 'duplicateOf, suggestedRule, entryVoided, entryVoidedAt, matchedJournalLineId and transferCandidate (feed-accept-v1): on a '
     + 'waiting, unmatched row, {feedItemId, accountId, accountName} of the other side of a transfer when exactly one exists (a waiting '
     + 'row on another GL account of the company with the exact opposite amount within 3 days, the rule of GET '
-    + '/banking/feed/:id/transfer-candidates and of the matches bucket), else null. Amounts are decimal strings in the feed sign '
-    + '(positive = money out).',
+    + '/banking/feed/:id/transfer-candidates and of the matches bucket), else null. transferWindowDays (1-10, default 3; '
+    + 'feed-transfer-window-v1) sets that window for transferCandidate, bucket and the matches filter (send the same value to '
+    + '/banking/feed/counts). acceptKind (feed-accept-kind-v1): post | match | transfer | deposit | payment, what the live '
+    + 'accept record of the row did (the record POST /banking/feed/undo acts on), null when the row has no entry or no live record. Amounts '
+    + 'are decimal strings in the feed sign (positive = money out).',
   query: bankFeedFiltersSchema,
 }), async (req, res) => {
   const filters = bankFeedFiltersSchema.parse(req.query);
@@ -140,7 +143,8 @@ bankingRouter.get('/feed/counts', describe({
   description: 'Response {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, excluded, inProgress}. '
     + 'waiting = ready + review + matches (pending and assigned rows), each equal to the total of GET /banking/feed?bucket=<b>. '
     + 'Buckets, first match wins: a possible duplicate is review; any match signal (a candidate journal line on the bank account, '
-    + 'payroll lines included, or one Payments Clearing item for exactly a money-in amount within 10 days) is matches; no account, '
+    + 'payroll lines included, one Payments Clearing item for exactly a money-in amount within 10 days, or the other side of a '
+    + 'transfer within transferWindowDays, 1-10, default 3, feed-transfer-window-v1) is matches; no account, '
     + 'a non-rule suggestion under 0.80 confidence, a rule mark_for_review, or a staged split that cannot post is review; the rest '
     + 'is ready. accepted = categorized and matched rows (entryVoided included: Accepted, Entry voided, never waiting); inProgress = '
     + 'rows being posted. Scope: bankConnectionId, startDate, endDate.',

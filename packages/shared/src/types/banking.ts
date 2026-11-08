@@ -95,6 +95,9 @@ export interface BankFeedItem {
   // when exactly one exists (the transfer-candidates rule, default 3-day
   // window: another GL account, the exact opposite amount, waiting); else null.
   transferCandidate?: BankFeedTransferCandidate | null;
+  // feed-accept-kind-v1 (U-178): what the row's live accept record did (the
+  // record Undo acts on); null when the row has no entry or no live record.
+  acceptKind?: 'post' | 'match' | 'transfer' | 'deposit' | 'payment' | null;
 }
 
 export interface BankFeedTransferCandidate {
@@ -124,6 +127,8 @@ export interface BankFeedFilters {
   // U-166 (feed-match-v2, Q-P26u): rows whose entry was voided (true) or
   // the others (false).
   entryVoided?: boolean;
+  // U-177 (feed-transfer-window-v1): transfer window in days (1-10, default 3).
+  transferWindowDays?: number;
   // Server-side column sort — the list paginates, so ordering must happen
   // in SQL, not on the loaded page.
   sortBy?: 'feedDate' | 'description' | 'category' | 'status' | 'amount' | 'checkNumber' | 'payee'

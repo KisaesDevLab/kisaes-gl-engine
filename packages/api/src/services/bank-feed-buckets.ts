@@ -16,7 +16,8 @@
  *               waiting in Payments Clearing for exactly the amount within
  *               ±10 days (not deposited, not bounced), or the other side of
  *               a transfer: a waiting item on another GL account of the
- *               company with the exact opposite amount within ±3 days
+ *               company with the exact opposite amount within ±3 days, or
+ *               the caller's transferWindowDays (1-10, feed-transfer-window-v1)
  *               (feed-accept-v1, the transfer-candidates predicate of U-171)
  *   3. review   no account, a suggestion that isn't a rule's with a
  *               confidence under 0.80 (AI, history; a rule's mark_for_review
@@ -43,6 +44,18 @@ export const REVIEW_CONFIDENCE = '0.80';
 export const CLEARING_WINDOW_DAYS = 10;
 /** Transfer-twin window (Q-P26l; GET /feed/:id/transfer-candidates' default). */
 export const TRANSFER_WINDOW_DAYS = 3;
+/** The largest transferWindowDays GET /feed and /feed/counts take (feed-transfer-window-v1, U-177). */
+export const TRANSFER_WINDOW_DAYS_MAX = 10;
+
+/**
+ * The transfer window in days: an integer 1..TRANSFER_WINDOW_DAYS_MAX, else
+ * the default. It is spliced into SQL as a literal, so anything else is
+ * never used.
+ */
+export function transferWindowDays(days?: number | null): number {
+  return typeof days === 'number' && Number.isInteger(days) && days >= 1 && days <= TRANSFER_WINDOW_DAYS_MAX
+    ? days : TRANSFER_WINDOW_DAYS;
+}
 
 /** The item's bank GL account, from its connection. */
 function bankAccountOf(tenantId: string): SQL {
@@ -55,8 +68,8 @@ export function waitingSql(): SQL {
   return sql`${bankFeedItems.status} IN ('pending', 'assigned')`;
 }
 
-/** Any match signal on a waiting row (bucket "matches"). */
-export function matchSignalSql(tenantId: string): SQL {
+/** Any match signal on a waiting row (bucket "matches"); `windowDays` is the transfer window (default 3). */
+export function matchSignalSql(tenantId: string, windowDays?: number): SQL {
   const amount = sql`CAST(${bankFeedItems.amount} AS DECIMAL)`;
   const line = sql`EXISTS (
     SELECT 1 FROM journal_lines jl, transactions t
@@ -92,7 +105,7 @@ export function matchSignalSql(tenantId: string): SQL {
   ) AND EXISTS (
     SELECT 1 FROM bank_feed_items o
     JOIN bank_connections oc ON oc.id = o.bank_connection_id AND oc.tenant_id = ${tenantId}
-    WHERE ${transferTwinWhere(tenantId, bankAccountOf(tenantId))}
+    WHERE ${transferTwinWhere(tenantId, bankAccountOf(tenantId), windowDays)}
   )`;
   return sql`(${bankFeedItems.matchedTransactionId} IS NULL AND ${amount} <> 0 AND (${line} OR ${clearing} OR ${transfer}))`;
 }
@@ -103,11 +116,12 @@ export function matchSignalSql(tenantId: string): SQL {
  * bank_feed_items row (feed-accept-v1; U-171's transfer-candidates rule at
  * its default window): waiting, the exact opposite amount, another GL
  * account than `bankAccountId` (the outer row's), within
- * TRANSFER_WINDOW_DAYS, the same company. The "matches" bucket and the
- * list's transferCandidate both use it, so they never disagree.
+ * `windowDays` (TRANSFER_WINDOW_DAYS by default; feed-transfer-window-v1),
+ * the same company. The "matches" bucket and the list's transferCandidate
+ * both use it, so they never disagree at the same window.
  */
-export function transferTwinWhere(tenantId: string, bankAccountId: SQL): SQL {
-  const tdays = sql.raw(String(TRANSFER_WINDOW_DAYS));
+export function transferTwinWhere(tenantId: string, bankAccountId: SQL, windowDays?: number): SQL {
+  const tdays = sql.raw(String(transferWindowDays(windowDays)));
   return sql`o.tenant_id = ${tenantId} AND o.status IN ('pending', 'assigned')
       AND o.amount = -${bankFeedItems.amount}
       AND o.id <> ${bankFeedItems.id}
@@ -124,7 +138,7 @@ export function transferTwinWhere(tenantId: string, bankAccountId: SQL): SQL {
  * is the outer row's bank GL account as the list query joins it. Runs per
  * listed row only (a page), never in /counts.
  */
-export function transferCandidateSql(tenantId: string, bankAccountId: SQL): SQL<{ feedItemId: string; accountId: string; accountName: string } | null> {
+export function transferCandidateSql(tenantId: string, bankAccountId: SQL, windowDays?: number): SQL<{ feedItemId: string; accountId: string; accountName: string } | null> {
   return sql<{ feedItemId: string; accountId: string; accountName: string } | null>`(
     CASE WHEN ${waitingSql()} AND ${bankFeedItems.matchedTransactionId} IS NULL
           AND ${bankAccountId} IS NOT NULL AND CAST(${bankFeedItems.amount} AS DECIMAL) <> 0
@@ -136,7 +150,7 @@ export function transferCandidateSql(tenantId: string, bankAccountId: SQL): SQL<
         FROM bank_feed_items o
         JOIN bank_connections oc ON oc.id = o.bank_connection_id AND oc.tenant_id = ${tenantId}
         LEFT JOIN accounts oa ON oa.id = oc.account_id AND oa.tenant_id = ${tenantId}
-        WHERE ${transferTwinWhere(tenantId, bankAccountId)}
+        WHERE ${transferTwinWhere(tenantId, bankAccountId, windowDays)}
         LIMIT 2
       ) tc
     ) END
@@ -169,12 +183,12 @@ export function needsReviewSql(): SQL {
   return sql`(${noAccount} OR ${lowConfidence} OR ${unbalancedSplitsSql()})`;
 }
 
-/** The row's bucket, or NULL when it isn't waiting. */
-export function bucketSql(tenantId: string): SQL<FeedBucket | null> {
+/** The row's bucket, or NULL when it isn't waiting; `windowDays` is the transfer window (default 3). */
+export function bucketSql(tenantId: string, windowDays?: number): SQL<FeedBucket | null> {
   return sql<FeedBucket | null>`(CASE
     WHEN NOT (${waitingSql()}) THEN NULL
     WHEN ${bankFeedItems.possibleDuplicate} THEN 'review'
-    WHEN ${matchSignalSql(tenantId)} THEN 'matches'
+    WHEN ${matchSignalSql(tenantId, windowDays)} THEN 'matches'
     WHEN ${needsReviewSql()} THEN 'review'
     ELSE 'ready' END)`;
 }
