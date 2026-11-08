@@ -41,6 +41,7 @@ import { buildReconciliationProof } from '../services/reconciliation-proof.servi
 import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { requireFeedAcceptDraftPermission, draftAttachPermissionsOf } from '../middleware/document-draft-permission.js';
 import { lockContextMiddleware, getLockContext } from '../services/lock-context.js';
 import { precheckClosingPassword } from '../services/closing-password.service.js';
 import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/check-payee-backfill.service.js';
@@ -238,6 +239,11 @@ const feedAcceptItemSchema = z.object({
   splits: feedSplitsSchema.optional(),
   matchTransactionId: z.string().uuid().optional(),
   journalLineId: z.string().uuid().optional(),
+  // feed-accept-draft-v1 (U-181): file this document draft on the row's entry.
+  documentDraft: z.object({
+    id: z.string().uuid(),
+    expectedUpdatedAt: z.string().min(1).max(64),
+  }).strict().optional(),
 }).strict().refine((i) => !i.journalLineId || !!i.matchTransactionId, {
   message: 'journalLineId goes with matchTransactionId',
 }).refine((i) => !i.matchTransactionId || (!i.accountId && !i.splits), {
@@ -302,7 +308,7 @@ const feedAcceptGroupReplay = idempotent({
 });
 
 bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter, lockContextMiddleware,
-  bulkClosingPasswordPrecheck, feedAcceptGroupReplay, validate(feedAcceptSchema), describe({
+  bulkClosingPasswordPrecheck, requireFeedAcceptDraftPermission, feedAcceptGroupReplay, validate(feedAcceptSchema), describe({
     summary: 'Accept bank feed rows: one, a selection, or all from one rule (feed-accept-v1)',
     description: 'Body {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?, journalLineId?}] (1-500) '
       + '| ruleId + ruleKind (conditional | legacy) + ruleUpdatedAt + bankConnectionId? + afterId?, closingPassword?}. One database '
@@ -322,7 +328,16 @@ bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter
       + 'POST /banking/feed/undo {undoGroupId} takes the whole group back. Idempotency-Key required (400 '
       + 'IDEMPOTENCY_KEY_REQUIRED); a replay returns the same body (GET /banking/feed/accept-groups/:id when it was over 512 KB). '
       + 'A wrong closingPassword is 403 CLOSING_PASSWORD_INVALID before anything posts (429 CLOSING_PASSWORD_RATE_LIMIT). '
-      + 'Audited per row.',
+      + 'Audited per row. feed-accept-draft-v1: an item may carry documentDraft {id, expectedUpdatedAt}: after the row posts or '
+      + 'matches, the draft is filed on its entry in the same database transaction exactly as POST /document-drafts/:id/attach '
+      + '(every file on the draft key moves to the entry, the draft becomes converted onto it, audited attached: true with the '
+      + 'feed item and undoGroupId). A draft that can\'t be attached fails its row and nothing is posted or matched for it: '
+      + 'failures DOCUMENT_DRAFT_CLOSED (converted or discarded, details.transactionId), STALE (details.updatedAt), '
+      + 'DOCUMENT_FILE_MISSING, ATTACHMENT_NOT_DRAFT (the file is filed on a record), INVALID_KIND (a statement draft), '
+      + 'TARGET_NOT_ATTACHABLE (a matched entry files can\'t go on), PERMISSION_DENIED, NOT_FOUND (not this company\'s draft). '
+      + 'The same draft on two items is 400 VALIDATION_ERROR. Permission: the draft kind\'s resource and the entry\'s (403 for the '
+      + 'request, checked before a replay too). A row that is skipped leaves its draft as it was. No closing-date check of its '
+      + 'own: the accept\'s applies.',
     body: feedAcceptSchema,
     response: feedAcceptResultDoc,
   }), async (req, res) => {
@@ -330,7 +345,7 @@ bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter
     const request: feedAccept.AcceptRequest = b.ruleId
       ? { rule: { ruleId: b.ruleId, ruleKind: b.ruleKind!, ruleUpdatedAt: b.ruleUpdatedAt!, bankConnectionId: b.bankConnectionId, afterId: b.afterId } }
       : { items: b.items! };
-    res.json(await feedAccept.acceptFeedItems(req.tenantId, req.companyId, req.userId, request));
+    res.json(await feedAccept.acceptFeedItems(req.tenantId, req.companyId, req.userId, request, draftAttachPermissionsOf(req)));
   });
 
 bankingRouter.get('/feed/accept-groups/:id', describe({
@@ -366,8 +381,9 @@ bankingRouter.post('/feed/undo', requireIdempotencyKey, closingPasswordLimiter, 
       + 'FEED_UNDO_RECONCILED (in a completed reconciliation, also for a plain match), TB_PERIOD_LOCKED (deleting an entry dated '
       + 'on or before the closing date needs closingPassword), PAYMENT_BOUNCED (a deposit holding a bounced payment stays), '
       + 'FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Response {undone: [{id, kind, transactionId, entry: deleted | kept, '
-      + 'undoGroupId}], failures}. 404 for an unknown undoGroupId. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). '
-      + 'Audited per row.',
+      + 'undoGroupId}], failures, reopenedDrafts}. 404 for an unknown undoGroupId. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). '
+      + 'Audited per row. reopenedDrafts (document-drafts-reopen-v1): the document drafts entered as or attached to a deleted entry, '
+      + 'status ready again with their files moved back onto a draft key in the same transaction (sorted ids); a kept entry keeps its documents.',
     body: feedUndoSchema,
     response: z.object({
       undone: z.array(z.object({
@@ -375,6 +391,7 @@ bankingRouter.post('/feed/undo', requireIdempotencyKey, closingPasswordLimiter, 
         entry: z.enum(['deleted', 'kept']), undoGroupId: z.string().uuid(),
       })),
       failures: z.array(feedFailureDoc),
+      reopenedDrafts: z.array(z.string().uuid()),
     }),
   }), async (req, res) => {
     const b = req.body as z.infer<typeof feedUndoSchema>;

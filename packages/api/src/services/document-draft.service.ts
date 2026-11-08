@@ -748,41 +748,107 @@ export async function attach(
     if (target.status !== 'posted') {
       throw AppError.conflict('This transaction is not posted (it may be void). Choose another one.', 'TRANSACTION_NOT_POSTED', { status: target.status });
     }
-
-    if (!before.attachmentId) {
-      throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
-    }
-    // The key's rows in id order, then the own file among them (review L-3).
-    const file = await attachmentService.lockDraftFile(tx, tenantId, before.attachmentId);
-    if (!file) throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
-    if (file.companyId !== null && file.companyId !== companyId) throw AppError.notFound('Attachment not found');
-    const onTarget = file.attachableType === fileType && file.attachableId === target.id;
-    if (!onTarget) {
-      if (file.attachableType !== 'draft') {
-        throw AppError.unprocessableEntity('This document\'s file is already filed on another record.', 'ATTACHMENT_NOT_DRAFT');
-      }
-      const moved = await attachmentService.relinkDraftAttachments(tx, tenantId, file.attachableId, fileType, target.id, userId, companyId, { exceptDraftId: before.id });
-      if (!moved.includes(before.attachmentId)) {
-        throw AppError.conflict('This file is being read as another document.', 'ATTACHMENT_IN_USE');
-      }
-    }
-
-    const hook = isTest() ? __documentDraftTestHooks.afterAttachRelink : undefined;
-    if (hook) await hook({ draftId: before.id, transactionId: target.id });
-
-    const [after] = await tx.update(documentDrafts).set({
-      status: 'converted',
-      convertedTransactionId: target.id,
-      convertedType: target.txn_type,
-      convertedAt: sql`clock_timestamp()`,
-      convertedBy: userId,
-      updatedAt: NEXT_UPDATED_AT(sql`${documentDrafts.updatedAt}`),
-    }).where(eq(documentDrafts.id, before.id)).returning();
-    await auditLog(tenantId, 'update', 'document_draft', before.id, auditImage(before), {
-      ...auditImage(after!), attached: true,
-    }, userId, tx);
-    return { draft: toDto(after!), transactionId: target.id };
+    return attachLockedInTx(tx, tenantId, companyId, userId, before, { id: target.id, txnType: target.txn_type, fileType });
   });
+}
+
+/**
+ * Steps 4-6 of attach() on the caller's transaction: the draft `before` is
+ * already locked and checked (live, not stale, not a statement, permission)
+ * and the target locked, posted and attachable. Moves the draft key's files
+ * to the target, marks the draft converted onto it and audits it
+ * (`attached: true`, plus `extraAudit`). Refusals: DOCUMENT_FILE_MISSING,
+ * 404 for another company's file, ATTACHMENT_NOT_DRAFT, ATTACHMENT_IN_USE.
+ * Claims no Idempotency-Key: the caller owns the request's key.
+ */
+export async function attachLockedInTx(
+  tx: Tx, tenantId: string, companyId: string, userId: string | undefined, before: DocumentDraftRow,
+  target: { id: string; txnType: string; fileType?: string }, extraAudit: Record<string, unknown> = {},
+): Promise<{ draft: DocumentDraftDto; transactionId: string }> {
+  const fileType = target.fileType ?? attachableTypeOfTarget(target.txnType);
+  if (!before.attachmentId) {
+    throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
+  }
+  // The key's rows in id order, then the own file among them (review L-3).
+  const file = await attachmentService.lockDraftFile(tx, tenantId, before.attachmentId);
+  if (!file) throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
+  if (file.companyId !== null && file.companyId !== companyId) throw AppError.notFound('Attachment not found');
+  const onTarget = file.attachableType === fileType && file.attachableId === target.id;
+  if (!onTarget) {
+    if (file.attachableType !== 'draft') {
+      throw AppError.unprocessableEntity('This document\'s file is already filed on another record.', 'ATTACHMENT_NOT_DRAFT');
+    }
+    const moved = await attachmentService.relinkDraftAttachments(tx, tenantId, file.attachableId, fileType, target.id, userId, companyId, { exceptDraftId: before.id });
+    if (!moved.includes(before.attachmentId)) {
+      throw AppError.conflict('This file is being read as another document.', 'ATTACHMENT_IN_USE');
+    }
+  }
+
+  const hook = isTest() ? __documentDraftTestHooks.afterAttachRelink : undefined;
+  if (hook) await hook({ draftId: before.id, transactionId: target.id });
+
+  const [after] = await tx.update(documentDrafts).set({
+    status: 'converted',
+    convertedTransactionId: target.id,
+    convertedType: target.txnType,
+    convertedAt: sql`clock_timestamp()`,
+    convertedBy: userId ?? null,
+    updatedAt: NEXT_UPDATED_AT(sql`${documentDrafts.updatedAt}`),
+  }).where(eq(documentDrafts.id, before.id)).returning();
+  await auditLog(tenantId, 'update', 'document_draft', before.id, auditImage(before), {
+    ...auditImage(after!), attached: true, ...extraAudit,
+  }, userId, tx);
+  return { draft: toDto(after!), transactionId: target.id };
+}
+
+/**
+ * Locks a draft for an attach by another request's transaction (the bank
+ * feed accept, feed-accept-draft-v1) and checks what attach() checks on the
+ * draft before it touches the target: 404 (not this company's), 403
+ * PERMISSION_DENIED (`canKind`), 409 DOCUMENT_DRAFT_CLOSED
+ * (details.transactionId), 409 STALE (details.updatedAt), 400
+ * INVALID_KIND (a statement), and the file: 422 DOCUMENT_FILE_MISSING, 404
+ * another company's, 422 ATTACHMENT_NOT_DRAFT (filed on a record). The file
+ * is read, not locked (attachLockedInTx locks it after the target, the
+ * attach lock order).
+ */
+export async function lockDraftForAttach(
+  tx: Tx, tenantId: string, companyId: string, id: string, expectedUpdatedAt: string,
+  canKind: (kind: DocumentDraftKind) => Promise<boolean>,
+): Promise<DocumentDraftRow> {
+  const before = await lockDraft(tx, tenantId, companyId, id);
+  if (!(await canKind(before.kind))) throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+  if (!isLive(before.status)) throw closed(before);
+  assertNotStale(before, expectedUpdatedAt);
+  assertNotStatement(before);
+  if (!before.attachmentId) throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
+  const f = await tx.execute(sql`SELECT attachable_type, company_id FROM attachments
+    WHERE tenant_id = ${tenantId} AND id = ${before.attachmentId}`);
+  const file = f.rows[0] as { attachable_type: string; company_id: string | null } | undefined;
+  if (!file) throw AppError.unprocessableEntity('This document\'s file was deleted.', 'DOCUMENT_FILE_MISSING');
+  if (file.company_id !== null && file.company_id !== companyId) throw AppError.notFound('Attachment not found');
+  if (file.attachable_type !== 'draft') {
+    throw AppError.unprocessableEntity('This document\'s file is already filed on another record.', 'ATTACHMENT_NOT_DRAFT');
+  }
+  return before;
+}
+
+/**
+ * Whether a document may be filed on a transaction of `txnType` by this
+ * request: a type files are stored on (TXN_ATTACHABLE_TYPES) the request
+ * may reach (`canAttachType`, else 422 TARGET_NOT_ATTACHABLE) and change
+ * (`canTarget` on resourceOfTarget, else 403 PERMISSION_DENIED).
+ */
+export async function assertAttachableTarget(
+  txnType: string,
+  canTarget: (resource: ResourceKey) => Promise<boolean>,
+  canAttachType: (txnType: string) => Promise<boolean>,
+): Promise<void> {
+  if (!(await canAttachType(txnType))) throw notAttachable(txnType);
+  if (!(await canTarget(resourceOfTarget(txnType)))) {
+    throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
+  }
+  if (!attachmentService.TXN_ATTACHABLE_TYPES.has(txnType)) throw notAttachable(txnType);
 }
 
 /** The attach response: the draft and the transaction it is filed on, as now. */

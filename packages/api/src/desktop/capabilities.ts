@@ -886,5 +886,29 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * accept; match means it was linked to an entry already in the books.
    */
   'feed-accept-kind-v1',
+  /**
+   * Deleting an entry reopens its documents (U-180): ledger deleteTransactionInTx (DELETE /transactions/:id, POST
+   * /banking/feed/undo of a posted entry, a journal entry's reversal, DELETE /inventory/adjustments/:id, any other caller)
+   * sets every document draft converted onto the entry (convert, attach or a feed accept with documentDraft) back to
+   * status ready with convertedTransactionId / convertedType / convertedAt cleared and a new updatedAt (kind and reading
+   * kept), and moves its own file, when still on the entry, back onto a draft key (the key it was relinked from, else the
+   * draft's id); other files on the entry stay. Same database transaction, audited (`reopened: true`); a draft whose file
+   * was deleted reopens without one. DELETE /transactions/:id answers {transaction, reopenedDrafts: [id]} and the undo
+   * response adds reopenedDrafts (sorted). A void keeps the entry and its drafts stay converted (an attach to a void entry
+   * stays 409 TRANSACTION_NOT_POSTED); an Undo that keeps the entry (a match) keeps its documents. Migration 0269: index
+   * idx_document_drafts_converted.
+   */
+  'document-drafts-reopen-v1',
+  /**
+   * POST /banking/feed/accept items take documentDraft {id, expectedUpdatedAt} (U-181): after the row posts or matches, the
+   * draft is filed on the entry in the same database transaction as POST /document-drafts/:id/attach does (draft key files
+   * move, draft converted onto the entry, audited attached: true with feedItemId and undoGroupId). A draft that can't be
+   * attached fails its row with nothing posted: failures DOCUMENT_DRAFT_CLOSED (details.transactionId), STALE
+   * (details.updatedAt), DOCUMENT_FILE_MISSING, ATTACHMENT_NOT_DRAFT, INVALID_KIND (statement), TARGET_NOT_ATTACHABLE,
+   * PERMISSION_DENIED, NOT_FOUND. One draft on two items is 400 VALIDATION_ERROR; permission (draft kind + entry resource)
+   * is checked before a replay too (403). Drafts are locked after the feed rows and before any entry. A replay returns the
+   * stored response. Undo of the posted entry reopens the draft (document-drafts-reopen-v1).
+   */
+  'feed-accept-draft-v1',
 ];
 

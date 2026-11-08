@@ -55,7 +55,10 @@ import {
   bankConnections, bankFeedAcceptGroupItems, bankFeedAcceptGroups, bankFeedItems, bankRules, conditionalRules,
   journalLines, reconciliationLines, reconciliations, transactionClassificationState, transactions,
 } from '../db/schema/index.js';
-import type { Action } from '@kis-books/shared';
+import type { Action, DocumentDraftKind, ResourceKey } from '@kis-books/shared';
+import DecimalLib from 'decimal.js';
+import type { DocumentDraftRow } from '../db/schema/index.js';
+import * as draftService from './document-draft.service.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
@@ -72,6 +75,8 @@ import { mapRow as mapConditionalRule } from './conditional-rules.service.js';
 import { aggregateActions, stagePatch } from './conditional-rules-apply.service.js';
 import * as symbolResolution from './rule-symbol-resolution.service.js';
 
+const Decimal = DecimalLib.default || DecimalLib;
+
 /** Rows per accept or undo request. */
 export const FEED_ACCEPT_MAX = 500;
 
@@ -86,7 +91,24 @@ export interface AcceptItemInput extends feed.AcceptRowInput {
   /** Match this row to an existing entry instead of posting one. */
   matchTransactionId?: string;
   journalLineId?: string;
+  /**
+   * feed-accept-draft-v1 (U-181): file this document draft on the entry the
+   * row posts or matches, in the same database transaction; a draft that
+   * can't be attached fails the row (nothing posted).
+   */
+  documentDraft?: { id: string; expectedUpdatedAt: string };
 }
+
+/** The permission checks of a document attach (the route's; a service caller that checked them may omit them). */
+export interface DraftAttachPermissions {
+  canKind: (kind: DocumentDraftKind) => Promise<boolean>;
+  canTarget: (resource: ResourceKey) => Promise<boolean>;
+  canAttachType: (txnType: string) => Promise<boolean>;
+}
+
+const ALLOW_ALL: DraftAttachPermissions = {
+  canKind: async () => true, canTarget: async () => true, canAttachType: async () => true,
+};
 
 export interface AcceptRuleSelection {
   ruleId: string;
@@ -257,16 +279,49 @@ async function assertAcceptRefs(tenantId: string, items: AcceptItemInput[]): Pro
 }
 
 type AcceptPlan =
-  | { kind: 'post'; row: FeedRow; values: feed.PostAssignmentValues }
-  | { kind: 'match'; row: FeedRow; transactionId: string; journalLineId: string };
+  | { kind: 'post'; row: FeedRow; values: feed.PostAssignmentValues; draft: DocumentDraftRow | null }
+  | { kind: 'match'; row: FeedRow; transactionId: string; txnType: string; journalLineId: string; draft: DocumentDraftRow | null };
+
+/** The entry type a feed row posts: money out an expense, money in a deposit (postFeedItemInTx). */
+function postedTxnType(row: FeedRow): string {
+  return new Decimal(row.amount).gt(0) ? 'expense' : 'deposit';
+}
+
+/**
+ * Locks the document drafts the items name (feed-accept-draft-v1), in
+ * sorted draft id order, after the feed rows and before any entry (the
+ * attach lock order is draft, entry, file). Per feed item: the locked,
+ * checked draft, or the refusal that fails the row.
+ */
+async function lockItemDrafts(
+  tx: Tx, tenantId: string, companyId: string | undefined, items: Array<{ feedItemId: string; draft: { id: string; expectedUpdatedAt: string } }>,
+  perms: DraftAttachPermissions,
+): Promise<Map<string, DocumentDraftRow | AppError>> {
+  const out = new Map<string, DocumentDraftRow | AppError>();
+  for (const it of [...items].sort((a, b) => a.draft.id.localeCompare(b.draft.id))) {
+    if (!companyId) { out.set(it.feedItemId, AppError.notFound('Document draft not found')); continue; }
+    try {
+      out.set(it.feedItemId, await draftService.lockDraftForAttach(tx, tenantId, companyId, it.draft.id, it.draft.expectedUpdatedAt, perms.canKind));
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      out.set(it.feedItemId, err);
+    }
+  }
+  return out;
+}
 
 /** POST /banking/feed/accept (see the header). */
 export async function acceptFeedItems(
   tenantId: string, companyId: string | undefined, userId: string | undefined, req: AcceptRequest,
+  perms: DraftAttachPermissions = ALLOW_ALL,
 ): Promise<AcceptResult> {
   if (req.items) {
     if (new Set(req.items.map((i) => i.id)).size !== req.items.length) {
       throw AppError.badRequest('The same bank line is listed twice.', 'VALIDATION_ERROR');
+    }
+    const draftIds = req.items.map((i) => i.documentDraft?.id.toLowerCase()).filter((v): v is string => !!v);
+    if (new Set(draftIds).size !== draftIds.length) {
+      throw AppError.badRequest('The same document is listed on two bank lines.', 'VALIDATION_ERROR');
     }
     await assertAcceptRefs(tenantId, req.items);
   }
@@ -322,6 +377,17 @@ export async function acceptFeedItems(
       .where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, needSignal), matchSignalSql(tenantId))))
       .map((r) => r.id));
 
+    // Document drafts to attach (feed-accept-draft-v1): locked before any entry.
+    const drafts = await lockItemDrafts(tx, tenantId, companyId, sorted
+      .filter((id) => locked.has(id) && !!inputs.get(id)!.documentDraft)
+      .map((id) => ({ feedItemId: id, draft: inputs.get(id)!.documentDraft! })), perms);
+    /** The row's locked draft, null without one; a refusal throws (the row fails, nothing posts). */
+    const draftFor = (id: string): DocumentDraftRow | null => {
+      const d = drafts.get(id);
+      if (d instanceof AppError) throw d;
+      return d ?? null;
+    };
+
     // 1. Validate.
     const skipped: AcceptResult['skipped'] = [];
     const failures: AcceptFailure[] = [];
@@ -336,7 +402,8 @@ export async function acceptFeedItems(
 
       if (input.matchTransactionId) {
         try {
-          const [txn] = await tx.select({ status: transactions.status, companyId: transactions.companyId }).from(transactions)
+          const [txn] = await tx.select({ status: transactions.status, companyId: transactions.companyId, txnType: transactions.txnType })
+            .from(transactions)
             .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, input.matchTransactionId))).for('share');
           if (!txn || txn.status !== 'posted' || !companyMatches(txn.companyId, companyId)) {
             throw new AppError(400, 'The entry to match was not found or is not posted.', 'MATCH_MISMATCH', { field: 'transactionId' });
@@ -349,8 +416,10 @@ export async function acceptFeedItems(
             throw AppError.conflict('Another bank line in this request is matched to the same entry line.', 'LINE_ALREADY_MATCHED',
               { journalLineId: lineId });
           }
+          const draft = draftFor(id);
+          if (draft) await draftService.assertAttachableTarget(txn.txnType, perms.canTarget, perms.canAttachType);
           linesTaken.add(lineId);
-          plan.push({ kind: 'match', row, transactionId: input.matchTransactionId, journalLineId: lineId });
+          plan.push({ kind: 'match', row, transactionId: input.matchTransactionId, txnType: txn.txnType, journalLineId: lineId, draft });
         } catch (err) {
           if (!(err instanceof AppError)) throw err;
           failures.push(failureOf(id, err));
@@ -372,21 +441,39 @@ export async function acceptFeedItems(
       }
       const closed = await closedPeriodFailure(tx, tenantId, row.feedDate, companyId, id);
       if (closed) { failures.push(closed); continue; }
-      plan.push({ kind: 'post', row, values });
+      let draft: DocumentDraftRow | null;
+      try {
+        draft = draftFor(id);
+        if (draft) await draftService.assertAttachableTarget(postedTxnType(row), perms.canTarget, perms.canAttachType);
+      } catch (err) {
+        if (!(err instanceof AppError)) throw err;
+        failures.push(failureOf(id, err));
+        continue;
+      }
+      plan.push({ kind: 'post', row, values, draft });
     }
 
     // 2. Post: same transaction, no savepoints.
     let posted = 0;
     let matched = 0;
+    /** Files the row's draft on its entry (feed-accept-draft-v1), checked in step 1. */
+    const attachDraft = async (p: AcceptPlan, transactionId: string, txnType: string) => {
+      if (!p.draft) return;
+      await draftService.attachLockedInTx(tx, tenantId, companyId!, userId, p.draft, { id: transactionId, txnType }, {
+        feedItemId: p.row.id, undoGroupId,
+      });
+    };
     for (const p of plan) {
       if (p.kind === 'match') {
         await feed.matchInTx(tx, tenantId, p.row.id, p.transactionId, {
           journalLineId: p.journalLineId, userId, companyId, acceptGroupId: undoGroupId,
         });
+        await attachDraft(p, p.transactionId, p.txnType);
         matched++;
         continue;
       }
       const r = await feed.postFeedItemInTx(tx, tenantId, p.row, p.values, userId, companyId);
+      await attachDraft(p, r.transaction.id, r.transaction.txnType);
       await recordAcceptItem(tx, {
         tenantId, companyId, groupId: undoGroupId, kind: 'post', before: p.row,
         transactionId: r.transaction.id, journalLineId: r.journalLineId,
