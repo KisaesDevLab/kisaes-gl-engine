@@ -58795,7 +58795,7 @@
     },
     "/api/v1/reports/sales-tax-liability": {
       "get": {
-        "description": "Response {title, startDate, endDate, totalSales, totalTax (v1 numbers, accrual document totals), basis, agencyId, agencies: [{agencyId|null, name, items: [{taxItemId, name, rate (6 places), taxableSales, nonTaxable: [{codeId, code, amount}], collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}], totals: {taxableSales, collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}}], totals, total, unassigned, openingPaid, otherEntries, glMovement, roundingDifference, balanceCheck: {stpBalance, owedAtEnd, unassigned, otherEntriesCumulative, openingPaid, roundingDifferenceCumulative}}. New amounts are 2-place strings; roundingDifference 6 places. Query start_date, end_date (default this year to today), basis accrual|cash (default the company's sales tax basis), agency_id (another company's is 404; the GL fields are null when filtered). Columns are for the range, owedAtEnd cumulative to end_date. collected: accrual = sale rows by date; cash = the running-total share of each payment, credit applied or deposit drawn (cash + discount, never write-offs) on the dates the cash ledger uses, credit memo refunds, and sales receipts and daily sales on their date. discounts on both bases; badDebts and recoveries accrual only (0.00 on cash). total = collected + discounts + badDebts + recoveries. glMovement = the Sales Tax Payable movement on the basis = Σ columns + unassigned + otherEntries + roundingDifference (cash: exact shares - rounded shares). stpBalance = owedAtEnd + openingPaid + unassigned + otherEntriesCumulative + roundingDifferenceCumulative.",
+        "description": "Response {title, startDate, endDate, totalSales, totalTax (v1 numbers, accrual document totals), basis, agencyId, agencies: [{agencyId|null, name, items: [{taxItemId, name, rate (6 places), taxableSales, nonTaxable: [{codeId, code, amount}], collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}], totals: {taxableSales, collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}}], totals, total, unassigned, openingPaid, otherEntries, glMovement, roundingDifference, balanceCheck: {stpBalance, owedAtEnd, unassigned, otherEntriesCumulative, openingPaid, roundingDifferenceCumulative}}. New amounts are 2-place strings; roundingDifference 6 places. Query start_date, end_date (default this year to today), basis accrual|cash (default the company's sales tax basis), agency_id (another company's is 404; the GL fields are null when filtered). Columns are for the range, owedAtEnd cumulative to end_date. collected: accrual = sale rows by date; cash = the running-total share of each payment, credit applied or deposit drawn (cash + discount, never write-offs) on the dates the cash ledger uses, credit memo refunds, and sales receipts and daily sales on their date. discounts on both bases; badDebts and recoveries accrual only (0.00 on cash). total = collected + discounts + badDebts + recoveries. glMovement = the Sales Tax Payable movement on the basis = Σ columns + unassigned + otherEntries + roundingDifference (cash: exact shares - rounded shares). stpBalance = owedAtEnd + openingPaid + unassigned + otherEntriesCumulative + roundingDifferenceCumulative. scope=consolidated reads every company of the tenant (the company basis default is then accrual). format=csv|pdf exports the same figures (one row per agency item, agency totals, report totals).",
         "operationId": "get_api_v1_reports_sales_tax_liability",
         "parameters": [
           {
@@ -58844,6 +58844,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -58867,7 +58875,7 @@
     },
     "/api/v1/reports/sales-tax-payments": {
       "get": {
-        "description": "Response {title, startDate, endDate, data: [{transactionId, date, txn_date, txnType, number, agencyId, agencyName, total, paid, adjustments, linked}]}: Pay Sales Tax payments and payments linked to an agency (linked = true), by date; amounts are 2-place strings. Query start_date, end_date, agency_id.",
+        "description": "Response {title, startDate, endDate, data: [{transactionId, date, txn_date, txnType, number, agencyId, agencyName, total, paid, adjustments, linked}]}: Pay Sales Tax payments and payments linked to an agency (linked = true), by date; amounts are 2-place strings. Query start_date, end_date, agency_id. scope=consolidated reads every company of the tenant (the company basis default is then accrual). format=csv|pdf exports the same figures (the rows, then a totals row).",
         "operationId": "get_api_v1_reports_sales_tax_payments",
         "parameters": [
           {
@@ -58900,6 +58908,14 @@
           {
             "in": "query",
             "name": "format",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
             "required": false,
             "schema": {
               "type": "string"

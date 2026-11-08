@@ -4,6 +4,9 @@
 
 import { Router, type Request } from 'express';
 import { z } from 'zod';
+import DecimalLib from 'decimal.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
 import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
@@ -15,7 +18,9 @@ import * as report from '../services/sales-tax-report.service.js';
 import * as pay from '../services/sales-tax-pay.service.js';
 import * as exemptions from '../services/tax-exemptions.service.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import { lockContextMiddleware } from '../services/lock-context.js';
+import { REPORT_SCHEMA_VERSION, resolveCompanyScope, respond } from './reports.routes.js';
 
 /**
  * Sales tax (U-147; sales-tax-setup-v1, idempotency-sales-tax-v1). One mount
@@ -427,20 +432,89 @@ for (const [path, active] of [['deactivate', false], ['reactivate', true]] as co
 
 /**
  * GET /reports/sales-tax-liability and /reports/sales-tax-payments, v2
- * (sales-tax-liability-v2). A `format` export (csv, pdf, …) falls through
- * to the reports router's v1 handlers.
+ * (sales-tax-liability-v2): the owner of both routes, JSON and the csv /
+ * pdf exports alike, so the screen and the export show the same numbers.
+ * Same guards as the reports router it is mounted in front of: reports
+ * read permission, the per-user report rate limit, `?scope=consolidated`
+ * (every company of the tenant, resolveCompanyScope) and the report schema
+ * version header.
  */
 export const salesTaxReportsRouter = Router();
 salesTaxReportsRouter.use(authenticate);
 salesTaxReportsRouter.use(companyContext);
 salesTaxReportsRouter.use(requireResource('reports'));
+// Scoped to this router's own paths: the router shares the /reports base
+// with reportsRouter, which applies the same limiter to every other report
+// (a bare use() here would count those requests twice).
+const SALES_TAX_REPORT_PATHS = ['/sales-tax-liability', '/sales-tax-payments', '/exemptions-expiring'];
+salesTaxReportsRouter.use(SALES_TAX_REPORT_PATHS, expensiveOpLimiter);
+salesTaxReportsRouter.use(SALES_TAX_REPORT_PATHS, (_req, res, next) => {
+  res.setHeader('X-Report-Schema-Version', REPORT_SCHEMA_VERSION);
+  next();
+});
 
+const scopeQuery = z.string().optional();
 const liabilityQuery = z.object({
   start_date: isoDate.optional(), end_date: isoDate.optional(), basis: basisEnum.optional(), agency_id: z.string().uuid().optional(),
-  format: z.string().optional(),
+  format: z.string().optional(), scope: scopeQuery,
 });
 const itemColumns = '{taxItemId, name, rate (6 places), taxableSales, nonTaxable: [{codeId, code, amount}], collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}';
 const totalsShape = '{taxableSales, collected, discounts, badDebts, recoveries, adjustments, paid, owedAtEnd}';
+const scopeDoc = 'scope=consolidated reads every company of the tenant (the company basis default is then accrual). format=csv|pdf exports the ' +
+  'same figures';
+
+/** The JSON body stays the report itself; only csv / pdf get the flattened export table. */
+const isExport = (format: string | undefined): boolean => format === 'csv' || format === 'pdf';
+
+type LiabilityV2 = Awaited<ReturnType<typeof report.buildSalesTaxLiabilityV2>>;
+type PaymentsV2 = Awaited<ReturnType<typeof report.buildSalesTaxPaymentsV2>>;
+
+/** The csv / pdf table of the liability report: one row per agency item, each agency's totals, then the report totals. */
+function liabilityExport(data: LiabilityV2) {
+  const money = (key: string, label: string) => ({ key, label, align: 'right' as const });
+  const row = (agency: string, item: string, rate: string | null, t: LiabilityV2['totals']) => ({
+    agency, item, rate: rate === null ? '' : `${new Decimal(rate).times(100).toFixed(4).replace(/\.?0+$/, '')}%`,
+    taxableSales: t.taxableSales, collected: t.collected, discounts: t.discounts, badDebts: t.badDebts, recoveries: t.recoveries,
+    adjustments: t.adjustments, paid: t.paid, owedAtEnd: t.owedAtEnd,
+  });
+  const rows = data.agencies.flatMap((a) => {
+    const name = a.agencyId ? a.name : 'No agency';
+    return [
+      ...a.items.map((it) => row(name, it.name, it.rate, it)),
+      ...(a.items.length > 1 ? [row(name, `Total ${name}`, null, a.totals)] : []),
+    ];
+  });
+  if (rows.length) rows.push(row('', 'Total', null, data.totals));
+  return {
+    ...data,
+    data: rows,
+    _landscape: true,
+    _exportColumns: [
+      { key: 'agency', label: 'Agency' }, { key: 'item', label: 'Tax item' }, { key: 'rate', label: 'Rate' },
+      money('taxableSales', 'Taxable sales'), money('collected', 'Collected'), money('discounts', 'Discounts'), money('badDebts', 'Bad debts'),
+      money('recoveries', 'Recoveries'), money('adjustments', 'Adjustments'), money('paid', 'Paid'), money('owedAtEnd', 'Owed at end'),
+    ],
+  };
+}
+
+/** The csv / pdf table of the payments report: the JSON rows, with a totals row. */
+function paymentsExport(data: PaymentsV2) {
+  const sum = (key: 'paid' | 'adjustments' | 'total') => data.data.reduce((s, r) => s.plus(r[key]), new Decimal(0)).toFixed(2);
+  const rows: Array<Record<string, string>> = data.data.map((r) => ({
+    txn_date: r.txn_date, txnType: r.txnType, number: r.number ?? '', agencyName: r.agencyName, paid: r.paid, adjustments: r.adjustments,
+    total: r.total, linked: r.linked ? 'Yes' : 'No',
+  }));
+  if (rows.length) rows.push({ txn_date: '', txnType: '', number: 'Total', agencyName: '', paid: sum('paid'), adjustments: sum('adjustments'), total: sum('total'), linked: '' });
+  return {
+    ...data,
+    data: rows,
+    _exportColumns: [
+      { key: 'txn_date', label: 'Date' }, { key: 'txnType', label: 'Type' }, { key: 'number', label: 'Number' }, { key: 'agencyName', label: 'Agency' },
+      { key: 'paid', label: 'Paid', align: 'right' }, { key: 'adjustments', label: 'Adjustments', align: 'right' },
+      { key: 'total', label: 'Total', align: 'right' }, { key: 'linked', label: 'Linked' },
+    ],
+  };
+}
 
 salesTaxReportsRouter.get('/sales-tax-liability', describe({
   summary: 'Sales tax liability by agency and tax item (sales-tax-liability-v2, cash-basis-spf-v1)',
@@ -454,31 +528,34 @@ salesTaxReportsRouter.get('/sales-tax-liability', describe({
     'ledger uses, credit memo refunds, and sales receipts and daily sales on their date. discounts on both bases; badDebts and recoveries ' +
     'accrual only (0.00 on cash). total = collected + discounts + badDebts + recoveries. glMovement = the Sales Tax Payable movement on ' +
     'the basis = Σ columns + unassigned + otherEntries + roundingDifference (cash: exact shares - rounded shares). stpBalance = owedAtEnd + ' +
-    'openingPaid + unassigned + otherEntriesCumulative + roundingDifferenceCumulative.',
+    `openingPaid + unassigned + otherEntriesCumulative + roundingDifferenceCumulative. ${scopeDoc} (one row per agency item, agency ` +
+    'totals, report totals).',
   query: liabilityQuery,
-}), async (req, res, next) => {
+}), async (req, res) => {
   const q = liabilityQuery.safeParse(req.query);
   if (!q.success) { res.status(400).json({ error: { message: q.error.issues[0]?.message ?? 'invalid query', code: 'VALIDATION_ERROR' } }); return; }
-  if (q.data.format && q.data.format !== 'json') { next(); return; }
   const today = new Date().toISOString().split('T')[0]!;
-  res.json(await report.buildSalesTaxLiabilityV2(req.tenantId, q.data.start_date ?? `${today.slice(0, 4)}-01-01`, q.data.end_date ?? today,
-    req.companyId, { basis: q.data.basis ?? null, agencyId: q.data.agency_id ?? null }));
+  const data = await report.buildSalesTaxLiabilityV2(req.tenantId, q.data.start_date ?? `${today.slice(0, 4)}-01-01`, q.data.end_date ?? today,
+    resolveCompanyScope(req), { basis: q.data.basis ?? null, agencyId: q.data.agency_id ?? null });
+  await respond(res, isExport(q.data.format) ? liabilityExport(data) : data, q.data.format);
 });
 
-const paymentsQuery = z.object({ start_date: isoDate.optional(), end_date: isoDate.optional(), agency_id: z.string().uuid().optional(), format: z.string().optional() });
+const paymentsQuery = z.object({
+  start_date: isoDate.optional(), end_date: isoDate.optional(), agency_id: z.string().uuid().optional(), format: z.string().optional(), scope: scopeQuery,
+});
 salesTaxReportsRouter.get('/sales-tax-payments', describe({
   summary: 'Sales tax payments (sales-tax-liability-v2)',
   description: 'Response {title, startDate, endDate, data: [{transactionId, date, txn_date, txnType, number, agencyId, agencyName, total, ' +
     'paid, adjustments, linked}]}: Pay Sales Tax payments and payments linked to an agency (linked = true), by date; amounts are 2-place ' +
-    'strings. Query start_date, end_date, agency_id.',
+    `strings. Query start_date, end_date, agency_id. ${scopeDoc} (the rows, then a totals row).`,
   query: paymentsQuery,
-}), async (req, res, next) => {
+}), async (req, res) => {
   const q = paymentsQuery.safeParse(req.query);
   if (!q.success) { res.status(400).json({ error: { message: q.error.issues[0]?.message ?? 'invalid query', code: 'VALIDATION_ERROR' } }); return; }
-  if (q.data.format && q.data.format !== 'json') { next(); return; }
   const today = new Date().toISOString().split('T')[0]!;
-  res.json(await report.buildSalesTaxPaymentsV2(req.tenantId, q.data.start_date ?? `${today.slice(0, 4)}-01-01`, q.data.end_date ?? today,
-    req.companyId, q.data.agency_id ?? null));
+  const data = await report.buildSalesTaxPaymentsV2(req.tenantId, q.data.start_date ?? `${today.slice(0, 4)}-01-01`, q.data.end_date ?? today,
+    resolveCompanyScope(req), q.data.agency_id ?? null);
+  await respond(res, isExport(q.data.format) ? paymentsExport(data) : data, q.data.format);
 });
 
 const expiringQuery = z.object({ asOf: isoDate.optional(), within: z.coerce.number().int().min(0).max(3650).optional() });
