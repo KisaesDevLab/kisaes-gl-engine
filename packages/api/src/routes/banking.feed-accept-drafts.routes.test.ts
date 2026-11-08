@@ -13,7 +13,14 @@
 //   - Undo of the posted entry deletes it and reopens the draft with its file
 //     (reopenedDrafts); DELETE /transactions/:id the same; a void keeps the
 //     draft converted; a draft whose file was deleted reopens without one;
-//     two drafts on one entry both reopen.
+//     two drafts on one entry both reopen;
+//   - U-182: a failure in the attach step after the posting commits nothing
+//     (the key is free again); a caller without the draft kind's permission
+//     is 403 (the locked recheck fails the row); a closed draft is refused
+//     without a lock;
+//   - U-183: every file a relink took off the draft key (attachments
+//     .source_draft_key) comes back on delete or Undo; hand-filed files stay;
+//     rows without a recorded key fall back to the audit row for the own file.
 
 import 'express-async-errors';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -26,7 +33,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, users, userTenantAccess, companies, accounts, contacts, attachments, documentDrafts, bankConnections, bankFeedItems,
-  transactions, auditLog,
+  transactions, auditLog, bankFeedAcceptGroups, userPermissions,
 } from '../db/schema/index.js';
 import { bankingRouter } from './banking.routes.js';
 import { documentDraftsRouter } from './document-drafts.routes.js';
@@ -36,6 +43,8 @@ import * as authService from '../services/auth.service.js';
 import * as attachmentService from '../services/attachment.service.js';
 import * as expenseService from '../services/expense.service.js';
 import * as ledger from '../services/ledger.service.js';
+import * as bankFeedAccept from '../services/bank-feed-accept.service.js';
+import * as draftService from '../services/document-draft.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { buildPortabilityPlan, scopeSql, type PortabilityPlan } from '../services/tenant-portability/plan.js';
 
@@ -81,7 +90,9 @@ let plan: PortabilityPlan;
 
 const keyed = (pathname: string, body: unknown, key: string = crypto.randomUUID()) =>
   send('POST', pathname, body, { 'Idempotency-Key': key });
-const accept = (body: unknown, key?: string) => keyed('/api/v1/banking/feed/accept', body, key);
+const accept = (body: unknown, key?: string, token?: string) => send('POST', '/api/v1/banking/feed/accept', body, {
+  'Idempotency-Key': key ?? crypto.randomUUID(), ...(token ? { Authorization: `Bearer ${token}` } : {}),
+});
 const undo = (body: unknown, key?: string) => keyed('/api/v1/banking/feed/undo', body, key);
 
 type Draft = { id: string; updatedAt: string; status: string };
@@ -118,6 +129,26 @@ const item = async (id: string) => (await db.query.bankFeedItems.findFirst({ whe
 const fileOf = async (id: string) => (await db.select().from(attachments).where(eq(attachments.id, id)))[0]!;
 const draftRow = async (id: string) => (await db.select().from(documentDrafts).where(eq(documentDrafts.id, id)))[0]!;
 const txnRow = async (id: string) => (await db.select().from(transactions).where(eq(transactions.id, id)))[0]!;
+
+/** A bookkeeper of the tenant with these permission overrides. */
+async function bookkeeper(overrides: Record<string, string>) {
+  const [u] = await db.insert(users).values({
+    tenantId: c.tenantId, email: `bk-${suffix()}@example.com`, passwordHash: 'x', displayName: 'Bookkeeper', role: 'bookkeeper',
+  } as never).returning();
+  await db.insert(userTenantAccess).values({ userId: u!.id, tenantId: c.tenantId, role: 'bookkeeper' });
+  await db.insert(userPermissions).values({ tenantId: c.tenantId, userId: u!.id, overrides: overrides as never });
+  const token = (await authService.issueSession({ userId: u!.id, tenantId: c.tenantId, role: 'bookkeeper', email: u!.email } as never)).accessToken;
+  return { id: u!.id, token };
+}
+
+/** Another file uploaded onto (`type`, `id`): a draft key or an entry. */
+async function uploadOn(type: string, id: string) {
+  const bytes = Buffer.from(`%PDF-1.4\n% page ${crypto.randomUUID()}\n%%EOF\n`);
+  const att = await attachmentService.upload(c.tenantId, {
+    originalname: 'page.pdf', buffer: bytes, mimetype: 'application/pdf', size: bytes.length,
+  }, type, id, { companyId: c.companyId });
+  return att!.id as string;
+}
 
 async function postedExpense(amount: string) {
   const exp = await expenseService.createExpense(c.tenantId, {
@@ -279,6 +310,87 @@ describe('POST /banking/feed/accept with documentDraft (U-181)', () => {
     expect((await item(ok)).matchedTransactionId).toBeTruthy();
   });
 
+  it('a failure in the attach step after the posting commits nothing; the same key then posts (U-182)', async () => {
+    const d = await readyDraft();
+    const row = await feed('47.23');
+    const key = crypto.randomUUID();
+    const body = { items: [{ id: row, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } }] };
+    const groups = async () => (await db.select().from(bankFeedAcceptGroups).where(eq(bankFeedAcceptGroups.tenantId, c.tenantId))).length;
+    const entries = async () => (await db.execute(sql`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = ${c.tenantId}`)).rows[0] as { n: number };
+    const before = { groups: await groups(), entries: await entries() };
+    let reached: string | null = null;
+    draftService.__documentDraftTestHooks.afterAttachRelink = (info) => { reached = info.transactionId; throw new Error('forced failure after relink'); };
+    try {
+      const r = await accept(body, key);
+      expect(r.status).toBe(500);
+    } finally {
+      delete draftService.__documentDraftTestHooks.afterAttachRelink;
+    }
+    // The posting ran (the hook saw its entry) and was rolled back with the rest.
+    expect(reached).toBeTruthy();
+    expect((await db.select().from(transactions).where(eq(transactions.id, reached!))).length).toBe(0);
+    expect({ groups: await groups(), entries: await entries() }).toEqual(before);
+    const it2 = await item(row);
+    expect(it2.status).toBe('pending');
+    expect(it2.matchedTransactionId).toBeNull();
+    const dr = await draftRow(d.draft.id);
+    expect(dr.status).toBe('ready');
+    expect(dr.updatedAt.toISOString()).toBe(d.draft.updatedAt);
+    expect(await fileOf(d.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: d.draftKey, sourceDraftKey: null });
+
+    // The key was not kept either: the same request now posts, not a replay.
+    const again = await accept(body, key);
+    expect(again.status, JSON.stringify(again.json)).toBe(200);
+    expect(again.headers['idempotent-replayed']).toBeUndefined();
+    expect(again.json.posted).toBe(1);
+    expect((await draftRow(d.draft.id)).status).toBe('converted');
+  });
+
+  it('403: a caller without the draft kind\'s permission is refused before anything posts; the locked recheck fails the row (U-182)', async () => {
+    const d = await readyDraft('bill');
+    expect((await draftRow(d.draft.id)).kind).toBe('bill');
+    const row = await feed('52.61');
+    const bk = await bookkeeper({ banking: 'full', transactions: 'full', bills: 'none' });
+    const body = { items: [{ id: row, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } }] };
+    const r = await accept(body, undefined, bk.token);
+    expect(r.status, JSON.stringify(r.json)).toBe(403);
+    expect(r.json.error.code).toBe('PERMISSION_DENIED');
+    expect((await item(row)).status).toBe('pending');
+    expect((await draftRow(d.draft.id)).status).toBe('ready');
+
+    // The service's recheck on the locked draft (the kind changed after the
+    // route's check): the row fails PERMISSION_DENIED, nothing posts.
+    const res = await bankFeedAccept.acceptFeedItems(c.tenantId, c.companyId, c.ownerId, body as never, {
+      canKind: async (k) => k !== 'bill', canTarget: async () => true, canAttachType: async () => true,
+    });
+    expect(res.posted).toBe(0);
+    expect(res.failures).toHaveLength(1);
+    expect(res.failures[0]).toMatchObject({ id: row, code: 'PERMISSION_DENIED' });
+    expect((await item(row)).status).toBe('pending');
+    expect((await draftRow(d.draft.id)).status).toBe('ready');
+    expect((await fileOf(d.attachmentId)).attachableType).toBe('draft');
+  });
+
+  it('a draft already entered is refused without a lock, so a delete of its entry is never blocked (U-182)', async () => {
+    const d = await readyDraft();
+    const exp = await postedExpense('58.08');
+    expect((await keyed(`/api/v1/document-drafts/${d.draft.id}/attach`, { transactionId: exp, expectedUpdatedAt: d.draft.updatedAt })).status).toBe(200);
+    await db.transaction(async (tx) => {
+      await expect(draftService.lockDraftForAttach(tx, c.tenantId, c.companyId, d.draft.id, d.draft.updatedAt, async () => true))
+        .rejects.toMatchObject({ code: 'DOCUMENT_DRAFT_CLOSED', details: { transactionId: exp } });
+      // Another connection can lock the draft at once (a delete of the entry does).
+      const other = await db.execute(sql`SELECT id FROM document_drafts WHERE id = ${d.draft.id} FOR UPDATE NOWAIT`);
+      expect(other.rows).toHaveLength(1);
+    });
+    // A live draft is still locked (and checked again under the lock).
+    const live = await readyDraft();
+    await db.transaction(async (tx) => {
+      const row = await draftService.lockDraftForAttach(tx, c.tenantId, c.companyId, live.draft.id, live.draft.updatedAt, async () => true);
+      expect(row.id).toBe(live.draft.id);
+      await expect(db.execute(sql`SELECT id FROM document_drafts WHERE id = ${live.draft.id} FOR UPDATE NOWAIT`)).rejects.toThrow();
+    });
+  });
+
   it('the same draft on two rows is 400', async () => {
     const d = await readyDraft();
     const a = await feed('31.00');
@@ -358,6 +470,72 @@ describe('deleting an entry reopens its drafts (U-180)', () => {
     const reopenAudit = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, c.tenantId),
       eq(auditLog.entityType, 'document_draft'), eq(auditLog.entityId, a.draft.id)));
     expect(reopenAudit.some((x) => (x.afterData as Record<string, unknown>)['reopened'] === true)).toBe(true);
+  });
+
+  it('every file the attach took off the draft key comes back; a file filed by hand stays; another live draft\'s file never left (U-183)', async () => {
+    const d = await readyDraft();
+    const second = await uploadOn('draft', d.draftKey);
+    const othersFile = await uploadOn('draft', d.draftKey);
+    const claim = await send('POST', '/api/v1/document-drafts', { attachmentId: othersFile, kindHint: 'card_charge' });
+    expect(claim.status, JSON.stringify(claim.json)).toBe(201);
+    const exp = await postedExpense('61.19');
+    const byHand = await uploadOn('expense', exp);
+    const r = await keyed(`/api/v1/document-drafts/${d.draft.id}/attach`, { transactionId: exp, expectedUpdatedAt: d.draft.updatedAt });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    for (const id of [d.attachmentId, second]) {
+      expect(await fileOf(id)).toMatchObject({ attachableType: 'expense', attachableId: exp, sourceDraftKey: d.draftKey });
+    }
+    expect(await fileOf(othersFile)).toMatchObject({ attachableType: 'draft', attachableId: d.draftKey });
+    expect((await fileOf(byHand)).sourceDraftKey).toBeNull();
+
+    const del = await send('DELETE', `/api/v1/transactions/${exp}`, {});
+    expect(del.status, JSON.stringify(del.json)).toBe(200);
+    expect(del.json.reopenedDrafts).toEqual([d.draft.id]);
+    for (const id of [d.attachmentId, second, othersFile]) {
+      expect(await fileOf(id)).toMatchObject({ attachableType: 'draft', attachableId: d.draftKey, sourceDraftKey: null });
+    }
+    expect(await fileOf(byHand)).toMatchObject({ attachableType: 'expense', attachableId: exp });
+    const moved = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, c.tenantId),
+      eq(auditLog.entityType, 'attachment'), eq(auditLog.entityId, second)));
+    expect(moved.some((x) => (x.afterData as Record<string, unknown>)['reopenedDraftId'] === d.draft.id)).toBe(true);
+  });
+
+  it('a feed accept\'s relink records the key too; Undo brings back every file of it (U-183)', async () => {
+    const d = await readyDraft();
+    const second = await uploadOn('draft', d.draftKey);
+    const row = await feed('66.02');
+    const r = await accept({ items: [{ id: row, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } }] });
+    expect(r.json.posted, JSON.stringify(r.json)).toBe(1);
+    const txnId = (await item(row)).matchedTransactionId!;
+    expect(await fileOf(second)).toMatchObject({ attachableId: txnId, sourceDraftKey: d.draftKey });
+    const u = await undo({ feedItemIds: [row] });
+    expect(u.json.reopenedDrafts).toEqual([d.draft.id]);
+    for (const id of [d.attachmentId, second]) {
+      expect(await fileOf(id)).toMatchObject({ attachableType: 'draft', attachableId: d.draftKey, sourceDraftKey: null });
+    }
+  });
+
+  it('a file relinked before migration 0270 (no recorded key): the own file comes back by the audit row, as before', async () => {
+    const d = await readyDraft();
+    const second = await uploadOn('draft', d.draftKey);
+    const exp = await postedExpense('63.47');
+    expect((await keyed(`/api/v1/document-drafts/${d.draft.id}/attach`, { transactionId: exp, expectedUpdatedAt: d.draft.updatedAt })).status).toBe(200);
+    await db.update(attachments).set({ sourceDraftKey: null }).where(eq(attachments.attachableId, exp));
+    const del = await send('DELETE', `/api/v1/transactions/${exp}`, {});
+    expect(del.status, JSON.stringify(del.json)).toBe(200);
+    expect(await fileOf(d.attachmentId)).toMatchObject({ attachableType: 'draft', attachableId: d.draftKey });
+    expect(await fileOf(second)).toMatchObject({ attachableType: 'expense', attachableId: exp });
+  });
+
+  it('a hand link clears the recorded key', async () => {
+    const d = await readyDraft();
+    const exp = await postedExpense('67.70');
+    const other = await postedExpense('67.71');
+    const second = await uploadOn('draft', d.draftKey);
+    expect((await keyed(`/api/v1/document-drafts/${d.draft.id}/attach`, { transactionId: exp, expectedUpdatedAt: d.draft.updatedAt })).status).toBe(200);
+    expect((await fileOf(second)).sourceDraftKey).toBe(d.draftKey);
+    await attachmentService.linkAttachment(c.tenantId, second, 'expense', other, c.companyId);
+    expect(await fileOf(second)).toMatchObject({ attachableId: other, sourceDraftKey: null });
   });
 
   it('a void keeps the entry, so its draft stays converted', async () => {
