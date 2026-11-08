@@ -269,6 +269,20 @@ describe('POST /', () => {
     expect(status).toBe(400);
   });
 
+  it('needs exactly 100 percent on create and update (U-164): 33.333 x 3 is refused', async () => {
+    const thirds = (p: number[]) => [{
+      type: 'split_by_percentage',
+      splits: p.map((percent, i) => ({ accountId: `00000000-0000-0000-0000-00000000001${i}`, percent })),
+    }];
+    const bad = await request('POST', '/api/v1/practice/conditional-rules',
+      { name: 'thirds', conditions: SAMPLE_CONDITION, actions: thirds([33.333, 33.333, 33.333]) }, bookkeeperToken);
+    expect(bad.status).toBe(400);
+    const upd = await request('PUT', '/api/v1/practice/conditional-rules/00000000-0000-0000-0000-000000000001',
+      { actions: thirds([33.333, 33.333, 33.333]) }, bookkeeperToken);
+    expect(upd.status).toBe(400);
+    expect(JSON.stringify(upd.json)).toMatch(/sum to 100/);
+  });
+
   it('rejects branching depth > MAX_BRANCH_DEPTH', async () => {
     let actions: ActionsField = [{ type: 'set_account', accountId: '00000000-0000-0000-0000-000000000010' }];
     for (let i = 0; i < 10; i++) {

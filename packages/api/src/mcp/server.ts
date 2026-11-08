@@ -415,6 +415,7 @@ registerTool('categorize_feed_item', 'Categorize a bank feed item (optional tag_
     tenantId,
     p.feed_item_id,
     { accountId: p.account_id, contactId: p.contact_id, memo: p.memo, ...(tagId !== undefined ? { tagId } : {}) } as any,
+    undefined, undefined, { ownerChoice: true },
   );
 });
 

@@ -96,6 +96,28 @@ export const conditionAstSchema: z.ZodType<ConditionASTSchema> = z.lazy(() =>
 // array (non-empty, percent variants sum to ~100, etc.) here
 // rather than only at evaluation time so a mis-built rule can't
 // be persisted in the first place.
+/**
+ * True when the percentages add up to exactly 100 as decimals (U-164). Each
+ * number is read as the decimal it prints as (33.33 is 33.33, not the
+ * nearest double), so 33.33 + 33.33 + 33.34 is 100 and 33.333 x 3 is not.
+ * A percentage that prints in exponent form (below 1e-6) never adds up.
+ */
+export function percentsTotalExactly100(percents: ReadonlyArray<number | string>): boolean {
+  const parts: Array<{ int: string; frac: string; neg: boolean }> = [];
+  for (const p of percents) {
+    const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(p).trim());
+    if (!m) return false;
+    parts.push({ neg: m[1] === '-', int: m[2]!, frac: m[3] ?? '' });
+  }
+  const scale = parts.reduce((n, x) => Math.max(n, x.frac.length), 0);
+  let total = 0n;
+  for (const x of parts) {
+    const v = BigInt(x.int + x.frac.padEnd(scale, '0'));
+    total += x.neg ? -v : v;
+  }
+  return total === 100n * 10n ** BigInt(scale);
+}
+
 const splitPercentageEntry = z.object({
   accountId: z.string().uuid(),
   percent: z.number().min(0).max(100),
@@ -273,8 +295,10 @@ export const createConditionalRuleSchema = baseConditionalRuleObject.superRefine
   collectActions(rule.actions, all);
   for (const action of all) {
     if (action.type === 'split_by_percentage') {
-      const sum = action.splits.reduce((s, x) => s + x.percent, 0);
-      if (Math.abs(sum - 100) > 0.01) {
+      // U-164: exactly 100 as decimals (the Bank Feed refuses to post any
+      // other total), not 100 within a float tolerance.
+      if (!percentsTotalExactly100(action.splits.map((x) => x.percent))) {
+        const sum = action.splits.reduce((s, x) => s + x.percent, 0);
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: `Percentage splits must sum to 100 (got ${sum})`,
@@ -286,7 +310,18 @@ export const createConditionalRuleSchema = baseConditionalRuleObject.superRefine
 });
 export type CreateConditionalRuleInput = z.infer<typeof createConditionalRuleSchema>;
 
-export const updateConditionalRuleSchema = baseConditionalRuleObject.partial();
+// U-164: an update that sends actions gets the same exact-100 check as
+// create, so a rule that can't post can't be saved either way.
+export const updateConditionalRuleSchema = baseConditionalRuleObject.partial().superRefine((rule, ctx) => {
+  if (rule.actions === undefined) return;
+  const all: Array<z.infer<typeof actionSchema>> = [];
+  collectActions(rule.actions, all);
+  for (const action of all) {
+    if (action.type === 'split_by_percentage' && !percentsTotalExactly100(action.splits.map((x) => x.percent))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Percentage splits must sum to 100', path: ['actions'] });
+    }
+  }
+});
 export type UpdateConditionalRuleInput = z.infer<typeof updateConditionalRuleSchema>;
 
 export const reorderConditionalRulesSchema = z.object({

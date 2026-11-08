@@ -123,6 +123,17 @@ export interface CategorizeInput {
   // rule's assign_tag_id or from explicit user selection in the
   // categorization drawer. Null means explicitly untagged.
   tagId?: string | null;
+  // U-164 (feed-exact-v1): the owner's split lines; they must add up
+  // exactly to the item's |amount|. Omitted = one line on accountId.
+  splits?: FeedSplitLine[];
+}
+
+export interface FeedSplitLine {
+  accountId: string;
+  // Positive decimal string with at most 2 decimals.
+  amount: string;
+  tagId?: string | null;
+  memo?: string | null;
 }
 
 export interface Reconciliation {

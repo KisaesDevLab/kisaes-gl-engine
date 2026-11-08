@@ -15309,6 +15309,7 @@
     },
     "/api/v1/banking/feed/{id}/assign": {
       "put": {
+        "description": "Response {item}. Approve posts what is staged. Optional `splits`: 2-50 lines {accountId, amount (^\\d{1,12}(\\.\\d{1,2})?$, more than 0), tagId?|null, memo? (at most 500)} that must add up exactly to the item amount (absolute value), else 400 SPLITS_DONT_BALANCE (details {kind: \"fixed\", difference, splitTotal, amount}; difference = |amount| - the lines). An item amount with more than 2 decimals cannot be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: \"percentage\", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order (100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must add up exactly. Amounts post exactly as stored (no floating point). Without `splits`, any staged split is cleared.",
         "operationId": "put_api_v1_banking_feed_by_id_assign",
         "parameters": [
           {
@@ -15352,6 +15353,51 @@
                       }
                     ]
                   },
+                  "splits": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "amount": {
+                          "pattern": "^\\d{1,12}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "memo": {
+                          "anyOf": [
+                            {
+                              "maxLength": 500,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "accountId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 50,
+                    "minItems": 2,
+                    "type": "array"
+                  },
                   "tagId": {
                     "anyOf": [
                       {
@@ -15386,6 +15432,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Stage a category (and optional split) on a bank feed item without posting",
         "tags": [
           "banking"
         ]
@@ -15393,7 +15440,7 @@
     },
     "/api/v1/banking/feed/{id}/categorize": {
       "put": {
-        "description": "Response {transaction}. An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
+        "description": "Response {transaction}. Optional `splits`: 2-50 lines {accountId, amount (^\\d{1,12}(\\.\\d{1,2})?$, more than 0), tagId?|null, memo? (at most 500)} that must add up exactly to the item amount (absolute value), else 400 SPLITS_DONT_BALANCE (details {kind: \"fixed\", difference, splitTotal, amount}; difference = |amount| - the lines). An item amount with more than 2 decimals cannot be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: \"percentage\", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order (100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must add up exactly. Amounts post exactly as stored (no floating point). An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
         "operationId": "put_api_v1_banking_feed_by_id_categorize",
         "parameters": [
           {
@@ -15421,6 +15468,51 @@
                   },
                   "memo": {
                     "type": "string"
+                  },
+                  "splits": {
+                    "items": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "amount": {
+                          "pattern": "^\\d{1,12}(\\.\\d{1,2})?$",
+                          "type": "string"
+                        },
+                        "memo": {
+                          "anyOf": [
+                            {
+                              "maxLength": 500,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "accountId",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 50,
+                    "minItems": 2,
+                    "type": "array"
                   },
                   "tagId": {
                     "anyOf": [
