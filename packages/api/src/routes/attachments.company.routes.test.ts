@@ -333,3 +333,81 @@ describe('U-90: rows from before the change (no company)', () => {
     expect((await send('GET', `/api/v1/attachments/${legacyOnA!.id}/download`, c.ownerToken, undefined, hdrA())).status).toBe(200);
   });
 });
+
+describe('U-186: upload and delete audit rows are written with the change (PR-A1 N3, T11)', () => {
+  const auditsOf = async (id: string) => (await db.select().from(auditLog).where(eq(auditLog.entityId, id)))
+    .filter((a) => a.tenantId === c.tenantId && a.entityType === 'attachment');
+  const tenantAudits = async (action: string) => (await db.select().from(auditLog).where(eq(auditLog.tenantId, c.tenantId)))
+    .filter((a) => a.entityType === 'attachment' && a.action === action).length;
+  /** auditLog() stores a JSON text; read it back as an object. */
+  const doc = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown> | null;
+
+  it('POST then DELETE: one create row and one delete row (before-image: the deleted row)', async () => {
+    const up = await uploadPdf(c.ownerToken, PDF_A, hdrA());
+    expect(up.status, up.raw).toBe(201);
+    const id = up.json.attachment.id as string;
+    const created = await auditsOf(id);
+    expect(created).toHaveLength(1);
+    expect(created[0]!.action).toBe('create');
+    expect(created[0]!.userId).toBe(c.ownerId);
+    expect(doc(created[0]!.afterData)).toMatchObject({ attachableType: 'draft', fileName: 'invoice.pdf', mimeType: 'application/pdf' });
+
+    const del = await send('DELETE', `/api/v1/attachments/${id}`, c.ownerToken, undefined, hdrA());
+    expect(del.status, del.raw).toBe(200);
+    const d = (await auditsOf(id)).find((a) => a.action === 'delete')!;
+    expect(d.userId).toBe(c.ownerId);
+    expect(doc(d.beforeData)).toMatchObject({ id, fileName: 'invoice.pdf', companyId: c.companyA });
+    expect(d.afterData).toBeNull();
+  });
+
+  it('a failure after the row delete and its audit row: neither happened and the file is still there; then it deletes once', async () => {
+    const up = await uploadPdf(c.ownerToken, PDF_A, hdrA());
+    const id = up.json.attachment.id as string;
+    const deletesBefore = await tenantAudits('delete');
+    let reached = false;
+    attachmentService.__attachmentTestHooks.afterDeleteAudit = () => { reached = true; throw new Error('forced failure after delete'); };
+    try {
+      const r = await send('DELETE', `/api/v1/attachments/${id}`, c.ownerToken, undefined, hdrA());
+      expect(r.status).toBe(500);
+    } finally {
+      delete attachmentService.__attachmentTestHooks.afterDeleteAudit;
+    }
+    expect(reached).toBe(true);
+    expect(await rowOf(id)).toBeTruthy();
+    expect(await tenantAudits('delete')).toBe(deletesBefore);
+    expect((await send('GET', `/api/v1/attachments/${id}/download`, c.ownerToken, undefined, hdrA())).status).toBe(200);
+
+    const ok = await send('DELETE', `/api/v1/attachments/${id}`, c.ownerToken, undefined, hdrA());
+    expect(ok.status, ok.raw).toBe(200);
+    expect(await rowOf(id)).toBeUndefined();
+    expect(await tenantAudits('delete')).toBe(deletesBefore + 1);
+  });
+
+  it('a failure after the upload insert and its audit row: no row and no audit row', async () => {
+    const count = async () => ({
+      rows: (await db.select().from(attachments).where(eq(attachments.tenantId, c.tenantId))).length,
+      creates: await tenantAudits('create'),
+    });
+    const before = await count();
+    let reached: string | null = null;
+    attachmentService.__attachmentTestHooks.afterUploadAudit = (info) => { reached = info.attachmentId; throw new Error('forced failure after upload'); };
+    try {
+      const r = await uploadPdf(c.ownerToken, PDF_A, hdrA());
+      expect(r.status).toBe(500);
+    } finally {
+      delete attachmentService.__attachmentTestHooks.afterUploadAudit;
+    }
+    expect(reached).toBeTruthy();
+    expect(await rowOf(reached!)).toBeUndefined();
+    expect(await count()).toEqual(before);
+  });
+
+  it('service callers without the audit option are unchanged (no audit row of their own)', async () => {
+    const a = await attachmentService.upload(c.tenantId,
+      { originalname: 'svc.pdf', buffer: PDF_B, mimetype: 'application/pdf', size: PDF_B.length },
+      'draft', crypto.randomUUID(), { skipAutoClassify: true, companyId: c.companyA });
+    expect(await auditsOf(a!.id)).toHaveLength(0);
+    await attachmentService.remove(c.tenantId, a!.id, c.companyA);
+    expect(await auditsOf(a!.id)).toHaveLength(0);
+  });
+});

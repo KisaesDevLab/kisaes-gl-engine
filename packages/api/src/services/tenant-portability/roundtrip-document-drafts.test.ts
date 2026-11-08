@@ -21,6 +21,7 @@ import { accounts, attachments, companies, documentDrafts, users } from '../../d
 import * as authService from '../auth.service.js';
 import * as attachmentService from '../attachment.service.js';
 import * as draftService from '../document-draft.service.js';
+import * as ledger from '../ledger.service.js';
 import { runWithoutIdempotency } from '../idempotency-context.js';
 import { ArchiveReader, validateManifest } from './archive-reader.js';
 import { runExport, tableCursorSql, type ExportResult } from './export.service.js';
@@ -236,6 +237,52 @@ describe('document drafts in tenant archives (U-92)', () => {
     // Its live draft still guards its file.
     const live = drafts.find((d) => d.status === 'new')!;
     await expect(attachmentService.remove(imported.tenantId, live.attachmentId!, newCompany)).rejects.toMatchObject({ statusCode: 409, code: 'ATTACHMENT_IN_USE' });
+  }, 600_000);
+
+  it('PR-A1 T7: after a backup round trip, deleting the entry made from a draft reopens it with its file; converting again posts once (twice: recorded key, then the audit-row fallback)', async () => {
+    const imported = await runImport({ filePath: backup.path!, passphrase: PASS, callerUserId: callerId });
+    createdTenants.push(imported.tenantId);
+    const tid = imported.tenantId;
+    const [conv] = await db.select().from(documentDrafts).where(and(eq(documentDrafts.tenantId, tid), eq(documentDrafts.status, 'converted')));
+    expect(conv).toBeTruthy();
+    const co = conv!.companyId;
+    // Ids are remapped on import: look the restored rows up by tenant.
+    const [vendor] = await rows<{ id: string }>(sql`SELECT id FROM contacts WHERE tenant_id = ${tid} AND display_name = 'Cosmos Granite'`);
+    const expense = await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tid), eq(accounts.accountType, 'expense')) });
+    const liveBills = async () => (await rows<{ n: number }>(sql`SELECT count(*)::int AS n FROM transactions
+      WHERE tenant_id = ${tid} AND txn_type = 'bill' AND status <> 'deleted'`))[0]!.n;
+    expect(await liveBills()).toBe(1);
+    const attId = conv!.attachmentId!;
+    expect(attId).toBeTruthy();
+
+    let billId = conv!.convertedTransactionId!;
+    for (const variant of ['recorded key', 'audit-row fallback'] as const) {
+      const [file] = await db.select().from(attachments).where(eq(attachments.id, attId));
+      expect(file, variant).toMatchObject({ tenantId: tid, attachableType: 'bill', attachableId: billId });
+      if (variant === 'audit-row fallback') {
+        await db.update(attachments).set({ sourceDraftKey: null }).where(eq(attachments.id, attId));
+      }
+
+      const del = await ledger.deleteTransaction(tid, billId, { userId: callerId, companyId: co, reason: 'T7' });
+      expect(del.reopenedDrafts, variant).toEqual([conv!.id]);
+      const reopened = await draftService.get(tid, co, conv!.id);
+      expect(reopened, variant).toMatchObject({ status: 'ready', convertedTransactionId: null, attachmentId: attId });
+      const [back] = await db.select().from(attachments).where(eq(attachments.id, attId));
+      expect(back!.attachableType, variant).toBe('draft');
+      // The file itself came back with the archive and is readable in the restored company.
+      const dl = await attachmentService.download(tid, attId, co);
+      expect(dl, variant).toBeTruthy();
+      expect(await liveBills(), variant).toBe(0);
+
+      const again = await runWithoutIdempotency(() => draftService.convert(tid, co, callerId, conv!.id, {
+        kind: 'bill', expectedUpdatedAt: reopened.updatedAt, acknowledgeDuplicateOf: [],
+        body: { contactId: vendor!.id, txnDate: '2026-05-01', vendorInvoiceNumber: 'RT-1', lines: [{ accountId: expense!.id, amount: '88.00' }] },
+      }, async () => true));
+      expect(await liveBills(), variant).toBe(1);
+      billId = again.transactionId;
+      const [moved] = await db.select().from(attachments).where(eq(attachments.id, attId));
+      expect(moved, variant).toMatchObject({ attachableType: 'bill', attachableId: billId });
+    }
   }, 600_000);
 
   it('resetDocumentDrafts: the backup verifies and imports with no unconverted drafts or layouts; converted drafts stay; the audit row records it', async () => {
