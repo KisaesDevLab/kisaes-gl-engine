@@ -40,10 +40,13 @@
  * A posted entry (post, transfer, deposit) is deleted (Q-P26f), fee lines
  * included, after every item pointing at it is unlinked (both sides of a
  * transfer, also one matched later); a deposit's payments go back to
- * Payments Clearing exactly. A match or a received payment is unlinked and
- * the entry kept. An entry that was voided is only unlinked (as Review
- * again, no password). Each item gets its prior review state back, and the
- * categorization history counts an override (Q-P26k).
+ * Payments Clearing exactly; this holds also when the row matched later is
+ * selected with it. A request of only matches or received payments unlinks
+ * them and keeps the entry. An entry that was voided is only unlinked (as
+ * Review again, no password). Each item gets its prior review state back,
+ * and the categorization history counts an override (Q-P26k). The entry is
+ * locked SKIP LOCKED after the feed rows (Void locks it first): a held entry
+ * is FEED_ITEM_IN_USE, never a wait.
  */
 
 import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
@@ -432,10 +435,13 @@ export interface UndoRequest {
 }
 
 export interface UndoResult {
-  /** entry: 'deleted' (posted for the row), 'kept' (a match, a payment or a voided entry: only unlinked). */
+  /** entry: 'deleted' (the feed posted it), 'kept' (only matches / payments undone, or a voided entry: only unlinked). */
   undone: Array<{ id: string; kind: string; transactionId: string; entry: 'deleted' | 'kept'; undoGroupId: string }>;
   failures: AcceptFailure[];
 }
+
+/** Record kinds whose entry the feed posted (Undo deletes it). */
+const POSTING_KINDS: ReadonlySet<string> = new Set(['post', 'transfer', 'deposit']);
 
 interface UndoUnit {
   transactionId: string;
@@ -526,8 +532,21 @@ export async function undoFeedAccepts(
       const failAll = (code: string, error: string, details?: Record<string, unknown>) => {
         for (const r of unit.records) failures.push({ id: r.feedItemId, code, error, ...(details ? { details } : {}) });
       };
+      // SKIP LOCKED, never a wait: Void and delete lock the entry and then
+      // its feed rows, and Undo already holds the feed rows, so waiting here
+      // could deadlock (two computers on the LAN). A held entry is
+      // FEED_ITEM_IN_USE for this unit; the owner tries again.
       const [txn] = await tx.select().from(transactions)
-        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, unit.transactionId))).for('update');
+        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, unit.transactionId)))
+        .for('update', { skipLocked: true });
+      if (!txn) {
+        const [held] = await tx.select({ id: transactions.id }).from(transactions)
+          .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, unit.transactionId))).limit(1);
+        if (held) {
+          failAll('FEED_ITEM_IN_USE', 'Someone else is working on this entry. Try again in a moment.');
+          continue;
+        }
+      }
       // Every item pointing at the entry, also one not in this request (the other side of a transfer).
       const linkedIds = (await tx.select({ id: bankFeedItems.id }).from(bankFeedItems)
         .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.matchedTransactionId, unit.transactionId))))
@@ -543,8 +562,11 @@ export async function undoFeedAccepts(
       unit.linked = [...linkedIds.filter((i) => locked.has(i)).map((i) => locked.get(i)!), ...extraLocked];
 
       const voided = !txn || txn.status !== 'posted' || unit.linked.some((l) => l.entryVoidedAt);
-      const kinds = new Set(unit.records.map((r) => r.kind));
-      unit.action = voided || kinds.has('match') || kinds.has('payment') ? 'unlink' : 'delete';
+      // An entry the feed posted (post, transfer, deposit) is deleted whenever
+      // its posting record is in the request, also when a row matched to it
+      // later is selected with it: the books don't depend on the selection.
+      // Only a request of matches / payments alone unlinks and keeps it.
+      unit.action = !voided && unit.records.some((r) => POSTING_KINDS.has(r.kind)) ? 'delete' : 'unlink';
 
       if (!voided) {
         const isReconciled = unit.action === 'delete'
@@ -590,8 +612,9 @@ export async function undoFeedAccepts(
     // 2. Post: unlink every item on the entry, restore it, then delete the entry.
     const undone: UndoResult['undone'] = [];
     for (const unit of ready) {
-      const learn = unit.action === 'delete' && unit.records.some((r) => r.kind === 'post')
-        ? await overrideFor(tx, tenantId, unit.linked.find((l) => l.id === unit.records[0]!.feedItemId) ?? unit.linked[0]!, unit.transactionId)
+      const postRec = unit.action === 'delete' ? unit.records.find((r) => r.kind === 'post') : undefined;
+      const learn = postRec
+        ? await overrideFor(tx, tenantId, unit.linked.find((l) => l.id === postRec.feedItemId) ?? unit.linked[0]!, unit.transactionId)
         : null;
       const recordIds: string[] = [];
       for (const item of unit.linked) {
@@ -624,7 +647,7 @@ export async function undoFeedAccepts(
         await ledger.deleteTransactionInTx(tx, tenantId, unit.transactionId, {
           userId, companyId, reason: 'Bank feed Undo',
         });
-        if (learn) overrides.push({ id: unit.records[0]!.feedItemId, l: learn });
+        if (learn && postRec) overrides.push({ id: postRec.feedItemId, l: learn });
       }
     }
     undone.sort((a, b) => a.id.localeCompare(b.id));

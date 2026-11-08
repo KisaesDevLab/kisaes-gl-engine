@@ -530,6 +530,104 @@ describe('POST /banking/feed/undo (U-169)', () => {
     expect((await item(inn)).status).toBe('pending');
   });
 
+  it('M1 a transfer and the row matched to it later, undone together, delete the entry: the same books as undoing it alone', async () => {
+    const before = { checking: await balanceOf(c.checking), savings: await balanceOf(c.savings) };
+    /** A to Savings as a transfer, then Savings row B matched to the transfer's Savings line. */
+    const setUp = async () => {
+      const a = await feed('300.0000', { description: 'ZZQX ONLINE TRANSFER' });
+      const b = await feed('-300.0000', { bankConnectionId: c.savingsConn, feedDate: '2026-08-15', description: 'ZZQX ONLINE TRANSFER' });
+      const t = await keyed(`${BASE}/${a}/transfer`, { toAccountId: c.savings });
+      expect(t.status).toBe(200);
+      const line = (await db.select().from(journalLines).where(eq(journalLines.transactionId, t.json.transaction.id)))
+        .find((l) => l.accountId === c.savings)!;
+      const m = await request('PUT', `${BASE}/${b}/match`, { transactionId: t.json.transaction.id, journalLineId: line.id });
+      expect(m.status).toBe(200);
+      return { a, b, txnId: t.json.transaction.id as string };
+    };
+
+    // Undo A alone.
+    const one = await setUp();
+    const u1 = await undo({ feedItemIds: [one.a] });
+    expect(u1.status).toBe(200);
+    expect((await txn(one.txnId)).status).toBe('deleted');
+    const afterAlone = { checking: await balanceOf(c.checking), savings: await balanceOf(c.savings) };
+    expect(afterAlone).toEqual(before);
+
+    // Undo A and B selected together: the same books.
+    const two = await setUp();
+    const u2 = await undo({ feedItemIds: [two.b, two.a] });
+    expect(u2.status).toBe(200);
+    expect(u2.json.failures).toEqual([]);
+    expect(u2.json.undone.map((x: any) => x.id).sort()).toEqual([two.a, two.b].sort());
+    for (const x of u2.json.undone) expect(x.entry).toBe('deleted');
+    expect((await txn(two.txnId)).status).toBe('deleted');
+    for (const id of [two.a, two.b]) expect(await item(id)).toMatchObject({ status: 'pending', matchedTransactionId: null });
+    expect({ checking: await balanceOf(c.checking), savings: await balanceOf(c.savings) }).toEqual(afterAlone);
+
+    // B alone (only the later match) unlinks B and keeps the transfer.
+    const three = await setUp();
+    const u3 = await undo({ feedItemIds: [three.b] });
+    expect(u3.json.undone).toEqual([expect.objectContaining({ id: three.b, kind: 'match', entry: 'kept' })]);
+    expect((await txn(three.txnId)).status).toBe('posted');
+    expect((await item(three.a)).matchedTransactionId).toBe(three.txnId);
+  });
+
+  it('m6 transfer and deposit refuse a row still flagged as a possible duplicate (409), as /accept skips it; Keep both lets it post', async () => {
+    const orig = await feed('250.0000', { description: 'ZZQX ONLINE TRANSFER' });
+    const dup = await feed('250.0000', { description: 'ZZQX ONLINE TRANSFER', possibleDuplicate: true, possibleDuplicateOf: orig });
+    const other = await feed('-250.0000', { bankConnectionId: c.savingsConn, description: 'ZZQX ONLINE TRANSFER' });
+    // Either side flagged.
+    const t1 = await keyed(`${BASE}/${dup}/transfer`, { toAccountId: c.savings });
+    expect([t1.status, t1.json.error.code]).toEqual([409, 'FEED_ITEM_POSSIBLE_DUPLICATE']);
+    expect(t1.json.error.details).toEqual({ id: dup, possibleDuplicateOf: orig });
+    const t2 = await keyed(`${BASE}/${other}/transfer`, { otherFeedItemId: dup });
+    expect([t2.status, t2.json.error.code]).toEqual([409, 'FEED_ITEM_POSSIBLE_DUPLICATE']);
+    expect((await item(other)).status).toBe('pending');
+
+    const p = await payment('180.0000');
+    const dIn = await feed('-180.0000', { possibleDuplicate: true, possibleDuplicateOf: orig });
+    const d = await keyed(`${BASE}/${dIn}/deposit`, { sourceTransactionIds: [p] });
+    expect([d.status, d.json.error.code]).toEqual([409, 'FEED_ITEM_POSSIBLE_DUPLICATE']);
+    expect((await item(dIn)).status).toBe('pending');
+
+    // The owner keeps it: it posts.
+    expect((await keyed(`${BASE}/${dup}/duplicate`, { decision: 'keep' })).status).toBe(200);
+    const t3 = await keyed(`${BASE}/${other}/transfer`, { otherFeedItemId: dup });
+    expect(t3.status).toBe(200);
+  });
+
+  it('m1 an entry another request holds (a Void in progress) is FEED_ITEM_IN_USE at once, never a wait', async () => {
+    const a = await feed('41.0000');
+    const r = await accept({ items: [{ id: a }] });
+    expect(r.json.posted).toBe(1);
+    const txnId = (await item(a)).matchedTransactionId!;
+    let release!: () => void;
+    const released = new Promise<void>((res) => { release = res; });
+    let taken!: () => void;
+    const lockTaken = new Promise<void>((res) => { taken = res; });
+    // As voidTransactionInTx: the entry first, the feed rows after.
+    const holder = db.transaction(async (tx) => {
+      await tx.select().from(transactions).where(eq(transactions.id, txnId)).for('update');
+      taken();
+      await released;
+    });
+    await lockTaken;
+    let u: Res;
+    try {
+      u = await undo({ feedItemIds: [a] });
+    } finally {
+      release();
+      await holder;
+    }
+    expect(u.status).toBe(200);
+    expect(u.json.undone).toEqual([]);
+    expect(u.json.failures).toEqual([expect.objectContaining({ id: a, code: 'FEED_ITEM_IN_USE' })]);
+    expect((await item(a)).status).toBe('categorized');
+    // Released: Undo goes through.
+    const again = await undo({ feedItemIds: [a] });
+    expect(again.json.undone).toEqual([expect.objectContaining({ id: a, entry: 'deleted' })]);
+  });
+
   it('#10/#24 a fee deposit undoes exactly: the payment is back in Payments Clearing at 720.00; a bounced one stays', async () => {
     const p = await payment('720.0000');
     const line = await feed('-699.4600', { feedDate: '2026-08-12', suggestedAccountId: null, matchType: null });

@@ -14,6 +14,9 @@
  *                       stack frames. Never the drizzle `params:` list, the
  *                       pg `detail`/`where`/`parameters`, or a quoted input
  *                       value — those carry amounts, names and memo text.
+ *                       An AppError with a code prints only its code,
+ *                       status and the ids in its details, never its
+ *                       message (written for the owner; it can hold amounts).
  *
  * Env-free and dependency-free.
  */
@@ -40,11 +43,34 @@ function shortMessage(message: unknown): string {
   return first.length > MAX_MESSAGE ? `${first.slice(0, MAX_MESSAGE)}…` : first;
 }
 
+const ID_KEY = /^(?:id|ids|.+Id|.+Ids)$/;
+const ID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The uuid-valued `id` / `…Id` / `ids` / `…Ids` entries of an app error's details, as `key=value`. */
+function idParts(details: unknown): string[] {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return [];
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(details as Record<string, unknown>)) {
+    if (!ID_KEY.test(k)) continue;
+    const vals = (Array.isArray(v) ? v : [v]).filter((x): x is string => typeof x === 'string' && ID_VALUE.test(x));
+    if (vals.length > 0) out.push(`${k}=${vals.slice(0, 10).join(',')}${vals.length > 10 ? ',…' : ''}`);
+  }
+  return out;
+}
+
 function describe(e: unknown): string {
   if (e === null || e === undefined) return String(e);
   if (typeof e !== 'object') return typeof e === 'string' ? shortMessage(e) : typeof e;
-  const o = e as { name?: unknown; code?: unknown; message?: unknown };
+  const o = e as { name?: unknown; code?: unknown; message?: unknown; statusCode?: unknown; details?: unknown };
   const parts: string[] = [typeof o.name === 'string' ? o.name : 'Error'];
+  // An app error with a code (AppError: statusCode + code): the code, its
+  // status and the ids in its details only. Its message is written for the
+  // owner and can carry amounts and names (SPLITS_DONT_BALANCE,
+  // FEED_ITEM_MISMATCH); the code says what happened.
+  if (typeof o.statusCode === 'number' && typeof o.code === 'string' && o.code !== '') {
+    parts.push(`code=${o.code}`, `status=${o.statusCode}`, ...idParts(o.details));
+    return parts.join(' ');
+  }
   if (typeof o.code === 'string' || typeof o.code === 'number') parts.push(`code=${o.code}`);
   const msg = shortMessage(o.message);
   if (msg) parts.push(msg);

@@ -68,7 +68,8 @@ function notFound(): AppError {
  * Locks the feed rows in sorted id order, FOR UPDATE SKIP LOCKED. A missing
  * row (or another company's) is 404; a row another request holds is 409
  * FEED_ITEM_IN_USE; a row that isn't pending or assigned is 409
- * FEED_ITEM_NOT_PENDING. Returns the rows by id.
+ * FEED_ITEM_NOT_PENDING; a row still flagged as a possible duplicate is 409
+ * FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf}. Returns the rows by id.
  */
 export async function lockOpenFeedItems(
   tx: Tx, tenantId: string, companyId: string | undefined, ids: string[],
@@ -92,6 +93,13 @@ export async function lockOpenFeedItems(
     if (!OPEN_STATUSES.includes(row.status ?? '')) {
       throw AppError.conflict(`Bank feed item is not pending (current status: ${row.status}).`, 'FEED_ITEM_NOT_PENDING',
         { id, status: row.status });
+    }
+    if (row.possibleDuplicate) {
+      // As POST /accept's possible_duplicate skip: the owner decides first
+      // (POST /feed/:id/duplicate keep | remove), so a look-alike of a line
+      // already in the books never posts a second transfer or deposit.
+      throw AppError.conflict('This bank line may be a duplicate of one already imported. Keep it or remove it first.',
+        'FEED_ITEM_POSSIBLE_DUPLICATE', { id, possibleDuplicateOf: row.possibleDuplicateOf ?? null });
     }
   }
   return byId;

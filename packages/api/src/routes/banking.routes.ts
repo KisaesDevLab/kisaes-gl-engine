@@ -350,10 +350,15 @@ bankingRouter.post('/feed/undo', requireIdempotencyKey, closingPasswordLimiter, 
       + 'nothing for that row (failures FEED_ITEM_NOT_ACCEPTED). One database transaction: validate every row, then undo. A '
       + 'posted entry (accept, categorize, approve, transfer, deposit) is deleted, fee lines included, after every row pointing at '
       + 'it is unlinked (both sides of a transfer, also a side matched later); a deposit’s payments go back to Payments Clearing '
-      + 'exactly. A match or a received payment is only unlinked (the entry is kept); so is an entry that was voided (as Review '
-      + 'again; no password). Each row gets back the review state it had before the accept and the categorization history counts '
-      + 'an override. 409 FEED_UNDO_CHANGED {ids} when an entry to delete was changed after it was accepted (its date, name, memo '
-      + 'or lines): nothing is undone; ask the owner, then send again with force: true. failures[] {id, code, error, details?}: '
+      + 'exactly. The entry is deleted whenever the row that posted it is in the request, also when a row matched to it later '
+      + 'is selected with it. A request of only matches or received payments unlinks them (the entry is kept); so is an entry '
+      + 'that was voided (as Review again; no password). Each row gets back the review state it had before the accept and the '
+      + 'categorization history counts an override. 409 FEED_UNDO_CHANGED {ids} when an entry to delete was changed after it '
+      + 'was accepted: the check covers the entry’s date, contact (name) and memo, and each line’s account, debit, credit and '
+      + 'tag (lines added or removed included). Other edits (the entry type, line descriptions, the reference or number, '
+      + 'attachments) are not checked: Undo deletes the entry with them without asking. On 409 nothing is undone; ask the '
+      + 'owner, then send again with force: true. An entry another request holds (a Void or an edit in progress) is '
+      + 'FEED_ITEM_IN_USE for its rows; Undo never waits for it. failures[] {id, code, error, details?}: '
       + 'FEED_UNDO_RECONCILED (in a completed reconciliation, also for a plain match), TB_PERIOD_LOCKED (deleting an entry dated '
       + 'on or before the closing date needs closingPassword), PAYMENT_BOUNCED (a deposit holding a bounced payment stays), '
       + 'FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Response {undone: [{id, kind, transactionId, entry: deleted | kept, '
@@ -536,7 +541,9 @@ bankingRouter.post('/feed/:id/transfer', requireIdempotencyKey, closingPasswordL
       + 'sheet account of this company other than this item\'s account, Payments Clearing, A/R and A/P. Otherwise 400 '
       + 'TRANSFER_MISMATCH {field: otherFeedItemId | account | amount | date | toAccountId}. Response {transaction, items: '
       + '[{feedItemId, journalLineId}]} (the transfer line on each item\'s account). 409 FEED_ITEM_NOT_PENDING {id, status}, 409 '
-      + 'FEED_ITEM_IN_USE {id}. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited per item. '
+      + 'FEED_ITEM_IN_USE {id}, 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf} (either item still flagged as a '
+      + 'possible duplicate: keep or remove it first with POST /banking/feed/:id/duplicate). Idempotency-Key required (400 '
+      + 'IDEMPOTENCY_KEY_REQUIRED). Audited per item. '
       + FEED_CLOSED_PERIOD_NOTE,
     params: feedItemIdParam,
     body: feedTransferSchema,
@@ -564,7 +571,8 @@ bankingRouter.post('/feed/:id/deposit', requirePermission('receive_payment', 're
       + 'nothing left) is 400 PAYMENT_NOT_PENDING_DEPOSIT {id}; a bounced one 409 PAYMENT_BOUNCED {paymentId}. Matches this item '
       + 'to the deposit in the same database transaction. Response {transaction, items: [{feedItemId, journalLineId}], payments: '
       + '[{id, amount}]}. Voiding or deleting the deposit puts the payments back in Payments Clearing. 409 FEED_ITEM_NOT_PENDING '
-      + '{id, status}, 409 FEED_ITEM_IN_USE {id}. Permissions: banking and receive_payment (read). Idempotency-Key required (400 '
+      + '{id, status}, 409 FEED_ITEM_IN_USE {id}, 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf} (keep or remove '
+      + 'it first with POST /banking/feed/:id/duplicate). Permissions: banking and receive_payment (read). Idempotency-Key required (400 '
       + 'IDEMPOTENCY_KEY_REQUIRED). Audited. ' + FEED_CLOSED_PERIOD_NOTE,
     params: feedItemIdParam,
     body: feedDepositSchema,

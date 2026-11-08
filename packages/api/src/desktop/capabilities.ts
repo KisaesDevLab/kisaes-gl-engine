@@ -824,7 +824,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * 400 FEE_ACCOUNT_INVALID {accountId} (bank/card, Payments Clearing, A/R, A/P or another company), 400
    * PAYMENT_NOT_PENDING_DEPOSIT {id}, 409 PAYMENT_BOUNCED. Both posts: response {transaction, items: [{feedItemId,
    * journalLineId}]} (deposit adds payments [{id, amount}]); Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED); 409
-   * FEED_ITEM_NOT_PENDING {id, status}, 409 FEED_ITEM_IN_USE {id}; closed period as feed-closing-date-v1; audited. Practice
+   * FEED_ITEM_NOT_PENDING {id, status}, 409 FEED_ITEM_IN_USE {id}, 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf} (an
+   * item still flagged; keep or remove it first); closed period as feed-closing-date-v1; audited. Practice
    * match-apply transfers post the same way; its amounts are exact decimals.
    */
   'feed-match-post-v1',
@@ -856,8 +857,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * transactionId, entry: deleted|kept, undoGroupId}], failures: [{id, code, error, details?}]}. Works only from accept records
    * (every accept, categorize, approve, match, payment, transfer and deposit writes one; transfer, deposit and PUT match return
    * undoGroupId) whose row still points at the recorded entry. Deletes a posted entry after unlinking every row on it (both
-   * transfer sides; a deposit's payments go back to Payments Clearing exactly); a match, a payment or a voided entry is only
-   * unlinked. Restores each row's prior review state (Review again too); counts a learning override. 409 FEED_UNDO_CHANGED {ids}
+   * transfer sides; a deposit's payments go back to Payments Clearing exactly) whenever the posting row is in the request, also
+   * with a later match selected; a request of only matches / payments, or a voided entry, is only unlinked. The changed check
+   * covers date, contact, memo and each line's account, debit, credit and tag; a held entry is FEED_ITEM_IN_USE. Restores each
+   * row's prior review state (Review again too); counts a learning override. 409 FEED_UNDO_CHANGED {ids}
    * (the entry changed since; nothing undone; resend with force); failures FEED_UNDO_RECONCILED, TB_PERIOD_LOCKED,
    * PAYMENT_BOUNCED, FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Idempotency-Key required.
    */
