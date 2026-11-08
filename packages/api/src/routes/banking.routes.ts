@@ -241,13 +241,16 @@ bankingRouter.put('/feed/:id/match', feedKeyed, validate(matchSchema), describe(
     + 'journal line of the posted entry: on the item\'s bank account, a credit for money out (feed amount > 0) or a debit for money '
     + 'in (< 0), for exactly the amount. journalLineId may be left out when only one line fits (else 400 LINE_REQUIRED '
     + '{journalLineIds}). 400 MATCH_MISMATCH {field: transactionId | journalLineId | account | amount}; 409 LINE_ALREADY_MATCHED '
-    + '{journalLineId} when another item holds the line; ' + FEED_NOT_PENDING_NOTE + ' Audited.',
+    + '{journalLineId} when another item holds the line; ' + FEED_NOT_PENDING_NOTE + ' Audited. undoGroupId (feed-undo-v1) '
+    + 'names the accept record for POST /banking/feed/undo (Undo unlinks a match; the entry stays).',
   body: matchSchema,
 }), async (req, res) => {
+  let undoGroupId: string | null = null;
   const item = await bankFeedService.match(req.tenantId, req.params['id']!, req.body.transactionId, {
     journalLineId: req.body.journalLineId, userId: req.userId, companyId: req.companyId,
+    onRecorded: (g) => { undoGroupId = g; },
   });
-  res.json({ message: 'Matched', item });
+  res.json({ message: 'Matched', item, undoGroupId });
 });
 
 // U-174 (feed-review-v1): Keep both / Remove this one on a possible duplicate.

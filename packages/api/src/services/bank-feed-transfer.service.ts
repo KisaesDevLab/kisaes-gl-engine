@@ -43,6 +43,7 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
+import { recordAcceptGroup } from './bank-feed-accept-records.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -212,6 +213,8 @@ export interface FeedTransferResult {
   transaction: Awaited<ReturnType<typeof ledger.postTransaction>>;
   /** One per matched feed item: the transfer line on that item's account. */
   items: Array<{ feedItemId: string; journalLineId: string }>;
+  /** U-169 (feed-undo-v1): POST /banking/feed/undo {undoGroupId} takes it back. */
+  undoGroupId: string;
 }
 
 /**
@@ -300,7 +303,14 @@ export async function postFeedTransferInTx(
       { status: 'matched', matchedTransactionId: txn.id, kind: 'transfer', journalLineId: it.journalLineId },
       userId, tx);
   }
-  return { transaction: txn, items };
+  // U-169: the accept records Undo works from (one entry, both sides).
+  const undoGroupId = await recordAcceptGroup(tx, {
+    tenantId, companyId, userId, source: 'transfer',
+    items: items.map((it) => ({
+      kind: 'transfer' as const, before: locked.get(it.feedItemId)!, transactionId: txn.id, journalLineId: it.journalLineId,
+    })),
+  });
+  return { transaction: txn, items, undoGroupId };
 }
 
 /** POST /banking/feed/:id/transfer: one database transaction (see header). */

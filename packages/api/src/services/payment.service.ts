@@ -950,7 +950,8 @@ async function matchFeedItem(tx: Tx, tenantId: string, input: ReceivePaymentInpu
     );
   }
   const { matchInTx } = await import('./bank-feed.service.js');
-  await matchInTx(tx, tenantId, item.id, paymentId, { companyId });
+  // U-169: recorded as a 'payment' link; Undo unlinks it and keeps the payment.
+  await matchInTx(tx, tenantId, item.id, paymentId, { companyId, recordKind: 'payment' });
 }
 
 /** Receives a payment in its own database transaction (routes, api-v2, MCP, Stripe, bank feed). */

@@ -20,7 +20,7 @@ import { AppError } from '../utils/errors.js';
 // (conditional-rules-engine.service.ts) is a pure separate
 // module; this service handles persistence + audit.
 
-function mapRow(row: typeof conditionalRules.$inferSelect): ConditionalRule {
+export function mapRow(row: typeof conditionalRules.$inferSelect): ConditionalRule {
   return {
     id: row.id,
     tenantId: row.tenantId,

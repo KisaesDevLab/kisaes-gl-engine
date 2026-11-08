@@ -41,6 +41,7 @@ import { assertNoBouncedPayments } from './payment.service.js';
 import { liveDepositsForSource } from './deposit-links.service.js';
 import { clearingAmount, createDepositWithWarnings, systemAccountId } from './deposit.service.js';
 import { feedAccountOf, linkFeedItemToEntry, lockOpenFeedItems } from './bank-feed-transfer.service.js';
+import { recordAcceptGroup } from './bank-feed-accept-records.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -55,6 +56,8 @@ export interface FeedDepositResult {
   transaction: Awaited<ReturnType<typeof createDepositWithWarnings>>['transaction'];
   /** The matched feed item and the deposit's line on its bank account. */
   items: Array<{ feedItemId: string; journalLineId: string }>;
+  /** U-169 (feed-undo-v1): POST /banking/feed/undo {undoGroupId} takes it back. */
+  undoGroupId: string;
   /** Each payment and the exact amount the deposit took out of Payments Clearing. */
   payments: Array<{ id: string; amount: string }>;
 }
@@ -187,10 +190,17 @@ export async function postFeedDepositInTx(
     { status: 'matched', matchedTransactionId: transaction.id, kind: 'deposit', journalLineId: bankLine.id },
     userId, tx);
 
+  // U-169: the accept record Undo works from (deletes the deposit, the payments go back to Payments Clearing).
+  const undoGroupId = await recordAcceptGroup(tx, {
+    tenantId, companyId, userId, source: 'deposit',
+    items: [{ kind: 'deposit', before: item, transactionId: transaction.id, journalLineId: bankLine.id }],
+  });
+
   return {
     transaction,
     items: [{ feedItemId: item.id, journalLineId: bankLine.id }],
     payments: payments.map((p) => ({ id: p.id, amount: wire(p.amount) })),
+    undoGroupId,
   };
 }
 

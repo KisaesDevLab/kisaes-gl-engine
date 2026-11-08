@@ -26,6 +26,7 @@ import { claimIdempotency } from './idempotency.service.js';
 import { errorSummaryForLog } from '../utils/log-safe.js';
 import { isDesktop } from '../desktop/profile.js';
 import { bucketSql, waitingSql } from './bank-feed-buckets.js';
+import { recordAcceptGroup, recordAcceptItem } from './bank-feed-accept-records.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -504,6 +505,11 @@ async function postFeedItem(
         ? 'Bank feed item is not assigned (current status: pending). Assign a category before approving.' : undefined);
     }
     const posted = await postFeedItemInTx(tx, tenantId, item, resolve(item), userId, companyId);
+    // U-169: the accept record Undo works from (B5).
+    await recordAcceptGroup(tx, {
+      tenantId, companyId, userId, source: allowed.includes('pending') ? 'categorize' : 'approve',
+      items: [{ kind: 'post', before: item, transactionId: posted.transaction.id, journalLineId: posted.journalLineId }],
+    });
     learn = posted.learn;
     return posted.transaction;
   });
@@ -901,6 +907,12 @@ export interface MatchOptions {
   conflictCode?: boolean;
   userId?: string;
   companyId?: string;
+  /** U-169: record the link in this accept group (POST /accept) instead of a group of its own. */
+  acceptGroupId?: string;
+  /** U-169: the record kind: 'payment' for POST /payments/receive with bankFeedItemId (U-136). */
+  recordKind?: 'match' | 'payment';
+  /** Called with the accept group the link was recorded in (the Undo toast's group). */
+  onRecorded?: (undoGroupId: string) => void;
 }
 
 /**
@@ -975,7 +987,18 @@ export async function matchInTx(
   }
   await auditLog(tenantId, 'update', 'bank_feed', feedItemId,
     { status: item.status, matchedTransactionId: item.matchedTransactionId },
-    { status: 'matched', matchedTransactionId: transactionId, matchedJournalLineId: lineId }, opts.userId, executor);
+    { status: 'matched', matchedTransactionId: transactionId, matchedJournalLineId: lineId,
+      ...(opts.acceptGroupId ? { undoGroupId: opts.acceptGroupId } : {}) }, opts.userId, executor);
+  // U-169: the accept record Undo works from (B5): in the caller's group, or one of its own.
+  const record = { kind: opts.recordKind ?? 'match', before: item, transactionId, journalLineId: lineId } as const;
+  if (opts.acceptGroupId) {
+    await recordAcceptItem(executor, { tenantId, companyId: opts.companyId, groupId: opts.acceptGroupId, ...record });
+    opts.onRecorded?.(opts.acceptGroupId);
+  } else {
+    opts.onRecorded?.(await recordAcceptGroup(executor, {
+      tenantId, companyId: opts.companyId, userId: opts.userId, source: record.kind, items: [record],
+    }));
+  }
   return matched;
 }
 
