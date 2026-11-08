@@ -91,6 +91,18 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // Q-P25c: imported as a look-alike of an existing item (soft reference).
   possibleDuplicate: boolean('possible_duplicate').notNull().default(false),
   possibleDuplicateOf: uuid('possible_duplicate_of'),
+  // Migration 0265 (U-166, feed-match-v2): the journal line on the item's
+  // bank account this item is (one item per line, partial unique index;
+  // NULL for items matched before 0265, which hold the whole transaction),
+  // and when the entry the item points at was voided (Q-P26u).
+  matchedJournalLineId: uuid('matched_journal_line_id'),
+  entryVoidedAt: timestamp('entry_voided_at', { withTimezone: true }),
+  // Migration 0266 (U-168, U-174): the rule that staged the suggestion
+  // ('conditional' = conditional_rules, 'legacy' = bank_rules), written with
+  // the suggestion; why an excluded item was excluded ('duplicate' or NULL).
+  suggestedRuleId: uuid('suggested_rule_id'),
+  suggestedRuleKind: varchar('suggested_rule_kind', { length: 12 }),
+  exclusionReason: varchar('exclusion_reason', { length: 20 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
@@ -109,6 +121,14 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   connectionRowKeyIdx: index('idx_bfi_connection_row_key').on(table.bankConnectionId, table.rowKey)
     .where(sql`row_key IS NOT NULL`),
   importBatchIdx: index('idx_bfi_import_batch').on(table.importBatchId).where(sql`import_batch_id IS NOT NULL`),
+  // Migrations 0265 and 0266.
+  matchedJournalLineUniq: uniqueIndex('uq_bfi_matched_journal_line').on(table.tenantId, table.matchedJournalLineId)
+    .where(sql`matched_journal_line_id IS NOT NULL`),
+  matchedTxnIdx: index('idx_bfi_matched_txn').on(table.tenantId, table.matchedTransactionId)
+    .where(sql`matched_transaction_id IS NOT NULL`),
+  entryVoidedIdx: index('idx_bfi_entry_voided').on(table.tenantId, table.entryVoidedAt).where(sql`entry_voided_at IS NOT NULL`),
+  suggestedRuleIdx: index('idx_bfi_suggested_rule').on(table.tenantId, table.suggestedRuleKind, table.suggestedRuleId)
+    .where(sql`suggested_rule_id IS NOT NULL`),
 }));
 
 // Bank file import batches (migration 0263, U-06). One row per committed

@@ -350,6 +350,10 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'bank_feed_items.assigned_tag_id': 'tenant-ref:tags',
   'bank_feed_items.assigned_by': 'identity',
   'bank_feed_items.close_reviewed_by': 'identity',
+  // U-166 (0265): the matched bank line; U-168 (0266): the staging rule, a
+  // conditional_rules or bank_rules id by suggested_rule_kind.
+  'bank_feed_items.matched_journal_line_id': 'tenant-ref:journal_lines',
+  'bank_feed_items.suggested_rule_id': 'polymorphic',
   'bank_rules.bank_account_id': 'tenant-ref:accounts',
   'bank_rules.assign_account_id': 'tenant-ref:accounts',
   'bank_rules.assign_contact_id': 'tenant-ref:contacts',
@@ -731,6 +735,7 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'transaction_classification_state.transaction_id': 'tenant-ref:transactions',
   'transaction_classification_state.suggested_account_id': 'tenant-ref:accounts',
   'transaction_classification_state.suggested_vendor_id': 'tenant-ref:contacts',
+  'transaction_classification_state.matched_bank_rule_id': 'tenant-ref:bank_rules',
   'transaction_tags.transaction_id': 'tenant-ref:transactions',
   'transaction_tags.tag_id': 'tenant-ref:tags',
   'transaction_tags.company_id': 'tenant-ref:companies',
