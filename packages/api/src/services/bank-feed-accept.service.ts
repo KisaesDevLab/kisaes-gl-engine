@@ -567,6 +567,12 @@ export async function undoFeedAccepts(
       // later is selected with it: the books don't depend on the selection.
       // Only a request of matches / payments alone unlinks and keeps it.
       unit.action = !voided && unit.records.some((r) => POSTING_KINDS.has(r.kind)) ? 'delete' : 'unlink';
+      // A kept entry keeps its other links: unlinking the posting row of a
+      // live entry would let it be accepted again over the same entry.
+      // A voided entry unlinks every row on it (as Review again).
+      if (unit.action === 'unlink' && !voided) {
+        unit.linked = unit.linked.filter((l) => unit.records.some((r) => r.feedItemId === l.id));
+      }
 
       if (!voided) {
         const isReconciled = unit.action === 'delete'
