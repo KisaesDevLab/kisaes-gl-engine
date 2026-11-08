@@ -606,6 +606,35 @@ describe('bank-import-batch-v1', () => {
     expect(await feedCount()).toBe(3);
   });
 
+  it('U-175 (bank-import-account-types-v1): a checking and a savings account take a bank file, balance-checked as a bank', async () => {
+    expect(DESKTOP_CAPABILITIES).toContain('bank-import-account-types-v1');
+    const checkingId = (await accountsService.create(tenantId, { name: 'Operating Checking', accountType: 'asset', detailType: 'checking', accountNumber: '1010' })).id;
+    const savingsId = (await accountsService.create(tenantId, { name: 'Savings', accountType: 'asset', detailType: 'savings', accountNumber: '1020' })).id;
+    await ledger.postTransaction(tenantId, {
+      txnType: 'journal_entry', txnDate: '2026-07-01', total: '500.0000',
+      lines: [{ accountId: savingsId, debit: '500.0000', credit: '0' }, { accountId: expenseId, debit: '0', credit: '500.0000' }],
+    } as never, ownerId, companyId);
+    const rows: Row[] = [{ line: 1, date: '2026-07-02', amount: '-25.00', description: 'INTEREST', fitid: 'SAV-1' }];
+    // A bank's debit balance: 500 + 25 in = 525.00.
+    const p = await preview(batch(rows, { accountId: savingsId, fileEndingBalance: '525.00', fileEndingDate: '2026-07-31' }));
+    expect(p.status).toBe(200);
+    expect(p.json.balanceCheck).toMatchObject({ booksAtDate: '500.00', projected: '525.00', difference: '0.00' });
+    const s = await commit(batch(rows, { accountId: savingsId }));
+    expect(s.status).toBe(200);
+    expect(s.json.insertedItemIds).toHaveLength(1);
+    expect(await waitPostProcessing(s.json.batchId)).toBe('done');
+    const c = await commit(batch(OFX, { accountId: checkingId, sourceFileSha256: 'c'.repeat(64) }));
+    expect(c.status).toBe(200);
+    expect(c.json.insertedItemIds).toHaveLength(3);
+    expect(await waitPostProcessing(c.json.batchId)).toBe('done');
+    const conns = await db.select({ accountId: bankConnections.accountId }).from(bankConnections).where(eq(bankConnections.tenantId, tenantId));
+    expect(conns.map((x) => x.accountId).sort()).toEqual([checkingId, savingsId].sort());
+    // Other asset detail types stay refused.
+    const otherAsset = (await accountsService.create(tenantId, { name: 'Prepaid', accountType: 'asset', detailType: 'prepaid_expenses', accountNumber: '1300' })).id;
+    const refused = await commit(batch(OFX, { accountId: otherAsset, sourceFileSha256: 'd'.repeat(64) }));
+    expect([refused.status, refused.json.error.code]).toEqual([422, 'account_not_bank_or_card']);
+  });
+
   it('422s: not a bank or card account, invalid rows with their line, too large; 403 for a role without access', async () => {
     const notBank = await commit(batch(OFX, { accountId: expenseId }));
     expect([notBank.status, notBank.json.error.code]).toEqual([422, 'account_not_bank_or_card']);

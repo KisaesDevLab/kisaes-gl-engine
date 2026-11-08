@@ -813,6 +813,13 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'bank-import-progress-v1',
   /**
+   * Bank file import account types (U-175): POST /banking/feed/import-batch takes an asset account with any bank register
+   * detail type (bank, checking, savings, cash, petty_cash; the set bank deposits and batch groups use) or a credit_card
+   * liability. Bank register types are balance-checked as a bank (debit balance). Other accounts stay 422
+   * account_not_bank_or_card.
+   */
+  'bank-import-account-types-v1',
+  /**
    * Feed transfers and deposits (U-171). GET /banking/feed/:id/transfer-candidates?windowDays=1..10 (default 3) → {candidates:
    * [{feedItemId, accountId, accountName, date, amount}]}: pending or assigned items on another GL account with the exact opposite
    * amount (feed sign, decimal string), closest date first. POST /banking/feed/:id/transfer {otherFeedItemId | toAccountId,

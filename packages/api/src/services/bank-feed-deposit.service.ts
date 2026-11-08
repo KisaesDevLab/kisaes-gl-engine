@@ -42,6 +42,7 @@ import { liveDepositsForSource } from './deposit-links.service.js';
 import { clearingAmount, createDepositWithWarnings, systemAccountId } from './deposit.service.js';
 import { feedAccountOf, linkFeedItemToEntry, lockOpenFeedItems } from './bank-feed-transfer.service.js';
 import { recordAcceptGroup } from './bank-feed-accept-records.js';
+import { BANK_DETAIL_TYPES } from './bank-account-types.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -62,8 +63,6 @@ export interface FeedDepositResult {
   payments: Array<{ id: string; amount: string }>;
 }
 
-/** Account detail types that are bank or card accounts (the cash-position set). */
-const BANK_DETAIL_TYPES = ['bank', 'checking', 'savings', 'cash', 'petty_cash'];
 const FEE_REFUSED_TAGS = ['payments_clearing', 'accounts_receivable', 'accounts_payable'];
 
 /** A decimal string with at least 2 places, more when the value has them (4 at most in the books). */
