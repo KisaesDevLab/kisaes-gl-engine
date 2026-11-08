@@ -834,5 +834,30 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * date, then import time, undone imports skipped. Register sign (a card: positive = owed). Decimal strings.
    */
   'account-balances-v1',
+  /**
+   * POST /banking/feed/accept (U-170): {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?,
+   * journalLineId?}] (1-500) | ruleId + ruleKind (conditional|legacy) + ruleUpdatedAt + bankConnectionId? + afterId?,
+   * closingPassword?} → {undoGroupId, posted, matched, skipped: [{id, reason}], failures: [{id, code, error, details?}],
+   * remaining, nextAfterId}. Validate then post in ONE database transaction under one required Idempotency-Key (replay
+   * identical; GET /banking/feed/accept-groups/:id over 512 KB). Skips not_found, in_use, not_pending, possible_duplicate,
+   * has_match (any match signal, incl. the other side of a transfer, unless values or a match are sent), incomplete,
+   * staging_differs; failures TB_PERIOD_LOCKED, SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS, MATCH_MISMATCH, LINE_REQUIRED,
+   * LINE_ALREADY_MATCHED. Rule mode: 409 RULE_CHANGED {updatedAt}, 409 RULE_NOT_AUTO_ACCEPT, 404 RULE_NOT_FOUND; 500 rows per
+   * call, continue with afterId = nextAfterId. conditional_rules.auto_accept (CRUD autoAccept; list suggestedRule.autoAccept)
+   * never posts on its own. Rule conditions: amount_abs, exact decimal amount comparisons. Desktop mode skips the
+   * CONDITIONAL_RULES_V1 flag check. The other side of a transfer is a match signal (bucket "matches").
+   */
+  'feed-accept-v1',
+  /**
+   * POST /banking/feed/undo (U-169): {feedItemIds (1-500) | undoGroupId, force?, closingPassword?} → {undone: [{id, kind,
+   * transactionId, entry: deleted|kept, undoGroupId}], failures: [{id, code, error, details?}]}. Works only from accept records
+   * (every accept, categorize, approve, match, payment, transfer and deposit writes one; transfer, deposit and PUT match return
+   * undoGroupId) whose row still points at the recorded entry. Deletes a posted entry after unlinking every row on it (both
+   * transfer sides; a deposit's payments go back to Payments Clearing exactly); a match, a payment or a voided entry is only
+   * unlinked. Restores each row's prior review state (Review again too); counts a learning override. 409 FEED_UNDO_CHANGED {ids}
+   * (the entry changed since; nothing undone; resend with force); failures FEED_UNDO_RECONCILED, TB_PERIOD_LOCKED,
+   * PAYMENT_BOUNCED, FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Idempotency-Key required.
+   */
+  'feed-undo-v1',
 ];
 

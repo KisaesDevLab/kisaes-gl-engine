@@ -638,8 +638,7 @@ export async function undoFeedAccepts(
 
 /**
  * Review again after a void (U-166 hook): the item's prior state from its
- * live accept record, which is then marked undone. Registered at engine
- * start (index.ts) and by the banking routes.
+ * live accept record, which is then marked undone.
  */
 export const restorePriorState: feed.PriorStateRestorer = async (tx, tenantId, item) => {
   const rec = await liveRecordFor(tx, tenantId, item);
@@ -647,3 +646,12 @@ export const restorePriorState: feed.PriorStateRestorer = async (tx, tenantId, i
   await markUndone(tx, tenantId, [rec.id]);
   return patchFromPriorState(rec.priorState);
 };
+
+/**
+ * Installs restorePriorState as Review again's hook. Called when the banking
+ * routes load (app start, and every test that mounts them), so the hook is
+ * in place in every process that serves Review again.
+ */
+export function registerPriorStateRestorer(): void {
+  feed.setPriorStateRestorer(restorePriorState);
+}

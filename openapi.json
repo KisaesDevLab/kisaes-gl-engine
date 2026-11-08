@@ -13821,6 +13821,433 @@
         ]
       }
     },
+    "/api/v1/banking/feed/accept": {
+      "post": {
+        "description": "Body {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?, journalLineId?}] (1-500) | ruleId + ruleKind (conditional | legacy) + ruleUpdatedAt + bankConnectionId? + afterId?, closingPassword?}. One database transaction: every row is validated first, then the rows that pass post together (all or nothing on an unexpected error). A row posts the owner’s values when sent (accountId without splits is one line), else its staged assignment, else its suggestion; matchTransactionId (+ journalLineId) matches it to an existing entry instead (as PUT /feed/:id/match). skipped[] {id, reason}: not_found, in_use (another request holds the row; refresh it), not_pending (already accepted, excluded, or its entry was voided), possible_duplicate, has_match (a candidate entry line, a waiting payment or the other side of a transfer: matches are never posted over unless the row carries values or a match), incomplete (no account), staging_differs (rule mode: the row’s suggestion is not what the rule stages now). failures[] {id, code, error, details?}: TB_PERIOD_LOCKED (send closingPassword and retry those rows), SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS, MATCH_MISMATCH, LINE_REQUIRED, LINE_ALREADY_MATCHED. Rule mode (\"Accept all from this rule\"): the rule must allow it (conditional auto_accept / legacy auto_confirm; else 409 RULE_NOT_AUTO_ACCEPT), ruleUpdatedAt must be the rule’s updatedAt as listed (else 409 RULE_CHANGED {updatedAt}; 404 RULE_NOT_FOUND), and only pending rows the rule staged are taken, 500 per call in id order: remaining counts the rule’s rows after this batch; send afterId = nextAfterId to go on. Rules never post on their own. Response {undoGroupId, posted, matched, skipped, failures, remaining, nextAfterId}; POST /banking/feed/undo {undoGroupId} takes the whole group back. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED); a replay returns the same body (GET /banking/feed/accept-groups/:id when it was over 512 KB). A wrong closingPassword is 403 CLOSING_PASSWORD_INVALID before anything posts (429 CLOSING_PASSWORD_RATE_LIMIT). Audited per row.",
+        "operationId": "post_api_v1_banking_feed_accept",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "afterId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "bankConnectionId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "contactId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "journalLineId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "matchTransactionId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "memo": {
+                          "anyOf": [
+                            {
+                              "maxLength": 500,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "splits": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "accountId": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "amount": {
+                                "pattern": "^\\d{1,12}(\\.\\d{1,2})?$",
+                                "type": "string"
+                              },
+                              "memo": {
+                                "anyOf": [
+                                  {
+                                    "maxLength": 500,
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "tagId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "accountId",
+                              "amount"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 50,
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "tagId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "ruleId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "ruleKind": {
+                    "enum": [
+                      "conditional",
+                      "legacy"
+                    ],
+                    "type": "string"
+                  },
+                  "ruleUpdatedAt": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "failures": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "details": {
+                            "additionalProperties": {},
+                            "type": "object"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "code",
+                          "error"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "matched": {
+                      "type": "integer"
+                    },
+                    "nextAfterId": {
+                      "anyOf": [
+                        {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "posted": {
+                      "type": "integer"
+                    },
+                    "remaining": {
+                      "type": "integer"
+                    },
+                    "skipped": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "not_found",
+                              "in_use",
+                              "not_pending",
+                              "possible_duplicate",
+                              "has_match",
+                              "incomplete",
+                              "staging_differs"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "undoGroupId": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "undoGroupId",
+                    "posted",
+                    "matched",
+                    "skipped",
+                    "failures",
+                    "remaining",
+                    "nextAfterId"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Accept bank feed rows: one, a selection, or all from one rule (feed-accept-v1)",
+        "tags": [
+          "banking"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/banking/feed/accept-groups/{id}": {
+      "get": {
+        "description": "Response as POST /banking/feed/accept, for its undoGroupId (a replay whose body was over the 512 KB idempotency cap reads it here). A group written by a single-row route (transfer, deposit, match, categorize) has posted / matched counts only. 404 when not in this company.",
+        "operationId": "get_api_v1_banking_feed_accept_groups_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "failures": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "details": {
+                            "additionalProperties": {},
+                            "type": "object"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "code",
+                          "error"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "matched": {
+                      "type": "integer"
+                    },
+                    "nextAfterId": {
+                      "anyOf": [
+                        {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "posted": {
+                      "type": "integer"
+                    },
+                    "remaining": {
+                      "type": "integer"
+                    },
+                    "skipped": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "not_found",
+                              "in_use",
+                              "not_pending",
+                              "possible_duplicate",
+                              "has_match",
+                              "incomplete",
+                              "staging_differs"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "undoGroupId": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "undoGroupId",
+                    "posted",
+                    "matched",
+                    "skipped",
+                    "failures",
+                    "remaining",
+                    "nextAfterId"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The response of an accept (feed-accept-v1)",
+        "tags": [
+          "banking"
+        ]
+      }
+    },
     "/api/v1/banking/feed/backfill-check-payees": {
       "post": {
         "operationId": "post_api_v1_banking_feed_backfill_check_payees",
@@ -15254,6 +15681,160 @@
         ]
       }
     },
+    "/api/v1/banking/feed/undo": {
+      "post": {
+        "description": "Body {feedItemIds (1-500) | undoGroupId, force?, closingPassword?}. Acts only on accept records whose row still points at the recorded entry and that are not undone: a stale Undo (the row was undone and accepted again since) does nothing for that row (failures FEED_ITEM_NOT_ACCEPTED). One database transaction: validate every row, then undo. A posted entry (accept, categorize, approve, transfer, deposit) is deleted, fee lines included, after every row pointing at it is unlinked (both sides of a transfer, also a side matched later); a deposit’s payments go back to Payments Clearing exactly. A match or a received payment is only unlinked (the entry is kept); so is an entry that was voided (as Review again; no password). Each row gets back the review state it had before the accept and the categorization history counts an override. 409 FEED_UNDO_CHANGED {ids} when an entry to delete was changed after it was accepted (its date, name, memo or lines): nothing is undone; ask the owner, then send again with force: true. failures[] {id, code, error, details?}: FEED_UNDO_RECONCILED (in a completed reconciliation, also for a plain match), TB_PERIOD_LOCKED (deleting an entry dated on or before the closing date needs closingPassword), PAYMENT_BOUNCED (a deposit holding a bounced payment stays), FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Response {undone: [{id, kind, transactionId, entry: deleted | kept, undoGroupId}], failures}. 404 for an unknown undoGroupId. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited per row.",
+        "operationId": "post_api_v1_banking_feed_undo",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "feedItemIds": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "force": {
+                    "type": "boolean"
+                  },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "undoGroupId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "failures": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "details": {
+                            "additionalProperties": {},
+                            "type": "object"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "code",
+                          "error"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "undone": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "entry": {
+                            "enum": [
+                              "deleted",
+                              "kept"
+                            ],
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "transactionId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "undoGroupId": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "transactionId",
+                          "entry",
+                          "undoGroupId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "undone",
+                    "failures"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Undo accepted bank feed rows: one, a selection, or an accept group (feed-undo-v1)",
+        "tags": [
+          "banking"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/banking/feed/{id}": {
       "put": {
         "operationId": "put_api_v1_banking_feed_by_id",
@@ -15759,12 +16340,18 @@
                     "transaction": {
                       "additionalProperties": {},
                       "type": "object"
+                    },
+                    "undoGroupId": {
+                      "description": "feed-undo-v1: POST /banking/feed/undo {undoGroupId} takes it back",
+                      "format": "uuid",
+                      "type": "string"
                     }
                   },
                   "required": [
                     "transaction",
                     "items",
-                    "payments"
+                    "payments",
+                    "undoGroupId"
                   ],
                   "type": "object"
                 }
@@ -15937,7 +16524,7 @@
     },
     "/api/v1/banking/feed/{id}/match": {
       "put": {
-        "description": "Body {transactionId, journalLineId?}. Response {message, item}. The item is pending or assigned; it matches one journal line of the posted entry: on the item's bank account, a credit for money out (feed amount > 0) or a debit for money in (< 0), for exactly the amount. journalLineId may be left out when only one line fits (else 400 LINE_REQUIRED {journalLineIds}). 400 MATCH_MISMATCH {field: transactionId | journalLineId | account | amount}; 409 LINE_ALREADY_MATCHED {journalLineId} when another item holds the line; An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400). Audited.",
+        "description": "Body {transactionId, journalLineId?}. Response {message, item}. The item is pending or assigned; it matches one journal line of the posted entry: on the item's bank account, a credit for money out (feed amount > 0) or a debit for money in (< 0), for exactly the amount. journalLineId may be left out when only one line fits (else 400 LINE_REQUIRED {journalLineIds}). 400 MATCH_MISMATCH {field: transactionId | journalLineId | account | amount}; 409 LINE_ALREADY_MATCHED {journalLineId} when another item holds the line; An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400). Audited. undoGroupId (feed-undo-v1) names the accept record for POST /banking/feed/undo (Undo unlinks a match; the entry stays).",
         "operationId": "put_api_v1_banking_feed_by_id_match",
         "parameters": [
           {
@@ -16196,11 +16783,17 @@
                     "transaction": {
                       "additionalProperties": {},
                       "type": "object"
+                    },
+                    "undoGroupId": {
+                      "description": "feed-undo-v1: POST /banking/feed/undo {undoGroupId} takes it back",
+                      "format": "uuid",
+                      "type": "string"
                     }
                   },
                   "required": [
                     "transaction",
-                    "items"
+                    "items",
+                    "undoGroupId"
                   ],
                   "type": "object"
                 }
@@ -47987,6 +48580,7 @@
                                             "descriptor",
                                             "amount",
                                             "amount_sign",
+                                            "amount_abs",
                                             "account_source_id",
                                             "date",
                                             "day_of_week",
@@ -48064,6 +48658,7 @@
                                       "descriptor",
                                       "amount",
                                       "amount_sign",
+                                      "amount_abs",
                                       "account_source_id",
                                       "date",
                                       "day_of_week",
@@ -48132,6 +48727,9 @@
                   "active": {
                     "type": "boolean"
                   },
+                  "autoAccept": {
+                    "type": "boolean"
+                  },
                   "companyId": {
                     "anyOf": [
                       {
@@ -48153,6 +48751,7 @@
                               "descriptor",
                               "amount",
                               "amount_sign",
+                              "amount_abs",
                               "account_source_id",
                               "date",
                               "day_of_week",
@@ -48997,6 +49596,7 @@
                                             "descriptor",
                                             "amount",
                                             "amount_sign",
+                                            "amount_abs",
                                             "account_source_id",
                                             "date",
                                             "day_of_week",
@@ -49074,6 +49674,7 @@
                                       "descriptor",
                                       "amount",
                                       "amount_sign",
+                                      "amount_abs",
                                       "account_source_id",
                                       "date",
                                       "day_of_week",
@@ -49142,6 +49743,9 @@
                   "active": {
                     "type": "boolean"
                   },
+                  "autoAccept": {
+                    "type": "boolean"
+                  },
                   "companyId": {
                     "anyOf": [
                       {
@@ -49163,6 +49767,7 @@
                               "descriptor",
                               "amount",
                               "amount_sign",
+                              "amount_abs",
                               "account_source_id",
                               "date",
                               "day_of_week",

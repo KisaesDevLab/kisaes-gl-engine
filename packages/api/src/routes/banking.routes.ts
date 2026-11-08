@@ -13,7 +13,7 @@ import {
   bulkReprocessRulesSchema,
   createManualConnectionSchema, updateFeedItemSchema, bankStatementFiltersSchema,
   confirmStatementLineSchema, createFromStatementLineSchema, importOfxStatementSchema,
-  feedDuplicateDecisionSchema, bankFeedCountsQuerySchema,
+  feedDuplicateDecisionSchema, bankFeedCountsQuerySchema, feedSplitsSchema,
   can,
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
@@ -33,6 +33,7 @@ import * as ledgerService from '../services/ledger.service.js';
 import * as depositSuggestions from '../services/deposit-suggestions.service.js';
 import * as feedTransfer from '../services/bank-feed-transfer.service.js';
 import * as feedDeposit from '../services/bank-feed-deposit.service.js';
+import * as feedAccept from '../services/bank-feed-accept.service.js';
 import * as suspenseService from '../services/suspense.service.js';
 import * as reconciliationService from '../services/reconciliation.service.js';
 import * as reconciliationSignoffService from '../services/reconciliation-signoff.service.js';
@@ -206,6 +207,161 @@ function requireIdempotencyKey(req: Request, _res: Response, next: NextFunction)
   next();
 }
 
+// ─── Accept and Undo (U-170 feed-accept-v1, U-169 feed-undo-v1) ───
+// One route each for Accept, Accept selected, Accept all from this rule, and
+// Undo of one row, a selection or a group. Validate, then post, in ONE
+// database transaction under one required Idempotency-Key (review B1).
+feedAccept.registerPriorStateRestorer();
+
+const feedAcceptItemSchema = z.object({
+  id: z.string().uuid(),
+  accountId: z.string().uuid().optional(),
+  contactId: z.string().uuid().nullable().optional(),
+  tagId: z.string().uuid().nullable().optional(),
+  memo: z.string().max(500).nullable().optional(),
+  splits: feedSplitsSchema.optional(),
+  matchTransactionId: z.string().uuid().optional(),
+  journalLineId: z.string().uuid().optional(),
+}).strict().refine((i) => !i.journalLineId || !!i.matchTransactionId, {
+  message: 'journalLineId goes with matchTransactionId',
+}).refine((i) => !i.matchTransactionId || (!i.accountId && !i.splits), {
+  message: 'Send either a match or values to post, not both',
+});
+const feedAcceptSchema = z.object({
+  items: z.array(feedAcceptItemSchema).min(1).max(feedAccept.FEED_ACCEPT_MAX).optional(),
+  ruleId: z.string().uuid().optional(),
+  ruleKind: z.enum(['conditional', 'legacy']).optional(),
+  ruleUpdatedAt: z.string().min(1).max(64).optional(),
+  bankConnectionId: z.string().uuid().optional(),
+  afterId: z.string().uuid().optional(),
+  closingPassword: z.string().optional(),
+  overrideConfirmed: z.boolean().optional(),
+}).strict().superRefine((b, ctx) => {
+  const ruleMode = b.ruleId !== undefined;
+  if (ruleMode === (b.items !== undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Send exactly one of items or ruleId' });
+  }
+  if (ruleMode && (!b.ruleKind || !b.ruleUpdatedAt)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ruleId needs ruleKind and ruleUpdatedAt' });
+  }
+  if (!ruleMode && (b.ruleKind || b.ruleUpdatedAt || b.bankConnectionId || b.afterId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ruleKind, ruleUpdatedAt, bankConnectionId and afterId go with ruleId' });
+  }
+  if (ruleMode && b.ruleUpdatedAt && Number.isNaN(Date.parse(b.ruleUpdatedAt))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ruleUpdatedAt must be a timestamp', path: ['ruleUpdatedAt'] });
+  }
+});
+const feedUndoSchema = z.object({
+  feedItemIds: z.array(z.string().uuid()).min(1).max(feedAccept.FEED_ACCEPT_MAX).optional(),
+  undoGroupId: z.string().uuid().optional(),
+  force: z.boolean().optional(),
+  closingPassword: z.string().optional(),
+  overrideConfirmed: z.boolean().optional(),
+}).strict().refine((b) => (b.feedItemIds ? 1 : 0) + (b.undoGroupId ? 1 : 0) === 1, {
+  message: 'Send exactly one of feedItemIds or undoGroupId',
+});
+
+const feedFailureDoc = z.object({
+  id: z.string().uuid(), code: z.string(), error: z.string(), details: z.record(z.string(), z.unknown()).optional(),
+});
+const feedAcceptResultDoc = z.object({
+  undoGroupId: z.string().uuid(),
+  posted: z.number().int(),
+  matched: z.number().int(),
+  skipped: z.array(z.object({
+    id: z.string().uuid(),
+    reason: z.enum(['not_found', 'in_use', 'not_pending', 'possible_duplicate', 'has_match', 'incomplete', 'staging_differs']),
+  })),
+  failures: z.array(feedFailureDoc),
+  remaining: z.number().int(),
+  nextAfterId: z.string().uuid().nullable(),
+});
+
+const feedAcceptGroupReplay = idempotent({
+  successStatus: 200,
+  replay: async (req, entity) => {
+    if (!entity || entity.type !== 'bank_feed_accept_group') throw AppError.notFound('Accept group not found');
+    return feedAccept.getAcceptGroup(req.tenantId, req.companyId, entity.id);
+  },
+});
+
+bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter, lockContextMiddleware,
+  bulkClosingPasswordPrecheck, feedAcceptGroupReplay, validate(feedAcceptSchema), describe({
+    summary: 'Accept bank feed rows: one, a selection, or all from one rule (feed-accept-v1)',
+    description: 'Body {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?, journalLineId?}] (1-500) '
+      + '| ruleId + ruleKind (conditional | legacy) + ruleUpdatedAt + bankConnectionId? + afterId?, closingPassword?}. One database '
+      + 'transaction: every row is validated first, then the rows that pass post together (all or nothing on an unexpected error). '
+      + 'A row posts the owner’s values when sent (accountId without splits is one line), else its staged assignment, else its '
+      + 'suggestion; matchTransactionId (+ journalLineId) matches it to an existing entry instead (as PUT /feed/:id/match). '
+      + 'skipped[] {id, reason}: not_found, in_use (another request holds the row; refresh it), not_pending (already accepted, '
+      + 'excluded, or its entry was voided), possible_duplicate, has_match (a candidate entry line, a waiting payment or the other '
+      + 'side of a transfer: matches are never posted over unless the row carries values or a match), incomplete (no account), '
+      + 'staging_differs (rule mode: the row’s suggestion is not what the rule stages now). failures[] {id, code, error, '
+      + 'details?}: TB_PERIOD_LOCKED (send closingPassword and retry those rows), SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS, '
+      + 'MATCH_MISMATCH, LINE_REQUIRED, LINE_ALREADY_MATCHED. Rule mode ("Accept all from this rule"): the rule must allow it '
+      + '(conditional auto_accept / legacy auto_confirm; else 409 RULE_NOT_AUTO_ACCEPT), ruleUpdatedAt must be the rule’s '
+      + 'updatedAt as listed (else 409 RULE_CHANGED {updatedAt}; 404 RULE_NOT_FOUND), and only pending rows the rule staged are '
+      + 'taken, 500 per call in id order: remaining counts the rule’s rows after this batch; send afterId = nextAfterId to go '
+      + 'on. Rules never post on their own. Response {undoGroupId, posted, matched, skipped, failures, remaining, nextAfterId}; '
+      + 'POST /banking/feed/undo {undoGroupId} takes the whole group back. Idempotency-Key required (400 '
+      + 'IDEMPOTENCY_KEY_REQUIRED); a replay returns the same body (GET /banking/feed/accept-groups/:id when it was over 512 KB). '
+      + 'A wrong closingPassword is 403 CLOSING_PASSWORD_INVALID before anything posts (429 CLOSING_PASSWORD_RATE_LIMIT). '
+      + 'Audited per row.',
+    body: feedAcceptSchema,
+    response: feedAcceptResultDoc,
+  }), async (req, res) => {
+    const b = req.body as z.infer<typeof feedAcceptSchema>;
+    const request: feedAccept.AcceptRequest = b.ruleId
+      ? { rule: { ruleId: b.ruleId, ruleKind: b.ruleKind!, ruleUpdatedAt: b.ruleUpdatedAt!, bankConnectionId: b.bankConnectionId, afterId: b.afterId } }
+      : { items: b.items! };
+    res.json(await feedAccept.acceptFeedItems(req.tenantId, req.companyId, req.userId, request));
+  });
+
+bankingRouter.get('/feed/accept-groups/:id', describe({
+  summary: 'The response of an accept (feed-accept-v1)',
+  description: 'Response as POST /banking/feed/accept, for its undoGroupId (a replay whose body was over the 512 KB idempotency '
+    + 'cap reads it here). A group written by a single-row route (transfer, deposit, match, categorize) has posted / matched '
+    + 'counts only. 404 when not in this company.',
+  params: z.object({ id: z.string().uuid() }),
+  response: feedAcceptResultDoc,
+}), async (req, res) => {
+  const id = z.string().uuid().safeParse(req.params['id']);
+  if (!id.success) throw AppError.badRequest('Invalid accept group id', 'VALIDATION_ERROR');
+  res.json(await feedAccept.getAcceptGroup(req.tenantId, req.companyId, id.data));
+});
+
+bankingRouter.post('/feed/undo', requireIdempotencyKey, closingPasswordLimiter, lockContextMiddleware,
+  bulkClosingPasswordPrecheck, idempotent({ successStatus: 200 }), validate(feedUndoSchema), describe({
+    summary: 'Undo accepted bank feed rows: one, a selection, or an accept group (feed-undo-v1)',
+    description: 'Body {feedItemIds (1-500) | undoGroupId, force?, closingPassword?}. Acts only on accept records whose row still '
+      + 'points at the recorded entry and that are not undone: a stale Undo (the row was undone and accepted again since) does '
+      + 'nothing for that row (failures FEED_ITEM_NOT_ACCEPTED). One database transaction: validate every row, then undo. A '
+      + 'posted entry (accept, categorize, approve, transfer, deposit) is deleted, fee lines included, after every row pointing at '
+      + 'it is unlinked (both sides of a transfer, also a side matched later); a deposit’s payments go back to Payments Clearing '
+      + 'exactly. A match or a received payment is only unlinked (the entry is kept); so is an entry that was voided (as Review '
+      + 'again; no password). Each row gets back the review state it had before the accept and the categorization history counts '
+      + 'an override. 409 FEED_UNDO_CHANGED {ids} when an entry to delete was changed after it was accepted (its date, name, memo '
+      + 'or lines): nothing is undone; ask the owner, then send again with force: true. failures[] {id, code, error, details?}: '
+      + 'FEED_UNDO_RECONCILED (in a completed reconciliation, also for a plain match), TB_PERIOD_LOCKED (deleting an entry dated '
+      + 'on or before the closing date needs closingPassword), PAYMENT_BOUNCED (a deposit holding a bounced payment stays), '
+      + 'FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Response {undone: [{id, kind, transactionId, entry: deleted | kept, '
+      + 'undoGroupId}], failures}. 404 for an unknown undoGroupId. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). '
+      + 'Audited per row.',
+    body: feedUndoSchema,
+    response: z.object({
+      undone: z.array(z.object({
+        id: z.string().uuid(), kind: z.string(), transactionId: z.string().uuid(),
+        entry: z.enum(['deleted', 'kept']), undoGroupId: z.string().uuid(),
+      })),
+      failures: z.array(feedFailureDoc),
+    }),
+  }), async (req, res) => {
+    const b = req.body as z.infer<typeof feedUndoSchema>;
+    res.json(await feedAccept.undoFeedAccepts(req.tenantId, req.companyId, req.userId, {
+      feedItemIds: b.feedItemIds, undoGroupId: b.undoGroupId, force: b.force,
+    }));
+  });
+
 bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMiddleware, feedKeyedTxn, validate(categorizeSchema), describe({
   summary: 'Categorize (post) a bank feed item',
   description: 'Response {transaction}. Takes a pending or assigned item (feed-idempotency-v1); the claim, the posting and the '
@@ -355,6 +511,7 @@ bankingRouter.get('/feed/:id/transfer-candidates', describe({
 });
 
 const feedPostedItemsDoc = z.array(z.object({ feedItemId: z.string().uuid(), journalLineId: z.string().uuid() }));
+const undoGroupIdDoc = z.string().uuid().describe('feed-undo-v1: POST /banking/feed/undo {undoGroupId} takes it back');
 
 bankingRouter.post('/feed/:id/transfer', requireIdempotencyKey, closingPasswordLimiter, lockContextMiddleware,
   idempotent({ successStatus: 200 }), validate(feedTransferSchema), describe({
@@ -371,7 +528,7 @@ bankingRouter.post('/feed/:id/transfer', requireIdempotencyKey, closingPasswordL
       + FEED_CLOSED_PERIOD_NOTE,
     params: feedItemIdParam,
     body: feedTransferSchema,
-    response: z.object({ transaction: z.record(z.string(), z.unknown()), items: feedPostedItemsDoc }),
+    response: z.object({ transaction: z.record(z.string(), z.unknown()), items: feedPostedItemsDoc, undoGroupId: undoGroupIdDoc }),
   }), async (req, res) => {
     const id = parseFeedItemId(req);
     const body = req.body as z.infer<typeof feedTransferSchema>;
@@ -403,6 +560,7 @@ bankingRouter.post('/feed/:id/deposit', requirePermission('receive_payment', 're
       transaction: z.record(z.string(), z.unknown()),
       items: feedPostedItemsDoc,
       payments: z.array(z.object({ id: z.string().uuid(), amount: z.string() })),
+      undoGroupId: undoGroupIdDoc,
     }),
   }), async (req, res) => {
     const id = parseFeedItemId(req);

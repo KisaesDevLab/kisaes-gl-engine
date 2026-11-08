@@ -184,7 +184,14 @@ export const IDEMPOTENCY_FEED_REVIEW_V1_ROUTES = [
   'post /api/v1/banking/feed/{id}/review-again',
 ].sort();
 
+/** Keyed by feed-accept-v1 and feed-undo-v1 (U-170, U-169): both need the key; one transaction per request. */
+export const IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES = [
+  'post /api/v1/banking/feed/accept',
+  'post /api/v1/banking/feed/undo',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES,
   ...IDEMPOTENCY_FEED_REVIEW_V1_ROUTES,
   ...IDEMPOTENCY_FEED_MATCH_POST_V1_ROUTES,
   ...IDEMPOTENCY_BANK_IMPORT_V1_ROUTES,
