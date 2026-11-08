@@ -42,6 +42,7 @@ import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { requireFeedAcceptDraftPermission, draftAttachPermissionsOf } from '../middleware/document-draft-permission.js';
+import { DUPLICATE_WINDOW_DAYS } from '../services/document-draft.service.js';
 import { lockContextMiddleware, getLockContext } from '../services/lock-context.js';
 import { precheckClosingPassword } from '../services/closing-password.service.js';
 import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/check-payee-backfill.service.js';
@@ -243,6 +244,8 @@ const feedAcceptItemSchema = z.object({
   documentDraft: z.object({
     id: z.string().uuid(),
     expectedUpdatedAt: z.string().min(1).max(64),
+    // feed-accept-draft-duplicates-v1 (U-185): as convert's acknowledgeDuplicateOf.
+    acknowledgeDuplicateOf: z.array(z.string().uuid()).max(50).optional(),
   }).strict().optional(),
 }).strict().refine((i) => !i.journalLineId || !!i.matchTransactionId, {
   message: 'journalLineId goes with matchTransactionId',
@@ -337,7 +340,15 @@ bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter
       + 'TARGET_NOT_ATTACHABLE (a matched entry files can\'t go on), PERMISSION_DENIED, NOT_FOUND (not this company\'s draft). '
       + 'The same draft on two items is 400 VALIDATION_ERROR. Permission: the draft kind\'s resource and the entry\'s (403 for the '
       + 'request, checked before a replay too). A row that is skipped leaves its draft as it was. No closing-date check of its '
-      + 'own: the accept\'s applies.',
+      + 'own: the accept\'s applies. feed-accept-draft-duplicates-v1: a row that would post an expense with a document runs '
+      + 'the duplicate check of POST /document-drafts/:id/convert before anything posts (vendor: the row\'s contact, else the '
+      + 'draft\'s suggestedContactId; the draft\'s reference; the row\'s amount and date): a posted bill or expense of the '
+      + 'vendor with the same reference, or the same total within ' + `${DUPLICATE_WINDOW_DAYS}` + ' days, that is '
+      + 'not in documentDraft.acknowledgeDuplicateOf (uuid[], max 50) fails the row DOCUMENT_POSSIBLE_DUPLICATE (not the bank '
+      + 'line\'s possible_duplicate) with details {draftId, matches: [{source: transaction, id, reason: reference | '
+      + 'amount_date, txnType, kind: null, date, total, reference}]}; nothing posts and the draft stays as it was. Send the '
+      + 'match ids in acknowledgeDuplicateOf to post it once (recorded on the draft\'s audit row as acknowledgedDuplicates). '
+      + 'Matches to an existing entry and money-in rows are not checked.',
     body: feedAcceptSchema,
     response: feedAcceptResultDoc,
   }), async (req, res) => {

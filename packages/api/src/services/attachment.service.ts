@@ -192,7 +192,13 @@ export async function upload(
   // `skipAutoClassify` is for callers that run their own extraction on the
   // file (Bill Capture): the generic receipt-OCR/classifier must not also
   // fire and spend AI twice or route the bill into the receipts inbox.
-  opts: { uploadedByContactId?: string | null; companyId?: string | null; skipAutoClassify?: boolean } = {},
+  // `audit` (U-186): write the 'create' audit row in the same database
+  // transaction as the row (POST /attachments), so a file is never stored
+  // without its audit row. Callers that audit on their own omit it.
+  opts: {
+    uploadedByContactId?: string | null; companyId?: string | null; skipAutoClassify?: boolean;
+    audit?: { userId?: string };
+  } = {},
 ) {
   if (file.size > env.MAX_FILE_SIZE_MB * 1024 * 1024) {
     throw AppError.badRequest(`File exceeds maximum size of ${env.MAX_FILE_SIZE_MB}MB`);
@@ -222,7 +228,7 @@ export async function upload(
     fs.writeFileSync(fallbackPath, file.buffer);
   }
 
-  const [attachment] = await db.insert(attachments).values({
+  const insertRow = (exec: DbOrTx) => exec.insert(attachments).values({
     tenantId,
     fileName: file.originalname,
     filePath: `/uploads/${storageKey}`,
@@ -236,6 +242,18 @@ export async function upload(
     storageProvider: storageProviderName,
     providerFileId: providerFileId || null,
   }).returning();
+  const audit = opts.audit;
+  const [attachment] = audit
+    ? await db.transaction(async (tx) => {
+      const rows = await insertRow(tx);
+      const a = rows[0];
+      await auditLog(tenantId, 'create', 'attachment', a?.id ?? null, null,
+        { attachableType, attachableId, fileName: a?.fileName, mimeType: a?.mimeType, fileSize: a?.fileSize }, audit.userId, tx);
+      const hook = testHook('afterUploadAudit');
+      if (hook && a) await hook({ attachmentId: a.id });
+      return rows;
+    })
+    : await insertRow(db);
 
   // Auto-trigger AI classification + OCR for images. Never in desktop mode
   // and never when the `attachments.autoOcr` setting is off (U-89).
@@ -450,6 +468,10 @@ export const __attachmentTestHooks: {
   afterKeyLock?: (info: { draftKey: string; attachmentIds: string[] }) => void | Promise<void>;
   /** Inside linkAttachment()'s transaction, after the row lock, before the live-draft check. */
   afterLinkLock?: (info: { attachmentId: string }) => void | Promise<void>;
+  /** Inside an audited remove()'s transaction, after the row delete and its audit row (U-186). */
+  afterDeleteAudit?: (info: { attachmentId: string }) => void | Promise<void>;
+  /** Inside an audited upload()'s transaction, after the row insert and its audit row (U-186). */
+  afterUploadAudit?: (info: { attachmentId: string }) => void | Promise<void>;
 } = {};
 
 const testHook = <K extends keyof typeof __attachmentTestHooks>(k: K) =>
@@ -585,8 +607,16 @@ function inTx<T>(executor: DbOrTx, fn: (tx: Tx) => Promise<T>): Promise<T> {
  * table still requires (bill_captures, ON DELETE RESTRICT) fails the delete
  * and leaves the file in storage. Storage is deleted only after the commit,
  * best effort: a failure leaves an orphaned file, never a row without one.
+ * With `audit` (U-186) the delete's audit row is written in the same
+ * transaction: the delete and its audit row commit together or not at all.
  */
-export async function remove(tenantId: string, id: string, companyId?: string | null) {
+export async function remove(
+  tenantId: string, id: string, companyId?: string | null,
+  // U-186: write the 'delete' audit row (before-image: the locked row) in
+  // the delete's transaction (DELETE /attachments/:id). Callers that audit
+  // on their own omit it.
+  audit?: { userId?: string },
+) {
   await getById(tenantId, id, companyId);
   const attachment = await db.transaction(async (tx) => {
     const [row] = await tx.select().from(attachments)
@@ -605,6 +635,11 @@ export async function remove(tenantId: string, id: string, companyId?: string | 
     const hook = process.env['NODE_ENV'] === 'test' ? __attachmentTestHooks.afterInUseCheck : undefined;
     if (hook) await hook({ attachmentId: row.id });
     await tx.delete(attachments).where(and(eq(attachments.tenantId, tenantId), eq(attachments.id, row.id)));
+    if (audit) {
+      await auditLog(tenantId, 'delete', 'attachment', row.id, row, null, audit.userId, tx);
+      const after = testHook('afterDeleteAudit');
+      if (after) await after({ attachmentId: row.id });
+    }
     return row;
   });
 

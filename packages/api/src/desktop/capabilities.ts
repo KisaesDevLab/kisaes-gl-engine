@@ -911,5 +911,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * stored response. Undo of the posted entry reopens the draft (document-drafts-reopen-v1).
    */
   'feed-accept-draft-v1',
+  /**
+   * POST /banking/feed/accept runs convert's duplicate check on a row that would post an expense with a documentDraft
+   * (U-185), before anything posts and under convert's company + vendor advisory lock: vendor = the row's contact, else
+   * the draft's suggestedContactId; reference = the draft's docReference; total and date = the row's. A posted bill or
+   * expense of the vendor with that reference, or the same total within 60 days, not listed in
+   * documentDraft.acknowledgeDuplicateOf (uuid[], max 50) fails the row DOCUMENT_POSSIBLE_DUPLICATE (distinct from the
+   * bank line's possible_duplicate skip) with details {draftId, matches} (matches as GET /document-drafts/:id/duplicates,
+   * source transaction); the row stays waiting and the draft unchanged. Acknowledged matches post once (audited as
+   * acknowledgedDuplicates on the draft's attach row). Rows that match an existing entry or bring money in are not checked.
+   */
+  'feed-accept-draft-duplicates-v1',
 ];
 
