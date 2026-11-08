@@ -53,7 +53,7 @@ jobs:
 
       - name: Open drift issue on scheduled failure
         if: failure() && github.event_name == 'schedule'
-        uses: peter-evans/create-issue-from-file@v5
+        uses: peter-evans/create-issue-from-file@v6
         with:
           title: "License compliance drift detected (${{ github.run_id }})"
           content-filepath: scripts/license-audit-result.txt
