@@ -14028,7 +14028,7 @@
     },
     "/api/v1/banking/feed/accept": {
       "post": {
-        "description": "Body {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?, journalLineId?}] (1-500) | ruleId + ruleKind (conditional | legacy) + ruleUpdatedAt + bankConnectionId? + afterId?, closingPassword?}. One database transaction: every row is validated first, then the rows that pass post together (all or nothing on an unexpected error). A row posts the owner’s values when sent (accountId without splits is one line), else its staged assignment, else its suggestion; matchTransactionId (+ journalLineId) matches it to an existing entry instead (as PUT /feed/:id/match). skipped[] {id, reason}: not_found, in_use (another request holds the row; refresh it), not_pending (already accepted, excluded, or its entry was voided), possible_duplicate, has_match (a candidate entry line, a waiting payment or the other side of a transfer: matches are never posted over unless the row carries values or a match), incomplete (no account), staging_differs (rule mode: the row’s suggestion is not what the rule stages now). failures[] {id, code, error, details?}: TB_PERIOD_LOCKED (send closingPassword and retry those rows), SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS, MATCH_MISMATCH, LINE_REQUIRED, LINE_ALREADY_MATCHED. Rule mode (\"Accept all from this rule\"): the rule must allow it (conditional auto_accept / legacy auto_confirm; else 409 RULE_NOT_AUTO_ACCEPT), ruleUpdatedAt must be the rule’s updatedAt as listed (else 409 RULE_CHANGED {updatedAt}; 404 RULE_NOT_FOUND), and only pending rows the rule staged are taken, 500 per call in id order: remaining counts the rule’s rows after this batch; send afterId = nextAfterId to go on. Rules never post on their own. Response {undoGroupId, posted, matched, skipped, failures, remaining, nextAfterId}; POST /banking/feed/undo {undoGroupId} takes the whole group back. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED); a replay returns the same body (GET /banking/feed/accept-groups/:id when it was over 512 KB). A wrong closingPassword is 403 CLOSING_PASSWORD_INVALID before anything posts (429 CLOSING_PASSWORD_RATE_LIMIT). Audited per row.",
+        "description": "Body {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?, journalLineId?}] (1-500) | ruleId + ruleKind (conditional | legacy) + ruleUpdatedAt + bankConnectionId? + afterId?, closingPassword?}. One database transaction: every row is validated first, then the rows that pass post together (all or nothing on an unexpected error). A row posts the owner’s values when sent (accountId without splits is one line), else its staged assignment, else its suggestion; matchTransactionId (+ journalLineId) matches it to an existing entry instead (as PUT /feed/:id/match). skipped[] {id, reason}: not_found, in_use (another request holds the row; refresh it), not_pending (already accepted, excluded, or its entry was voided), possible_duplicate, has_match (a candidate entry line, a waiting payment or the other side of a transfer: matches are never posted over unless the row carries values or a match), incomplete (no account), staging_differs (rule mode: the row’s suggestion is not what the rule stages now). failures[] {id, code, error, details?}: TB_PERIOD_LOCKED (send closingPassword and retry those rows), SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS, MATCH_MISMATCH, LINE_REQUIRED, LINE_ALREADY_MATCHED. Rule mode (\"Accept all from this rule\"): the rule must allow it (conditional auto_accept / legacy auto_confirm; else 409 RULE_NOT_AUTO_ACCEPT), ruleUpdatedAt must be the rule’s updatedAt as listed (else 409 RULE_CHANGED {updatedAt}; 404 RULE_NOT_FOUND), and only pending rows the rule staged are taken, 500 per call in id order: remaining counts the rule’s rows after this batch; send afterId = nextAfterId to go on. Rules never post on their own. Response {undoGroupId, posted, matched, skipped, failures, remaining, nextAfterId}; POST /banking/feed/undo {undoGroupId} takes the whole group back. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED); a replay returns the same body (GET /banking/feed/accept-groups/:id when it was over 512 KB). A wrong closingPassword is 403 CLOSING_PASSWORD_INVALID before anything posts (429 CLOSING_PASSWORD_RATE_LIMIT). Audited per row. feed-accept-draft-v1: an item may carry documentDraft {id, expectedUpdatedAt}: after the row posts or matches, the draft is filed on its entry in the same database transaction exactly as POST /document-drafts/:id/attach (every file on the draft key moves to the entry, the draft becomes converted onto it, audited attached: true with the feed item and undoGroupId). A draft that can't be attached fails its row and nothing is posted or matched for it: failures DOCUMENT_DRAFT_CLOSED (converted or discarded, details.transactionId), STALE (details.updatedAt), DOCUMENT_FILE_MISSING, ATTACHMENT_NOT_DRAFT (the file is filed on a record), INVALID_KIND (a statement draft), TARGET_NOT_ATTACHABLE (a matched entry files can't go on), PERMISSION_DENIED, NOT_FOUND (not this company's draft). The same draft on two items is 400 VALIDATION_ERROR. Permission: the draft kind's resource and the entry's (403 for the request, checked before a replay too). A row that is skipped leaves its draft as it was. No closing-date check of its own: the accept's applies.",
         "operationId": "post_api_v1_banking_feed_accept",
         "parameters": [
           {
@@ -14077,6 +14077,25 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "documentDraft": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expectedUpdatedAt": {
+                              "maxLength": 64,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "id": {
+                              "format": "uuid",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "expectedUpdatedAt"
+                          ],
+                          "type": "object"
                         },
                         "id": {
                           "format": "uuid",
@@ -15898,7 +15917,7 @@
     },
     "/api/v1/banking/feed/undo": {
       "post": {
-        "description": "Body {feedItemIds (1-500) | undoGroupId, force?, closingPassword?}. Acts only on accept records whose row still points at the recorded entry and that are not undone: a stale Undo (the row was undone and accepted again since) does nothing for that row (failures FEED_ITEM_NOT_ACCEPTED). One database transaction: validate every row, then undo. A posted entry (accept, categorize, approve, transfer, deposit) is deleted, fee lines included, after every row pointing at it is unlinked (both sides of a transfer, also a side matched later); a deposit’s payments go back to Payments Clearing exactly. The entry is deleted whenever the row that posted it is in the request, also when a row matched to it later is selected with it. A request of only matches or received payments unlinks them (the entry is kept); so is an entry that was voided (as Review again; no password). Each row gets back the review state it had before the accept and the categorization history counts an override. 409 FEED_UNDO_CHANGED {ids} when an entry to delete was changed after it was accepted: the check covers the entry’s date, contact (name) and memo, and each line’s account, debit, credit and tag (lines added or removed included). Other edits (the entry type, line descriptions, the reference or number, attachments) are not checked: Undo deletes the entry with them without asking. On 409 nothing is undone; ask the owner, then send again with force: true. An entry another request holds (a Void or an edit in progress) is FEED_ITEM_IN_USE for its rows; Undo never waits for it. failures[] {id, code, error, details?}: FEED_UNDO_RECONCILED (in a completed reconciliation, also for a plain match), TB_PERIOD_LOCKED (deleting an entry dated on or before the closing date needs closingPassword), PAYMENT_BOUNCED (a deposit holding a bounced payment stays), FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Response {undone: [{id, kind, transactionId, entry: deleted | kept, undoGroupId}], failures}. 404 for an unknown undoGroupId. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited per row.",
+        "description": "Body {feedItemIds (1-500) | undoGroupId, force?, closingPassword?}. Acts only on accept records whose row still points at the recorded entry and that are not undone: a stale Undo (the row was undone and accepted again since) does nothing for that row (failures FEED_ITEM_NOT_ACCEPTED). One database transaction: validate every row, then undo. A posted entry (accept, categorize, approve, transfer, deposit) is deleted, fee lines included, after every row pointing at it is unlinked (both sides of a transfer, also a side matched later); a deposit’s payments go back to Payments Clearing exactly. The entry is deleted whenever the row that posted it is in the request, also when a row matched to it later is selected with it. A request of only matches or received payments unlinks them (the entry is kept); so is an entry that was voided (as Review again; no password). Each row gets back the review state it had before the accept and the categorization history counts an override. 409 FEED_UNDO_CHANGED {ids} when an entry to delete was changed after it was accepted: the check covers the entry’s date, contact (name) and memo, and each line’s account, debit, credit and tag (lines added or removed included). Other edits (the entry type, line descriptions, the reference or number, attachments) are not checked: Undo deletes the entry with them without asking. On 409 nothing is undone; ask the owner, then send again with force: true. An entry another request holds (a Void or an edit in progress) is FEED_ITEM_IN_USE for its rows; Undo never waits for it. failures[] {id, code, error, details?}: FEED_UNDO_RECONCILED (in a completed reconciliation, also for a plain match), TB_PERIOD_LOCKED (deleting an entry dated on or before the closing date needs closingPassword), PAYMENT_BOUNCED (a deposit holding a bounced payment stays), FEED_ITEM_NOT_ACCEPTED, FEED_ITEM_IN_USE. Response {undone: [{id, kind, transactionId, entry: deleted | kept, undoGroupId}], failures, reopenedDrafts}. 404 for an unknown undoGroupId. Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited per row. reopenedDrafts (document-drafts-reopen-v1): the document drafts entered as or attached to a deleted entry, status ready again with their files moved back onto a draft key in the same transaction (sorted ids); a kept entry keeps its documents.",
         "operationId": "post_api_v1_banking_feed_undo",
         "parameters": [
           {
@@ -15982,6 +16001,13 @@
                       },
                       "type": "array"
                     },
+                    "reopenedDrafts": {
+                      "items": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "undone": {
                       "items": {
                         "additionalProperties": true,
@@ -16023,7 +16049,8 @@
                   },
                   "required": [
                     "undone",
-                    "failures"
+                    "failures",
+                    "reopenedDrafts"
                   ],
                   "type": "object"
                 }
@@ -86422,7 +86449,7 @@
     },
     "/api/v1/transactions/{id}": {
       "delete": {
-        "description": "ap-edit-v1: bills and vendor credits are deletable while nothing is applied (409 BILL_HAS_PAYMENTS / CREDIT_APPLIED; a refunded credit 409 TXN_DELETE_LINKED; a bill entered from a bill capture 409 TXN_DELETE_LINKED with links [\"bill_capture\"]). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt).",
+        "description": "ap-edit-v1: bills and vendor credits are deletable while nothing is applied (409 BILL_HAS_PAYMENTS / CREDIT_APPLIED; a refunded credit 409 TXN_DELETE_LINKED; a bill entered from a bill capture 409 TXN_DELETE_LINKED with links [\"bill_capture\"]). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt). Response {transaction, reopenedDrafts} (document-drafts-reopen-v1): the ids of the document drafts entered as or attached to the entry, now status ready again with their files moved back onto a draft key, in the same database transaction (audited). A replay without a stored body has reopenedDrafts [].",
         "operationId": "delete_api_v1_transactions_by_id",
         "parameters": [
           {
@@ -86474,6 +86501,34 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "reopenedDrafts": {
+                      "items": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "transaction": {
+                      "additionalProperties": {},
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "transaction",
+                    "reopenedDrafts"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
           "default": {
             "description": "Response not yet documented in this specification."
           }
