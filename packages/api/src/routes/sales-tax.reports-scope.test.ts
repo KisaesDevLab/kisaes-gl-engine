@@ -33,7 +33,8 @@ const limiterCalls: string[] = [];
 vi.mock('../middleware/expensive-op-limiter.js', async (orig) => {
   const real = await orig<typeof import('../middleware/expensive-op-limiter.js')>();
   const observed: RequestHandler = (req, res, next) => {
-    limiterCalls.push(req.path);
+    // originalUrl: a path-scoped use() sees req.path as '/'.
+    limiterCalls.push(req.originalUrl.split('?')[0]!);
     return real.expensiveOpLimiter(req, res, next);
   };
   return { ...real, expensiveOpLimiter: observed as unknown as typeof real.expensiveOpLimiter };
@@ -103,11 +104,13 @@ function csvRow(csv: string, label: string, col = 1): string[] {
 const plain = (money: string) => money.replace(/,/g, '');
 
 describe('sales tax report routes: scope, limiter, exports', () => {
-  it('every request passes the report rate limiter', async () => {
+  it('every request passes the report rate limiter once, and another report is not counted twice', async () => {
     limiterCalls.length = 0;
     ok(await get(`/api/v1/reports/sales-tax-liability?${range}`));
     ok(await get(`/api/v1/reports/sales-tax-payments?${range}`));
-    expect(limiterCalls).toEqual(['/sales-tax-liability', '/sales-tax-payments']);
+    // A reportsRouter report on the shared /reports base: the limiter in that router only.
+    ok(await get(`/api/v1/reports/taxable-sales-summary?${range}`));
+    expect(limiterCalls).toEqual(['/api/v1/reports/sales-tax-liability', '/api/v1/reports/sales-tax-payments', '/api/v1/reports/taxable-sales-summary']);
   });
 
   it('liability: the company by default, every company with scope=consolidated, another company by header', async () => {

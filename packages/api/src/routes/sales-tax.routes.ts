@@ -443,8 +443,12 @@ export const salesTaxReportsRouter = Router();
 salesTaxReportsRouter.use(authenticate);
 salesTaxReportsRouter.use(companyContext);
 salesTaxReportsRouter.use(requireResource('reports'));
-salesTaxReportsRouter.use(expensiveOpLimiter);
-salesTaxReportsRouter.use((_req, res, next) => {
+// Scoped to this router's own paths: the router shares the /reports base
+// with reportsRouter, which applies the same limiter to every other report
+// (a bare use() here would count those requests twice).
+const SALES_TAX_REPORT_PATHS = ['/sales-tax-liability', '/sales-tax-payments', '/exemptions-expiring'];
+salesTaxReportsRouter.use(SALES_TAX_REPORT_PATHS, expensiveOpLimiter);
+salesTaxReportsRouter.use(SALES_TAX_REPORT_PATHS, (_req, res, next) => {
   res.setHeader('X-Report-Schema-Version', REPORT_SCHEMA_VERSION);
   next();
 });
