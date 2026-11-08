@@ -24,7 +24,7 @@ import {
 } from './format.js';
 import { ArchiveError } from './errors.js';
 import { buildPortabilityPlan, TYPE_CHANGES, type PortabilityPlan } from './plan.js';
-import { BACKFILL, COMPAT_BASELINE_SCHEMA_VERSION, DROPPED_COLUMNS, DROPPED_TABLES, RELAXED_COLUMNS, WIDENED_CHECKS, checkSchemaCompatibility } from './compat.js';
+import { BACKFILL, COMPAT_BASELINE_SCHEMA_VERSION, DROPPED_COLUMNS, DROPPED_INDEXES, DROPPED_TABLES, RELAXED_COLUMNS, WIDENED_CHECKS, checkSchemaCompatibility } from './compat.js';
 
 const PASS = 'reader test passphrase 2026';
 let dir = '';
@@ -343,7 +343,7 @@ describe('schema compatibility (MT7, B8)', () => {
     const t = tableFor('journal_lines');
     const narrowed = { ...t, columns: t.columns.map(([c, ty]) => (c === 'debit' ? [c, 'numeric(12,2)'] : [c, ty]) as [string, string]) };
     expect(() => checkSchemaCompatibility([narrowed], plan, 250, liveVersion)).toThrow(expect.objectContaining({ code: 'ARCHIVE_COLUMN_TYPE_CHANGED' }));
-    TYPE_CHANGES['journal_lines.debit'] = { from: 'numeric(12,2)', to: 'numeric(19,4)' };
+    TYPE_CHANGES['journal_lines.debit'] = { from: 'numeric(12,2)', to: 'numeric(19,4)', changedIn: 251 };
     try {
       const r = checkSchemaCompatibility([narrowed], plan, 250, liveVersion);
       expect(r.tables[0]!.widened).toEqual([{ column: 'debit', from: 'numeric(12,2)', to: 'numeric(19,4)' }]);
@@ -352,7 +352,7 @@ describe('schema compatibility (MT7, B8)', () => {
     }
     // An archive declaring MORE precision than live is never widened silently.
     const wider = { ...t, columns: t.columns.map(([c, ty]) => (c === 'debit' ? [c, 'numeric(22,6)'] : [c, ty]) as [string, string]) };
-    TYPE_CHANGES['journal_lines.debit'] = { from: 'numeric(22,6)', to: 'numeric(19,4)' };
+    TYPE_CHANGES['journal_lines.debit'] = { from: 'numeric(22,6)', to: 'numeric(19,4)', changedIn: 251 };
     try {
       expect(() => checkSchemaCompatibility([wider], plan, 250, liveVersion)).toThrow(expect.objectContaining({ code: 'ARCHIVE_COLUMN_TYPE_CHANGED' }));
     } finally {
@@ -387,6 +387,8 @@ describe('schema compatibility (MT7, B8)', () => {
       ...Object.values(BACKFILL).map((d) => d.addedIn),
       ...Object.values(RELAXED_COLUMNS).map((d) => d.relaxedIn),
       ...Object.values(WIDENED_CHECKS).map((d) => d.widenedIn),
+      ...Object.values(TYPE_CHANGES).map((d) => d.changedIn),
+      ...Object.values(DROPPED_INDEXES).map((d) => d.droppedIn),
     ]);
     const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql') && !f.endsWith('.rollback.sql'));
     const offenders: string[] = [];
@@ -400,6 +402,16 @@ describe('schema compatibility (MT7, B8)', () => {
       if (nonAdditive && !covered.has(version)) offenders.push(e.tag);
     }
     expect(offenders).toEqual([]);
+    // And the other way: a retype or an index drop recorded here is marked in its migration file.
+    const markedVersions = new Set<number>();
+    for (const e of journal.entries) {
+      const file = files.find((f) => f.startsWith(e.tag) || f === `allow-non-additive_${e.tag}.sql`);
+      if (!file) continue;
+      const head = readFileSync(path.join(MIGRATIONS, file), 'utf8').split('\n').slice(0, 10).join('\n');
+      if (file.startsWith('allow-non-additive_') || head.includes('-- migration-policy: non-additive-exception')) markedVersions.add(e.idx + 1);
+    }
+    for (const [k, v] of Object.entries(TYPE_CHANGES)) expect(markedVersions.has(v.changedIn), `${k} changedIn ${v.changedIn}`).toBe(true);
+    for (const [k, v] of Object.entries(DROPPED_INDEXES)) expect(markedVersions.has(v.droppedIn), `${k} droppedIn ${v.droppedIn}`).toBe(true);
     // The baseline is fixed at E5; later migrations only add entries.
     expect(journal.entries.length).toBeGreaterThanOrEqual(COMPAT_BASELINE_SCHEMA_VERSION);
     expect(journal.entries.map((e) => e.idx)).toEqual(journal.entries.map((_, i) => i));

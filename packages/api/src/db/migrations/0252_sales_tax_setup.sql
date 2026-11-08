@@ -2,6 +2,13 @@
 -- Licensed under the PolyForm Internal Use License 1.0.0.
 -- See LICENSE and NOTICE.md for terms.
 --
+-- migration-policy: non-additive-exception
+-- Two column type changes (step 3 below): companies.default_sales_tax_rate
+-- and journal_lines.tax_rate go from numeric(5,4) to unconstrained numeric so
+-- a rate keeps 6 places. A widening only (every stored value fits; binary
+-- coercible, no rewrite), recorded in TYPE_CHANGES (tenant-portability/plan.ts)
+-- so an older archive still imports. Everything else here is additive.
+--
 -- Sales tax setup (U-147, U-148, U-25 sales-tax half; sales-tax-setup-v1,
 -- sales-tax-rate6-v1, company-sales-tax-flags-v1).
 -- 1. sales_tax_agencies (a vendor per agency), sales_tax_items (a rate or a
