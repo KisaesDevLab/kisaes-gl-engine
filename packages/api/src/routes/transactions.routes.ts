@@ -61,6 +61,12 @@ const keyedCreate = idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ transaction: await ledger.getTransaction(req.tenantId, entity!.id, req.companyId) }),
 });
+// DELETE answers {transaction, reopenedDrafts} (U-180); a replay without a stored body can't tell which drafts it reopened.
+const keyedDelete = idempotent({
+  successStatus: 200,
+  replay: async (req) => ({ transaction: await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId), reopenedDrafts: [] }),
+});
+
 const keyedById = idempotent({
   successStatus: 200,
   replay: async (req) => ({ transaction: await ledger.getTransaction(req.tenantId, req.params['id']!, req.companyId) }),
@@ -400,25 +406,29 @@ const deleteTransactionBodyDoc = deleteTransactionSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); never stored or echoed'),
 });
 
-transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedById, describe({ summary: 'Delete a transaction', description: INVENTORY_ROUTE_NOTE }), (req, _res, next) => {
+transactionsRouter.delete('/:id', apDocumentPermission('delete'), keyedDelete, describe({ summary: 'Delete a transaction', description: INVENTORY_ROUTE_NOTE }), (req, _res, next) => {
   // A DELETE often has no body at all.
   if (!req.body || typeof req.body !== 'object') req.body = {};
   next();
 }, validate(deleteTransactionSchema), describe({
   summary: 'Delete a transaction (soft delete with reversing lines; txn-delete-v1)',
   description: 'ap-edit-v1: bills and vendor credits are deletable while nothing is applied (409 BILL_HAS_PAYMENTS / CREDIT_APPLIED; a refunded credit 409 TXN_DELETE_LINKED; ' +
-    'a bill entered from a bill capture 409 TXN_DELETE_LINKED with links ["bill_capture"]). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt).',
+    'a bill entered from a bill capture 409 TXN_DELETE_LINKED with links ["bill_capture"]). expectedUpdatedAt: mismatch 409 STALE (details.updatedAt). ' +
+    'Response {transaction, reopenedDrafts} (document-drafts-reopen-v1): the ids of the document drafts entered as or attached to the ' +
+    'entry, now status ready again with their files moved back onto a draft key, in the same database transaction (audited). A replay ' +
+    'without a stored body has reopenedDrafts [].',
   body: deleteTransactionBodyDoc,
   params: z.object({ id: z.string().uuid() }),
+  response: z.object({ transaction: z.record(z.string(), z.unknown()), reopenedDrafts: z.array(z.string().uuid()) }),
 }), async (req, res) => {
   const parsed = txnIdParam.safeParse(req.params['id']);
   if (!parsed.success) throw AppError.badRequest('Invalid transaction id');
-  await ledger.deleteTransaction(req.tenantId, parsed.data, {
+  const r = await ledger.deleteTransaction(req.tenantId, parsed.data, {
     reason: req.body.reason, userId: req.userId, companyId: req.companyId,
     expectedUpdatedAt: req.body.expectedUpdatedAt,
   });
   const txn = await ledger.getTransaction(req.tenantId, parsed.data, req.companyId);
-  res.json({ transaction: txn });
+  res.json({ transaction: txn, reopenedDrafts: r.reopenedDrafts });
 });
 
 transactionsRouter.post('/:id/duplicate', apDocumentPermission('create'), async (req, res) => {

@@ -112,6 +112,51 @@ export async function requireAttachPermission(req: Request, _res: Response, next
 }
 
 /**
+ * POST /banking/feed/accept items with documentDraft (U-181,
+ * feed-accept-draft-v1): the attach permission pair, checked here ahead of
+ * idempotent() so a replay is checked too, and again on the locked rows
+ * (the service's failures). Each draft's current kind's resource (a draft
+ * of another company or none is left to the service: a per-row 404), and
+ * the entry's: a matched entry's resourceOfTarget (another company's left
+ * to the service), a posted one's `transactions` (feed postings are
+ * expenses and deposits). Any refusal is 403 for the whole request, as on
+ * POST /document-drafts/:id/attach.
+ */
+export async function requireFeedAcceptDraftPermission(req: Request, _res: Response, next: NextFunction) {
+  const items = (req.body as { items?: unknown } | undefined)?.items;
+  if (!Array.isArray(items) || !req.companyId) return next();
+  for (const raw of items) {
+    const it = raw as { documentDraft?: { id?: unknown }; matchTransactionId?: unknown } | null;
+    const draftId = it?.documentDraft?.id;
+    if (typeof draftId !== 'string' || !UUID_RE.test(draftId)) continue;
+    const r = await db.execute(sql`SELECT kind FROM document_drafts
+      WHERE tenant_id = ${req.tenantId} AND company_id = ${req.companyId} AND id = ${draftId} LIMIT 1`);
+    const kind = (r.rows[0] as { kind: DocumentDraftKind } | undefined)?.kind;
+    if (kind && !(await canChangeKind(req, kind))) throw denied();
+    const target = it?.matchTransactionId;
+    if (typeof target === 'string' && UUID_RE.test(target)) {
+      const t = await db.execute(sql`SELECT txn_type FROM transactions
+        WHERE tenant_id = ${req.tenantId} AND id = ${target} AND status <> 'deleted'
+          AND (company_id IS NULL OR company_id = ${req.companyId}) LIMIT 1`);
+      const type = (t.rows[0] as { txn_type: string } | undefined)?.txn_type;
+      if (type && !(await canChangeResource(req, resourceOfTarget(type)))) throw denied();
+    } else if (!(await canChangeResource(req, 'transactions'))) {
+      throw denied();
+    }
+  }
+  next();
+}
+
+/** The attach permission checks of a request, for the service's recheck on the locked rows. */
+export function draftAttachPermissionsOf(req: Request) {
+  return {
+    canKind: (k: DocumentDraftKind) => canChangeKind(req, k),
+    canTarget: (r: ResourceKey) => canChangeResource(req, r),
+    canAttachType: (t: string) => canAttachToType(req, t),
+  };
+}
+
+/**
  * POST /document-drafts/:id/convert: full access to the resource of the
  * body's `kind`; a missing or other value is 400 INVALID_KIND.
  */

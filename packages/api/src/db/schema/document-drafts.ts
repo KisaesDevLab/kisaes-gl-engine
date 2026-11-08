@@ -41,6 +41,9 @@ export const documentDrafts = pgTable('document_drafts', {
   queueIdx: index('idx_document_drafts_queue').on(table.tenantId, table.companyId, table.status, table.createdAt),
   attachmentIdx: index('idx_document_drafts_attachment').on(table.attachmentId),
   contactIdx: index('idx_document_drafts_contact').on(table.tenantId, table.companyId, table.suggestedContactId),
+  // Migration 0269 (U-180): converted drafts by entry, for the reopen on delete.
+  convertedIdx: index('idx_document_drafts_converted').on(table.tenantId, table.convertedTransactionId)
+    .where(sql`converted_transaction_id IS NOT NULL`),
 }));
 
 export type DocumentDraftRow = typeof documentDrafts.$inferSelect;
