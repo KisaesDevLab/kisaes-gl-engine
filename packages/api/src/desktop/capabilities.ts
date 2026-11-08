@@ -770,5 +770,27 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * this batch: decimal string, feed sign, at least 2 decimals) and existingDate (YYYY-MM-DD), dry run and commit (Q-P25af).
    */
   'bank-import-progress-v1',
+  /**
+   * Feed transfers and deposits (U-171). GET /banking/feed/:id/transfer-candidates?windowDays=1..10 (default 3) → {candidates:
+   * [{feedItemId, accountId, accountName, date, amount}]}: pending or assigned items on another GL account with the exact opposite
+   * amount (feed sign, decimal string), closest date first. POST /banking/feed/:id/transfer {otherFeedItemId | toAccountId,
+   * closingPassword?} posts ONE transfer (source bank_feed) dated on the money-out side (the closing date is checked against it)
+   * and matches every item to it in one database transaction; 400 TRANSFER_MISMATCH {field}. POST /banking/feed/:id/deposit
+   * {sourceTransactionIds (1-100), feeLines?: [{accountId, amount ^\d{1,12}(\.\d{1,2})?$ > 0, memo? ≤ 500}] (≤ 10),
+   * closingPassword?} posts ONE deposit from the payments' live Payments Clearing amounts (Dr bank, Cr Clearing per payment, Dr
+   * each fee account) and matches it; payments − fees must equal the bank amount exactly (400 FEED_ITEM_MISMATCH {difference}),
+   * 400 FEE_ACCOUNT_INVALID {accountId} (bank/card, Payments Clearing, A/R, A/P or another company), 400
+   * PAYMENT_NOT_PENDING_DEPOSIT {id}, 409 PAYMENT_BOUNCED. Both posts: response {transaction, items: [{feedItemId,
+   * journalLineId}]} (deposit adds payments [{id, amount}]); Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED); 409
+   * FEED_ITEM_NOT_PENDING {id, status}, 409 FEED_ITEM_IN_USE {id}; closed period as feed-closing-date-v1; audited. Practice
+   * match-apply transfers post the same way; its amounts are exact decimals.
+   */
+  'feed-match-post-v1',
+  /**
+   * GET /dashboard/account-balances (U-77) → [{accountId, name, accountNumber, kind bank|card, booksBalance, bankFileBalance|null,
+   * bankFileDate|null, booksBalanceAtFileDate|null}] per active bank, cash and card account: the latest bank file by file ending
+   * date, then import time, undone imports skipped. Register sign (a card: positive = owed). Decimal strings.
+   */
+  'account-balances-v1',
 ];
 
