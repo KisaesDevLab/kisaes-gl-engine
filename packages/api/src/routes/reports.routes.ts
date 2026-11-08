@@ -45,7 +45,8 @@ reportsRouter.use((_req, res, next) => {
   next();
 });
 
-function resolveCompanyScope(req: Request): string | null {
+/** `?scope=consolidated` = every company of the tenant (null); otherwise the request's company. Shared with the sales tax report routes. */
+export function resolveCompanyScope(req: Request): string | null {
   const scope = req.query['scope'] as string | undefined;
   if (scope === 'consolidated') return null;
   return req.companyId;
@@ -879,7 +880,8 @@ function asciiFilename(title: unknown): string {
   return base || 'report';
 }
 
-async function respond(res: any, reportData: any, format: string | undefined) {
+/** JSON, or a CSV / PDF export of `reportData.data` by `_exportColumns`. Shared with the sales tax report routes. */
+export async function respond(res: any, reportData: any, format: string | undefined) {
   // Footer is only set by the three financial-statement builders (P&L,
   // Balance Sheet, Cash Flow). For other reports it's empty/undefined,
   // which both renderers treat as "no footer".
@@ -1625,26 +1627,9 @@ reportsRouter.get('/check-register', async (req, res) => {
   ]}, format);
 });
 
-// Tax
-reportsRouter.get('/sales-tax-liability', async (req, res) => {
-  const { start_date, end_date, format } = req.query as Record<string, string>;
-  const today = new Date();
-  const data = await reportService.buildSalesTaxLiability(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
-  // Reshape scalar values into a data array for CSV/PDF export
-  const exportData = {
-    ...data,
-    data: [
-      { item: 'Total Taxable Sales', amount: data.totalSales },
-      { item: 'Total Sales Tax Collected', amount: data.totalTax },
-    ],
-    _exportColumns: [
-      { key: 'item', label: 'Item' },
-      { key: 'amount', label: 'Amount', align: 'right' },
-    ],
-  };
-  await respond(res, exportData, format);
-});
-
+// Tax. /sales-tax-liability and /sales-tax-payments (JSON, CSV and PDF) are
+// served by salesTaxReportsRouter (sales-tax.routes.ts), mounted on the same
+// base before this router.
 reportsRouter.get('/taxable-sales-summary', async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
@@ -1661,16 +1646,6 @@ reportsRouter.get('/taxable-sales-summary', async (req, res) => {
     ],
   };
   await respond(res, exportData, format);
-});
-
-reportsRouter.get('/sales-tax-payments', async (req, res) => {
-  const { start_date, end_date, format } = req.query as Record<string, string>;
-  const today = new Date();
-  const data = await reportService.buildSalesTaxPayments(req.tenantId, start_date || `${today.getFullYear()}-01-01`, end_date || today.toISOString().split('T')[0]!, resolveCompanyScope(req));
-  await respond(res, { ...data, _exportColumns: [
-    { key: 'txn_date', label: 'Date' },
-    { key: 'total', label: 'Amount', align: 'right' },
-  ]}, format);
 });
 
 reportsRouter.get('/vendor-1099-summary', async (req, res) => {
