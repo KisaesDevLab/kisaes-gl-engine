@@ -1595,7 +1595,8 @@ async function applyCheckImagePayees(
         contact = { id: created.id, displayName: created.displayName };
         tenantContacts.push(contact); // reuse for another check with the same payee
       } catch (err) {
-        console.warn(`[applyCheckImagePayees] contact create failed for "${payee}":`, err instanceof Error ? err.message : err);
+        // U-167: never the payee itself, only the error code and the item id.
+        console.warn(`[applyCheckImagePayees] contact create failed for item ${item.id}: ${errorSummaryForLog(err)}`);
       }
     }
     const update: Partial<typeof bankFeedItems.$inferInsert> = {
@@ -1684,8 +1685,11 @@ export async function runCleansingPipeline(
   // (ai_config.autoCategorizeOnImport). When off, skip the LLM entirely
   // (counted as `disabled`) — deterministic rules + regex cleaning still run.
   const { getConfig } = await import('./ai-config.service.js');
-  const aiCfg = opts.llm === false ? null : await getConfig().catch(() => null);
-  const aiDisabled = opts.llm === false || !(aiCfg?.autoCategorizeOnImport ?? true);
+  // Desktop mode (Q-P26c, S6): AI runs only when the owner asks, never in
+  // the unattended cleansing (imports, recleanse).
+  const llmOff = opts.llm === false || isDesktop();
+  const aiCfg = llmOff ? null : await getConfig().catch(() => null);
+  const aiDisabled = llmOff || !(aiCfg?.autoCategorizeOnImport ?? true);
 
   const { resolvePreAiLayers, categorizeFeedItemsBatch } = await import('./ai-categorization.service.js');
 
@@ -1767,7 +1771,8 @@ export async function runCleansingPipeline(
             agg.aiFailed++;
             if (!agg.firstError) agg.firstError = r.error.message;
             // eslint-disable-next-line no-console
-            console.warn(`[cleanse] AI step failed for item ${s.item.id}: ${r.error.message}`);
+            // U-167: the provider's error text may echo the description; the code only.
+            console.warn(`[cleanse] AI step failed for item ${s.item.id}: code=${r.error.code}`);
           }
         } else if (r?.skipped) {
           // The batch covering this item was abandoned by the outage
@@ -1794,6 +1799,9 @@ export async function runCleansingPipeline(
  *  rules). Shared by the import-time categorization pipeline and the
  *  bank-feed "Reprocess Rules" bulk action so rule semantics can never
  *  drift between the two entry points. */
+/** A rule that fired for an item (U-168): its id and which table it is in. */
+export interface RuleFire { ruleId: string | null; kind: 'conditional' | 'legacy' }
+
 interface RulesStagesOutcome {
   /** Ids of items that were still 'pending' when rule evaluation ran. */
   processedIds: string[];
@@ -1801,12 +1809,12 @@ interface RulesStagesOutcome {
    *  match otherwise). The pipeline feeds this into the
    *  classification-state upsert so Bucket 2 can render "grouped by
    *  rule"; a rule that doesn't auto-confirm still gets attributed. */
-  ruleFiredByItem: Map<string, { ruleId: string | null }>;
+  ruleFiredByItem: Map<string, RuleFire>;
   /** Items where a Phase-4 conditional rule fired without
    *  continue_after_match — legacy bank-rule eval was skipped for
    *  these (build plan §4.5). */
   conditionalShortCircuited: Set<string>;
-  /** Items posted to the ledger via a legacy autoConfirm rule. */
+  /** Items posted to the ledger via a legacy autoConfirm rule (never in desktop mode, S6). */
   autoCategorizedIds: string[];
   /** Per-item autoConfirm posting failures. categorize() reverts the
    *  claim on failure, so these items stay pending and retryable. */
@@ -1820,7 +1828,9 @@ interface RulesStagesOutcome {
  *      splits_config on the feed item. A rule that fires without
  *      continue_after_match short-circuits stage 2 for that item.
  *   2. Legacy bank rules — a match records attribution; a match with
- *      autoConfirm + assignAccountId posts the item via categorize().
+ *      autoConfirm + assignAccountId posts the item via categorize(),
+ *      except in desktop mode (Q-P26o, S6) and the bank-file import batch,
+ *      where a rule only stages its suggestion.
  *
  * Runs at import time (inside runCategorizationPipeline) and again on
  * demand via reprocessRules(). Items no rule matches are left untouched.
@@ -1832,11 +1842,14 @@ async function runRulesStages(
   // match is attributed but never posted.
   opts: { userId?: string; companyId?: string; autoConfirm?: boolean } = {},
 ): Promise<RulesStagesOutcome> {
+  // S6, Q-P26o: rules never post in desktop mode (legacy auto_confirm and
+  // split rules only stage); the owner accepts what they staged.
+  const stageOnly = opts.autoConfirm === false || isDesktop();
   const bankRulesService = await import('./bank-rules.service.js');
   const conditionalRulesApply = await import('./conditional-rules-apply.service.js');
 
   const processedIds: string[] = [];
-  const ruleFiredByItem = new Map<string, { ruleId: string | null }>();
+  const ruleFiredByItem = new Map<string, RuleFire>();
   const conditionalShortCircuited = new Set<string>();
   const autoCategorizedIds: string[] = [];
   const failures: Array<{ id: string; error: string }> = [];
@@ -1879,15 +1892,12 @@ async function runRulesStages(
       if (result.fires.length > 0) {
         const firstFire = result.fires[0]!;
         if (!ruleFiredByItem.has(item.id)) {
-          ruleFiredByItem.set(item.id, { ruleId: firstFire.ruleId });
+          ruleFiredByItem.set(item.id, { ruleId: firstFire.ruleId, kind: 'conditional' });
         }
       }
     } catch (err) {
       // Engine failures shouldn't abort the run.
-      console.warn(
-        `[runRulesStages] conditional-rules apply failed for item ${item.id}:`,
-        err instanceof Error ? err.message : String(err),
-      );
+      console.warn(`[runRulesStages] conditional-rules apply failed for item ${item.id}: ${errorSummaryForLog(err)}`);
     }
   }
 
@@ -1909,14 +1919,16 @@ async function runRulesStages(
     });
     if (ruleResult.matched) {
       // Capture which rule fired — even if autoConfirm is false.
-      ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null });
+      ruleFiredByItem.set(item.id, { ruleId: ruleResult.ruleId ?? null, kind: 'legacy' });
     }
     // Bank-file import batch (U-06, Q-P25j): a matching rule is staged as a
     // suggestion only (never categorized, never posted), unless a
     // conditional rule already staged one.
-    if (opts.autoConfirm === false && ruleResult.matched && ruleResult.assignAccountId && !current.suggestedAccountId) {
+    if (stageOnly && ruleResult.matched && ruleResult.assignAccountId && !current.suggestedAccountId) {
       await db.update(bankFeedItems).set({
         suggestedAccountId: ruleResult.assignAccountId,
+        // U-168: the attribution, in the same UPDATE as the suggestion.
+        ...(ruleResult.ruleId ? { suggestedRuleId: ruleResult.ruleId, suggestedRuleKind: 'legacy' } : {}),
         ...(ruleResult.assignContactId && !current.suggestedContactId ? { suggestedContactId: ruleResult.assignContactId } : {}),
         ...(ruleResult.assignTagId && !current.suggestedTagId ? { suggestedTagId: ruleResult.assignTagId } : {}),
         matchType: 'rule',
@@ -1928,7 +1940,7 @@ async function runRulesStages(
         sql`${bankFeedItems.suggestedAccountId} IS NULL`,
       ));
     }
-    if (opts.autoConfirm !== false && ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
+    if (!stageOnly && ruleResult.matched && ruleResult.autoConfirm && ruleResult.assignAccountId) {
       try {
         await categorize(tenantId, item.id, {
           accountId: ruleResult.assignAccountId,
@@ -1945,7 +1957,7 @@ async function runRulesStages(
         // pending and can be retried.
         const msg = err instanceof Error ? err.message : String(err);
         failures.push({ id: item.id, error: msg });
-        console.warn(`[runRulesStages] autoConfirm categorize failed for item ${item.id}: ${msg}`);
+        console.warn(`[runRulesStages] autoConfirm categorize failed for item ${item.id}: ${errorSummaryForLog(err)}`);
       }
     }
   }
@@ -1991,7 +2003,9 @@ export async function runCategorizationPipeline(
       pendingIds.push(item.id);
     }
   }
-  if (pendingIds.length > 0 && opts.llm !== false) {
+  // Q-P26c: in desktop mode AI runs only when the owner asks (Suggest with
+  // AI), never unattended after an import.
+  if (pendingIds.length > 0 && opts.llm !== false && !isDesktop()) {
     // Honor the "Auto-categorize bank feed transactions" setting
     // (ai_config.autoCategorizeOnImport, default on). This pipeline runs for
     // EVERY import path — CSV/OFX, Plaid sync, AND bank-statement import — so
@@ -2005,7 +2019,7 @@ export async function runCategorizationPipeline(
       // outage is visible to operators.
       await categorizationService.suggestForBatch(tenantId, pendingIds).catch((err) => {
         // eslint-disable-next-line no-console
-        console.warn(`[bank-feed] AI batch suggest failed for tenant ${tenantId}:`, err?.message ?? err);
+        console.warn(`[bank-feed] AI batch suggest failed for tenant ${tenantId}: ${errorSummaryForLog(err)}`);
       });
     }
   }
@@ -2031,10 +2045,7 @@ export async function runCategorizationPipeline(
       // pipeline — log and move on with no candidates for that
       // item. The state-row upsert below still runs so the row
       // ends up in some non-Bucket-1 bucket.
-      console.warn(
-        `[runCategorizationPipeline] potential-match find failed for item ${item.id}:`,
-        err instanceof Error ? err.message : String(err),
-      );
+      console.warn(`[runCategorizationPipeline] potential-match find failed for item ${item.id}: ${errorSummaryForLog(err)}`);
     }
   }
 
@@ -2054,6 +2065,7 @@ export async function runCategorizationPipeline(
     try {
       await classificationStateService.upsertStateForFeedItem(tenantId, item.id, {
         matchedRuleId: matched?.ruleId ?? null,
+        matchedRuleKind: matched?.kind,
         matchCandidates: candidates,
       });
     } catch {
@@ -2068,11 +2080,8 @@ export async function runCategorizationPipeline(
           matchCandidates: candidates,
         });
       } catch (err) {
-        console.warn(
-          `[runCategorizationPipeline] classification-state upsert failed for item ${item.id}:`,
-          err instanceof Error ? err.message : String(err),
-          'cause:', (err as { cause?: Error })?.cause?.message ?? '(none)',
-        );
+        // errorSummaryForLog carries the cause's code and message, never the params.
+        console.warn(`[runCategorizationPipeline] classification-state upsert failed for item ${item.id}: ${errorSummaryForLog(err)}`);
       }
     }
   }
@@ -2086,7 +2095,8 @@ export async function bulkRecleanse(tenantId: string, feedItemIds: string[]) {
     });
     if (item) items.push(item);
   }
-  const cleansing = await runCleansingPipeline(tenantId, items);
+  // S6: recleanse never calls AI in desktop mode (Q-P26c: AI only on request).
+  const cleansing = await runCleansingPipeline(tenantId, items, isDesktop() ? { llm: false } : {});
   return { cleansed: items.length, cleansing };
 }
 
@@ -2171,6 +2181,7 @@ export async function reprocessRules(
       try {
         await classificationStateService.upsertStateForFeedItem(tenantId, itemId, {
           matchedRuleId: fired.ruleId,
+          matchedRuleKind: fired.kind,
         });
       } catch {
         // Same transient-failure retry + cause logging as the
@@ -2181,11 +2192,7 @@ export async function reprocessRules(
             matchedRuleId: fired.ruleId,
           });
         } catch (err) {
-          console.warn(
-            `[reprocessRules] classification-state upsert failed for item ${itemId}:`,
-            err instanceof Error ? err.message : String(err),
-            'cause:', (err as { cause?: Error })?.cause?.message ?? '(none)',
-          );
+          console.warn(`[reprocessRules] classification-state upsert failed for item ${itemId}: ${errorSummaryForLog(err)}`);
         }
       }
     }
@@ -2593,3 +2600,26 @@ export async function importStatementItems(
   return { imported: insertedStmt.length, skipped: transactions.length - insertedStmt.length, cleansing };
 }
 
+
+/**
+ * Engine start (U-173, S9): rows left in 'categorizing' by an older engine
+ * (or a crash during the separate claim it used) for more than 5 minutes go
+ * back to where they were: 'assigned' when they carry a staged account, else
+ * 'pending'; a row that has its posted entry is 'categorized'. Feed posting
+ * no longer leaves this state behind (the claim is inside the posting
+ * transaction). Every tenant; returns how many rows moved.
+ */
+export const STUCK_CATEGORIZING_MS = 5 * 60 * 1000;
+export async function recoverStuckCategorizing(olderThanMs = STUCK_CATEGORIZING_MS): Promise<number> {
+  const cutoff = new Date(Date.now() - olderThanMs);
+  const res = await db.execute(sql`
+    UPDATE bank_feed_items SET
+      status = CASE
+        WHEN matched_transaction_id IS NOT NULL THEN 'categorized'
+        WHEN assigned_account_id IS NOT NULL AND assigned_at IS NOT NULL THEN 'assigned'
+        ELSE 'pending' END,
+      updated_at = now()
+    WHERE status = 'categorizing' AND (updated_at IS NULL OR updated_at < ${cutoff})
+    RETURNING id`);
+  return (res.rows as unknown[]).length;
+}

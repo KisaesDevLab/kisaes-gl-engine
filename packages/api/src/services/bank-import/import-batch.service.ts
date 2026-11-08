@@ -1175,9 +1175,13 @@ async function undoInTx(actor: BatchActor, batchId: string, pendingOnly: boolean
     const items = await tx.select({
       id: bankFeedItems.id, status: bankFeedItems.status, assignedAt: bankFeedItems.assignedAt,
       matchedTransactionId: bankFeedItems.matchedTransactionId, sourceLine: bankFeedItems.sourceLine,
+      exclusionReason: bankFeedItems.exclusionReason,
     }).from(bankFeedItems)
       .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.importBatchId, batchId))).for('update');
-    const untouched = items.filter((i) => i.status === 'pending' && !i.assignedAt && !i.matchedTransactionId);
+    // A row the owner removed as a duplicate (U-174, S4) counts as untouched:
+    // undoing the import takes it away with the rest.
+    const untouched = items.filter((i) => !i.matchedTransactionId
+      && ((i.status === 'pending' && !i.assignedAt) || (i.status === 'excluded' && i.exclusionReason === 'duplicate')));
     const used = items.filter((i) => !untouched.includes(i));
 
     // Items this batch replaced (changed rows, "replace") get their values

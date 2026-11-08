@@ -100,7 +100,7 @@ async function applyLegacy(
   }
 
   const aggregated = aggregateActions(matches.flatMap((m) => m.appliedActions));
-  await stageOnFeedItem(tenantId, feedItem.id, aggregated);
+  await stageOnFeedItem(tenantId, feedItem.id, aggregated, firstFiringRule(matches));
 
   const fires: ApplyResult['fires'] = [];
   for (const match of matches) {
@@ -180,7 +180,7 @@ async function applyTiered(
   }
 
   const aggregated = aggregateActionsTiered(resolvedMatches, ruleById);
-  await stageOnFeedItem(tenantId, feedItem.id, aggregated);
+  await stageOnFeedItem(tenantId, feedItem.id, aggregated, firstFiringRule(resolvedMatches));
 
   const fires: ApplyResult['fires'] = [];
   for (const match of resolvedMatches) {
@@ -316,14 +316,31 @@ export function aggregateActions(actions: Action[]): Action[] {
 // Persists the staged action results to the feed item. Splits
 // actions write a JSONB blob; the categorize-on-approve path
 // reads it and posts N journal lines instead of 2.
+/** The rule a staged suggestion is attributed to (U-168): the first fire with actions, as ruleFiredByItem. */
+function firstFiringRule(matches: Array<{ ruleId: string; appliedActions: Action[] }>): string | null {
+  return matches.find((m) => m.appliedActions.length > 0)?.ruleId ?? null;
+}
+
+/**
+ * The rule attribution written with a suggestion (U-168, S3): in the same
+ * UPDATE as the staged account or split, so 'Accept all from this rule'
+ * selects exactly the rows the rule staged.
+ */
+export function ruleAttribution(patch: StagePatch, ruleId: string | null): { suggestedRuleId?: string; suggestedRuleKind?: string } {
+  if (!ruleId || (patch.suggestedAccountId === undefined && patch.splitsConfig === undefined)) return {};
+  return { suggestedRuleId: ruleId, suggestedRuleKind: 'conditional' };
+}
+
 async function stageOnFeedItem(
   tenantId: string,
   feedItemId: string,
   actions: Action[],
+  ruleId: string | null = null,
 ): Promise<void> {
+  const patch = stagePatch(actions);
   await db
     .update(bankFeedItems)
-    .set({ ...stagePatch(actions), updatedAt: new Date() })
+    .set({ ...patch, ...ruleAttribution(patch, ruleId), updatedAt: new Date() })
     .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
 }
 

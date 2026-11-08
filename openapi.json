@@ -14382,6 +14382,56 @@
         ]
       }
     },
+    "/api/v1/banking/feed/counts": {
+      "get": {
+        "description": "Response {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, excluded, inProgress}. waiting = ready + review + matches (pending and assigned rows), each equal to the total of GET /banking/feed?bucket=<b>. Buckets, first match wins: a possible duplicate is review; any match signal (a candidate journal line on the bank account, payroll lines included, or one Payments Clearing item for exactly a money-in amount within 10 days) is matches; no account, a non-rule suggestion under 0.80 confidence, a rule mark_for_review, or a staged split that cannot post is review; the rest is ready. accepted = categorized and matched rows (entryVoided included: Accepted, Entry voided, never waiting); inProgress = rows being posted. Scope: bankConnectionId, startDate, endDate.",
+        "operationId": "get_api_v1_banking_feed_counts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "bankConnectionId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Bank feed counts per review bucket and state (feed-review-v1)",
+        "tags": [
+          "banking"
+        ]
+      }
+    },
     "/api/v1/banking/feed/import": {
       "post": {
         "operationId": "post_api_v1_banking_feed_import",
@@ -15276,7 +15326,7 @@
     },
     "/api/v1/banking/feed/{id}/approve": {
       "post": {
-        "description": "Response {transaction}. An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
+        "description": "Response {transaction}. Takes an assigned item; the claim, the posting and the status change are one database transaction. An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400). An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
         "operationId": "post_api_v1_banking_feed_by_id_approve",
         "parameters": [
           {
@@ -15284,6 +15334,16 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -15304,12 +15364,13 @@
         "summary": "Approve (post) a bank feed item's assigned category",
         "tags": [
           "banking"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/banking/feed/{id}/assign": {
       "put": {
-        "description": "Response {item}. Approve posts what is staged. Optional `splits`: 2-50 lines {accountId, amount (^\\d{1,12}(\\.\\d{1,2})?$, more than 0), tagId?|null, memo? (at most 500)} that must add up exactly to the item amount (absolute value), else 400 SPLITS_DONT_BALANCE (details {kind: \"fixed\", difference, splitTotal, amount}; difference = |amount| - the lines). An item amount with more than 2 decimals cannot be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: \"percentage\", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order (100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must add up exactly. Amounts post exactly as stored (no floating point). Without `splits`, any staged split is cleared.",
+        "description": "Response {item}. Approve posts what is staged. Optional `splits`: 2-50 lines {accountId, amount (^\\d{1,12}(\\.\\d{1,2})?$, more than 0), tagId?|null, memo? (at most 500)} that must add up exactly to the item amount (absolute value), else 400 SPLITS_DONT_BALANCE (details {kind: \"fixed\", difference, splitTotal, amount}; difference = |amount| - the lines). An item amount with more than 2 decimals cannot be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: \"percentage\", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order (100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must add up exactly. Amounts post exactly as stored (no floating point). Without `splits`, any staged split is cleared. An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400).",
         "operationId": "put_api_v1_banking_feed_by_id_assign",
         "parameters": [
           {
@@ -15440,7 +15501,7 @@
     },
     "/api/v1/banking/feed/{id}/categorize": {
       "put": {
-        "description": "Response {transaction}. Optional `splits`: 2-50 lines {accountId, amount (^\\d{1,12}(\\.\\d{1,2})?$, more than 0), tagId?|null, memo? (at most 500)} that must add up exactly to the item amount (absolute value), else 400 SPLITS_DONT_BALANCE (details {kind: \"fixed\", difference, splitTotal, amount}; difference = |amount| - the lines). An item amount with more than 2 decimals cannot be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: \"percentage\", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order (100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must add up exactly. Amounts post exactly as stored (no floating point). An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
+        "description": "Response {transaction}. Takes a pending or assigned item (feed-idempotency-v1); the claim, the posting and the status change are one database transaction. An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400). Optional `splits`: 2-50 lines {accountId, amount (^\\d{1,12}(\\.\\d{1,2})?$, more than 0), tagId?|null, memo? (at most 500)} that must add up exactly to the item amount (absolute value), else 400 SPLITS_DONT_BALANCE (details {kind: \"fixed\", difference, splitTotal, amount}; difference = |amount| - the lines). An item amount with more than 2 decimals cannot be split: 400 AMOUNT_NOT_CENTS. Sending accountId without `splits` means one line on accountId: a split a rule staged on the item is not used. A staged rule percentage split (used by bulk approve) must total exactly 100 (else 400 SPLITS_DONT_BALANCE {kind: \"percentage\", percentTotal}) and is allocated in cents by largest remainder, equal remainders settled by line order (100.00 at 33.334 / 33.333 / 33.333% = 33.34 / 33.33 / 33.33; 0.03 at 50 / 50% = 0.02 / 0.01); a staged fixed split is rounded to cents half away from zero and must add up exactly. Amounts post exactly as stored (no floating point). An item dated on or before the closing date needs `closingPassword` in the body (or a staff `overrideConfirmed: true` when the company has no closing-date password): 423 TB_PERIOD_LOCKED (details: lockDate, canOverride, closingPasswordRequired), 403 CLOSING_PASSWORD_INVALID, 429 CLOSING_PASSWORD_RATE_LIMIT; an allowed one writes a closing_date_override audit row (feed-closing-date-v1).",
         "operationId": "put_api_v1_banking_feed_by_id_categorize",
         "parameters": [
           {
@@ -15448,6 +15509,16 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -15551,7 +15622,8 @@
         "summary": "Categorize (post) a bank feed item",
         "tags": [
           "banking"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/banking/feed/{id}/deposit-groupings": {
@@ -15598,8 +15670,76 @@
         ]
       }
     },
+    "/api/v1/banking/feed/{id}/duplicate": {
+      "post": {
+        "description": "Body {decision: keep | remove}. Response {item, decision}. keep clears the possible-duplicate flag (the row waits for review as usual); remove excludes the row with exclusionReason \"duplicate\" (the flag stays; Restore brings it back undecided). An import Undo counts a row removed as a duplicate as untouched. Only a waiting (pending or assigned) row flagged as a possible duplicate: else 409 NOT_A_POSSIBLE_DUPLICATE {status, possibleDuplicate}. Needs an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). Audited.",
+        "operationId": "post_api_v1_banking_feed_by_id_duplicate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "decision": {
+                    "enum": [
+                      "keep",
+                      "remove"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "decision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Decide a possible duplicate: keep both or remove this one (feed-review-v1)",
+        "tags": [
+          "banking"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/banking/feed/{id}/exclude": {
       "put": {
+        "description": "A pending or assigned item only: An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400). Audited.",
         "operationId": "put_api_v1_banking_feed_by_id_exclude",
         "parameters": [
           {
@@ -15624,6 +15764,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Exclude a bank feed item",
         "tags": [
           "banking"
         ]
@@ -15631,6 +15772,7 @@
     },
     "/api/v1/banking/feed/{id}/match": {
       "put": {
+        "description": "Body {transactionId, journalLineId?}. Response {message, item}. The item is pending or assigned; it matches one journal line of the posted entry: on the item's bank account, a credit for money out (feed amount > 0) or a debit for money in (< 0), for exactly the amount. journalLineId may be left out when only one line fits (else 400 LINE_REQUIRED {journalLineIds}). 400 MATCH_MISMATCH {field: transactionId | journalLineId | account | amount}; 409 LINE_ALREADY_MATCHED {journalLineId} when another item holds the line; An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400). Audited.",
         "operationId": "put_api_v1_banking_feed_by_id_match",
         "parameters": [
           {
@@ -15638,6 +15780,16 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -15648,6 +15800,10 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "journalLineId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
                   "transactionId": {
                     "format": "uuid",
                     "type": "string"
@@ -15675,13 +15831,16 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Match a bank feed item to a line of a posted entry (feed-match-v2)",
         "tags": [
           "banking"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/banking/feed/{id}/match-candidates": {
       "get": {
+        "description": "Response {candidates: [{id (the entry), journalLineId, txnType, txnNumber, txnDate, total, amount (feed sign), memo, lineDescription, checkNumber, printStatus, source, contactName}]}: lines on the item's bank account, a credit for money out or a debit for money in, for exactly the amount, on posted entries within 15 days, not held by another feed item. One row per line (a payroll entry with two bank lines is two rows). Bill payments first, then by date distance.",
         "operationId": "get_api_v1_banking_feed_by_id_match_candidates",
         "parameters": [
           {
@@ -15706,6 +15865,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Journal lines a bank feed item may match (feed-match-v2)",
         "tags": [
           "banking"
         ]
@@ -15713,6 +15873,7 @@
     },
     "/api/v1/banking/feed/{id}/payroll-overlap": {
       "get": {
+        "description": "Response {overlaps: [{txnId, journalLineId, memo, date, amount}]}: posted payroll-import entries within 5 days with a credit line on the bank account for exactly the amount (feed sign; money in has none), not held by another feed item. Each bank line of an entry (net pay, taxes) is its own row; match it with PUT /banking/feed/:id/match {transactionId, journalLineId}.",
         "operationId": "get_api_v1_banking_feed_by_id_payroll_overlap",
         "parameters": [
           {
@@ -15737,13 +15898,59 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Payroll bank lines a money-out feed item may already be (feed-match-v2)",
         "tags": [
           "banking"
         ]
       }
     },
+    "/api/v1/banking/feed/{id}/review-again": {
+      "post": {
+        "description": "Response {item}. Voiding an entry a feed item points at is allowed: the item keeps its status and link and is flagged entryVoided (list filter entryVoided=true, /counts entryVoided, audit row). This unlinks it (clears the entry, its line and the flag) and puts it back to pending with its suggestion and without staged values, audited. The void entry stays void. 409 ENTRY_NOT_VOIDED {status} on any other row. Needs an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). No closing-date password (nothing in the books changes).",
+        "operationId": "post_api_v1_banking_feed_by_id_review_again",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Review again a bank feed item whose entry was voided (feed-match-v2)",
+        "tags": [
+          "banking"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/banking/feed/{id}/unexclude": {
       "put": {
+        "description": "An excluded item goes back to pending (a row removed as a duplicate comes back still flagged). Any other item: An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; was 400). Audited.",
         "operationId": "put_api_v1_banking_feed_by_id_unexclude",
         "parameters": [
           {
@@ -15768,6 +15975,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Restore an excluded bank feed item",
         "tags": [
           "banking"
         ]

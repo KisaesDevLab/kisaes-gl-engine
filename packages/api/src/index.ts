@@ -315,6 +315,14 @@ async function start() {
     void import('./services/bank-import/import-batch.service.js')
       .then((m) => m.resumeScheduledPostProcessing())
       .catch((err) => { console.error('Bank import post-processing resume failed:', errorSummaryForLog(err)); });
+    // Bank feed rows an older engine left 'categorizing' (U-173) go back
+    // to waiting.
+    void import('./services/bank-feed.service.js')
+      .then(async (m) => {
+        const n = await m.recoverStuckCategorizing();
+        if (n > 0) console.log('[bank-feed] ' + n + ' row(s) left in progress were put back to waiting');
+      })
+      .catch((err) => { console.error('Bank feed recovery failed:', errorSummaryForLog(err)); });
     // MIG-2: router mode only; non-blocking with retry — AI features fail
     // closed at the router until registration lands, which is correct.
     // Load the Admin -> AI router connection (overrides env) before registering.

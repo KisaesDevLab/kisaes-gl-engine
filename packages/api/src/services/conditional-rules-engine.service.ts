@@ -92,7 +92,8 @@ function warnUnsafeStoredPattern(pattern: string): void {
   warnedPatterns.add(pattern);
   const why = checkRegexSafety(pattern).reason ?? 'invalid regular expression';
   // eslint-disable-next-line no-console
-  console.warn(`[rules] stored regex refused (rule condition treated as non-matching): ${why} — pattern=${JSON.stringify(pattern.slice(0, 120))}`);
+  // U-167: never the pattern itself (it may hold a payee name).
+  console.warn(`[rules] stored regex refused (rule condition treated as non-matching): ${why}`);
 }
 
 function evaluateString(field: string | undefined, op: string, value: unknown): boolean {
