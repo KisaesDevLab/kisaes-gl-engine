@@ -438,6 +438,8 @@ export interface UndoResult {
   /** entry: 'deleted' (the feed posted it), 'kept' (only matches / payments undone, or a voided entry: only unlinked). */
   undone: Array<{ id: string; kind: string; transactionId: string; entry: 'deleted' | 'kept'; undoGroupId: string }>;
   failures: AcceptFailure[];
+  /** Document drafts reopened because an entry they were entered as or attached to was deleted (U-180, document-drafts-reopen-v1), sorted. */
+  reopenedDrafts: string[];
 }
 
 /** Record kinds whose entry the feed posted (Undo deletes it). */
@@ -617,6 +619,7 @@ export async function undoFeedAccepts(
 
     // 2. Post: unlink every item on the entry, restore it, then delete the entry.
     const undone: UndoResult['undone'] = [];
+    const reopenedDrafts: string[] = [];
     for (const unit of ready) {
       const postRec = unit.action === 'delete' ? unit.records.find((r) => r.kind === 'post') : undefined;
       const learn = postRec
@@ -650,15 +653,17 @@ export async function undoFeedAccepts(
       }
       await markUndone(tx, tenantId, recordIds, userId);
       if (unit.action === 'delete') {
-        await ledger.deleteTransactionInTx(tx, tenantId, unit.transactionId, {
+        const del = await ledger.deleteTransactionInTx(tx, tenantId, unit.transactionId, {
           userId, companyId, reason: 'Bank feed Undo',
         });
+        reopenedDrafts.push(...del.reopenedDrafts);
         if (learn && postRec) overrides.push({ id: postRec.feedItemId, l: learn });
       }
     }
     undone.sort((a, b) => a.id.localeCompare(b.id));
     failures.sort((a, b) => a.id.localeCompare(b.id));
-    return { undone, failures };
+    reopenedDrafts.sort();
+    return { undone, failures, reopenedDrafts };
   });
 
   for (const { id, l } of overrides) feed.learnFromFeed(tenantId, id, l, false);

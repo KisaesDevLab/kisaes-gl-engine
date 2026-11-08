@@ -22,6 +22,7 @@ import { releaseBilledCosts, assertSourceLinksIntact, billedInvoicesForLines } f
 import * as salesTaxRows from './sales-tax.service.js';
 import * as costing from './inventory-costing.service.js';
 import { resolveLineUnits } from './unit-lines.service.js';
+import { reopenDraftsOfDeletedTransaction } from './document-draft-reopen.service.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -1258,13 +1259,21 @@ export async function deleteTransaction(
   return await db.transaction((tx) => deleteTransactionInTx(tx, tenantId, txnId, opts));
 }
 
+export interface DeleteTransactionResult {
+  id: string;
+  status: 'deleted';
+  /** Document drafts reopened because they were entered as or attached to the entry (U-180), sorted per entry. */
+  reopenedDrafts: string[];
+  inventoryWarnings?: Awaited<ReturnType<typeof costing.apply>>;
+}
+
 /** deleteTransaction inside the caller's database transaction. */
 export async function deleteTransactionInTx(
   tx: Tx,
   tenantId: string,
   txnId: string,
   opts: DeleteTransactionOptions = {},
-) {
+): Promise<DeleteTransactionResult> {
   {
     await claimIdempotency(tx);
     await recordIdempotentEntity(tx, 'transaction', txnId);
@@ -1402,6 +1411,9 @@ export async function deleteTransactionInTx(
     const deleteWarnings = costingLock
       ? await costing.apply(tx, tenantId, txnId, { lock: costingLock, userId: opts.userId })
       : [];
+    // U-180 (document-drafts-reopen-v1): documents entered as or attached to
+    // this entry go back to the review queue with their files.
+    const reopenedDrafts = await reopenDraftsOfDeletedTransaction(tx, tenantId, txnId, opts.userId);
 
     await auditLog(tenantId, 'delete', 'transaction', txnId,
       { ...txn, lines: originalLines },
@@ -1410,13 +1422,20 @@ export async function deleteTransactionInTx(
         reason: opts.reason ?? null,
         ...(releasedLinks.length > 0 ? { releasedDepositLinks: releasedLinks } : {}),
         ...(releasedCosts.length > 0 ? { releasedBillableCosts: releasedCosts } : {}),
+        ...(reopenedDrafts.length > 0 ? { reopenedDrafts } : {}),
       },
       opts.userId, tx);
 
     // The reversal has its own updatedAt; the caller's token was for the original.
-    if (reversal) await deleteTransactionInTx(tx, tenantId, reversal.id, { ...opts, expectedUpdatedAt: undefined });
+    if (reversal) {
+      const r = await deleteTransactionInTx(tx, tenantId, reversal.id, { ...opts, expectedUpdatedAt: undefined });
+      reopenedDrafts.push(...r.reopenedDrafts);
+    }
 
-    return { id: txnId, status: 'deleted' as const, ...(deleteWarnings.length > 0 ? { inventoryWarnings: deleteWarnings } : {}) };
+    return {
+      id: txnId, status: 'deleted' as const, reopenedDrafts,
+      ...(deleteWarnings.length > 0 ? { inventoryWarnings: deleteWarnings } : {}),
+    };
   }
 }
 
