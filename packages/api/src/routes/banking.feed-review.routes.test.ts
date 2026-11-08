@@ -277,7 +277,7 @@ describe('line-level matches (U-166, B2)', () => {
     ]);
     const a = await feedItem('70.0000');
     expect((await match(a, { transactionId: e.id })).status).toBe(200);
-    await expect(ledger.deleteTransaction(tenantId, e.id, userId, { companyId } as never)).rejects.toBeTruthy();
+    await expect(ledger.deleteTransaction(tenantId, e.id, { companyId, userId } as never)).rejects.toBeTruthy();
     const e2 = await entry('expense', '2026-04-13', [
       { accountId: supplies, debit: '71.0000', credit: '0' },
       { accountId: bankId, debit: '0', credit: '71.0000' },

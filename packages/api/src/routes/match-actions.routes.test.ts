@@ -19,6 +19,8 @@ import {
   bankConnections,
   bankFeedItems,
   contacts,
+  accounts,
+  journalLines,
   transactions,
   transactionClassificationState,
   tenantFeatureFlags,
@@ -26,6 +28,7 @@ import {
 } from '../db/schema/index.js';
 import { matchActionsRouter } from './match-actions.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
+import * as ledger from '../services/ledger.service.js';
 
 let server: Server | null = null;
 let port = 0;
@@ -112,9 +115,10 @@ async function seedUser(tId: string, role: string): Promise<{ id: string; token:
 async function seedFeedItemAndState(opts: {
   amount: string;
   candidates: MatchCandidate[];
+  bankAccountId?: string;
 }): Promise<{ feedItemId: string; stateId: string }> {
   const [conn] = await db.insert(bankConnections).values({
-    tenantId, accountId: crypto.randomUUID(), institutionName: 'Test Bank',
+    tenantId, accountId: opts.bankAccountId ?? crypto.randomUUID(), institutionName: 'Test Bank',
   }).returning();
   const [item] = await db.insert(bankFeedItems).values({
     tenantId,
@@ -140,7 +144,9 @@ async function cleanDb() {
   await db.delete(transactionClassificationState).where(eq(transactionClassificationState.tenantId, tenantId));
   await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
   await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
+  await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
   await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
+  await db.delete(accounts).where(eq(accounts.tenantId, tenantId));
   await db.delete(contacts).where(eq(contacts.tenantId, tenantId));
   await db.delete(tenantFeatureFlags).where(eq(tenantFeatureFlags.tenantId, tenantId));
   await db.delete(users).where(eq(users.tenantId, tenantId));
@@ -194,16 +200,28 @@ describe('match-actions routes — auth + role gates', () => {
 
 describe('POST /:stateId/apply — journal entry path', () => {
   it('applies a JE candidate and returns the JE id', async () => {
-    // Create a real journal-entry transaction so the apply succeeds.
-    const [je] = await db.insert(transactions).values({
-      tenantId,
+    // A real posted journal entry with a line on the feed's bank account: a
+    // feed match is line-level (U-166), so money out (a positive amount)
+    // matches the entry's credit on that account for exactly the amount.
+    // (This used to be a header with no lines on a random account.)
+    const [bank] = await db.insert(accounts).values({
+      tenantId, name: 'Checking', accountType: 'asset', detailType: 'bank', accountNumber: '1000',
+    }).returning();
+    const [expense] = await db.insert(accounts).values({
+      tenantId, name: 'Rent', accountType: 'expense', accountNumber: '6000',
+    }).returning();
+    const je = await ledger.postTransaction(tenantId, {
       txnType: 'journal_entry',
       txnDate: '2026-04-15',
       total: '1000.0000',
-      status: 'posted',
-    }).returning();
+      lines: [
+        { accountId: expense!.id, debit: '1000.0000', credit: '0' },
+        { accountId: bank!.id, debit: '0', credit: '1000.0000' },
+      ],
+    });
 
-    const { stateId } = await seedFeedItemAndState({
+    const { feedItemId, stateId } = await seedFeedItemAndState({
+      bankAccountId: bank!.id,
       amount: '1000.00',
       candidates: [
         {
@@ -228,8 +246,45 @@ describe('POST /:stateId/apply — journal entry path', () => {
       bookkeeperToken,
     );
     expect(status).toBe(200);
-    expect(json.appliedTransactionId).toBe(je!.id);
+    expect(json.appliedTransactionId).toBe(je.id);
     expect(json.kind).toBe('journal_entry');
+    const [linked] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, feedItemId));
+    const [bankLine] = await db.select().from(journalLines)
+      .where(eq(journalLines.id, linked!.matchedJournalLineId!));
+    expect(linked).toMatchObject({ status: 'matched', matchedTransactionId: je.id });
+    expect(bankLine).toMatchObject({ accountId: bank!.id, credit: '1000.0000' });
+  });
+
+  it('a JE with no line on the bank account is 400 MATCH_MISMATCH and the feed line stays pending', async () => {
+    const [cash] = await db.insert(accounts).values({
+      tenantId, name: 'Petty Cash', accountType: 'asset', detailType: 'bank', accountNumber: '1010',
+    }).returning();
+    const [expense] = await db.insert(accounts).values({
+      tenantId, name: 'Rent', accountType: 'expense', accountNumber: '6000',
+    }).returning();
+    const [bank] = await db.insert(accounts).values({
+      tenantId, name: 'Checking', accountType: 'asset', detailType: 'bank', accountNumber: '1000',
+    }).returning();
+    const je = await ledger.postTransaction(tenantId, {
+      txnType: 'journal_entry', txnDate: '2026-04-15', total: '1000.0000',
+      lines: [
+        { accountId: expense!.id, debit: '1000.0000', credit: '0' },
+        { accountId: cash!.id, debit: '0', credit: '1000.0000' },
+      ],
+    });
+    const { feedItemId, stateId } = await seedFeedItemAndState({
+      bankAccountId: bank!.id,
+      amount: '1000.00',
+      candidates: [{
+        kind: 'journal_entry', targetId: je.id, amount: '1000.0000', date: '2026-04-15', contactName: null,
+        score: 0.95, amountScore: 1, dateScore: 1, nameScore: 0.7, reason: 'JE match',
+      }],
+    });
+    const { status, json } = await request('POST', `/api/v1/practice/classification/${stateId}/apply`, { candidateIndex: 0 }, bookkeeperToken);
+    expect(status).toBe(400);
+    expect(json.error.code).toBe('MATCH_MISMATCH');
+    const [still] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, feedItemId));
+    expect(still).toMatchObject({ status: 'pending', matchedTransactionId: null });
   });
 
   it('returns 400 for an out-of-range candidate index', async () => {

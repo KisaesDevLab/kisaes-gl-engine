@@ -161,7 +161,10 @@ export async function payBills(
   // line matched to an open bill): there is nothing left to print and no
   // check number to hand out. It overrides input.method — the feed knows a
   // check number or it knows nothing, so the method is 'check' or unrecorded.
-  origin?: { source: string; sourceId: string; alreadyCleared?: { checkNumber: number | null } },
+  // With `feedItemId` the payment is matched to that feed line in this same
+  // database transaction (U-166): one vendor payment only, and its bank line
+  // must fit the feed line exactly, else nothing posts.
+  origin?: { source: string; sourceId: string; alreadyCleared?: { checkNumber: number | null; feedItemId?: string } },
 ) {
   if (input.bills.length === 0) throw AppError.badRequest('Must select at least one bill to pay');
 
@@ -591,6 +594,18 @@ export async function payBills(
     // The bank account's counter moves past the last number (never back).
     if (lastCheckNumber !== null) {
       await advanceCheckCounterPast(tx, tenantId, input.bankAccountId, lastCheckNumber, companyId);
+    }
+
+    // The bank already made this payment: match its feed line now, so the
+    // payment and the match commit together or not at all (U-166).
+    const feedItemId = origin?.alreadyCleared?.feedItemId;
+    if (feedItemId) {
+      if (createdPayments.length !== 1) {
+        throw AppError.badRequest('A bank line matches one vendor payment: pay one vendor at a time.', 'MATCH_MISMATCH', { field: 'transactionId' });
+      }
+      // Dynamic import, as in payment.service (matchFeedItem): no load-time cycle.
+      const { matchInTx } = await import('./bank-feed.service.js');
+      await matchInTx(tx, tenantId, feedItemId, createdPayments[0]!.payment.id, { companyId, userId });
     }
 
     return {

@@ -7,7 +7,7 @@
 // above stays an A/R credit on the client. The feed line never fails.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { MatchCandidate } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
@@ -70,15 +70,18 @@ async function stage(feedAmount: string) {
   const [state] = await db.insert(transactionClassificationState).values({
     tenantId, bankFeedItemId: item!.id, bucket: 'potential_match', matchCandidates: [candidate],
   }).returning();
-  return { inv, stateId: state!.id };
+  return { inv, itemId: item!.id, stateId: state!.id };
 }
 
 describe('applyMatch — open invoice (U-132)', () => {
   beforeEach(async () => { await cleanDb(); await setup(); });
   afterEach(async () => { await cleanDb(); });
 
+  // Feed sign (U-136, U-166): a deposit is money in, a NEGATIVE amount. These
+  // fixtures used to stage it as +100.05 (the old reversed sign); the practice
+  // matcher never offers an invoice for money out.
   it('a feed amount above the balance applies the cent balance; the rest stays a credit', async () => {
-    const { inv, stateId } = await stage('100.05');
+    const { inv, itemId, stateId } = await stage('-100.05');
     const result = await applyMatch(tenantId, stateId, 0, USER_ID);
     expect(result).toMatchObject({ kind: 'invoice', appliedAmount: '100.00', partial: false });
     const [paid] = await db.select().from(transactions).where(eq(transactions.id, inv.id));
@@ -87,10 +90,27 @@ describe('applyMatch — open invoice (U-132)', () => {
     expect(payment!.total).toBe('100.0500');
     const apps = await db.select().from(paymentApplications).where(eq(paymentApplications.paymentId, payment!.id));
     expect(apps.map((a) => a.amount)).toEqual(['100.0000']);
+    // Line-level (U-166): the feed line holds the payment's debit on the bank account.
+    const [linked] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, itemId));
+    expect(linked).toMatchObject({ status: 'matched', matchedTransactionId: payment!.id });
+    const [bankLine] = await db.select().from(journalLines).where(eq(journalLines.id, linked!.matchedJournalLineId!));
+    expect(bankLine).toMatchObject({ transactionId: payment!.id, accountId: bankAccountId, debit: '100.0500' });
+  });
+
+  it('money out (a positive amount) is not a deposit: 400 FEED_ITEM_MISMATCH, nothing posts', async () => {
+    const { inv, itemId, stateId } = await stage('100.00');
+    await expect(applyMatch(tenantId, stateId, 0, USER_ID)).rejects.toMatchObject({ statusCode: 400, code: 'FEED_ITEM_MISMATCH' });
+    const payments = await db.select().from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.txnType, 'customer_payment')));
+    expect(payments).toHaveLength(0);
+    const [open] = await db.select().from(transactions).where(eq(transactions.id, inv.id));
+    expect(open!.balanceDue).toBe('100.0000');
+    const [still] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, itemId));
+    expect(still).toMatchObject({ status: 'pending', matchedTransactionId: null, matchedJournalLineId: null });
   });
 
   it('a feed amount short of the balance is a partial payment, exact to the cent', async () => {
-    const { inv, stateId } = await stage('99.99');
+    const { inv, stateId } = await stage('-99.99');
     const result = await applyMatch(tenantId, stateId, 0, USER_ID);
     expect(result).toMatchObject({ appliedAmount: '99.99', partial: true });
     const [partial] = await db.select().from(transactions).where(eq(transactions.id, inv.id));

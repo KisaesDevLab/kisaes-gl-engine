@@ -139,13 +139,16 @@ async function applyInvoiceMatch(
       depositTo: bankAccountId,
       memo: item.description ?? undefined,
       applications: appliedDec.greaterThan(0) ? [{ invoiceId: invoice.id, amount: application }] : [],
+      // Matched in the payment's own database transaction (U-136, U-166): a
+      // feed line that is not money in for exactly this amount posts nothing
+      // (400 FEED_ITEM_MISMATCH). It used to post the payment, then fail.
+      bankFeedItemId: item.id,
     },
     userId,
     companyId ?? undefined,
     { allowUnapplied: true },
   );
 
-  await bankFeedService.match(tenantId, item.id, payment.id);
   await classificationService.stampTransactionId(tenantId, item.id, payment.id);
 
   return {
@@ -190,7 +193,11 @@ async function applyBillMatch(
     },
     userId,
     companyId ?? undefined,
-    { source: 'bank_feed', sourceId: item.id, alreadyCleared: { checkNumber: item.checkNumber } },
+    // feedItemId: matched in the payment's database transaction (U-166). The
+    // bank line must be money out for exactly the payment, so a feed amount
+    // above the bill's balance is 400 MATCH_MISMATCH and posts nothing (it
+    // used to post a smaller payment, then fail or link the wrong amount).
+    { source: 'bank_feed', sourceId: item.id, alreadyCleared: { checkNumber: item.checkNumber, feedItemId: item.id } },
   );
 
   // One bill, so one vendor, so exactly one payment. (This read three result
@@ -201,7 +208,6 @@ async function applyBillMatch(
     throw AppError.internal('payBills did not return a payment transaction id');
   }
 
-  await bankFeedService.match(tenantId, item.id, paymentId);
   await classificationService.stampTransactionId(tenantId, item.id, paymentId);
 
   return {
