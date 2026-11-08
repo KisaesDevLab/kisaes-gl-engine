@@ -14,11 +14,14 @@ import {
   tenants, users, userTenantAccess, sessions, companies, accounts, auditLog, bankConnections, bankFeedItems, bankRules,
   bankImportBatches, transactions, journalLines, transactionClassificationState, categorizationHistory, idempotencyKeys,
   conditionalRules, conditionalRuleAudit, contacts, firms, tenantFirmAssignments, tenantFeatureFlags,
+  bankFeedAcceptGroups, bankFeedAcceptGroupItems,
 } from '../../db/schema/index.js';
 import * as authService from '../auth.service.js';
 import * as accountsService from '../accounts.service.js';
 import { normalizePayeePattern } from '../categorization-ai.service.js';
 import * as importBatch from './import-batch.service.js';
+import * as accept from '../bank-feed-accept.service.js';
+import { FEED_ROW_WAIT } from '../bank-feed-row-locks.js';
 
 let tenantId = '';
 let companyId = '';
@@ -551,4 +554,70 @@ describe('import post-processing (U-06 follow-up)', () => {
     expect(lines).toHaveLength(0); // nothing posted (the seeded bills and invoices have no lines)
     if (process.env['PERF_BUDGETS'] === '1') expect(took).toBeLessThan(30_000);
   }, 900_000);
+});
+
+// U-187: an Accept sent right after an import (the owner clicks Accept while
+// the rows are still being prepared) met the chunk's FOR UPDATE and skipped
+// the row as in_use. Accept now looks again for a short while (FEED_ROW_WAIT,
+// never a lock wait) before it calls a row in use.
+describe('an accept while post-processing holds the rows (U-187)', () => {
+  async function cleanAccepts() {
+    await db.delete(bankFeedAcceptGroupItems).where(eq(bankFeedAcceptGroupItems.tenantId, tenantId));
+    await db.delete(bankFeedAcceptGroups).where(eq(bankFeedAcceptGroups.tenantId, tenantId));
+  }
+
+  async function heldWhileAccepting(holdMs: number) {
+    const r = await importBatch.commitBatch({ tenantId, companyId, userId: ownerId },
+      batchInput([{ line: 1, date: '2026-05-02', amount: '17.25', description: 'PLAIN VENDOR 187' }], 'f'));
+    const [row] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.importBatchId, r.batchId!));
+    const { POST_CHUNK } = await import('./post-process.js');
+    let accepting: Promise<accept.AcceptResult> | null = null;
+    let took = 0;
+    POST_CHUNK.afterLock = async () => {
+      if (accepting) return;
+      const started = Date.now();
+      accepting = accept.acceptFeedItems(tenantId, companyId, ownerId, { items: [{ id: row!.id, accountId: expenseId }] })
+        .finally(() => { took = Date.now() - started; });
+      // Let the accept reach the row while this chunk holds it.
+      await new Promise((res) => setTimeout(res, holdMs));
+    };
+    try {
+      expect(await importBatch.runImportPostProcessing(tenantId, r.batchId!)).toBe('done');
+    } finally {
+      POST_CHUNK.afterLock = undefined;
+    }
+    expect(accepting).not.toBeNull();
+    const out = await accepting!;
+    return { row: row!, out, took };
+  }
+
+  it('posts the row once the chunk commits, never skipped in_use', async () => {
+    try {
+      const { row, out } = await heldWhileAccepting(300);
+      expect(out.skipped).toEqual([]);
+      expect(out.failures).toEqual([]);
+      expect(out.posted).toBe(1);
+      const [after] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, row.id));
+      expect(after!.status).toBe('categorized');
+    } finally {
+      await cleanAccepts();
+    }
+  });
+
+  it('a row held longer than the wait is in_use, after the wait and not before', async () => {
+    const wait = FEED_ROW_WAIT.ms;
+    FEED_ROW_WAIT.ms = 150;
+    try {
+      const { row, out, took } = await heldWhileAccepting(800);
+      expect(out.skipped).toEqual([{ id: row.id, reason: 'in_use' }]);
+      expect(out.posted).toBe(0);
+      expect(took).toBeGreaterThanOrEqual(150);
+      expect(took).toBeLessThan(800); // gave up before the holder let go: never a lock wait
+      const [after] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, row.id));
+      expect(after!.status).toBe('pending');
+    } finally {
+      FEED_ROW_WAIT.ms = wait;
+      await cleanAccepts();
+    }
+  });
 });
