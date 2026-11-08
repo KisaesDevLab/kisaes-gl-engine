@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Fable review R1 (docs/reviews/R1-books-to-tax-basis.md) regression tests:
 // one describe per finding F1-F16. Each test failed on the pre-R1 provider

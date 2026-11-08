@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // MODULE.md "State calculation" — the pure state orchestrator (Phase 8; Q53 rate schedules).
 //   rate_mode 'brackets' (default; state-schedule.ts): the state's starting point − capital gain

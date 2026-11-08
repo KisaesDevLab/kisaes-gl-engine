@@ -1,6 +1,6 @@
 # Copyright 2026 Kisaes LLC
-# Licensed under the PolyForm Small Business License 1.0.0.
-# Free for small businesses; see LICENSE for terms.
+# Licensed under the PolyForm Internal Use License 1.0.0.
+# See LICENSE and NOTICE.md for terms.
 """Reference calculator (test oracle) for the Phase 14 golden scenarios — tax year 2026.
 
 Independent of the app engine (nothing under packages/ is imported). Run:

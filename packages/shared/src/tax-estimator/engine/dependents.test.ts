@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q44: §21 care credit, §24 CTC / ODC / ACTC, age boundaries, ordering, Schedule AI fixed mode,
 // EITC / head-of-household warnings. Expected figures are worked by hand from the statute /

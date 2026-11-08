@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-06: dedupe keys v1 reproduce __fixtures__/dedupe_v1.json exactly. The
 // same file is read by the ClientLedger desktop's cargo tests through the

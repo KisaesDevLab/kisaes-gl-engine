@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q51 — per-portal-contact Tax Estimator view options (OPEN-QUESTIONS Q51). A PUT sends only
 // the sections it changes; absent keys keep their stored value. Turning a section ON is a

@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // migration.0267-0268.rollback (U-169, U-170; S14): the forward files are
 // additive, roll back cleanly (newest first) and re-apply; a rule keeps its

@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Activity units + tag→unit mapping (Phase 3, ADR-TB-02, D3/D13).
 // A unit = one activity schedule instance on the return (Sch C #1,

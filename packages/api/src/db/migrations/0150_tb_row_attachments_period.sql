@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 -- migration-policy: non-additive-exception
 -- (Index swap + SET NOT NULL on a table shipped hours ago in 0149 with
 -- no external consumers; the backfill fully populates period_end before

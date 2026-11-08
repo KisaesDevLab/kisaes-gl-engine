@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // Invoice print layouts (U-130, invoice-layouts-v1) through the HTTP routes:
 //   - a company's first layout "Standard" (a copy of the template it printed

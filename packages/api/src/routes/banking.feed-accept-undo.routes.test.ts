@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-170 (feed-accept-v1) and U-169 (feed-undo-v1), plan P26 §6:
 //   #1  feed-accept.idempotency: one locked row and two open; one commit; the replay is identical

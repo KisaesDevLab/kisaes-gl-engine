@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-147 / U-148 / U-25 (sales-tax-rate6-v1, company-sales-tax-flags-v1,
 // idempotency-sales-tax-v1): setup CRUD for agencies, items, groups and codes

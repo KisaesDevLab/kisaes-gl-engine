@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Phase 12 acceptance (PHASES.md): a snapshot stays unchanged after ANY later input or
 // parameter change; the assumptions block is complete for the Rivera fixture; snapshot

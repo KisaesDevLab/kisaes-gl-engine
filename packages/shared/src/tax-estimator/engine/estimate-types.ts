@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Phase 10 shared vocabulary (MODULE.md "Safe harbor, Schedule AI, vouchers,
 // penalties"): the estimate trace, the per-calculation context and the small

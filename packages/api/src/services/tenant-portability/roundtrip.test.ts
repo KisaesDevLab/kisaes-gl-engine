@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Round trip, fidelity, tamper, compatibility, encryption and identity
 // (U-05 §4.5 groups B, C, D, G, H; MT9, MT10, MT15, MT19, MT22, MT27 and

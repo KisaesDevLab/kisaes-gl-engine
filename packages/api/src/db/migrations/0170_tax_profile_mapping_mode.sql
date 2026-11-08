@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- TB tax-code mapping mode per company (docs/tb/BUILD_PLAN.md ADR-TB-02
 -- follow-up). 'account' (default) keeps today's behaviour: a unit slice

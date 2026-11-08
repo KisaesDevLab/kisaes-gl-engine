@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // The sales-form golden cases (U-122, sales-cents-v1), canonical here in
 // packages/shared/fixtures/invoice-golden.json; the ClientLedger client keeps

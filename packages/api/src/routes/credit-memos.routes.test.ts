@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // U-137 (credit-memo-apply-v1, idempotency-credit-memo-v1) and U-142 / U-121
 // A/R half (ar-open-items-asof-v1, ar-aging-exact-v1): credit memos as A/R

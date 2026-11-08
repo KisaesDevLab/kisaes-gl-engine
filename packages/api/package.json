@@ -2,7 +2,7 @@
   "name": "@kis-books/api",
   "version": "0.1.0",
   "private": true,
-  "license": "PolyForm-Small-Business-1.0.0",
+  "license": "PolyForm-Internal-Use-1.0.0",
   "type": "module",
   "main": "./dist/bootstrap.js",
   "scripts": {

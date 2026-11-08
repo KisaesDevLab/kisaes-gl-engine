@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Trial Balance module tables (docs/tb/BUILD_PLAN.md §4, ADR-TB-01…06).
 // "Entity" in the plan = a `companies` row (CLAUDE.md rule TB2). Balances

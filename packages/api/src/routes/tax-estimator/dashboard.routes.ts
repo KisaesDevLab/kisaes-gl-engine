@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Tax Estimator Q52 — firm-wide dashboard cards ("Vouchers due in the next 30 days",
 // "Behind on payments"), shown on the Tax Estimator home (taxpayer list). Rides the staff

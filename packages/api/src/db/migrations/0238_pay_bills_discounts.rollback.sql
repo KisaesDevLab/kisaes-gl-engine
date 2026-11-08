@@ -1,5 +1,5 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
 -- migration-policy: non-additive-exception
 --
 -- Rollback for 0238 (Pay Bills discounts; U-101). The code that writes

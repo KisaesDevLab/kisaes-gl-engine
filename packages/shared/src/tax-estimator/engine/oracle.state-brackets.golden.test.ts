@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q53 golden test: the engine must match features/tax-estimator/docs/reference-calc/state_brackets_expected.json,
 // produced by state_brackets_fixture.py (independent Python from the 2025 Schedule D Tax Worksheet, MO-1040 /

@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // CPA report-letter (SSARS 21) admin CRUD schemas + type metadata.
 // Templates are SYSTEM-level (managed by super-admin, shared across the

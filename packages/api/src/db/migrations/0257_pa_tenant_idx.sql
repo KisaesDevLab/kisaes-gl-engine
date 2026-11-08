@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- U-155 (cash-basis report performance): the cash-basis virtual ledger
 -- (report.service.ts arAppsCte / executeCashBasis) reads a tenant's

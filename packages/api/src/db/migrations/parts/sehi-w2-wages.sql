@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Tax Estimator Q41 part: CPA-decided switch (OPEN-QUESTIONS.md Q41 item 1). Assembled AFTER the
 -- R6 lifecycle part. Additive only. Per entity and tax year: include the >2% S corporation

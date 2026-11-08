@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // feed-rules.desktop-never-posts (U-168, S6, Q-P26o): in desktop mode the
 // rule stages never post (a legacy auto_confirm rule only stages its

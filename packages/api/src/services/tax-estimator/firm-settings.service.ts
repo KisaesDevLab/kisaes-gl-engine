@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Per-firm Tax Estimator settings (MODULE.md D4/D10/D17): safe-harbor default, disclaimer, portal default,
 // taxpayer visibility switch (restrict_taxpayers_to_linked_tenants, default ON).

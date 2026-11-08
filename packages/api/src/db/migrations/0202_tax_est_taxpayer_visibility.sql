@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Tax Estimator D17 part: taxpayer visibility controls (Kurt, 2026-10-12; MODULE.md D17,
 -- OPEN-QUESTIONS.md Q42). Shipped as its OWN migration 0202_tax_est_taxpayer_visibility

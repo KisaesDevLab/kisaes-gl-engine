@@ -1,6 +1,6 @@
 -- Copyright 2026 Kisaes LLC
--- Licensed under the PolyForm Small Business License 1.0.0.
--- Free for small businesses; see LICENSE for terms.
+-- Licensed under the PolyForm Internal Use License 1.0.0.
+-- See LICENSE and NOTICE.md for terms.
 --
 -- Idempotency-Key records for POST /api/v1/batch/save (U-72). One row per
 -- (tenant, company, key) whose batch saved: the SHA-256 of the request body

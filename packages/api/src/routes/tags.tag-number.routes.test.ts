@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 //
 // Tag numbers (ClientLedger U-75, tag-number-v1): optional, trimmed, up to
 // 20 characters, unique per tenant when set (409 TAG_NUMBER_EXISTS on create

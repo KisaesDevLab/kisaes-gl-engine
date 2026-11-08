@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // QA D7 / D19: engine trace formulas and warning messages carry exact decimal
 // strings ("bracket tax on 138725.7318071403638391314"). These helpers format

@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // D17 (Kurt, 2026-10-12) — taxpayer visibility controls, HTTP level. D18 (a non-empty staff
 // list replaces the linked-tenant rule, full data) is covered in taxpayer-list-override.routes.test.ts.

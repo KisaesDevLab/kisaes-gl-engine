@@ -1,6 +1,6 @@
 # Copyright 2026 Kisaes LLC
-# Licensed under the PolyForm Small Business License 1.0.0.
-# Free for small businesses; see LICENSE for terms.
+# Licensed under the PolyForm Internal Use License 1.0.0.
+# See LICENSE and NOTICE.md for terms.
 """Reference calculator (test oracle) for the state rate schedules and capital gains (OPEN-QUESTIONS Q53) — tax year 2025.
 
 Independent of the app engine (nothing under packages/ is imported). Run:

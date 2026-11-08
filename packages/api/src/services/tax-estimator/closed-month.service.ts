@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // The LAST CLOSED MONTH rule (MODULE.md "Books readiness"), shared by the
 // readiness service and the P&L provider's default range end (R1 F5). Callers

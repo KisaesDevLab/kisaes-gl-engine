@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 import { z } from 'zod';
 import { desktopFatal } from '../desktop/fatal.js';
@@ -260,8 +260,8 @@ export const envSchema = z.object({
   // time, or the WebAuthn API will refuse the credential.
   WEBAUTHN_RP_ID: z.string().optional(),
   // The D6 boot-time license-token check was removed (v0.9.111) —
-  // PolyForm Small Business is free for small businesses and the gate
-  // only produced failed installs. Any LICENSE_* / DISABLE_LICENSE_CHECK
+  // the gate only produced failed installs; licensing terms are in
+  // LICENSE and NOTICE.md. Any LICENSE_* / DISABLE_LICENSE_CHECK
   // values still present in operator .env files are simply ignored
   // (unknown keys are stripped by this schema).
   // vibe-mybooks-compatibility-addendum §3.4. Standalone keeps

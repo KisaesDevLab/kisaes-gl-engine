@@ -1,6 +1,6 @@
 // Copyright 2026 Kisaes LLC
-// Licensed under the PolyForm Small Business License 1.0.0.
-// Free for small businesses; see LICENSE for terms.
+// Licensed under the PolyForm Internal Use License 1.0.0.
+// See LICENSE and NOTICE.md for terms.
 
 // Q44 golden test: the engine must match features/tax-estimator/docs/reference-calc/dependents_expected.json,
 // produced by dependents_fixture.py (independent Python from Schedule 8812 / Form 2441 / §21 / §24, no
