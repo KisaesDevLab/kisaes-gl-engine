@@ -22,6 +22,10 @@ export const CONDITION_FIELDS = [
   'descriptor',
   'amount',
   'amount_sign',
+  // feed-accept-v1 (U-170): the amount without its sign (a bank line of
+  // 42.10 in or out), compared exactly as a decimal. Use with amount_sign
+  // for a direction.
+  'amount_abs',
   'account_source_id',
   'date',
   'day_of_week',
@@ -69,6 +73,7 @@ export const FIELD_OPERATOR_MAP: Record<ConditionField, readonly string[]> = {
   descriptor: STRING_OPERATORS,
   amount: NUMERIC_OPERATORS,
   amount_sign: ['eq', 'ne'],            // -1 | 0 | 1
+  amount_abs: NUMERIC_OPERATORS,
   account_source_id: ['eq', 'ne'],
   date: DATE_OPERATORS,
   day_of_week: ['eq', 'ne'],            // 0..6

@@ -7,7 +7,7 @@ import { eq, and, sql, count, inArray, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { BankFeedFilters, CategorizeInput, CsvColumnMapping, FeedSplitLine } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
-import { db, type DbOrTx } from '../db/index.js';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { bankFeedItems, bankConnections, accounts, transactions, journalLines, contacts, tags, transactionTags as transactionTagsTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -208,12 +208,12 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
         WHERE d.tenant_id = ${tenantId} AND d.id = ${bankFeedItems.possibleDuplicateOf}
       )`,
       // U-174 (U-168): the rule that staged the suggestion. autoAccept is a
-      // legacy rule's auto_confirm; conditional rules gain auto_accept in
-      // feed-accept-v1 (false until then).
+      // conditional rule's auto_accept (feed-accept-v1) or a legacy rule's
+      // auto_confirm: "Accept all from this rule" is offered.
       suggestedRule: sql<{ id: string; kind: 'conditional' | 'legacy'; name: string; autoAccept: boolean; updatedAt: string | null } | null>`(
         CASE ${bankFeedItems.suggestedRuleKind}
           WHEN 'conditional' THEN (SELECT json_build_object('id', cr.id, 'kind', 'conditional', 'name', cr.name,
-            'autoAccept', false, 'updatedAt', cr.updated_at)
+            'autoAccept', cr.auto_accept, 'updatedAt', cr.updated_at)
             FROM conditional_rules cr WHERE cr.id = ${bankFeedItems.suggestedRuleId})
           WHEN 'legacy' THEN (SELECT json_build_object('id', br.id, 'kind', 'legacy', 'name', br.name,
             'autoAccept', COALESCE(br.auto_confirm, false), 'updatedAt', br.updated_at)
@@ -455,7 +455,7 @@ export function resolveFeedMemo(
 // resolved the tag (an explicit id, or null for untagged — the
 // undefined→suggestedTagId fallback lives in categorize()), the contact, and
 // the memo, so this helper never guesses.
-interface PostAssignmentValues {
+export interface PostAssignmentValues {
   accountId: string;
   contactId?: string | null;
   tagId?: string | null;
@@ -493,7 +493,7 @@ async function postFeedItem(
   userId?: string,
   companyId?: string,
 ) {
-  let learn: { text: string; accountId: string; contactId: string | null } | null = null;
+  let learn: FeedLearning | null = null;
   const txn = await db.transaction(async (tx) => {
     const [item] = await tx.select().from(bankFeedItems)
       .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
@@ -503,7 +503,111 @@ async function postFeedItem(
       throw feedItemNotPending(item.status, item.status === 'pending' && !allowed.includes('pending')
         ? 'Bank feed item is not assigned (current status: pending). Assign a category before approving.' : undefined);
     }
-    const values = resolve(item);
+    const posted = await postFeedItemInTx(tx, tenantId, item, resolve(item), userId, companyId);
+    learn = posted.learn;
+    return posted.transaction;
+  });
+
+  // Update categorization learning history. Fire-and-forget — the
+  // transaction has already posted; this only feeds future suggestions.
+  const l = learn as FeedLearning | null;
+  if (l) learnFromFeed(tenantId, feedItemId, l, true);
+
+  return txn;
+}
+
+/** What a posted feed item teaches the categorization history (after the commit). */
+export interface FeedLearning { text: string; accountId: string; contactId: string | null }
+
+/**
+ * Feeds the categorization history after a commit, fire-and-forget:
+ * `accepted` true confirms the account, false counts an override (an Undo,
+ * Q-P26k). Logs only a code and the item id (U-167).
+ */
+export function learnFromFeed(tenantId: string, feedItemId: string, l: FeedLearning, accepted: boolean): void {
+  updateLearning(tenantId, l.text, l.accountId, l.contactId, accepted).catch((err) => {
+    // U-167: the error code and the item id only (Drizzle errors carry the description in params).
+    // eslint-disable-next-line no-console
+    console.warn(`[bank-feed] updateLearning failed for item ${feedItemId}: ${errorSummaryForLog(err)}`);
+  });
+}
+
+/** The values an Accept sends for one row (feed-accept-v1). */
+export interface AcceptRowInput {
+  accountId?: string;
+  contactId?: string | null;
+  tagId?: string | null;
+  memo?: string | null;
+  splits?: FeedSplitLine[];
+}
+
+/**
+ * What an Accept posts for a waiting row (feed-accept-v1), or null when
+ * there is nothing to post (no account anywhere): the owner's values when
+ * sent (as PUT /categorize with ownerChoice: an account without splits is
+ * one line), else the owner's staged values on an assigned row (as
+ * approve), else the suggestion as staged (as bulk approve).
+ */
+export function acceptValuesFor(item: typeof bankFeedItems.$inferSelect, input: AcceptRowInput): PostAssignmentValues | null {
+  const tagOr = (fallback: string | null | undefined) => (input.tagId === undefined ? (fallback ?? null) : (input.tagId ?? null));
+  const ownSplits = input.splits && input.splits.length > 0 ? manualSplitsConfig(input.splits) : null;
+  if (input.accountId || ownSplits) {
+    return {
+      accountId: input.accountId ?? ownSplits!.splits[0]!.accountId,
+      contactId: input.contactId || (item.suggestedContactId ?? undefined),
+      tagId: tagOr(item.suggestedTagId),
+      memo: resolveFeedMemo(item, input.memo),
+      splitsConfig: ownSplits,
+    };
+  }
+  if (item.status === 'assigned' && item.assignedAccountId) {
+    return {
+      accountId: item.assignedAccountId,
+      contactId: input.contactId || item.assignedContactId || item.suggestedContactId || undefined,
+      tagId: tagOr(item.assignedTagId),
+      memo: resolveFeedMemo(item, input.memo ?? (item.assignedMemo as string | null)),
+      splitsConfig: item.splitsConfig as FeedSplitsConfig,
+    };
+  }
+  const staged = (item.splitsConfig as FeedSplitsConfig) ?? null;
+  const account = item.suggestedAccountId ?? (staged && staged.splits.length > 0 ? staged.splits[0]!.accountId : null);
+  if (!account) return null;
+  return {
+    accountId: account,
+    contactId: input.contactId || (item.suggestedContactId ?? undefined),
+    tagId: tagOr(item.suggestedTagId),
+    memo: resolveFeedMemo(item, input.memo),
+    splitsConfig: staged,
+  };
+}
+
+/** Throws the posting's split refusal (SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS) without posting anything. */
+export function assertFeedSplitsPost(item: typeof bankFeedItems.$inferSelect, values: PostAssignmentValues): void {
+  const cfg = values.splitsConfig ?? null;
+  if (cfg && cfg.splits.length > 0) computeSplitLines(item.amount, cfg);
+}
+
+/** Every account and tag of an Accept's owner split must be in this tenant (400 otherwise). */
+export async function assertAcceptSplitRefs(tenantId: string, splits: FeedSplitLine[] | undefined): Promise<void> {
+  if (splits && splits.length > 0) await assertSplitRefsInTenant(tenantId, splits);
+}
+
+/**
+ * Posts a feed row the caller locked (FOR UPDATE) and checked, in the
+ * caller's database transaction: the ledger entry, the check stamp, status
+ * 'categorized' and the entry's bank line (U-166). The caller feeds the
+ * learning (`learn`) after the commit.
+ */
+export async function postFeedItemInTx(
+  tx: Tx,
+  tenantId: string,
+  item: typeof bankFeedItems.$inferSelect,
+  values: PostAssignmentValues,
+  userId?: string,
+  companyId?: string,
+): Promise<{ transaction: Awaited<ReturnType<typeof ledger.postTransaction>>; journalLineId: string | null; learn: FeedLearning }> {
+  const feedItemId = item.id;
+  {
 
     // Determine if this is an expense (positive amount = money out) or deposit
     // (negative = money in). Exact decimals (U-164): the amount posts as
@@ -610,22 +714,12 @@ async function postFeedItem(
       entryVoidedAt: null,
       updatedAt: new Date(),
     }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
-    learn = { text: item.originalDescription || item.description || '', accountId: values.accountId, contactId: values.contactId || null };
-    return t;
-  });
-
-  // Update categorization learning history. Fire-and-forget — the
-  // transaction has already posted; this only feeds future suggestions.
-  const l = learn as { text: string; accountId: string; contactId: string | null } | null;
-  if (l) {
-    updateLearning(tenantId, l.text, l.accountId, l.contactId, true).catch((err) => {
-      // U-167: the error code and the item id only (Drizzle errors carry the description in params).
-      // eslint-disable-next-line no-console
-      console.warn(`[bank-feed] updateLearning failed for item ${feedItemId}: ${errorSummaryForLog(err)}`);
-    });
+    return {
+      transaction: t,
+      journalLineId: cash?.id ?? null,
+      learn: { text: item.originalDescription || item.description || '', accountId: values.accountId, contactId: values.contactId || null },
+    };
   }
-
-  return txn;
 }
 
 /**

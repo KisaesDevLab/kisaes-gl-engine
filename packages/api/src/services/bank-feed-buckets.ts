@@ -12,9 +12,12 @@
  *
  *   1. review   a possible duplicate (the owner decides Keep both / Remove)
  *   2. matches  any match signal: a candidate journal line (U-166 predicate,
- *               payroll lines included) or, for money in, one posted item
+ *               payroll lines included), for money in one posted item
  *               waiting in Payments Clearing for exactly the amount within
- *               ±10 days (not deposited, not bounced)
+ *               ±10 days (not deposited, not bounced), or the other side of
+ *               a transfer: a waiting item on another GL account of the
+ *               company with the exact opposite amount within ±3 days
+ *               (feed-accept-v1, the transfer-candidates predicate of U-171)
  *   3. review   no account, a suggestion that isn't a rule's with a
  *               confidence under 0.80 (AI, history; a rule's mark_for_review
  *               stages 0.00), or a staged split that can't post (fixed lines
@@ -38,6 +41,8 @@ export type FeedBucket = (typeof FEED_BUCKETS)[number];
 export const REVIEW_CONFIDENCE = '0.80';
 /** Payments Clearing window for the exact-item match signal (as deposit groupings, U-56). */
 export const CLEARING_WINDOW_DAYS = 10;
+/** Transfer-twin window (Q-P26l; GET /feed/:id/transfer-candidates' default). */
+export const TRANSFER_WINDOW_DAYS = 3;
 
 /** The item's bank GL account, from its connection. */
 function bankAccountOf(tenantId: string): SQL {
@@ -77,8 +82,21 @@ export function matchSignalSql(tenantId: string): SQL {
       AND NOT EXISTS (SELECT 1 FROM transactions r WHERE r.tenant_id = ${tenantId} AND r.source_txn_id = pt.id
         AND r.txn_type = 'returned_payment' AND r.status = 'posted')
   ))`;
-  // E4 (U-171) adds the transfer-candidate signal here.
-  return sql`(${bankFeedItems.matchedTransactionId} IS NULL AND ${amount} <> 0 AND (${line} OR ${clearing}))`;
+  // The other side of a transfer (feed-accept-v1; U-171's candidate rule):
+  // served by idx_bfi_waiting_amount (0269).
+  const tdays = sql.raw(String(TRANSFER_WINDOW_DAYS));
+  const transfer = sql`EXISTS (
+    SELECT 1 FROM bank_feed_items o
+    JOIN bank_connections oc ON oc.id = o.bank_connection_id AND oc.tenant_id = ${tenantId}
+    WHERE o.tenant_id = ${tenantId} AND o.status IN ('pending', 'assigned')
+      AND o.amount = -${bankFeedItems.amount}
+      AND o.id <> ${bankFeedItems.id}
+      AND oc.account_id IS DISTINCT FROM ${bankAccountOf(tenantId)}
+      AND o.feed_date >= (${bankFeedItems.feedDate}::date - INTERVAL '${tdays} days')
+      AND o.feed_date <= (${bankFeedItems.feedDate}::date + INTERVAL '${tdays} days')
+      AND (${bankFeedItems.companyId} IS NULL OR o.company_id IS NULL OR o.company_id = ${bankFeedItems.companyId})
+  )`;
+  return sql`(${bankFeedItems.matchedTransactionId} IS NULL AND ${amount} <> 0 AND (${line} OR ${clearing} OR ${transfer}))`;
 }
 
 /** A staged split the posting would refuse (SPLITS_DONT_BALANCE, AMOUNT_NOT_CENTS). */

@@ -7,6 +7,16 @@ import type { PracticeFeatureFlagKey } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import * as featureFlagsService from '../services/feature-flags.service.js';
 import { resolveReviewMode } from '../services/suggestion-review-mode.service.js';
+import { isDesktop } from '../desktop/profile.js';
+
+/**
+ * Flags the desktop deployment does not check (feed-accept-v1, U-170,
+ * Q-P26d): the owner's own bank rules are part of the desktop app, also in
+ * a company restored from an older archive whose flag row is off. Keyed off
+ * the deployment (isDesktop()), never a tenant setting; the client and
+ * readonly checks still apply.
+ */
+const DESKTOP_ALWAYS_ON: readonly PracticeFeatureFlagKey[] = ['CONDITIONAL_RULES_V1'];
 
 // Shared gate for every /api/v1/practice/* router. Three checks in
 // one middleware so the routes stay terse and the policy lives in
@@ -30,7 +40,8 @@ export function requirePracticeAccess(flag: PracticeFeatureFlagKey) {
     if (req.userRole === 'readonly') {
       throw AppError.forbidden('Insufficient role');
     }
-    const enabled = await featureFlagsService.isEnabled(req.tenantId, flag);
+    const enabled = (isDesktop() && DESKTOP_ALWAYS_ON.includes(flag))
+      || await featureFlagsService.isEnabled(req.tenantId, flag);
     if (!enabled) {
       throw AppError.notFound('Feature not available');
     }

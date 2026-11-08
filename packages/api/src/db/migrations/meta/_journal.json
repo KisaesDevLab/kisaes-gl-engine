@@ -1870,6 +1870,20 @@
       "when": 1787500021380,
       "tag": "0266_bank_feed_rule_review",
       "breakpoints": true
+    },
+    {
+      "idx": 268,
+      "version": "7",
+      "when": 1787500023380,
+      "tag": "0268_conditional_rule_auto_accept",
+      "breakpoints": true
+    },
+    {
+      "idx": 269,
+      "version": "7",
+      "when": 1787500024380,
+      "tag": "0269_bank_feed_accept_groups",
+      "breakpoints": true
     }
   ]
 }

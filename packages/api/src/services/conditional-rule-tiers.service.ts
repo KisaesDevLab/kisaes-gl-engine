@@ -304,6 +304,7 @@ function mapRow(row: typeof conditionalRules.$inferSelect): ConditionalRule {
     ownerUserId: row.ownerUserId,
     ownerFirmId: row.ownerFirmId,
     forkedFromGlobalId: row.forkedFromGlobalId,
+    autoAccept: row.autoAccept,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

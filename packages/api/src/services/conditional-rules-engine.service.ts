@@ -18,6 +18,10 @@ import {
   MAX_REGEX_HAYSTACK,
 } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
+import DecimalLib from 'decimal.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
+type DecimalValue = InstanceType<typeof Decimal>;
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 4 — pure evaluator. No
 // DB access, no side effects. Inputs are the persisted rule + a
@@ -68,7 +72,13 @@ function evaluateLeaf(leaf: LeafCondition, ctx: ConditionalRuleContext): boolean
     case 'descriptor':
       return evaluateString(fieldValue as string | undefined, leaf.operator, leaf.value);
     case 'amount':
-      return evaluateNumeric(fieldValue as number | undefined, leaf.operator, leaf.value);
+      return evaluateNumeric(fieldValue as number | undefined, leaf.operator, leaf.value, ctx.amount_text);
+    case 'amount_abs': {
+      // feed-accept-v1 (U-170): |amount|, exact when the context carries the text.
+      const exact = ctx.amount_text !== undefined ? exactDecimal(ctx.amount_text)?.abs().toFixed() : undefined;
+      const abs = ctx.amount_abs ?? (typeof ctx.amount === 'number' ? Math.abs(ctx.amount) : undefined);
+      return evaluateNumeric(abs, leaf.operator, leaf.value, exact);
+    }
     case 'amount_sign':
       return evaluateEqNe(fieldValue as number | undefined, leaf.operator, leaf.value);
     case 'account_source_id':
@@ -141,7 +151,43 @@ function evaluateString(field: string | undefined, op: string, value: unknown): 
   }
 }
 
-function evaluateNumeric(field: number | undefined, op: string, value: unknown): boolean {
+/** A finite decimal, or null for anything else (never throws). */
+function exactDecimal(v: unknown): DecimalValue | null {
+  if (typeof v !== 'string' && typeof v !== 'number') return null;
+  const s = String(v).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(s)) return null;
+  return new Decimal(s);
+}
+
+/**
+ * Numeric comparison. With `exact` (the feed item's stored decimal string,
+ * feed-accept-v1) both sides are compared as exact decimals, so 0.1 + 0.2
+ * style drift can never move a rule across a boundary; a rule value that
+ * is not a plain decimal never matches. Without it, numbers as before.
+ */
+function evaluateNumeric(field: number | undefined, op: string, value: unknown, exact?: string): boolean {
+  if (exact !== undefined) {
+    const a = exactDecimal(exact);
+    if (!a) return false;
+    if (op === 'between') {
+      if (!Array.isArray(value) || value.length !== 2) return false;
+      const lo = exactDecimal(value[0]);
+      const hi = exactDecimal(value[1]);
+      if (!lo || !hi) return false;
+      return a.gte(lo) && a.lte(hi);
+    }
+    const v = exactDecimal(value);
+    if (!v) return false;
+    switch (op) {
+      case 'eq':  return a.eq(v);
+      case 'ne':  return !a.eq(v);
+      case 'gt':  return a.gt(v);
+      case 'gte': return a.gte(v);
+      case 'lt':  return a.lt(v);
+      case 'lte': return a.lte(v);
+      default:    throw AppError.badRequest(`Unknown numeric operator "${op}"`);
+    }
+  }
   if (field === undefined || field === null || Number.isNaN(field)) return false;
   if (op === 'between') {
     if (!Array.isArray(value) || value.length !== 2) return false;
@@ -355,14 +401,19 @@ export function contextFromFeedItem(item: {
 }): ConditionalRuleContext {
   const base = (item.originalDescription || item.description || '').trim();
   const desc = item.payeeNameOnCheck ? `${base} ${item.payeeNameOnCheck}`.trim() : base;
+  // Exact (feed-accept-v1): the sign and the comparisons come from the
+  // stored decimal string; `amount` stays a number for older callers.
+  const exact = exactDecimal(item.amount);
   const amt = parseFloat(item.amount);
-  const sign: -1 | 0 | 1 = amt > 0 ? 1 : amt < 0 ? -1 : 0;
+  const sign: -1 | 0 | 1 = exact ? (exact.gt(0) ? 1 : exact.lt(0) ? -1 : 0) : (amt > 0 ? 1 : amt < 0 ? -1 : 0);
   const date = item.feedDate;
   const dow = new Date(date + 'T00:00:00Z').getUTCDay();
   return {
     descriptor: desc,
     amount: amt,
     amount_sign: sign,
+    amount_abs: Math.abs(amt),
+    ...(exact ? { amount_text: exact.toFixed() } : {}),
     account_source_id: item.bankConnectionAccountId,
     date,
     day_of_week: dow,

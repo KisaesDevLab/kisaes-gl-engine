@@ -301,6 +301,7 @@ function rule(over: Partial<ConditionalRule> & { conditions: ConditionAST; actio
     ownerUserId: over.ownerUserId ?? 'u1',
     ownerFirmId: over.ownerFirmId ?? null,
     forkedFromGlobalId: over.forkedFromGlobalId ?? null,
+    autoAccept: over.autoAccept ?? false,
     createdAt: '2026-04-15T00:00:00.000Z',
     updatedAt: '2026-04-15T00:00:00.000Z',
   };
@@ -423,5 +424,44 @@ describe('deferred features', () => {
       ctx(),
     );
     expect(out).toEqual([]);
+  });
+});
+
+// ─── feed-accept-v1 (U-170): exact amounts, amount_abs ───────
+
+describe('exact amount comparisons (feed-accept-v1)', () => {
+  const feedCtx = (amount: string) => contextFromFeedItem({
+    description: 'X', originalDescription: 'X', amount, feedDate: '2026-04-15', bankConnectionAccountId: 'acct-1',
+  });
+
+  it('carries |amount| and the exact decimal text', () => {
+    const c = feedCtx('-42.1000');
+    expect(c.amount_abs).toBe(42.1);
+    expect(c.amount_text).toBe('-42.1');
+    expect(c.amount_sign).toBe(-1);
+  });
+
+  it('amount_abs matches money in and money out of the same size', () => {
+    const rule = leaf('amount_abs', 'eq', '42.10');
+    expect(evaluateCondition(rule, feedCtx('42.1000'))).toBe(true);
+    expect(evaluateCondition(rule, feedCtx('-42.1000'))).toBe(true);
+    expect(evaluateCondition(rule, feedCtx('42.1100'))).toBe(false);
+  });
+
+  it('compares as decimals at the 12-digit edge, where a float would round', () => {
+    const big = feedCtx('999999999999.9999');
+    expect(evaluateCondition(leaf('amount', 'gt', '999999999999.9998'), big)).toBe(true);
+    expect(evaluateCondition(leaf('amount', 'eq', '999999999999.9999'), big)).toBe(true);
+    expect(evaluateCondition(leaf('amount_abs', 'between', ['999999999999.99', '999999999999.9999']), big)).toBe(true);
+    expect(evaluateCondition(leaf('amount_abs', 'lt', '999999999999.9999'), big)).toBe(false);
+  });
+
+  it('a value that is not a plain decimal never matches', () => {
+    expect(evaluateCondition(leaf('amount_abs', 'eq', '1e2'), feedCtx('100'))).toBe(false);
+    expect(evaluateCondition(leaf('amount', 'between', ['x', '5']), feedCtx('1'))).toBe(false);
+  });
+
+  it('without amount_text the numbers are compared as before', () => {
+    expect(evaluateCondition(leaf('amount', 'gte', 10), ctx({ amount: 10 }))).toBe(true);
   });
 });
