@@ -8,6 +8,7 @@ const Decimal = DecimalLib.default || DecimalLib;
 type Decimal = InstanceType<typeof Decimal>;
 import { CHECK_MEMO_PRINT_LIMIT, vendorAccountMemo, toStoredPaymentMethod, type PayBillsInput } from '@kis-books/shared';
 import { db, type Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
 import {
   transactions,
   journalLines,
@@ -736,7 +737,8 @@ export interface VoidBillPaymentOptions {
 export async function voidBillPayment(
   tenantId: string, paymentId: string, reason: string, userId?: string, opts: VoidBillPaymentOptions = {},
 ) {
-  return await db.transaction((tx) => voidBillPaymentInTx(tx, tenantId, paymentId, reason, userId, opts));
+  // Retried once on a deadlock (U-197; reconciliation header locks, U-193).
+  return await transactionWithRetry((tx) => voidBillPaymentInTx(tx, tenantId, paymentId, reason, userId, opts), { label: 'bill_payment_void' });
 }
 
 /**

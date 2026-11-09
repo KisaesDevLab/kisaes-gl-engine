@@ -1017,12 +1017,14 @@ adminRouter.get('/plaid/tenant-accounts', async (req, res) => {
   const { accounts } = await import('../db/schema/index.js');
   const { and: andOp, eq: eqOp, inArray } = await import('drizzle-orm');
   const { db: database } = await import('../db/index.js');
+  // Every bank detail type (checking, savings, cash...), not only 'bank' (U-197).
+  const { BANK_DETAIL_TYPES } = await import('../services/bank-account-types.js');
   const rows = await database.select({
     id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, detailType: accounts.detailType,
   }).from(accounts).where(andOp(
     eqOp(accounts.tenantId, tenantId),
     eqOp(accounts.isActive, true),
-    inArray(accounts.detailType, ['bank', 'credit_card', 'other_current_asset', 'other_current_liability']),
+    inArray(accounts.detailType, [...BANK_DETAIL_TYPES, 'credit_card', 'other_current_asset', 'other_current_liability']),
   ));
   res.json({ accounts: rows });
 });

@@ -53,3 +53,18 @@ export function noteInventoryWarnings(warnings: readonly NegativeStockWarning[])
 export function inventoryWarningsContext(_req: Request, res: Response, next: NextFunction): void {
   storage.run({ res, warnings: [], wrapped: false }, next);
 }
+
+/** How many warnings the request has noted so far (a mark for rollbackInventoryWarnings). */
+export function inventoryWarningsMark(): number {
+  return storage.getStore()?.warnings.length ?? 0;
+}
+
+/**
+ * Drops the warnings noted after `mark`: a database transaction that noted
+ * them rolled back and is retried (transactionWithRetry, U-197), which
+ * notes them again from what it sees.
+ */
+export function rollbackInventoryWarnings(mark: number): void {
+  const ctx = storage.getStore();
+  if (ctx && ctx.warnings.length > mark) ctx.warnings.length = mark;
+}

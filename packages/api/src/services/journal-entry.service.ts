@@ -5,6 +5,7 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { CreateJournalEntryInput } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
 import { accounts, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
@@ -127,7 +128,8 @@ export async function createJournalEntry(
 export async function updateJournalEntry(tenantId: string, txnId: string, input: CreateJournalEntryInput, userId?: string, companyId?: string) {
   if (input.reverseOn !== undefined) assertReverseOn(input.txnDate, input.reverseOn);
   const payload = buildJournalEntryPayload(input);
-  return db.transaction(async (tx) => {
+  // Retried once on a deadlock (U-197; reconciliation header locks, U-193).
+  return transactionWithRetry(async (tx) => {
     await assertJournalEntryNames(tx, tenantId, companyId, payload.lines);
     const [existing] = await tx.select().from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))

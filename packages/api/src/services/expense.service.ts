@@ -4,6 +4,7 @@
 
 import type { CreateExpenseInput, JournalLineInput } from '@kis-books/shared';
 import { db, type Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
 import * as ledger from './ledger.service.js';
 import { assertLineContacts } from './line-contacts.service.js';
 import { assertPrintedFaceKeptOnExpenseEdit } from './check.service.js';
@@ -70,7 +71,8 @@ export async function createExpense(
 
 export async function updateExpense(tenantId: string, txnId: string, input: CreateExpenseInput, userId?: string, companyId?: string) {
   const payload = buildExpensePayload(input);
-  return db.transaction(async (tx) => {
+  // Retried once on a deadlock (U-197; reconciliation header locks, U-193).
+  return transactionWithRetry(async (tx) => {
     // A printed check keeps its printed face here (U-80): 409 CHECK_PRINTED,
     // edit it with PUT /checks/:id, which asks reprint or keep the number.
     await assertPrintedFaceKeptOnExpenseEdit(tx, tenantId, txnId, {

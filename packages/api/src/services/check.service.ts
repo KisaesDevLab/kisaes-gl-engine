@@ -5,6 +5,7 @@
 import { eq, and, sql, count, inArray } from 'drizzle-orm';
 import type { WriteCheckInput, UpdateCheckInput } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
 import {
   transactions, companies, journalLines as journalLinesTable, tags, transactionTags, spoiledCheckNumbers,
 } from '../db/schema/index.js';
@@ -455,7 +456,8 @@ export async function updateCheck(
 ) {
   const journalLines = buildCheckLines(input);
 
-  return await db.transaction(async (tx) => {
+  // Retried once on a deadlock (U-197; reconciliation header locks, U-193).
+  return await transactionWithRetry(async (tx) => {
     // Lock order (U-117 S4): the check counter's companies row BEFORE the
     // check row, as printChecks does. Every numbering branch below locks the
     // counter; taking it after the check row deadlocked against a print run
