@@ -23,6 +23,7 @@ import crypto from 'crypto';
 import { itemLineDetails } from '../utils/line-amount.js';
 import { assertItemsInScope } from './bill.service.js';
 import { splitDerived } from './inventory-costing.service.js';
+import { BANK_DETAIL_TYPES } from './bank-account-types.js';
 
 // Check numbers are tracked PER BANK ACCOUNT in
 // check_settings.nextCheckNumbers keyed by the bank GL account id. This SQL
@@ -718,12 +719,14 @@ export async function getPrintQueue(tenantId: string, bankAccountId?: string, co
  * void reversal. `t` is the transactions alias.
  */
 function bankAccountSubselect(t: ReturnType<typeof sql>) {
+  // Every bank register detail type (U-194), as a SQL value list.
+  const bankDetailTypesSql = sql.join(BANK_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
   return sql`(
     SELECT jl.account_id FROM journal_lines jl
     JOIN accounts a ON a.id = jl.account_id
     WHERE jl.transaction_id = ${t}.id AND jl.tenant_id = ${t}.tenant_id
       AND jl.credit > 0 AND COALESCE(jl.is_void_reversal, false) = false
-    ORDER BY (a.account_type = 'asset') DESC, (a.detail_type = 'bank') DESC, jl.credit DESC, jl.account_id
+    ORDER BY (a.account_type = 'asset') DESC, (a.detail_type IN (${bankDetailTypesSql})) DESC, jl.credit DESC, jl.account_id
     LIMIT 1
   )`;
 }

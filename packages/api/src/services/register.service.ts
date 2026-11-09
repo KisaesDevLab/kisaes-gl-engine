@@ -8,6 +8,7 @@ import { db } from '../db/index.js';
 import { accounts, journalLines, transactions, contacts, reconciliationLines, reconciliations } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { isBankDetailType } from './bank-account-types.js';
 import DecimalLib from 'decimal.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
@@ -87,10 +88,13 @@ interface RegisterLine<M extends RegisterMoney = RegisterMoney> {
 }
 
 // Determine which inline transaction types are allowed per account detail type
-function getAllowedEntryTypes(detailType: string | null, accountType: string): string[] {
+// (every bank detail type — checking, savings, cash, petty cash — gets the
+// bank list, U-194).
+export function getAllowedEntryTypes(detailType: string | null, accountType: string): string[] {
+  if (isBankDetailType(detailType)) {
+    return ['expense', 'deposit', 'transfer', 'journal_entry'];
+  }
   switch (detailType) {
-    case 'bank':
-      return ['expense', 'deposit', 'transfer', 'journal_entry'];
     case 'credit_card':
       return ['expense', 'transfer', 'journal_entry'];
     case 'accounts_receivable':
@@ -507,13 +511,16 @@ export async function getRegisterSummary(
   `);
   const unclearedCount = parseInt((unclearedResult.rows as any[])[0]?.cnt || '0');
 
-  // Last reconciliation date
+  // Last reconciliation date: the latest completed one — statement date,
+  // then the later finish (U-193's "latest", U-196). Without an ORDER BY the
+  // footer could name an older reconciliation.
   const lastRecon = await db.query.reconciliations.findFirst({
     where: and(
       eq(reconciliations.tenantId, tenantId),
       eq(reconciliations.accountId, accountId),
       eq(reconciliations.status, 'complete'),
     ),
+    orderBy: (r, { desc }) => [desc(r.statementDate), sql`${r.completedAt} DESC NULLS LAST`],
   });
 
   // Transaction count this period (current month)

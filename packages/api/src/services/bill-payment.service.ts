@@ -15,13 +15,11 @@ import {
   contacts,
   billPaymentApplications,
   vendorCreditApplications,
-  reconciliations,
-  reconciliationLines,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as billService from './bill.service.js';
-import { checkLockDate, auditLockOverride, assertAccountsInScope, assertNotStale, assertBalanced, inOtherCompany, round4 } from './ledger.service.js';
+import { checkLockDate, auditLockOverride, assertAccountsInScope, assertNotStale, assertBalanced, inOtherCompany, round4, completedReconciliationOfTransaction, reconciledTransactionError } from './ledger.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { lockCheckCounter, assertCheckNumberRangeFree, advanceCheckCounterPast, allocateNextCheckNumber } from './check.service.js';
 import { assertBillDiscountAccount, companyBillDiscountAccountId } from './bill-discount-account.js';
@@ -778,21 +776,13 @@ export async function voidBillPaymentInTx(
     await checkLockDate(tx, tenantId, payment.txnDate, payment.companyId, undefined, {
       txnId: paymentId, oldDate: payment.txnDate, newDate: null,
     });
-    const clearedInCompleted = await tx.execute(sql`
-      SELECT 1
-      FROM ${reconciliationLines} rl
-      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
-      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
-      WHERE r.tenant_id = ${tenantId}
-        AND r.status = 'complete'
-        AND rl.is_cleared = true
-        AND jl.transaction_id = ${paymentId}
-      LIMIT 1
-    `);
-    if ((clearedInCompleted.rows as unknown[]).length > 0) {
-      throw AppError.badRequest(
+    const reconciledBy = await completedReconciliationOfTransaction(tx, tenantId, paymentId);
+    if (reconciledBy) {
+      throw reconciledTransactionError(
         'Cannot void a bill payment whose lines are cleared in a completed bank reconciliation. ' +
           'Undo the reconciliation first, then void and post a correcting entry.',
+        'void',
+        reconciledBy,
       );
     }
 

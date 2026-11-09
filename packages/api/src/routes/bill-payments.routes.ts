@@ -89,7 +89,7 @@ billPaymentsRouter.post('/:id/void', closingPasswordLimiter, lockContextMiddlewa
   replay: async () => ({ voided: true }),
 }), validate(voidTransactionSchema), describe({
   summary: 'Void a bill payment',
-  description: `Response 200 {voided: true}. ${closedPeriodNote} expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE.`,
+  description: `Response 200 {voided: true}. ${closedPeriodNote} expectedUpdatedAt (ap-edit-v1): mismatch 409 STALE. Cleared in a completed reconciliation: 409 RECONCILED_TRANSACTION {action, reconciliationId, statementDate} (reconcile-qa-v1).`,
   body: voidTransactionSchema.extend({ closingPassword: closingPasswordDoc, overrideConfirmed: z.boolean().optional() }),
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {

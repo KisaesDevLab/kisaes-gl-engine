@@ -9,3 +9,12 @@
  * and bank file import (U-175) share this set.
  */
 export const BANK_DETAIL_TYPES: readonly string[] = ['bank', 'checking', 'savings', 'cash', 'petty_cash'];
+
+/**
+ * Whether an asset detail type is a bank register (BANK_DETAIL_TYPES). Checks,
+ * deposits and transfers post on any of them, so registers and pickers that
+ * offer those entries use this rather than comparing with 'bank' (U-194).
+ */
+export function isBankDetailType(detailType: string | null | undefined): boolean {
+  return detailType != null && BANK_DETAIL_TYPES.includes(detailType);
+}
