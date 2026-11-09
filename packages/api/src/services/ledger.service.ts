@@ -808,6 +808,32 @@ export function inOtherCompany(row: { companyId: string | null }, companyId: str
   return !!companyId && !!row.companyId && row.companyId !== companyId;
 }
 
+/**
+ * Locks (FOR UPDATE) every reconciliation header whose worksheet holds a line
+ * of this entry, in any status, before the "cleared in a completed
+ * reconciliation" guard reads (U-193). complete(), refresh, ticks and undo
+ * hold the same header lock, so under READ COMMITTED an edit, void or delete
+ * waits for a Finish in flight and then sees it committed — it can no longer
+ * pass the guard on the in-progress state and replace or void lines of a
+ * reconciliation that completes under it. No status filter in the locking
+ * query: the recheck after the wait would drop a header Finish just flipped.
+ * Lock order stays entry → header → account balances, as complete() is
+ * header → account balances.
+ */
+export async function lockReconciliationsOfTransaction(tx: Tx, tenantId: string, txnId: string): Promise<void> {
+  await tx.execute(sql`
+    SELECT r.id FROM ${reconciliations} r
+    WHERE r.tenant_id = ${tenantId}
+      AND EXISTS (
+        SELECT 1 FROM ${reconciliationLines} rl
+        JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+        WHERE rl.reconciliation_id = r.id AND jl.transaction_id = ${txnId}
+      )
+    ORDER BY r.id
+    FOR UPDATE
+  `);
+}
+
 export async function voidTransaction(tenantId: string, txnId: string, reason: string, userId?: string, opts: VoidTransactionOptions = {}) {
   // Wrap in a database transaction AND lock the row up front. Without the
   // row lock, two concurrent void calls on the same transaction can both
@@ -882,6 +908,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     // lines onto the cleared journal_lines themselves, which leaves
     // the rec's cleared total stale and unreconcilable. Operator must
     // undo the rec first, then void + post a correction.
+    await lockReconciliationsOfTransaction(tx, tenantId, txnId);
     const clearedInCompleted = await tx.execute(sql`
       SELECT 1
       FROM ${reconciliationLines} rl
@@ -1313,6 +1340,7 @@ export async function deleteTransactionInTx(
       txnId, oldDate: txn.txnDate, newDate: null,
     });
 
+    await lockReconciliationsOfTransaction(tx, tenantId, txnId);
     const clearedInCompleted = await tx.execute(sql`
       SELECT 1
       FROM ${reconciliationLines} rl
@@ -1624,7 +1652,9 @@ export async function updateTransaction(
     // marked cleared inside a completed reconciliation. Allowing the edit
     // would silently decouple the reconciliation's cleared total from the
     // actual line amounts, which is an audit-trail integrity break that
-    // isn't recoverable without re-doing the reconciliation.
+    // isn't recoverable without re-doing the reconciliation. The header
+    // lock first, so a Finish in flight is seen committed (U-193).
+    await lockReconciliationsOfTransaction(tx, tenantId, txnId);
     const clearedRows = await tx.execute(sql`
       SELECT DISTINCT jl.id AS journal_line_id
       FROM ${reconciliationLines} rl

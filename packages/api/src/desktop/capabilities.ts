@@ -978,5 +978,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * unchanged. Completed reconciliations are not touched.
    */
   'line-identity-v1',
+  /**
+   * Reconcile hardening (U-193, P27 review): GET of an in-progress worksheet and complete leave out rows whose entry is no
+   * longer posted (complete deletes them first, audit droppedLineIds), so a void after ticking no longer counts. Start and
+   * PATCH statementDate answer 409 RECONCILE_STATEMENT_DATE_ORDER {latestReconciliationId, latestStatementDate} for a date on
+   * or before the latest completed reconciliation's; "latest" breaks a same-date tie by the later finish (beginning balance,
+   * undo). An edit, void or delete of an entry on a worksheet locks that reconciliation header first, so it waits for a
+   * Finish in flight and then meets the completed-reconciliation guard. PATCH of a posted charge whose entry was voided or
+   * deleted is accepted: the charge is pending again and the next complete posts it.
+   */
+  'reconcile-hardening-v1',
 ];
 

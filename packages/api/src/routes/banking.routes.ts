@@ -1173,7 +1173,9 @@ bankingRouter.post('/reconciliations', validate(startReconciliationSchema), desc
     + 'holds uncleared lines dated after the statement date. precheck: bank_feed ticks a line when an accepted bank-file row '
     + 'names it (or, for rows from before line links, its entry and the reconciled account), the entry is not voided and the bank '
     + 'posted it on or before the statement date. 409 RECONCILIATION_IN_PROGRESS {reconciliationId} when the account already has one '
-    + 'in progress (also for two starts at once). Response 201 {reconciliation}: the summary view (no lines) plus statementId. '
+    + 'in progress (also for two starts at once). 409 RECONCILE_STATEMENT_DATE_ORDER {latestReconciliationId, latestStatementDate} '
+    + 'when the statement date is on or before the latest completed reconciliation\'s (reconcile-hardening-v1); the beginning '
+    + 'balance is that reconciliation\'s ending balance (latest statement date, then latest finish). Response 201 {reconciliation}: the summary view (no lines) plus statementId. '
     + RECON_RESPONSE_DOC,
 }), async (req, res) => {
   const recon = await reconciliationService.start(
@@ -1388,7 +1390,10 @@ bankingRouter.patch('/reconciliations/:id', validate(updateReconciliationSchema)
   summary: 'Change statement info of an in-progress reconciliation (reconcile-begin-v1)',
   description: 'Any of statementEndingBalance (a liability\'s printed figure is flipped, as on start), statementDate, serviceCharge, '
     + 'interest ({amount, date, accountId} or null to remove). A charge complete already posted can\'t change: 409 '
-    + 'RECONCILE_CHARGE_POSTED {kind, transactionId} (the same value again is accepted). 409 RECONCILIATION_NOT_IN_PROGRESS '
+    + 'RECONCILE_CHARGE_POSTED {kind, transactionId} (the same value again is accepted); once that entry is voided or deleted the '
+    + 'charge is pending again and may change (sent again, even unchanged, the next complete posts it). A new statementDate on or '
+    + 'before the latest completed reconciliation\'s: 409 RECONCILE_STATEMENT_DATE_ORDER {latestReconciliationId, '
+    + 'latestStatementDate}. 409 RECONCILIATION_NOT_IN_PROGRESS '
     + '{status}. Audited. Response {reconciliation} (view=summary: no lines). ' + RECON_RESPONSE_DOC,
   query: reconciliationViewQuerySchema,
 }), async (req, res) => {
@@ -1441,7 +1446,9 @@ bankingRouter.post('/reconciliations/:id/complete', closingPasswordLimiter, lock
     + '(a deposit: debit the reconciled account, credit its account) through the normal posting path (closing date: 423 '
     + 'TB_PERIOD_LOCKED, or closingPassword in the body, a wrong one 403; the override is audited), adds their lines as cleared, '
     + 'stores the cleared balance and difference, marks it complete and writes one audit row (cleared line ids, posted charge ids). '
-    + 'A charge posted before (an undone reconciliation) is never posted again. 409 RECONCILIATION_NOT_IN_PROGRESS {status}. '
+    + 'A charge posted before (an undone reconciliation) is never posted again. Worksheet rows whose entry is no longer posted '
+    + '(voided) or whose journal line is gone are dropped first and count for nothing (audit droppedLineIds). 409 '
+    + 'RECONCILIATION_NOT_IN_PROGRESS {status}. '
     + 'Response {message, reconciliation} (summary view).',
 }), async (req, res) => {
   await reconciliationService.complete(req.tenantId, req.params['id']!, req.userId);
