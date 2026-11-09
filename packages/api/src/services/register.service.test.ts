@@ -420,4 +420,33 @@ describe('Register Service', () => {
     expect(summary.currentBalance).toBe(3000);
     expect(summary.transactionsThisPeriod).toBeGreaterThanOrEqual(1);
   });
+
+  it('every bank detail type gets the bank entry types (U-194)', async () => {
+    const bankList = ['expense', 'deposit', 'transfer', 'journal_entry'];
+    for (const [i, detailType] of ['checking', 'savings', 'cash', 'petty_cash'].entries()) {
+      const a = await accountsService.create(tenantId, { name: `Bank ${detailType}`, accountType: 'asset', detailType, accountNumber: `102${i}` });
+      const reg = await registerService.getRegister(tenantId, a.id, {});
+      expect(reg.allowedEntryTypes, detailType).toEqual(bankList);
+    }
+    expect((await registerService.getRegister(tenantId, bankAccountId, {})).allowedEntryTypes).toEqual(bankList);
+    // Other asset registers keep their lists.
+    expect(registerService.getAllowedEntryTypes('other_current_asset', 'asset')).toEqual(['journal_entry', 'deposit']);
+    expect(registerService.getAllowedEntryTypes('fixed_asset', 'asset')).toEqual(['journal_entry']);
+    expect(registerService.getAllowedEntryTypes(null, 'asset')).toEqual(['journal_entry', 'deposit']);
+  });
+
+  it('lastReconciliationDate is the latest completed reconciliation, inserted in any order (U-196)', async () => {
+    const rec = (statementDate: string, completedAt: Date | null, status = 'complete') => ({
+      tenantId, accountId: bankAccountId, statementDate, statementEndingBalance: '0', beginningBalance: '0', status, completedAt,
+    });
+    // The earlier statement inserted first (and finished later), then the
+    // later one, an in-progress later one and a same-date tie with no finish
+    // time: the latest completed statement date wins.
+    await db.insert(reconciliations).values(rec('2026-01-31', new Date('2026-03-05T10:00:00Z')));
+    await db.insert(reconciliations).values(rec('2026-02-28', new Date('2026-03-02T10:00:00Z')));
+    await db.insert(reconciliations).values(rec('2026-03-31', null, 'in_progress'));
+    await db.insert(reconciliations).values(rec('2026-02-28', null));
+    const summary = await registerService.getRegisterSummary(tenantId, bankAccountId);
+    expect(summary.lastReconciliationDate).toBe('2026-02-28');
+  });
 });
