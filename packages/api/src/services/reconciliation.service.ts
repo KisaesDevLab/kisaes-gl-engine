@@ -1283,7 +1283,11 @@ export async function applyHeaderUpdate(
       after['statementEndingBalance'] = new Decimal(oriented).toFixed(4);
     }
     if (input.statementDate !== undefined) {
-      assertStatementDateAfter(await latestCompletedOf(tx, tenantId, recon.accountId), input.statementDate);
+      // Resending the current date is never refused (rows started before
+      // the order rule may already be out of order).
+      if (isoDay(input.statementDate) !== isoDay(recon.statementDate)) {
+        assertStatementDateAfter(await latestCompletedOf(tx, tenantId, recon.accountId), input.statementDate);
+      }
       set.statementDate = input.statementDate;
       before['statementDate'] = recon.statementDate;
       after['statementDate'] = input.statementDate;

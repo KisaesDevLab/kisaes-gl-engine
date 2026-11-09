@@ -352,6 +352,22 @@ describe('reconcile hardening (U-193)', () => {
     expect((await undo(second!.id)).status).toBe(200);
   });
 
+  it('PATCH resending the current date of an older, out-of-order worksheet is accepted', async () => {
+    const [feb] = await db.insert(reconciliations).values({
+      tenantId: ctx.tenantId, accountId: ctx.checkingId, statementDate: '2026-02-28', beginningBalance: '0',
+      statementEndingBalance: '0', status: 'complete', completedAt: new Date(),
+    }).returning();
+    // Started before the order rule, on a date before the completed one.
+    const [legacy] = await db.insert(reconciliations).values({
+      tenantId: ctx.tenantId, accountId: ctx.checkingId, statementDate: '2026-01-31', beginningBalance: '0',
+      statementEndingBalance: '0', status: 'in_progress',
+    }).returning();
+    expect((await patch(legacy!.id, { statementDate: '2026-01-31', statementEndingBalance: '0' })).status).toBe(200);
+    const moved = await patch(legacy!.id, { statementDate: '2026-02-15' });
+    expect(moved.status).toBe(409);
+    expect(moved.json.error.details.latestReconciliationId).toBe(feb!.id);
+  });
+
   // ─── m2 ──────────────────────────────────────────────────────────
   it('a posted charge whose entry was voided is pending again and posted once more by the next finish', async () => {
     const r = await begin({

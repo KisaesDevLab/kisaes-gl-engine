@@ -1391,7 +1391,7 @@ bankingRouter.patch('/reconciliations/:id', validate(updateReconciliationSchema)
   description: 'Any of statementEndingBalance (a liability\'s printed figure is flipped, as on start), statementDate, serviceCharge, '
     + 'interest ({amount, date, accountId} or null to remove). A charge complete already posted can\'t change: 409 '
     + 'RECONCILE_CHARGE_POSTED {kind, transactionId} (the same value again is accepted); once that entry is voided or deleted the '
-    + 'charge is pending again and may change (sent again, even unchanged, the next complete posts it). A statementDate on or '
+    + 'charge is pending again and may change (sent again, even unchanged, the next complete posts it). A new statementDate on or '
     + 'before the latest completed reconciliation\'s: 409 RECONCILE_STATEMENT_DATE_ORDER {latestReconciliationId, '
     + 'latestStatementDate}. 409 RECONCILIATION_NOT_IN_PROGRESS '
     + '{status}. Audited. Response {reconciliation} (view=summary: no lines). ' + RECON_RESPONSE_DOC,
