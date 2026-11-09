@@ -1468,7 +1468,7 @@ bankingRouter.post('/reconciliations/:id/undo', requireReconcileAdmin, closingPa
       + '{latestReconciliationId} unless it is the most recent completed one of its account; 409 RECONCILIATION_IN_PROGRESS '
       + '{reconciliationId} when another reconciliation of the account is in progress; 409 RECONCILIATION_NOT_COMPLETE {status}. '
       + 'A statement date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without, 403 when wrong; the '
-      + 'override is audited). Sign-offs are invalidated. One audit row (action update, before {clearedLineIds}, after {undo: '
+      + 'override is audited). Sign-offs are invalidated. One audit row (action update, before {status, accountId, statementDate, clearedLineIds}, after {undo: '
       + '{mode}}). Response {message, mode}.',
   }), async (req, res) => {
     const result = await reconciliationService.undo(req.tenantId, req.params['id']!, req.userId, { mode: req.body?.mode });

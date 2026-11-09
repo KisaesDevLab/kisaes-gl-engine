@@ -3,6 +3,7 @@
 // See LICENSE and NOTICE.md for terms.
 
 import { Router, type Request } from 'express';
+import { z } from 'zod';
 import { formatDetailTypeLabel, formatIsoUS, reconMoney } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { AppError } from '../utils/errors.js';
@@ -10,6 +11,8 @@ import { requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as reportService from '../services/report.service.js';
+import { describe } from '../middleware/describe.js';
+import { buildReconciliationDiscrepancy } from '../services/reconciliation-discrepancy.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
 import { renderProofHtml, proofCsvRows, PROOF_CSV_COLUMNS } from '../services/reconciliation-proof-render.js';
@@ -1575,6 +1578,29 @@ function summaryPdfHtml(data: Awaited<ReturnType<typeof reportService.buildBankR
 // landing page, which has no reconciliation picker). Shows the professional
 // bank-to-books reconciliation: summary, supporting schedules (with aged-item
 // flags), the cleared list, subsequent activity, book-side proof, sign-off.
+// Reconciliation discrepancy (U-191): changes to an account's reconciled
+// history since each reconciliation was finished. A banking read on top of
+// the router's reports read.
+const discrepancyQuerySchema = z.object({ account_id: z.string().uuid() });
+reportsRouter.get('/reconciliation-discrepancy', requirePermission('banking', 'read'), describe({
+  summary: 'Reconciliation discrepancy report (reconcile-discrepancy-v1)',
+  description: 'Response {accountId, rows, drift}. rows: [{kind: changed | voided | deleted | added_after | reconciliation_undone, '
+    + 'reconciliationId, statementDate, transactionId, txnDate, txnType, number, payee, reconciledAmount, effect, changedAt, changedBy, '
+    + 'fields[], undoMode (reconciliation_undone only)}], newest statement first. changed / voided / deleted: audit rows on an entry '
+    + 'with a line cleared in a completed reconciliation of the account, written after it was finished; added_after: entries posted '
+    + 'on the account, dated on or before a completed statement date, entered after that reconciliation was finished and not '
+    + 'cleared; reconciliation_undone: undo audit rows. Amounts are decimal strings in the books sign of the account: reconciledAmount '
+    + 'is what the reconciliation cleared for the entry (null for added_after), effect the change to it (0.0000 for a '
+    + 'category-only edit). fields lists the names of what changed (date, payee, memo, number, status, amount, category, '
+    + 'line_description, tags), never values. drift: of the latest completed reconciliation {reconciliationId, expected, actual, '
+    + 'difference} or null. 404 for an unknown account.',
+  query: discrepancyQuerySchema,
+}), async (req, res) => {
+  const parsed = discrepancyQuerySchema.safeParse(req.query);
+  if (!parsed.success) throw AppError.badRequest('account_id is required', 'VALIDATION_ERROR');
+  res.json(await buildReconciliationDiscrepancy(req.tenantId, parsed.data.account_id));
+});
+
 reportsRouter.get('/reconciliation-detail', async (req, res) => {
   const reconciliationId = req.query['reconciliation_id'] as string | undefined;
   if (!reconciliationId) {

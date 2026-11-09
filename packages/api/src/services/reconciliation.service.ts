@@ -351,6 +351,11 @@ async function beginningBalanceDriftOf(executor: DbOrTx, tenantId: string, recon
     .orderBy(sql`${reconciliations.statementDate} DESC`, sql`${reconciliations.completedAt} DESC NULLS LAST`)
     .limit(1);
   if (!prior) return null;
+  return driftOfCompleted(executor, prior);
+}
+
+/** Drift of one completed reconciliation (null when none). */
+async function driftOfCompleted(executor: DbOrTx, prior: ReconRow) {
   const res = await executor.execute(sql`
     SELECT COALESCE(SUM(jl.debit - jl.credit), 0)::text AS net
     FROM reconciliation_lines rl
@@ -369,6 +374,23 @@ async function beginningBalanceDriftOf(executor: DbOrTx, tenantId: string, recon
     actual: actual.toFixed(4),
     difference: difference.toFixed(4),
   };
+}
+
+/**
+ * Drift of the account's latest completed reconciliation (U-191's report):
+ * its stored ending balance against its beginning balance plus the lines it
+ * cleared that are still posted. Null when none or no drift.
+ */
+export async function latestCompletedDrift(tenantId: string, accountId: string) {
+  const [latest] = await db.select().from(reconciliations)
+    .where(and(
+      eq(reconciliations.tenantId, tenantId),
+      eq(reconciliations.accountId, accountId),
+      eq(reconciliations.status, 'complete'),
+    ))
+    .orderBy(sql`${reconciliations.statementDate} DESC`, sql`${reconciliations.completedAt} DESC NULLS LAST`)
+    .limit(1);
+  return latest ? driftOfCompleted(db, latest) : null;
 }
 
 /** A pending charge dated on or before the closing date: Finish needs the password. */

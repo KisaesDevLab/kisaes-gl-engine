@@ -961,5 +961,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * posted charges stay; one audit row {undo: {mode}} with the cleared line ids before.
    */
   'reconcile-undo-v2',
+  /**
+   * GET /reports/reconciliation-discrepancy?account_id= (U-191; reports read + banking read): {accountId, rows, drift}.
+   * rows: kind changed | voided | deleted (audit rows on reconciled entries written after the reconciliation was
+   * finished), added_after (entries dated inside a reconciled period, entered after it was finished, not cleared),
+   * reconciliation_undone (undo audit rows, with undoMode); reconciliationId, statementDate, transactionId, txnDate,
+   * txnType, number, payee, reconciledAmount, effect (strings), changedAt, changedBy, fields[] (names only, never values).
+   * drift: the latest completed reconciliation's {reconciliationId, expected, actual, difference} | null.
+   */
+  'reconcile-discrepancy-v1',
+  /**
+   * Editing an entry through the full-replace path keeps in-progress reconciliation ticks and bank-file links (U-192):
+   * each old line referenced by an in-progress worksheet row or bank_feed_items.matched_journal_line_id moves to the single
+   * new line on the same account and side. A worksheet row stays ticked only if the amount is unchanged (else unticked,
+   * audited); with no single match it is removed (refresh adds the new line). A feed row moves only if the amount is
+   * unchanged. Completed reconciliations are not touched.
+   */
+  'line-identity-v1',
 ];
 

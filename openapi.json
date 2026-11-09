@@ -17907,7 +17907,7 @@
     },
     "/api/v1/banking/reconciliations/{id}/undo": {
       "post": {
-        "description": "Owner only (403 RECONCILE_ADMIN_REQUIRED). mode: clear_checks (default; reopen with every line unticked), keep_checks (reopen with the ticks as they were at finish) or discard (reopen and discard in one step). Posted service charge and interest entries stay in the books in every mode and are not posted again. 409 RECONCILIATION_NOT_LATEST {latestReconciliationId} unless it is the most recent completed one of its account; 409 RECONCILIATION_IN_PROGRESS {reconciliationId} when another reconciliation of the account is in progress; 409 RECONCILIATION_NOT_COMPLETE {status}. A statement date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without, 403 when wrong; the override is audited). Sign-offs are invalidated. One audit row (action update, before {clearedLineIds}, after {undo: {mode}}). Response {message, mode}.",
+        "description": "Owner only (403 RECONCILE_ADMIN_REQUIRED). mode: clear_checks (default; reopen with every line unticked), keep_checks (reopen with the ticks as they were at finish) or discard (reopen and discard in one step). Posted service charge and interest entries stay in the books in every mode and are not posted again. 409 RECONCILIATION_NOT_LATEST {latestReconciliationId} unless it is the most recent completed one of its account; 409 RECONCILIATION_IN_PROGRESS {reconciliationId} when another reconciliation of the account is in progress; 409 RECONCILIATION_NOT_COMPLETE {status}. A statement date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without, 403 when wrong; the override is audited). Sign-offs are invalidated. One audit row (action update, before {status, accountId, statementDate, clearedLineIds}, after {undo: {mode}}). Response {message, mode}.",
         "operationId": "post_api_v1_banking_reconciliations_by_id_undo",
         "parameters": [
           {
@@ -58936,6 +58936,40 @@
             "ApiKeyAuth": []
           }
         ],
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/reconciliation-discrepancy": {
+      "get": {
+        "description": "Response {accountId, rows, drift}. rows: [{kind: changed | voided | deleted | added_after | reconciliation_undone, reconciliationId, statementDate, transactionId, txnDate, txnType, number, payee, reconciledAmount, effect, changedAt, changedBy, fields[], undoMode (reconciliation_undone only)}], newest statement first. changed / voided / deleted: audit rows on an entry with a line cleared in a completed reconciliation of the account, written after it was finished; added_after: entries posted on the account, dated on or before a completed statement date, entered after that reconciliation was finished and not cleared; reconciliation_undone: undo audit rows. Amounts are decimal strings in the books sign of the account: reconciledAmount is what the reconciliation cleared for the entry (null for added_after), effect the change to it (0.0000 for a category-only edit). fields lists the names of what changed (date, payee, memo, number, status, amount, category, line_description, tags), never values. drift: of the latest completed reconciliation {reconciliationId, expected, actual, difference} or null. 404 for an unknown account.",
+        "operationId": "get_api_v1_reports_reconciliation_discrepancy",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Reconciliation discrepancy report (reconcile-discrepancy-v1)",
         "tags": [
           "reports"
         ]

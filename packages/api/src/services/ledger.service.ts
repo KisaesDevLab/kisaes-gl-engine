@@ -23,6 +23,7 @@ import * as salesTaxRows from './sales-tax.service.js';
 import * as costing from './inventory-costing.service.js';
 import { resolveLineUnits } from './unit-lines.service.js';
 import { reopenDraftsOfDeletedTransaction } from './document-draft-reopen.service.js';
+import { carryLineReferences } from './line-identity.service.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -1851,6 +1852,9 @@ export async function updateTransaction(
     }));
 
     const lines = await tx.insert(journalLines).values(lineValues).returning();
+    // U-192: in-progress worksheet rows and bank-file rows that named a
+    // deleted line follow it to its successor (same account and side).
+    await carryLineReferences(tx, tenantId, txnId, originalLines, lines, userId);
 
     await syncTransactionTagsFromLines(tx, tenantId, companyId ?? existing.companyId ?? null, txnId, lineValues, headerOnlyTags);
     // U-147: the edited document's tax rows (S3: every edit path).
