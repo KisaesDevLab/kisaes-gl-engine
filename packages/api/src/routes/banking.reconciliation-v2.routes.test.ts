@@ -130,7 +130,7 @@ beforeEach(async () => {
     accountantToken: await seedUser(t!.id, 'accountant'),
   };
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' })); // as app.ts
   app.use('/api/v1/banking', bankingRouter);
   app.use(errorHandler);
   await new Promise<void>((r) => { server = app.listen(0, () => { port = (server!.address() as AddressInfo).port; r(); }); });

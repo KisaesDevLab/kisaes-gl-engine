@@ -76,22 +76,22 @@ function continuityOf(
 // ─── Shared guards ──────────────────────────────────────────────
 
 /** 409 for any change to a reconciliation that is not in progress (U-188). */
-function notInProgress(status: string | null): AppError {
+function notInProgress(status: string | null, completeMessage = 'Reconciliation is already complete'): AppError {
   return AppError.conflict(
-    status === 'complete' ? 'Reconciliation is already complete' : 'Reconciliation is not in progress',
+    status === 'complete' ? completeMessage : 'Reconciliation is not in progress',
     'RECONCILIATION_NOT_IN_PROGRESS',
     { status },
   );
 }
 
 /** Locks the header FOR UPDATE and requires status in_progress. */
-async function lockInProgress(tx: Tx, tenantId: string, reconciliationId: string): Promise<ReconRow> {
+async function lockInProgress(tx: Tx, tenantId: string, reconciliationId: string, completeMessage?: string): Promise<ReconRow> {
   const [recon] = await tx.select().from(reconciliations)
     .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
     .for('update')
     .limit(1);
   if (!recon) throw AppError.notFound('Reconciliation not found');
-  if (recon.status !== 'in_progress') throw notInProgress(recon.status);
+  if (recon.status !== 'in_progress') throw notInProgress(recon.status, completeMessage);
   return recon;
 }
 
@@ -1237,7 +1237,8 @@ export async function applyHeaderUpdate(
 // transaction (U-188).
 export async function cancel(tenantId: string, reconciliationId: string, userId?: string) {
   await db.transaction(async (tx) => {
-    const recon = await lockInProgress(tx, tenantId, reconciliationId);
+    const recon = await lockInProgress(tx, tenantId, reconciliationId,
+      'A completed reconciliation cannot be canceled — use Undo instead.');
 
     // Reset statement lines this reconciliation had matched (same as undo).
     await tx.execute(sql`

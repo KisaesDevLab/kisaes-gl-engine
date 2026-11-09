@@ -17168,6 +17168,7 @@
         ]
       },
       "post": {
+        "description": "Manual (accountId, statementDate, statementEndingBalance) or from a stored statement (statementId). A liability's ending balance is typed as printed (positive = owed) and stored flipped. serviceCharge / interest {amount > 0 (2 places), date, accountId}: counted in the cleared balance at once, posted by complete; the account must be in the company, active and not the reconciled account (400 RECONCILE_CHARGE_ACCOUNT_INVALID {kind, reason}). includeLaterLines: the worksheet also holds uncleared lines dated after the statement date. precheck: bank_feed ticks a line when an accepted bank-file row names it (or, for rows from before line links, its entry and the reconciled account), the entry is not voided and the bank posted it on or before the statement date. 409 RECONCILIATION_IN_PROGRESS {reconciliationId} when the account already has one in progress (also for two starts at once). Response 201 {reconciliation}: the summary view (no lines) plus statementId. The reconciliation: its stored columns (beginningBalance, statementEndingBalance as decimal strings in the account's books sign, a card or other liability negative when owed; serviceChargeAmount/Date/AccountId/TxnId, interestAmount/Date/AccountId/TxnId, includeLaterLines) plus clearedBalanceExact and differenceExact (decimal strings, 4 places; clearedBalance and difference are the same figures as JSON numbers, kept for older clients), clearedDeposits and clearedPayments {count, total} (ticked lines with amount > 0, and the rest; totals in books sign; pending charges included), pending {serviceCharge, interest} ({amount, date, accountId} not yet posted, else null; they count in the cleared balance: cleared = beginningBalance + interest - serviceCharge + the ticked line amounts), beginningBalanceDrift {reconciliationId, expected, actual, difference} or null (the prior completed reconciliation's stored ending balance against its beginning balance plus the lines it cleared that are still posted), postingLocked (a pending charge is dated on or before the closing date: complete needs closingPassword), statement, continuityWarning (numbers). The full view adds lines[]: journal_line_id, is_cleared, txn_date, txn_type, txn_number, check_number, contact_name, debit, credit, amount (debit - credit, string), afterStatementDate, fromBankFeed (an accepted bank-file row stands behind the line), source, sourceId, likely_duplicate, duplicate_of. view=summary leaves lines out.",
         "operationId": "post_api_v1_banking_reconciliations",
         "requestBody": {
           "content": {
@@ -17179,12 +17180,81 @@
                     "format": "uuid",
                     "type": "string"
                   },
+                  "includeLaterLines": {
+                    "type": "boolean"
+                  },
+                  "interest": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "amount": {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,2})?$",
+                            "type": "string"
+                          },
+                          "date": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "amount",
+                          "date",
+                          "accountId"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "precheck": {
+                    "enum": [
+                      "bank_feed"
+                    ],
+                    "type": "string"
+                  },
+                  "serviceCharge": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "amount": {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,2})?$",
+                            "type": "string"
+                          },
+                          "date": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "amount",
+                          "date",
+                          "accountId"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "statementDate": {
                     "minLength": 1,
                     "type": "string"
                   },
                   "statementEndingBalance": {
-                    "minLength": 1,
+                    "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
                     "type": "string"
                   },
                   "statementId": {
@@ -17211,6 +17281,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Start a reconciliation (reconcile-exact-v1, reconcile-begin-v1)",
         "tags": [
           "banking"
         ]
@@ -17218,6 +17289,7 @@
     },
     "/api/v1/banking/reconciliations/{id}": {
       "get": {
+        "description": "Response {reconciliation}. The reconciliation: its stored columns (beginningBalance, statementEndingBalance as decimal strings in the account's books sign, a card or other liability negative when owed; serviceChargeAmount/Date/AccountId/TxnId, interestAmount/Date/AccountId/TxnId, includeLaterLines) plus clearedBalanceExact and differenceExact (decimal strings, 4 places; clearedBalance and difference are the same figures as JSON numbers, kept for older clients), clearedDeposits and clearedPayments {count, total} (ticked lines with amount > 0, and the rest; totals in books sign; pending charges included), pending {serviceCharge, interest} ({amount, date, accountId} not yet posted, else null; they count in the cleared balance: cleared = beginningBalance + interest - serviceCharge + the ticked line amounts), beginningBalanceDrift {reconciliationId, expected, actual, difference} or null (the prior completed reconciliation's stored ending balance against its beginning balance plus the lines it cleared that are still posted), postingLocked (a pending charge is dated on or before the closing date: complete needs closingPassword), statement, continuityWarning (numbers). The full view adds lines[]: journal_line_id, is_cleared, txn_date, txn_type, txn_number, check_number, contact_name, debit, credit, amount (debit - credit, string), afterStatementDate, fromBankFeed (an accepted bank-file row stands behind the line), source, sourceId, likely_duplicate, duplicate_of. view=summary leaves lines out.",
         "operationId": "get_api_v1_banking_reconciliations_by_id",
         "parameters": [
           {
@@ -17225,6 +17297,18 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "summary"
+              ],
               "type": "string"
             }
           }
@@ -17242,11 +17326,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "A reconciliation worksheet (reconcile-exact-v1)",
         "tags": [
           "banking"
         ]
       },
       "patch": {
+        "description": "Any of statementEndingBalance (a liability's printed figure is flipped, as on start), statementDate, serviceCharge, interest ({amount, date, accountId} or null to remove). A charge complete already posted can't change: 409 RECONCILE_CHARGE_POSTED {kind, transactionId} (the same value again is accepted). 409 RECONCILIATION_NOT_IN_PROGRESS {status}. Audited. Response {reconciliation} (view=summary: no lines). The reconciliation: its stored columns (beginningBalance, statementEndingBalance as decimal strings in the account's books sign, a card or other liability negative when owed; serviceChargeAmount/Date/AccountId/TxnId, interestAmount/Date/AccountId/TxnId, includeLaterLines) plus clearedBalanceExact and differenceExact (decimal strings, 4 places; clearedBalance and difference are the same figures as JSON numbers, kept for older clients), clearedDeposits and clearedPayments {count, total} (ticked lines with amount > 0, and the rest; totals in books sign; pending charges included), pending {serviceCharge, interest} ({amount, date, accountId} not yet posted, else null; they count in the cleared balance: cleared = beginningBalance + interest - serviceCharge + the ticked line amounts), beginningBalanceDrift {reconciliationId, expected, actual, difference} or null (the prior completed reconciliation's stored ending balance against its beginning balance plus the lines it cleared that are still posted), postingLocked (a pending charge is dated on or before the closing date: complete needs closingPassword), statement, continuityWarning (numbers). The full view adds lines[]: journal_line_id, is_cleared, txn_date, txn_type, txn_number, check_number, contact_name, debit, credit, amount (debit - credit, string), afterStatementDate, fromBankFeed (an accepted bank-file row stands behind the line), source, sourceId, likely_duplicate, duplicate_of. view=summary leaves lines out.",
         "operationId": "patch_api_v1_banking_reconciliations_by_id",
         "parameters": [
           {
@@ -17254,6 +17340,18 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "summary"
+              ],
               "type": "string"
             }
           }
@@ -17264,14 +17362,75 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "interest": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "amount": {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,2})?$",
+                            "type": "string"
+                          },
+                          "date": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "amount",
+                          "date",
+                          "accountId"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "serviceCharge": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "amount": {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,2})?$",
+                            "type": "string"
+                          },
+                          "date": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "amount",
+                          "date",
+                          "accountId"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "statementDate": {
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
                   "statementEndingBalance": {
-                    "minLength": 1,
+                    "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
                     "type": "string"
                   }
                 },
-                "required": [
-                  "statementEndingBalance"
-                ],
                 "type": "object"
               }
             }
@@ -17291,6 +17450,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Change statement info of an in-progress reconciliation (reconcile-begin-v1)",
         "tags": [
           "banking"
         ]
@@ -17329,6 +17489,7 @@
     },
     "/api/v1/banking/reconciliations/{id}/cancel": {
       "post": {
+        "description": "Deletes the worksheet (nothing is posted), resets statement-line matches and unlinks its statement; audited in the same transaction. 409 RECONCILIATION_NOT_IN_PROGRESS {status} for a completed one (use undo). Response {message}.",
         "operationId": "post_api_v1_banking_reconciliations_by_id_cancel",
         "parameters": [
           {
@@ -17353,6 +17514,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Discard an in-progress reconciliation",
         "tags": [
           "banking"
         ]
@@ -17360,6 +17522,7 @@
     },
     "/api/v1/banking/reconciliations/{id}/complete": {
       "post": {
+        "description": "Only at a difference of exactly 0 (4 places): else 400 RECONCILE_DIFFERENCE_NOT_ZERO {difference}. In one transaction posts the pending service charge (an expense: debit its account, credit the reconciled account) and interest (a deposit: debit the reconciled account, credit its account) through the normal posting path (closing date: 423 TB_PERIOD_LOCKED, or closingPassword in the body, a wrong one 403; the override is audited), adds their lines as cleared, stores the cleared balance and difference, marks it complete and writes one audit row (cleared line ids, posted charge ids). A charge posted before (an undone reconciliation) is never posted again. 409 RECONCILIATION_NOT_IN_PROGRESS {status}. Response {message, reconciliation} (summary view).",
         "operationId": "post_api_v1_banking_reconciliations_by_id_complete",
         "parameters": [
           {
@@ -17384,6 +17547,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Finish a reconciliation (reconcile-exact-v1, reconcile-begin-v1)",
         "tags": [
           "banking"
         ]
@@ -17391,6 +17555,7 @@
     },
     "/api/v1/banking/reconciliations/{id}/lines": {
       "put": {
+        "description": "Body {lines: [{journalLineId, isCleared}]}, up to 10,000; the last entry for a line wins, lines not on the worksheet are ignored. Serialized with other ticks and complete by a row lock. 409 RECONCILIATION_NOT_IN_PROGRESS {status} once the reconciliation was completed or discarded. Response {reconciliation}; view=summary leaves the lines out. The reconciliation: its stored columns (beginningBalance, statementEndingBalance as decimal strings in the account's books sign, a card or other liability negative when owed; serviceChargeAmount/Date/AccountId/TxnId, interestAmount/Date/AccountId/TxnId, includeLaterLines) plus clearedBalanceExact and differenceExact (decimal strings, 4 places; clearedBalance and difference are the same figures as JSON numbers, kept for older clients), clearedDeposits and clearedPayments {count, total} (ticked lines with amount > 0, and the rest; totals in books sign; pending charges included), pending {serviceCharge, interest} ({amount, date, accountId} not yet posted, else null; they count in the cleared balance: cleared = beginningBalance + interest - serviceCharge + the ticked line amounts), beginningBalanceDrift {reconciliationId, expected, actual, difference} or null (the prior completed reconciliation's stored ending balance against its beginning balance plus the lines it cleared that are still posted), postingLocked (a pending charge is dated on or before the closing date: complete needs closingPassword), statement, continuityWarning (numbers). The full view adds lines[]: journal_line_id, is_cleared, txn_date, txn_type, txn_number, check_number, contact_name, debit, credit, amount (debit - credit, string), afterStatementDate, fromBankFeed (an accepted bank-file row stands behind the line), source, sourceId, likely_duplicate, duplicate_of. view=summary leaves lines out.",
         "operationId": "put_api_v1_banking_reconciliations_by_id_lines",
         "parameters": [
           {
@@ -17398,6 +17563,18 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "summary"
+              ],
               "type": "string"
             }
           }
@@ -17426,6 +17603,7 @@
                       ],
                       "type": "object"
                     },
+                    "maxItems": 10000,
                     "type": "array"
                   }
                 },
@@ -17451,6 +17629,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Tick and untick worksheet lines (reconcile-exact-v1)",
         "tags": [
           "banking"
         ]
@@ -17520,6 +17699,7 @@
     },
     "/api/v1/banking/reconciliations/{id}/refresh": {
       "post": {
+        "description": "Adds eligible lines not on the worksheet (posted, not cleared in a completed reconciliation, on or before the statement date unless includeLaterLines), ticking bank-file lines when precheck is bank_feed (the start rule); removes rows whose entry is no longer posted, rows whose journal line no longer exists, and, without later lines, unticked rows dated after the statement date. includeLaterLines, when sent, is stored. Response {added, removed, prechecked}. 409 RECONCILIATION_NOT_IN_PROGRESS {status}.",
         "operationId": "post_api_v1_banking_reconciliations_by_id_refresh",
         "parameters": [
           {
@@ -17531,6 +17711,28 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "includeLaterLines": {
+                    "type": "boolean"
+                  },
+                  "precheck": {
+                    "enum": [
+                      "bank_feed"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -17544,6 +17746,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Sync an in-progress worksheet with the books (reconcile-begin-v1)",
         "tags": [
           "banking"
         ]
@@ -17704,6 +17907,7 @@
     },
     "/api/v1/banking/reconciliations/{id}/undo": {
       "post": {
+        "description": "Owner only (403 RECONCILE_ADMIN_REQUIRED). mode: clear_checks (default; reopen with every line unticked), keep_checks (reopen with the ticks as they were at finish) or discard (reopen and discard in one step). Posted service charge and interest entries stay in the books in every mode and are not posted again. 409 RECONCILIATION_NOT_LATEST {latestReconciliationId} unless it is the most recent completed one of its account; 409 RECONCILIATION_IN_PROGRESS {reconciliationId} when another reconciliation of the account is in progress; 409 RECONCILIATION_NOT_COMPLETE {status}. A statement date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without, 403 when wrong; the override is audited). Sign-offs are invalidated. One audit row (action update, before {clearedLineIds}, after {undo: {mode}}). Response {message, mode}.",
         "operationId": "post_api_v1_banking_reconciliations_by_id_undo",
         "parameters": [
           {
@@ -17715,6 +17919,27 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "clear_checks",
+                      "keep_checks",
+                      "discard"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -17728,6 +17953,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Undo the latest completed reconciliation (reconcile-undo-v2)",
         "tags": [
           "banking"
         ]
