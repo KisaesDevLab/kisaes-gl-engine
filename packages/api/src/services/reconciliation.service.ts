@@ -1029,7 +1029,8 @@ export async function complete(tenantId: string, reconciliationId: string, userI
  * (keep_checks keeps their txn ids, so the next finish never re-posts them).
  * A statement date on or before the closing date needs the closing-date
  * password (or the staff override where allowed); the override is audited.
- * One audit row: action update, before {clearedLineIds}, after {undo: {mode}}.
+ * One audit row: action update, before {status, accountId, statementDate,
+ * clearedLineIds}, after {undo: {mode}}.
  * Callers gate it to the company owner (route).
  */
 export async function undo(
@@ -1128,7 +1129,7 @@ export async function undo(
 
       await auditLog(
         tenantId, 'update', 'reconciliation', reconciliationId,
-        { status: 'complete', clearedLineIds },
+        { status: 'complete', accountId: recon.accountId, statementDate: recon.statementDate, clearedLineIds },
         { undo: { mode } },
         userId, tx,
       );
