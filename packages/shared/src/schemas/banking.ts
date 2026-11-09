@@ -145,19 +145,54 @@ export const bulkSetContactSchema = z.object({
   contactId: z.string().uuid().nullable(),
 });
 
+// Reconciliation amounts (U-188/U-189): plain decimal strings. A statement
+// balance may be negative and may carry the 4 places the engine stores (a
+// client echoing a stored balance back); a charge is positive, at most 2
+// places.
+export const reconcileBalanceString = z.string().regex(/^-?\d{1,15}(\.\d{1,4})?$/, 'Amount must be a decimal number');
+export const reconcileChargeAmount = z.string()
+  .regex(/^\d{1,15}(\.\d{1,2})?$/, 'Amount must be a positive number with at most 2 decimals')
+  .refine((v) => /[1-9]/.test(v), 'Amount must be greater than zero');
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD');
+
+// A service charge or interest entered at Begin (U-189, reconcile-begin-v1):
+// counted in the cleared balance at once, posted by Finish. null removes it.
+export const reconcileChargeSchema = z.object({
+  amount: reconcileChargeAmount,
+  date: isoDate,
+  accountId: z.string().uuid(),
+});
+
 // Start a reconciliation either manually (accountId + statementDate +
 // statementEndingBalance) or from a stored bank statement (statementId —
 // the server derives account, statement date, and ending balance from the
 // bank_statements row and links the reconciliation back to it).
+// serviceCharge / interest / includeLaterLines / precheck: U-189.
 export const startReconciliationSchema = z.object({
   accountId: z.string().uuid().optional(),
   statementDate: z.string().min(1).optional(),
-  statementEndingBalance: z.string().min(1).optional(),
+  statementEndingBalance: reconcileBalanceString.optional(),
   statementId: z.string().uuid().optional(),
+  serviceCharge: reconcileChargeSchema.nullable().optional(),
+  interest: reconcileChargeSchema.nullable().optional(),
+  includeLaterLines: z.boolean().optional(),
+  precheck: z.enum(['bank_feed']).optional(),
 }).refine(
   (d) => !!d.statementId || (!!d.accountId && !!d.statementDate && !!d.statementEndingBalance),
   { message: 'Provide statementId, or accountId + statementDate + statementEndingBalance' },
 );
+
+// POST /banking/reconciliations/:id/refresh (U-189): optional body.
+export const refreshReconciliationSchema = z.object({
+  includeLaterLines: z.boolean().optional(),
+  precheck: z.enum(['bank_feed']).optional(),
+});
+
+// POST /banking/reconciliations/:id/undo (U-190). closingPassword is taken
+// out of the body by the lock-context middleware before validation.
+export const undoReconciliationSchema = z.object({
+  mode: z.enum(['clear_checks', 'keep_checks', 'discard']).optional(),
+});
 
 // GET /banking/statements list filters (query params).
 export const bankStatementFiltersSchema = z.object({
@@ -170,15 +205,30 @@ export const updateReconciliationLinesSchema = z.object({
   lines: z.array(z.object({
     journalLineId: z.string().uuid(),
     isCleared: z.boolean(),
-  })),
+  })).max(10000),
+});
+
+// PUT /banking/reconciliations/:id/lines?view=summary (U-188): the header
+// and totals without lines.
+export const reconciliationViewQuerySchema = z.object({
+  view: z.enum(['full', 'summary']).optional(),
 });
 
 // PATCH /banking/reconciliations/:id — edit header fields on an in-progress
-// reconciliation. Currently just the statement ending balance (the figure the
-// worksheet ties out against); enforced server-side to in_progress only.
+// reconciliation: the statement ending balance (the figure the worksheet
+// ties out against), and since U-189 the statement date and the service
+// charge / interest (null removes one). Enforced server-side to in_progress
+// only; a charge already posted can't change (409 RECONCILE_CHARGE_POSTED).
 export const updateReconciliationSchema = z.object({
-  statementEndingBalance: z.string().min(1),
-});
+  statementEndingBalance: reconcileBalanceString.optional(),
+  statementDate: isoDate.optional(),
+  serviceCharge: reconcileChargeSchema.nullable().optional(),
+  interest: reconcileChargeSchema.nullable().optional(),
+}).refine(
+  (d) => d.statementEndingBalance !== undefined || d.statementDate !== undefined
+    || d.serviceCharge !== undefined || d.interest !== undefined,
+  { message: 'Provide at least one of statementEndingBalance, statementDate, serviceCharge, interest' },
+);
 
 // Statement Match Engine wave 1: confirm a suggested (or manually chosen)
 // worksheet journal line for a statement line.

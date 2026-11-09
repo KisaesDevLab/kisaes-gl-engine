@@ -933,5 +933,33 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * a vendor the rules are unchanged. Vendorless checks serialize on a company-wide advisory lock.
    */
   'document-duplicates-no-vendor-v1',
+  /**
+   * Exact reconciliation (U-188): GET /banking/reconciliations/:id and every route returning a reconciliation add
+   * clearedBalanceExact and differenceExact (decimal strings; clearedBalance / difference stay JSON numbers for older
+   * clients), clearedDeposits / clearedPayments {count, total} and per line amount (debit - credit) and
+   * afterStatementDate. complete only at a difference of exactly 0 (400 RECONCILE_DIFFERENCE_NOT_ZERO {difference}) and
+   * stores the real difference. PUT lines / PATCH / refresh / complete / cancel on a reconciliation not in progress: 409
+   * RECONCILIATION_NOT_IN_PROGRESS {status}. PATCH flips a liability's statement balance like start. PUT lines takes up
+   * to 10,000 lines in two statements; ?view=summary (GET, PATCH, PUT lines) leaves the lines out. One in-progress
+   * reconciliation per account (unique index, migration 0272): start answers 409 RECONCILIATION_IN_PROGRESS
+   * {reconciliationId}. complete and cancel are audited in their transaction.
+   */
+  'reconcile-exact-v1',
+  /**
+   * Begin charges, later lines, bank-file pre-check, drift (U-189, migration 0271): start and PATCH take serviceCharge /
+   * interest {amount, date, accountId} (or null), counted in the cleared balance until complete posts them (an expense /
+   * a deposit, closing date enforced, closingPassword on complete); pending {serviceCharge, interest}; PATCH of a posted
+   * charge 409 RECONCILE_CHARGE_POSTED {kind}; PATCH takes statementDate. start / refresh take includeLaterLines and
+   * precheck: 'bank_feed'. Lines carry fromBankFeed, source, sourceId. beginningBalanceDrift {reconciliationId, expected,
+   * actual, difference} | null and postingLocked. refresh removes rows whose journal line is gone.
+   */
+  'reconcile-begin-v1',
+  /**
+   * POST /banking/reconciliations/:id/undo {mode?: clear_checks | keep_checks | discard, closingPassword?} (U-190):
+   * owner only (403 RECONCILE_ADMIN_REQUIRED); 409 RECONCILIATION_NOT_LATEST, RECONCILIATION_IN_PROGRESS,
+   * RECONCILIATION_NOT_COMPLETE; closed period needs the closing password (423 TB_PERIOD_LOCKED), override audited;
+   * posted charges stay; one audit row {undo: {mode}} with the cleared line ids before.
+   */
+  'reconcile-undo-v2',
 ];
 

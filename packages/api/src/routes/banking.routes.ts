@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   bankFeedFiltersSchema, categorizeSchema, matchSchema, assignSchema, bulkAssignSchema, bulkSetContactSchema,
   startReconciliationSchema, updateReconciliationLinesSchema, updateReconciliationSchema, bankImportSchema,
+  refreshReconciliationSchema, undoReconciliationSchema, reconciliationViewQuerySchema,
   bulkApproveSchema, bulkCategorizeSchema, bulkExcludeSchema, bulkRecleanseSchema,
   bulkPostToSuspenseSchema,
   bulkReprocessRulesSchema,
@@ -1147,10 +1148,44 @@ bankingRouter.get('/reconciliations', async (req, res) => {
   res.json({ reconciliations: history.map((r) => ({ ...r, signoffs: signoffs.get(r.id) })) });
 });
 
-bankingRouter.post('/reconciliations', validate(startReconciliationSchema), async (req, res) => {
+// Worksheet response, shared by the reconciliation routes below (U-188,
+// U-189). Documented once here; each route links to it.
+const RECON_RESPONSE_DOC = 'The reconciliation: its stored columns (beginningBalance, statementEndingBalance as decimal strings '
+  + 'in the account\'s books sign, a card or other liability negative when owed; serviceChargeAmount/Date/AccountId/TxnId, '
+  + 'interestAmount/Date/AccountId/TxnId, includeLaterLines) plus clearedBalanceExact and differenceExact (decimal strings, 4 places; '
+  + 'clearedBalance and difference are the same figures as JSON numbers, kept for older clients), clearedDeposits and '
+  + 'clearedPayments {count, total} (ticked lines with amount > 0, and the rest; totals in books sign; pending charges included), '
+  + 'pending {serviceCharge, interest} ({amount, date, accountId} not yet posted, else null; they count in the cleared balance: '
+  + 'cleared = beginningBalance + interest - serviceCharge + the ticked line amounts), beginningBalanceDrift {reconciliationId, '
+  + 'expected, actual, difference} or null (the prior completed reconciliation\'s stored ending balance against its beginning '
+  + 'balance plus the lines it cleared that are still posted), postingLocked (a pending charge is dated on or before the '
+  + 'closing date: complete needs closingPassword), statement, continuityWarning (numbers). The full view adds lines[]: '
+  + 'journal_line_id, is_cleared, txn_date, txn_type, txn_number, check_number, contact_name, debit, credit, amount (debit - credit, '
+  + 'string), afterStatementDate, fromBankFeed (an accepted bank-file row stands behind the line), source, sourceId, '
+  + 'likely_duplicate, duplicate_of. view=summary leaves lines out.';
+
+bankingRouter.post('/reconciliations', validate(startReconciliationSchema), describe({
+  summary: 'Start a reconciliation (reconcile-exact-v1, reconcile-begin-v1)',
+  description: 'Manual (accountId, statementDate, statementEndingBalance) or from a stored statement (statementId). A liability\'s '
+    + 'ending balance is typed as printed (positive = owed) and stored flipped. serviceCharge / interest {amount > 0 (2 places), '
+    + 'date, accountId}: counted in the cleared balance at once, posted by complete; the account must be in the company, active '
+    + 'and not the reconciled account (400 RECONCILE_CHARGE_ACCOUNT_INVALID {kind, reason}). includeLaterLines: the worksheet also '
+    + 'holds uncleared lines dated after the statement date. precheck: bank_feed ticks a line when an accepted bank-file row '
+    + 'names it (or, for rows from before line links, its entry and the reconciled account), the entry is not voided and the bank '
+    + 'posted it on or before the statement date. 409 RECONCILIATION_IN_PROGRESS {reconciliationId} when the account already has one '
+    + 'in progress (also for two starts at once). Response 201 {reconciliation}: the summary view (no lines) plus statementId. '
+    + RECON_RESPONSE_DOC,
+}), async (req, res) => {
   const recon = await reconciliationService.start(
     req.tenantId, req.body.accountId, req.body.statementDate, req.body.statementEndingBalance,
-    { statementId: req.body.statementId },
+    {
+      statementId: req.body.statementId,
+      serviceCharge: req.body.serviceCharge,
+      interest: req.body.interest,
+      includeLaterLines: req.body.includeLaterLines,
+      precheck: req.body.precheck,
+      userId: req.userId,
+    },
   );
   res.status(201).json({ reconciliation: recon });
 });
@@ -1337,40 +1372,105 @@ bankingRouter.delete('/reconciliations/:id/signoffs/:role', async (req, res) => 
   res.json({ signoffs });
 });
 
-bankingRouter.get('/reconciliations/:id', async (req, res) => {
-  const recon = await reconciliationService.getReconciliation(req.tenantId, req.params['id']!);
+bankingRouter.get('/reconciliations/:id', describe({
+  summary: 'A reconciliation worksheet (reconcile-exact-v1)',
+  description: 'Response {reconciliation}. ' + RECON_RESPONSE_DOC,
+  query: reconciliationViewQuerySchema,
+}), async (req, res) => {
+  const { view } = reconciliationViewQuerySchema.parse(req.query);
+  const recon = await reconciliationService.getReconciliationView(req.tenantId, req.params['id']!, view);
   res.json({ reconciliation: recon });
 });
 
-// Edit header fields (statement ending balance) on an in-progress rec.
-bankingRouter.patch('/reconciliations/:id', validate(updateReconciliationSchema), async (req, res) => {
-  const recon = await reconciliationService.updateHeader(req.tenantId, req.params['id']!, req.body, req.userId);
+// Edit header fields (statement ending balance, date, Begin charges) on an
+// in-progress rec.
+bankingRouter.patch('/reconciliations/:id', validate(updateReconciliationSchema), describe({
+  summary: 'Change statement info of an in-progress reconciliation (reconcile-begin-v1)',
+  description: 'Any of statementEndingBalance (a liability\'s printed figure is flipped, as on start), statementDate, serviceCharge, '
+    + 'interest ({amount, date, accountId} or null to remove). A charge complete already posted can\'t change: 409 '
+    + 'RECONCILE_CHARGE_POSTED {kind, transactionId} (the same value again is accepted). 409 RECONCILIATION_NOT_IN_PROGRESS '
+    + '{status}. Audited. Response {reconciliation} (view=summary: no lines). ' + RECON_RESPONSE_DOC,
+  query: reconciliationViewQuerySchema,
+}), async (req, res) => {
+  const { view } = reconciliationViewQuerySchema.parse(req.query);
+  await reconciliationService.applyHeaderUpdate(req.tenantId, req.params['id']!, req.body, req.userId);
+  const recon = await reconciliationService.getReconciliationView(req.tenantId, req.params['id']!, view);
   res.json({ reconciliation: recon });
 });
 
-bankingRouter.put('/reconciliations/:id/lines', validate(updateReconciliationLinesSchema), async (req, res) => {
-  const recon = await reconciliationService.updateLines(req.tenantId, req.params['id']!, req.body.lines);
+bankingRouter.put('/reconciliations/:id/lines', validate(updateReconciliationLinesSchema), describe({
+  summary: 'Tick and untick worksheet lines (reconcile-exact-v1)',
+  description: 'Body {lines: [{journalLineId, isCleared}]}, up to 10,000; the last entry for a line wins, lines not on the worksheet '
+    + 'are ignored. Serialized with other ticks and complete by a row lock. 409 RECONCILIATION_NOT_IN_PROGRESS {status} once the '
+    + 'reconciliation was completed or discarded. Response {reconciliation}; view=summary leaves the lines out. ' + RECON_RESPONSE_DOC,
+  query: reconciliationViewQuerySchema,
+}), async (req, res) => {
+  const { view } = reconciliationViewQuerySchema.parse(req.query);
+  await reconciliationService.applyLineUpdates(req.tenantId, req.params['id']!, req.body.lines);
+  const recon = await reconciliationService.getReconciliationView(req.tenantId, req.params['id']!, view);
   res.json({ reconciliation: recon });
 });
 
 // Cancel (discard) an in-progress rec so the account can start fresh.
-bankingRouter.post('/reconciliations/:id/cancel', async (req, res) => {
+bankingRouter.post('/reconciliations/:id/cancel', describe({
+  summary: 'Discard an in-progress reconciliation',
+  description: 'Deletes the worksheet (nothing is posted), resets statement-line matches and unlinks its statement; audited in the '
+    + 'same transaction. 409 RECONCILIATION_NOT_IN_PROGRESS {status} for a completed one (use undo). Response {message}.',
+}), async (req, res) => {
   await reconciliationService.cancel(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Reconciliation canceled' });
 });
 
 // Pull transactions added after start into the worksheet.
-bankingRouter.post('/reconciliations/:id/refresh', async (req, res) => {
-  const result = await reconciliationService.refreshLines(req.tenantId, req.params['id']!);
+bankingRouter.post('/reconciliations/:id/refresh', validate(refreshReconciliationSchema), describe({
+  summary: 'Sync an in-progress worksheet with the books (reconcile-begin-v1)',
+  description: 'Adds eligible lines not on the worksheet (posted, not cleared in a completed reconciliation, on or before the '
+    + 'statement date unless includeLaterLines), ticking bank-file lines when precheck is bank_feed (the start rule); removes '
+    + 'rows whose entry is no longer posted, rows whose journal line no longer exists, and, without later lines, unticked rows dated '
+    + 'after the statement date. includeLaterLines, when sent, is stored. Response {added, removed, prechecked}. 409 '
+    + 'RECONCILIATION_NOT_IN_PROGRESS {status}.',
+}), async (req, res) => {
+  const result = await reconciliationService.refreshLines(req.tenantId, req.params['id']!, req.body ?? {});
   res.json(result);
 });
 
-bankingRouter.post('/reconciliations/:id/complete', async (req, res) => {
+bankingRouter.post('/reconciliations/:id/complete', closingPasswordLimiter, lockContextMiddleware, describe({
+  summary: 'Finish a reconciliation (reconcile-exact-v1, reconcile-begin-v1)',
+  description: 'Only at a difference of exactly 0 (4 places): else 400 RECONCILE_DIFFERENCE_NOT_ZERO {difference}. In one '
+    + 'transaction posts the pending service charge (an expense: debit its account, credit the reconciled account) and interest '
+    + '(a deposit: debit the reconciled account, credit its account) through the normal posting path (closing date: 423 '
+    + 'TB_PERIOD_LOCKED, or closingPassword in the body, a wrong one 403; the override is audited), adds their lines as cleared, '
+    + 'stores the cleared balance and difference, marks it complete and writes one audit row (cleared line ids, posted charge ids). '
+    + 'A charge posted before (an undone reconciliation) is never posted again. 409 RECONCILIATION_NOT_IN_PROGRESS {status}. '
+    + 'Response {message, reconciliation} (summary view).',
+}), async (req, res) => {
   await reconciliationService.complete(req.tenantId, req.params['id']!, req.userId);
-  res.json({ message: 'Reconciliation complete' });
+  const recon = await reconciliationService.getReconciliationSummary(req.tenantId, req.params['id']!);
+  res.json({ message: 'Reconciliation complete', reconciliation: recon });
 });
 
-bankingRouter.post('/reconciliations/:id/undo', async (req, res) => {
-  await reconciliationService.undo(req.tenantId, req.params['id']!, req.userId);
-  res.json({ message: 'Reconciliation undone' });
-});
+// Undo is a company-admin act (U-190): the tenant role owner, or a super
+// admin (the tb.routes.ts gate).
+function requireReconcileAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (req.isSuperAdmin || req.userRole === 'owner') {
+    next();
+    return;
+  }
+  next(AppError.forbidden('Only a company administrator can undo a reconciliation', 'RECONCILE_ADMIN_REQUIRED'));
+}
+
+bankingRouter.post('/reconciliations/:id/undo', requireReconcileAdmin, closingPasswordLimiter, lockContextMiddleware,
+  validate(undoReconciliationSchema), describe({
+    summary: 'Undo the latest completed reconciliation (reconcile-undo-v2)',
+    description: 'Owner only (403 RECONCILE_ADMIN_REQUIRED). mode: clear_checks (default; reopen with every line unticked), '
+      + 'keep_checks (reopen with the ticks as they were at finish) or discard (reopen and discard in one step). Posted service '
+      + 'charge and interest entries stay in the books in every mode and are not posted again. 409 RECONCILIATION_NOT_LATEST '
+      + '{latestReconciliationId} unless it is the most recent completed one of its account; 409 RECONCILIATION_IN_PROGRESS '
+      + '{reconciliationId} when another reconciliation of the account is in progress; 409 RECONCILIATION_NOT_COMPLETE {status}. '
+      + 'A statement date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without, 403 when wrong; the '
+      + 'override is audited). Sign-offs are invalidated. One audit row (action update, before {clearedLineIds}, after {undo: '
+      + '{mode}}). Response {message, mode}.',
+  }), async (req, res) => {
+    const result = await reconciliationService.undo(req.tenantId, req.params['id']!, req.userId, { mode: req.body?.mode });
+    res.json({ message: 'Reconciliation undone', mode: result.mode });
+  });

@@ -5,11 +5,15 @@
 import { eq, and, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
-import { db } from '../db/index.js';
-import { reconciliations, reconciliationLines, journalLines, transactions, accounts, bankStatements } from '../db/schema/index.js';
+type Dec = InstanceType<typeof Decimal>;
+import { db, type DbOrTx, type Tx } from '../db/index.js';
+import { reconciliations, reconciliationLines, journalLines, accounts, bankStatements } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { invalidateForReopen } from './reconciliation-signoff.service.js';
+import { postTransaction, checkLockDate } from './ledger.service.js';
+
+type ReconRow = typeof reconciliations.$inferSelect;
 
 export interface ContinuityWarning {
   expected: number; // prior completed reconciliation's ending balance
@@ -17,10 +21,28 @@ export interface ContinuityWarning {
   delta: number;
 }
 
-// Statement opening balance vs the prior completed reconciliation's ending
-// balance (the same derivation start() uses for beginningBalance). A
-// mismatch means cleared transactions were changed/deleted since the last
-// reconciliation — surfaced as a warning, never a block.
+/** Service charge or interest entered at Begin (U-189). */
+export interface ReconcileChargeInput {
+  amount: string;
+  date: string;
+  accountId: string;
+}
+
+export type ReconcileChargeKind = 'serviceCharge' | 'interest';
+
+export interface StartReconciliationOptions {
+  statementId?: string;
+  serviceCharge?: ReconcileChargeInput | null;
+  interest?: ReconcileChargeInput | null;
+  includeLaterLines?: boolean;
+  precheck?: 'bank_feed';
+  userId?: string;
+}
+
+export type ReconciliationView = 'full' | 'summary';
+
+export type UndoMode = 'clear_checks' | 'keep_checks' | 'discard';
+
 // Bank statements print liability balances (credit cards, lines of credit)
 // as positive amounts OWED, but on the books a liability is credit-normal:
 // the reconciliation's cleared-balance arithmetic (beginning + Σ(debit −
@@ -35,6 +57,11 @@ export function glOrientedStatementBalance(
   return accountType === 'liability' ? new Decimal(value).negated().toFixed(4) : value;
 }
 
+// Statement opening balance vs the prior completed reconciliation's ending
+// balance (the same derivation start() uses for beginningBalance). A
+// mismatch means cleared transactions were changed/deleted since the last
+// reconciliation — surfaced as a warning, never a block. Numbers are kept
+// for existing clients; beginningBalanceDrift (U-189) carries exact strings.
 function continuityOf(
   statementOpening: string | null,
   priorEnding: string | null | undefined,
@@ -46,12 +73,330 @@ function continuityOf(
   return Math.abs(delta) > 0.005 ? { expected, actual, delta } : null;
 }
 
+// ─── Shared guards ──────────────────────────────────────────────
+
+/** 409 for any change to a reconciliation that is not in progress (U-188). */
+function notInProgress(status: string | null, completeMessage = 'Reconciliation is already complete'): AppError {
+  return AppError.conflict(
+    status === 'complete' ? completeMessage : 'Reconciliation is not in progress',
+    'RECONCILIATION_NOT_IN_PROGRESS',
+    { status },
+  );
+}
+
+/** Locks the header FOR UPDATE and requires status in_progress. */
+async function lockInProgress(tx: Tx, tenantId: string, reconciliationId: string, completeMessage?: string): Promise<ReconRow> {
+  const [recon] = await tx.select().from(reconciliations)
+    .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
+    .for('update')
+    .limit(1);
+  if (!recon) throw AppError.notFound('Reconciliation not found');
+  if (recon.status !== 'in_progress') throw notInProgress(recon.status, completeMessage);
+  return recon;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
+}
+
+function inProgressConflict(reconciliationId: string | null, startedAt?: unknown): AppError {
+  const when = startedAt instanceof Date ? startedAt.toISOString() : startedAt ? String(startedAt) : null;
+  return AppError.conflict(
+    `A reconciliation is already in progress for this account${when ? ` (started ${when})` : ''}. `
+      + 'Finish or cancel it before starting a new one.',
+    'RECONCILIATION_IN_PROGRESS',
+    { reconciliationId },
+  );
+}
+
+async function inProgressFor(executor: DbOrTx, tenantId: string, accountId: string, exceptId?: string) {
+  const rows = await executor.select({ id: reconciliations.id, createdAt: reconciliations.createdAt })
+    .from(reconciliations)
+    .where(and(
+      eq(reconciliations.tenantId, tenantId),
+      eq(reconciliations.accountId, accountId),
+      eq(reconciliations.status, 'in_progress'),
+      exceptId ? sql`${reconciliations.id} <> ${exceptId}` : sql`true`,
+    ))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+async function accountOf(executor: DbOrTx, tenantId: string, accountId: string) {
+  const [acct] = await executor.select({
+    id: accounts.id, companyId: accounts.companyId, accountType: accounts.accountType, isActive: accounts.isActive,
+  }).from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId))).limit(1);
+  return acct ?? null;
+}
+
+/** YYYY-MM-DD of a date column, whether the driver gave a string or a Date. */
+function isoDay(v: unknown): string {
+  return v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+}
+
+/** Postgres uuid[] literal for `= ANY(...::uuid[])` (ids are zod-validated uuids). */
+function uuidArray(ids: readonly string[]): string {
+  return `{${ids.join(',')}}`;
+}
+
+// ─── Charges entered at Begin (U-189) ───────────────────────────
+
+const CHARGE_COLUMNS = {
+  serviceCharge: { amount: 'serviceChargeAmount', date: 'serviceChargeDate', accountId: 'serviceChargeAccountId', txnId: 'serviceChargeTxnId' },
+  interest: { amount: 'interestAmount', date: 'interestDate', accountId: 'interestAccountId', txnId: 'interestTxnId' },
+} as const;
+
+interface ChargeState {
+  amount: string;
+  date: string;
+  accountId: string;
+  txnId: string | null;
+}
+
+function chargeOf(recon: ReconRow, kind: ReconcileChargeKind): ChargeState | null {
+  const cols = CHARGE_COLUMNS[kind];
+  const amount = recon[cols.amount];
+  const date = recon[cols.date];
+  const accountId = recon[cols.accountId];
+  if (amount == null || date == null || accountId == null) return null;
+  return { amount, date, accountId, txnId: recon[cols.txnId] ?? null };
+}
+
+/** A charge entered at Begin that Finish has not posted yet. */
+function pendingCharge(recon: ReconRow, kind: ReconcileChargeKind): ChargeState | null {
+  const c = chargeOf(recon, kind);
+  return c && !c.txnId ? c : null;
+}
+
+function chargeColumnsFor(kind: ReconcileChargeKind, input: ReconcileChargeInput | null) {
+  const cols = CHARGE_COLUMNS[kind];
+  return {
+    [cols.amount]: input ? new Decimal(input.amount).toFixed(4) : null,
+    [cols.date]: input ? input.date : null,
+    [cols.accountId]: input ? input.accountId : null,
+  } as Partial<typeof reconciliations.$inferInsert>;
+}
+
+/**
+ * The charge (or income) account must be in the tenant, in the reconciled
+ * account's company (or tenant-wide), active, and not the reconciled
+ * account itself. 400 RECONCILE_CHARGE_ACCOUNT_INVALID {kind, reason}.
+ */
+async function assertChargeAccount(
+  executor: DbOrTx,
+  tenantId: string,
+  reconAccount: { id: string; companyId: string | null },
+  kind: ReconcileChargeKind,
+  accountId: string,
+): Promise<void> {
+  const fail = (reason: string) => AppError.badRequest(
+    `The ${kind === 'serviceCharge' ? 'service charge' : 'interest'} account can't be used: ${reason}.`,
+    'RECONCILE_CHARGE_ACCOUNT_INVALID',
+    { kind, reason },
+  );
+  if (accountId === reconAccount.id) throw fail('it is the account being reconciled');
+  const acct = await accountOf(executor, tenantId, accountId);
+  if (!acct) throw fail('account not found');
+  if (reconAccount.companyId && acct.companyId && acct.companyId !== reconAccount.companyId) {
+    throw fail('account belongs to a different company');
+  }
+  if (acct.isActive === false) throw fail('account is inactive');
+}
+
+// ─── Worksheet loading and the bank-file pre-check ──────────────
+
+/**
+ * Posted lines on the account that are not on this worksheet and not cleared
+ * in a completed reconciliation; on or before the statement date unless
+ * later lines are included.
+ */
+async function eligibleNewLineIds(
+  executor: DbOrTx,
+  tenantId: string,
+  recon: Pick<ReconRow, 'id' | 'accountId' | 'statementDate' | 'includeLaterLines'>,
+): Promise<string[]> {
+  const res = await executor.execute(sql`
+    SELECT jl.id FROM journal_lines jl
+    JOIN transactions t ON t.id = jl.transaction_id
+    WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${recon.accountId}
+      AND t.status = 'posted'
+      AND (${recon.includeLaterLines === true} OR t.txn_date <= ${recon.statementDate})
+      AND NOT EXISTS (
+        SELECT 1 FROM reconciliation_lines rl
+        WHERE rl.reconciliation_id = ${recon.id} AND rl.journal_line_id = jl.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM reconciliation_lines rl
+        JOIN reconciliations r ON r.id = rl.reconciliation_id
+        WHERE rl.journal_line_id = jl.id AND r.tenant_id = ${tenantId} AND r.account_id = ${recon.accountId}
+          AND r.status = 'complete' AND rl.is_cleared = true
+      )
+  `);
+  return (res.rows as Array<{ id: string }>).map((r) => r.id);
+}
+
+/**
+ * Bank-file pre-check (Q-100): of `lineIds`, the lines an accepted bank-file
+ * row stands behind, the bank having posted it on or before the statement
+ * date (feed_date, not the entry date), entry not voided. The row names the
+ * line (matched_journal_line_id, migration 0265) or, for rows from before
+ * it, the entry, when the row's own bank account is the reconciled account.
+ */
+async function bankFeedPrecheckIds(
+  executor: DbOrTx,
+  tenantId: string,
+  recon: Pick<ReconRow, 'accountId' | 'statementDate'>,
+  lineIds: readonly string[],
+): Promise<string[]> {
+  if (lineIds.length === 0) return [];
+  const res = await executor.execute(sql`
+    SELECT jl.id FROM journal_lines jl
+    WHERE jl.id = ANY(${uuidArray(lineIds)}::uuid[])
+      AND (
+        EXISTS (
+          SELECT 1 FROM bank_feed_items b
+          WHERE b.tenant_id = ${tenantId} AND b.matched_journal_line_id = jl.id
+            AND b.status IN ('matched', 'categorized')
+            AND b.entry_voided_at IS NULL AND b.feed_date <= ${recon.statementDate}
+        )
+        OR EXISTS (
+          SELECT 1 FROM bank_feed_items b
+          JOIN bank_connections bc ON bc.id = b.bank_connection_id
+          WHERE b.tenant_id = ${tenantId} AND b.matched_journal_line_id IS NULL
+            AND b.matched_transaction_id = jl.transaction_id
+            AND jl.account_id = ${recon.accountId} AND bc.account_id = ${recon.accountId}
+            AND b.status IN ('matched', 'categorized')
+            AND b.entry_voided_at IS NULL AND b.feed_date <= ${recon.statementDate}
+        )
+      )
+  `);
+  return (res.rows as Array<{ id: string }>).map((r) => r.id);
+}
+
+/** Adds `lineIds` to the worksheet, pre-checking bank-file lines when asked. */
+async function addWorksheetLines(
+  tx: Tx,
+  tenantId: string,
+  recon: Pick<ReconRow, 'id' | 'accountId' | 'statementDate'>,
+  lineIds: readonly string[],
+  precheck: 'bank_feed' | undefined,
+): Promise<number> {
+  if (lineIds.length === 0) return 0;
+  const ticked = new Set(precheck === 'bank_feed' ? await bankFeedPrecheckIds(tx, tenantId, recon, lineIds) : []);
+  const now = new Date();
+  for (let i = 0; i < lineIds.length; i += 1000) {
+    await tx.insert(reconciliationLines).values(
+      lineIds.slice(i, i + 1000).map((id) => ({
+        reconciliationId: recon.id,
+        journalLineId: id,
+        isCleared: ticked.has(id),
+        clearedAt: ticked.has(id) ? now : null,
+      })),
+    );
+  }
+  return ticked.size;
+}
+
+// ─── Totals ─────────────────────────────────────────────────────
+
+interface ClearedTotals {
+  cleared: Dec;
+  difference: Dec;
+  deposits: { count: number; total: Dec };
+  payments: { count: number; total: Dec };
+}
+
+/**
+ * The one cleared-balance rule (GET and complete): beginning balance + Σ
+ * (debit − credit) of the ticked lines + interest − service charge not yet
+ * posted. Deposits are amounts > 0, payments the rest (zero included), in
+ * the account's books sign.
+ */
+function clearedTotals(recon: ReconRow, lines: ReadonlyArray<{ is_cleared: boolean | null; debit: string; credit: string }>): ClearedTotals {
+  const deposits = { count: 0, total: new Decimal(0) };
+  const payments = { count: 0, total: new Decimal(0) };
+  const add = (amount: Dec) => {
+    const pane = amount.greaterThan(0) ? deposits : payments;
+    pane.count += 1;
+    pane.total = pane.total.plus(amount);
+  };
+  for (const line of lines) {
+    if (line.is_cleared) add(new Decimal(line.debit).minus(line.credit));
+  }
+  const interest = pendingCharge(recon, 'interest');
+  if (interest) add(new Decimal(interest.amount));
+  const serviceCharge = pendingCharge(recon, 'serviceCharge');
+  if (serviceCharge) add(new Decimal(serviceCharge.amount).negated());
+  const cleared = new Decimal(recon.beginningBalance).plus(deposits.total).plus(payments.total);
+  const difference = new Decimal(recon.statementEndingBalance).minus(cleared);
+  return { cleared, difference, deposits, payments };
+}
+
+/**
+ * Drift of the prior completed reconciliation (U-189): its stored ending
+ * balance against its beginning balance plus the lines it cleared that are
+ * still posted. Nonzero means a reconciled entry was voided, deleted or
+ * changed since; null when there is no prior or no drift.
+ */
+async function beginningBalanceDriftOf(executor: DbOrTx, tenantId: string, recon: ReconRow) {
+  const [prior] = await executor.select().from(reconciliations)
+    .where(and(
+      eq(reconciliations.tenantId, tenantId),
+      eq(reconciliations.accountId, recon.accountId),
+      eq(reconciliations.status, 'complete'),
+      sql`${reconciliations.id} <> ${recon.id}`,
+      recon.status === 'complete' ? sql`${reconciliations.statementDate} < ${recon.statementDate}` : sql`true`,
+    ))
+    .orderBy(sql`${reconciliations.statementDate} DESC`, sql`${reconciliations.completedAt} DESC NULLS LAST`)
+    .limit(1);
+  if (!prior) return null;
+  const res = await executor.execute(sql`
+    SELECT COALESCE(SUM(jl.debit - jl.credit), 0)::text AS net
+    FROM reconciliation_lines rl
+    JOIN journal_lines jl ON jl.id = rl.journal_line_id
+    JOIN transactions t ON t.id = jl.transaction_id AND t.status = 'posted'
+    WHERE rl.reconciliation_id = ${prior.id} AND rl.is_cleared = true
+  `);
+  const net = (res.rows as Array<{ net: string }>)[0]?.net ?? '0';
+  const expected = new Decimal(prior.statementEndingBalance);
+  const actual = new Decimal(prior.beginningBalance).plus(net);
+  const difference = actual.minus(expected);
+  if (difference.isZero()) return null;
+  return {
+    reconciliationId: prior.id,
+    expected: expected.toFixed(4),
+    actual: actual.toFixed(4),
+    difference: difference.toFixed(4),
+  };
+}
+
+/** A pending charge dated on or before the closing date: Finish needs the password. */
+async function postingLockedFor(executor: DbOrTx, tenantId: string, companyId: string | null, recon: ReconRow): Promise<boolean> {
+  const dates = (['serviceCharge', 'interest'] as const)
+    .map((k) => pendingCharge(recon, k)?.date)
+    .filter((d): d is string => !!d);
+  if (dates.length === 0) return false;
+  const res = companyId
+    ? await executor.execute(sql`SELECT lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId}`)
+    : await executor.execute(sql`SELECT MAX(lock_date)::text AS lock_date FROM companies WHERE tenant_id = ${tenantId}`);
+  const lockDate = (res.rows as Array<{ lock_date: string | null }>)[0]?.lock_date;
+  if (!lockDate) return false;
+  return dates.some((d) => d <= lockDate);
+}
+
+function chargeView(c: ChargeState | null) {
+  return c ? { amount: c.amount, date: c.date, accountId: c.accountId } : null;
+}
+
+// ─── Start ──────────────────────────────────────────────────────
+
 export async function start(
   tenantId: string,
   accountId: string | undefined,
   statementDate: string | undefined,
   statementEndingBalance: string | undefined,
-  opts: { statementId?: string } = {},
+  opts: StartReconciliationOptions = {},
 ) {
   // Statement-driven start: derive account / date / ending balance from the
   // stored bank_statements row, then link the reconciliation back to it.
@@ -87,44 +432,33 @@ export async function start(
   if (!accountId || !statementDate || !statementEndingBalance) {
     throw AppError.badRequest('accountId, statementDate and statementEndingBalance are required');
   }
+  const acct = await accountOf(db, tenantId, accountId);
+  if (!acct) throw AppError.notFound('Account not found');
   // Manual start (no driving statement): orient a liability's entered
   // balance the same way a statement-driven start does, so a user can type
   // the credit-card statement balance as printed (a positive amount owed)
   // and still tie out against the credit-normal GL balance. Asset balances
   // pass through unchanged.
   if (!opts.statementId) {
-    const acct = await db.query.accounts.findFirst({
-      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
-    });
-    statementAccountType = acct?.accountType ?? null;
+    statementAccountType = acct.accountType ?? null;
     statementEndingBalance =
       glOrientedStatementBalance(statementEndingBalance, statementAccountType) ?? statementEndingBalance;
   }
   // Refuse to start a second reconciliation on an account that already
-  // has one in progress. Two users opening the bank rec screen at the
-  // same moment would otherwise create two parallel "in_progress"
-  // reconciliations that both see the same uncleared lines — and then
-  // both try to mark those same lines as cleared, corrupting the
-  // running balance when the second one completes.
-  const inProgress = await db.query.reconciliations.findFirst({
-    where: and(
-      eq(reconciliations.tenantId, tenantId),
-      eq(reconciliations.accountId, accountId),
-      eq(reconciliations.status, 'in_progress'),
-    ),
-  });
-  if (inProgress) {
-    throw AppError.conflict(
-      `A reconciliation is already in progress for this account (started ${inProgress.createdAt?.toISOString?.() || inProgress.createdAt}). ` +
-      `Finish or cancel it before starting a new one.`,
-      'RECONCILIATION_IN_PROGRESS',
-    );
+  // has one in progress (two would both clear the same lines). The read
+  // gives the friendly answer; the partial unique index (migration 0272)
+  // settles two starts at the same moment.
+  const existing = await inProgressFor(db, tenantId, accountId);
+  if (existing) throw inProgressConflict(existing.id, existing.createdAt);
+
+  for (const kind of ['serviceCharge', 'interest'] as const) {
+    const charge = opts[kind];
+    if (charge) await assertChargeAccount(db, tenantId, acct, kind, charge.accountId);
   }
 
   // Get beginning balance (cleared balance from last reconciliation, or 0).
   // Ordered by statement date DESC so the MOST RECENT completed
-  // reconciliation's ending balance chains forward (findFirst without an
-  // order returned an arbitrary row once an account had several).
+  // reconciliation's ending balance chains forward.
   const lastRecon = await db.query.reconciliations.findFirst({
     where: and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.accountId, accountId), eq(reconciliations.status, 'complete')),
     orderBy: (r, { desc }) => desc(r.statementDate),
@@ -134,51 +468,41 @@ export async function start(
   // Create the reconciliation header + load uncleared lines in one tx
   // so a partial failure doesn't leave a reconciliation row with no
   // lines to reconcile against.
-  const recon = await db.transaction(async (tx) => {
-    const [created] = await tx.insert(reconciliations).values({
-      tenantId,
-      accountId,
-      statementDate,
-      statementEndingBalance,
-      beginningBalance,
-      status: 'in_progress',
-    }).returning();
+  let recon: ReconRow;
+  try {
+    recon = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(reconciliations).values({
+        tenantId,
+        accountId: accountId!,
+        statementDate: statementDate!,
+        statementEndingBalance: statementEndingBalance!,
+        beginningBalance,
+        status: 'in_progress',
+        includeLaterLines: opts.includeLaterLines === true,
+        ...(opts.serviceCharge ? chargeColumnsFor('serviceCharge', opts.serviceCharge) : {}),
+        ...(opts.interest ? chargeColumnsFor('interest', opts.interest) : {}),
+      }).returning();
+      if (!created) throw AppError.internal('Failed to create reconciliation');
 
-    if (!created) throw AppError.internal('Failed to create reconciliation');
+      const lineIds = await eligibleNewLineIds(tx, tenantId, created);
+      await addWorksheetLines(tx, tenantId, created, lineIds, opts.precheck);
 
-    const unclearedLines = await tx.execute(sql`
-      SELECT jl.id FROM journal_lines jl
-      JOIN transactions t ON t.id = jl.transaction_id
-      WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${accountId}
-        AND t.status = 'posted' AND t.txn_date <= ${statementDate}
-        AND jl.id NOT IN (
-          SELECT rl.journal_line_id FROM reconciliation_lines rl
-          JOIN reconciliations r ON r.id = rl.reconciliation_id
-          WHERE r.tenant_id = ${tenantId} AND r.account_id = ${accountId}
-            AND r.status = 'complete' AND rl.is_cleared = true
-        )
-    `);
-
-    if ((unclearedLines.rows as any[]).length > 0) {
-      await tx.insert(reconciliationLines).values(
-        (unclearedLines.rows as any[]).map((row: any) => ({
+      // Link the driving statement to its reconciliation.
+      if (statement) {
+        await tx.update(bankStatements).set({
           reconciliationId: created.id,
-          journalLineId: row.id,
-          isCleared: false,
-        })),
-      );
+          updatedAt: new Date(),
+        }).where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, statement.id)));
+      }
+      return created;
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      const winner = await inProgressFor(db, tenantId, accountId);
+      throw inProgressConflict(winner?.id ?? null, winner?.createdAt);
     }
-
-    // Link the driving statement to its reconciliation.
-    if (statement) {
-      await tx.update(bankStatements).set({
-        reconciliationId: created.id,
-        updatedAt: new Date(),
-      }).where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, statement.id)));
-    }
-
-    return created;
-  });
+    throw err;
+  }
 
   // Opening-balance continuity check (statement-driven starts only) —
   // informational, never blocking.
@@ -189,84 +513,107 @@ export async function start(
       )
     : null;
 
-  return { ...recon, statementId: statement?.id ?? null, continuityWarning };
+  const summary = await getReconciliationSummary(tenantId, recon.id);
+  return { ...summary, statementId: statement?.id ?? null, continuityWarning };
 }
 
 // Sync the worksheet with the ledger as it stands NOW — both directions.
 // start() snapshots the uncleared lines at start time, so a transaction the
-// user adds mid-reconciliation (a "missing" one they just entered) has no
-// reconciliation_line and never appears; conversely a transaction VOIDED
-// mid-reconciliation keeps its snapshot row and lingers on the worksheet.
-// Adds a worksheet row for every posted, on-or-before-statement-date line
-// for the account that isn't already on this worksheet and isn't cleared in
-// a prior completed reconciliation (the same eligibility rule start() uses),
-// and removes rows whose transaction is no longer posted.
-export async function refreshLines(tenantId: string, reconciliationId: string): Promise<{ added: number; removed: number }> {
+// user adds mid-reconciliation has no reconciliation_line and never appears;
+// conversely a transaction VOIDED mid-reconciliation keeps its snapshot row.
+// Adds a worksheet row for every eligible line not on the worksheet (the
+// same rule start() uses, pre-checking bank-file lines when asked), and
+// removes rows whose transaction is no longer posted, rows whose journal
+// line no longer exists (U-189), and — when later lines are not included —
+// unticked rows dated after the statement date.
+export async function refreshLines(
+  tenantId: string,
+  reconciliationId: string,
+  opts: { includeLaterLines?: boolean; precheck?: 'bank_feed' } = {},
+): Promise<{ added: number; removed: number; prechecked: number }> {
   return await db.transaction(async (tx) => {
-    const [recon] = await tx.select().from(reconciliations)
-      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
-      .for('update')
-      .limit(1);
-    if (!recon) throw AppError.notFound('Reconciliation not found');
-    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
+    let recon = await lockInProgress(tx, tenantId, reconciliationId);
+    if (opts.includeLaterLines !== undefined && opts.includeLaterLines !== recon.includeLaterLines) {
+      const [updated] = await tx.update(reconciliations)
+        .set({ includeLaterLines: opts.includeLaterLines, updatedAt: new Date() })
+        .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
+        .returning();
+      recon = updated!;
+    }
 
-    // Remove rows whose transaction has been voided (or otherwise left
-    // 'posted') since the worksheet snapshot — they can never clear against
-    // the statement and sit in the uncleared list forever. Cleared rows are
-    // removed too: this reconciliation is still in progress, and a cleared
-    // row pointing at a void transaction would corrupt the cleared balance.
+    // Rows whose transaction has been voided (or otherwise left 'posted')
+    // can never clear against the statement; cleared ones would corrupt the
+    // cleared balance. Rows whose journal line is gone (an edit replaced the
+    // entry's lines) point at nothing.
     const removedRes = await tx.execute(sql`
       DELETE FROM reconciliation_lines rl
-      USING journal_lines jl, transactions t
       WHERE rl.reconciliation_id = ${reconciliationId}
-        AND jl.id = rl.journal_line_id
-        AND t.id = jl.transaction_id
-        AND t.status <> 'posted'
+        AND (
+          NOT EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.id = rl.journal_line_id)
+          OR EXISTS (
+            SELECT 1 FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id
+            WHERE jl.id = rl.journal_line_id
+              AND (t.status <> 'posted' OR (${recon.includeLaterLines !== true} AND rl.is_cleared IS NOT TRUE
+                AND t.txn_date > ${recon.statementDate}))
+          )
+        )
       RETURNING rl.id
     `);
-    const removed = (removedRes.rows as any[]).length;
+    const removed = (removedRes.rows as unknown[]).length;
 
-    const newLines = await tx.execute(sql`
-      SELECT jl.id FROM journal_lines jl
-      JOIN transactions t ON t.id = jl.transaction_id
-      WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${recon.accountId}
-        AND t.status = 'posted' AND t.txn_date <= ${recon.statementDate}
-        AND jl.id NOT IN (
-          SELECT rl.journal_line_id FROM reconciliation_lines rl
-          WHERE rl.reconciliation_id = ${reconciliationId}
-        )
-        AND jl.id NOT IN (
-          SELECT rl.journal_line_id FROM reconciliation_lines rl
-          JOIN reconciliations r ON r.id = rl.reconciliation_id
-          WHERE r.tenant_id = ${tenantId} AND r.account_id = ${recon.accountId}
-            AND r.status = 'complete' AND rl.is_cleared = true
-        )
-    `);
-    const rows = newLines.rows as Array<{ id: string }>;
-    if (rows.length > 0) {
-      await tx.insert(reconciliationLines).values(
-        rows.map((r) => ({ reconciliationId, journalLineId: r.id, isCleared: false })),
-      );
-    }
-    return { added: rows.length, removed };
+    const lineIds = await eligibleNewLineIds(tx, tenantId, recon);
+    const prechecked = await addWorksheetLines(tx, tenantId, recon, lineIds, opts.precheck);
+    return { added: lineIds.length, removed, prechecked };
   });
 }
 
+// ─── Read ───────────────────────────────────────────────────────
+
+/** The worksheet with its lines (GET /banking/reconciliations/:id). */
 export async function getReconciliation(tenantId: string, reconciliationId: string) {
+  const { header, rows } = await loadReconciliation(tenantId, reconciliationId, true);
+  return { ...header, lines: rows! };
+}
+
+/** The header and totals without lines (view=summary, U-188). */
+export async function getReconciliationSummary(tenantId: string, reconciliationId: string) {
+  return (await loadReconciliation(tenantId, reconciliationId, false)).header;
+}
+
+/** getReconciliation or getReconciliationSummary by view. */
+export async function getReconciliationView(tenantId: string, reconciliationId: string, view?: ReconciliationView) {
+  return view === 'summary' ? getReconciliationSummary(tenantId, reconciliationId) : getReconciliation(tenantId, reconciliationId);
+}
+
+async function loadReconciliation(tenantId: string, reconciliationId: string, withLines: boolean) {
   const recon = await db.query.reconciliations.findFirst({
     where: and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)),
   });
   if (!recon) throw AppError.notFound('Reconciliation not found');
 
-  // Get lines with transaction details. Check number / payee / contact are
-  // additive fields consumed by the Statement Match Engine UI (wave 1).
+  // Lines with transaction details. Check number / payee / contact are
+  // consumed by the Statement Match Engine UI (wave 1); source, source_id
+  // and from_bank_feed (an accepted bank-file row stands behind the line,
+  // the rule of the pre-check without its date) by U-189.
   const lines = await db.execute(sql`
     SELECT rl.id, rl.journal_line_id, rl.is_cleared, rl.cleared_at,
       jl.transaction_id,
       jl.debit, jl.credit, jl.description,
       t.txn_date, t.txn_type, t.txn_number, t.memo,
       t.check_number, t.payee_name_on_check, t.contact_id,
-      c.display_name AS contact_name
+      t.source, t.source_id,
+      c.display_name AS contact_name,
+      (EXISTS (
+        SELECT 1 FROM bank_feed_items b
+        WHERE b.tenant_id = ${tenantId} AND b.matched_journal_line_id = jl.id
+          AND b.status IN ('matched', 'categorized')
+      ) OR EXISTS (
+        SELECT 1 FROM bank_feed_items b
+        JOIN bank_connections bc ON bc.id = b.bank_connection_id
+        WHERE b.tenant_id = ${tenantId} AND b.matched_journal_line_id IS NULL
+          AND b.matched_transaction_id = jl.transaction_id AND bc.account_id = jl.account_id
+          AND b.status IN ('matched', 'categorized')
+      )) AS from_bank_feed
     FROM reconciliation_lines rl
     JOIN journal_lines jl ON jl.id = rl.journal_line_id
     JOIN transactions t ON t.id = jl.transaction_id
@@ -274,18 +621,12 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
     WHERE rl.reconciliation_id = ${reconciliationId}
     ORDER BY t.txn_date, t.created_at
   `);
+  const rows = lines.rows as any[];
 
   // Cleared-balance arithmetic runs through Decimal so the difference
-  // shown to users is an exact penny figure. Float drift here is what
-  // makes reconciliations that should tie out show $0.01 difference.
-  let cleared = new Decimal(recon.beginningBalance);
-  for (const line of lines.rows as any[]) {
-    if (line.is_cleared) {
-      cleared = cleared.plus(new Decimal(line.debit).minus(line.credit));
-    }
-  }
-  const clearedTotal = Number(cleared.toFixed(4));
-  const difference = Number(new Decimal(recon.statementEndingBalance).minus(cleared).toFixed(4));
+  // shown to users is an exact penny figure.
+  const totals = clearedTotals(recon, rows);
+  const acct = await accountOf(db, tenantId, recon.accountId);
 
   // Statement linkage (statement-driven reconciliation): the driving
   // statement, plus the opening-balance continuity warning so the
@@ -306,9 +647,6 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
     });
     // Liability statement balances print positive-owed — compare in GL
     // orientation (same convention as the stored reconciliation balances).
-    const acct = await db.query.accounts.findFirst({
-      where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, recon.accountId)),
-    });
     continuityWarning = continuityOf(
       glOrientedStatementBalance(statement.openingBalance, acct?.accountType),
       prior?.statementEndingBalance,
@@ -326,6 +664,32 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
     statementLineCount = Number((cnt.rows as Array<{ count: number }>)[0]?.count ?? 0);
   }
 
+  const beginningBalanceDrift = await beginningBalanceDriftOf(db, tenantId, recon);
+  const postingLocked = recon.status === 'in_progress'
+    ? await postingLockedFor(db, tenantId, acct?.companyId ?? null, recon)
+    : false;
+
+  const header = {
+    ...recon,
+    // Legacy JSON numbers (kept for existing clients); the *Exact strings
+    // are the exact figures (U-188).
+    clearedBalance: Number(totals.cleared.toFixed(4)),
+    difference: Number(totals.difference.toFixed(4)),
+    clearedBalanceExact: totals.cleared.toFixed(4),
+    differenceExact: totals.difference.toFixed(4),
+    clearedDeposits: { count: totals.deposits.count, total: totals.deposits.total.toFixed(4) },
+    clearedPayments: { count: totals.payments.count, total: totals.payments.total.toFixed(4) },
+    pending: {
+      serviceCharge: chargeView(pendingCharge(recon, 'serviceCharge')),
+      interest: chargeView(pendingCharge(recon, 'interest')),
+    },
+    beginningBalanceDrift,
+    postingLocked,
+    statement: statement ? { ...statement, lineCount: statementLineCount } : null,
+    continuityWarning,
+  };
+  if (!withLines) return { header, rows: null };
+
   // Likely-duplicate detection: an UNCLEARED row whose CLEARED twin has the
   // same amount on the same side and either the same check number or a date
   // within ±3 days is almost certainly a double entry (manual + bank-feed,
@@ -333,17 +697,26 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
   // twin never will. Flag it so the UI can offer a one-click void. Human
   // confirms — two identical legitimate charges do exist, so nothing is
   // voided automatically.
-  const rows = lines.rows as any[];
-  const clearedRows = rows.filter((r) => r.is_cleared);
+  const clearedByAmount = new Map<string, any[]>();
+  for (const row of rows) {
+    if (!row.is_cleared) continue;
+    const key = new Decimal(row.debit).minus(row.credit).toFixed(4);
+    const list = clearedByAmount.get(key);
+    if (list) list.push(row); else clearedByAmount.set(key, [row]);
+  }
   const dayMs = 86400000;
   for (const row of rows) {
+    const amt = new Decimal(row.debit).minus(row.credit);
+    row.amount = amt.toFixed(4);
+    row.afterStatementDate = isoDay(row.txn_date) > isoDay(recon.statementDate);
+    row.fromBankFeed = row.from_bank_feed === true;
+    row.sourceId = row.source_id ?? null;
+    delete row.from_bank_feed;
     row.likely_duplicate = false;
     row.duplicate_of = null;
     if (row.is_cleared) continue;
-    const amt = new Decimal(row.debit).minus(row.credit);
     if (amt.isZero()) continue;
-    const twin = clearedRows.find((c: any) => {
-      if (!new Decimal(c.debit).minus(c.credit).equals(amt)) return false;
+    const twin = (clearedByAmount.get(row.amount) ?? []).find((c: any) => {
       if (row.check_number != null && c.check_number != null) return Number(row.check_number) === Number(c.check_number);
       const dd = Math.abs(new Date(String(c.txn_date)).getTime() - new Date(String(row.txn_date)).getTime()) / dayMs;
       return dd <= 3;
@@ -359,14 +732,7 @@ export async function getReconciliation(tenantId: string, reconciliationId: stri
     }
   }
 
-  return {
-    ...recon,
-    lines: rows,
-    clearedBalance: clearedTotal,
-    difference,
-    statement: statement ? { ...statement, lineCount: statementLineCount } : null,
-    continuityWarning,
-  };
+  return { header, rows };
 }
 
 /**
@@ -449,29 +815,50 @@ export async function autoClearStatement(tenantId: string, reconciliationId: str
   });
 }
 
-export async function updateLines(tenantId: string, reconciliationId: string, lineUpdates: Array<{ journalLineId: string; isCleared: boolean }>) {
-  // Lock the reconciliation row FOR UPDATE so concurrent updateLines
-  // calls serialize. Otherwise two users each toggling different line
-  // checkboxes at the same moment could complete() while one of the
-  // updates is mid-flight, leaving the reconciliation with a stale
-  // cleared balance.
+// ─── Ticks ──────────────────────────────────────────────────────
+
+/**
+ * Ticks and unticks worksheet lines (up to 10,000 per call, U-188) in at
+ * most two UPDATE statements. The header row lock serializes concurrent
+ * calls with each other and with complete(). The last entry for a line
+ * wins; ids not on the worksheet are ignored.
+ */
+export async function updateLines(
+  tenantId: string,
+  reconciliationId: string,
+  lineUpdates: Array<{ journalLineId: string; isCleared: boolean }>,
+) {
+  await applyLineUpdates(tenantId, reconciliationId, lineUpdates);
+  return getReconciliation(tenantId, reconciliationId);
+}
+
+/** updateLines without the read-back (the route picks the view). */
+export async function applyLineUpdates(
+  tenantId: string,
+  reconciliationId: string,
+  lineUpdates: Array<{ journalLineId: string; isCleared: boolean }>,
+): Promise<void> {
   await db.transaction(async (tx) => {
-    const [recon] = await tx.select().from(reconciliations)
-      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
-      .for('update')
-      .limit(1);
+    await lockInProgress(tx, tenantId, reconciliationId);
 
-    if (!recon) throw AppError.notFound('Reconciliation not found');
-    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
+    const wanted = new Map<string, boolean>();
+    for (const u of lineUpdates) wanted.set(u.journalLineId, u.isCleared);
+    const clearIds = [...wanted].filter(([, v]) => v).map(([id]) => id);
+    const unclearIds = [...wanted].filter(([, v]) => !v).map(([id]) => id);
 
-    for (const update of lineUpdates) {
-      await tx.update(reconciliationLines).set({
-        isCleared: update.isCleared,
-        clearedAt: update.isCleared ? new Date() : null,
-      }).where(and(
-        eq(reconciliationLines.reconciliationId, reconciliationId),
-        eq(reconciliationLines.journalLineId, update.journalLineId),
-      ));
+    if (clearIds.length > 0) {
+      await tx.execute(sql`
+        UPDATE reconciliation_lines SET is_cleared = true, cleared_at = now()
+        WHERE reconciliation_id = ${reconciliationId}
+          AND journal_line_id = ANY(${uuidArray(clearIds)}::uuid[])
+      `);
+    }
+    if (unclearIds.length > 0) {
+      await tx.execute(sql`
+        UPDATE reconciliation_lines SET is_cleared = false, cleared_at = NULL
+        WHERE reconciliation_id = ${reconciliationId}
+          AND journal_line_id = ANY(${uuidArray(unclearIds)}::uuid[])
+      `);
     }
 
     // Statement Match Engine (wave 1): un-clearing a worksheet line that an
@@ -481,10 +868,7 @@ export async function updateLines(tenantId: string, reconciliationId: string, li
     // in matched_journal_line_id — the full set lives in
     // score_breakdown.group.journalLineIds, so un-clearing ANY member must
     // reset the statement line too.
-    const unclearedJlIds = lineUpdates.filter((u) => !u.isCleared).map((u) => u.journalLineId);
-    if (unclearedJlIds.length > 0) {
-      const idList = sql.join(unclearedJlIds.map((id) => sql`${id}::uuid`), sql`, `);
-      const textList = sql.join(unclearedJlIds.map((id) => sql`${id}::text`), sql`, `);
+    if (unclearIds.length > 0) {
       // Scoped to THIS reconciliation's linked statement: matches for these
       // journal lines can only have been made from it, and an unscoped
       // update would let arbitrary journalLineIds in the request body reset
@@ -503,8 +887,8 @@ export async function updateLines(tenantId: string, reconciliationId: string, li
             WHERE tenant_id = ${tenantId} AND reconciliation_id = ${reconciliationId}
           )
           AND match_status IN ('auto', 'confirmed')
-          AND (matched_journal_line_id IN (${idList})
-            OR jsonb_exists_any(COALESCE(score_breakdown->'group'->'journalLineIds', '[]'::jsonb), ARRAY[${textList}]))
+          AND (matched_journal_line_id = ANY(${uuidArray(unclearIds)}::uuid[])
+            OR jsonb_exists_any(COALESCE(score_breakdown->'group'->'journalLineIds', '[]'::jsonb), ${uuidArray(unclearIds)}::text[]))
         RETURNING id
       `);
       // Wave 2 many-to-one: member statement lines carry a back-pointer to
@@ -522,112 +906,239 @@ export async function updateLines(tenantId: string, reconciliationId: string, li
       }
     }
   });
-
-  return getReconciliation(tenantId, reconciliationId);
 }
 
+// ─── Finish ─────────────────────────────────────────────────────
+
+/** Posts a pending charge through the ledger; returns its id and its line on the reconciled account. */
+async function postCharge(
+  tx: Tx,
+  tenantId: string,
+  recon: ReconRow,
+  companyId: string | null,
+  kind: ReconcileChargeKind,
+  charge: ChargeState,
+  userId: string | undefined,
+): Promise<{ txnId: string; lineId: string }> {
+  const amount = new Decimal(charge.amount).toFixed(4);
+  const reconLine = kind === 'serviceCharge'
+    ? { accountId: recon.accountId, debit: '0', credit: amount }
+    : { accountId: recon.accountId, debit: amount, credit: '0' };
+  const otherLine = kind === 'serviceCharge'
+    ? { accountId: charge.accountId, debit: amount, credit: '0' }
+    : { accountId: charge.accountId, debit: '0', credit: amount };
+  const txn = await postTransaction(tenantId, {
+    txnType: kind === 'serviceCharge' ? 'expense' : 'deposit',
+    txnDate: charge.date,
+    memo: kind === 'serviceCharge' ? 'Service charge' : 'Interest earned',
+    total: amount,
+    source: 'reconciliation',
+    sourceId: recon.id,
+    lines: kind === 'serviceCharge' ? [otherLine, reconLine] : [reconLine, otherLine],
+  }, userId, companyId ?? undefined, tx);
+  const [line] = await tx.select({ id: journalLines.id }).from(journalLines)
+    .where(and(
+      eq(journalLines.tenantId, tenantId),
+      eq(journalLines.transactionId, txn.id),
+      eq(journalLines.accountId, recon.accountId),
+    ))
+    .limit(1);
+  if (!line) throw AppError.internal('Posted charge has no line on the reconciled account');
+  return { txnId: txn.id, lineId: line.id };
+}
+
+/**
+ * Finish (U-188, U-189): only at a difference of exactly zero. In one
+ * transaction: post the pending service charge (expense) and interest
+ * (deposit) through the ledger — closing date enforced, closingPassword via
+ * the request's lock context — add their lines to the worksheet as cleared,
+ * mark the reconciliation complete and write one audit row.
+ */
 export async function complete(tenantId: string, reconciliationId: string, userId?: string) {
-  // Lock + read + compute + write, all in one transaction. Previously
-  // the read and the write were on the default connection with no
-  // locking, so two concurrent complete() calls could both pass the
-  // "difference < 0.01" check and both flip the status.
   await db.transaction(async (tx) => {
-    const [recon] = await tx.select().from(reconciliations)
-      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
-      .for('update')
-      .limit(1);
+    const recon = await lockInProgress(tx, tenantId, reconciliationId);
 
-    if (!recon) throw AppError.notFound('Reconciliation not found');
-    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
-
-    // Recompute cleared balance inside the lock so it reflects the
-    // latest updateLines results rather than a possibly-stale snapshot.
+    // Recompute inside the lock so it reflects the latest updateLines.
     const linesResult = await tx.execute(sql`
-      SELECT rl.is_cleared, jl.debit, jl.credit
+      SELECT rl.journal_line_id, rl.is_cleared, jl.debit, jl.credit
       FROM reconciliation_lines rl
       JOIN journal_lines jl ON jl.id = rl.journal_line_id
       WHERE rl.reconciliation_id = ${reconciliationId}
     `);
-    let cleared = new Decimal(recon.beginningBalance);
-    for (const line of linesResult.rows as any[]) {
-      if (line.is_cleared) {
-        cleared = cleared.plus(new Decimal(line.debit).minus(line.credit));
-      }
+    const lines = linesResult.rows as Array<{ journal_line_id: string; is_cleared: boolean | null; debit: string; credit: string }>;
+    const totals = clearedTotals(recon, lines);
+    if (!totals.difference.isZero()) {
+      throw AppError.badRequest(
+        `Cannot complete: the difference is ${totals.difference.toFixed(2)}; it must be exactly 0.00`,
+        'RECONCILE_DIFFERENCE_NOT_ZERO',
+        { difference: totals.difference.toFixed(4) },
+      );
     }
-    const difference = new Decimal(recon.statementEndingBalance).minus(cleared);
-    if (difference.abs().greaterThan('0.01')) {
-      throw AppError.badRequest(`Cannot complete: difference is $${difference.toFixed(2)}, must be $0.00`);
+
+    const acct = await accountOf(tx, tenantId, recon.accountId);
+    const companyId = acct?.companyId ?? null;
+    const posted: { serviceChargeTxnId: string | null; interestTxnId: string | null } = { serviceChargeTxnId: null, interestTxnId: null };
+    const clearedLineIds = lines.filter((l) => l.is_cleared).map((l) => l.journal_line_id);
+    for (const kind of ['serviceCharge', 'interest'] as const) {
+      const charge = pendingCharge(recon, kind);
+      if (!charge) continue;
+      await assertChargeAccount(tx, tenantId, { id: recon.accountId, companyId }, kind, charge.accountId);
+      const { txnId, lineId } = await postCharge(tx, tenantId, recon, companyId, kind, charge, userId);
+      await tx.insert(reconciliationLines).values({
+        reconciliationId, journalLineId: lineId, isCleared: true, clearedAt: new Date(),
+      });
+      clearedLineIds.push(lineId);
+      if (kind === 'serviceCharge') posted.serviceChargeTxnId = txnId;
+      else posted.interestTxnId = txnId;
     }
 
     await tx.update(reconciliations).set({
       status: 'complete',
-      clearedBalance: cleared.toFixed(4),
-      difference: '0',
+      clearedBalance: totals.cleared.toFixed(4),
+      difference: totals.difference.toFixed(4),
       completedAt: new Date(),
       completedBy: userId || null,
       updatedAt: new Date(),
+      ...(posted.serviceChargeTxnId ? { serviceChargeTxnId: posted.serviceChargeTxnId } : {}),
+      ...(posted.interestTxnId ? { interestTxnId: posted.interestTxnId } : {}),
     }).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+
+    await auditLog(
+      tenantId, 'update', 'reconciliation', reconciliationId,
+      { status: 'in_progress' },
+      {
+        status: 'complete',
+        clearedBalance: totals.cleared.toFixed(4),
+        clearedLineIds,
+        postedCharges: posted,
+      },
+      userId, tx,
+    );
   });
 }
 
-export async function undo(tenantId: string, reconciliationId: string, userId?: string) {
-  // Same locking pattern as complete(). Preventing interleaved undo
-  // and complete() calls keeps the status transitions deterministic.
-  await db.transaction(async (tx) => {
-    const [recon] = await tx.select().from(reconciliations)
-      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
-      .for('update')
-      .limit(1);
+// ─── Undo ───────────────────────────────────────────────────────
 
-    if (!recon) throw AppError.notFound('Reconciliation not found');
-    if (recon.status !== 'complete') throw AppError.badRequest('Only a completed reconciliation can be undone.');
+/**
+ * Undo the most recent completed reconciliation of its account (U-190).
+ *   clear_checks (default): reopen with every line unticked (the behavior
+ *                before U-190).
+ *   keep_checks:  reopen with the ticks exactly as they were at finish.
+ *   discard:      reopen and discard in one step (the cancel teardown).
+ * Posted service charge / interest entries stay in the books in every mode
+ * (keep_checks keeps their txn ids, so the next finish never re-posts them).
+ * A statement date on or before the closing date needs the closing-date
+ * password (or the staff override where allowed); the override is audited.
+ * One audit row: action update, before {status, accountId, statementDate,
+ * clearedLineIds}, after {undo: {mode}}.
+ * Callers gate it to the company owner (route).
+ */
+export async function undo(
+  tenantId: string,
+  reconciliationId: string,
+  userId?: string,
+  opts: { mode?: UndoMode } = {},
+) {
+  const mode: UndoMode = opts.mode ?? 'clear_checks';
+  try {
+    await db.transaction(async (tx) => {
+      const [recon] = await tx.select().from(reconciliations)
+        .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
+        .for('update')
+        .limit(1);
 
-    // Only the MOST RECENT completed reconciliation for this account may be
-    // undone — undoing an older period would corrupt the beginning-balance
-    // chain of every reconciliation completed after it.
-    const [latestComplete] = await tx.select({ id: reconciliations.id }).from(reconciliations)
-      .where(and(
-        eq(reconciliations.tenantId, tenantId),
-        eq(reconciliations.accountId, recon.accountId),
-        eq(reconciliations.status, 'complete'),
-      ))
-      .orderBy(sql`${reconciliations.statementDate} DESC`)
-      .limit(1);
-    if (!latestComplete || latestComplete.id !== reconciliationId) {
-      throw AppError.badRequest('Only the most recent completed reconciliation can be undone — undo newer periods first.');
-    }
+      if (!recon) throw AppError.notFound('Reconciliation not found');
+      if (recon.status !== 'complete') {
+        throw AppError.conflict('Only a completed reconciliation can be undone.', 'RECONCILIATION_NOT_COMPLETE', { status: recon.status });
+      }
 
-    await tx.update(reconciliations).set({
-      status: 'in_progress',
-      completedAt: null,
-      completedBy: null,
-      updatedAt: new Date(),
-    }).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+      // Only the MOST RECENT completed reconciliation for this account may be
+      // undone — undoing an older period would corrupt the beginning-balance
+      // chain of every reconciliation completed after it.
+      const [latestComplete] = await tx.select({ id: reconciliations.id }).from(reconciliations)
+        .where(and(
+          eq(reconciliations.tenantId, tenantId),
+          eq(reconciliations.accountId, recon.accountId),
+          eq(reconciliations.status, 'complete'),
+        ))
+        .orderBy(sql`${reconciliations.statementDate} DESC`)
+        .limit(1);
+      if (!latestComplete || latestComplete.id !== reconciliationId) {
+        throw AppError.conflict(
+          'Only the most recent completed reconciliation can be undone — undo newer periods first.',
+          'RECONCILIATION_NOT_LATEST',
+          { latestReconciliationId: latestComplete?.id ?? null },
+        );
+      }
 
-    // Reopening voids every electronic sign-off on this reconciliation
-    // (migration 0214) — in the same transaction, so a rolled-back undo
-    // leaves the signatures intact.
-    await invalidateForReopen(tenantId, reconciliationId, userId ?? null, tx);
+      // A reconciliation in progress on the account began from this one's
+      // ending balance; undoing under it would leave it on a stale anchor.
+      const other = await inProgressFor(tx, tenantId, recon.accountId, reconciliationId);
+      if (other) throw inProgressConflict(other.id, other.createdAt);
 
-    // Unmark all cleared lines
-    await tx.update(reconciliationLines).set({
-      isCleared: false,
-      clearedAt: null,
-    }).where(eq(reconciliationLines.reconciliationId, reconciliationId));
+      // Closed period: the statement date is the date the undo changes.
+      const acct = await accountOf(tx, tenantId, recon.accountId);
+      await checkLockDate(tx, tenantId, recon.statementDate, acct?.companyId ?? null);
 
-    // Statement Match Engine (wave 1): the undo un-clears every worksheet
-    // line, so any auto/confirmed statement-line matches for this
-    // reconciliation's statement must reset too.
-    await tx.execute(sql`
-      UPDATE bank_statement_lines bsl
-      SET match_status = 'unmatched', matched_journal_line_id = NULL,
-          match_score = NULL, score_breakdown = NULL, updated_at = now()
-      FROM bank_statements bs
-      WHERE bs.id = bsl.statement_id AND bs.reconciliation_id = ${reconciliationId}
-        AND bsl.tenant_id = ${tenantId}
-        AND bsl.match_status IN ('auto', 'confirmed')
-    `);
-  });
+      const clearedRes = await tx.execute(sql`
+        SELECT journal_line_id FROM reconciliation_lines
+        WHERE reconciliation_id = ${reconciliationId} AND is_cleared = true
+        ORDER BY journal_line_id
+      `);
+      const clearedLineIds = (clearedRes.rows as Array<{ journal_line_id: string }>).map((r) => r.journal_line_id);
+
+      // Reopening voids every electronic sign-off on this reconciliation
+      // (migration 0214) — in the same transaction, so a rolled-back undo
+      // leaves the signatures intact.
+      await invalidateForReopen(tenantId, reconciliationId, userId ?? null, tx);
+
+      if (mode !== 'keep_checks') {
+        // Statement Match Engine (wave 1): the lines are un-cleared (or the
+        // worksheet goes), so auto/confirmed statement-line matches reset.
+        await tx.execute(sql`
+          UPDATE bank_statement_lines bsl
+          SET match_status = 'unmatched', matched_journal_line_id = NULL,
+              match_score = NULL, score_breakdown = NULL, updated_at = now()
+          FROM bank_statements bs
+          WHERE bs.id = bsl.statement_id AND bs.reconciliation_id = ${reconciliationId}
+            AND bsl.tenant_id = ${tenantId}
+            AND bsl.match_status IN ('auto', 'confirmed')
+        `);
+      }
+
+      if (mode === 'discard') {
+        await tx.update(bankStatements)
+          .set({ reconciliationId: null })
+          .where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.reconciliationId, reconciliationId)));
+        await tx.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, reconciliationId));
+        await tx.delete(reconciliations).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+      } else {
+        await tx.update(reconciliations).set({
+          status: 'in_progress',
+          completedAt: null,
+          completedBy: null,
+          updatedAt: new Date(),
+        }).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+        if (mode === 'clear_checks') {
+          await tx.update(reconciliationLines).set({
+            isCleared: false,
+            clearedAt: null,
+          }).where(eq(reconciliationLines.reconciliationId, reconciliationId));
+        }
+      }
+
+      await auditLog(
+        tenantId, 'update', 'reconciliation', reconciliationId,
+        { status: 'complete', accountId: recon.accountId, statementDate: recon.statementDate, clearedLineIds },
+        { undo: { mode } },
+        userId, tx,
+      );
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) throw inProgressConflict(null);
+    throw err;
+  }
+  return { mode };
 }
 
 export async function getHistory(tenantId: string, accountId: string) {
@@ -636,46 +1147,83 @@ export async function getHistory(tenantId: string, accountId: string) {
     .orderBy(sql`${reconciliations.statementDate} DESC`);
 }
 
-// Edit header fields on an in-progress reconciliation. Today that's just the
-// statement ending balance — the figure the cleared balance ties out against.
-// Same lock/guard pattern as updateLines/complete: lock FOR UPDATE and refuse
-// once the reconciliation is complete (a completed period's ending balance is
-// the immutable anchor for the next period's beginning balance). The updated
-// value feeds straight into getReconciliation's difference recompute.
+// ─── Header edits ───────────────────────────────────────────────
+
+export interface UpdateReconciliationHeaderInput {
+  statementEndingBalance?: string;
+  statementDate?: string;
+  serviceCharge?: ReconcileChargeInput | null;
+  interest?: ReconcileChargeInput | null;
+}
+
+function sameCharge(current: ChargeState | null, next: ReconcileChargeInput | null): boolean {
+  if (!current || !next) return !current && !next;
+  return new Decimal(current.amount).equals(next.amount) && current.date === next.date && current.accountId === next.accountId;
+}
+
+// Edit header fields on an in-progress reconciliation: the statement ending
+// balance (oriented like start(): a liability's printed figure is flipped,
+// U-188), the statement date and the Begin charges (U-189). Same lock/guard
+// pattern as updateLines/complete. A charge Finish already posted can't
+// change (409 RECONCILE_CHARGE_POSTED); sending it unchanged is a no-op.
 export async function updateHeader(
   tenantId: string,
   reconciliationId: string,
-  input: { statementEndingBalance: string },
+  input: UpdateReconciliationHeaderInput,
   userId?: string,
 ) {
-  let before: string | null = null;
-  await db.transaction(async (tx) => {
-    const [recon] = await tx.select().from(reconciliations)
-      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
-      .for('update')
-      .limit(1);
-
-    if (!recon) throw AppError.notFound('Reconciliation not found');
-    if (recon.status === 'complete') throw AppError.badRequest('Reconciliation is already complete');
-    before = recon.statementEndingBalance;
-
-    await tx.update(reconciliations).set({
-      statementEndingBalance: input.statementEndingBalance,
-      updatedAt: new Date(),
-    }).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
-  });
-
-  await auditLog(
-    tenantId,
-    'update',
-    'reconciliation',
-    reconciliationId,
-    { statementEndingBalance: before },
-    { statementEndingBalance: input.statementEndingBalance },
-    userId,
-  );
-
+  await applyHeaderUpdate(tenantId, reconciliationId, input, userId);
   return getReconciliation(tenantId, reconciliationId);
+}
+
+/** updateHeader without the read-back (the route picks the view). */
+export async function applyHeaderUpdate(
+  tenantId: string,
+  reconciliationId: string,
+  input: UpdateReconciliationHeaderInput,
+  userId?: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const recon = await lockInProgress(tx, tenantId, reconciliationId);
+    const acct = await accountOf(tx, tenantId, recon.accountId);
+    const set: Partial<typeof reconciliations.$inferInsert> = {};
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+
+    if (input.statementEndingBalance !== undefined) {
+      const oriented = glOrientedStatementBalance(input.statementEndingBalance, acct?.accountType) ?? input.statementEndingBalance;
+      set.statementEndingBalance = oriented;
+      before['statementEndingBalance'] = recon.statementEndingBalance;
+      after['statementEndingBalance'] = new Decimal(oriented).toFixed(4);
+    }
+    if (input.statementDate !== undefined) {
+      set.statementDate = input.statementDate;
+      before['statementDate'] = recon.statementDate;
+      after['statementDate'] = input.statementDate;
+    }
+    for (const kind of ['serviceCharge', 'interest'] as const) {
+      const next = input[kind];
+      if (next === undefined) continue;
+      const current = chargeOf(recon, kind);
+      if (sameCharge(current, next)) continue;
+      if (current?.txnId) {
+        throw AppError.conflict(
+          'This charge was already entered in the books. Change or delete it in the register.',
+          'RECONCILE_CHARGE_POSTED',
+          { kind, transactionId: current.txnId },
+        );
+      }
+      if (next) await assertChargeAccount(tx, tenantId, { id: recon.accountId, companyId: acct?.companyId ?? null }, kind, next.accountId);
+      Object.assign(set, chargeColumnsFor(kind, next));
+      before[kind] = chargeView(current);
+      after[kind] = next ? { amount: new Decimal(next.amount).toFixed(4), date: next.date, accountId: next.accountId } : null;
+    }
+    if (Object.keys(set).length === 0) return;
+
+    await tx.update(reconciliations).set({ ...set, updatedAt: new Date() })
+      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
+    await auditLog(tenantId, 'update', 'reconciliation', reconciliationId, before, after, userId, tx);
+  });
 }
 
 // Cancel (discard) an in-progress reconciliation so the account is free to
@@ -686,18 +1234,12 @@ export async function updateHeader(
 //
 // Teardown mirrors undo(): reset any auto/confirmed statement-line matches and
 // unlink the driving statement so it can be reconciled again, then delete the
-// worksheet lines and the header.
+// worksheet lines and the header. The audit row is written in the same
+// transaction (U-188).
 export async function cancel(tenantId: string, reconciliationId: string, userId?: string) {
   await db.transaction(async (tx) => {
-    const [recon] = await tx.select().from(reconciliations)
-      .where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)))
-      .for('update')
-      .limit(1);
-
-    if (!recon) throw AppError.notFound('Reconciliation not found');
-    if (recon.status === 'complete') {
-      throw AppError.badRequest('A completed reconciliation cannot be canceled — use Undo instead.');
-    }
+    const recon = await lockInProgress(tx, tenantId, reconciliationId,
+      'A completed reconciliation cannot be canceled — use Undo instead.');
 
     // Reset statement lines this reconciliation had matched (same as undo).
     await tx.execute(sql`
@@ -718,7 +1260,8 @@ export async function cancel(tenantId: string, reconciliationId: string, userId?
     // Delete worksheet lines, then the header.
     await tx.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, reconciliationId));
     await tx.delete(reconciliations).where(and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.id, reconciliationId)));
-  });
 
-  await auditLog(tenantId, 'delete', 'reconciliation', reconciliationId, null, null, userId);
+    await auditLog(tenantId, 'delete', 'reconciliation', reconciliationId,
+      { status: recon.status, accountId: recon.accountId, statementDate: recon.statementDate }, null, userId, tx);
+  });
 }
