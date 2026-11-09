@@ -318,7 +318,7 @@ bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter
       + 'transaction: every row is validated first, then the rows that pass post together (all or nothing on an unexpected error). '
       + 'A row posts the owner’s values when sent (accountId without splits is one line), else its staged assignment, else its '
       + 'suggestion; matchTransactionId (+ journalLineId) matches it to an existing entry instead (as PUT /feed/:id/match). '
-      + 'skipped[] {id, reason}: not_found, in_use (another request holds the row; refresh it), not_pending (already accepted, '
+      + 'skipped[] {id, reason}: not_found, in_use (another request still holds the row after a short look, up to 2 s, never a lock wait; refresh it), not_pending (already accepted, '
       + 'excluded, or its entry was voided), possible_duplicate, has_match (a candidate entry line, a waiting payment or the other '
       + 'side of a transfer: matches are never posted over unless the row carries values or a match), incomplete (no account), '
       + 'staging_differs (rule mode: the row’s suggestion is not what the rule stages now). failures[] {id, code, error, '
@@ -506,7 +506,7 @@ bankingRouter.get('/feed/:id/deposit-groupings', requirePermission('receive_paym
 // One database transaction each: post, then match the feed item(s) to the
 // entry. Exact decimals; amounts in the feed sign (positive = money out).
 // Feed rows locked in id order FOR UPDATE SKIP LOCKED: a row another request
-// holds is 409 FEED_ITEM_IN_USE {id}; a row not pending or assigned is 409
+// still holds after a short look (FEED_ROW_WAIT, U-187) is 409 FEED_ITEM_IN_USE {id}; a row not pending or assigned is 409
 // FEED_ITEM_NOT_PENDING {id, status}. Idempotency-Key required on the posts.
 
 const feedItemIdParam = z.object({ id: z.string().uuid() });

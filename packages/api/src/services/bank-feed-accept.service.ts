@@ -11,7 +11,9 @@
  * database transaction (review B1):
  *
  *   1. Validate. Lock the feed rows in sorted id order, FOR UPDATE SKIP
- *      LOCKED (a row another request holds is reported, never waited for),
+ *      LOCKED (a row another request holds is looked for again for up to
+ *      FEED_ROW_WAIT, never waited on in a lock queue, then reported; U-187:
+ *      import post-processing holds a chunk's rows for a moment),
  *      and sort every row into skipped[] (nothing to do), failures[] (the
  *      owner can fix it: a closed period, an unbalanced split, a reconciled
  *      entry) or the work list. Only checks that can be predicted run here;
@@ -82,6 +84,7 @@ import * as ledger from './ledger.service.js';
 import * as feed from './bank-feed.service.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { matchSignalSql } from './bank-feed-buckets.js';
+import { lockFeedRows } from './bank-feed-row-locks.js';
 import { resolveMatchLine } from './bank-feed-lines.js';
 import {
   liveRecordFor, markUndone, newAcceptGroup, patchFromPriorState, recordAcceptItem, setAcceptGroupResult,
@@ -171,15 +174,14 @@ function companyMatches(rowCompanyId: string | null, companyId: string | undefin
 }
 
 /**
- * Locks feed rows in sorted id order, FOR UPDATE SKIP LOCKED. Returns the
- * locked rows and, for the rest, whether they exist (in_use) or not.
+ * Locks feed rows in sorted id order, FOR UPDATE SKIP LOCKED; a held row is
+ * looked for again for a short while, never waited on (bank-feed-row-locks,
+ * U-187). Returns the locked rows and, for the rest, whether they exist
+ * (in_use) or not.
  */
 async function lockRows(tx: Tx, tenantId: string, companyId: string | undefined, ids: string[]) {
   const sorted = [...new Set(ids)].sort();
-  const rows = sorted.length === 0 ? [] : await tx.select().from(bankFeedItems)
-    .where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, sorted)))
-    .orderBy(asc(bankFeedItems.id))
-    .for('update', { skipLocked: true });
+  const rows = await lockFeedRows(tx, tenantId, sorted);
   const locked = new Map(rows.filter((r) => companyMatches(r.companyId, companyId)).map((r) => [r.id, r]));
   const missing = sorted.filter((id) => !rows.some((r) => r.id === id));
   const existing = missing.length === 0 ? [] : await tx.select({ id: bankFeedItems.id, companyId: bankFeedItems.companyId })

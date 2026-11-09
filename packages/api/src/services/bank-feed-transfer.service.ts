@@ -21,8 +21,9 @@
 //   - Pairs on the same GL account are never a transfer (two connections can
 //     point at one account).
 //   - Feed rows are locked in sorted id order with FOR UPDATE SKIP LOCKED: a
-//     row another request holds is 409 FEED_ITEM_IN_USE {id}, never a wait or
-//     a deadlock. Only pending or assigned rows (409 FEED_ITEM_NOT_PENDING
+//     row another request holds is looked for again for a moment
+//     (bank-feed-row-locks FEED_ROW_WAIT, U-187), then 409 FEED_ITEM_IN_USE
+//     {id}; never a lock wait or a deadlock. Only pending or assigned rows (409 FEED_ITEM_NOT_PENDING
 //     {id, status}).
 //   - Source bank_feed, source id = the item the request names.
 //   - No AI_BUCKET_WORKFLOW_V1 dependency: the banking routes carry no
@@ -44,6 +45,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import { recordAcceptGroup } from './bank-feed-accept-records.js';
+import { lockFeedRows } from './bank-feed-row-locks.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -65,7 +67,8 @@ function notFound(): AppError {
 }
 
 /**
- * Locks the feed rows in sorted id order, FOR UPDATE SKIP LOCKED. A missing
+ * Locks the feed rows in sorted id order, FOR UPDATE SKIP LOCKED (a held
+ * row is looked for again for a moment, bank-feed-row-locks). A missing
  * row (or another company's) is 404; a row another request holds is 409
  * FEED_ITEM_IN_USE; a row that isn't pending or assigned is 409
  * FEED_ITEM_NOT_PENDING; a row still flagged as a possible duplicate is 409
@@ -75,10 +78,7 @@ export async function lockOpenFeedItems(
   tx: Tx, tenantId: string, companyId: string | undefined, ids: string[],
 ): Promise<Map<string, FeedRow>> {
   const sorted = [...new Set(ids)].sort();
-  const locked = await tx.select().from(bankFeedItems)
-    .where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, sorted)))
-    .orderBy(bankFeedItems.id)
-    .for('update', { skipLocked: true });
+  const locked = await lockFeedRows(tx, tenantId, sorted);
   const byId = new Map(locked.map((r) => [r.id, r]));
   for (const id of sorted) {
     const row = byId.get(id);

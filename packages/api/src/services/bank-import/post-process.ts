@@ -73,8 +73,16 @@ import { getThresholds } from '../practice-thresholds.service.js';
 import { findSystemAccountId, SUSPENSE_TAG } from '../system-accounts.service.js';
 import { Decimal } from './keys.js';
 
-/** Items per chunk; a test may lower it, and may watch each chunk commit (`afterChunk`, tests only). */
-export const POST_CHUNK: { size: number; afterChunk?: (batchId: string) => Promise<void> | void } = { size: 1000 };
+/**
+ * Items per chunk; a test may lower it, and may watch each chunk commit
+ * (`afterChunk`) or run while the chunk's write holds its rows (`afterLock`,
+ * inside the transaction after the FOR UPDATE). Tests only.
+ */
+export const POST_CHUNK: {
+  size: number;
+  afterChunk?: (batchId: string) => Promise<void> | void;
+  afterLock?: (batchId: string) => Promise<void> | void;
+} = { size: 1000 };
 
 type Item = typeof bankFeedItems.$inferSelect;
 type LegacyRule = typeof bankRules.$inferSelect;
@@ -253,6 +261,7 @@ async function processChunk(ctx: RunContext, batchId: string, ids: string[]): Pr
       SELECT id, md5(bank_feed_items::text) AS v FROM bank_feed_items
       WHERE tenant_id = ${tenantId} AND id IN (SELECT (jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb))::uuid)
       ORDER BY id FOR UPDATE`);
+    await POST_CHUNK.afterLock?.(batchId);
     const now = new Map((current.rows as Array<{ id: string; v: string }>).map((r) => [r.id, r.v]));
     const fresh = items.filter((i) => now.get(i.id) === versions.get(i.id));
     if (fresh.length < items.length) {
