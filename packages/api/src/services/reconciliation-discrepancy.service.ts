@@ -51,7 +51,7 @@ export interface DiscrepancyRow {
   undoMode?: string;
 }
 
-type Json = Record<string, any>;
+type Json = Record<string, unknown>;
 
 /** Audit images are stored as jsonb; older writers stored a JSON string. */
 function image(v: unknown): Json | null {
@@ -174,12 +174,12 @@ export async function buildReconciliationDiscrepancy(tenantId: string, accountId
       FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id = ANY(${ids}::uuid[])
     `);
     const linesBy = new Map<string, LineImage[]>();
-    for (const l of lines.rows as any[]) {
+    for (const l of lines.rows as Array<{ transaction_id: string; account_id: string; debit: string; credit: string; description: string | null; tag_id: string | null; is_void_reversal: boolean }>) {
       const list = linesBy.get(l.transaction_id) ?? [];
       list.push({ accountId: l.account_id, debit: l.debit, credit: l.credit, description: l.description, tagId: l.tag_id, isVoidReversal: l.is_void_reversal });
       linesBy.set(l.transaction_id, list);
     }
-    for (const t of txns.rows as any[]) {
+    for (const t of txns.rows as Array<{ id: string; txn_date: string; txn_type: string; txn_number: string | null; check_number: number | null; contact_id: string | null; payee_name_on_check: string | null; memo: string | null; status: string; contact_name: string | null }>) {
       current.set(t.id, {
         txnDate: t.txn_date, txnType: t.txn_type, txnNumber: t.txn_number, checkNumber: t.check_number,
         contactId: t.contact_id, payeeNameOnCheck: t.payee_name_on_check, memo: t.memo, status: t.status,
@@ -248,7 +248,7 @@ export async function buildReconciliationDiscrepancy(tenantId: string, accountId
       )
     ORDER BY t.id, r.statement_date ASC
   `);
-  for (const t of added.rows as any[]) {
+  for (const t of added.rows as Array<{ id: string; txn_date: string; txn_type: string; txn_number: string | null; check_number: number | null; payee_name_on_check: string | null; contact_name: string | null; created_at: unknown; reconciliation_id: string; statement_date: string; amount: string | null; created_by: string | null }>) {
     rows.push({
       kind: 'added_after',
       reconciliationId: t.reconciliation_id,
@@ -276,10 +276,10 @@ export async function buildReconciliationDiscrepancy(tenantId: string, accountId
         ->> 'accountId' = ${accountId}
     ORDER BY a.created_at, a.id
   `);
-  for (const u of undos.rows as any[]) {
+  for (const u of undos.rows as Array<{ entity_id: string; before_data: unknown; after_data: unknown; created_at: unknown; changed_by: string | null }>) {
     const before = image(u.before_data) ?? {};
     const after = image(u.after_data) ?? {};
-    const ids: string[] = Array.isArray(before['clearedLineIds']) ? before['clearedLineIds'] : [];
+    const ids: string[] = Array.isArray(before['clearedLineIds']) ? (before['clearedLineIds'] as string[]) : [];
     let net = new Decimal(0);
     if (ids.length > 0) {
       const res = await db.execute(sql`
@@ -302,7 +302,7 @@ export async function buildReconciliationDiscrepancy(tenantId: string, accountId
       changedAt: iso(u.created_at),
       changedBy: u.changed_by ?? null,
       fields: [],
-      undoMode: String(after['undo']?.mode ?? 'clear_checks'),
+      undoMode: String((after['undo'] as { mode?: string } | undefined)?.mode ?? 'clear_checks'),
     });
   }
 
