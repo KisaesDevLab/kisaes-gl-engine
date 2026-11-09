@@ -172,6 +172,17 @@ export interface Reconciliation {
   status: ReconciliationStatus;
   completedAt: string | null;
   completedBy: string | null;
+  /** Begin charges (migration 0271, U-189): counted while *TxnId is null, posted by complete. */
+  serviceChargeAmount?: string | null;
+  serviceChargeDate?: string | null;
+  serviceChargeAccountId?: string | null;
+  serviceChargeTxnId?: string | null;
+  interestAmount?: string | null;
+  interestDate?: string | null;
+  interestAccountId?: string | null;
+  interestTxnId?: string | null;
+  /** The worksheet also holds uncleared lines dated after the statement date (U-189). */
+  includeLaterLines?: boolean;
   createdAt: string;
   updatedAt: string;
   /** Electronic sign-off state (history list only — GET /banking/reconciliations). */

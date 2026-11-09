@@ -225,9 +225,27 @@ export const reconciliations = pgTable('reconciliations', {
   status: varchar('status', { length: 20 }).default('in_progress'),
   completedAt: timestamp('completed_at', { withTimezone: true }),
   completedBy: uuid('completed_by'),
+  // Service charge and interest entered at Begin (migration 0271, U-189):
+  // counted in the cleared balance while *_txn_id is null, posted by Finish
+  // (txn ids set once, never posted again after an Undo).
+  serviceChargeAmount: decimal('service_charge_amount', { precision: 19, scale: 4 }),
+  serviceChargeDate: date('service_charge_date'),
+  serviceChargeAccountId: uuid('service_charge_account_id'),
+  serviceChargeTxnId: uuid('service_charge_txn_id'),
+  interestAmount: decimal('interest_amount', { precision: 19, scale: 4 }),
+  interestDate: date('interest_date'),
+  interestAccountId: uuid('interest_account_id'),
+  interestTxnId: uuid('interest_txn_id'),
+  // The worksheet also holds uncleared lines dated after the statement date.
+  includeLaterLines: boolean('include_later_lines').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
-});
+}, (table) => ({
+  // One in-progress reconciliation per account (migration 0272, U-188).
+  oneInProgress: uniqueIndex('uq_reconciliations_one_in_progress')
+    .on(table.tenantId, table.accountId)
+    .where(sql`status = 'in_progress'`),
+}));
 
 export const reconciliationLines = pgTable('reconciliation_lines', {
   id: uuid('id').primaryKey().defaultRandom(),
