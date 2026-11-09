@@ -42,7 +42,7 @@ import * as bankStatementsService from '../services/bank-statements.service.js';
 import * as statementMatchService from '../services/statement-match.service.js';
 import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
 import { requireFeedAcceptDraftPermission, draftAttachPermissionsOf } from '../middleware/document-draft-permission.js';
-import { DUPLICATE_WINDOW_DAYS } from '../services/document-draft.service.js';
+import { DUPLICATE_WINDOW_DAYS, DUPLICATE_WINDOW_DAYS_NO_VENDOR } from '../services/document-draft.service.js';
 import { lockContextMiddleware, getLockContext } from '../services/lock-context.js';
 import { precheckClosingPassword } from '../services/closing-password.service.js';
 import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/check-payee-backfill.service.js';
@@ -346,7 +346,10 @@ bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter
       + 'vendor with the same reference, or the same total within ' + `${DUPLICATE_WINDOW_DAYS}` + ' days, that is '
       + 'not in documentDraft.acknowledgeDuplicateOf (uuid[], max 50) fails the row DOCUMENT_POSSIBLE_DUPLICATE (not the bank '
       + 'line\'s possible_duplicate) with details {draftId, matches: [{source: transaction, id, reason: reference | '
-      + 'amount_date, txnType, kind: null, date, total, reference}]}; nothing posts and the draft stays as it was. Send the '
+      + 'amount_date, noVendor, txnType, kind: null, date, total, reference}]}; nothing posts and the draft stays as it was. '
+      + 'document-duplicates-no-vendor-v1: with no vendor (no row contact and no suggestedContactId) the check still runs, over '
+      + 'any vendor\'s posted bills, expenses, card charges and checks (open bills too) with the same reference, or the same '
+      + 'total within ' + `${DUPLICATE_WINDOW_DAYS_NO_VENDOR}` + ' days; those matches carry noVendor: true. Send the '
       + 'match ids in acknowledgeDuplicateOf to post it once (recorded on the draft\'s audit row as acknowledgedDuplicates). '
       + 'Matches to an existing entry and money-in rows are not checked.',
     body: feedAcceptSchema,

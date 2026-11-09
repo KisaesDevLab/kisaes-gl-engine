@@ -36,7 +36,10 @@
  * draft's reference, or the same total within 60 days of the row's date,
  * that is not in documentDraft.acknowledgeDuplicateOf fails the row
  * DOCUMENT_POSSIBLE_DUPLICATE {draftId, matches} with nothing posted.
- * Matches and money-in rows are not checked (nothing new posts as a bill or
+ * Without a vendor (U-99, document-duplicates-no-vendor-v1) any vendor's
+ * posted bill or expense with the reference, or the same total within 7
+ * days, counts (matches flagged noVendor), under the company's no-vendor
+ * lock. Matches and money-in rows are not checked (nothing new posts as a bill or
  * expense).
  *
  * Several postings under one Idempotency-Key in one database transaction are
@@ -487,10 +490,12 @@ export async function acceptFeedItems(
     // lock after its draft lock: draft, then vendor, then the posting).
     const dupChecks = plan
       .filter((p): p is Extract<AcceptPlan, { kind: 'post' }> => p.kind === 'post' && !!p.draft && postedTxnType(p.row) === 'expense')
-      .map((p) => ({ p, contactId: p.values.contactId || p.draft!.suggestedContactId || null }))
-      .filter((x): x is { p: Extract<AcceptPlan, { kind: 'post' }>; contactId: string } => !!x.contactId);
-    for (const vendor of [...new Set(dupChecks.map((x) => x.contactId))].sort()) {
-      await draftService.vendorAdvisoryLock(tx, companyId!, vendor);
+      // No vendor (null): the check still runs, over any vendor's posted
+      // documents (U-99, document-duplicates-no-vendor-v1).
+      .map((p) => ({ p, contactId: p.values.contactId || p.draft!.suggestedContactId || null }));
+    const lockVendors = new Map(dupChecks.map((x) => [draftService.vendorLockKey(companyId!, x.contactId), x.contactId] as const));
+    for (const key of [...lockVendors.keys()].sort()) {
+      await draftService.vendorAdvisoryLock(tx, companyId!, lockVendors.get(key) ?? null);
     }
     const refused = new Set<string>();
     for (const { p, contactId } of dupChecks) {
