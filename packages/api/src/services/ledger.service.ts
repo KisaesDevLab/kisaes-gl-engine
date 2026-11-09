@@ -834,6 +834,56 @@ export async function lockReconciliationsOfTransaction(tx: Tx, tenantId: string,
   `);
 }
 
+/** The completed reconciliation that cleared a line of a transaction (U-195). */
+export interface ReconciledBy {
+  reconciliationId: string;
+  /** YYYY-MM-DD */
+  statementDate: string;
+}
+
+/**
+ * The latest completed reconciliation (statement date, then finish) in which
+ * a line of `txnId` is cleared, or null when none is.
+ */
+export async function completedReconciliationOfTransaction(
+  executor: DbOrTx, tenantId: string, txnId: string,
+): Promise<ReconciledBy | null> {
+  const res = await executor.execute(sql`
+    SELECT r.id AS reconciliation_id, r.statement_date::text AS statement_date
+    FROM ${reconciliationLines} rl
+    JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
+    JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
+    WHERE r.tenant_id = ${tenantId}
+      AND r.status = 'complete'
+      AND rl.is_cleared = true
+      AND jl.transaction_id = ${txnId}
+    ORDER BY r.statement_date DESC, r.completed_at DESC NULLS LAST
+    LIMIT 1
+  `);
+  const row = (res.rows as Array<{ reconciliation_id: string; statement_date: string }>)[0];
+  return row ? { reconciliationId: row.reconciliation_id, statementDate: row.statement_date } : null;
+}
+
+/**
+ * The refusal for changing an entry a completed reconciliation cleared:
+ * 409 RECONCILED_TRANSACTION {action, field?, reconciliationId,
+ * statementDate} (U-195). The message text is unchanged from the older
+ * code-less refusals, so clients matching on it keep working.
+ */
+export function reconciledTransactionError(
+  message: string,
+  action: 'void' | 'update' | 'delete',
+  by: ReconciledBy,
+  field?: 'txnDate' | 'lines',
+): AppError {
+  return AppError.conflict(message, 'RECONCILED_TRANSACTION', {
+    action,
+    ...(field ? { field } : {}),
+    reconciliationId: by.reconciliationId,
+    statementDate: by.statementDate,
+  });
+}
+
 export async function voidTransaction(tenantId: string, txnId: string, reason: string, userId?: string, opts: VoidTransactionOptions = {}) {
   // Wrap in a database transaction AND lock the row up front. Without the
   // row lock, two concurrent void calls on the same transaction can both
@@ -909,21 +959,13 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
     // the rec's cleared total stale and unreconcilable. Operator must
     // undo the rec first, then void + post a correction.
     await lockReconciliationsOfTransaction(tx, tenantId, txnId);
-    const clearedInCompleted = await tx.execute(sql`
-      SELECT 1
-      FROM ${reconciliationLines} rl
-      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
-      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
-      WHERE r.tenant_id = ${tenantId}
-        AND r.status = 'complete'
-        AND rl.is_cleared = true
-        AND jl.transaction_id = ${txnId}
-      LIMIT 1
-    `);
-    if ((clearedInCompleted.rows as unknown[]).length > 0) {
-      throw AppError.badRequest(
+    const reconciledBy = await completedReconciliationOfTransaction(tx, tenantId, txnId);
+    if (reconciledBy) {
+      throw reconciledTransactionError(
         'Cannot void a transaction whose lines are cleared in a completed bank reconciliation. ' +
           'Undo the reconciliation first, then void and post a correcting entry.',
+        'void',
+        reconciledBy,
       );
     }
 
@@ -1341,22 +1383,13 @@ export async function deleteTransactionInTx(
     });
 
     await lockReconciliationsOfTransaction(tx, tenantId, txnId);
-    const clearedInCompleted = await tx.execute(sql`
-      SELECT 1
-      FROM ${reconciliationLines} rl
-      JOIN ${reconciliations} r ON r.id = rl.reconciliation_id
-      JOIN ${journalLines} jl ON jl.id = rl.journal_line_id
-      WHERE r.tenant_id = ${tenantId}
-        AND r.status = 'complete'
-        AND rl.is_cleared = true
-        AND jl.transaction_id = ${txnId}
-      LIMIT 1
-    `);
-    if ((clearedInCompleted.rows as unknown[]).length > 0) {
-      throw AppError.conflict(
+    const reconciledBy = await completedReconciliationOfTransaction(tx, tenantId, txnId);
+    if (reconciledBy) {
+      throw reconciledTransactionError(
         'This transaction is part of a completed bank reconciliation, so it can’t be deleted. ' +
           'Undo the reconciliation first.',
-        'RECONCILED_TRANSACTION',
+        'delete',
+        reconciledBy,
       );
     }
 
@@ -1724,9 +1757,13 @@ export async function updateTransaction(
       if (ok && newPLLines.some((l) => isBalanceSheet(l.accountId))) ok = false;
 
       if (!ok) {
-        throw AppError.badRequest(
-          'This transaction is part of a completed bank reconciliation, so its reconciled (balance-sheet) line and date can’t change. ' +
-            'You can still recategorize or re-tag the income/expense lines. To change the reconciled amount, undo the reconciliation, or void and re-post.',
+        const reconciledBy = await completedReconciliationOfTransaction(tx, tenantId, txnId);
+        const message = 'This transaction is part of a completed bank reconciliation, so its reconciled (balance-sheet) line and date can’t change. ' +
+          'You can still recategorize or re-tag the income/expense lines. To change the reconciled amount, undo the reconciliation, or void and re-post.';
+        // clearedLineIds is non-empty here, so the lookup finds one.
+        if (!reconciledBy) throw AppError.badRequest(message);
+        throw reconciledTransactionError(
+          message, 'update', reconciledBy, existing.txnDate !== input.txnDate ? 'txnDate' : 'lines',
         );
       }
 

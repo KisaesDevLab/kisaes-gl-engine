@@ -988,5 +988,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * deleted is accepted: the charge is pending again and the next complete posts it.
    */
   'reconcile-hardening-v1',
+  /**
+   * Reconcile QA follow-ups (U-194–U-196, P27 QA). Registers of every bank detail type (bank, checking, savings, cash,
+   * petty_cash) report the bank allowedEntryTypes [expense, deposit, transfer, journal_entry] (U-194). Changing the date
+   * or reconciled line of an entry cleared in a completed reconciliation, voiding it, or voiding such a bill payment is
+   * 409 RECONCILED_TRANSACTION like delete (was a code-less 400; message text unchanged); every RECONCILED_TRANSACTION
+   * carries details {action: void | update | delete, field?: txnDate | lines (update), reconciliationId, statementDate}
+   * naming the latest such reconciliation (U-195). The register summary's lastReconciliationDate is the latest completed
+   * reconciliation's statement date: statement date DESC, then completedAt DESC (U-196).
+   */
+  'reconcile-qa-v1',
 ];
 

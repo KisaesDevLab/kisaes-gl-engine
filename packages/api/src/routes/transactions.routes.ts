@@ -251,7 +251,9 @@ transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, descri
     'ledger-guards-v1: a deposit edit that sends a linked line (payment or vendor refund) back without its sourceTransactionId while keeping an unlinked line on that account is 409 DEPOSIT_LINKS_DROPPED (details.sourceTransactionIds); ' +
     'an expense edit of a printed check that changes its printed face (amount, payee, memo line, bank account, date) is 409 CHECK_PRINTED (details.checkNumber, printedAt, changedFields), edit it with PUT /checks/:id; ' +
     'a check keeps its own header tags. A finance-charge invoice keeps its client: a contactId change is 409 FINANCE_CHARGE_CLIENT_CHANGE; ' +
-    'another invoice with a live payment or credit applied: 409 INVOICE_HAS_PAYMENTS (invoice-client-guard-v1).',
+    'another invoice with a live payment or credit applied: 409 INVOICE_HAS_PAYMENTS (invoice-client-guard-v1). ' +
+    'An entry cleared in a completed reconciliation keeps its date and balance-sheet lines: a change to either is 409 RECONCILED_TRANSACTION ' +
+    '(details.action update, field txnDate | lines, reconciliationId, statementDate; reconcile-qa-v1).',
   body: registerEntryBodyDoc,
   params: z.object({ id: z.string().uuid() }),
 }), async (req, res) => {
@@ -383,7 +385,9 @@ transactionsRouter.post('/:id/void', voidAjeGuard, apDocumentPermission('update'
   // B1): a bill or vendor credit with anything applied is 409
   // BILL_HAS_PAYMENTS / CREDIT_APPLIED; a bill payment is voided with its
   // applications (the bills and credits it settled reopen). A transaction
-  // of another company is 404 (review M3).
+  // of another company is 404 (review M3). An entry cleared in a completed
+  // reconciliation is 409 RECONCILED_TRANSACTION {action: 'void',
+  // reconciliationId, statementDate} (reconcile-qa-v1, U-195).
   await ledger.voidTransaction(req.tenantId, req.params['id']!, req.body.reason, req.userId, {
     expectedUpdatedAt: req.body.expectedUpdatedAt, companyId: req.companyId,
   });

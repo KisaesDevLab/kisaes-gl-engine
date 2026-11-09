@@ -588,7 +588,7 @@ describe('payment-bounce-v1 (U-132)', () => {
     }).returning();
     await db.insert(reconciliationLines).values({ reconciliationId: rec!.id, journalLineId: bankLine!.id, isCleared: true });
     v = await request('POST', `/api/v1/transactions/${r.json.returnId}/void`, c.token, { reason: 'x' });
-    expect(v.status).toBe(400);
+    expect([v.status, v.json.error.code]).toEqual([409, 'RECONCILED_TRANSACTION']);
     await db.delete(reconciliationLines).where(eq(reconciliationLines.reconciliationId, rec!.id));
 
     v = await request('POST', `/api/v1/invoices/${g.i1091}/void`, c.token, { reason: 'dup' });
