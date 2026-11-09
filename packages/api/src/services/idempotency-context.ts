@@ -68,3 +68,22 @@ export function runWithIdemContext<T>(ctx: IdemCtx, fn: () => T): T {
 export function runWithoutIdempotency<T>(fn: () => T): T {
   return storage.exit(fn);
 }
+
+/**
+ * Forgets the claim `tx` made after that database transaction rolled back,
+ * so a retry of the whole transaction (transactionWithRetry, U-197) claims
+ * the key again on its new `tx` instead of failing as a second claim. The
+ * claim row went with the rollback. A no-op when `tx` did not claim.
+ */
+export function releaseRolledBackClaim(tx: Tx): void {
+  const ctx = storage.getStore();
+  if (!ctx || ctx.claimTx !== tx) return;
+  delete ctx.claimTx;
+  delete ctx.rowId;
+  delete ctx.entity;
+}
+
+/** True when the request's claims already failed as a route bug (never retried). */
+export function idempotencyFailed(): boolean {
+  return storage.getStore()?.failed !== undefined;
+}

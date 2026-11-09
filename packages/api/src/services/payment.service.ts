@@ -29,6 +29,7 @@ import type {
   JournalLineInput,
 } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
 import { transactions, accounts, paymentApplications, companies, contacts, journalLines } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
@@ -1630,11 +1631,13 @@ export async function voidPayment(
   tenantId: string, paymentId: string, reason: string | undefined, userId?: string,
   opts: { expectedUpdatedAt?: string; companyId?: string } = {},
 ) {
-  await db.transaction(async (tx) => {
+  // Retried once on a deadlock (U-197): it voids its draws one by one and
+  // each takes the reconciliation header locks (U-193).
+  await transactionWithRetry(async (tx) => {
     await ledger.voidTransactionInTx(tx, tenantId, paymentId, reason ?? 'Voided', userId, {
       expectedUpdatedAt: opts.expectedUpdatedAt, companyId: opts.companyId, expectType: 'customer_payment',
     });
-  });
+  }, { label: 'payment_void' });
 }
 
 /**
@@ -1999,7 +2002,8 @@ export async function updatePayment(
   tenantId: string, paymentId: string, input: ReceivePaymentInput & { expectedUpdatedAt?: string },
   userId?: string, companyId?: string,
 ): Promise<PaymentRecord> {
-  return db.transaction(async (tx) => {
+  // Retried once on a deadlock (U-197): it voids its draws and re-makes its ledger entry.
+  return transactionWithRetry(async (tx) => {
     const parsed = parseSettlement(input);
     // The deposit holding it, then the payment, its credit links and the new
     // credit sources in one batch, read again under the locks (E-B1).

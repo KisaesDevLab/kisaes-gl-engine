@@ -52,6 +52,7 @@ import DecimalLib from 'decimal.js';
 import type { CreateDepositInput, JournalLineInput } from '@kis-books/shared';
 import { assertDepositSourcesNotBounced, assertNoBouncedPayments } from './payment.service.js';
 import { db, type Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
 import { accounts, depositLines, journalLines, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { exactAmount } from '../utils/money.js';
@@ -441,7 +442,8 @@ export async function updateDepositWithWarnings(
   tenantId: string, txnId: string, input: CreateDepositInput, userId?: string, companyId?: string,
 ) {
   const plan = planDeposit(input);
-  return db.transaction(async (tx) => {
+  // Retried once on a deadlock (U-197; reconciliation header locks, U-193).
+  return transactionWithRetry(async (tx) => {
     // Deposit row first, then its sources (create locks sources only), so
     // an edit and a create never wait on each other in opposite orders.
     const [existing] = await tx.select({

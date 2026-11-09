@@ -7,6 +7,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus, PaymentMethod, BulkUpdateTransactionsInput, BulkUpdateTransactionsResult } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
 import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags, items } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -892,7 +893,9 @@ export async function voidTransaction(tenantId: string, txnId: string, reason: s
   // the trial balance. SELECT … FOR UPDATE serializes the void path so
   // the second caller blocks until the first commits, then reads the
   // already-voided state and throws "already void" cleanly.
-  return await db.transaction((tx) => voidTransactionInTx(tx, tenantId, txnId, reason, userId, opts));
+  // Retried once on a deadlock (U-197): the reconciliation header lock (U-193)
+  // can deadlock, rarely, with a multi-entry payment void.
+  return await transactionWithRetry((tx) => voidTransactionInTx(tx, tenantId, txnId, reason, userId, opts), { label: 'void' });
 }
 
 /** voidTransaction inside the caller's database transaction. */
@@ -1326,7 +1329,9 @@ export async function deleteTransaction(
   txnId: string,
   opts: DeleteTransactionOptions = {},
 ) {
-  return await db.transaction((tx) => deleteTransactionInTx(tx, tenantId, txnId, opts));
+  // Retried once on a deadlock (U-197): the reconciliation header lock (U-193)
+  // can deadlock, rarely, with a multi-entry payment void.
+  return await transactionWithRetry((tx) => deleteTransactionInTx(tx, tenantId, txnId, opts), { label: 'delete' });
 }
 
 export interface DeleteTransactionResult {
@@ -1584,7 +1589,8 @@ export async function updateTransaction(
   // reverse-old-balances → delete-lines → insert-new-lines → apply-new
   // balances steps and corrupt account balances + leave duplicated /
   // missing journal lines. SELECT … FOR UPDATE serializes them.
-  const run = <T>(fn: (tx: Tx) => Promise<T>): Promise<T> => (outerTx ? fn(outerTx) : db.transaction(fn));
+  // Its own transaction retries once on a deadlock (U-197); an outer one is the caller's.
+  const run = <T>(fn: (tx: Tx) => Promise<T>): Promise<T> => (outerTx ? fn(outerTx) : transactionWithRetry(fn, { label: 'update' }));
   return await run(async (tx) => {
     await claimIdempotency(tx);
     await recordIdempotentEntity(tx, 'transaction', txnId);
