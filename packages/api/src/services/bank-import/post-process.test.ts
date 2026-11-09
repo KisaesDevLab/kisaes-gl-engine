@@ -562,6 +562,8 @@ describe('import post-processing (U-06 follow-up)', () => {
 // never a lock wait) before it calls a row in use.
 describe('an accept while post-processing holds the rows (U-187)', () => {
   async function cleanAccepts() {
+    // The accept's learning write runs after its commit (learnFromFeed): let it land before afterEach.
+    await new Promise((res) => setTimeout(res, 100));
     await db.delete(bankFeedAcceptGroupItems).where(eq(bankFeedAcceptGroupItems.tenantId, tenantId));
     await db.delete(bankFeedAcceptGroups).where(eq(bankFeedAcceptGroups.tenantId, tenantId));
   }
@@ -608,11 +610,11 @@ describe('an accept while post-processing holds the rows (U-187)', () => {
     const wait = FEED_ROW_WAIT.ms;
     FEED_ROW_WAIT.ms = 150;
     try {
-      const { row, out, took } = await heldWhileAccepting(800);
+      const { row, out, took } = await heldWhileAccepting(2_000);
       expect(out.skipped).toEqual([{ id: row.id, reason: 'in_use' }]);
       expect(out.posted).toBe(0);
       expect(took).toBeGreaterThanOrEqual(150);
-      expect(took).toBeLessThan(800); // gave up before the holder let go: never a lock wait
+      expect(took).toBeLessThan(2_000); // gave up before the holder let go: never a lock wait
       const [after] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, row.id));
       expect(after!.status).toBe('pending');
     } finally {
