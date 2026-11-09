@@ -58941,6 +58941,40 @@
         ]
       }
     },
+    "/api/v1/reports/reconciliation-discrepancy": {
+      "get": {
+        "description": "Response {accountId, rows, drift}. rows: [{kind: changed | voided | deleted | added_after | reconciliation_undone, reconciliationId, statementDate, transactionId, txnDate, txnType, number, payee, reconciledAmount, effect, changedAt, changedBy, fields[], undoMode (reconciliation_undone only)}], newest statement first. changed / voided / deleted: audit rows on an entry with a line cleared in a completed reconciliation of the account, written after it was finished; added_after: entries posted on the account, dated on or before a completed statement date, entered after that reconciliation was finished and not cleared; reconciliation_undone: undo audit rows. Amounts are decimal strings in the books sign of the account: reconciledAmount is what the reconciliation cleared for the entry (null for added_after), effect the change to it (0.0000 for a category-only edit). fields lists the names of what changed (date, payee, memo, number, status, amount, category, line_description, tags), never values. drift: of the latest completed reconciliation {reconciliationId, expected, actual, difference} or null. 404 for an unknown account.",
+        "operationId": "get_api_v1_reports_reconciliation_discrepancy",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Reconciliation discrepancy report (reconcile-discrepancy-v1)",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/api/v1/reports/reorder": {
       "get": {
         "description": "Response {title, asOf, data: [{itemId, name, description, unitLabel, preferredVendorId, preferredVendor {id, name} | null, reorderPoint, reorderQuantity, onHand, value, reorder}]}: the active inventory items with a reorder point whose on hand now (every date) is at or below it, by name, with reorderQuantity (how many to order, base unit) and the preferred vendor. The same rows as GET /items/reorder-alerts. Inventory off for the company: 400 INVENTORY_OFF. A bad query is 400 VALIDATION_ERROR. Quantities are 4-place strings in each item's base unit, money 2-place strings, average cost 6-place strings (value / on hand while on hand is above 0, else the last positive average).",
