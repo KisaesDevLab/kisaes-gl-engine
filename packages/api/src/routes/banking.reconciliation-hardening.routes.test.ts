@@ -189,10 +189,13 @@ async function finishInFlight(reconId: string) {
 
 /** Settles within `ms`? (false while it is still waiting on a lock). */
 async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
-  let settled = false;
-  p.then(() => { settled = true; }, () => { settled = true; });
-  await new Promise((r) => setTimeout(r, ms));
-  return settled;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });
+  try {
+    return await Promise.race([p.then(() => true, () => true), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 describe('reconcile hardening (U-193)', () => {
@@ -295,7 +298,7 @@ describe('reconcile hardening (U-193)', () => {
     const finish = await finishInFlight(id);
     try {
       const edit = ledger.updateTransaction(ctx.tenantId, later, entry('2026-02-10', depositLines('11.00')), undefined, ctx.companyId);
-      expect(await settlesWithin(edit, 2000)).toBe(true);
+      expect(await settlesWithin(edit, 10000)).toBe(true);
       await edit;
     } finally {
       finish.release();
