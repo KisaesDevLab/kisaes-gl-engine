@@ -82,7 +82,7 @@ beforeAll(async () => {
   const [income] = await db.insert(accounts).values({ tenantId, companyId, name: 'RT Interest', accountType: 'revenue', accountNumber: '4190' }).returning();
   await ledger.postTransaction(tenantId, {
     txnType: 'journal_entry', txnDate: '2026-01-05', memo: 'Opening deposit',
-    lines: [{ accountId: bank.id, debit: '500.0000', credit: '0' }, { accountId: income.id, debit: '0', credit: '500.0000' }],
+    lines: [{ accountId: bank.id, debit: '500.0000', credit: '0' }, { accountId: income!.id, debit: '0', credit: '500.0000' }],
   }, undefined, companyId);
 
   // January: finished, both charges posted.
