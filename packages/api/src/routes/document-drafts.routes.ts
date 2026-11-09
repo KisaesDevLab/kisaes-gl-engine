@@ -77,10 +77,11 @@ documentDraftsRouter.get('/:id', describe({ summary: 'Get a document draft', des
 
 documentDraftsRouter.get('/:id/duplicates', describe({
   summary: 'Possible duplicates of a document draft',
-  description: 'Response `{matches: [{source: "transaction"|"draft", id, reason: "reference"|"amount_date", txnType, kind, date, total, reference}]}`: ' +
-    'posted bills, expenses and checks (not void or deleted) and other live drafts of the draft\'s vendor (`suggestedContactId`) with the same ' +
+  description: 'Response `{matches: [{source: "transaction"|"draft", id, reason: "reference"|"amount_date", noVendor, txnType, kind, date, total, reference}]}`: ' +
+    'posted bills, expenses and checks (not void or deleted; open bills too) and other live drafts of the draft\'s vendor (`suggestedContactId`) with the same ' +
     `normalized reference (leading zeros of every digit run dropped, lower case, ASCII letters and digits only: INV-00123 = inv123) or the same total within ${draftService.DUPLICATE_WINDOW_DAYS} days of its date. ` +
-    'Empty without a vendor. Totals compare as numeric.',
+    'Without a vendor (document-duplicates-no-vendor-v1): posted bills, expenses, card charges and checks of any vendor in the company with the same ' +
+    `reference, or the same total within ${draftService.DUPLICATE_WINDOW_DAYS_NO_VENDOR} days, flagged \`noVendor: true\`; other drafts are not listed. Totals compare as numeric.`,
   params: idParams,
 }), async (req, res) => {
   res.json(await draftService.duplicates(req.tenantId, req.companyId, req.params['id']!));
@@ -130,6 +131,8 @@ documentDraftsRouter.post('/:id/convert', requireConvertKindPermission, keyedCon
       'the kind\'s service (a date on or before the closing date needs the top-level closingPassword: 423 TB_PERIOD_LOCKED / 403 ' +
       'CLOSING_PASSWORD_INVALID), then posted bills, expenses and checks of the same vendor with the same reference, or the same total within ' +
       `${draftService.DUPLICATE_WINDOW_DAYS} days, that are not in acknowledgeDuplicateOf are 409 POSSIBLE_DUPLICATE (details.matches); ` +
+      'without a vendor (document-duplicates-no-vendor-v1) posted ones of any vendor with the same reference, or the same total within ' +
+      `${draftService.DUPLICATE_WINDOW_DAYS_NO_VENDOR} days, count the same way (matches flagged noVendor: true); ` +
       'other live drafts that match are listed in details.draftMatches (and in the 201 response\'s draftMatches) but never block. The draft\'s ' +
       'file, and other files on its draft key that no other live draft reads, move to the new record (attachable type bill, or expense for ' +
       'the other kinds) with an audit row each; the draft is marked converted. ' +

@@ -662,9 +662,97 @@ describe('duplicates (U-92b)', () => {
       expect.objectContaining({ source: 'draft', id: other.draft.id, reason: 'amount_date', total: '33.3000' }),
     ]));
     expect(r.json.matches).toHaveLength(2);
-    // No vendor: nothing to compare.
+    // No vendor and nothing read: nothing to compare.
     const lone = await newDraft('dl-lone');
     expect((await call('GET', `/api/v1/document-drafts/${lone.draft.id}/duplicates`)).json.matches).toEqual([]);
+  });
+});
+
+describe('duplicates without a vendor (U-99, document-duplicates-no-vendor-v1)', () => {
+  /** A card charge convert with no vendor (Purchased from left empty). */
+  async function convertCardNoVendor(amount: string, txnDate: string, txnNumber: string | null, ack: string[] = []) {
+    const d = await newDraft('nv', 'card_charge');
+    const rd = await ready(d.draft);
+    const r = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, {
+      kind: 'card_charge', expectedUpdatedAt: rd.updatedAt, acknowledgeDuplicateOf: ack,
+      body: { txnDate, payFromAccountId: c.card, ...(txnNumber ? { txnNumber } : {}), lines: [{ expenseAccountId: c.expense, amount }] },
+    });
+    return { d, r };
+  }
+  const liveWithTotal = (total: string) => count(`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = $1 AND total = $2::numeric AND status NOT IN ('void', 'deleted')`, c.tenantId, total);
+
+  it('advertises document-duplicates-no-vendor-v1', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('document-duplicates-no-vendor-v1');
+  });
+
+  it('QA-3: a card charge with no vendor and an open bill\'s reference is 409 POSSIBLE_DUPLICATE (noVendor); acknowledged, it posts once', async () => {
+    const v = await vendor('Ozark Valley Electric Cooperative');
+    const posted = await billService.createBill(c.tenantId, billBody(v, '685.55', { vendorInvoiceNumber: '33994105', txnDate: '2025-10-02' }) as never, c.ownerId, c.companyA);
+    const { r } = await convertCardNoVendor('685.55', '2025-10-02', '33994105');
+    expect(r.status, JSON.stringify(r.json)).toBe(409);
+    expect(r.json.error.code).toBe('POSSIBLE_DUPLICATE');
+    expect(r.json.error.details.matches).toEqual([{
+      source: 'transaction', id: posted.id, reason: 'reference', noVendor: true, txnType: 'bill', kind: null,
+      date: '2025-10-02', total: '685.5500', reference: '33994105',
+    }]);
+    expect(r.json.error.details.draftMatches).toEqual([]);
+    expect(await liveWithTotal('685.55')).toBe(1);
+    const ok = await convertCardNoVendor('685.55', '2025-10-02', '33994105', [posted.id]);
+    expect(ok.r.status, JSON.stringify(ok.r.json)).toBe(201);
+    expect(await liveWithTotal('685.55')).toBe(2);
+  });
+
+  it('reference only: no vendor, a different total and date months away still match by reference', async () => {
+    const v = await vendor('RefOnly');
+    const posted = await billService.createBill(c.tenantId, billBody(v, '100.00', { vendorInvoiceNumber: 'NV-0071', txnDate: '2025-01-15' }) as never, c.ownerId, c.companyA);
+    const { r } = await convertCardNoVendor('3.21', '2025-08-01', 'nv 71');
+    expect(r.status, JSON.stringify(r.json)).toBe(409);
+    expect(r.json.error.details.matches).toEqual([expect.objectContaining({ id: posted.id, reason: 'reference', noVendor: true })]);
+  });
+
+  it('amount and date: no vendor matches any vendor\'s total within 7 days (open bill), not 8; with a vendor the 60-day rule is unchanged', async () => {
+    const v = await vendor('NvWindow');
+    const posted = await billService.createBill(c.tenantId, billBody(v, '412.34', { txnDate: '2025-02-01' }) as never, c.ownerId, c.companyA);
+    const r7 = await convertCardNoVendor('412.340', '2025-02-08', null);
+    expect(r7.r.status, JSON.stringify(r7.r.json)).toBe(409);
+    expect(r7.r.json.error.details.matches).toEqual([expect.objectContaining({ id: posted.id, reason: 'amount_date', noVendor: true, total: '412.3400' })]);
+    const r7before = await convertCardNoVendor('412.34', '2025-01-25', null);
+    expect(r7before.r.status).toBe(409);
+    const r8 = await convertCardNoVendor('412.34', '2025-02-09', null);
+    expect(r8.r.status, JSON.stringify(r8.r.json)).toBe(201);
+    // With the vendor: 59 days still matches, flagged noVendor: false.
+    const d = await newDraft('nv-vendor', 'bill');
+    const rd = await ready(d.draft);
+    const withVendor = await call('POST', `/api/v1/document-drafts/${d.draft.id}/convert`, {
+      kind: 'bill', body: billBody(v, '412.34', { txnDate: '2025-03-31' }), expectedUpdatedAt: rd.updatedAt,
+    });
+    expect(withVendor.status).toBe(409);
+    expect(withVendor.json.error.details.matches).toEqual(expect.arrayContaining([expect.objectContaining({ id: posted.id, reason: 'amount_date', noVendor: false })]));
+  });
+
+  it('GET /:id/duplicates without a vendor lists posted documents of any vendor (noVendor), not other drafts', async () => {
+    const v = await vendor('NvList');
+    const posted = await billService.createBill(c.tenantId, billBody(v, '57.75', { vendorInvoiceNumber: 'NVL-9', txnDate: '2025-04-10' }) as never, c.ownerId, c.companyA);
+    const other = await newDraft('nvl-other', 'bill');
+    await ready(other.draft, { docReference: 'NVL-9', docTotal: '57.75', docDate: '2025-04-10' });
+    const d = await newDraft('nvl', 'bill');
+    await ready(d.draft, { docReference: 'nvl 9', docTotal: '57.75', docDate: '2025-04-12' });
+    const r = await call('GET', `/api/v1/document-drafts/${d.draft.id}/duplicates`);
+    expect(r.status).toBe(200);
+    expect(r.json.matches).toEqual([expect.objectContaining({ source: 'transaction', id: posted.id, reason: 'reference', noVendor: true })]);
+    // An amount 9 days away and a different reference: nothing.
+    const far = await newDraft('nvl-far', 'bill');
+    await ready(far.draft, { docReference: 'NVL-10', docTotal: '57.75', docDate: '2025-04-19' });
+    expect((await call('GET', `/api/v1/document-drafts/${far.draft.id}/duplicates`)).json.matches).toEqual([]);
+  });
+
+  it('another company\'s documents never match', async () => {
+    const v = await vendor('NvScope', c.companyB);
+    // Company B's bill (header only: the match reads transactions, not lines).
+    await db.execute(sql`INSERT INTO transactions (tenant_id, company_id, txn_type, txn_date, status, contact_id, total, vendor_invoice_number)
+      VALUES (${c.tenantId}, ${c.companyB}, 'bill', '2025-05-05', 'posted', ${v}, '91.19', 'NVS-1')`);
+    const { r } = await convertCardNoVendor('91.19', '2025-05-05', 'NVS-1');
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
   });
 });
 

@@ -922,5 +922,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * acknowledgedDuplicates on the draft's attach row). Rows that match an existing entry or bring money in are not checked.
    */
   'feed-accept-draft-duplicates-v1',
+  /**
+   * The document duplicate check also runs when no vendor is known (U-99): on POST /document-drafts/:id/convert (no
+   * body contactId), on POST /banking/feed/accept with a documentDraft (no row contact and no suggestedContactId) and in
+   * GET /document-drafts/:id/duplicates (no suggestedContactId). It looks at posted bills (open ones too), expenses,
+   * card charges and checks of any vendor in the company (not void or deleted): the same normalized reference (when the
+   * document has one), or the exact same total dated within 7 days either side. Matches have the usual shape plus
+   * noVendor: true (false on every vendor-rule match) and are acknowledged the usual way (acknowledgeDuplicateOf;
+   * refusals POSSIBLE_DUPLICATE / DOCUMENT_POSSIBLE_DUPLICATE). Other live drafts are matched only with a vendor. With
+   * a vendor the rules are unchanged. Vendorless checks serialize on a company-wide advisory lock.
+   */
+  'document-duplicates-no-vendor-v1',
 ];
 

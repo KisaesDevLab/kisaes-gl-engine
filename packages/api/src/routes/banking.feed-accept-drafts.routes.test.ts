@@ -449,7 +449,7 @@ describe('feed accept with a document runs convert\'s duplicate check (U-185, fe
     expect(f).toMatchObject({ id: row, code: 'DOCUMENT_POSSIBLE_DUPLICATE', details: { draftId: d.draft.id } });
     expect(f.code).not.toBe('POSSIBLE_DUPLICATE');
     expect(f.details.matches).toEqual([{
-      source: 'transaction', id: billId, reason: 'reference', txnType: 'bill', kind: null,
+      source: 'transaction', id: billId, reason: 'reference', noVendor: false, txnType: 'bill', kind: null,
       date: '2026-08-02', total: '685.5500', reference: 'INV-33994105',
     }]);
     // Nothing posted, nothing moved.
@@ -530,13 +530,88 @@ describe('feed accept with a document runs convert\'s duplicate check (U-185, fe
     expect((await item(plain)).matchedTransactionId).toBeTruthy();
   });
 
-  it('a document with no matching entry posts as before; a draft with no vendor anywhere is not checked', async () => {
+  it('a document with no matching entry posts as before', async () => {
     const vendor = await newVendor();
     await bill(vendor, '300.00', 'OTHER-1');
     const d = await readyDraft('bill', { suggestedContactId: vendor, docReference: 'NEW-2', docTotal: '42.17' });
     const row = await feed('42.17');
     const r = await accept({ items: [{ id: row, documentDraft: { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt } }] });
     expect(r.json.posted, JSON.stringify(r.json)).toBe(1);
+  });
+});
+
+describe('feed accept with a document and no vendor still checks for duplicates (U-99, document-duplicates-no-vendor-v1)', () => {
+  async function newVendor(name: string) {
+    const [v] = await db.insert(contacts).values({ tenantId: c.tenantId, contactType: 'vendor', displayName: `${name} ${suffix()}` } as never).returning();
+    return v!.id as string;
+  }
+  async function datedBill(vendor: string, amount: string, txnDate: string, vendorInvoiceNumber: string) {
+    const b = await billService.createBill(c.tenantId, {
+      contactId: vendor, txnDate, vendorInvoiceNumber, lines: [{ accountId: c.supplies, amount }],
+    } as Parameters<typeof billService.createBill>[1], c.ownerId, c.companyId);
+    return b.id as string;
+  }
+  async function datedFeed(amount: string, feedDate: string) {
+    const row = await feed(amount);
+    await db.update(bankFeedItems).set({ feedDate }).where(eq(bankFeedItems.id, row));
+    return row;
+  }
+  const postedFrom = async (row: string) => ((await db.execute(sql`SELECT count(*)::int AS n FROM transactions WHERE tenant_id = ${c.tenantId}
+    AND source = 'bank_feed' AND source_id = ${row} AND status = 'posted'`)).rows[0] as { n: number }).n;
+
+  it('advertises document-duplicates-no-vendor-v1', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('document-duplicates-no-vendor-v1');
+  });
+
+  it('QA-1: a bill entered by hand, its document read with no vendor, the autopay line accepted with an account only: refused; acknowledged, it posts once', async () => {
+    const whitfield = await newVendor('Whitfield & Moore CPAs, PLLC');
+    const billId = await datedBill(whitfield, '1892.30', '2026-01-23', '26095');
+    const d = await readyDraft('card_charge', { docReference: '26095', docTotal: '1892.30' });
+    const row = await datedFeed('1892.30', '2026-01-26');
+    const dd = { id: d.draft.id, expectedUpdatedAt: d.draft.updatedAt };
+
+    const r = await accept({ items: [{ id: row, accountId: c.supplies, documentDraft: dd }] });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.posted).toBe(0);
+    expect(r.json.failures).toHaveLength(1);
+    expect(r.json.failures[0]).toMatchObject({ id: row, code: 'DOCUMENT_POSSIBLE_DUPLICATE', details: { draftId: d.draft.id } });
+    expect(r.json.failures[0].details.matches).toEqual([{
+      source: 'transaction', id: billId, reason: 'reference', noVendor: true, txnType: 'bill', kind: null,
+      date: '2026-01-23', total: '1892.3000', reference: '26095',
+    }]);
+    // Nothing posted; the bill is still open and the draft untouched.
+    expect(await postedFrom(row)).toBe(0);
+    expect((await item(row)).status).toBe('pending');
+    expect(await txnRow(billId)).toMatchObject({ status: 'posted', balanceDue: '1892.3000' });
+    expect((await draftRow(d.draft.id)).status).toBe('ready');
+
+    const key = crypto.randomUUID();
+    const body = { items: [{ id: row, accountId: c.supplies, documentDraft: { ...dd, acknowledgeDuplicateOf: [billId] } }] };
+    const ok = await accept(body, key);
+    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    expect(ok.json.posted).toBe(1);
+    expect(ok.json.failures).toEqual([]);
+    const again = await accept(body, key);
+    expect(again.headers['idempotent-replayed']).toBe('true');
+    expect(await postedFrom(row)).toBe(1);
+    expect((await draftRow(d.draft.id)).status).toBe('converted');
+  });
+
+  it('no vendor and no reference: the same total within 7 days matches (noVendor); 8 days away does not', async () => {
+    const v = await newVendor('Window');
+    const near = await datedBill(v, '2207.07', '2026-03-03', `W-${suffix()}`);
+    const nearDraft = await readyDraft('card_charge', { docTotal: '2207.07' });
+    const nearRow = await datedFeed('2207.07', '2026-03-10');
+    const r = await accept({ items: [{ id: nearRow, documentDraft: { id: nearDraft.draft.id, expectedUpdatedAt: nearDraft.draft.updatedAt } }] });
+    expect(r.json.failures, JSON.stringify(r.json)).toEqual([expect.objectContaining({ id: nearRow, code: 'DOCUMENT_POSSIBLE_DUPLICATE' })]);
+    expect(r.json.failures[0].details.matches).toEqual([expect.objectContaining({ id: near, reason: 'amount_date', noVendor: true })]);
+
+    await datedBill(v, '2208.08', '2026-03-02', `W-${suffix()}`);
+    const farDraft = await readyDraft('card_charge', { docTotal: '2208.08' });
+    const farRow = await datedFeed('2208.08', '2026-03-10');
+    const far = await accept({ items: [{ id: farRow, documentDraft: { id: farDraft.draft.id, expectedUpdatedAt: farDraft.draft.updatedAt } }] });
+    expect(far.json.failures, JSON.stringify(far.json)).toEqual([]);
+    expect(far.json.posted).toBe(1);
   });
 });
 

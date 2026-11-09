@@ -66,6 +66,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const DUPLICATE_WINDOW_DAYS = 60;
 
 /**
+ * The window of the amount rule when no vendor is known (U-99,
+ * document-duplicates-no-vendor-v1): any vendor's posted document matches,
+ * so the window is narrower than the vendor rule's.
+ */
+export const DUPLICATE_WINDOW_DAYS_NO_VENDOR = 7;
+
+/**
  * SQL for a normalized document reference: leading zeros of every digit run
  * dropped (an all-zero run keeps one 0), then lower case, ASCII letters and
  * digits only (`INV-00123` -> `inv123`, `RB-2026-0042` -> `rb202642`). Same
@@ -400,8 +407,16 @@ export interface DuplicateMatch {
   /** 'transaction': a posted bill, expense or check; 'draft': another live draft. */
   source: 'transaction' | 'draft';
   id: string;
-  /** 'reference': same vendor and normalized reference; 'amount_date': same vendor, same total, dates within 60 days. */
+  /**
+   * 'reference': same normalized reference; 'amount_date': same total, dates
+   * within 60 days (same vendor) or within 7 days (`noVendor`).
+   */
   reason: 'reference' | 'amount_date';
+  /**
+   * true: the check had no vendor, so the match may be any vendor's
+   * (document-duplicates-no-vendor-v1); false: the same vendor's.
+   */
+  noVendor: boolean;
   txnType: string | null;
   kind: string | null;
   date: string | null;
@@ -420,16 +435,19 @@ interface DuplicateProbe {
 }
 
 /**
- * Posted bills, expenses and checks of the vendor in the company (or
+ * Posted bills (open ones too), expenses and checks in the company (or
  * tenant-wide) that are neither void nor deleted, matching by normalized
  * reference or by exact total (numeric) with the date within
- * DUPLICATE_WINDOW_DAYS.
+ * DUPLICATE_WINDOW_DAYS. With a vendor, only that vendor's; without one
+ * (U-99, document-duplicates-no-vendor-v1), any vendor's, with the amount
+ * rule's window narrowed to DUPLICATE_WINDOW_DAYS_NO_VENDOR.
  */
 async function transactionMatches(exec: Tx | typeof db, tenantId: string, companyId: string, p: DuplicateProbe): Promise<DuplicateMatch[]> {
-  if (!p.contactId) return [];
+  const noVendor = !p.contactId;
+  const days = noVendor ? DUPLICATE_WINDOW_DAYS_NO_VENDOR : DUPLICATE_WINDOW_DAYS;
   const ref = normalizedRefSql(sql`${p.reference}::text`);
   const amountRule = p.total && p.date
-    ? sql`(t.total = (${p.total})::numeric AND t.txn_date BETWEEN (${p.date})::date - ${DUPLICATE_WINDOW_DAYS}::int AND (${p.date})::date + ${DUPLICATE_WINDOW_DAYS}::int)`
+    ? sql`(t.total = (${p.total})::numeric AND t.txn_date BETWEEN (${p.date})::date - ${days}::int AND (${p.date})::date + ${days}::int)`
     : sql`false`;
   const r = await exec.execute(sql`SELECT t.id, t.txn_type, t.txn_date::text AS date, t.total::text AS total,
       ${TXN_REFERENCE_SQL} AS reference,
@@ -439,19 +457,23 @@ async function transactionMatches(exec: Tx | typeof db, tenantId: string, compan
       AND (t.company_id = ${companyId} OR t.company_id IS NULL)
       AND t.txn_type IN ('bill', 'expense')
       AND t.status NOT IN ('void', 'deleted')
-      AND t.contact_id = ${p.contactId}
+      ${noVendor ? sql`` : sql`AND t.contact_id = ${p.contactId}`}
       ${p.excludeTransactionId ? sql`AND t.id <> ${p.excludeTransactionId}` : sql``}
       AND ((${ref} <> '' AND ${normalizedRefSql(TXN_REFERENCE_SQL)} = ${ref}) OR ${amountRule})
     ORDER BY t.txn_date DESC, t.id
     LIMIT 20`);
   return (r.rows as Array<{ id: string; txn_type: string; date: string | null; total: string | null; reference: string | null; ref_match: boolean }>)
     .map((x) => ({
-      source: 'transaction' as const, id: x.id, reason: x.ref_match ? 'reference' as const : 'amount_date' as const,
+      source: 'transaction' as const, id: x.id, reason: x.ref_match ? 'reference' as const : 'amount_date' as const, noVendor,
       txnType: x.txn_type, kind: null, date: x.date, total: x.total, reference: x.reference,
     }));
 }
 
-/** Other live drafts of the vendor in the company, by the same two rules. */
+/**
+ * Other live drafts of the vendor in the company, by the same two rules.
+ * Empty without a vendor (U-99 widens only the posted check; these never
+ * block).
+ */
 async function draftMatches(exec: Tx | typeof db, tenantId: string, companyId: string, p: DuplicateProbe): Promise<DuplicateMatch[]> {
   if (!p.contactId) return [];
   const ref = normalizedRefSql(sql`${p.reference}::text`);
@@ -470,7 +492,7 @@ async function draftMatches(exec: Tx | typeof db, tenantId: string, companyId: s
     LIMIT 20`);
   return (r.rows as Array<{ id: string; kind: string; date: string | null; total: string | null; reference: string | null; ref_match: boolean }>)
     .map((x) => ({
-      source: 'draft' as const, id: x.id, reason: x.ref_match ? 'reference' as const : 'amount_date' as const,
+      source: 'draft' as const, id: x.id, reason: x.ref_match ? 'reference' as const : 'amount_date' as const, noVendor: false,
       txnType: null, kind: x.kind, date: x.date, total: x.total, reference: x.reference,
     }));
 }
@@ -478,7 +500,9 @@ async function draftMatches(exec: Tx | typeof db, tenantId: string, companyId: s
 /**
  * GET /document-drafts/:id/duplicates: posted documents and other live
  * drafts that may be the same document, from the draft's vendor
- * (suggestedContactId), reference, total and date. Empty without a vendor.
+ * (suggestedContactId), reference, total and date. Without a vendor, posted
+ * documents of any vendor by reference or by total within 7 days (U-99);
+ * other drafts need a vendor.
  */
 export async function duplicates(tenantId: string, companyId: string, id: string): Promise<{ matches: DuplicateMatch[] }> {
   if (!UUID_RE.test(id)) throw notFound();
@@ -522,7 +546,8 @@ export function parseConvertBody(kind: DocumentConvertKind, body: Record<string,
  *   3. the vendor must be tenant-wide or the company's (404), then is
  *      serialized with a transaction-scoped advisory lock on
  *      company + vendor, so two computers converting copies of one
- *      invoice run one after the other;
+ *      invoice run one after the other (no vendor: the company's
+ *      no-vendor lock, U-99);
  *   4. the body posts through the kind's service on this transaction
  *      (closed period 423 / 403 at the ledger's closing-date check);
  *   5. the duplicate check runs on the posted row (its vendor, total,
@@ -530,7 +555,9 @@ export function parseConvertBody(kind: DocumentConvertKind, body: Record<string,
  *      expense or check of the vendor that matches and is not in
  *      acknowledgeDuplicateOf is 409 POSSIBLE_DUPLICATE {matches,
  *      draftMatches} and the posting rolls back; other live drafts that
- *      match (draftMatches) are listed but never block;
+ *      match (draftMatches) are listed but never block. Without a vendor,
+ *      any vendor's posted bill, expense or check with the reference or the
+ *      same total within 7 days (U-99, document-duplicates-no-vendor-v1);
  *   6. the draft's file is relinked to the new record (one audit row each),
  *      except files on its key that another live draft reads;
  *   7. the draft is marked converted, with an audit row.
@@ -557,8 +584,10 @@ export async function convert(
       // The vendor must be tenant-wide or this company's (404), before it
       // names a lock or a posting.
       await assertContactInScope(tx, tenantId, companyId, contactId);
-      await vendorAdvisoryLock(tx, companyId, contactId);
     }
+    // No vendor: the company's no-vendor lock (U-99), so two vendorless
+    // converts of one document run one after the other too.
+    await vendorAdvisoryLock(tx, companyId, contactId);
 
     let txnId: string;
     switch (input.kind) {
@@ -580,7 +609,9 @@ export async function convert(
       }
     }
 
-    if (contactId) {
+    {
+      // Without a vendor the check still runs, over any vendor's posted
+      // documents (U-99, document-duplicates-no-vendor-v1).
       const probe = await postedProbe(tx, tenantId, txnId, before.docReference);
       const matches = await transactionMatches(tx, tenantId, companyId, { ...probe, contactId, excludeTransactionId: txnId });
       const acknowledged = new Set(input.acknowledgeDuplicateOf.map((x) => x.toLowerCase()));
@@ -632,18 +663,19 @@ export async function convert(
  * accept will post: `contactId` the row's contact, else the draft's
  * suggested vendor; `total` and `date` the row's amount and date; the
  * draft's own reference. Returns the posted bills and expenses of that
- * vendor that match (transactionMatches) and are not in `acknowledged`;
- * empty without a vendor.
+ * vendor that match (transactionMatches) and are not in `acknowledged`.
+ * Without a vendor, any vendor's posted documents with the reference or the
+ * same total within 7 days (U-99, document-duplicates-no-vendor-v1).
  *
- * The caller takes vendorAdvisoryLock for the vendor first (sorted vendor
- * order across a request), so an accept and a convert of two copies of one
- * invoice run one after the other, as two converts do.
+ * The caller takes vendorAdvisoryLock for the vendor (null: the company's
+ * no-vendor lock) first, in vendorLockKey order across a request, so an
+ * accept and a convert of two copies of one invoice run one after the
+ * other, as two converts do.
  */
 export async function feedPostDuplicates(
   tx: Tx, tenantId: string, companyId: string, draft: DocumentDraftRow,
   posted: { contactId: string | null; total: string; date: string }, acknowledged: readonly string[],
 ): Promise<DuplicateMatch[]> {
-  if (!posted.contactId) return [];
   const matches = await transactionMatches(tx, tenantId, companyId, {
     contactId: posted.contactId,
     reference: draft.docReference,
@@ -654,9 +686,18 @@ export async function feedPostDuplicates(
   return matches.filter((m) => !ack.has(m.id.toLowerCase()));
 }
 
+/**
+ * The key of the company + vendor advisory lock; no vendor (null) is the
+ * company's own no-vendor key (U-99), which no vendor id can equal. Callers
+ * taking several locks take them in ascending key order.
+ */
+export function vendorLockKey(companyId: string, contactId: string | null): string {
+  return `${companyId}:${contactId ?? '-'}`;
+}
+
 /** The company + vendor advisory lock convert takes before its duplicate check (transaction-scoped). */
-export async function vendorAdvisoryLock(tx: Tx, companyId: string, contactId: string): Promise<void> {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${companyId}:${contactId}`}, 0))`);
+export async function vendorAdvisoryLock(tx: Tx, companyId: string, contactId: string | null): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${vendorLockKey(companyId, contactId)}, 0))`);
 }
 
 /** The duplicate probe of a posted row as the engine stored it: total, date and reference. */
