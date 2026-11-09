@@ -6,6 +6,12 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import DecimalLib from 'decimal.js';
 import { listPendingDepositItems } from './payment.service.js';
+import { BANK_DETAIL_TYPES } from './bank-account-types.js';
+
+/** BANK_DETAIL_TYPES as a SQL list: `a.detail_type IN (${bankDetailTypesSql()})`. */
+function bankDetailTypesSql(): SQL {
+  return sql.join(BANK_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
+}
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalT = InstanceType<typeof Decimal>;
@@ -150,7 +156,7 @@ export async function getCashPosition(tenantId: string, opts: DashboardOptions =
     FROM accounts a
     WHERE a.tenant_id = ${tenantId} AND a.is_active = true
       AND (
-        (a.account_type = 'asset' AND a.detail_type IN ('bank', 'checking', 'savings', 'cash', 'petty_cash'))
+        (a.account_type = 'asset' AND a.detail_type IN (${bankDetailTypesSql()}))
         OR (a.account_type = 'liability' AND a.detail_type = 'credit_card')
       )
     ORDER BY a.account_type, a.account_number, a.name
@@ -310,14 +316,16 @@ export async function getActionItems(tenantId: string, companyId?: string, opts:
   `);
   const overdueInvoiceCount = Number(rowsOf<{ count: number }>(overdueResult)[0]?.count ?? 0);
 
-  // Stale reconciliations — bank accounts not reconciled in the 30 days before today
+  // Stale reconciliations — bank accounts (every bank detail type, U-197) not
+  // reconciled in the 30 days before today
   const staleResult = await db.execute(sql`
     SELECT s.name, s.last_reconciled FROM (
       SELECT a.name,
         (SELECT MAX(r.statement_date) FROM reconciliations r
          WHERE r.tenant_id = ${tenantId} AND r.account_id = a.id AND r.status = 'complete') as last_reconciled
       FROM accounts a
-      WHERE a.tenant_id = ${tenantId} AND a.is_active = true AND a.detail_type = 'bank'
+      WHERE a.tenant_id = ${tenantId} AND a.is_active = true
+        AND a.account_type = 'asset' AND a.detail_type IN (${bankDetailTypesSql()})
     ) s
     WHERE s.last_reconciled IS NULL OR s.last_reconciled < (${today}::date - 30)
   `);
@@ -405,7 +413,7 @@ export async function getAccountBalances(tenantId: string, companyId?: string): 
     ) f ON TRUE
     WHERE a.tenant_id = ${tenantId} AND a.is_active = true ${companyCond}
       AND (
-        (a.account_type = 'asset' AND a.detail_type IN ('bank', 'checking', 'savings', 'cash', 'petty_cash'))
+        (a.account_type = 'asset' AND a.detail_type IN (${bankDetailTypesSql()}))
         OR (a.account_type = 'liability' AND a.detail_type = 'credit_card')
       )
     ORDER BY a.account_type, a.account_number, a.name, a.id
