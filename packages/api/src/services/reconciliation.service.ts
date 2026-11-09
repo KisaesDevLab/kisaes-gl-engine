@@ -7,7 +7,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 type Dec = InstanceType<typeof Decimal>;
 import { db, type DbOrTx, type Tx } from '../db/index.js';
-import { reconciliations, reconciliationLines, journalLines, accounts, bankStatements } from '../db/schema/index.js';
+import { reconciliations, reconciliationLines, journalLines, accounts, bankStatements, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { invalidateForReopen } from './reconciliation-signoff.service.js';
@@ -121,6 +121,40 @@ async function inProgressFor(executor: DbOrTx, tenantId: string, accountId: stri
     ))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * The account's most recent completed reconciliation: latest statement date,
+ * then latest finish (U-193). Its ending balance is the next one's beginning
+ * balance and only it can be undone.
+ */
+async function latestCompletedOf(executor: DbOrTx, tenantId: string, accountId: string): Promise<ReconRow | null> {
+  const [row] = await executor.select().from(reconciliations)
+    .where(and(
+      eq(reconciliations.tenantId, tenantId),
+      eq(reconciliations.accountId, accountId),
+      eq(reconciliations.status, 'complete'),
+    ))
+    .orderBy(sql`${reconciliations.statementDate} DESC`, sql`${reconciliations.completedAt} DESC NULLS LAST`)
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * A statement date must fall after the latest completed reconciliation's
+ * (U-193): an earlier or equal one would begin from a later period's ending
+ * balance. 409 RECONCILE_STATEMENT_DATE_ORDER {latestReconciliationId,
+ * latestStatementDate}.
+ */
+function assertStatementDateAfter(latest: ReconRow | null, statementDate: string): void {
+  if (!latest) return;
+  const latestDay = isoDay(latest.statementDate);
+  if (isoDay(statementDate) > latestDay) return;
+  throw AppError.conflict(
+    `The statement date must be after ${latestDay}, the date of the last finished reconciliation of this account.`,
+    'RECONCILE_STATEMENT_DATE_ORDER',
+    { latestReconciliationId: latest.id, latestStatementDate: latestDay },
+  );
 }
 
 async function accountOf(executor: DbOrTx, tenantId: string, accountId: string) {
@@ -382,14 +416,7 @@ async function driftOfCompleted(executor: DbOrTx, prior: ReconRow) {
  * cleared that are still posted. Null when none or no drift.
  */
 export async function latestCompletedDrift(tenantId: string, accountId: string) {
-  const [latest] = await db.select().from(reconciliations)
-    .where(and(
-      eq(reconciliations.tenantId, tenantId),
-      eq(reconciliations.accountId, accountId),
-      eq(reconciliations.status, 'complete'),
-    ))
-    .orderBy(sql`${reconciliations.statementDate} DESC`, sql`${reconciliations.completedAt} DESC NULLS LAST`)
-    .limit(1);
+  const latest = await latestCompletedOf(db, tenantId, accountId);
   return latest ? driftOfCompleted(db, latest) : null;
 }
 
@@ -405,6 +432,14 @@ async function postingLockedFor(executor: DbOrTx, tenantId: string, companyId: s
   const lockDate = (res.rows as Array<{ lock_date: string | null }>)[0]?.lock_date;
   if (!lockDate) return false;
   return dates.some((d) => d <= lockDate);
+}
+
+/** The entry exists and is posted (not voided, not deleted). */
+async function postedEntryExists(executor: DbOrTx, tenantId: string, txnId: string): Promise<boolean> {
+  const [row] = await executor.select({ status: transactions.status }).from(transactions)
+    .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)))
+    .limit(1);
+  return row?.status === 'posted';
 }
 
 function chargeView(c: ChargeState | null) {
@@ -478,33 +513,41 @@ export async function start(
     if (charge) await assertChargeAccount(db, tenantId, acct, kind, charge.accountId);
   }
 
-  // Get beginning balance (cleared balance from last reconciliation, or 0).
-  // Ordered by statement date DESC so the MOST RECENT completed
-  // reconciliation's ending balance chains forward.
-  const lastRecon = await db.query.reconciliations.findFirst({
-    where: and(eq(reconciliations.tenantId, tenantId), eq(reconciliations.accountId, accountId), eq(reconciliations.status, 'complete')),
-    orderBy: (r, { desc }) => desc(r.statementDate),
-  });
-  const beginningBalance = lastRecon?.statementEndingBalance || '0';
-
   // Create the reconciliation header + load uncleared lines in one tx
   // so a partial failure doesn't leave a reconciliation row with no
   // lines to reconcile against.
   let recon: ReconRow;
+  let priorEnding: string | null = null;
   try {
-    recon = await db.transaction(async (tx) => {
-      const [created] = await tx.insert(reconciliations).values({
+    [recon, priorEnding] = await db.transaction(async (tx): Promise<[ReconRow, string | null]> => {
+      const [inserted] = await tx.insert(reconciliations).values({
         tenantId,
         accountId: accountId!,
         statementDate: statementDate!,
         statementEndingBalance: statementEndingBalance!,
-        beginningBalance,
+        beginningBalance: '0',
         status: 'in_progress',
         includeLaterLines: opts.includeLaterLines === true,
         ...(opts.serviceCharge ? chargeColumnsFor('serviceCharge', opts.serviceCharge) : {}),
         ...(opts.interest ? chargeColumnsFor('interest', opts.interest) : {}),
       }).returning();
-      if (!created) throw AppError.internal('Failed to create reconciliation');
+      if (!inserted) throw AppError.internal('Failed to create reconciliation');
+
+      // Beginning balance: the most recent completed reconciliation's ending
+      // balance, or 0. Read after the insert, inside the transaction (U-193):
+      // the one-in-progress index made the insert wait for a Finish of the
+      // account's previous worksheet, so its completion is seen here. The
+      // statement date must fall after it.
+      const lastRecon = await latestCompletedOf(tx, tenantId, accountId!);
+      assertStatementDateAfter(lastRecon, statementDate!);
+      let created = inserted;
+      if (lastRecon) {
+        const [withBeginning] = await tx.update(reconciliations)
+          .set({ beginningBalance: lastRecon.statementEndingBalance })
+          .where(eq(reconciliations.id, inserted.id))
+          .returning();
+        created = withBeginning!;
+      }
 
       const lineIds = await eligibleNewLineIds(tx, tenantId, created);
       await addWorksheetLines(tx, tenantId, created, lineIds, opts.precheck);
@@ -516,7 +559,7 @@ export async function start(
           updatedAt: new Date(),
         }).where(and(eq(bankStatements.tenantId, tenantId), eq(bankStatements.id, statement.id)));
       }
-      return created;
+      return [created, lastRecon?.statementEndingBalance ?? null];
     });
   } catch (err) {
     if (isUniqueViolation(err)) {
@@ -531,7 +574,7 @@ export async function start(
   const continuityWarning = statement
     ? continuityOf(
         glOrientedStatementBalance(statement.openingBalance, statementAccountType),
-        lastRecon?.statementEndingBalance,
+        priorEnding,
       )
     : null;
 
@@ -616,7 +659,10 @@ async function loadReconciliation(tenantId: string, reconciliationId: string, wi
   // Lines with transaction details. Check number / payee / contact are
   // consumed by the Statement Match Engine UI (wave 1); source, source_id
   // and from_bank_feed (an accepted bank-file row stands behind the line,
-  // the rule of the pre-check without its date) by U-189.
+  // the rule of the pre-check without its date) by U-189. An in-progress
+  // worksheet leaves out rows whose entry is no longer posted (voided after
+  // the worksheet loaded it): complete() ignores them too and refresh
+  // removes them (U-193). A completed reconciliation shows what it cleared.
   const lines = await db.execute(sql`
     SELECT rl.id, rl.journal_line_id, rl.is_cleared, rl.cleared_at,
       jl.transaction_id,
@@ -641,6 +687,7 @@ async function loadReconciliation(tenantId: string, reconciliationId: string, wi
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id
     WHERE rl.reconciliation_id = ${reconciliationId}
+      AND (${recon.status !== 'in_progress'} OR t.status = 'posted')
     ORDER BY t.txn_date, t.created_at
   `);
   const rows = lines.rows as any[];
@@ -665,7 +712,7 @@ async function loadReconciliation(tenantId: string, reconciliationId: string, wi
         eq(reconciliations.status, 'complete'),
         sql`${reconciliations.statementDate} < ${recon.statementDate}`,
       ),
-      orderBy: (r, { desc }) => desc(r.statementDate),
+      orderBy: (r, { desc }) => [desc(r.statementDate), sql`${r.completedAt} DESC NULLS LAST`],
     });
     // Liability statement balances print positive-owed — compare in GL
     // orientation (same convention as the stored reconciliation balances).
@@ -980,11 +1027,30 @@ export async function complete(tenantId: string, reconciliationId: string, userI
   await db.transaction(async (tx) => {
     const recon = await lockInProgress(tx, tenantId, reconciliationId);
 
+    // Rows whose entry is no longer posted (voided since the worksheet loaded
+    // it) or whose journal line is gone can never clear against the
+    // statement: drop them, the rule refreshLines applies and GET shows, so
+    // the completed reconciliation never holds a voided line (U-193).
+    const droppedRes = await tx.execute(sql`
+      DELETE FROM reconciliation_lines rl
+      WHERE rl.reconciliation_id = ${reconciliationId}
+        AND (
+          NOT EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.id = rl.journal_line_id)
+          OR EXISTS (
+            SELECT 1 FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id
+            WHERE jl.id = rl.journal_line_id AND t.status <> 'posted'
+          )
+        )
+      RETURNING rl.journal_line_id
+    `);
+    const droppedLineIds = (droppedRes.rows as Array<{ journal_line_id: string }>).map((r) => r.journal_line_id);
+
     // Recompute inside the lock so it reflects the latest updateLines.
     const linesResult = await tx.execute(sql`
       SELECT rl.journal_line_id, rl.is_cleared, jl.debit, jl.credit
       FROM reconciliation_lines rl
       JOIN journal_lines jl ON jl.id = rl.journal_line_id
+      JOIN transactions t ON t.id = jl.transaction_id AND t.status = 'posted'
       WHERE rl.reconciliation_id = ${reconciliationId}
     `);
     const lines = linesResult.rows as Array<{ journal_line_id: string; is_cleared: boolean | null; debit: string; credit: string }>;
@@ -1033,6 +1099,7 @@ export async function complete(tenantId: string, reconciliationId: string, userI
         clearedBalance: totals.cleared.toFixed(4),
         clearedLineIds,
         postedCharges: posted,
+        ...(droppedLineIds.length > 0 ? { droppedLineIds: droppedLineIds.sort() } : {}),
       },
       userId, tx,
     );
@@ -1077,14 +1144,8 @@ export async function undo(
       // Only the MOST RECENT completed reconciliation for this account may be
       // undone — undoing an older period would corrupt the beginning-balance
       // chain of every reconciliation completed after it.
-      const [latestComplete] = await tx.select({ id: reconciliations.id }).from(reconciliations)
-        .where(and(
-          eq(reconciliations.tenantId, tenantId),
-          eq(reconciliations.accountId, recon.accountId),
-          eq(reconciliations.status, 'complete'),
-        ))
-        .orderBy(sql`${reconciliations.statementDate} DESC`)
-        .limit(1);
+      // Same statement date: the later finish is the most recent (U-193).
+      const latestComplete = await latestCompletedOf(tx, tenantId, recon.accountId);
       if (!latestComplete || latestComplete.id !== reconciliationId) {
         throw AppError.conflict(
           'Only the most recent completed reconciliation can be undone — undo newer periods first.',
@@ -1187,7 +1248,10 @@ function sameCharge(current: ChargeState | null, next: ReconcileChargeInput | nu
 // balance (oriented like start(): a liability's printed figure is flipped,
 // U-188), the statement date and the Begin charges (U-189). Same lock/guard
 // pattern as updateLines/complete. A charge Finish already posted can't
-// change (409 RECONCILE_CHARGE_POSTED); sending it unchanged is a no-op.
+// change (409 RECONCILE_CHARGE_POSTED); sending it unchanged is a no-op. Once
+// that entry is voided or deleted the charge is pending again (U-193). The
+// statement date stays after the latest completed reconciliation's (409
+// RECONCILE_STATEMENT_DATE_ORDER).
 export async function updateHeader(
   tenantId: string,
   reconciliationId: string,
@@ -1219,6 +1283,7 @@ export async function applyHeaderUpdate(
       after['statementEndingBalance'] = new Decimal(oriented).toFixed(4);
     }
     if (input.statementDate !== undefined) {
+      assertStatementDateAfter(await latestCompletedOf(tx, tenantId, recon.accountId), input.statementDate);
       set.statementDate = input.statementDate;
       before['statementDate'] = recon.statementDate;
       after['statementDate'] = input.statementDate;
@@ -1227,6 +1292,18 @@ export async function applyHeaderUpdate(
       const next = input[kind];
       if (next === undefined) continue;
       const current = chargeOf(recon, kind);
+      // A posted charge whose entry was since voided or deleted is no longer
+      // in the books: the charge is pending again and may change, and is
+      // posted again by the next finish (U-193).
+      const postedGone = !!current?.txnId && !(await postedEntryExists(tx, tenantId, current.txnId));
+      if (postedGone) {
+        set[CHARGE_COLUMNS[kind].txnId] = null;
+        before[kind] = { ...chargeView(current), transactionId: current!.txnId };
+        after[kind] = next ? { amount: new Decimal(next.amount).toFixed(4), date: next.date, accountId: next.accountId } : null;
+        if (next) await assertChargeAccount(tx, tenantId, { id: recon.accountId, companyId: acct?.companyId ?? null }, kind, next.accountId);
+        Object.assign(set, chargeColumnsFor(kind, next));
+        continue;
+      }
       if (sameCharge(current, next)) continue;
       if (current?.txnId) {
         throw AppError.conflict(
