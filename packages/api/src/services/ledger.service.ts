@@ -1710,14 +1710,16 @@ export async function updateTransaction(
       throw AppError.conflict('This transaction moves inventory and is part of a completed bank reconciliation. Undo the reconciliation first.', 'INVENTORY_DOCUMENT');
     }
     if (clearedLineIds.size > 0) {
-      // Reconciled transaction. The reconciliation cleared this txn's
-      // balance-sheet line(s) (the bank / credit-card account). Those lines
-      // must NOT change — their amount is the reconciled total, and their
-      // journal_line ids are referenced by reconciliation_lines (no FK, so a
-      // delete/recreate would leave dangling references and corrupt the rec).
-      // The OTHER (income/expense) lines don't touch the reconciled balance,
-      // so the user may recategorize / split / re-tag them freely — as long as
-      // the balance-sheet lines and the date stay put.
+      // Reconciled transaction. A completed reconciliation cleared some of
+      // this txn's lines (the bank / credit-card side). Every line on a
+      // reconciled account must NOT change: its amount is in the reconciled
+      // total, and the cleared line ids are referenced by reconciliation_lines
+      // (no FK, so a delete/recreate would leave dangling references and
+      // corrupt the rec). The OTHER lines don't touch the reconciled balance,
+      // so the user may recategorize / split / re-tag them freely, also a
+      // balance-sheet one such as A/R, owner's equity or a loan (U-198; before,
+      // every balance-sheet line was kept), as long as the reconciled lines
+      // and the date stay put.
       const existingLines = await tx.select().from(journalLines)
         .where(and(
           eq(journalLines.tenantId, tenantId),
@@ -1737,10 +1739,16 @@ export async function updateTransaction(
       const keyOf = (accountId: string, debit?: string | null, credit?: string | null) =>
         `${accountId}|${new Decimal(debit || '0').toFixed(4)}|${new Decimal(credit || '0').toFixed(4)}`;
 
-      const existingBS = existingLines.filter((l) => isBalanceSheet(l.accountId));
-      const existingPL = existingLines.filter((l) => !isBalanceSheet(l.accountId));
+      // The accounts a completed reconciliation cleared a line on; every
+      // line on them must come back unchanged.
+      const reconciledAccounts = new Set(existingLines.filter((l) => clearedLineIds.has(l.id)).map((l) => l.accountId));
+      const mustKeep = existingLines.filter((l) => reconciledAccounts.has(l.accountId));
+      // Other balance-sheet lines are kept in place (same id, so an
+      // in-progress worksheet row or bank-file link on them holds) when the
+      // input has them unchanged; else they are replaced like P&L lines.
+      const mayKeep = existingLines.filter((l) => !reconciledAccounts.has(l.accountId) && isBalanceSheet(l.accountId));
 
-      // Match each existing balance-sheet line to an UNCHANGED input line.
+      // Match each kept line to an UNCHANGED input line.
       const inputPool = new Map<string, Array<{ idx: number; line: (typeof input.lines)[number] }>>();
       input.lines.forEach((line, idx) => {
         const k = keyOf(line.accountId, line.debit, line.credit);
@@ -1750,17 +1758,25 @@ export async function updateTransaction(
       const bsPairs: Array<{ lineId: string; input: (typeof input.lines)[number] }> = [];
       let ok = existing.txnDate === input.txnDate;
       if (ok) {
-        for (const bs of existingBS) {
+        for (const bs of mustKeep) {
           const match = inputPool.get(keyOf(bs.accountId, bs.debit, bs.credit))?.shift();
           if (!match) { ok = false; break; }
           preservedIdx.add(match.idx);
           bsPairs.push({ lineId: bs.id, input: match.line });
         }
       }
-      // Remaining input lines replace the P&L side; none may be a balance-sheet
-      // account (that would add/alter the reconciled side).
-      const newPLLines = ok ? input.lines.filter((_, idx) => !preservedIdx.has(idx)) : [];
-      if (ok && newPLLines.some((l) => isBalanceSheet(l.accountId))) ok = false;
+      if (ok) {
+        for (const bs of mayKeep) {
+          const match = inputPool.get(keyOf(bs.accountId, bs.debit, bs.credit))?.shift();
+          if (!match) continue;
+          preservedIdx.add(match.idx);
+          bsPairs.push({ lineId: bs.id, input: match.line });
+        }
+      }
+      // Remaining input lines replace the rest; none may be on a reconciled
+      // account (that would add to or alter the reconciled side).
+      const newLines = ok ? input.lines.filter((_, idx) => !preservedIdx.has(idx)) : [];
+      if (ok && newLines.some((l) => reconciledAccounts.has(l.accountId))) ok = false;
 
       if (!ok) {
         const reconciledBy = await completedReconciliationOfTransaction(tx, tenantId, txnId);
@@ -1772,6 +1788,8 @@ export async function updateTransaction(
           message, 'update', reconciledBy, existing.txnDate !== input.txnDate ? 'txnDate' : 'lines',
         );
       }
+      const keptIds = new Set(bsPairs.map((p) => p.lineId));
+      const replaced = existingLines.filter((l) => !keptIds.has(l.id));
 
       const [contactDefaultTagId, itemDefaultTagMap] = await Promise.all([
         loadContactDefaultTagId(tx, tenantId, input.contactId),
@@ -1785,37 +1803,40 @@ export async function updateTransaction(
         contactDefaultTagId,
       });
 
-      // 1. Preserve balance-sheet lines: update tag/description IN PLACE (no
-      //    amount/account change → reconciliation references untouched).
+      // 1. Kept lines: update tag/description IN PLACE (no amount/account
+      //    change, so reconciliation references stay untouched).
       for (const { lineId, input: inLine } of bsPairs) {
         await tx.update(journalLines).set({ tagId: tagFor(inLine), description: inLine.description || null, ...settlementColumns(inLine) })
           .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, lineId)));
       }
-      // 2. Replace P&L lines: reverse old balances, delete, insert new, apply.
-      if (existingPL.length > 0) {
-        await updateAccountBalances(tx, tenantId, existingPL.map((l) => ({ accountId: l.accountId, debit: l.credit, credit: l.debit })));
+      // 2. Replace the other lines: reverse old balances, delete, insert new, apply.
+      if (replaced.length > 0) {
+        await updateAccountBalances(tx, tenantId, replaced.map((l) => ({ accountId: l.accountId, debit: l.credit, credit: l.debit })));
         await tx.delete(journalLines).where(and(
           eq(journalLines.tenantId, tenantId),
-          inArray(journalLines.id, existingPL.map((l) => l.id)),
+          inArray(journalLines.id, replaced.map((l) => l.id)),
         ));
       }
-      const newPLValues = newPLLines.map((line, i) => ({
+      const newPLValues = newLines.map((line, i) => ({
         tenantId, companyId: companyId || null, transactionId: txnId,
         accountId: line.accountId, debit: line.debit || '0', credit: line.credit || '0',
         description: line.description || null, itemId: line.itemId || null,
         quantity: line.quantity || null, unitPrice: line.unitPrice || null, ...unitColumns(line),
         isTaxable: line.isTaxable || false, taxRate: storedTaxRate(line.taxRate), taxAmount: line.taxAmount || '0', taxCodeId: line.taxCodeId ?? null,
-        lineOrder: existingBS.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
+        lineOrder: bsPairs.length + i, contactId: line.contactId ?? null, tagId: tagFor(line),
         serviceDate: line.serviceDate || null,
         discountPercent: line.discountPercent ?? null,
         unitPriceSource: line.unitPriceSource ?? null,
         ...billableFor(line),
         ...settlementColumns(line),
       }));
-      if (newPLValues.length > 0) {
-        await tx.insert(journalLines).values(newPLValues);
-        await updateAccountBalances(tx, tenantId, newPLLines);
-      }
+      const inserted = newPLValues.length > 0
+        ? await tx.insert(journalLines).values(newPLValues).returning()
+        : [];
+      if (newLines.length > 0) await updateAccountBalances(tx, tenantId, newLines);
+      // U-192: a replaced balance-sheet line's in-progress worksheet row or
+      // bank-file link follows it to its successor (same account and side).
+      await carryLineReferences(tx, tenantId, txnId, replaced, inserted, userId);
       // 3. Ledger-neutral header fields (memo / contact / basis / number /
       //    adjusting flag).
       await tx.update(transactions).set({

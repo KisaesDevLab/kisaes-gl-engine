@@ -998,5 +998,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * reconciliation's statement date: statement date DESC, then completedAt DESC (U-196).
    */
   'reconcile-qa-v1',
+  /**
+   * Category edit of a reconciled entry (U-198, P27 QA-13). An edit of an entry cleared in a completed reconciliation
+   * keeps every line on a reconciled account and the date (else 409 RECONCILED_TRANSACTION as before); its other lines,
+   * also balance-sheet ones such as A/R, owner's equity or a loan, can be recategorized. Before, every balance-sheet
+   * line was kept, so moving a deposit's A/R line to income or a check's owner's-draw line to an expense was refused.
+   * An unchanged balance-sheet line keeps its id; a replaced one carries its in-progress worksheet row and bank-file
+   * link to its successor (U-192).
+   */
+  'reconciled-category-edit-v1',
 ];
 
