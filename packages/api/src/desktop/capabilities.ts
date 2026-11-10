@@ -1061,7 +1061,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   /**
    * Report columns and tag split (U-201, ClientLedger P28 PR-B). With exact=1 on /reports/profit-loss and /reports/balance-sheet:
    * period_ranges=YYYY-MM-DD..YYYY-MM-DD,… (at most 36, in date order, not overlapping; 4-4-5 or custom; Balance Sheet as of each end),
-   * ytd=1[&fiscal_year_start=] (P&L), prior=period|year ($ change = current - prior, % change = change / |prior|), compare=by_contact
+   * ytd=1[&fiscal_year_start=] (P&L), prior=period|year[&prior_ranges= one per period, e.g. the previous 4-4-5 periods; else the same
+   * number of days just before] ($ change = current - prior, % change = change / |prior|), compare=by_contact
    * (P&L: the 36 most active clients by name, an engine-summed All others, No client, Total; client = the line's contact, else its
    * transaction's), compare=by_tag&tag_group_id= (P&L: each group tag with activity, No tag in group, Total), pct_of_income=1 (P&L),
    * tag_id=untagged, tag_split=1&tag_group_id= (rows per account: rowKind account = lines without a tag from the group, tag per group
