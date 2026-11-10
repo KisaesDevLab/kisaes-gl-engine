@@ -312,7 +312,7 @@ export async function createDefinition(tenantId: string, companyId: string, view
 }
 
 export async function updateDefinition(tenantId: string, companyId: string, viewer: Viewer, id: string, input: {
-  version: number; name?: string; groupId?: string | null; definition?: unknown;
+  version: number; name?: string; groupId?: string | null; kind?: ReportDefinitionKind; definition?: unknown;
 }) {
   const parsed = input.definition !== undefined ? parseDefinition(input.definition) : null;
   try {
@@ -321,6 +321,7 @@ export async function updateDefinition(tenantId: string, companyId: string, view
       if (!canEdit(row, viewer)) throw notAuthor();
       if (row.version !== input.version) throw stale(row.version);
       if (parsed && parsed.definition.kind !== row.kind) throw invalid('A saved report cannot change its kind.', 'definition.kind');
+      if (input.kind !== undefined && input.kind !== row.kind) throw invalid('A saved report cannot change its kind.', 'kind');
       if (input.groupId !== undefined) await assertGroup(tx, tenantId, companyId, input.groupId);
       if (parsed) await assertRefsInScope(tx, tenantId, companyId, parsed.refs);
       const [next] = await tx.update(reportDefinitions).set({

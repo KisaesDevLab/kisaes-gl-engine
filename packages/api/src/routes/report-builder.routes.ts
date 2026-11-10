@@ -64,6 +64,7 @@ const createDefinitionSchema = z.object({
 const updateDefinitionSchema = z.object({
   version: z.number().int().min(1),
   name: name(200).optional(),
+  kind: z.enum(REPORT_DEFINITION_KINDS).optional().describe('optional; must equal the saved kind'),
   groupId: z.string().uuid().nullable().optional(),
   definition: z.unknown().optional(),
 }).strict();
@@ -114,33 +115,33 @@ reportBuilderRouter.get('/definitions', describe({
 
 reportBuilderRouter.post('/definitions', describe({
   summary: 'Save a report (report-defs-v1)',
-  description: `Body \`{name, groupId?, kind?, definition: {schemaVersion: 1, kind: 'standard', reportKey, options}}\`. Response 201 \`{definition: row}\`, row ${ROW_DOC} The caller is the author. 400 DEFINITION_INVALID {details.path} (shape, a uuid outside the id paths, or an id not in this company), VALIDATION_ERROR {details.field: groupId}; 409 NAME_TAKEN (names are unique per company, case-insensitive, among saved reports not deleted); 413 DEFINITION_TOO_LARGE {details.limit}.`,
+  description: `Body \`{name, groupId?, kind?, definition: {schemaVersion: 1, kind: 'standard', reportKey, options}}\`. Response 201: the row, ${ROW_DOC} The caller is the author. 400 DEFINITION_INVALID {details.path} (shape, a uuid outside the id paths, or an id not in this company), VALIDATION_ERROR {details.field: groupId}; 409 NAME_TAKEN (names are unique per company, case-insensitive, among saved reports not deleted); 413 DEFINITION_TOO_LARGE {details.limit}.`,
 }), validate(createDefinitionSchema), bodyDoc(createDefinitionSchema.extend({ definition: definitionDoc })), idempotent({
   successStatus: 201,
-  replay: async (req, entity) => ({ definition: await defs.getDefinition(req.tenantId, req.companyId, entity!.id, viewer(req)) }),
+  replay: async (req, entity) => defs.getDefinition(req.tenantId, req.companyId, entity!.id, viewer(req)),
 }), async (req, res) => {
-  res.status(201).json({ definition: await defs.createDefinition(req.tenantId, req.companyId, viewer(req), req.body) });
+  res.status(201).json(await defs.createDefinition(req.tenantId, req.companyId, viewer(req), req.body));
 });
 
 reportBuilderRouter.get('/definitions/:id', describe({
   summary: 'Get a saved report (report-defs-v1)',
-  description: `Response \`{definition: row}\`, row ${ROW_DOC} Another company's or a deleted report: 404.`,
+  description: `Response: the row, ${ROW_DOC} Another company's or a deleted report: 404.`,
   params: idParams,
 }), async (req, res) => {
   const id = uuidParam(req.params['id'], defs.definitionNotFound);
-  res.json({ definition: await defs.getDefinition(req.tenantId, req.companyId, id, viewer(req)) });
+  res.json(await defs.getDefinition(req.tenantId, req.companyId, id, viewer(req)));
 });
 
 reportBuilderRouter.put('/definitions/:id', describe({
   summary: 'Change a saved report (report-defs-v1)',
-  description: `Body \`{version, name?, groupId?, definition?}\` (groupId null moves it to no group; the kind cannot change). Response \`{definition: row}\` with the next version. 403 NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.`,
+  description: `Body \`{version, name?, groupId?, kind?, definition?}\` (groupId null moves it to no group; the kind cannot change: kind and definition.kind must equal it). Response: the row with the next version. 403 NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.`,
   params: idParams,
 }), authorMw, idempotent({
   successStatus: 200,
-  replay: async (req) => ({ definition: await defs.getDefinition(req.tenantId, req.companyId, req.params['id']!, viewer(req)) }),
+  replay: async (req) => defs.getDefinition(req.tenantId, req.companyId, req.params['id']!, viewer(req)),
 }), validate(updateDefinitionSchema), bodyDoc(updateDefinitionSchema.extend({ definition: definitionDoc.optional() })), async (req, res) => {
   const id = uuidParam(req.params['id'], defs.definitionNotFound);
-  res.json({ definition: await defs.updateDefinition(req.tenantId, req.companyId, viewer(req), id, req.body) });
+  res.json(await defs.updateDefinition(req.tenantId, req.companyId, viewer(req), id, req.body));
 });
 
 reportBuilderRouter.delete('/definitions/:id', describe({
@@ -164,24 +165,24 @@ reportBuilderRouter.get('/definition-groups', describe({
 
 reportBuilderRouter.post('/definition-groups', describe({
   summary: 'Create a saved-report group (report-defs-v1)',
-  description: `Response 201 \`{group}\`, group ${GROUP_DOC}. 409 NAME_TAKEN (unique per company, case-insensitive, among groups not deleted).`,
+  description: `Response 201: the group, ${GROUP_DOC}. 409 NAME_TAKEN (unique per company, case-insensitive, among groups not deleted).`,
 }), validate(groupCreateSchema), idempotent({
   successStatus: 201,
-  replay: async (req, entity) => ({ group: await defs.getGroup(req.tenantId, req.companyId, entity!.id) }),
+  replay: async (req, entity) => defs.getGroup(req.tenantId, req.companyId, entity!.id),
 }), async (req, res) => {
-  res.status(201).json({ group: await defs.createGroup(req.tenantId, req.companyId, req.userId, req.body) });
+  res.status(201).json(await defs.createGroup(req.tenantId, req.companyId, req.userId, req.body));
 });
 
 reportBuilderRouter.put('/definition-groups/:id', describe({
   summary: 'Rename or reorder a saved-report group (report-defs-v1)',
-  description: 'Body `{version, name?, sort?}`. Response `{group}`. 409 STALE_VERSION {details.current}, NAME_TAKEN.',
+  description: 'Body `{version, name?, sort?}`. Response: the group. 409 STALE_VERSION {details.current}, NAME_TAKEN.',
   params: idParams,
 }), groupInCompanyMw, idempotent({
   successStatus: 200,
-  replay: async (req) => ({ group: await defs.getGroup(req.tenantId, req.companyId, req.params['id']!) }),
+  replay: async (req) => defs.getGroup(req.tenantId, req.companyId, req.params['id']!),
 }), validate(groupUpdateSchema), async (req, res) => {
   const id = uuidParam(req.params['id'], defs.groupNotFound);
-  res.json({ group: await defs.updateGroup(req.tenantId, req.companyId, req.userId, id, req.body) });
+  res.json(await defs.updateGroup(req.tenantId, req.companyId, req.userId, id, req.body));
 });
 
 reportBuilderRouter.delete('/definition-groups/:id', describe({

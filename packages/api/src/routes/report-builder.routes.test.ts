@@ -107,7 +107,7 @@ describe('report-defs-v1 (U-118)', () => {
     const options = { dateRange: { preset: 'this_year' }, basis: 'accrual', filters: { accountIds: [c.bank, c.expense], contactIds: [c.vendor], tagIds: [c.tag] } };
     const r = await create({ name: 'Monthly P&L', definition: def(options) });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
-    const row = r.json.definition;
+    const row = r.json;
     expect(row).toMatchObject({
       groupId: null, name: 'Monthly P&L', kind: 'standard', definition: def(options), version: 1,
       createdBy: c.userId, createdByName: expect.stringMatching(/^Owner rd/), canEdit: true,
@@ -118,11 +118,14 @@ describe('report-defs-v1 (U-118)', () => {
     expect(list.status).toBe(200);
     expect(list.json.definitions.map((d: { id: string }) => d.id)).toEqual([row.id]);
     const got = await call('GET', `/definitions/${row.id}`, c.token);
-    expect(got.json.definition).toEqual(row);
+    expect(got.json).toEqual(row);
 
-    const up = await call('PUT', `/definitions/${row.id}`, c.token, { version: 1, name: 'P&L by month', definition: def({ basis: 'cash' }) });
+    // The desktop sends the whole write body: name, groupId, kind, definition, version.
+    const wrongKind = await call('PUT', `/definitions/${row.id}`, c.token, { version: 1, kind: 'builder', definition: def() });
+    expect(wrongKind.status).toBe(400);
+    const up = await call('PUT', `/definitions/${row.id}`, c.token, { version: 1, name: 'P&L by month', groupId: null, kind: 'standard', definition: def({ basis: 'cash' }) });
     expect(up.status, JSON.stringify(up.json)).toBe(200);
-    expect(up.json.definition).toMatchObject({ name: 'P&L by month', version: 2, definition: def({ basis: 'cash' }) });
+    expect(up.json).toMatchObject({ name: 'P&L by month', version: 2, definition: def({ basis: 'cash' }) });
 
     const del = await call('DELETE', `/definitions/${row.id}?version=2`, c.token);
     expect(del.status).toBe(204);
@@ -139,7 +142,7 @@ describe('report-defs-v1 (U-118)', () => {
   });
 
   it('409 STALE_VERSION with details.current on PUT and DELETE', async () => {
-    const row = (await create({ name: 'AR', definition: def({}, 'ar_aging_summary') })).json.definition;
+    const row = (await create({ name: 'AR', definition: def({}, 'ar_aging_summary') })).json;
     expect((await call('PUT', `/definitions/${row.id}`, c.token, { version: 1, name: 'AR aging' })).status).toBe(200);
     const stalePut = await call('PUT', `/definitions/${row.id}`, c.token, { version: 1, name: 'Again' });
     expect(stalePut.status).toBe(409);
@@ -156,8 +159,8 @@ describe('report-defs-v1 (U-118)', () => {
 
     const mine = await create({ name: 'Viewer report', definition: def() }, viewer.token);
     expect(mine.status, JSON.stringify(mine.json)).toBe(201);
-    const id = mine.json.definition.id;
-    expect(mine.json.definition).toMatchObject({ createdBy: viewer.id, createdByName: 'Viewer', canEdit: true });
+    const id = mine.json.id;
+    expect(mine.json).toMatchObject({ createdBy: viewer.id, createdByName: 'Viewer', canEdit: true });
 
     // Visible to everyone with report access, with canEdit false for another user.
     const seen = await call('GET', '/definitions', other.token);
@@ -177,16 +180,16 @@ describe('report-defs-v1 (U-118)', () => {
     expect((await call('PUT', `/definitions/${id}`, viewer.token, { version: 1, name: 'Viewer report 2' })).status).toBe(200);
     const byOwner = await call('PUT', `/definitions/${id}`, c.token, { version: 2, name: 'Viewer report 3' });
     expect(byOwner.status, JSON.stringify(byOwner.json)).toBe(200);
-    expect(byOwner.json.definition).toMatchObject({ createdBy: viewer.id, version: 3, canEdit: true });
+    expect(byOwner.json).toMatchObject({ createdBy: viewer.id, version: 3, canEdit: true });
     expect((await call('DELETE', `/definitions/${id}?version=3`, c.token)).status).toBe(204);
   });
 
   it('409 NAME_TAKEN per company, case-insensitive; free again after delete; other company may reuse', async () => {
-    const a = (await create({ name: 'Cash Flow', definition: def() })).json.definition;
+    const a = (await create({ name: 'Cash Flow', definition: def() })).json;
     const dup = await create({ name: 'cash flow', definition: def() });
     expect(dup.status).toBe(409);
     expect(dup.json.error.code).toBe('NAME_TAKEN');
-    const b = (await create({ name: 'Other', definition: def() })).json.definition;
+    const b = (await create({ name: 'Other', definition: def() })).json;
     const rename = await call('PUT', `/definitions/${b.id}`, c.token, { version: 1, name: 'CASH FLOW' });
     expect(rename.json.error.code).toBe('NAME_TAKEN');
     expect((await create({ name: 'Cash Flow', definition: def() }, c.token, { co: c.companyB })).status).toBe(201);
@@ -195,7 +198,7 @@ describe('report-defs-v1 (U-118)', () => {
   });
 
   it('another company or tenant: 404 and not listed', async () => {
-    const row = (await create({ name: 'Mine', definition: def() })).json.definition;
+    const row = (await create({ name: 'Mine', definition: def() })).json;
     expect((await call('GET', `/definitions/${row.id}`, c.token, undefined, { co: c.companyB })).status).toBe(404);
     expect((await call('GET', '/definitions', c.token, undefined, { co: c.companyB })).json.definitions).toEqual([]);
     expect((await call('PUT', `/definitions/${row.id}`, c.token, { version: 1, name: 'x' }, { co: c.companyB })).status).toBe(404);
@@ -238,22 +241,22 @@ describe('report-defs-v1 (U-118)', () => {
   it('groups: CRUD, stale, name taken; deleting a group moves its reports to no group', async () => {
     const g = await call('POST', '/definition-groups', c.token, { name: 'Monthly', sort: 1 });
     expect(g.status, JSON.stringify(g.json)).toBe(201);
-    expect(g.json.group).toMatchObject({ name: 'Monthly', sort: 1, version: 1, definitionCount: 0 });
-    const gid = g.json.group.id;
+    expect(g.json).toMatchObject({ name: 'Monthly', sort: 1, version: 1, definitionCount: 0 });
+    const gid = g.json.id;
     expect((await call('POST', '/definition-groups', c.token, { name: 'MONTHLY' })).json.error.code).toBe('NAME_TAKEN');
-    const r1 = (await create({ name: 'One', groupId: gid, definition: def() })).json.definition;
-    const r2 = (await create({ name: 'Two', definition: def() })).json.definition;
-    expect((await call('PUT', `/definitions/${r2.id}`, c.token, { version: 1, groupId: gid })).json.definition.groupId).toBe(gid);
+    const r1 = (await create({ name: 'One', groupId: gid, definition: def() })).json;
+    const r2 = (await create({ name: 'Two', definition: def() })).json;
+    expect((await call('PUT', `/definitions/${r2.id}`, c.token, { version: 1, groupId: gid })).json.groupId).toBe(gid);
     expect((await call('GET', `/definitions?groupId=${gid}`, c.token)).json.definitions).toHaveLength(2);
     expect((await call('GET', '/definitions?groupId=none', c.token)).json.definitions).toEqual([]);
     expect((await call('GET', '/definition-groups', c.token)).json.groups).toEqual([expect.objectContaining({ id: gid, definitionCount: 2 })]);
     // A group of another company is refused.
-    const gb = (await call('POST', '/definition-groups', c.token, { name: 'B' }, { co: c.companyB })).json.group;
+    const gb = (await call('POST', '/definition-groups', c.token, { name: 'B' }, { co: c.companyB })).json;
     const cross = await create({ name: 'Cross', groupId: gb.id, definition: def() });
     expect(cross.status).toBe(400);
 
     const ren = await call('PUT', `/definition-groups/${gid}`, c.token, { version: 1, name: 'Month end' });
-    expect(ren.json.group).toMatchObject({ name: 'Month end', version: 2 });
+    expect(ren.json).toMatchObject({ name: 'Month end', version: 2 });
     const staleG = await call('PUT', `/definition-groups/${gid}`, c.token, { version: 1, name: 'x' });
     expect(staleG.json.error).toMatchObject({ code: 'STALE_VERSION', details: { current: 2 } });
     expect((await call('DELETE', `/definition-groups/${gid}?version=1`, c.token)).json.error.code).toBe('STALE_VERSION');
@@ -275,13 +278,13 @@ describe('report-defs-v1 (U-118)', () => {
     expect(first.status).toBe(201);
     const again = await create({ name: 'Keyed', definition: def() }, c.token, { key });
     expect(again.status).toBe(201);
-    expect(again.json.definition.id).toBe(first.json.definition.id);
+    expect(again.json.id).toBe(first.json.id);
     const putKey = `rd-put-${suffix()}`;
-    const p1 = await call('PUT', `/definitions/${first.json.definition.id}`, c.token, { version: 1, name: 'Keyed 2' }, { key: putKey });
-    const p2 = await call('PUT', `/definitions/${first.json.definition.id}`, c.token, { version: 1, name: 'Keyed 2' }, { key: putKey });
+    const p1 = await call('PUT', `/definitions/${first.json.id}`, c.token, { version: 1, name: 'Keyed 2' }, { key: putKey });
+    const p2 = await call('PUT', `/definitions/${first.json.id}`, c.token, { version: 1, name: 'Keyed 2' }, { key: putKey });
     expect(p1.status).toBe(200);
     expect(p2.status).toBe(200);
-    expect(p2.json.definition.version).toBe(2);
+    expect(p2.json.version).toBe(2);
     expect(await db.select().from(reportDefinitions).where(eq(reportDefinitions.tenantId, c.tenantId))).toHaveLength(1);
   });
 });

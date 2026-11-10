@@ -57080,7 +57080,7 @@
         ]
       },
       "post": {
-        "description": "Response 201 `{group}`, group `{id, name, sort, version, definitionCount, updatedAt}`. 409 NAME_TAKEN (unique per company, case-insensitive, among groups not deleted).",
+        "description": "Response 201: the group, `{id, name, sort, version, definitionCount, updatedAt}`. 409 NAME_TAKEN (unique per company, case-insensitive, among groups not deleted).",
         "operationId": "post_api_v1_report_builder_definition_groups",
         "parameters": [
           {
@@ -57183,7 +57183,7 @@
         ]
       },
       "put": {
-        "description": "Body `{version, name?, sort?}`. Response `{group}`. 409 STALE_VERSION {details.current}, NAME_TAKEN.",
+        "description": "Body `{version, name?, sort?}`. Response: the group. 409 STALE_VERSION {details.current}, NAME_TAKEN.",
         "operationId": "put_api_v1_report_builder_definition_groups_by_id",
         "parameters": [
           {
@@ -57310,7 +57310,7 @@
         ]
       },
       "post": {
-        "description": "Body `{name, groupId?, kind?, definition: {schemaVersion: 1, kind: 'standard', reportKey, options}}`. Response 201 `{definition: row}`, row `{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310). The caller is the author. 400 DEFINITION_INVALID {details.path} (shape, a uuid outside the id paths, or an id not in this company), VALIDATION_ERROR {details.field: groupId}; 409 NAME_TAKEN (names are unique per company, case-insensitive, among saved reports not deleted); 413 DEFINITION_TOO_LARGE {details.limit}.",
+        "description": "Body `{name, groupId?, kind?, definition: {schemaVersion: 1, kind: 'standard', reportKey, options}}`. Response 201: the row, `{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310). The caller is the author. 400 DEFINITION_INVALID {details.path} (shape, a uuid outside the id paths, or an id not in this company), VALIDATION_ERROR {details.field: groupId}; 409 NAME_TAKEN (names are unique per company, case-insensitive, among saved reports not deleted); 413 DEFINITION_TOO_LARGE {details.limit}.",
         "operationId": "post_api_v1_report_builder_definitions",
         "parameters": [
           {
@@ -57460,7 +57460,7 @@
         ]
       },
       "get": {
-        "description": "Response `{definition: row}`, row `{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310). Another company's or a deleted report: 404.",
+        "description": "Response: the row, `{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310). Another company's or a deleted report: 404.",
         "operationId": "get_api_v1_report_builder_definitions_by_id",
         "parameters": [
           {
@@ -57492,7 +57492,7 @@
         ]
       },
       "put": {
-        "description": "Body `{version, name?, groupId?, definition?}` (groupId null moves it to no group; the kind cannot change). Response `{definition: row}` with the next version. 403 NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.",
+        "description": "Body `{version, name?, groupId?, kind?, definition?}` (groupId null moves it to no group; the kind cannot change: kind and definition.kind must equal it). Response: the row with the next version. 403 NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.",
         "operationId": "put_api_v1_report_builder_definitions_by_id",
         "parameters": [
           {
@@ -57564,6 +57564,13 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "kind": {
+                    "description": "optional; must equal the saved kind",
+                    "enum": [
+                      "standard"
+                    ],
+                    "type": "string"
                   },
                   "name": {
                     "maxLength": 200,
