@@ -1029,5 +1029,20 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * replaceRefused not_waiting | staged with replaced false.
    */
   'feed-guards-v1',
+  /**
+   * Exact reports (U-14, U-205, ClientLedger P28 PR-A). ?exact=1 on the /reports catalog routes (profit-loss incl. compare=, balance-sheet
+   * incl. compare=, trial-balance, general-ledger, account-activity-summary, transaction-list, journal-entry-report, invoice-list,
+   * customer-balance-summary|detail, vendor-balance-summary, ap-aging-summary|detail, unpaid-bills, bill-payment-history, vendor-statement,
+   * transaction-list-by-vendor, ap-1099-prep, vendor-1099-summary, sales-by-customer, sales-by-item, expense-by-vendor, expense-by-category,
+   * revenue-by-category, deposit-detail, check-register, bank-balances): every money field x gains xExact (unrounded decimal string, same
+   * sign; 4 places from the journal, more for a cash-basis allocation share, never rounded), totals are Decimal sums of the rows, dates are
+   * YYYY-MM-DD, and meta {exact, basis, cashBasisRules, from, to | asOf, reportSchemaVersion} is added. Standard P&L / Balance Sheet / Trial
+   * Balance account rows carry parentAccountId, depth and rollupExact on parents (comparative columns do not); GL lines and accrual
+   * transaction-list rows carry lineId; GL takes limit and returns rowCount and truncated; comparative rows carry valuesExact (% at 1 place).
+   * GET /reports/vendor-1099-summary?year=&exact=1 -> {rows [{contactId, name, tinLast4, boxes {box: exact}, totalExact, meetsThreshold}],
+   * totalsExact} from the 1099 account-to-box mapping. 400 INVALID_PARAM / INVALID_DATE_RANGE with details.param. Without exact=1 the
+   * response shapes are unchanged (their number totals are now summed in Decimal); an exact value other than 1/0/true/false is 400.
+   */
+  'reports-exact-v1',
 ];
 

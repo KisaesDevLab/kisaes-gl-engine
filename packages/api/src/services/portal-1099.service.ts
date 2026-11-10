@@ -121,6 +121,21 @@ export async function ytdTotalsByBox(
   tenantId: string,
   taxYear: number,
 ): Promise<Array<{ contactId: string; formBox: FormBox; total: number }>> {
+  return (await ytdTotalsByBoxExact(tenantId, taxYear))
+    .map((r) => ({ contactId: r.contactId, formBox: r.formBox, total: Number(r.total) }))
+    .filter((r) => r.total > 0);
+}
+
+// The one per-box query behind ytdTotalsByBox and the 1099 Summary report
+// (U-205, reports-exact-v1): totals stay pg numeric strings (exact), and a
+// companyId narrows the transactions to one company (the 1099 Center
+// passes none and stays tenant-wide). Every (vendor, box) bucket is
+// returned, including non-positive ones; callers filter.
+export async function ytdTotalsByBoxExact(
+  tenantId: string,
+  taxYear: number,
+  companyId: string | null = null,
+): Promise<Array<{ contactId: string; formBox: FormBox; total: string }>> {
   const yearStart = `${taxYear}-01-01`;
   const yearEnd = `${taxYear}-12-31`;
   const rows = await db
@@ -153,6 +168,7 @@ export async function ytdTotalsByBox(
         inArray(transactions.txnType, ['bill', 'expense', 'check']),
         eq(transactions.status, 'posted'),
         sql`${transactions.voidedAt} IS NULL`,
+        ...(companyId ? [eq(transactions.companyId, companyId)] : []),
       ),
     )
     .groupBy(transactions.contactId, vendor1099AccountMappings.formBox);
@@ -165,9 +181,8 @@ export async function ytdTotalsByBox(
     .map((r) => ({
       contactId: r.contactId,
       formBox: r.formBox as FormBox,
-      total: Number(r.total),
-    }))
-    .filter((r) => r.total > 0);
+      total: r.total,
+    }));
 }
 
 // 1099-reportable total per vendor: the sum of ytdTotalsByBox across every

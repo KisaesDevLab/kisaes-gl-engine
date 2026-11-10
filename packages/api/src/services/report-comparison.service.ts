@@ -10,6 +10,7 @@ import * as reportService from './report.service.js';
 import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
 import { getLeadsheetMap, groupByLeadsheet } from './report-leadsheets.js';
 import type { AccountType } from '@kis-books/shared';
+import { dec, dsum, exactStr, legacyNum, percent1, type Dec, type MoneyIn } from './report-exact.js';
 
 type CompareMode = 'previous_period' | 'previous_year' | 'ytd_vs_prior_ytd' | 'multi_period';
 type PeriodType = 'month' | 'quarter' | 'year';
@@ -23,9 +24,64 @@ interface DateRange { startDate: string; endDate: string; label: string }
 // passes +1 (raw). With this, green = helped profit / red = hurt profit for
 // every row, and the section changes sum to the (raw) net-income change.
 function computeVariance(current: number, prior: number, favorabilitySign: 1 | -1 = 1): { dollarChange: number; percentChange: number | null } {
-  const dollarChange = favorabilitySign * (current - prior);
+  // The $ change goes through Decimal (U-14); the legacy % stays a plain
+  // ratio. Exact reports use exactVariance below.
+  const dollarChange = legacyNum(dec(current).minus(dec(prior)).times(favorabilitySign));
   const percentChange = prior === 0 ? null : (dollarChange / Math.abs(prior)) * 100;
   return { dollarChange, percentChange };
+}
+
+// ─── Exact columns (U-14, ?exact=1) ──────────────────────────────
+// Every row, subtotal and total gains `valuesExact` (or `<total>Exact`)
+// beside its legacy `values`: amounts as decimal strings, the $ change
+// as a Decimal difference, the % change at 1 place (half away from zero)
+// of the Decimal amounts, null on a zero prior.
+function exactVariance(cur: Dec, prior: Dec, favorabilitySign: 1 | -1 = 1): Array<string | null> {
+  const change = cur.minus(prior).times(favorabilitySign);
+  return [exactStr(cur), exactStr(prior), exactStr(change), percent1(change, prior.abs())];
+}
+function exactWithTotal(cols: Dec[]): string[] {
+  return [...cols.map(exactStr), exactStr(dsum(cols))];
+}
+// Group subtotal in exact form from the member rows' valuesExact.
+function subtotalValuesExact(rows: Array<{ valuesExact?: Array<string | null> }>, columns: ComparativeColumn[], favorabilitySign: 1 | -1 = 1): Array<string | null> {
+  const sums = columns.map((col, i) =>
+    col.type === 'variance' || col.type === 'percent_variance' ? null : dsum(rows.map((r) => r.valuesExact?.[i] ?? null)));
+  const hasVariance = columns.some((c) => c.type === 'variance');
+  if (hasVariance) return exactVariance(sums[0] ?? dec(0), sums[1] ?? dec(0), favorabilitySign);
+  return sums.map((d) => (d ? exactStr(d) : null));
+}
+type ExactGroup = { rows: Array<{ valuesExact?: Array<string | null> }> };
+function withGroupsExact<G extends ExactGroup>(groups: G[], columns: ComparativeColumn[], favorabilitySign: 1 | -1 = 1): Array<G & { valuesExact: Array<string | null> }> {
+  return groups.map((g) => ({ ...g, valuesExact: subtotalValuesExact(g.rows, columns, favorabilitySign) }));
+}
+type PlSectionKey = 'revenue' | 'cogs' | 'expenses' | 'otherRevenue' | 'otherExpenses';
+// One P&L's per-account Decimal amounts and section totals.
+function plDecimals(pl: reportService.PLResult): { byAccount: Map<string, Dec>; totals: Record<string, Dec> } {
+  const byAccount = new Map<string, Dec>();
+  for (const k of ['revenue', 'cogs', 'expenses', 'otherRevenue', 'otherExpenses'] as PlSectionKey[]) {
+    for (const e of pl[k]) byAccount.set(e.accountId, dec(e.amountExact ?? e.amount));
+  }
+  return {
+    byAccount,
+    totals: {
+      totalRevenue: dec(pl.totalRevenueExact ?? pl.totalRevenue),
+      totalCogs: dec(pl.totalCogsExact ?? pl.totalCogs),
+      totalExpenses: dec(pl.totalExpensesExact ?? pl.totalExpenses),
+      totalOtherRevenue: dec(pl.totalOtherRevenueExact ?? pl.totalOtherRevenue),
+      totalOtherExpenses: dec(pl.totalOtherExpensesExact ?? pl.totalOtherExpenses),
+      netIncome: dec(pl.netIncomeExact ?? pl.netIncome),
+    },
+  };
+}
+const sumNums = (vals: number[]): number => legacyNum(dsum(vals as MoneyIn[]));
+// Section totals per column plus the trailing Total column, exact.
+function multiTotalsExact(plDec: Array<{ totals: Record<string, Dec> }>): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const k of ['totalRevenue', 'totalCogs', 'totalExpenses', 'totalOtherRevenue', 'totalOtherExpenses', 'netIncome']) {
+    out[`${k}Exact`] = exactWithTotal(plDec.map((p) => p.totals[k]!));
+  }
+  return out;
 }
 
 // P&L cost sections (COGS + operating + other expense) flip; revenue stays raw.
@@ -63,13 +119,13 @@ type ComparativeColumn = { label: string; type?: string };
 function subtotalValues(rows: Array<{ values: Array<number | null> }>, columns: ComparativeColumn[], favorabilitySign: 1 | -1 = 1): Array<number | null> {
   const sums = columns.map((col, i) => {
     if (col.type === 'variance' || col.type === 'percent_variance') return 0;
-    return rows.reduce((acc, r) => acc + (r.values[i] ?? 0), 0);
+    return sumNums(rows.map((r) => r.values[i] ?? 0));
   });
   const out: Array<number | null> = [...sums];
   for (let i = 0; i < columns.length; i++) {
     const col = columns[i];
     if (col?.type === 'variance') {
-      out[i] = favorabilitySign * ((sums[0] ?? 0) - (sums[1] ?? 0));
+      out[i] = legacyNum(dec(sums[0] ?? 0).minus(dec(sums[1] ?? 0)).times(favorabilitySign));
     } else if (col?.type === 'percent_variance') {
       out[i] = computeVariance(sums[0] ?? 0, sums[1] ?? 0, favorabilitySign).percentChange;
     }
@@ -265,10 +321,12 @@ export async function buildComparativePL(
   // field per section; existing comparative shape untouched.
   groupBy: reportService.ReportGroupBy | null = null,
   // U-60 adjusting lens (default include), applied to every column.
-  opts: { adjusting?: reportService.AdjustingFilter | null } = {},
+  // exact: valuesExact on rows / groups and *Exact totals (U-14).
+  opts: { adjusting?: reportService.AdjustingFilter | null; exact?: boolean } = {},
 ) {
   const grouped = groupBy !== null;
-  const lens = { adjusting: opts.adjusting ?? null };
+  const exact = !!opts.exact;
+  const lens = { adjusting: opts.adjusting ?? null, exactAmounts: exact };
   if (compareMode === 'multi_period') {
     const fyStartMonth = periodType === 'year'
       ? await reportService.getFiscalYearStart(tenantId, companyId)
@@ -296,15 +354,17 @@ export async function buildComparativePL(
       for (const r of pl.otherExpenses) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
     }
 
+    const plDec = exact ? plResults.map(plDecimals) : [];
     const rows = [...accountMap.values()].map((acct) => {
       const values = plResults.map((pl) => {
         const items = (pl as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
         return items.find((i) => i.accountId === acct.accountId)?.amount || 0;
       });
-      values.push(values.reduce((a, b) => a + b, 0)); // Total column
+      values.push(sumNums(values)); // Total column
       return {
         accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
         accountType: acct.type, values,
+        ...(exact ? { valuesExact: exactWithTotal(plDec.map((p) => p.byAccount.get(acct.accountId) ?? dec(0))) } : {}),
         ...(grouped ? { detailType: acct.detailType } : {}),
       };
     });
@@ -315,17 +375,19 @@ export async function buildComparativePL(
     // Custom detail types follow the tenant's presentation order —
     // same shared helper as the standard P&L/BS builders.
     const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+    const gx = <G extends ExactGroup>(g: G[]) => (exact ? withGroupsExact(g, columns) : g);
     const plGroups = group
       ? {
-          revenue: group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns),
-          cogs: group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns),
-          expenses: group('expense', rows.filter((r) => r.accountType === 'expense'), columns),
-          otherRevenue: group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns),
-          otherExpenses: group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns),
+          revenue: gx(group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns)),
+          cogs: gx(group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns)),
+          expenses: gx(group('expense', rows.filter((r) => r.accountType === 'expense'), columns)),
+          otherRevenue: gx(group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns)),
+          otherExpenses: gx(group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns)),
         }
       : undefined;
 
-    const withTotal = (vals: number[]) => { vals.push(vals.reduce((a, b) => a + b, 0)); return vals; };
+    const withTotal = (vals: number[]) => { vals.push(sumNums(vals)); return vals; };
+    const totalsExact = exact ? multiTotalsExact(plDec) : {};
     const revTotals = withTotal(plResults.map((pl) => pl.totalRevenue));
     const cogsTotals = withTotal(plResults.map((pl) => pl.totalCogs));
     const expTotals = withTotal(plResults.map((pl) => pl.totalExpenses));
@@ -344,6 +406,7 @@ export async function buildComparativePL(
       totalOtherRevenue: otherRevTotals,
       totalOtherExpenses: otherExpTotals,
       netIncome: netTotals,
+      ...totalsExact,
       ...(plGroups ? { groupBy: groupBy!, groups: plGroups } : {}),
     };
   }
@@ -386,6 +449,8 @@ export async function buildComparativePL(
     other_revenue: 'otherRevenue', other_expense: 'otherExpenses',
   };
 
+  const curDec = exact ? plDecimals(currentPL) : null;
+  const priDec = exact ? plDecimals(priorPL) : null;
   const rows = [...allAccounts.values()].map((acct) => {
     const currentItems = (currentPL as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
     const priorItems = (priorPL as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
@@ -395,6 +460,9 @@ export async function buildComparativePL(
     return {
       accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
       accountType: acct.type, values: [current, prior, v.dollarChange, v.percentChange],
+      ...(curDec && priDec
+        ? { valuesExact: exactVariance(curDec.byAccount.get(acct.accountId) ?? dec(0), priDec.byAccount.get(acct.accountId) ?? dec(0), favSign(acct.type)) }
+        : {}),
       ...(grouped ? { detailType: acct.detailType } : {}),
     };
   });
@@ -404,13 +472,14 @@ export async function buildComparativePL(
   // re-derived from those sums (same semantics as account rows). Custom
   // detail types follow the tenant's presentation order (shared helper).
   const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+  const gx2 = <G extends ExactGroup>(g: G[], t: PLAcctType) => (exact ? withGroupsExact(g, columns, favSign(t)) : g);
   const plGroups = group
     ? {
-        revenue: group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns, undefined, favSign('revenue')),
-        cogs: group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns, undefined, favSign('cogs')),
-        expenses: group('expense', rows.filter((r) => r.accountType === 'expense'), columns, undefined, favSign('expense')),
-        otherRevenue: group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns, undefined, favSign('other_revenue')),
-        otherExpenses: group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns, undefined, favSign('other_expense')),
+        revenue: gx2(group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns, undefined, favSign('revenue')), 'revenue'),
+        cogs: gx2(group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns, undefined, favSign('cogs')), 'cogs'),
+        expenses: gx2(group('expense', rows.filter((r) => r.accountType === 'expense'), columns, undefined, favSign('expense')), 'expense'),
+        otherRevenue: gx2(group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns, undefined, favSign('other_revenue')), 'other_revenue'),
+        otherExpenses: gx2(group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns, undefined, favSign('other_expense')), 'other_expense'),
       }
     : undefined;
 
@@ -432,6 +501,16 @@ export async function buildComparativePL(
     totalOtherRevenue: varRow(currentPL.totalOtherRevenue, priorPL.totalOtherRevenue, favSign('other_revenue')),
     totalOtherExpenses: varRow(currentPL.totalOtherExpenses, priorPL.totalOtherExpenses, favSign('other_expense')),
     netIncome: varRow(currentPL.netIncome, priorPL.netIncome),
+    ...(curDec && priDec
+      ? {
+          totalRevenueExact: exactVariance(curDec.totals['totalRevenue']!, priDec.totals['totalRevenue']!, favSign('revenue')),
+          totalCogsExact: exactVariance(curDec.totals['totalCogs']!, priDec.totals['totalCogs']!, favSign('cogs')),
+          totalExpensesExact: exactVariance(curDec.totals['totalExpenses']!, priDec.totals['totalExpenses']!, favSign('expense')),
+          totalOtherRevenueExact: exactVariance(curDec.totals['totalOtherRevenue']!, priDec.totals['totalOtherRevenue']!, favSign('other_revenue')),
+          totalOtherExpensesExact: exactVariance(curDec.totals['totalOtherExpenses']!, priDec.totals['totalOtherExpenses']!, favSign('other_expense')),
+          netIncomeExact: exactVariance(curDec.totals['netIncome']!, priDec.totals['netIncome']!),
+        }
+      : {}),
     ...(plGroups ? { groupBy: groupBy!, groups: plGroups } : {}),
   };
 }
@@ -443,10 +522,12 @@ export async function buildComparativeBS(
   // field per section; existing comparative shape untouched.
   groupBy: reportService.ReportGroupBy | null = null,
   // U-60 adjusting lens (default include), applied to both columns.
-  opts: { adjusting?: reportService.AdjustingFilter | null } = {},
+  // exact: valuesExact on rows / groups and *Exact totals (U-14).
+  opts: { adjusting?: reportService.AdjustingFilter | null; exact?: boolean } = {},
 ) {
   const grouped = groupBy !== null;
-  const lens = { adjusting: opts.adjusting ?? null };
+  const exact = !!opts.exact;
+  const lens = { adjusting: opts.adjusting ?? null, exactAmounts: exact };
   const currentBS = await reportService.buildBalanceSheet(tenantId, asOfDate, basis, companyId, null, groupBy, lens);
   let priorDate: string;
 
@@ -473,7 +554,7 @@ export async function buildComparativeBS(
     { label: '% Change', type: 'percent_variance' },
   ];
 
-  type BSRow = { accountId: string | null; name: string; accountNumber: string | null; balance: number; detailType?: string | null };
+  type BSRow = { accountId: string | null; name: string; accountNumber: string | null; balance: number; balanceExact?: string; detailType?: string | null };
   // Key by accountId, NOT name: account names aren't unique (only numbers are),
   // so name-keying collapsed two same-named accounts into one row and hid the
   // second account's prior-period amount when it had no current balance.
@@ -498,6 +579,7 @@ export async function buildComparativeBS(
         name: cur?.name ?? pri?.name ?? '',
         accountNumber: cur?.accountNumber ?? pri?.accountNumber ?? null,
         values: [curBal, priBal, v.dollarChange, v.percentChange] as Array<number | null>,
+        ...(exact ? { valuesExact: exactVariance(dec(cur?.balanceExact ?? cur?.balance ?? 0), dec(pri?.balanceExact ?? pri?.balance ?? 0)) } : {}),
         // Present only in grouped mode (the underlying BS entries carry
         // detailType only when built with groupBy).
         ...(grouped ? { detailType: (cur?.detailType ?? pri?.detailType) ?? null } : {}),
@@ -515,13 +597,17 @@ export async function buildComparativeBS(
   // Custom detail types follow the tenant's presentation order; null-
   // detail groups (incl. the calculated one) stay trailing.
   const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+  const gb = <G extends ExactGroup>(g: G[]) => (exact ? withGroupsExact(g, columns) : g);
   const bsGroups = group
     ? {
-        assets: group('asset', mergedAssets, columns),
-        liabilities: group('liability', mergedLiabilities, columns),
-        equity: group('equity', mergedEquity, columns, (r) => r.accountId === null),
+        assets: gb(group('asset', mergedAssets, columns)),
+        liabilities: gb(group('liability', mergedLiabilities, columns)),
+        equity: gb(group('equity', mergedEquity, columns, (r) => r.accountId === null)),
       }
     : undefined;
+  const cb = currentBS as Record<string, unknown>;
+  const pb = priorBS as Record<string, unknown>;
+  const bsTotalExact = (k: string) => exactVariance(dec(cb[`${k}Exact`] as MoneyIn ?? cb[k] as MoneyIn), dec(pb[`${k}Exact`] as MoneyIn ?? pb[k] as MoneyIn));
 
   return {
     title: 'Balance Sheet (Comparative)' + reportService.basisTitleSuffix(basis), comparisonMode: compareMode, columns,
@@ -541,6 +627,14 @@ export async function buildComparativeBS(
       priorBS.totalLiabilitiesAndEquity,
       ...Object.values(computeVariance(currentBS.totalLiabilitiesAndEquity, priorBS.totalLiabilitiesAndEquity)),
     ],
+    ...(exact
+      ? {
+          totalAssetsExact: bsTotalExact('totalAssets'),
+          totalLiabilitiesExact: bsTotalExact('totalLiabilities'),
+          totalEquityExact: bsTotalExact('totalEquity'),
+          totalLiabilitiesAndEquityExact: bsTotalExact('totalLiabilitiesAndEquity'),
+        }
+      : {}),
     ...(bsGroups ? { groupBy: groupBy!, groups: bsGroups } : {}),
   };
 }
@@ -571,10 +665,12 @@ export async function buildPLByTag(
   companyId: string | null = null,
   groupBy: reportService.ReportGroupBy | null = null,
   // U-60 adjusting lens (default include), applied to every tag column.
-  opts: { adjusting?: reportService.AdjustingFilter | null } = {},
+  // exact: valuesExact on rows / groups and *Exact totals (U-14).
+  opts: { adjusting?: reportService.AdjustingFilter | null; exact?: boolean } = {},
 ) {
   const grouped = groupBy !== null;
-  const lens = { adjusting: opts.adjusting ?? null };
+  const exact = !!opts.exact;
+  const lens = { adjusting: opts.adjusting ?? null, exactAmounts: exact };
   const requested = tagIdList.split(',').map((s) => s.trim()).filter(Boolean);
   const tagRows = await db.select({ id: tags.id, name: tags.name }).from(tags)
     .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, requested)));
@@ -605,6 +701,7 @@ export async function buildPLByTag(
     for (const r of pl.otherExpenses) accountMap.set(r.accountId ?? r.name, { accountId: r.accountId, name: r.name, accountNumber: r.accountNumber, type: 'other_expense', detailType: r.detailType ?? null });
   }
 
+  const plDec = exact ? plResults.map(plDecimals) : [];
   const rows = [...accountMap.values()].map((acct) => {
     const values = plResults.map((pl) => {
       const items = (pl as any)[sectionKey[acct.type]] as Array<{ accountId: string; name: string; amount: number }>;
@@ -612,26 +709,28 @@ export async function buildPLByTag(
     });
     // Total column. A journal line carries at most one tag, so summing
     // the per-tag columns never double-counts a line.
-    values.push(values.reduce((a, b) => a + b, 0));
+    values.push(sumNums(values));
     return {
       accountId: acct.accountId, account: acct.name, accountNumber: acct.accountNumber,
       accountType: acct.type, values,
+      ...(exact ? { valuesExact: exactWithTotal(plDec.map((p) => p.byAccount.get(acct.accountId) ?? dec(0))) } : {}),
       ...(grouped ? { detailType: acct.detailType } : {}),
     };
   });
 
   const group = grouped ? await makeComparativeGrouper(tenantId, companyId, groupBy!) : null;
+  const gt = <G extends ExactGroup>(g: G[]) => (exact ? withGroupsExact(g, columns) : g);
   const plGroups = group
     ? {
-        revenue: group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns),
-        cogs: group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns),
-        expenses: group('expense', rows.filter((r) => r.accountType === 'expense'), columns),
-        otherRevenue: group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns),
-        otherExpenses: group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns),
+        revenue: gt(group('revenue', rows.filter((r) => r.accountType === 'revenue'), columns)),
+        cogs: gt(group('cogs', rows.filter((r) => r.accountType === 'cogs'), columns)),
+        expenses: gt(group('expense', rows.filter((r) => r.accountType === 'expense'), columns)),
+        otherRevenue: gt(group('other_revenue', rows.filter((r) => r.accountType === 'other_revenue'), columns)),
+        otherExpenses: gt(group('other_expense', rows.filter((r) => r.accountType === 'other_expense'), columns)),
       }
     : undefined;
 
-  const withTotal = (vals: number[]) => { vals.push(vals.reduce((a, b) => a + b, 0)); return vals; };
+  const withTotal = (vals: number[]) => { vals.push(sumNums(vals)); return vals; };
   return {
     title: 'Profit and Loss by Tag' + reportService.basisTitleSuffix(basis), comparisonMode: 'by_tag',
     startDate, endDate,
@@ -644,6 +743,7 @@ export async function buildPLByTag(
     totalOtherRevenue: withTotal(plResults.map((pl) => pl.totalOtherRevenue)),
     totalOtherExpenses: withTotal(plResults.map((pl) => pl.totalOtherExpenses)),
     netIncome: withTotal(plResults.map((pl) => pl.netIncome)),
+    ...(exact ? multiTotalsExact(plDec) : {}),
     ...(plGroups ? { groupBy: groupBy!, groups: plGroups } : {}),
   };
 }

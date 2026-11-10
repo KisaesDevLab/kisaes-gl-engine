@@ -57059,7 +57059,75 @@
     },
     "/api/v1/reports/account-activity-summary": {
       "get": {
+        "description": "data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_account_activity_summary",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57073,6 +57141,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Account Activity Summary",
         "tags": [
           "reports"
         ]
@@ -57101,7 +57170,65 @@
     },
     "/api/v1/reports/ap-1099-prep": {
       "get": {
+        "description": "data[] {total_paidExact}, totalPaidExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_1099_prep",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tax_year",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57115,6 +57242,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "1099 Preparation",
         "tags": [
           "reports"
         ]
@@ -57122,7 +57250,65 @@
     },
     "/api/v1/reports/ap-aging-detail": {
       "get": {
+        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_aging_detail",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57136,6 +57322,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "A/P Aging Detail",
         "tags": [
           "reports"
         ]
@@ -57143,7 +57330,65 @@
     },
     "/api/v1/reports/ap-aging-summary": {
       "get": {
+        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_aging_summary",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57157,6 +57402,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "A/P Aging Summary",
         "tags": [
           "reports"
         ]
@@ -57227,7 +57473,110 @@
     },
     "/api/v1/reports/balance-sheet": {
       "get": {
+        "description": "assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_balance_sheet",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "compare",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "enum": [
+                "detail_type",
+                "leadsheet"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57241,6 +57590,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Balance Sheet",
         "tags": [
           "reports"
         ]
@@ -57248,7 +57598,65 @@
     },
     "/api/v1/reports/bank-balances": {
       "get": {
+        "description": "accounts[] {balanceExact}, totalBalanceExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_bank_balances",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57262,6 +57670,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Bank Account Balances",
         "tags": [
           "reports"
         ]
@@ -57290,7 +57699,75 @@
     },
     "/api/v1/reports/bill-payment-history": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_bill_payment_history",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57304,6 +57781,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Bill Payment History",
         "tags": [
           "reports"
         ]
@@ -57353,7 +57831,84 @@
     },
     "/api/v1/reports/check-register": {
       "get": {
+        "description": "data[] {debitExact, creditExact}, totalsExact {debit, credit}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_check_register",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57367,6 +57922,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Check Register",
         "tags": [
           "reports"
         ]
@@ -57374,7 +57930,57 @@
     },
     "/api/v1/reports/customer-balance-detail": {
       "get": {
+        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_customer_balance_detail",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57388,6 +57994,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Customer Balance Detail",
         "tags": [
           "reports"
         ]
@@ -57395,7 +58002,57 @@
     },
     "/api/v1/reports/customer-balance-summary": {
       "get": {
+        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_customer_balance_summary",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57409,6 +58066,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Customer Balance Summary",
         "tags": [
           "reports"
         ]
@@ -57556,7 +58214,75 @@
     },
     "/api/v1/reports/deposit-detail": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_deposit_detail",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57570,6 +58296,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Deposit Detail",
         "tags": [
           "reports"
         ]
@@ -57642,7 +58369,106 @@
     },
     "/api/v1/reports/expense-by-category": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] {lineId, debitExact, creditExact, balanceExact}} and grandTotalExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_expense_by_category",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "display",
+            "required": false,
+            "schema": {
+              "enum": [
+                "detail"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57656,6 +58482,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Expenses by Category",
         "tags": [
           "reports"
         ]
@@ -57663,7 +58490,98 @@
     },
     "/api/v1/reports/expense-by-vendor": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalExact, accounts[] {totalExact}}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_expense_by_vendor",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "display",
+            "required": false,
+            "schema": {
+              "enum": [
+                "detail"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57677,6 +58595,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Expenses by Vendor",
         "tags": [
           "reports"
         ]
@@ -57684,7 +58603,117 @@
     },
     "/api/v1/reports/general-ledger": {
       "get": {
+        "description": "accounts[] {accountId, beginningBalanceExact, periodDebitsExact, periodCreditsExact, endingBalanceExact, lines[] {lineId, transactionId, debitExact, creditExact, runningBalanceExact}}, totalDebitsExact, totalCreditsExact, rowCount (all lines), truncated. limit returns at most that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_general_ledger",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "description": "1-100000",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57698,6 +58727,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "General Ledger",
         "tags": [
           "reports"
         ]
@@ -57844,7 +58874,83 @@
     },
     "/api/v1/reports/invoice-list": {
       "get": {
+        "description": "data[] {totalExact, amount_paidExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_invoice_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57858,6 +58964,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Invoice List",
         "tags": [
           "reports"
         ]
@@ -57865,7 +58972,88 @@
     },
     "/api/v1/reports/journal-entry-report": {
       "get": {
+        "description": "Journal entries, one row per line: data[] {id, lineId, debitExact, creditExact, amountExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_journal_entry_report",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -57879,6 +59067,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Journal",
         "tags": [
           "reports"
         ]
@@ -58940,7 +60129,136 @@
     },
     "/api/v1/reports/profit-loss": {
       "get": {
+        "description": "Standard: revenue/cogs/expenses/otherRevenue/otherExpenses[] {accountId, amount, amountExact, parentAccountId, depth, rollupExact?}, total*Exact, grossProfitExact, operatingIncomeExact, netIncomeExact; group_by adds groups[].subtotalExact. compare=previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag: rows[].valuesExact and groups[].valuesExact (amounts; $ change; % change at 1 place, null on a zero base), total*Exact / netIncomeExact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_profit_loss",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "compare",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "periods",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "enum": [
+                "detail_type",
+                "leadsheet"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -58954,6 +60272,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Profit and Loss",
         "tags": [
           "reports"
         ]
@@ -59039,7 +60358,106 @@
     },
     "/api/v1/reports/revenue-by-category": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] {lineId, debitExact, creditExact, balanceExact}} and grandTotalExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_revenue_by_category",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "display",
+            "required": false,
+            "schema": {
+              "enum": [
+                "detail"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59053,6 +60471,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Revenue by Category",
         "tags": [
           "reports"
         ]
@@ -59060,7 +60479,87 @@
     },
     "/api/v1/reports/sales-by-customer": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_sales_by_customer",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59074,6 +60573,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Sales by Client",
         "tags": [
           "reports"
         ]
@@ -59081,7 +60581,87 @@
     },
     "/api/v1/reports/sales-by-item": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_sales_by_item",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59095,6 +60675,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Sales by Item",
         "tags": [
           "reports"
         ]
@@ -59591,7 +61172,116 @@
     },
     "/api/v1/reports/transaction-list": {
       "get": {
+        "description": "One row per journal line: data[] {id (transaction), lineId (journal line; null on cash basis), debitExact, creditExact, amountExact (debit - credit)}, totalsExact {debit, credit, amount}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_transaction_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "txn_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59605,6 +61295,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Transaction List",
         "tags": [
           "reports"
         ]
@@ -59612,7 +61303,84 @@
     },
     "/api/v1/reports/transaction-list-by-vendor": {
       "get": {
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_transaction_list_by_vendor",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vendor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59626,6 +61394,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Transactions by Vendor",
         "tags": [
           "reports"
         ]
@@ -59633,7 +61402,108 @@
     },
     "/api/v1/reports/trial-balance": {
       "get": {
+        "description": "data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, depth, rollupExact?}, totalDebitsExact, totalCreditsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_trial_balance",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59647,6 +61517,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Trial Balance",
         "tags": [
           "reports"
         ]
@@ -59654,7 +61525,81 @@
     },
     "/api/v1/reports/unpaid-bills": {
       "get": {
+        "description": "data[] {totalExact, amount_paidExact, credits_appliedExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_unpaid_bills",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contact_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "due_on_or_before",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overdue_only",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59668,6 +61613,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Unpaid Bills",
         "tags": [
           "reports"
         ]
@@ -59675,7 +61621,65 @@
     },
     "/api/v1/reports/vendor-1099-summary": {
       "get": {
+        "description": "Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, boxNumber, label, thresholdExact}, rows[] {contactId, name, tinLast4, is1099Eligible, boxes {box code: exact amount}, totalExact, meetsThreshold}, totalsExact {box code..., total}} from the 1099 account-to-box mapping (the 1099 Center source), for the company. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_vendor_1099_summary",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59689,6 +61693,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "1099 Summary by box (U-205)",
         "tags": [
           "reports"
         ]
@@ -59696,7 +61701,57 @@
     },
     "/api/v1/reports/vendor-balance-summary": {
       "get": {
+        "description": "data[] {total_spentExact}, totalsExact {total_spent}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_vendor_balance_summary",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59710,6 +61765,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Vendor Balance Summary",
         "tags": [
           "reports"
         ]
@@ -59717,7 +61773,84 @@
     },
     "/api/v1/reports/vendor-statement": {
       "get": {
+        "description": "openingBalanceExact, closingBalanceExact, totalChargesExact, totalPaymentsExact, lines[] {id, chargeExact, paymentExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_vendor_statement",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vendor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default January 1 of this year",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -59731,6 +61864,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Vendor Statement",
         "tags": [
           "reports"
         ]
