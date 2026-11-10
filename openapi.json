@@ -57342,7 +57342,7 @@
                       },
                       "options": {
                         "additionalProperties": {},
-                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId and options.budgetId",
+                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId",
                         "type": "object"
                       },
                       "reportKey": {
@@ -57533,7 +57533,7 @@
                       },
                       "options": {
                         "additionalProperties": {},
-                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId and options.budgetId",
+                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId",
                         "type": "object"
                       },
                       "reportKey": {

@@ -50,7 +50,7 @@ const definitionDoc = z.object({
   schemaVersion: z.literal(1),
   kind: z.enum(REPORT_DEFINITION_KINDS),
   reportKey: z.string().regex(defs.REPORT_KEY_RE).describe('the report, /^[a-z0-9_]{1,64}$/'),
-  options: z.record(z.unknown()).describe('report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId and options.budgetId'),
+  options: z.record(z.unknown()).describe('report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId'),
 }).strict().describe('at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})');
 
 const createDefinitionSchema = z.object({

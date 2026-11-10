@@ -1049,7 +1049,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * /report-builder/definitions (?groupId=<id>|none, ?kind=), GET/PUT/DELETE /report-builder/definitions/:id, GET/POST
    * /report-builder/definition-groups, PUT/DELETE /report-builder/definition-groups/:id (a deleted group's reports move to no
    * group, each with a new version). Definition {schemaVersion: 1, kind: 'standard', reportKey /^[a-z0-9_]{1,64}$/, options};
-   * ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.budgetId, and they
+   * ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId, options.budgetId, and they
    * must be in the company. Row {id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt};
    * group {id, name, sort, version, definitionCount, updatedAt}. Needs report access (reports read); only the author, an owner or
    * a super admin changes or deletes a saved report (403 NOT_AUTHOR). POST/PUT take Idempotency-Key; PUT body and DELETE

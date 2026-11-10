@@ -24,7 +24,7 @@ import type { Server } from 'http';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, auditLog, reportDefinitions, userPermissions, users, userTenantAccess } from '../db/schema/index.js';
+import { accounts, auditLog, reportDefinitions, tagGroups, userPermissions, users, userTenantAccess } from '../db/schema/index.js';
 import { reportBuilderRouter } from './report-builder.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
@@ -228,6 +228,14 @@ describe('report-defs-v1 (U-118)', () => {
     // An account of the other company.
     const [foreign] = await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyB, name: `B only ${suffix()}`, accountType: 'expense' }).returning();
     await bad(def({ filters: { accountIds: [foreign!.id] } }), 'options.filters.accountIds');
+    // The column tag group (P28 compare=by_tag) is an id path: a tag group of this company is kept, another company's refused.
+    const [ownGroup] = await db.insert(tagGroups).values({ tenantId: c.tenantId, companyId: c.companyId, name: `Cols ${suffix()}` }).returning();
+    const [otherGroup] = await db.insert(tagGroups).values({ tenantId: c.tenantId, companyId: c.companyB, name: `ColsB ${suffix()}` }).returning();
+    await bad(def({ columnTagGroupId: otherGroup!.id }), 'options.columnTagGroupId');
+    const cols = await create({ name: 'By location', definition: def({ columnTagGroupId: ownGroup!.id }, 'profit_loss') });
+    expect(cols.status, JSON.stringify(cols.json)).toBe(201);
+    expect(cols.json.definition.options).toEqual({ columnTagGroupId: ownGroup!.id });
+    await db.delete(reportDefinitions).where(eq(reportDefinitions.id, cols.json.id));
     // kind must match.
     const mismatch = await create({ name: 'k', kind: 'builder', definition: def() });
     expect(mismatch.status).toBe(400);

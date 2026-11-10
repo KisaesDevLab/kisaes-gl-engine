@@ -5,7 +5,7 @@
 // U-118 (Q-312): saved report definitions and their groups travel in tenant
 // archives — the ClientLedger backup and the transfer file. A definition
 // naming one id of every kind at its fixed path (account, name, tag, item,
-// tag group, budget) and placed in a group comes back with every id pointing
+// tag group for the tag split and for the columns, budget) and placed in a group comes back with every id pointing
 // at the importing tenant's copy of the same row, and the import verifies.
 // Deleted (soft) rows travel as they are. Runs in server mode against the
 // test database.
@@ -60,7 +60,7 @@ async function shape(tid: string) {
   };
   const out = [];
   for (const r of rows) {
-    const o = r.def['options'] as { filters?: Record<string, string[]>; tagSplit?: { tagGroupId: string }; budgetId?: string; basis?: string };
+    const o = r.def['options'] as { filters?: Record<string, string[]>; tagSplit?: { tagGroupId: string }; budgetId?: string; basis?: string; columnTagGroupId?: string };
     const f = o.filters ?? {};
     out.push({
       name: r.name, kind: r.kind, version: r.version, deleted: r.deleted, group: r.grp, author: r.author?.replace(/@.*/, '') ?? null,
@@ -71,6 +71,7 @@ async function shape(tid: string) {
       items: await Promise.all((f['itemIds'] ?? []).map((id) => nameOf('items', id))),
       tagGroup: o.tagSplit ? await nameOf('tag_groups', o.tagSplit.tagGroupId) : null,
       budget: o.budgetId ? await nameOf('budgets', o.budgetId) : null,
+      columnTagGroup: o.columnTagGroupId ? await nameOf('tag_groups', o.columnTagGroupId) : null,
     });
   }
   return out;
@@ -97,6 +98,7 @@ beforeAll(async () => {
   const revenue = (await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, tenantId), eq(accounts.accountType, 'revenue')) }))!;
   const [contact] = await db.insert(contacts).values({ tenantId, companyId, contactType: 'customer', displayName: 'Hartley Residence' }).returning();
   const [tagGroup] = await db.insert(tagGroups).values({ tenantId, companyId, name: 'Crews' }).returning();
+  const [columnGroup] = await db.insert(tagGroups).values({ tenantId, companyId, name: 'Locations' }).returning();
   const [tag] = await db.insert(tags).values({ tenantId, companyId, name: 'North crew' }).returning();
   const [item] = await db.insert(items).values({ tenantId, companyId, name: 'Site visit', incomeAccountId: revenue.id }).returning();
   const [budget] = await db.insert(budgets).values({ tenantId, companyId, name: 'Plan 2026', fiscalYear: 2026 }).returning();
@@ -106,11 +108,11 @@ beforeAll(async () => {
   await defs.createDefinition(tenantId, companyId, viewer, {
     name: 'Everything', groupId: group.id,
     definition: {
-      schemaVersion: 1, kind: 'standard', reportKey: 'profit_and_loss',
+      schemaVersion: 1, kind: 'standard', reportKey: 'profit_loss',
       options: {
         basis: 'cash',
         filters: { accountIds: [revenue.id], contactIds: [contact!.id], tagIds: [tag!.id], itemIds: [item!.id] },
-        tagSplit: { tagGroupId: tagGroup!.id }, budgetId: budget!.id,
+        tagSplit: { tagGroupId: tagGroup!.id }, columnTagGroupId: columnGroup!.id, budgetId: budget!.id,
       },
     },
   });
@@ -157,13 +159,13 @@ describe('saved report definitions in tenant archives and backups (U-118)', () =
       expect(before).toEqual([
         {
           name: 'Everything', kind: 'standard', version: 1, deleted: false, group: 'Month end', author: `rtd-${stamp}`,
-          reportKey: 'profit_and_loss', basis: 'cash',
+          reportKey: 'profit_loss', basis: 'cash',
           accounts: [expect.any(String)], contacts: ['Hartley Residence'], tags: ['North crew'], items: ['Site visit'],
-          tagGroup: 'Crews', budget: 'Plan 2026',
+          tagGroup: 'Crews', budget: 'Plan 2026', columnTagGroup: 'Locations',
         },
         {
           name: 'Old one', kind: 'standard', version: 2, deleted: true, group: null, author: `rtd-${stamp}`,
-          reportKey: 'balance_sheet', basis: null, accounts: [], contacts: [], tags: [], items: [], tagGroup: null, budget: null,
+          reportKey: 'balance_sheet', basis: null, accounts: [], contacts: [], tags: [], items: [], tagGroup: null, budget: null, columnTagGroup: null,
         },
       ]);
       const imported = await runImport({ filePath: archives[kind]!.path!, passphrase: PASS, callerUserId: callerId });
@@ -173,7 +175,7 @@ describe('saved report definitions in tenant archives and backups (U-118)', () =
       // Same rows, every id now resolving to the new tenant's copy (shape() looks them up in the new tenant).
       expect(after.map((r) => ({ ...r, author: r.author === null ? null : 'x' })))
         .toEqual(before.map((r) => ({ ...r, author: r.author === null ? null : 'x' })));
-      expect(after.flatMap((r) => [...r.accounts, ...r.contacts, ...r.tags, ...r.items, r.tagGroup ?? '', r.budget ?? '']).join(' ')).not.toMatch(/MISSING/);
+      expect(after.flatMap((r) => [...r.accounts, ...r.contacts, ...r.tags, ...r.items, r.tagGroup ?? '', r.budget ?? '', r.columnTagGroup ?? '']).join(' ')).not.toMatch(/MISSING/);
       // No definition of the new tenant points at an old-tenant row.
       const leaked = await q<{ n: number }>(`SELECT count(*)::int AS n FROM report_definitions d
         WHERE d.tenant_id = $1 AND (d.definition_json::text ~ ANY (SELECT id::text FROM accounts WHERE tenant_id = $2)

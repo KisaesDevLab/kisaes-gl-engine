@@ -847,7 +847,7 @@ export const JSON_CONFIG_COLUMNS: Record<string, JsonConfigClass> = {
   'import_sessions.options': 'plain',
   // Saved report definitions (U-118): ids only at fixed option paths
   // (options.filters.{accountIds,contactIds,tagIds,itemIds},
-  // options.tagSplit.tagGroupId, options.budgetId).
+  // options.tagSplit.tagGroupId, options.columnTagGroupId, options.budgetId).
   'report_definitions.definition_json': 'contains-ids',
   'report_pack_items.options_json': 'contains-ids',
   'tenants.report_settings': 'contains-ids',

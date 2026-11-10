@@ -107,6 +107,8 @@ const definitionShape = z.object({
 }).strict();
 
 type IdKind = 'accounts' | 'contacts' | 'tags' | 'items' | 'tagGroups' | 'budgets';
+/** The ids a definition names, by path. */
+export type DefinitionRefs = Array<{ kind: IdKind; path: string; ids: string[] }>;
 
 /** The only places an entity id may appear (tenant archives remap them). */
 const ID_LIST_PATHS: Record<string, IdKind> = {
@@ -117,6 +119,8 @@ const ID_LIST_PATHS: Record<string, IdKind> = {
 };
 const ID_SCALAR_PATHS: Record<string, IdKind> = {
   'options.tagSplit.tagGroupId': 'tagGroups',
+  // The tag group whose tags become the report's columns (P28 compare=by_tag).
+  'options.columnTagGroupId': 'tagGroups',
   'options.budgetId': 'budgets',
 };
 
@@ -131,7 +135,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * ids it names, by kind. Throws 413 DEFINITION_TOO_LARGE or 400
  * DEFINITION_INVALID {path}.
  */
-export function parseDefinition(raw: unknown): { definition: ReportDefinition; refs: Record<IdKind, string[]> } {
+export function parseDefinition(raw: unknown): { definition: ReportDefinition; refs: DefinitionRefs } {
   if (raw === undefined || raw === null) throw invalid('A definition is required.', 'definition');
   const text = JSON.stringify(raw);
   if (Buffer.byteLength(text, 'utf8') > MAX_DEFINITION_BYTES) {
@@ -144,7 +148,7 @@ export function parseDefinition(raw: unknown): { definition: ReportDefinition; r
     throw invalid(`The saved report is not valid: ${issue.message}.`, path);
   }
   const definition = parsed.data as ReportDefinition;
-  const refs: Record<IdKind, string[]> = { accounts: [], contacts: [], tags: [], items: [], tagGroups: [], budgets: [] };
+  const refs: DefinitionRefs = [];
 
   const walk = (v: unknown, path: string, depth: number): void => {
     if (depth > MAX_DEPTH) throw invalid('The saved report is nested too deeply.', path);
@@ -153,14 +157,14 @@ export function parseDefinition(raw: unknown): { definition: ReportDefinition; r
       if (!Array.isArray(v) || v.length > MAX_FILTER_IDS || v.some((x) => typeof x !== 'string' || !uuidRe.test(x))) {
         throw invalid(`${path} must be a list of at most ${MAX_FILTER_IDS} ids.`, path);
       }
-      refs[list].push(...(v as string[]).map((x) => x.toLowerCase()));
+      refs.push({ kind: list, path, ids: [...new Set((v as string[]).map((x) => x.toLowerCase()))] });
       return;
     }
     const scalar = ID_SCALAR_PATHS[path];
     if (scalar) {
       if (v === null) return;
       if (typeof v !== 'string' || !uuidRe.test(v)) throw invalid(`${path} must be an id or null.`, path);
-      refs[scalar].push(v.toLowerCase());
+      refs.push({ kind: scalar, path, ids: [v.toLowerCase()] });
       return;
     }
     if (typeof v === 'string') {
@@ -179,25 +183,16 @@ export function parseDefinition(raw: unknown): { definition: ReportDefinition; r
     }
   };
   walk(definition.options, 'options', 0);
-  for (const k of Object.keys(refs) as IdKind[]) refs[k] = [...new Set(refs[k])];
   return { definition, refs };
 }
 
-const REF_TABLES = {
-  accounts: { table: accounts, path: 'options.filters.accountIds' },
-  contacts: { table: contacts, path: 'options.filters.contactIds' },
-  tags: { table: tags, path: 'options.filters.tagIds' },
-  items: { table: items, path: 'options.filters.itemIds' },
-  tagGroups: { table: tagGroups, path: 'options.tagSplit.tagGroupId' },
-  budgets: { table: budgets, path: 'options.budgetId' },
-} as const;
+const REF_TABLES = { accounts, contacts, tags, items, tagGroups, budgets } as const;
 
 /** Every id must be a row of this tenant, shared or of this company. */
-async function assertRefsInScope(tx: Tx, tenantId: string, companyId: string, refs: Record<IdKind, string[]>): Promise<void> {
-  for (const k of Object.keys(REF_TABLES) as IdKind[]) {
-    const ids = refs[k];
+async function assertRefsInScope(tx: Tx, tenantId: string, companyId: string, refs: DefinitionRefs): Promise<void> {
+  for (const { kind, path, ids } of refs) {
     if (ids.length === 0) continue;
-    const { table, path } = REF_TABLES[k];
+    const table = REF_TABLES[kind];
     const rows = await tx.select({ id: table.id, companyId: table.companyId }).from(table)
       .where(and(eq(table.tenantId, tenantId), inArray(table.id, ids)));
     if (rows.length !== ids.length || rows.some((r) => r.companyId !== null && r.companyId !== companyId)) {
