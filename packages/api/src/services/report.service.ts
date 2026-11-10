@@ -27,6 +27,9 @@ import { loadGapDismissals, missingMonthsBetween } from './bank-statements.servi
 import { buildReconciliationProof, type ReconciliationProofOptions } from './reconciliation-proof.service.js';
 import { getCustomDetailTypeRanks, orderDetailTypeGroups } from './detail-types.service.js';
 import { getLeadsheetMap, groupByLeadsheet } from './report-leadsheets.js';
+import {
+  applyAccountTree, dec, dsum, exactStr, legacyNum, type AccountTreeNode, type MoneyIn,
+} from './report-exact.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -546,6 +549,25 @@ export async function executeCashBasis(query: SQL) {
   });
 }
 
+// Exact reports: the tenant's accounts with their parents, for the
+// account tree on P&L / Balance Sheet / Trial Balance rows.
+export async function loadAccountTree(tenantId: string): Promise<Map<string, AccountTreeNode>> {
+  const res = await db.execute(sql`
+    SELECT id, parent_id, name, account_number, account_type FROM accounts WHERE tenant_id = ${tenantId}
+  `);
+  const map = new Map<string, AccountTreeNode>();
+  for (const r of res.rows as Array<Record<string, unknown>>) {
+    map.set(String(r['id']), {
+      id: String(r['id']),
+      parentId: (r['parent_id'] as string | null) ?? null,
+      name: String(r['name'] ?? ''),
+      accountNumber: (r['account_number'] as string | null) ?? null,
+      accountType: String(r['account_type'] ?? ''),
+    });
+  }
+  return map;
+}
+
 // ─── FINANCIAL STATEMENTS ────────────────────────────────────────
 
 export interface PLEntry {
@@ -561,6 +583,10 @@ export interface PLEntry {
   // Additive so the default response shape is unchanged for existing
   // consumers (PDF, comparative, portal blocks, MCP).
   detailType?: string | null;
+  // Exact reports (accountTree): the account tree within the section.
+  parentAccountId?: string | null;
+  depth?: number;
+  rollupExact?: string;
 }
 
 // One group per distinct detail type within a report section, produced
@@ -575,6 +601,8 @@ export interface DetailTypeGroup<T> {
   label: string;
   entries: T[];
   subtotal: number;
+  // Exact reports: the Decimal subtotal as a decimal string.
+  subtotalExact?: string;
 }
 
 export type ReportGroupBy = 'detail_type' | 'leadsheet';
@@ -585,23 +613,33 @@ export type ReportGroupBy = 'detail_type' | 'leadsheet';
 // trailing (see report-leadsheets.ts).
 type SectionGrouper = <T extends { accountId?: string | null; detailType?: string | null }>(
   entries: T[],
-  amountOf: (e: T) => number,
+  amountOf: (e: T) => MoneyIn,
   accountType: AccountType,
 ) => Array<DetailTypeGroup<T>>;
 
-export async function makeSectionGrouper(tenantId: string, companyId: string | null, groupBy: ReportGroupBy): Promise<SectionGrouper> {
+export async function makeSectionGrouper(
+  tenantId: string,
+  companyId: string | null,
+  groupBy: ReportGroupBy,
+  // Exact reports: groups also carry subtotalExact.
+  exact = false,
+): Promise<SectionGrouper> {
   if (groupBy === 'leadsheet') {
     const map = await getLeadsheetMap(tenantId, companyId);
-    return (entries, amountOf) => groupByLeadsheet(entries, map, (members, label, code) => ({
-      detailType: null,
-      leadsheetCode: code,
-      label,
-      entries: members,
-      subtotal: Number(members.reduce((d, e) => d.plus(amountOf(e)), new Decimal(0)).toFixed(4)),
-    }));
+    return (entries, amountOf) => groupByLeadsheet(entries, map, (members, label, code) => {
+      const d = dsum(members.map(amountOf));
+      return {
+        detailType: null,
+        leadsheetCode: code,
+        label,
+        entries: members,
+        subtotal: legacyNum(d),
+        ...(exact ? { subtotalExact: exactStr(d) } : {}),
+      };
+    });
   }
   const ranks = await getCustomDetailTypeRanks(tenantId);
-  return (entries, amountOf, accountType) => orderDetailTypeGroups(groupByDetailType(entries, amountOf), ranks, accountType);
+  return (entries, amountOf, accountType) => orderDetailTypeGroups(groupByDetailType(entries, amountOf, exact), ranks, accountType);
 }
 
 // Group a section's entries by their detailType, preserving the
@@ -611,7 +649,8 @@ export async function makeSectionGrouper(tenantId: string, companyId: string | n
 // report aggregate.
 function groupByDetailType<T extends { detailType?: string | null }>(
   entries: T[],
-  amountOf: (e: T) => number,
+  amountOf: (e: T) => MoneyIn,
+  exact = false,
 ): Array<DetailTypeGroup<T>> {
   const groups = new Map<string, DetailTypeGroup<T> & { subtotalDec: InstanceType<typeof Decimal> }>();
   for (const entry of entries) {
@@ -629,11 +668,12 @@ function groupByDetailType<T extends { detailType?: string | null }>(
       groups.set(key, group);
     }
     group.entries.push(entry);
-    group.subtotalDec = group.subtotalDec.plus(amountOf(entry));
+    group.subtotalDec = group.subtotalDec.plus(dec(amountOf(entry)));
   }
   return Array.from(groups.values()).map(({ subtotalDec, ...g }) => ({
     ...g,
-    subtotal: Number(subtotalDec.toFixed(4)),
+    subtotal: legacyNum(subtotalDec),
+    ...(exact ? { subtotalExact: exactStr(subtotalDec) } : {}),
   }));
 }
 
@@ -657,6 +697,15 @@ export interface PLResult {
   grossProfit: number | null;
   operatingIncome: number | null;
   netIncome: number;
+  // Present only when built with { exactAmounts: true } (U-14).
+  totalRevenueExact?: string;
+  totalCogsExact?: string;
+  totalExpensesExact?: string;
+  totalOtherRevenueExact?: string;
+  totalOtherExpensesExact?: string;
+  grossProfitExact?: string | null;
+  operatingIncomeExact?: string | null;
+  netIncomeExact?: string;
   // Additive fields — present only when built with groupBy: 'detail_type'.
   groupBy?: ReportGroupBy;
   groups?: {
@@ -684,7 +733,9 @@ export async function buildProfitAndLoss(
   groupBy: ReportGroupBy | null = null,
   // Additive: exactAmounts adds PLEntry.amountExact (decimal string);
   // adjusting is the U-60 lens (default include).
-  plOpts: { exactAmounts?: boolean; adjusting?: AdjustingFilter | null } = {},
+  // accountTree (exact reports): parentAccountId, depth and rollupExact on
+  // account rows, with zero ancestors added so the tree is complete.
+  plOpts: { exactAmounts?: boolean; accountTree?: boolean; adjusting?: AdjustingFilter | null } = {},
 ): Promise<PLResult> {
   const adjusting = plOpts.adjusting ?? null;
   // Cash basis: revenue recognized when cash is received, expenses when
@@ -736,11 +787,13 @@ export async function buildProfitAndLoss(
   const expenses: PLEntry[] = [];
   const otherRevenue: PLEntry[] = [];
   const otherExpenses: PLEntry[] = [];
-  let totalRevenue = 0;
-  let totalCogs = 0;
-  let totalExpenses = 0;
-  let totalOtherRevenue = 0;
-  let totalOtherExpenses = 0;
+  // Section totals accumulate in Decimal from the unrounded SQL sums
+  // (U-14); the legacy number totals are derived from them.
+  let revD = new Decimal(0);
+  let cogsD = new Decimal(0);
+  let expD = new Decimal(0);
+  let otherRevD = new Decimal(0);
+  let otherExpD = new Decimal(0);
 
   for (const row of rows.rows as any[]) {
     // SIGNED, normal-balance convention: income accounts report
@@ -752,40 +805,71 @@ export async function buildProfitAndLoss(
     // retained-earnings rows are derived from this net income, the error
     // propagated into equity and broke A = L + E.
     const isIncome = row.account_type === 'revenue' || row.account_type === 'other_revenue';
-    const amount = isIncome
-      ? sub(row.total_credit, row.total_debit)
-      : sub(row.total_debit, row.total_credit);
-    const exact = plOpts.exactAmounts
-      ? (isIncome
-        ? new Decimal(row.total_credit || 0).minus(row.total_debit || 0)
-        : new Decimal(row.total_debit || 0).minus(row.total_credit || 0))
-      : null;
-    if (amount === 0 && (!exact || exact.isZero())) continue;
+    const exact = isIncome
+      ? new Decimal(row.total_credit || 0).minus(row.total_debit || 0)
+      : new Decimal(row.total_debit || 0).minus(row.total_credit || 0);
+    const amount = legacyNum(exact);
+    // Legacy responses keep the old rule (a row that rounds to 0 at 4
+    // places is left out); exact responses drop only a true zero.
+    if (exact.isZero() || (!plOpts.exactAmounts && amount === 0)) continue;
     const entry: PLEntry = {
       accountId: row.id,
       name: row.name,
       accountNumber: row.account_number,
       amount,
-      ...(exact ? { amountExact: exact.toString() } : {}),
+      ...(plOpts.exactAmounts ? { amountExact: exactStr(exact) } : {}),
       ...(grouped ? { detailType: (row.detail_type as string | null) ?? null } : {}),
     };
     switch (row.account_type) {
-      case 'revenue': revenue.push(entry); totalRevenue += amount; break;
-      case 'cogs': cogs.push(entry); totalCogs += amount; break;
-      case 'expense': expenses.push(entry); totalExpenses += amount; break;
-      case 'other_revenue': otherRevenue.push(entry); totalOtherRevenue += amount; break;
-      case 'other_expense': otherExpenses.push(entry); totalOtherExpenses += amount; break;
+      case 'revenue': revenue.push(entry); revD = revD.plus(exact); break;
+      case 'cogs': cogs.push(entry); cogsD = cogsD.plus(exact); break;
+      case 'expense': expenses.push(entry); expD = expD.plus(exact); break;
+      case 'other_revenue': otherRevenue.push(entry); otherRevD = otherRevD.plus(exact); break;
+      case 'other_expense': otherExpenses.push(entry); otherExpD = otherExpD.plus(exact); break;
     }
   }
 
   const hasCogs = cogs.length > 0;
   const hasOther = otherRevenue.length > 0 || otherExpenses.length > 0;
-  const grossProfit = hasCogs ? totalRevenue - totalCogs : null;
-  const operatingIncome = hasCogs || hasOther
-    ? (grossProfit ?? totalRevenue) - totalExpenses
-    : null;
-  const netIncome =
-    totalRevenue + totalOtherRevenue - totalCogs - totalExpenses - totalOtherExpenses;
+  const grossD = hasCogs ? revD.minus(cogsD) : null;
+  const opD = hasCogs || hasOther ? (grossD ?? revD).minus(expD) : null;
+  const netD = revD.plus(otherRevD).minus(cogsD).minus(expD).minus(otherExpD);
+  const totalRevenue = legacyNum(revD);
+  const totalCogs = legacyNum(cogsD);
+  const totalExpenses = legacyNum(expD);
+  const totalOtherRevenue = legacyNum(otherRevD);
+  const totalOtherExpenses = legacyNum(otherExpD);
+  const grossProfit = grossD ? legacyNum(grossD) : null;
+  const operatingIncome = opD ? legacyNum(opD) : null;
+  const netIncome = legacyNum(netD);
+
+  // Exact report (?exact=1): section totals as decimal strings and the
+  // account tree on every section.
+  const exactTotals = plOpts.exactAmounts
+    ? {
+        totalRevenueExact: exactStr(revD),
+        totalCogsExact: exactStr(cogsD),
+        totalExpensesExact: exactStr(expD),
+        totalOtherRevenueExact: exactStr(otherRevD),
+        totalOtherExpensesExact: exactStr(otherExpD),
+        grossProfitExact: grossD ? exactStr(grossD) : null,
+        operatingIncomeExact: opD ? exactStr(opD) : null,
+        netIncomeExact: exactStr(netD),
+      }
+    : {};
+  let sections = { revenue, cogs, expenses, otherRevenue, otherExpenses };
+  if (plOpts.accountTree) {
+    const tree = await loadAccountTree(tenantId);
+    const t = (list: PLEntry[]) => applyAccountTree(list, tree, (e) => dec(e.amountExact ?? e.amount), (n) => ({
+      accountId: n.id, name: n.name, accountNumber: n.accountNumber, amount: 0,
+      ...(plOpts.exactAmounts ? { amountExact: exactStr(0) } : {}),
+      ...(grouped ? { detailType: null } : {}),
+    }));
+    sections = {
+      revenue: t(revenue), cogs: t(cogs), expenses: t(expenses),
+      otherRevenue: t(otherRevenue), otherExpenses: t(otherExpenses),
+    };
+  }
 
   const [labels, footer] = await Promise.all([
     getPLLabels(tenantId),
@@ -797,28 +881,30 @@ export async function buildProfitAndLoss(
     startDate, endDate, basis,
     labels,
     footer,
-    revenue, totalRevenue,
-    cogs, totalCogs,
-    expenses, totalExpenses,
-    otherRevenue, totalOtherRevenue,
-    otherExpenses, totalOtherExpenses,
+    revenue: sections.revenue, totalRevenue,
+    cogs: sections.cogs, totalCogs,
+    expenses: sections.expenses, totalExpenses,
+    otherRevenue: sections.otherRevenue, totalOtherRevenue,
+    otherExpenses: sections.otherExpenses, totalOtherExpenses,
     grossProfit,
     operatingIncome,
     netIncome,
+    ...exactTotals,
     ...(grouped
       ? await (async () => {
           // Detail types: stock groups keep first-occurrence order,
           // custom groups follow by tenant sort_order, null-detail
           // ('Other') trails. Leadsheets: TB sort order, unassigned last.
-          const group = await makeSectionGrouper(tenantId, companyId, groupBy!);
+          const group = await makeSectionGrouper(tenantId, companyId, groupBy!, !!plOpts.exactAmounts);
+          const amt = (e: PLEntry) => e.amountExact ?? e.amount;
           return {
             groupBy: groupBy!,
             groups: {
-              revenue: group(revenue, (e) => e.amount, 'revenue'),
-              cogs: group(cogs, (e) => e.amount, 'cogs'),
-              expenses: group(expenses, (e) => e.amount, 'expense'),
-              otherRevenue: group(otherRevenue, (e) => e.amount, 'other_revenue'),
-              otherExpenses: group(otherExpenses, (e) => e.amount, 'other_expense'),
+              revenue: group(revenue, amt, 'revenue'),
+              cogs: group(cogs, amt, 'cogs'),
+              expenses: group(expenses, amt, 'expense'),
+              otherRevenue: group(otherRevenue, amt, 'other_revenue'),
+              otherExpenses: group(otherExpenses, amt, 'other_expense'),
             },
           };
         })()
@@ -841,7 +927,8 @@ export async function buildBalanceSheet(
   groupBy: ReportGroupBy | null = null,
   // U-60 adjusting lens; also applied to the retained-earnings and
   // current-year net-income rows.
-  bsOpts: { adjusting?: AdjustingFilter | null } = {},
+  // exactAmounts / accountTree: exact report fields (U-14), as on the P&L.
+  bsOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; accountTree?: boolean } = {},
 ) {
   const adjusting = bsOpts.adjusting ?? null;
   const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
@@ -884,7 +971,20 @@ export async function buildBalanceSheet(
         GROUP BY a.id ORDER BY a.account_number, a.name
       `);
 
-  type BSEntry = { accountId: string | null; name: string; accountNumber: string | null; balance: number; detailType?: string | null };
+  type BSEntry = {
+    accountId: string | null; name: string; accountNumber: string | null; balance: number; detailType?: string | null;
+    // Exact reports only (U-14).
+    balanceExact?: string;
+  };
+  const exactMode = !!bsOpts.exactAmounts;
+  // Balances accumulate in Decimal from the unrounded SQL sums (U-14); the
+  // number fields are derived from them. balD keeps each entry's Decimal.
+  const balD = new Map<BSEntry, InstanceType<typeof Decimal>>();
+  const setBal = (e: BSEntry, d: InstanceType<typeof Decimal>) => {
+    balD.set(e, d);
+    e.balance = legacyNum(d);
+    if (exactMode) e.balanceExact = exactStr(d);
+  };
   const assets: BSEntry[] = [];
   const liabilities: BSEntry[] = [];
   const equity: BSEntry[] = [];
@@ -895,7 +995,7 @@ export async function buildBalanceSheet(
   // The designated system Retained Earnings account (systemTag), captured so
   // the prior-years retained earnings folds into its single line below.
   let reEntry: BSEntry | null = null;
-  let totalAssets = 0, totalLiabilities = 0, totalEquity = 0;
+  let assetsD = new Decimal(0), liabD = new Decimal(0), equityD = new Decimal(0);
 
   for (const row of rows.rows as any[]) {
     // NOTE: the Retained Earnings system account is intentionally
@@ -906,26 +1006,31 @@ export async function buildBalanceSheet(
     // balance carries it instead — the identity holds either way.
     // (Previously this row was skipped entirely, so any posting to RE
     // silently vanished from the BS while its counter-leg remained.)
-    const raw = sub(row.total_debit, row.total_credit);
+    const rawD = new Decimal(row.total_debit || 0).minus(row.total_credit || 0);
     const isRetainedEarnings = row.system_tag === 'retained_earnings' && row.account_type === 'equity';
     // Keep the designated RE account even at a $0 posted balance so the
-    // prior-years retained earnings can fold into its line below.
-    if (raw === 0 && !isRetainedEarnings) continue;
+    // prior-years retained earnings can fold into its line below. Legacy
+    // responses also drop a balance that rounds to 0 at 4 places.
+    if ((rawD.isZero() || (!exactMode && legacyNum(rawD) === 0)) && !isRetainedEarnings) continue;
     const detail = grouped ? { detailType: (row.detail_type as string | null) ?? null } : {};
     if (row.account_type === 'asset') {
-      assets.push({ accountId: row.id, name: row.name, accountNumber: row.account_number, balance: raw, ...detail });
-      totalAssets += raw;
+      const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance: 0, ...detail };
+      setBal(entry, rawD);
+      assets.push(entry);
+      assetsD = assetsD.plus(rawD);
     } else {
       // SIGNED accumulation in natural (credit-positive) convention:
       // a normal liability/equity balance is positive; a contra balance
       // (overpaid credit card, Owner Withdraw draws) is negative and
       // correctly REDUCES the section. The previous Math.abs() added
       // contra balances as positives, unbalancing the sheet by twice
-      // the contra amount.
-      const balance = -raw;
-      const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance, ...detail };
-      if (row.account_type === 'liability') { liabilities.push(entry); totalLiabilities += balance; }
-      else { equity.push(entry); totalEquity += balance; if (isRetainedEarnings) reEntry = entry; }
+      // the contra amount. Customer Deposits (a liability) therefore
+      // reads credit-positive here.
+      const balance = rawD.negated();
+      const entry: BSEntry = { accountId: row.id, name: row.name, accountNumber: row.account_number, balance: 0, ...detail };
+      setBal(entry, balance);
+      if (row.account_type === 'liability') { liabilities.push(entry); liabD = liabD.plus(balance); }
+      else { equity.push(entry); equityD = equityD.plus(balance); if (isRetainedEarnings) reEntry = entry; }
     }
   }
 
@@ -942,42 +1047,62 @@ export async function buildBalanceSheet(
   if (asOf.getUTCMonth() + 1 < fyStartMonth) currentFYStartYear--;
   const currentFYStart = `${currentFYStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
-  // Retained Earnings = net income for all completed fiscal years (before current FY start)
+  // Retained Earnings = net income for all completed fiscal years (before
+  // current FY start). The P&L hands back its Decimal net income
+  // (netIncomeExact) so the equity rows never round-trip through a float.
   const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', (() => {
     const d = new Date(currentFYStart + 'T00:00:00Z');
     d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().split('T')[0]!;
-  })(), basis, companyId, tagId, null, { adjusting });
+  })(), basis, companyId, tagId, null, { adjusting, exactAmounts: true });
+  const retainedD = dec(retainedPL.netIncomeExact);
   // Prior-years retained earnings. When a system Retained Earnings account is
   // designated (systemTag='retained_earnings'), FOLD the accumulated prior-year
   // net income into that account's line — one "Retained Earnings" line = posted
   // balance + prior-year net income (QBO-style). Otherwise keep the separate
   // calculated "Retained Earnings (Prior Years)" row so the sheet still balances.
   if (reEntry) {
-    if (retainedPL.netIncome !== 0) {
-      reEntry.balance += retainedPL.netIncome;
-      totalEquity += retainedPL.netIncome;
+    if (!retainedD.isZero()) {
+      setBal(reEntry, balD.get(reEntry)!.plus(retainedD));
+      equityD = equityD.plus(retainedD);
     }
     // A fully-zero RE line (no posted balance and no prior income) is noise —
     // drop it, matching the $0 skip applied to every other account.
-    if (reEntry.balance === 0) {
+    if (balD.get(reEntry)!.isZero()) {
       const i = equity.indexOf(reEntry);
       if (i >= 0) equity.splice(i, 1);
     }
-  } else if (retainedPL.netIncome !== 0) {
-    const row: BSEntry = { accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: retainedPL.netIncome };
+  } else if (!retainedD.isZero()) {
+    const row: BSEntry = { accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: 0 };
+    setBal(row, retainedD);
     equity.push(row);
     calculatedEquity.push(row);
-    totalEquity += retainedPL.netIncome;
+    equityD = equityD.plus(retainedD);
   }
 
   // Current year net income
-  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId, null, { adjusting });
-  if (currentPL.netIncome !== 0) {
-    const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: currentPL.netIncome };
+  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId, null, { adjusting, exactAmounts: true });
+  const currentD = dec(currentPL.netIncomeExact);
+  if (!currentD.isZero()) {
+    const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: 0 };
+    setBal(row, currentD);
     equity.push(row);
     calculatedEquity.push(row);
-    totalEquity += currentPL.netIncome;
+    equityD = equityD.plus(currentD);
+  }
+  const totalAssets = legacyNum(assetsD);
+  const totalLiabilities = legacyNum(liabD);
+  const totalEquity = legacyNum(equityD);
+  const bsAmt = (e: BSEntry): MoneyIn => balD.get(e) ?? e.balance;
+  let sections = { assets, liabilities, equity };
+  if (bsOpts.accountTree) {
+    const tree = await loadAccountTree(tenantId);
+    const t = (list: BSEntry[]) => applyAccountTree(list, tree, (e) => dec(bsAmt(e)), (n) => {
+      const z: BSEntry = { accountId: n.id, name: n.name, accountNumber: n.accountNumber, balance: 0, ...(grouped ? { detailType: null } : {}) };
+      setBal(z, new Decimal(0));
+      return z;
+    });
+    sections = { assets: t(assets), liabilities: t(liabilities), equity: t(equity) };
   }
 
   const [labels, footer] = await Promise.all([
@@ -989,35 +1114,41 @@ export async function buildBalanceSheet(
     title: 'Balance Sheet' + basisTitleSuffix(basis), asOfDate, basis,
     labels,
     footer,
-    assets, totalAssets,
-    liabilities, totalLiabilities,
-    equity, totalEquity,
-    totalLiabilitiesAndEquity: totalLiabilities + totalEquity,
+    assets: sections.assets, totalAssets,
+    liabilities: sections.liabilities, totalLiabilities,
+    equity: sections.equity, totalEquity,
+    totalLiabilitiesAndEquity: legacyNum(liabD.plus(equityD)),
+    ...(exactMode
+      ? {
+          totalAssetsExact: exactStr(assetsD),
+          totalLiabilitiesExact: exactStr(liabD),
+          totalEquityExact: exactStr(equityD),
+          totalLiabilitiesAndEquityExact: exactStr(liabD.plus(equityD)),
+        }
+      : {}),
     ...(grouped
       ? await (async () => {
           // Same custom detail-type presentation ordering as the P&L —
           // stock first-occurrence, custom by sort_order, null trailing
           // (which keeps 'Equity (Calculated)' last).
-          const group = await makeSectionGrouper(tenantId, companyId, groupBy!);
+          const group = await makeSectionGrouper(tenantId, companyId, groupBy!, exactMode);
+          const calcD = dsum(calculatedEquity.map(bsAmt));
           return {
             groupBy: groupBy!,
             groups: {
-              assets: group(assets, (e) => e.balance, 'asset'),
-              liabilities: group(liabilities, (e) => e.balance, 'liability'),
+              assets: group(assets, bsAmt, 'asset'),
+              liabilities: group(liabilities, bsAmt, 'liability'),
               equity: [
                 // Real equity accounts group by detail type / leadsheet…
-                ...group(equity.filter((e) => e.accountId !== null), (e) => e.balance, 'equity'),
+                ...group(equity.filter((e) => e.accountId !== null), bsAmt, 'equity'),
                 // …the computed rows land in a dedicated trailing group.
                 ...(calculatedEquity.length > 0
                   ? [{
                       detailType: null,
                       label: 'Equity (Calculated)',
                       entries: calculatedEquity,
-                      subtotal: Number(
-                        calculatedEquity
-                          .reduce((d, e) => d.plus(e.balance), new Decimal(0))
-                          .toFixed(4),
-                      ),
+                      subtotal: legacyNum(calcD),
+                      ...(exactMode ? { subtotalExact: exactStr(calcD) } : {}),
                     }]
                   : []),
               ],
@@ -2920,7 +3051,10 @@ export async function buildTrialBalance(
   tagId: string | null = null,
   basis: Basis = 'accrual',
   // U-60 adjusting lens; also applied to the prior-years retained-earnings row.
-  tbOpts: { adjusting?: AdjustingFilter | null } = {},
+  // exactAmounts / accountTree: exact report fields (U-14). Exact rows add
+  // accountId, total_debitExact, total_creditExact, debitExact, creditExact
+  // and netExact (debit − credit; rollupExact on parent rows is the same sign).
+  tbOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; accountTree?: boolean } = {},
 ) {
   const adjusting = tbOpts.adjusting ?? null;
   const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
@@ -3006,32 +3140,39 @@ export async function buildTrialBalance(
   // Totals must tie out to the penny for every user. Accumulate through
   // Decimal so "totalDebits === totalCredits" isn't off by fractional
   // cents.
-  let td = new Decimal('0');
-  let tc = new Decimal('0');
-  const data = (rows.rows as any[]).map(r => {
-    const d = num(r.total_debit);
-    const c = num(r.total_credit);
-    const net = sub(d, c);
-    return {
-      ...r,
-      total_debit: d,
-      total_credit: c,
-      debit: net > 0 ? net : 0,
-      credit: net < 0 ? Math.abs(net) : 0,
+  // Everything accumulates in Decimal from the unrounded SQL sums (U-14);
+  // the number fields are derived from the same Decimals.
+  const exactMode = !!tbOpts.exactAmounts;
+  const netOf = new Map<object, InstanceType<typeof Decimal>>();
+  // Rows stay loosely typed as before (the raw SQL row plus the netted columns).
+  const tbRow = (base: Record<string, unknown>, dD: InstanceType<typeof Decimal>, cD: InstanceType<typeof Decimal>): any => {
+    const net = dD.minus(cD);
+    const row: Record<string, unknown> = {
+      ...base,
+      total_debit: legacyNum(dD),
+      total_credit: legacyNum(cD),
+      debit: net.gt(0) ? legacyNum(net) : 0,
+      credit: net.lt(0) ? legacyNum(net.abs()) : 0,
+      ...(exactMode
+        ? {
+            accountId: (base['id'] as string | null) ?? null,
+            total_debitExact: exactStr(dD),
+            total_creditExact: exactStr(cD),
+            debitExact: exactStr(net.gt(0) ? net : 0),
+            creditExact: exactStr(net.lt(0) ? net.abs() : 0),
+            netExact: exactStr(net),
+          }
+        : {}),
     };
-  })
+    netOf.set(row, net);
+    return row;
+  };
+  const data: any[] = (rows.rows as any[]).map((r) => tbRow(r, new Decimal(r.total_debit || 0), new Decimal(r.total_credit || 0)))
     // The HAVING above keeps accounts with LIFETIME activity; drop rows
     // that net to zero after the fiscal-YTD CASE and debit/credit netting
     // (fully-offset accounts, prior-fiscal-year-only income accounts).
-    .filter((r) => r.debit !== 0 || r.credit !== 0);
-  for (const r of data) {
-    td = td.plus(r.debit);
-    tc = tc.plus(r.credit);
-  }
-  // Kept mutable because the Retained Earnings injection below still
-  // needs to add reDebit/reCredit to the running totals.
-  let totalDebits = Number(td.toFixed(4));
-  let totalCredits = Number(tc.toFixed(4));
+    // Legacy responses also drop a net that rounds to 0 at 4 places.
+    .filter((r) => !netOf.get(r)!.isZero() && (exactMode || r['debit'] !== 0 || r['credit'] !== 0));
 
   // Add Retained Earnings row for prior-year net income (virtual closing).
   //
@@ -3050,24 +3191,26 @@ export async function buildTrialBalance(
     const priorEndDate = new Date(fyStart + 'T00:00:00Z');
     priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
     const priorEnd = priorEndDate.toISOString().split('T')[0]!;
-    const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId, tagId, null, { adjusting });
-    if (retainedPL.netIncome !== 0) {
+    const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId, tagId, null, { adjusting, exactAmounts: true });
+    const reD = dec(retainedPL.netIncomeExact);
+    if (!reD.isZero()) {
       // Retained earnings is a credit-balance equity account. Numbered
       // 30120 to sort beside the posted Retained Earnings account (the
       // seeds use 30120; the old '3900' sorted it away from equity), and
       // labeled "(Prior Years)" so the virtual row is distinguishable
       // from the real account when closing entries have been posted.
-      const reDebit = retainedPL.netIncome < 0 ? Math.abs(retainedPL.netIncome) : 0;
-      const reCredit = retainedPL.netIncome > 0 ? retainedPL.netIncome : 0;
-      data.push({
-        id: null, account_number: '30120', name: 'Retained Earnings (Prior Years)', account_type: 'equity',
-        total_debit: reDebit, total_credit: reCredit,
-        debit: reDebit, credit: reCredit,
-      });
-      totalDebits = Number(new Decimal(totalDebits).plus(reDebit).toFixed(4));
-      totalCredits = Number(new Decimal(totalCredits).plus(reCredit).toFixed(4));
+      const reDebit = reD.lt(0) ? reD.abs() : new Decimal(0);
+      const reCredit = reD.gt(0) ? reD : new Decimal(0);
+      data.push(tbRow(
+        { id: null, account_number: '30120', name: 'Retained Earnings (Prior Years)', account_type: 'equity' },
+        reDebit, reCredit,
+      ));
     }
   }
+  const td = dsum(data.map((r) => { const n = netOf.get(r)!; return n.gt(0) ? n : 0; }));
+  const tc = dsum(data.map((r) => { const n = netOf.get(r)!; return n.lt(0) ? n.abs() : 0; }));
+  const totalDebits = legacyNum(td);
+  const totalCredits = legacyNum(tc);
 
   // Sort by account number to maintain proper order after adding Retained Earnings
   data.sort((a: any, b: any) => {
@@ -3076,6 +3219,19 @@ export async function buildTrialBalance(
     return numA.localeCompare(numB, undefined, { numeric: true });
   });
 
+  if (exactMode) {
+    let out: any[] = data;
+    if (tbOpts.accountTree) {
+      const tree = await loadAccountTree(tenantId);
+      out = applyAccountTree(data as Array<{ accountId: string | null }>, tree,
+        (r) => netOf.get(r) ?? dec((r as Record<string, string>)['netExact']),
+        (n) => tbRow({ id: n.id, account_number: n.accountNumber, name: n.name, account_type: n.accountType }, new Decimal(0), new Decimal(0)));
+    }
+    return {
+      title: 'Trial Balance', startDate, endDate, data: out, totalDebits, totalCredits,
+      totalDebitsExact: exactStr(td), totalCreditsExact: exactStr(tc),
+    };
+  }
   return { title: 'Trial Balance', startDate, endDate, data, totalDebits, totalCredits };
 }
 
