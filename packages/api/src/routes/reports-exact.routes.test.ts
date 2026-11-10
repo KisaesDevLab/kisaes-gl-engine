@@ -478,9 +478,11 @@ describe('no float money in the exact report modules', () => {
     '../services/report.service.ts',
     '../services/ap-report.service.ts',
     '../services/report-comparison.service.ts',
+    '../services/report-lens.ts',
+    '../services/report-columns.service.ts',
   ];
   // Non-money counters that may use +=, by exact line text.
-  const ALLOW = new Set(['rowCount += reportLines.length;']);
+  const ALLOW = new Set(['rowCount += reportLines.length;', 'rowCount += t.lines.length;']);
   it.each(files)('%s has no parseFloat and no += outside the allowlist', (file) => {
     const src = readFileSync(resolve(here, file), 'utf8');
     const code = src.split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, '').trim()).filter((l) => l && !l.startsWith('*'));

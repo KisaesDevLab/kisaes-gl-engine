@@ -23,7 +23,12 @@ import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
 import { buildVendor1099SummaryByBox } from '../services/vendor-1099-summary.service.js';
-import { exactRows, isIsoDate, normalizeReportDates, reportMeta } from '../services/report-exact.js';
+import { exactRows, exactStr, dsum, isIsoDate, normalizeReportDates, reportMeta, ReportDecimal } from '../services/report-exact.js';
+import { loadGroupTags, type ContactLens, type LineLens, type TagLens } from '../services/report-lens.js';
+import {
+  MAX_PERIOD_RANGES, ReportColumnsError, applyTrialBalanceTagSplit, buildBalanceSheetColumns, buildProfitAndLossColumns,
+  fiscalYearStartOf, type DateRange,
+} from '../services/report-columns.service.js';
 
 export interface ExactRouteHelpers {
   resolveCompanyScope(req: Request): string | null;
@@ -102,6 +107,228 @@ function uuid(req: Request, name: string, required: boolean): string | undefined
   return v;
 }
 
+// ─── U-201 / U-202 strict readers (reports-columns-v1, reports-drill-v1) ──
+// Unlike the legacy readers (which drop a malformed id and so widen the
+// report), these answer 400 INVALID_PARAM: a drill that silently loses a
+// filter would not tie out to its cell.
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const MAX_DRILL_IDS = 500;
+
+function flag(req: Request, name: string): boolean {
+  const v = qs(req, name);
+  if (v === undefined || v === '0' || v === 'false') return false;
+  if (v === '1' || v === 'true') return true;
+  throw bad(name, `${name} must be 1 or 0`);
+}
+
+function strictIds(req: Request, name: string, max = MAX_DRILL_IDS): string[] | null {
+  const v = qs(req, name);
+  if (v === undefined) return null;
+  const ids = v.split(',').map((s) => s.trim()).filter((s) => s !== '');
+  if (ids.length === 0) return null;
+  if (ids.some((id) => !UUID_RE.test(id))) throw bad(name, `${name} must be comma-separated ids`);
+  if (ids.length > max) throw bad(name, `${name} takes at most ${max} ids`);
+  return [...new Set(ids.map((s) => s.toLowerCase()))];
+}
+
+function decimalParam(req: Request, name: string): string | null {
+  const v = qs(req, name);
+  if (v === undefined) return null;
+  if (!/^\d{1,15}(\.\d{1,4})?$/.test(v)) throw bad(name, `${name} must be a non-negative amount like 1234.56`);
+  return v;
+}
+
+/** tag_id (ids | untagged) and tag_scope=untagged_in_group&tag_group_id=. */
+function readTagLens(req: Request, opts: { allowUntagged: boolean; allowScope: boolean }): TagLens | null {
+  const raw = qs(req, 'tag_id') ?? qs(req, 'tagId');
+  const scope = oneOf(req, 'tag_scope', ['untagged_in_group'] as const);
+  if (scope) {
+    if (!opts.allowScope) throw bad('tag_scope', 'tag_scope is not available on this report');
+    if (raw !== undefined) throw bad('tag_scope', 'use tag_id or tag_scope, not both');
+    const groupId = uuid(req, 'tag_group_id', true)!;
+    return { kind: 'untagged_in_group', groupId };
+  }
+  if (raw === undefined) return null;
+  if (raw === 'untagged') {
+    if (!opts.allowUntagged) throw bad('tag_id', 'tag_id=untagged is not available on this report');
+    return { kind: 'untagged' };
+  }
+  const ids = strictIds(req, req.query['tag_id'] !== undefined ? 'tag_id' : 'tagId');
+  return ids ? { kind: 'ids', ids } : null;
+}
+
+/** contact_id (ids | none | others with exclude_contact_ids). */
+function readContactLens(req: Request): ContactLens | null {
+  const raw = qs(req, 'contact_id');
+  const exclude = strictIds(req, 'exclude_contact_ids', 100);
+  if (raw === undefined) {
+    if (exclude) throw bad('exclude_contact_ids', 'exclude_contact_ids needs contact_id=others');
+    return null;
+  }
+  if (raw === 'none') { if (exclude) throw bad('exclude_contact_ids', 'exclude_contact_ids needs contact_id=others'); return { kind: 'none' }; }
+  if (raw === 'others') return { kind: 'others', exclude: exclude ?? [] };
+  if (exclude) throw bad('exclude_contact_ids', 'exclude_contact_ids needs contact_id=others');
+  const ids = strictIds(req, 'contact_id');
+  return ids ? { kind: 'ids', ids } : null;
+}
+
+/** The U-202 drill lens: client, tag, amount range, cleared state, transaction types. */
+function readLineLens(req: Request): LineLens {
+  const amountMin = decimalParam(req, 'amount_min');
+  const amountMax = decimalParam(req, 'amount_max');
+  if (amountMin && amountMax && new ReportDecimal(amountMin).gt(amountMax)) {
+    throw AppError.badRequest('amount_min is more than amount_max', 'INVALID_PARAM', { param: 'amount_max' });
+  }
+  const types = qs(req, 'txn_types');
+  let txnTypes: string[] | null = null;
+  if (types !== undefined) {
+    txnTypes = types.split(',').map((s) => s.trim()).filter(Boolean);
+    if (txnTypes.length === 0 || txnTypes.length > 50 || txnTypes.some((t) => !/^[a-z_]{1,40}$/.test(t))) {
+      throw bad('txn_types', 'txn_types must be comma-separated transaction types');
+    }
+  }
+  return {
+    contact: readContactLens(req),
+    tag: readTagLens(req, { allowUntagged: true, allowScope: true }),
+    amountMin, amountMax,
+    cleared: oneOf(req, 'cleared', ['cleared', 'uncleared', 'reconciled'] as const) ?? null,
+    txnTypes,
+  };
+}
+
+/** period_ranges=YYYY-MM-DD..YYYY-MM-DD,… (at most 36, ascending, not overlapping). */
+function readPeriodRanges(req: Request, name = 'period_ranges', ordered = true): DateRange[] | null {
+  const v = qs(req, name);
+  if (v === undefined) return null;
+  const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  if (parts.length > MAX_PERIOD_RANGES) throw bad(name, `${name} takes at most ${MAX_PERIOD_RANGES} ranges`);
+  const ranges = parts.map((p) => {
+    const m = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(p);
+    if (!m || !isIsoDate(m[1]!) || !isIsoDate(m[2]!)) throw bad(name, `${name} must be YYYY-MM-DD..YYYY-MM-DD, comma-separated`);
+    if (m[1]! > m[2]!) throw AppError.badRequest(`range ${p} starts after it ends`, 'INVALID_DATE_RANGE', { param: name });
+    return { from: m[1]!, to: m[2]! };
+  });
+  for (let i = 1; ordered && i < ranges.length; i++) {
+    if (ranges[i]!.from <= ranges[i - 1]!.to) throw bad(name, `${name} must be in date order and must not overlap`);
+  }
+  return ranges;
+}
+
+/** prior_ranges (with prior=period): one range per column, aligned with period_ranges (or the single range). */
+function readPriorRanges(req: Request, prior: 'period' | 'year' | null, columns: number): DateRange[] | null {
+  const pr = readPeriodRanges(req, 'prior_ranges', false);
+  if (!pr) return null;
+  if (prior !== 'period') throw bad('prior_ranges', 'prior_ranges needs prior=period');
+  if (pr.length !== columns) throw bad('prior_ranges', `prior_ranges needs one range per period (${columns})`);
+  return pr;
+}
+
+/** Parameters that need exact=1 (and no export format); without it they would be ignored. */
+const COLUMN_PARAMS = ['period_ranges', 'prior_ranges', 'ytd', 'fiscal_year_start', 'prior', 'tag_split', 'tag_group_id', 'pct_of_income'];
+const DRILL_PARAMS = ['tag_scope', 'contact_id', 'exclude_contact_ids', 'amount_min', 'amount_max', 'cleared', 'txn_types'];
+function needsExact(params: readonly string[], extra?: (req: Request) => string | null) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const exact = readExact(req);
+    const exported = req.query['format'] !== undefined && req.query['format'] !== '';
+    if (!exact || exported) {
+      const hit = params.find((p) => req.query[p] !== undefined && req.query[p] !== '') ?? extra?.(req) ?? null;
+      if (hit) throw bad(hit, `${hit} needs exact=1 and no export format (reports-columns-v1 / reports-drill-v1)`);
+    }
+    next();
+  };
+}
+const untaggedNeedsExact = (req: Request) => ((req.query['tag_id'] ?? req.query['tagId']) === 'untagged' ? 'tag_id' : null);
+
+/**
+ * POST twin of a GET drill route: the same parameters as a JSON object
+ * body (strings, or arrays joined with commas), for an account_ids list
+ * too long for a URL (up to 500 ids).
+ */
+function bodyAsQuery(req: Request, _res: Response, next: NextFunction) {
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body as Record<string, unknown> : {};
+  const q: Record<string, string> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (v === null || v === undefined) continue;
+    if (Array.isArray(v)) q[k] = v.map((x) => String(x)).join(',');
+    else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') q[k] = String(v);
+    else throw bad(k, `${k} must be a string`);
+  }
+  (req as unknown as { query: Record<string, string> }).query = { ...(req.query as Record<string, string>), ...q, exact: q['exact'] ?? '1' };
+  next();
+}
+
+/**
+ * The Journal (GET /general-ledger?group_by=transaction, U-202): the
+ * General Ledger's lines regrouped by transaction, in date order, every
+ * filter applied per line exactly as on the ledger. limit counts lines.
+ */
+type GlLine = Record<string, unknown> & { transactionId: string; date: unknown; debitExact?: string; creditExact?: string; lineOrder?: number };
+type GlAccount = { id: string; accountNumber: string | null; name: string; lines: GlLine[] };
+export function journalOf(gl: { title?: string; startDate: string; endDate: string; accounts: GlAccount[] }, limit: number | null) {
+  type Txn = { transactionId: string; date: unknown; txnType: unknown; txnNumber: unknown; contactName: unknown; lines: Array<Record<string, unknown>> };
+  const byTxn = new Map<string, Txn>();
+  for (const a of gl.accounts) {
+    for (const l of a.lines) {
+      let t = byTxn.get(l.transactionId);
+      if (!t) {
+        t = { transactionId: l.transactionId, date: l.date, txnType: l['txnType'], txnNumber: l['txnNumber'], contactName: l['contactName'], lines: [] };
+        byTxn.set(l.transactionId, t);
+      }
+      t.lines.push({
+        lineId: l['lineId'], sourceLineId: l['sourceLineId'] ?? null, accountId: a.id, accountNumber: a.accountNumber, accountName: a.name,
+        description: l['description'], debitExact: l.debitExact, creditExact: l.creditExact, tagId: l['tagId'] ?? null, tagName: l['tagName'] ?? null,
+        contactId: l['contactId'] ?? null, lineOrder: l.lineOrder ?? 0,
+      });
+    }
+  }
+  const day = (d: unknown) => (d instanceof Date ? d.getTime() : Date.parse(String(d)));
+  const txns = [...byTxn.values()].sort((x, y) => day(x.date) - day(y.date)
+    || String(x.txnNumber ?? '').localeCompare(String(y.txnNumber ?? ''), undefined, { numeric: true })
+    || x.transactionId.localeCompare(y.transactionId));
+  let rowCount = 0;
+  let totalD = dsum([]); let totalC = dsum([]);
+  const out = txns.map((t) => {
+    t.lines.sort((p, q) => Number(p['lineOrder']) - Number(q['lineOrder']) || String(p['accountNumber'] ?? '').localeCompare(String(q['accountNumber'] ?? '')));
+    const d = dsum(t.lines.map((l) => l['debitExact'] as string));
+    const c = dsum(t.lines.map((l) => l['creditExact'] as string));
+    totalD = totalD.plus(d); totalC = totalC.plus(c);
+    rowCount += t.lines.length;
+    return { ...t, totalDebitsExact: exactStr(d), totalCreditsExact: exactStr(c) };
+  });
+  let truncated = false;
+  if (limit !== null && rowCount > limit) {
+    truncated = true;
+    let left = limit;
+    for (const t of out) {
+      if (t.lines.length > left) t.lines = t.lines.slice(0, left);
+      left -= t.lines.length;
+    }
+  }
+  return {
+    title: 'Journal', startDate: gl.startDate, endDate: gl.endDate,
+    transactions: out.filter((t) => t.lines.length > 0),
+    totalDebitsExact: exactStr(totalD), totalCreditsExact: exactStr(totalC), rowCount, truncated,
+  };
+}
+
+/** 404 when tag_scope names a tag group that is not the tenant's (it would otherwise match every line). */
+async function checkLensGroup(req: Request, lens: LineLens): Promise<LineLens> {
+  if (lens.tag?.kind === 'untagged_in_group' && (await loadGroupTags(req.tenantId, lens.tag.groupId)) === null) {
+    throw AppError.notFound('tag group not found');
+  }
+  return lens;
+}
+
+function columnsError(e: unknown): never {
+  if (e instanceof ReportColumnsError) {
+    if (e.code === 'NOT_FOUND') throw AppError.notFound(e.message);
+    throw bad(e.param, e.message);
+  }
+  throw e;
+}
+
 /** The exact handler wrapper: pass through unless exact=1 without an export format. */
 type ExactHandler = (req: Request, res: Response) => Promise<unknown>;
 function exactOnly(handler: ExactHandler) {
@@ -133,6 +360,34 @@ const COMMON_Q = {
   format: z.enum(['csv', 'pdf']).optional(),
 };
 const BASIS_Q = { basis: z.enum(['accrual', 'cash']).optional() };
+// U-201 (reports-columns-v1); every one needs exact=1.
+const COLUMNS_Q = {
+  period_ranges: z.string().optional().describe('YYYY-MM-DD..YYYY-MM-DD,… up to 36 ranges in date order, not overlapping (4-4-5 or custom periods). '
+    + 'One column per range (Balance Sheet: as of each range end); a P&L with two or more ranges adds a Total column.'),
+  ytd: z.enum(['1', '0']).optional().describe('1 = add a YTD column from fiscal_year_start (default: the company fiscal year start) to the last end date'),
+  fiscal_year_start: z.string().optional().describe('YYYY-MM-DD; the YTD column start (needs ytd=1)'),
+  prior_ranges: z.string().optional().describe('With prior=period: the prior range of each period range (same count and order), e.g. the previous '
+    + '4-4-5 periods; Balance Sheet: each prior as-of is the range end. Without it prior=period uses the same number of days just before.'),
+  prior: z.enum(['period', 'year']).optional().describe('After each period / YTD column: the prior period (same number of days just before; '
+    + 'Balance Sheet: as of the day before the period start) or prior year, $ change (current - prior) and % change (change / |prior|, 1 place, null on 0)'),
+  tag_split: z.enum(['1', '0']).optional().describe('1 = under each account: rowKind account (lines without a tag from the group), tag (one per group tag '
+    + 'with activity) and account_total (untagged + tags, the unsplit amount). Section totals unchanged. Needs tag_group_id.'),
+  tag_group_id: z.string().uuid().optional().describe('The tag group for tag_split or compare=by_tag'),
+  pct_of_income: z.enum(['1', '0']).optional().describe('1 = pctOfIncomeExact per row and pctOfIncomeTotalsExact: amount / total income x 100, 1 place, null on 0 income'),
+};
+// U-202 (reports-drill-v1); every one needs exact=1.
+const DRILL_Q = {
+  contact_id: z.string().optional().describe('Comma-separated client ids (the line\'s own contact, else its transaction\'s), none (no client) or others (with exclude_contact_ids)'),
+  exclude_contact_ids: z.string().optional().describe('With contact_id=others: the clients to leave out (at most 100)'),
+  account_ids: z.string().optional().describe('Comma-separated account ids, at most 500 (POST the same parameters as a JSON body for long lists)'),
+  tag_id: z.string().optional().describe('Comma-separated tag ids or untagged (per line: the line\'s own tag)'),
+  tag_scope: z.enum(['untagged_in_group']).optional().describe('Lines without a tag from tag_group_id (no tag, or a tag from another group)'),
+  tag_group_id: z.string().uuid().optional(),
+  amount_min: z.string().optional().describe('Decimal string; lines with |debit - credit| at least this'),
+  amount_max: z.string().optional().describe('Decimal string; lines with |debit - credit| at most this'),
+  cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional().describe('Reconciliation state of the journal line (cash-basis shares of a paid document count as uncleared)'),
+  txn_types: z.string().optional().describe('Comma-separated transaction types'),
+};
 const ADJ_Q = { adjusting: z.enum(['include', 'exclude', 'only']).optional() };
 const META_DOC = 'meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. '
   + 'Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis '
@@ -151,15 +406,130 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   const meta = (req: Request, o: { basis?: 'accrual' | 'cash' | null; from?: string; to?: string; asOf?: string }) =>
     reportMeta({ basis: o.basis ?? null, from: o.from, to: o.to, asOf: o.asOf, reportSchemaVersion: h.reportSchemaVersion });
 
+  /** The parameters every drill of this report adds (basis, adjusting, report tag filter). */
+  const drillBase = (req: Request, b: 'accrual' | 'cash', adjusting: string, tag: TagLens | null): Record<string, string> => ({
+    basis: b, adjusting,
+    ...(req.query['scope'] === 'consolidated' ? { scope: 'consolidated' } : {}),
+    ...(tag?.kind === 'ids' ? { tag_id: tag.ids.join(',') } : tag?.kind === 'untagged' ? { tag_id: 'untagged' } : {}),
+  });
+
+  // U-201: the column layout of the Profit and Loss, or null for the classic shapes.
+  async function profitLossColumns(req: Request) {
+    const ranges = readPeriodRanges(req);
+    const ytd = flag(req, 'ytd');
+    const prior = oneOf(req, 'prior', ['period', 'year'] as const) ?? null;
+    const compareRaw = qs(req, 'compare');
+    const tagSplit = flag(req, 'tag_split');
+    const pctOfIncome = flag(req, 'pct_of_income');
+    const groupId = uuid(req, 'tag_group_id', false) ?? null;
+    const tagFilter = readTagLens(req, { allowUntagged: true, allowScope: false });
+    const compare = compareRaw === 'by_contact' ? { kind: 'contact' as const }
+      : compareRaw === 'by_tag' && groupId ? { kind: 'tag' as const, groupId } : null;
+    const columnsMode = !!ranges || ytd || !!prior || !!compare || tagSplit || pctOfIncome || tagFilter?.kind === 'untagged';
+    if (!columnsMode) {
+      if (groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1 or compare=by_tag');
+      if (qs(req, 'fiscal_year_start') !== undefined) throw bad('fiscal_year_start', 'fiscal_year_start needs ytd=1');
+      return null;
+    }
+    if (compareRaw && !compare) {
+      throw bad('compare', compareRaw === 'by_tag'
+        ? 'compare=by_tag with these options needs tag_group_id'
+        : `compare=${compareRaw} does not combine with period_ranges, ytd, prior, tag_split or pct_of_income`);
+    }
+    if (compare && (ranges || ytd || prior || tagSplit)) throw bad('compare', 'columns by client or tag do not combine with period_ranges, ytd, prior or tag_split');
+    if (tagSplit && !groupId) throw bad('tag_group_id', 'tag_split needs tag_group_id');
+    if (!tagSplit && !compare && groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1 or compare=by_tag');
+    if ((tagSplit || compare?.kind === 'tag') && tagFilter) throw bad('tag_id', 'tag_id does not combine with tag_split or compare=by_tag');
+    if (h.readGroupBy(req)) throw bad('group_by', 'group_by is not available in the column layout');
+    const fyParam = date(req, 'fiscal_year_start');
+    if (fyParam && !ytd) throw bad('fiscal_year_start', 'fiscal_year_start needs ytd=1');
+    const useRanges = ranges ?? [range(req)];
+    const priorRanges = readPriorRanges(req, prior, useRanges.length);
+    const b = basis(req);
+    const companyId = h.resolveCompanyScope(req);
+    const adjusting = h.readAdjusting(req);
+    const last = useRanges[useRanges.length - 1]!.to;
+    let ytdFrom: string | null = null;
+    if (ytd) {
+      ytdFrom = fyParam ?? fiscalYearStartOf(last, await reportService.getFiscalYearStart(req.tenantId, companyId));
+      if (ytdFrom > last) throw AppError.badRequest('fiscal_year_start is after the last period end', 'INVALID_DATE_RANGE', { param: 'fiscal_year_start' });
+    }
+    const data = await buildProfitAndLossColumns(req.tenantId, {
+      basis: b, companyId, adjusting, tagFilter, ranges: useRanges, periodColumns: !!ranges, ytdFrom, prior, priorRanges, compare,
+      tagSplitGroupId: tagSplit ? groupId : null, pctOfIncome,
+    }).catch(columnsError);
+    const from = ytdFrom && ytdFrom < useRanges[0]!.from ? ytdFrom : useRanges[0]!.from;
+    return {
+      ...data,
+      drillTarget: { path: '/reports/general-ledger', amount: 'netChangeExact', params: drillBase(req, b, adjusting, tagFilter) },
+      meta: meta(req, { basis: b, from, to: last }),
+    };
+  }
+
+  // U-201: the column layout of the Balance Sheet, or null for the classic shapes.
+  async function balanceSheetColumns(req: Request) {
+    const ranges = readPeriodRanges(req);
+    const prior = oneOf(req, 'prior', ['period', 'year'] as const) ?? null;
+    const tagSplit = flag(req, 'tag_split');
+    const groupId = uuid(req, 'tag_group_id', false) ?? null;
+    const tagFilter = readTagLens(req, { allowUntagged: true, allowScope: false });
+    if (flag(req, 'ytd')) throw bad('ytd', 'ytd is not available on the Balance Sheet');
+    if (flag(req, 'pct_of_income')) throw bad('pct_of_income', 'pct_of_income is not available on the Balance Sheet');
+    const columnsMode = !!ranges || !!prior || tagSplit || tagFilter?.kind === 'untagged';
+    if (!columnsMode) {
+      if (groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1');
+      return null;
+    }
+    if (qs(req, 'compare')) throw bad('compare', 'compare does not combine with period_ranges, prior, tag_split or tag_id=untagged');
+    if (tagSplit && !groupId) throw bad('tag_group_id', 'tag_split needs tag_group_id');
+    if (!tagSplit && groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1');
+    if (tagSplit && tagFilter) throw bad('tag_id', 'tag_id does not combine with tag_split');
+    if (h.readGroupBy(req)) throw bad('group_by', 'group_by is not available in the column layout');
+    let asOfs: Array<{ asOf: string; from: string | null }>;
+    if (ranges) {
+      asOfs = ranges.map((r) => ({ asOf: r.to, from: r.from }));
+    } else {
+      const asOf = date(req, 'as_of_date') ?? today();
+      const from = date(req, 'start_date') ?? null;
+      if (from && from > asOf) throw AppError.badRequest('start_date is after as_of_date', 'INVALID_DATE_RANGE', { param: 'start_date' });
+      asOfs = [{ asOf, from }];
+    }
+    const priorRanges = readPriorRanges(req, prior, asOfs.length);
+    if (prior === 'period' && !priorRanges && asOfs.some((a) => !a.from)) throw bad('prior', 'prior=period needs period_ranges, start_date or prior_ranges');
+    const b = basis(req);
+    const adjusting = h.readAdjusting(req);
+    const data = await buildBalanceSheetColumns(req.tenantId, {
+      basis: b, companyId: h.resolveCompanyScope(req), adjusting, tagFilter, asOfs, periodColumns: !!ranges, prior, priorRanges,
+      tagSplitGroupId: tagSplit ? groupId : null,
+    }).catch(columnsError);
+    return {
+      ...data,
+      drillTarget: { path: '/reports/general-ledger', amount: 'endingBalanceExact', params: drillBase(req, b, adjusting, tagFilter) },
+      meta: meta(req, { basis: b, asOf: asOfs[asOfs.length - 1]!.asOf }),
+    };
+  }
+
   // ── Financial statements ──
   router.get('/profit-loss', doc('Profit and Loss',
     'Standard: revenue/cogs/expenses/otherRevenue/otherExpenses[] {accountId, amount, amountExact, parentAccountId, depth, rollupExact?}, '
     + 'total*Exact, grossProfitExact, operatingIncomeExact, netIncomeExact; group_by adds groups[].subtotalExact. compare=previous_period|'
     + 'previous_year|ytd_vs_prior_ytd|multi_period|by_tag: rows[].valuesExact and groups[].valuesExact (amounts; $ change; % change at 1 place, '
-    + 'null on a zero base), total*Exact / netIncomeExact arrays.',
-    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), periods: z.string().optional(), period_type: z.string().optional(),
-      group_by: z.enum(['detail_type', 'leadsheet']).optional() }),
+    + 'null on a zero base), total*Exact / netIncomeExact arrays. Column layout (reports-columns-v1; with period_ranges, ytd, prior, '
+    + 'compare=by_contact, compare=by_tag&tag_group_id, tag_split, pct_of_income or tag_id=untagged): {layout: "columns", columns[] {key, caption, '
+    + 'kind period|total|ytd|prior|change|pct_change|contact|others|no_contact|tag|no_tag, valueType amount|percent, from, to, contactId?, tagId?, '
+    + 'baseKey?, drill}, revenue/cogs/expenses/otherRevenue/otherExpenses[] {rowKind account|tag|account_total, accountId, name, accountNumber, '
+    + 'parentAccountId, depth, tagId?, tagNumber?, tagName?, valuesExact[] (one per column), rollupValuesExact?, pctOfIncomeExact?, drill}, '
+    + 'totalsExact {totalRevenue, totalCogs, totalExpenses, totalOtherRevenue, totalOtherExpenses, grossProfit|null, operatingIncome|null, '
+    + 'netIncome: values[]}, pctOfIncomeTotalsExact?, tagSplit {tagGroupId, tags[]}|null, drillTarget {path, amount: netChangeExact, params}}. '
+    + 'A cell drills to GET /reports/general-ledger with drillTarget.params + column.drill + row.drill (exact=1); the account\'s netChangeExact '
+    + 'equals the cell.',
+    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, compare: z.string().optional().describe('previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag|by_contact'),
+      periods: z.string().optional(), period_type: z.string().optional(),
+      group_by: z.enum(['detail_type', 'leadsheet']).optional(), ...COLUMNS_Q }),
+  needsExact(COLUMN_PARAMS, (req) => (req.query['compare'] === 'by_contact' ? 'compare' : untaggedNeedsExact(req))),
   exactOnly(async (req) => {
+    const columns = await profitLossColumns(req);
+    if (columns) return columns;
     const { from, to } = range(req);
     const b = basis(req);
     const compare = oneOf(req, 'compare', ['previous_period', 'previous_year', 'ytd_vs_prior_ytd', 'multi_period', 'by_tag'] as const);
@@ -184,9 +554,18 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
 
   router.get('/balance-sheet', doc('Balance Sheet',
     'assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and '
-    + 'equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays.',
-    { as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), group_by: z.enum(['detail_type', 'leadsheet']).optional() }),
+    + 'equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. Column layout '
+    + '(reports-columns-v1; with period_ranges, prior, tag_split or tag_id=untagged): as on the P&L, sections assets/liabilities/equity, one '
+    + 'column per as-of date (kind as_of, asOf), totalsExact {totalAssets, totalLiabilities, totalEquity, totalLiabilitiesAndEquity}; '
+    + 'calculated: true rows (Retained Earnings (Prior Years), Net Income (Current Year)) and the Retained Earnings account '
+    + '(includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column).',
+    { as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), group_by: z.enum(['detail_type', 'leadsheet']).optional(),
+      start_date: z.string().optional().describe('With prior=period and no period_ranges: the period start (prior as-of = the day before)'),
+      period_ranges: COLUMNS_Q.period_ranges, prior: COLUMNS_Q.prior, prior_ranges: COLUMNS_Q.prior_ranges, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
+  needsExact(COLUMN_PARAMS, untaggedNeedsExact),
   exactOnly(async (req) => {
+    const columns = await balanceSheetColumns(req);
+    if (columns) return columns;
     const asOf = date(req, 'as_of_date') ?? today();
     const b = basis(req);
     const compare = oneOf(req, 'compare', ['previous_period', 'previous_year'] as const);
@@ -204,32 +583,86 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
 
   router.get('/trial-balance', doc('Trial Balance',
     'data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, '
-    + 'depth, rollupExact?}, totalDebitsExact, totalCreditsExact.',
-    { ...RANGE_Q, as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q }),
+    + 'depth, rollupExact?}, totalDebitsExact, totalCreditsExact, drillTarget {path, amount: endingBalanceExact, startDate, endDate, params}. '
+    + 'tag_split=1&tag_group_id= (reports-columns-v1): each row becomes rowKind account (untagged in the group), tag rows and account_total '
+    + '(the unsplit row), each with drill; totals unchanged.',
+    { ...RANGE_Q, as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
+  needsExact(['tag_split', 'tag_group_id']),
   exactOnly(async (req) => {
     const asOf = date(req, 'as_of_date');
     const from = date(req, 'start_date') ?? yearStart();
     const to = date(req, 'end_date') ?? asOf ?? today();
     if (from > to) throw AppError.badRequest('start_date is after end_date', 'INVALID_DATE_RANGE', { param: 'end_date' });
     const b = basis(req);
-    const data = await reportService.buildTrialBalance(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req), b,
-      { adjusting: h.readAdjusting(req), exactAmounts: true, accountTree: true });
-    return { ...data, meta: meta(req, { basis: b, from, to }) };
+    const tagSplit = flag(req, 'tag_split');
+    const groupId = uuid(req, 'tag_group_id', false) ?? null;
+    if (tagSplit && !groupId) throw bad('tag_group_id', 'tag_split needs tag_group_id');
+    if (!tagSplit && groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1');
+    if (tagSplit && (req.query['tag_id'] ?? req.query['tagId'])) throw bad('tag_id', 'tag_id does not combine with tag_split');
+    const companyId = h.resolveCompanyScope(req);
+    const adjusting = h.readAdjusting(req);
+    const data = await reportService.buildTrialBalance(req.tenantId, from, to, companyId, h.readTagFilter(req), b,
+      { adjusting, exactAmounts: true, accountTree: true });
+    const out = tagSplit
+      ? await applyTrialBalanceTagSplit(req.tenantId, data as typeof data & { data: Array<Record<string, unknown>> }, { basis: b, companyId, adjusting, tagGroupId: groupId! })
+        .catch(columnsError)
+      : data;
+    return {
+      ...out,
+      drillTarget: { path: '/reports/general-ledger', amount: 'endingBalanceExact',
+        startDate: fiscalYearStartOf(to, await reportService.getFiscalYearStart(req.tenantId, companyId)), endDate: to,
+        note: 'GL start_date = startDate (the fiscal year start of the end date), end_date = endDate; the GL ending balance is in the account\'s natural sign '
+          + '(netExact for debit-normal accounts, -netExact for credit-normal ones). The computed retained-earnings row has no drill.',
+        params: drillBase(req, b, adjusting, null) },
+      meta: meta(req, { basis: b, from, to }),
+    };
   }));
 
   router.get('/general-ledger', doc('General Ledger',
     'accounts[] {accountId, beginningBalanceExact, periodDebitsExact, periodCreditsExact, endingBalanceExact, lines[] {lineId, transactionId, '
     + 'debitExact, creditExact, runningBalanceExact}}, totalDebitsExact, totalCreditsExact, rowCount (all lines), truncated. limit returns at most '
-    + 'that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids.',
-    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, account_ids: z.string().optional(), limit: z.string().optional().describe('1-100000') }),
-  exactOnly(async (req) => {
+    + 'that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids. '
+    + 'reports-drill-v1: accounts[].netChangeExact (ending - beginning, natural sign; what a P&L cell drills to), lines[].sourceLineId (the '
+    + 'journal line; cash basis: the line passed through, null for a share of a paid document), lines[].contactId (the line\'s client); the '
+    + 'drill filters apply to beginning balances and lines alike; tag_split=1&tag_group_id= adds accounts[].tagSplit[] {rowKind account|tag|'
+    + 'account_total, tagId, tagNumber, tagName, periodDebitsExact, periodCreditsExact, netChangeExact}.',
+    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, limit: z.string().optional().describe('1-100000'),
+      ...DRILL_Q, tag_split: COLUMNS_Q.tag_split,
+      group_by: z.enum(['transaction']).optional().describe('transaction = the Journal: transactions[] {transactionId, date, txnType, txnNumber, '
+        + 'contactName, lines[] {lineId, accountId, accountNumber, accountName, debitExact, creditExact, tagId, contactId}, totalDebitsExact, '
+        + 'totalCreditsExact} in date order, totalDebitsExact, totalCreditsExact, rowCount, truncated') }),
+  needsExact([...DRILL_PARAMS, 'tag_split', 'tag_group_id'],
+    (req) => (req.query['group_by'] === 'transaction' ? 'group_by' : untaggedNeedsExact(req))),
+  exactOnly(generalLedger));
+  router.post('/general-ledger', doc('General Ledger (POST)',
+    'The exact General Ledger with the parameters as a JSON object body (strings; arrays are joined with commas), for an account_ids '
+    + 'list too long for a URL. exact=1 is implied. Same response as GET /reports/general-ledger?exact=1.', {}),
+  bodyAsQuery, exactOnly(generalLedger));
+
+  async function generalLedger(req: Request) {
     const { from, to } = range(req);
     const b = basis(req);
     const limit = posInt(req, 'limit', 100000);
-    const data = await reportService.buildGeneralLedger(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req), b,
-      h.readAccountIds(req), { adjusting: h.readAdjusting(req), exactAmounts: true, limit: limit ?? null });
-    return { ...data, meta: meta(req, { basis: b, from, to }) };
-  }));
+    const lens = await checkLensGroup(req, readLineLens(req));
+    const accountIds = strictIds(req, 'account_ids');
+    const tagSplit = flag(req, 'tag_split');
+    const groupBy = oneOf(req, 'group_by', ['transaction'] as const);
+    const groupId = uuid(req, 'tag_group_id', false) ?? null;
+    if (tagSplit && !groupId) throw bad('tag_group_id', 'tag_split needs tag_group_id');
+    if (tagSplit && lens.tag) throw bad('tag_id', 'tag_id / tag_scope do not combine with tag_split');
+    if (tagSplit && groupBy) throw bad('tag_split', 'tag_split does not combine with group_by=transaction');
+    if (groupId && !tagSplit && lens.tag?.kind !== 'untagged_in_group') throw bad('tag_group_id', 'tag_group_id needs tag_split=1 or tag_scope');
+    if (tagSplit) {
+      const tags = await loadGroupTags(req.tenantId, groupId!);
+      if (tags === null) throw AppError.notFound('tag group not found');
+    }
+    const adjusting = h.readAdjusting(req);
+    const data = await reportService.buildGeneralLedger(req.tenantId, from, to, h.resolveCompanyScope(req), null, b,
+      accountIds, { adjusting, exactAmounts: true, limit: groupBy ? null : limit ?? null, lens, tagSplitGroupId: tagSplit ? groupId : null });
+    const m = meta(req, { basis: b, from, to });
+    if (groupBy === 'transaction') return { ...journalOf(data, limit ?? null), meta: m };
+    return { ...data, meta: m };
+  }
 
   router.get('/account-activity-summary', doc('Account Activity Summary',
     'data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact.', { ...RANGE_Q }),
@@ -241,20 +674,35 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
 
   // ── Lists ──
   router.get('/transaction-list', doc('Transaction List',
-    'One row per journal line: data[] {id (transaction), lineId (journal line; null on cash basis), debitExact, creditExact, amountExact '
-    + '(debit - credit)}, totalsExact {debit, credit, amount}.',
-    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, txn_type: z.string().optional(), account_id: z.string().optional() }),
-  exactOnly(async (req) => {
+    'One row per journal line: data[] {id (transaction), lineId (journal line; on cash basis the line passed through, null for a share of a '
+    + 'paid document), accountId, contactId (the line\'s client), debitExact, creditExact, amountExact (debit - credit)}, totalsExact {debit, '
+    + 'credit, amount}. With exact=1 every filter is per line, tag_id included (reports-drill-v1).',
+    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, txn_type: z.string().optional(), account_id: z.string().optional(), ...DRILL_Q }),
+  needsExact([...DRILL_PARAMS, 'account_ids', 'tag_group_id'], untaggedNeedsExact),
+  exactOnly(transactionList));
+  router.post('/transaction-list', doc('Transaction List (POST)',
+    'The exact Transaction List with the parameters as a JSON object body (strings; arrays are joined with commas), for an account_ids '
+    + 'list too long for a URL. exact=1 is implied. Same response as GET /reports/transaction-list?exact=1.', {}),
+  bodyAsQuery, exactOnly(transactionList));
+
+  async function transactionList(req: Request) {
     const { from, to } = range(req, 'start_date', 'end_date', false);
     const b = basis(req);
     const accountId = uuid(req, 'account_id', false);
-    const tagId = h.readTagFilter(req);
+    const lens = await checkLensGroup(req, readLineLens(req));
+    const accountIds = strictIds(req, 'account_ids');
+    if (accountId && accountIds) throw bad('account_ids', 'use account_id or account_ids, not both');
     const data = await reportService.buildTransactionList(req.tenantId, {
-      startDate: from || undefined, endDate: to || undefined, txnType: qs(req, 'txn_type'), accountId, ...(tagId ? { tagId } : {}),
-      basis: b, adjusting: h.readAdjusting(req), exactAmounts: true,
+      startDate: from || undefined, endDate: to || undefined, txnType: qs(req, 'txn_type'), accountId,
+      basis: b, adjusting: h.readAdjusting(req), exactAmounts: true, accountIds, lens,
     }, h.resolveCompanyScope(req));
-    return { ...exactList(data as { data: unknown[] }, ['debit', 'credit', 'amount'], (r) => ({ lineId: r['line_id'] ?? null })), meta: meta(req, { basis: b, from: from || undefined, to: to || undefined }) };
-  }));
+    return {
+      ...exactList(data as { data: unknown[] }, ['debit', 'credit', 'amount'], (r) => ({
+        lineId: r['line_id'] ?? null, accountId: r['account_id'] ?? null, contactId: r['line_contact_id'] ?? null,
+      })),
+      meta: meta(req, { basis: b, from: from || undefined, to: to || undefined }),
+    };
+  }
 
   router.get('/journal-entry-report', doc('Journal',
     'Journal entries, one row per line: data[] {id, lineId, debitExact, creditExact, amountExact}, totalsExact.', { ...RANGE_Q, ...ADJ_Q }),
@@ -356,12 +804,14 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     ['/sales-by-customer', 'Sales by Client', reportService.buildSalesByCustomer],
     ['/sales-by-item', 'Sales by Item', reportService.buildSalesByItem],
   ] as const) {
-    router.get(path, doc(title, 'data[] {totalExact}, totalsExact {total}.', { ...RANGE_Q, ...BASIS_Q }),
+    router.get(path, doc(title, `data[] {${path === '/sales-by-customer' ? 'contact_id (null: no client)' : 'item_id (null: no item)'}, totalExact}, `
+      + 'totalsExact {total}, grandTotalExact (= totalsExact.total). adjusting is the U-60 lens (reports-drill-v1).', { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q }),
     exactOnly(async (req) => {
       const { from, to } = range(req);
       const b = basis(req);
-      const data = await build(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req), b);
-      return { ...exactList(data as { data: unknown[] }, ['total']), meta: meta(req, { basis: b, from, to }) };
+      const data = await build(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req), b, h.readAdjusting(req));
+      const list = exactList(data as { data: unknown[] }, ['total']);
+      return { ...list, grandTotalExact: list.totalsExact['total'], meta: meta(req, { basis: b, from, to }) };
     }));
   }
   router.get('/expense-by-vendor', doc('Expenses by Vendor',

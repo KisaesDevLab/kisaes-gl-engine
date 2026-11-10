@@ -58027,7 +58027,7 @@
     },
     "/api/v1/reports/balance-sheet": {
       "get": {
-        "description": "assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. Column layout (reports-columns-v1; with period_ranges, prior, tag_split or tag_id=untagged): as on the P&L, sections assets/liabilities/equity, one column per as-of date (kind as_of, asOf), totalsExact {totalAssets, totalLiabilities, totalEquity, totalLiabilitiesAndEquity}; calculated: true rows (Retained Earnings (Prior Years), Net Income (Current Year)) and the Retained Earnings account (includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column). meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_balance_sheet",
         "parameters": [
           {
@@ -58127,6 +58127,69 @@
                 "detail_type",
                 "leadsheet"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "With prior=period and no period_ranges: the period start (prior as-of = the day before)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period_ranges",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD..YYYY-MM-DD,… up to 36 ranges in date order, not overlapping (4-4-5 or custom periods). One column per range (Balance Sheet: as of each range end); a P&L with two or more ranges adds a Total column.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prior",
+            "required": false,
+            "schema": {
+              "description": "After each period / YTD column: the prior period (same number of days just before; Balance Sheet: as of the day before the period start) or prior year, $ change (current - prior) and % change (change / |prior|, 1 place, null on 0)",
+              "enum": [
+                "period",
+                "year"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prior_ranges",
+            "required": false,
+            "schema": {
+              "description": "With prior=period: the prior range of each period range (same count and order), e.g. the previous 4-4-5 periods; Balance Sheet: each prior as-of is the range end. Without it prior=period uses the same number of days just before.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_split",
+            "required": false,
+            "schema": {
+              "description": "1 = under each account: rowKind account (lines without a tag from the group), tag (one per group tag with activity) and account_total (untagged + tags, the unsplit amount). Section totals unchanged. Needs tag_group_id.",
+              "enum": [
+                "1",
+                "0"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_group_id",
+            "required": false,
+            "schema": {
+              "description": "The tag group for tag_split or compare=by_tag",
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -59157,7 +59220,7 @@
     },
     "/api/v1/reports/general-ledger": {
       "get": {
-        "description": "accounts[] {accountId, beginningBalanceExact, periodDebitsExact, periodCreditsExact, endingBalanceExact, lines[] {lineId, transactionId, debitExact, creditExact, runningBalanceExact}}, totalDebitsExact, totalCreditsExact, rowCount (all lines), truncated. limit returns at most that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "accounts[] {accountId, beginningBalanceExact, periodDebitsExact, periodCreditsExact, endingBalanceExact, lines[] {lineId, transactionId, debitExact, creditExact, runningBalanceExact}}, totalDebitsExact, totalCreditsExact, rowCount (all lines), truncated. limit returns at most that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids. reports-drill-v1: accounts[].netChangeExact (ending - beginning, natural sign; what a P&L cell drills to), lines[].sourceLineId (the journal line; cash basis: the line passed through, null for a share of a paid document), lines[].contactId (the line's client); the drill filters apply to beginning balances and lines alike; tag_split=1&tag_group_id= adds accounts[].tagSplit[] {rowKind account|tag|account_total, tagId, tagNumber, tagName, periodDebitsExact, periodCreditsExact, netChangeExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_general_ledger",
         "parameters": [
           {
@@ -59180,7 +59243,7 @@
             "name": "tag_id",
             "required": false,
             "schema": {
-              "description": "Comma-separated tag ids",
+              "description": "Comma-separated tag ids or untagged (per line: the line's own tag)",
               "type": "string"
             }
           },
@@ -59252,18 +59315,124 @@
           },
           {
             "in": "query",
-            "name": "account_ids",
+            "name": "limit",
             "required": false,
             "schema": {
+              "description": "1-100000",
               "type": "string"
             }
           },
           {
             "in": "query",
-            "name": "limit",
+            "name": "contact_id",
             "required": false,
             "schema": {
-              "description": "1-100000",
+              "description": "Comma-separated client ids (the line's own contact, else its transaction's), none (no client) or others (with exclude_contact_ids)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exclude_contact_ids",
+            "required": false,
+            "schema": {
+              "description": "With contact_id=others: the clients to leave out (at most 100)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_ids",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated account ids, at most 500 (POST the same parameters as a JSON body for long lists)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_scope",
+            "required": false,
+            "schema": {
+              "description": "Lines without a tag from tag_group_id (no tag, or a tag from another group)",
+              "enum": [
+                "untagged_in_group"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_group_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "amount_min",
+            "required": false,
+            "schema": {
+              "description": "Decimal string; lines with |debit - credit| at least this",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "amount_max",
+            "required": false,
+            "schema": {
+              "description": "Decimal string; lines with |debit - credit| at most this",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cleared",
+            "required": false,
+            "schema": {
+              "description": "Reconciliation state of the journal line (cash-basis shares of a paid document count as uncleared)",
+              "enum": [
+                "cleared",
+                "uncleared",
+                "reconciled"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "txn_types",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated transaction types",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_split",
+            "required": false,
+            "schema": {
+              "description": "1 = under each account: rowKind account (lines without a tag from the group), tag (one per group tag with activity) and account_total (untagged + tags, the unsplit amount). Section totals unchanged. Needs tag_group_id.",
+              "enum": [
+                "1",
+                "0"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "description": "transaction = the Journal: transactions[] {transactionId, date, txnType, txnNumber, contactName, lines[] {lineId, accountId, accountNumber, accountName, debitExact, creditExact, tagId, contactId}, totalDebitsExact, totalCreditsExact} in date order, totalDebitsExact, totalCreditsExact, rowCount, truncated",
+              "enum": [
+                "transaction"
+              ],
               "type": "string"
             }
           }
@@ -59282,6 +59451,76 @@
           }
         ],
         "summary": "General Ledger",
+        "tags": [
+          "reports"
+        ]
+      },
+      "post": {
+        "description": "The exact General Ledger with the parameters as a JSON object body (strings; arrays are joined with commas), for an account_ids list too long for a URL. exact=1 is implied. Same response as GET /reports/general-ledger?exact=1. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "operationId": "post_api_v1_reports_general_ledger",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "General Ledger (POST)",
         "tags": [
           "reports"
         ]
@@ -60683,7 +60922,7 @@
     },
     "/api/v1/reports/profit-loss": {
       "get": {
-        "description": "Standard: revenue/cogs/expenses/otherRevenue/otherExpenses[] {accountId, amount, amountExact, parentAccountId, depth, rollupExact?}, total*Exact, grossProfitExact, operatingIncomeExact, netIncomeExact; group_by adds groups[].subtotalExact. compare=previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag: rows[].valuesExact and groups[].valuesExact (amounts; $ change; % change at 1 place, null on a zero base), total*Exact / netIncomeExact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "Standard: revenue/cogs/expenses/otherRevenue/otherExpenses[] {accountId, amount, amountExact, parentAccountId, depth, rollupExact?}, total*Exact, grossProfitExact, operatingIncomeExact, netIncomeExact; group_by adds groups[].subtotalExact. compare=previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag: rows[].valuesExact and groups[].valuesExact (amounts; $ change; % change at 1 place, null on a zero base), total*Exact / netIncomeExact arrays. Column layout (reports-columns-v1; with period_ranges, ytd, prior, compare=by_contact, compare=by_tag&tag_group_id, tag_split, pct_of_income or tag_id=untagged): {layout: \"columns\", columns[] {key, caption, kind period|total|ytd|prior|change|pct_change|contact|others|no_contact|tag|no_tag, valueType amount|percent, from, to, contactId?, tagId?, baseKey?, drill}, revenue/cogs/expenses/otherRevenue/otherExpenses[] {rowKind account|tag|account_total, accountId, name, accountNumber, parentAccountId, depth, tagId?, tagNumber?, tagName?, valuesExact[] (one per column), rollupValuesExact?, pctOfIncomeExact?, drill}, totalsExact {totalRevenue, totalCogs, totalExpenses, totalOtherRevenue, totalOtherExpenses, grossProfit|null, operatingIncome|null, netIncome: values[]}, pctOfIncomeTotalsExact?, tagSplit {tagGroupId, tags[]}|null, drillTarget {path, amount: netChangeExact, params}}. A cell drills to GET /reports/general-ledger with drillTarget.params + column.drill + row.drill (exact=1); the account's netChangeExact equals the cell. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_profit_loss",
         "parameters": [
           {
@@ -60781,6 +61020,7 @@
             "name": "compare",
             "required": false,
             "schema": {
+              "description": "previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag|by_contact",
               "type": "string"
             }
           },
@@ -60808,6 +61048,95 @@
               "enum": [
                 "detail_type",
                 "leadsheet"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period_ranges",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD..YYYY-MM-DD,… up to 36 ranges in date order, not overlapping (4-4-5 or custom periods). One column per range (Balance Sheet: as of each range end); a P&L with two or more ranges adds a Total column.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ytd",
+            "required": false,
+            "schema": {
+              "description": "1 = add a YTD column from fiscal_year_start (default: the company fiscal year start) to the last end date",
+              "enum": [
+                "1",
+                "0"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fiscal_year_start",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; the YTD column start (needs ytd=1)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prior_ranges",
+            "required": false,
+            "schema": {
+              "description": "With prior=period: the prior range of each period range (same count and order), e.g. the previous 4-4-5 periods; Balance Sheet: each prior as-of is the range end. Without it prior=period uses the same number of days just before.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prior",
+            "required": false,
+            "schema": {
+              "description": "After each period / YTD column: the prior period (same number of days just before; Balance Sheet: as of the day before the period start) or prior year, $ change (current - prior) and % change (change / |prior|, 1 place, null on 0)",
+              "enum": [
+                "period",
+                "year"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_split",
+            "required": false,
+            "schema": {
+              "description": "1 = under each account: rowKind account (lines without a tag from the group), tag (one per group tag with activity) and account_total (untagged + tags, the unsplit amount). Section totals unchanged. Needs tag_group_id.",
+              "enum": [
+                "1",
+                "0"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_group_id",
+            "required": false,
+            "schema": {
+              "description": "The tag group for tag_split or compare=by_tag",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pct_of_income",
+            "required": false,
+            "schema": {
+              "description": "1 = pctOfIncomeExact per row and pctOfIncomeTotalsExact: amount / total income x 100, 1 place, null on 0 income",
+              "enum": [
+                "1",
+                "0"
               ],
               "type": "string"
             }
@@ -61033,7 +61362,7 @@
     },
     "/api/v1/reports/sales-by-customer": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "data[] {contact_id (null: no client), totalExact}, totalsExact {total}, grandTotalExact (= totalsExact.total). adjusting is the U-60 lens (reports-drill-v1). meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_sales_by_customer",
         "parameters": [
           {
@@ -61112,6 +61441,19 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -61135,7 +61477,7 @@
     },
     "/api/v1/reports/sales-by-item": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "data[] {item_id (null: no item), totalExact}, totalsExact {total}, grandTotalExact (= totalsExact.total). adjusting is the U-60 lens (reports-drill-v1). meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_sales_by_item",
         "parameters": [
           {
@@ -61211,6 +61553,19 @@
               "enum": [
                 "accrual",
                 "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
               ],
               "type": "string"
             }
@@ -61726,7 +62081,7 @@
     },
     "/api/v1/reports/transaction-list": {
       "get": {
-        "description": "One row per journal line: data[] {id (transaction), lineId (journal line; null on cash basis), debitExact, creditExact, amountExact (debit - credit)}, totalsExact {debit, credit, amount}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "One row per journal line: data[] {id (transaction), lineId (journal line; on cash basis the line passed through, null for a share of a paid document), accountId, contactId (the line's client), debitExact, creditExact, amountExact (debit - credit)}, totalsExact {debit, credit, amount}. With exact=1 every filter is per line, tag_id included (reports-drill-v1). meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_transaction_list",
         "parameters": [
           {
@@ -61749,7 +62104,7 @@
             "name": "tag_id",
             "required": false,
             "schema": {
-              "description": "Comma-separated tag ids",
+              "description": "Comma-separated tag ids or untagged (per line: the line's own tag)",
               "type": "string"
             }
           },
@@ -61834,6 +62189,95 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "contact_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated client ids (the line's own contact, else its transaction's), none (no client) or others (with exclude_contact_ids)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exclude_contact_ids",
+            "required": false,
+            "schema": {
+              "description": "With contact_id=others: the clients to leave out (at most 100)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_ids",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated account ids, at most 500 (POST the same parameters as a JSON body for long lists)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_scope",
+            "required": false,
+            "schema": {
+              "description": "Lines without a tag from tag_group_id (no tag, or a tag from another group)",
+              "enum": [
+                "untagged_in_group"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_group_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "amount_min",
+            "required": false,
+            "schema": {
+              "description": "Decimal string; lines with |debit - credit| at least this",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "amount_max",
+            "required": false,
+            "schema": {
+              "description": "Decimal string; lines with |debit - credit| at most this",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cleared",
+            "required": false,
+            "schema": {
+              "description": "Reconciliation state of the journal line (cash-basis shares of a paid document count as uncleared)",
+              "enum": [
+                "cleared",
+                "uncleared",
+                "reconciled"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "txn_types",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated transaction types",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -61850,6 +62294,76 @@
           }
         ],
         "summary": "Transaction List",
+        "tags": [
+          "reports"
+        ]
+      },
+      "post": {
+        "description": "The exact Transaction List with the parameters as a JSON object body (strings; arrays are joined with commas), for an account_ids list too long for a URL. exact=1 is implied. Same response as GET /reports/transaction-list?exact=1. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "operationId": "post_api_v1_reports_transaction_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Transaction List (POST)",
         "tags": [
           "reports"
         ]
@@ -61956,7 +62470,7 @@
     },
     "/api/v1/reports/trial-balance": {
       "get": {
-        "description": "data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, depth, rollupExact?}, totalDebitsExact, totalCreditsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, depth, rollupExact?}, totalDebitsExact, totalCreditsExact, drillTarget {path, amount: endingBalanceExact, startDate, endDate, params}. tag_split=1&tag_group_id= (reports-columns-v1): each row becomes rowKind account (untagged in the group), tag rows and account_total (the unsplit row), each with drill; totals unchanged. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_trial_balance",
         "parameters": [
           {
@@ -62054,6 +62568,29 @@
                 "exclude",
                 "only"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_split",
+            "required": false,
+            "schema": {
+              "description": "1 = under each account: rowKind account (lines without a tag from the group), tag (one per group tag with activity) and account_total (untagged + tags, the unsplit amount). Section totals unchanged. Needs tag_group_id.",
+              "enum": [
+                "1",
+                "0"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_group_id",
+            "required": false,
+            "schema": {
+              "description": "The tag group for tag_split or compare=by_tag",
+              "format": "uuid",
               "type": "string"
             }
           }
