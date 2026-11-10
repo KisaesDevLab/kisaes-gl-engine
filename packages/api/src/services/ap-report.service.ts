@@ -7,6 +7,7 @@ import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
 import { tagIn } from './report.service.js';
+import { dec, dsum, exactStr, legacyNum } from './report-exact.js';
 
 // Helper: add `b` to `a` via Decimal and return a plain number rounded
 // to 4 decimals. Reports expose `number` to the UI, but accumulation
@@ -68,7 +69,8 @@ export async function buildApAgingSummary(
   const details: any[] = [];
 
   for (const row of rows.rows as any[]) {
-    const balance = Number(new Decimal(row.balance_due || row.total || '0').toFixed(4));
+    const balanceD = dec(row.balance_due || row.total || '0');
+    const balance = legacyNum(balanceD);
     if (balance <= 0) continue;
     // Parse the date as UTC midnight to avoid a ±1 day drift in aging
     // buckets when the server's local timezone isn't UTC. Plain DATE
@@ -112,24 +114,48 @@ export async function buildApAgingSummary(
       paid: Number(new Decimal(row.amount_paid || '0').plus(row.credits_applied || '0').toFixed(4)),
       balance,
       bucket,
+      // Exact reports (U-14).
+      totalExact: exactStr(row.total),
+      paidExact: exactStr(dec(row.amount_paid).plus(dec(row.credits_applied))),
+      balanceExact: exactStr(balanceD),
     });
   }
 
-  const vendors = Array.from(vendorMap.values()).sort((a, b) => a.vendor_name.localeCompare(b.vendor_name));
-  const totals = vendors.reduce((acc, v) => ({
-    current: acc.current + v.current,
-    bucket1to30: acc.bucket1to30 + v.bucket1to30,
-    bucket31to60: acc.bucket31to60 + v.bucket31to60,
-    bucket61to90: acc.bucket61to90 + v.bucket61to90,
-    bucketOver90: acc.bucketOver90 + v.bucketOver90,
-    total: acc.total + v.total,
-  }), { current: 0, bucket1to30: 0, bucket31to60: 0, bucket61to90: 0, bucketOver90: 0, total: 0 });
+  // Bucket totals and per-vendor sums in Decimal from the stored balances
+  // (U-14); exact reports read the *Exact strings.
+  const BUCKETS = ['current', 'bucket1to30', 'bucket31to60', 'bucket61to90', 'bucketOver90', 'total'] as const;
+  const bucketOf: Record<string, typeof BUCKETS[number]> = {
+    current: 'current', '1_30': 'bucket1to30', '31_60': 'bucket31to60', '61_90': 'bucket61to90', over_90: 'bucketOver90',
+  };
+  const vendorExact = new Map<string, Record<string, string>>();
+  for (const d of details) {
+    const key = d.contact_id || 'unknown';
+    const v = vendorExact.get(key) ?? Object.fromEntries(BUCKETS.map((b) => [b, exactStr(0)]));
+    const b = bucketOf[d.bucket]!;
+    v[b] = exactStr(dec(v[b]).plus(dec(d.balanceExact)));
+    v['total'] = exactStr(dec(v['total']).plus(dec(d.balanceExact)));
+    vendorExact.set(key, v);
+  }
+  const vendors = Array.from(vendorMap.entries())
+    .map(([key, v]) => {
+      const ex = vendorExact.get(key)!;
+      return {
+        ...v,
+        currentExact: ex['current']!, bucket1to30Exact: ex['bucket1to30']!, bucket31to60Exact: ex['bucket31to60']!,
+        bucket61to90Exact: ex['bucket61to90']!, bucketOver90Exact: ex['bucketOver90']!, totalExact: ex['total']!,
+      };
+    })
+    .sort((a, b) => a.vendor_name.localeCompare(b.vendor_name));
+  const sumOf = (b: typeof BUCKETS[number]) => dsum(vendors.map((v) => v[`${b}Exact`]));
+  const totals = Object.fromEntries(BUCKETS.map((b) => [b, legacyNum(sumOf(b))])) as Record<typeof BUCKETS[number], number>;
+  const totalsExact = Object.fromEntries(BUCKETS.map((b) => [b, exactStr(sumOf(b))])) as Record<typeof BUCKETS[number], string>;
 
   return {
     title: 'AP Aging Summary',
     asOfDate,
     vendors,
     totals,
+    totalsExact,
     details,
   };
 }
@@ -238,29 +264,34 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
     SELECT COALESCE(SUM(v.amount), 0) AS opening
     FROM (${vendorActivity(sql`t.txn_date < ${startDate}`)}) v
   `);
-  const openingBalance = Number(new Decimal((openingResult.rows[0] as { opening: string })?.opening || '0').toFixed(4));
+  const openingD = dec((openingResult.rows[0] as { opening: string })?.opening || '0');
+  const openingBalance = legacyNum(openingD);
 
   const activity = await db.execute(sql`
     SELECT v.* FROM (${vendorActivity(sql`t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}`)}) v
     ORDER BY v.txn_date, v.created_at, v.id
   `);
 
-  let running = openingBalance;
+  // Running balance in Decimal (U-14); the numbers derive from it.
+  let runningD = openingD;
   const lines = (activity.rows as any[]).map((row) => {
-    const signed = Number(new Decimal(row.amount || '0').toFixed(4));
-    let charge = 0, payment = 0;
-    if (signed >= 0) charge = signed;
-    else payment = -signed;
-    running = addMoney(running, signed);
+    const signedD = dec(row.amount || '0');
+    const chargeD = signedD.gte(0) ? signedD : dec(0);
+    const paymentD = signedD.lt(0) ? signedD.negated() : dec(0);
+    runningD = runningD.plus(signedD);
     return {
+      id: row.id,
       txn_date: row.txn_date,
       txn_type: row.txn_type,
       txn_number: row.txn_number,
       vendor_invoice_number: row.vendor_invoice_number,
       memo: row.memo,
-      charge,
-      payment,
-      balance: running,
+      charge: legacyNum(chargeD),
+      payment: legacyNum(paymentD),
+      balance: legacyNum(runningD),
+      chargeExact: exactStr(chargeD),
+      paymentExact: exactStr(paymentD),
+      balanceExact: exactStr(runningD),
     };
   });
 
@@ -270,7 +301,11 @@ export async function buildVendorStatement(tenantId: string, vendorId: string, r
     startDate,
     endDate,
     openingBalance,
-    closingBalance: running,
+    closingBalance: legacyNum(runningD),
+    openingBalanceExact: exactStr(openingD),
+    closingBalanceExact: exactStr(runningD),
+    totalChargesExact: exactStr(dsum(lines.map((l) => l.chargeExact))),
+    totalPaymentsExact: exactStr(dsum(lines.map((l) => l.paymentExact))),
     lines,
   };
 }
@@ -307,9 +342,10 @@ export async function buildAp1099Prep(tenantId: string, taxYear: number, company
       address: parts.join(', ') || '',
       tax_id: row.tax_id,
       total_paid: Number(totalPaid.toFixed(4)),
+      total_paidExact: exactStr(totalPaid),
       over_threshold: totalPaid.greaterThanOrEqualTo(600),
     };
   });
 
-  return { title: '1099 Vendor Preparation', taxYear, data };
+  return { title: '1099 Vendor Preparation', taxYear, data, totalPaidExact: exactStr(dsum(data.map((r) => r.total_paidExact))) };
 }

@@ -12,6 +12,7 @@ import { companyContext } from '../middleware/company.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as reportService from '../services/report.service.js';
 import { describe } from '../middleware/describe.js';
+import { registerExactReportRoutes } from './reports-exact.routes.js';
 import { buildReconciliationDiscrepancy } from '../services/reconciliation-discrepancy.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
@@ -46,6 +47,13 @@ reportsRouter.use(expensiveOpLimiter);
 reportsRouter.use((_req, res, next) => {
   res.setHeader('X-Report-Schema-Version', REPORT_SCHEMA_VERSION);
   next();
+});
+
+// Exact reports (U-14, U-205, reports-exact-v1): ?exact=1 handlers run
+// ahead of the legacy handlers below and pass through without exact=1.
+registerExactReportRoutes(reportsRouter, {
+  resolveCompanyScope, readTagFilter, readAdjusting, readAccountIds, readGroupBy,
+  reportSchemaVersion: REPORT_SCHEMA_VERSION,
 });
 
 function resolveCompanyScope(req: Request): string | null {

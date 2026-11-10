@@ -1424,6 +1424,8 @@ export interface ExpenseVendorAccountRow {
   accountNumber: string | null;
   name: string;
   total: number;
+  // Exact reports (U-14): the same total as a decimal string.
+  totalExact: string;
 }
 
 // A vendor with the accounts it was paid to and the vendor total.
@@ -1432,6 +1434,7 @@ export interface ExpenseVendorGroup {
   vendorName: string;
   accounts: ExpenseVendorAccountRow[];
   total: number;
+  totalExact: string;
 }
 
 export async function buildExpenseByVendor(
@@ -1539,16 +1542,20 @@ export async function buildExpenseByVendor(
     const key = r.vendor_key ?? r.vendor_name;
     let g = byVendor.get(key);
     if (!g) {
-      g = { contactId: r.contact_id, vendorName: r.vendor_name, accounts: [], total: 0 };
+      g = { contactId: r.contact_id, vendorName: r.vendor_name, accounts: [], total: 0, totalExact: exactStr(0) };
       byVendor.set(key, g);
     }
-    const total = num(r.total);
-    g.accounts.push({ accountId: r.account_id, accountNumber: r.account_number, name: r.account_name, total });
-    g.total = Number(new Decimal(g.total).plus(total).toFixed(4));
+    const totalD = dec(r.total);
+    g.accounts.push({
+      accountId: r.account_id, accountNumber: r.account_number, name: r.account_name, total: legacyNum(totalD),
+      totalExact: exactStr(totalD),
+    });
+    g.totalExact = exactStr(dec(g.totalExact).plus(totalD));
+    g.total = legacyNum(g.totalExact);
   }
   const groups = [...byVendor.values()]
-    .map((g) => ({ ...g, accounts: g.accounts.sort((a, b) => b.total - a.total) }))
-    .sort((a, b) => b.total - a.total);
+    .map((g) => ({ ...g, accounts: g.accounts.sort((a, b) => dec(b.totalExact).comparedTo(dec(a.totalExact))) }))
+    .sort((a, b) => dec(b.totalExact).comparedTo(dec(a.totalExact)));
 
   return { ...summary, groups };
 }
@@ -2272,6 +2279,8 @@ export async function buildBankBalances(
     accountNumber: string | null;
     name: string;
     balance: number;
+    // Exact reports (U-14): the balance as a decimal string.
+    balanceExact: string;
     isInactive: boolean;
   };
   const entries: BankBalanceEntry[] = [];
@@ -2284,7 +2293,8 @@ export async function buildBankBalances(
     total_debit: string | number | null;
     total_credit: string | number | null;
   }>) {
-    const balance = sub(row.total_debit, row.total_credit);
+    const balD = dec(row.total_debit).minus(dec(row.total_credit));
+    const balance = legacyNum(balD);
     const isInactive = row.is_active === false;
     if (isInactive && balance === 0) continue;
     entries.push({
@@ -2292,9 +2302,10 @@ export async function buildBankBalances(
       accountNumber: row.account_number,
       name: isInactive ? `${row.name} (inactive)` : row.name,
       balance,
+      balanceExact: exactStr(balD),
       isInactive,
     });
-    total = total.plus(balance);
+    total = total.plus(balD);
   }
 
   const footer = await getReportFooter(tenantId);
@@ -2303,7 +2314,8 @@ export async function buildBankBalances(
     asOfDate,
     footer,
     accounts: entries,
-    totalBalance: Number(total.toFixed(4)),
+    totalBalance: legacyNum(total),
+    totalBalanceExact: exactStr(total),
   };
 }
 
@@ -3327,23 +3339,28 @@ export async function buildAccountActivitySummary(
   let td = new Decimal('0');
   let tc = new Decimal('0');
   const data = (rows.rows as unknown as ActivityRow[]).map((r) => {
-    const d = num(r.total_debit);
-    const c = num(r.total_credit);
+    const d = dec(r.total_debit);
+    const c = dec(r.total_credit);
     td = td.plus(d);
     tc = tc.plus(c);
-    return { ...r, total_debit: d, total_credit: c, net: sub(d, c) };
+    return {
+      ...r, total_debit: legacyNum(d), total_credit: legacyNum(c), net: legacyNum(d.minus(c)),
+      // Exact reports (U-14).
+      total_debitExact: exactStr(d), total_creditExact: exactStr(c), netExact: exactStr(d.minus(c)),
+    };
   });
-  const totalDebits = Number(td.toFixed(4));
-  const totalCredits = Number(tc.toFixed(4));
 
   return {
     title: 'Account Activity Summary',
     startDate,
     endDate,
     data,
-    totalDebits,
-    totalCredits,
-    totalNet: Number(td.minus(tc).toFixed(4)),
+    totalDebits: legacyNum(td),
+    totalCredits: legacyNum(tc),
+    totalNet: legacyNum(td.minus(tc)),
+    totalDebitsExact: exactStr(td),
+    totalCreditsExact: exactStr(tc),
+    totalNetExact: exactStr(td.minus(tc)),
   };
 }
 
@@ -3367,7 +3384,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
     const tagCond = filters?.tagId ? sql`AND cb.tag_id IN ${tagIn(filters.tagId)}` : sql``;
     const cashRows = await executeCashBasis(sql`
       WITH ${cashBasisLinesWith(tenantId, start, end, companyId, filters?.adjusting ?? null)}
-      SELECT cb.transaction_id AS id, cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
+      SELECT cb.transaction_id AS id, NULL::uuid AS line_id, cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
         c.display_name AS contact_name,
         a.account_number, a.name AS account_name,
         CASE WHEN a.account_number IS NOT NULL AND a.account_number <> ''
@@ -3404,7 +3421,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
   // Void transactions are already excluded (status = 'posted' above); the
   // is_void_reversal filter drops the reversing lines the voider persisted.
   const rows = await db.execute(sql`
-    SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.memo, t.status,
+    SELECT t.id, jl.id AS line_id, t.txn_type, t.txn_number, t.txn_date, t.memo, t.status,
       -- STATEMENT_CHECK_PAYEE_V1 — fall back to the check-image payee.
       COALESCE(c.display_name, t.payee_name_on_check) as contact_name,
       a.account_number, a.name AS account_name,
