@@ -1919,6 +1919,13 @@
       "when": 1788000024380,
       "tag": "0273_bank_feed_entry_changed",
       "breakpoints": true
+    },
+    {
+      "idx": 274,
+      "version": "7",
+      "when": 1788100024380,
+      "tag": "0274_report_definitions",
+      "breakpoints": true
     }
   ]
 }

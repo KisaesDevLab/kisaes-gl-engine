@@ -662,6 +662,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'report_ai_summaries.prompt_template_id': 'global-ref:ai_prompt_templates',
   'report_ai_summaries.edited_by': 'identity',
   'report_comments.author_id': 'identity',
+  'report_definitions.created_by': 'identity',
+  'report_definitions.updated_by': 'identity',
   'report_instances.created_by': 'identity',
   'report_instances.fs_report_version_id': 'tenant-ref:fs_report_versions',
   'report_pack_runs.requested_by': 'identity',
@@ -828,7 +830,8 @@ export const SECRET_COLUMNS: Record<string, SecretColumnRule> = {
 };
 
 /** Rule 5b. jsonb/json columns on archived or identity tables whose name matches JSON_CONFIG_RE. */
-export const JSON_CONFIG_RE = /(config|settings|credential|options)/i;
+// `definition` covers report_definitions.definition_json (U-118).
+export const JSON_CONFIG_RE = /(config|settings|credential|options|definition)/i;
 
 export const JSON_CONFIG_COLUMNS: Record<string, JsonConfigClass> = {
   'bank_feed_items.splits_config': 'contains-ids',
@@ -842,6 +845,10 @@ export const JSON_CONFIG_COLUMNS: Record<string, JsonConfigClass> = {
   'companies.intake_settings': 'plain',
   'fs_report_versions.settings_json': 'plain',
   'import_sessions.options': 'plain',
+  // Saved report definitions (U-118): ids only at fixed option paths
+  // (options.filters.{accountIds,contactIds,tagIds,itemIds},
+  // options.tagSplit.tagGroupId, options.columnTagGroupId, options.budgetId).
+  'report_definitions.definition_json': 'contains-ids',
   'report_pack_items.options_json': 'contains-ids',
   'tenants.report_settings': 'contains-ids',
   'tenants.practice_settings': 'plain',

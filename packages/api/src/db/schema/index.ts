@@ -50,6 +50,7 @@ export * from './portal-1099.js';
 export * from './bank-connect-invites.js';
 export * from './portal-reports.js';
 export * from './report-packs.js';
+export * from './report-definitions.js';
 export * from './report-letters.js';
 export * from './portal-receipts.js';
 export * from './recurring-doc-requests.js';

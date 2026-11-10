@@ -32,6 +32,7 @@ import { tagsRouter } from './routes/tags.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
 import { customerStatementReportsRouter, customerStatementRunsRouter, customerStatementsRouter } from './routes/customer-statements.routes.js';
 import { reportPacksRouter } from './routes/report-packs.routes.js';
+import { reportBuilderRouter } from './routes/report-builder.routes.js';
 import { bankingRouter } from './routes/banking.routes.js';
 import { dashboardRouter } from './routes/dashboard.routes.js';
 import { ledgerVersionRouter } from './routes/ledger-version.routes.js';
@@ -583,6 +584,7 @@ app.use('/api/v1/tags', tagsRouter);
 // Report Packs share the /reports base; mount BEFORE reportsRouter so the
 // pack sub-paths (/catalog, /packs*) resolve via their own middleware chain.
 app.use('/api/v1/reports', reportPacksRouter);
+app.use('/api/v1/report-builder', reportBuilderRouter);
 app.use('/api/v1/reports', customerStatementReportsRouter);
 app.use('/api/v1/reports', salesTaxReportsRouter);
 // Inventory valuation, stock status and reorder (U-160, U-78).

@@ -190,7 +190,16 @@ export const IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES = [
   'post /api/v1/banking/feed/undo',
 ].sort();
 
+/** Keyed by report-defs-v1 (U-118): saved reports and their groups, create and change. */
+export const IDEMPOTENCY_REPORT_DEFS_V1_ROUTES = [
+  'post /api/v1/report-builder/definitions',
+  'put /api/v1/report-builder/definitions/{id}',
+  'post /api/v1/report-builder/definition-groups',
+  'put /api/v1/report-builder/definition-groups/{id}',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_REPORT_DEFS_V1_ROUTES,
   ...IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES,
   ...IDEMPOTENCY_FEED_REVIEW_V1_ROUTES,
   ...IDEMPOTENCY_FEED_MATCH_POST_V1_ROUTES,
