@@ -333,6 +333,12 @@ export interface PlColumnsOptions {
   /** YTD column from this date to the last range's end. */
   ytdFrom: string | null;
   prior: 'period' | 'year' | null;
+  /**
+   * prior=period: the prior range of each period range, in the same order
+   * (e.g. the previous 4-4-5 period); without it, the same number of days
+   * just before. The YTD column's prior always uses the day count.
+   */
+  priorRanges?: DateRange[] | null;
   compare: null | { kind: 'contact' } | { kind: 'tag'; groupId: string };
   tagSplitGroupId: string | null;
   pctOfIncome: boolean;
@@ -363,9 +369,9 @@ export async function buildProfitAndLossColumns(tenantId: string, o: PlColumnsOp
   };
   const defs: ColDef[] = [];
   const all = () => true;
-  const addPrior = (baseIdx: number, r: DateRange) => {
+  const addPrior = (baseIdx: number, r: DateRange, explicit: DateRange | null = null) => {
     if (!o.prior) return;
-    const pr = priorRange(r, o.prior);
+    const pr = explicit ?? priorRange(r, o.prior);
     const base = defs[baseIdx]!.col;
     const priorIdx = defs.length;
     defs.push({ col: { key: `${base.key}_prior`, caption: o.prior === 'year' ? 'Prior year' : 'Prior period', kind: 'prior', valueType: 'amount',
@@ -392,7 +398,7 @@ export async function buildProfitAndLossColumns(tenantId: string, o: PlColumnsOp
         defs.push({ col: { key: o.periodColumns ? `p${i}` : 'total', caption: o.periodColumns ? rangeCaption(r) : 'Total',
           kind: o.periodColumns ? 'period' : 'total', valueType: 'amount', from: r.from, to: r.to,
           drill: { start_date: r.from, end_date: r.to } }, src: { type: 'sums', set: windowIndex(r), pick: all } });
-        addPrior(idx, r);
+        addPrior(idx, r, o.prior === 'period' ? (o.priorRanges?.[i] ?? null) : null);
       });
     });
     if (o.periodColumns && o.ranges.length > 1) {
@@ -557,6 +563,8 @@ export interface BsColumnsOptions {
   asOfs: Array<{ asOf: string; from: string | null }>;
   periodColumns: boolean;
   prior: 'period' | 'year' | null;
+  /** prior=period: the prior range of each column (its end is the prior as-of date). */
+  priorRanges?: DateRange[] | null;
   tagSplitGroupId: string | null;
 }
 
@@ -581,7 +589,7 @@ export async function buildBalanceSheetColumns(tenantId: string, o: BsColumnsOpt
     defs.push({ col: { key, caption: o.periodColumns ? `As of ${fmtDay(c.asOf)}` : 'Total', kind: o.periodColumns ? 'as_of' : 'total', valueType: 'amount',
       from: c.from, to: c.asOf, asOf: c.asOf, drill: { end_date: c.asOf } }, src: { type: 'sums', set: dateIndex(c.asOf), pick: all } });
     if (o.prior) {
-      const pAsOf = o.prior === 'year' ? shiftYear(c.asOf, -1) : addDays(c.from!, -1);
+      const pAsOf = o.prior === 'year' ? shiftYear(c.asOf, -1) : (o.priorRanges?.[i]?.to ?? addDays(c.from!, -1));
       const pIdx = defs.length;
       defs.push({ col: { key: `${key}_prior`, caption: o.prior === 'year' ? 'Prior year' : 'Prior period', kind: 'prior', valueType: 'amount',
         from: null, to: pAsOf, asOf: pAsOf, baseKey: key, drill: { end_date: pAsOf } }, src: { type: 'sums', set: dateIndex(pAsOf), pick: all } });
@@ -719,12 +727,14 @@ export async function applyTrialBalanceTagSplit<T extends { data: TbRow[]; endDa
     basis: o.basis, companyId: o.companyId, adjusting: o.adjusting, from: null, to: tb.endDate, dimension, splitDate: fyStart,
   });
   const isPl = (t: string) => (PL_TYPES as readonly string[]).includes(t);
-  // Net (debit - credit) per account per key in the TB window.
-  const net = new Map<string, Map<string | null, Dec>>();
+  // Debits and credits per account per key in the TB window.
+  type DC = { d: Dec; c: Dec };
+  const net = new Map<string, Map<string | null, DC>>();
   for (const r of rows) {
     if (isPl(r.accountType) && r.pre) continue;
-    const m = net.get(r.accountId) ?? new Map<string | null, Dec>();
-    m.set(r.key, (m.get(r.key) ?? ZERO()).plus(r.debit.minus(r.credit)));
+    const m = net.get(r.accountId) ?? new Map<string | null, DC>();
+    const cur = m.get(r.key) ?? { d: ZERO(), c: ZERO() };
+    m.set(r.key, { d: cur.d.plus(r.debit), c: cur.c.plus(r.credit) });
     net.set(r.accountId, m);
   }
   // Retained earnings (prior years): accrual P&L lines before the fiscal year.
@@ -734,20 +744,27 @@ export async function applyTrialBalanceTagSplit<T extends { data: TbRow[]; endDa
         basis: 'accrual', companyId: o.companyId, adjusting: o.adjusting, from: null, to: addDays(fyStart, -1),
         accountTypes: PL_TYPES, dimension,
       }));
-  const reNet = new Map<string | null, Dec>();
-  for (const r of reRows) reNet.set(r.key, (reNet.get(r.key) ?? ZERO()).plus(r.debit.minus(r.credit)));
+  // The computed row shows its net on one side (as buildTrialBalance does).
+  const reNetOnly = new Map<string | null, Dec>();
+  for (const r of reRows) reNetOnly.set(r.key, (reNetOnly.get(r.key) ?? ZERO()).plus(r.debit.minus(r.credit)));
+  const reNet = new Map<string | null, DC>();
+  for (const [k, n] of reNetOnly) reNet.set(k, { d: n.gt(0) ? n : ZERO(), c: n.lt(0) ? n.abs() : ZERO() });
 
   const inGroup = new Set(tags.map((t) => t.id));
-  const pickNet = (m: Map<string | null, Dec> | undefined, pick: (k: string | null) => boolean) => {
-    let acc = ZERO();
-    if (m) for (const [k, v] of m) if (pick(k)) acc = acc.plus(v);
+  const pickNet = (m: Map<string | null, DC> | undefined, pick: (k: string | null) => boolean): DC => {
+    const acc = { d: ZERO(), c: ZERO() };
+    if (m) for (const [k, v] of m) if (pick(k)) { acc.d = acc.d.plus(v.d); acc.c = acc.c.plus(v.c); }
     return acc;
   };
-  const shape = (base: TbRow, n: Dec, extra: Record<string, unknown>) => ({
-    ...base, ...extra,
-    debit: n.gt(0) ? legacyNum(n) : 0, credit: n.lt(0) ? legacyNum(n.abs()) : 0,
-    debitExact: exactStr(n.gt(0) ? n : 0), creditExact: exactStr(n.lt(0) ? n.abs() : 0), netExact: exactStr(n),
-  });
+  const shape = (base: TbRow, dc: DC, extra: Record<string, unknown>) => {
+    const n = dc.d.minus(dc.c);
+    return {
+      ...base, ...extra,
+      total_debit: legacyNum(dc.d), total_credit: legacyNum(dc.c), total_debitExact: exactStr(dc.d), total_creditExact: exactStr(dc.c),
+      debit: n.gt(0) ? legacyNum(n) : 0, credit: n.lt(0) ? legacyNum(n.abs()) : 0,
+      debitExact: exactStr(n.gt(0) ? n : 0), creditExact: exactStr(n.lt(0) ? n.abs() : 0), netExact: exactStr(n),
+    };
+  };
   const out: TbRow[] = [];
   for (const row of tb.data) {
     const accountId = (row.accountId ?? row.id ?? null) as string | null;
@@ -758,7 +775,7 @@ export async function applyTrialBalanceTagSplit<T extends { data: TbRow[]; endDa
       { rowKind: 'account', tagId: null, tagNumber: null, tagName: null, ...drillOf({ tag_scope: 'untagged_in_group', tag_group_id: o.tagGroupId }) }));
     for (const t of tags) {
       const v = pickNet(m, (k) => k === t.id);
-      if (v.isZero()) continue;
+      if (v.d.isZero() && v.c.isZero()) continue;
       out.push(shape(row, v, { rowKind: 'tag', tagId: t.id, tagNumber: t.tagNumber, tagName: t.name, rollupExact: undefined, ...drillOf({ tag_id: t.id }) }));
     }
     out.push({ ...row, rowKind: 'account_total', tagId: null, tagNumber: null, tagName: null, ...drillOf({}) });

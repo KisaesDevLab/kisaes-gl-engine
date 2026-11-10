@@ -58163,6 +58163,15 @@
           },
           {
             "in": "query",
+            "name": "prior_ranges",
+            "required": false,
+            "schema": {
+              "description": "With prior=period: the prior range of each period range (same count and order), e.g. the previous 4-4-5 periods; Balance Sheet: each prior as-of is the range end. Without it prior=period uses the same number of days just before.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "tag_split",
             "required": false,
             "schema": {
@@ -61071,6 +61080,15 @@
             "required": false,
             "schema": {
               "description": "YYYY-MM-DD; the YTD column start (needs ytd=1)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prior_ranges",
+            "required": false,
+            "schema": {
+              "description": "With prior=period: the prior range of each period range (same count and order), e.g. the previous 4-4-5 periods; Balance Sheet: each prior as-of is the range end. Without it prior=period uses the same number of days just before.",
               "type": "string"
             }
           },

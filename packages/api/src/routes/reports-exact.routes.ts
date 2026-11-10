@@ -198,26 +198,35 @@ function readLineLens(req: Request): LineLens {
 }
 
 /** period_ranges=YYYY-MM-DD..YYYY-MM-DD,… (at most 36, ascending, not overlapping). */
-function readPeriodRanges(req: Request): DateRange[] | null {
-  const v = qs(req, 'period_ranges');
+function readPeriodRanges(req: Request, name = 'period_ranges', ordered = true): DateRange[] | null {
+  const v = qs(req, name);
   if (v === undefined) return null;
   const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return null;
-  if (parts.length > MAX_PERIOD_RANGES) throw bad('period_ranges', `period_ranges takes at most ${MAX_PERIOD_RANGES} ranges`);
+  if (parts.length > MAX_PERIOD_RANGES) throw bad(name, `${name} takes at most ${MAX_PERIOD_RANGES} ranges`);
   const ranges = parts.map((p) => {
     const m = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(p);
-    if (!m || !isIsoDate(m[1]!) || !isIsoDate(m[2]!)) throw bad('period_ranges', 'period_ranges must be YYYY-MM-DD..YYYY-MM-DD, comma-separated');
-    if (m[1]! > m[2]!) throw AppError.badRequest(`range ${p} starts after it ends`, 'INVALID_DATE_RANGE', { param: 'period_ranges' });
+    if (!m || !isIsoDate(m[1]!) || !isIsoDate(m[2]!)) throw bad(name, `${name} must be YYYY-MM-DD..YYYY-MM-DD, comma-separated`);
+    if (m[1]! > m[2]!) throw AppError.badRequest(`range ${p} starts after it ends`, 'INVALID_DATE_RANGE', { param: name });
     return { from: m[1]!, to: m[2]! };
   });
-  for (let i = 1; i < ranges.length; i++) {
-    if (ranges[i]!.from <= ranges[i - 1]!.to) throw bad('period_ranges', 'period_ranges must be in date order and must not overlap');
+  for (let i = 1; ordered && i < ranges.length; i++) {
+    if (ranges[i]!.from <= ranges[i - 1]!.to) throw bad(name, `${name} must be in date order and must not overlap`);
   }
   return ranges;
 }
 
+/** prior_ranges (with prior=period): one range per column, aligned with period_ranges (or the single range). */
+function readPriorRanges(req: Request, prior: 'period' | 'year' | null, columns: number): DateRange[] | null {
+  const pr = readPeriodRanges(req, 'prior_ranges', false);
+  if (!pr) return null;
+  if (prior !== 'period') throw bad('prior_ranges', 'prior_ranges needs prior=period');
+  if (pr.length !== columns) throw bad('prior_ranges', `prior_ranges needs one range per period (${columns})`);
+  return pr;
+}
+
 /** Parameters that need exact=1 (and no export format); without it they would be ignored. */
-const COLUMN_PARAMS = ['period_ranges', 'ytd', 'fiscal_year_start', 'prior', 'tag_split', 'tag_group_id', 'pct_of_income'];
+const COLUMN_PARAMS = ['period_ranges', 'prior_ranges', 'ytd', 'fiscal_year_start', 'prior', 'tag_split', 'tag_group_id', 'pct_of_income'];
 const DRILL_PARAMS = ['tag_scope', 'contact_id', 'exclude_contact_ids', 'amount_min', 'amount_max', 'cleared', 'txn_types'];
 function needsExact(params: readonly string[], extra?: (req: Request) => string | null) {
   return (req: Request, _res: Response, next: NextFunction) => {
@@ -304,6 +313,14 @@ export function journalOf(gl: { title?: string; startDate: string; endDate: stri
   };
 }
 
+/** 404 when tag_scope names a tag group that is not the tenant's (it would otherwise match every line). */
+async function checkLensGroup(req: Request, lens: LineLens): Promise<LineLens> {
+  if (lens.tag?.kind === 'untagged_in_group' && (await loadGroupTags(req.tenantId, lens.tag.groupId)) === null) {
+    throw AppError.notFound('tag group not found');
+  }
+  return lens;
+}
+
 function columnsError(e: unknown): never {
   if (e instanceof ReportColumnsError) {
     if (e.code === 'NOT_FOUND') throw AppError.notFound(e.message);
@@ -349,6 +366,8 @@ const COLUMNS_Q = {
     + 'One column per range (Balance Sheet: as of each range end); a P&L with two or more ranges adds a Total column.'),
   ytd: z.enum(['1', '0']).optional().describe('1 = add a YTD column from fiscal_year_start (default: the company fiscal year start) to the last end date'),
   fiscal_year_start: z.string().optional().describe('YYYY-MM-DD; the YTD column start (needs ytd=1)'),
+  prior_ranges: z.string().optional().describe('With prior=period: the prior range of each period range (same count and order), e.g. the previous '
+    + '4-4-5 periods; Balance Sheet: each prior as-of is the range end. Without it prior=period uses the same number of days just before.'),
   prior: z.enum(['period', 'year']).optional().describe('After each period / YTD column: the prior period (same number of days just before; '
     + 'Balance Sheet: as of the day before the period start) or prior year, $ change (current - prior) and % change (change / |prior|, 1 place, null on 0)'),
   tag_split: z.enum(['1', '0']).optional().describe('1 = under each account: rowKind account (lines without a tag from the group), tag (one per group tag '
@@ -388,8 +407,9 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     reportMeta({ basis: o.basis ?? null, from: o.from, to: o.to, asOf: o.asOf, reportSchemaVersion: h.reportSchemaVersion });
 
   /** The parameters every drill of this report adds (basis, adjusting, report tag filter). */
-  const drillBase = (b: 'accrual' | 'cash', adjusting: string, tag: TagLens | null): Record<string, string> => ({
+  const drillBase = (req: Request, b: 'accrual' | 'cash', adjusting: string, tag: TagLens | null): Record<string, string> => ({
     basis: b, adjusting,
+    ...(req.query['scope'] === 'consolidated' ? { scope: 'consolidated' } : {}),
     ...(tag?.kind === 'ids' ? { tag_id: tag.ids.join(',') } : tag?.kind === 'untagged' ? { tag_id: 'untagged' } : {}),
   });
 
@@ -424,6 +444,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const fyParam = date(req, 'fiscal_year_start');
     if (fyParam && !ytd) throw bad('fiscal_year_start', 'fiscal_year_start needs ytd=1');
     const useRanges = ranges ?? [range(req)];
+    const priorRanges = readPriorRanges(req, prior, useRanges.length);
     const b = basis(req);
     const companyId = h.resolveCompanyScope(req);
     const adjusting = h.readAdjusting(req);
@@ -434,13 +455,13 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
       if (ytdFrom > last) throw AppError.badRequest('fiscal_year_start is after the last period end', 'INVALID_DATE_RANGE', { param: 'fiscal_year_start' });
     }
     const data = await buildProfitAndLossColumns(req.tenantId, {
-      basis: b, companyId, adjusting, tagFilter, ranges: useRanges, periodColumns: !!ranges, ytdFrom, prior, compare,
+      basis: b, companyId, adjusting, tagFilter, ranges: useRanges, periodColumns: !!ranges, ytdFrom, prior, priorRanges, compare,
       tagSplitGroupId: tagSplit ? groupId : null, pctOfIncome,
     }).catch(columnsError);
     const from = ytdFrom && ytdFrom < useRanges[0]!.from ? ytdFrom : useRanges[0]!.from;
     return {
       ...data,
-      drillTarget: { path: '/reports/general-ledger', amount: 'netChangeExact', params: drillBase(b, adjusting, tagFilter) },
+      drillTarget: { path: '/reports/general-ledger', amount: 'netChangeExact', params: drillBase(req, b, adjusting, tagFilter) },
       meta: meta(req, { basis: b, from, to: last }),
     };
   }
@@ -473,16 +494,17 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
       if (from && from > asOf) throw AppError.badRequest('start_date is after as_of_date', 'INVALID_DATE_RANGE', { param: 'start_date' });
       asOfs = [{ asOf, from }];
     }
-    if (prior === 'period' && asOfs.some((a) => !a.from)) throw bad('prior', 'prior=period needs period_ranges or start_date');
+    const priorRanges = readPriorRanges(req, prior, asOfs.length);
+    if (prior === 'period' && !priorRanges && asOfs.some((a) => !a.from)) throw bad('prior', 'prior=period needs period_ranges, start_date or prior_ranges');
     const b = basis(req);
     const adjusting = h.readAdjusting(req);
     const data = await buildBalanceSheetColumns(req.tenantId, {
-      basis: b, companyId: h.resolveCompanyScope(req), adjusting, tagFilter, asOfs, periodColumns: !!ranges, prior,
+      basis: b, companyId: h.resolveCompanyScope(req), adjusting, tagFilter, asOfs, periodColumns: !!ranges, prior, priorRanges,
       tagSplitGroupId: tagSplit ? groupId : null,
     }).catch(columnsError);
     return {
       ...data,
-      drillTarget: { path: '/reports/general-ledger', amount: 'endingBalanceExact', params: drillBase(b, adjusting, tagFilter) },
+      drillTarget: { path: '/reports/general-ledger', amount: 'endingBalanceExact', params: drillBase(req, b, adjusting, tagFilter) },
       meta: meta(req, { basis: b, asOf: asOfs[asOfs.length - 1]!.asOf }),
     };
   }
@@ -539,7 +561,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     + '(includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column).',
     { as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), group_by: z.enum(['detail_type', 'leadsheet']).optional(),
       start_date: z.string().optional().describe('With prior=period and no period_ranges: the period start (prior as-of = the day before)'),
-      period_ranges: COLUMNS_Q.period_ranges, prior: COLUMNS_Q.prior, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
+      period_ranges: COLUMNS_Q.period_ranges, prior: COLUMNS_Q.prior, prior_ranges: COLUMNS_Q.prior_ranges, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
   needsExact(COLUMN_PARAMS, untaggedNeedsExact),
   exactOnly(async (req) => {
     const columns = await balanceSheetColumns(req);
@@ -591,7 +613,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
         startDate: fiscalYearStartOf(to, await reportService.getFiscalYearStart(req.tenantId, companyId)), endDate: to,
         note: 'GL start_date = startDate (the fiscal year start of the end date), end_date = endDate; the GL ending balance is in the account\'s natural sign '
           + '(netExact for debit-normal accounts, -netExact for credit-normal ones). The computed retained-earnings row has no drill.',
-        params: { basis: b, adjusting } },
+        params: drillBase(req, b, adjusting, null) },
       meta: meta(req, { basis: b, from, to }),
     };
   }));
@@ -621,7 +643,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const { from, to } = range(req);
     const b = basis(req);
     const limit = posInt(req, 'limit', 100000);
-    const lens = readLineLens(req);
+    const lens = await checkLensGroup(req, readLineLens(req));
     const accountIds = strictIds(req, 'account_ids');
     const tagSplit = flag(req, 'tag_split');
     const groupBy = oneOf(req, 'group_by', ['transaction'] as const);
@@ -667,7 +689,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const { from, to } = range(req, 'start_date', 'end_date', false);
     const b = basis(req);
     const accountId = uuid(req, 'account_id', false);
-    const lens = readLineLens(req);
+    const lens = await checkLensGroup(req, readLineLens(req));
     const accountIds = strictIds(req, 'account_ids');
     if (accountId && accountIds) throw bad('account_ids', 'use account_id or account_ids, not both');
     const data = await reportService.buildTransactionList(req.tenantId, {

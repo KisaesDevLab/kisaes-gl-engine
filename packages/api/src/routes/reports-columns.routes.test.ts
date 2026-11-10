@@ -324,6 +324,48 @@ describe('reports-columns-v1 / reports-drill-v1 (U-201, U-202)', () => {
     });
   }
 
+  it('prior=period with prior_ranges: each 4-4-5 period compares with the previous period, not a day count', async () => {
+    const prior = '2025-11-27..2025-12-31,2026-01-01..2026-01-28,2026-01-29..2026-02-25';
+    for (const basis of ['accrual', 'cash']) {
+      const r = await get(`/profit-loss?exact=1&basis=${basis}&period_ranges=${RANGES}&prior=period&prior_ranges=${prior}`);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const cols = r.body.columns;
+      expect(cols.find((c: any) => c.key === 'p2_prior')).toMatchObject({ from: '2026-01-29', to: '2026-02-25' });
+      for (const [i, col] of cols.entries()) {
+        if (col.kind !== 'prior') continue;
+        const { byAccount } = await plAmounts(col.from, col.to, `&basis=${basis}`);
+        for (const s of PL_SECTIONS) for (const row of r.body[s]) expect(D(row.valuesExact[i]).eq(D(byAccount.get(row.accountId) ?? '0'))).toBe(true);
+      }
+      expect(await checkDrills(r.body, PL_SECTIONS, 'netChangeExact')).toBeGreaterThan(10);
+      const bs = await get(`/balance-sheet?exact=1&basis=${basis}&period_ranges=${RANGES}&prior=period&prior_ranges=${prior}`);
+      expect(bs.status).toBe(200);
+      expect(bs.body.columns.find((c: any) => c.key === 'p2_prior')).toMatchObject({ asOf: '2026-02-25' });
+    }
+    const wrong = await get(`/profit-loss?exact=1&period_ranges=${RANGES}&prior=period&prior_ranges=2026-01-01..2026-01-28`);
+    expect(wrong.status).toBe(400);
+  });
+
+  for (const basis of ['accrual', 'cash'] as const) {
+    it(`columns by client and by tag drill exactly; a subtotal drill (section account ids) equals the section total (${basis})`, async () => {
+      for (const q of ['compare=by_contact', `compare=by_tag&tag_group_id=${ids['region']}`]) {
+        const r = await get(`/profit-loss?exact=1&basis=${basis}&start_date=2026-01-01&end_date=2026-03-31&${q}`);
+        expect(r.status).toBe(200);
+        expect(await checkDrills(r.body, PL_SECTIONS, 'netChangeExact')).toBeGreaterThan(5);
+        const t = r.body.columns.findIndex((c: any) => c.key === 'total');
+        for (const [section, total] of [['revenue', 'totalRevenue'], ['expenses', 'totalExpenses']] as const) {
+          const accountIds = r.body[section].map((e: any) => e.accountId).join(',');
+          for (const [i, col] of r.body.columns.entries()) {
+            if (!col.drill) continue;
+            const gl = (await get(`/general-ledger?${qsOf({ ...r.body.drillTarget.params, ...col.drill, account_ids: accountIds, exact: '1' })}`)).body;
+            const sum = gl.accounts.reduce((a: any, x: any) => a.plus(D(x.netChangeExact)), new Decimal(0));
+            expect(sum.eq(D(r.body.totalsExact[total][i])), `${q} ${section} ${col.key}`).toBe(true);
+          }
+          expect(t).toBeGreaterThan(0);
+        }
+      }
+    });
+  }
+
   it('36 monthly cash-basis columns with prior year and tag split run in one ledger pass', async () => {
     const months = Array.from({ length: 36 }, (_, i) => {
       const y = 2024 + Math.floor(i / 12);
@@ -496,6 +538,8 @@ describe('reports-columns-v1 / reports-drill-v1 (U-201, U-202)', () => {
         for (; rows[j]?.rowKind === 'tag'; j++) acc = acc.plus(D(rows[j].netExact));
         expect(rows[j].rowKind).toBe('account_total');
         expect(acc.eq(D(rows[j].netExact)), row.name).toBe(true);
+        // Each split row's own debits and credits, not the account's.
+        for (let k = i; k <= j; k++) expect(D(rows[k].total_debitExact).minus(D(rows[k].total_creditExact)).eq(D(rows[k].netExact))).toBe(true);
         const orig = plain.data.find((p: any) => (p.accountId ?? p.name) === (row.accountId ?? row.name));
         expect(D(rows[j].netExact).eq(D(orig.netExact))).toBe(true);
       }
@@ -632,6 +676,11 @@ describe('reports-columns-v1 / reports-drill-v1 (U-201, U-202)', () => {
     await bad('/trial-balance?exact=1&tag_split=1', 'tag_group_id');
     const nf = await get(`/profit-loss?exact=1&tag_split=1&tag_group_id=${randomUUID()}`);
     expect(nf.status).toBe(404);
+    expect((await get(`/general-ledger?exact=1&tag_scope=untagged_in_group&tag_group_id=${randomUUID()}`)).status).toBe(404);
+    expect((await get(`/transaction-list?exact=1&tag_scope=untagged_in_group&tag_group_id=${randomUUID()}`)).status).toBe(404);
+    // A consolidated report drills consolidated.
+    const cons = await get('/profit-loss?exact=1&scope=consolidated&pct_of_income=1');
+    expect(cons.body.drillTarget.params.scope).toBe('consolidated');
     // Without the new options the legacy and exact shapes are unchanged.
     const legacy = await get('/profit-loss?start_date=2026-01-01&end_date=2026-03-31');
     expect(legacy.body.columns).toBeUndefined();
