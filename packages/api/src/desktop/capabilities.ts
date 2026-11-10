@@ -1007,5 +1007,27 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * link to its successor (U-192).
    */
   'reconciled-category-edit-v1',
+  /**
+   * Bank lines whose entry was changed (U-199, ClientLedger PR-5 B1, Q-PR5a). An edit of an entry that changes the amount of
+   * a bank feed row's line, or moves it to another account, is kept (never refused); the row keeps its status and entry and
+   * gets entryChanged / entryChangedAt (list filter entryChanged=true|false, /feed/counts entryChanged, audit bank_feed
+   * entry_changed). matchedJournalLineId names the entry's new line when one line on the bank account and side pairs and no
+   * other row holds it (the line stays held), else null (no line held, and the row no longer holds the whole entry). A flagged
+   * row is never a reconcile pre-check source or fromBankFeed. POST /feed/:id/review-again takes it (as entryVoided) back to
+   * waiting. POST /feed/undo's reconciled check for an unlink uses the entry's current lines on the row's account. Migration
+   * 0273 clears and flags rows whose line was already gone (audited, reason backfill_0273).
+   */
+  'feed-entry-changed-v1',
+  /**
+   * Bank feed guards for direct callers (U-200, ClientLedger PR-5 S1, S3, N1, N2). POST /feed/accept takes transferWindowDays
+   * (1-10, default 3) for its has_match transfer signal. PUT /feed/:id/categorize, POST /feed/:id/approve, PUT /feed/:id/match,
+   * POST /payments/receive {bankFeedItemId} and a bill payment for a bank line answer 409 FEED_ITEM_POSSIBLE_DUPLICATE {id,
+   * possibleDuplicateOf} for a row still flagged as a possible duplicate (bulk approve/categorize list it in failures[]); POST
+   * /feed/:id/duplicate keep clears the flag, as for transfer and deposit. POST /feed/:id/transfer {toAccountId} answers 409
+   * FEED_ITEM_HAS_MATCH {id, candidates: [{transactionId, journalLineId, txnType, txnDate}]} when the line matches an entry already
+   * in the books, unless force: true. Import batch rows carry existingReplaceable (Replace would update the item) and, on commit,
+   * replaceRefused not_waiting | staged with replaced false.
+   */
+  'feed-guards-v1',
 ];
 

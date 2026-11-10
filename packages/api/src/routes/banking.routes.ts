@@ -106,9 +106,12 @@ bankingRouter.get('/feed', describe({
   summary: 'List bank feed items (paged)',
   description: 'Response {data, total}. Filters: status = pending | assigned | matched | categorized | excluded, or accepted '
     + '(feed-accept-v1: categorized and matched rows, entryVoided included, the same rows as GET /banking/feed/counts accepted); '
-    + 'bucket = ready | review | matches; possibleDuplicate, entryVoided, actionableOnly, ruleOnly; bankConnectionId, startDate, '
+    + 'bucket = ready | review | matches; possibleDuplicate, entryVoided, entryChanged, actionableOnly, ruleOnly; bankConnectionId, startDate, '
     + 'endDate, search; sortBy, sortDir; limit (1-500, default 50), offset. Rows carry, among others, bucket, matchCandidateCount, '
-    + 'duplicateOf, suggestedRule, entryVoided, entryVoidedAt, matchedJournalLineId and transferCandidate (feed-accept-v1): on a '
+    + 'duplicateOf, suggestedRule, entryVoided, entryVoidedAt, entryChanged, entryChangedAt (feed-entry-changed-v1: an edit of the '
+    + 'entry changed the amount or account of this accepted row’s line; the row stays accepted with its entry, is never a reconcile '
+    + 'pre-check source and holds no line unless matchedJournalLineId names the new one; Review again puts it back to waiting), '
+    + 'matchedJournalLineId and transferCandidate (feed-accept-v1): on a '
     + 'waiting, unmatched row, {feedItemId, accountId, accountName} of the other side of a transfer when exactly one exists (a waiting '
     + 'row on another GL account of the company with the exact opposite amount within 3 days, the rule of GET '
     + '/banking/feed/:id/transfer-candidates and of the matches bucket), else null. transferWindowDays (1-10, default 3; '
@@ -143,13 +146,14 @@ bankingRouter.get('/feed/suggest-account', async (req, res) => {
 // predicates as the list filters (one SQL builder), so they always agree.
 bankingRouter.get('/feed/counts', describe({
   summary: 'Bank feed counts per review bucket and state (feed-review-v1)',
-  description: 'Response {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, excluded, inProgress}. '
+  description: 'Response {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, entryChanged, excluded, inProgress}. '
     + 'waiting = ready + review + matches (pending and assigned rows), each equal to the total of GET /banking/feed?bucket=<b>. '
     + 'Buckets, first match wins: a possible duplicate is review; any match signal (a candidate journal line on the bank account, '
     + 'payroll lines included, one Payments Clearing item for exactly a money-in amount within 10 days, or the other side of a '
     + 'transfer within transferWindowDays, 1-10, default 3, feed-transfer-window-v1) is matches; no account, '
     + 'a non-rule suggestion under 0.80 confidence, a rule mark_for_review, or a staged split that cannot post is review; the rest '
-    + 'is ready. accepted = categorized and matched rows (entryVoided included: Accepted, Entry voided, never waiting); inProgress = '
+    + 'is ready. accepted = categorized and matched rows (entryVoided and entryChanged included: Accepted, Entry voided / Entry '
+    + 'changed, never waiting); entryChanged (feed-entry-changed-v1) = rows the list filter entryChanged=true returns; inProgress = '
     + 'rows being posted. Scope: bankConnectionId, startDate, endDate.',
   query: bankFeedCountsQuerySchema,
 }), async (req, res) => {
@@ -210,6 +214,9 @@ const FEED_SPLITS_NOTE = 'Optional `splits`: 2-50 lines {accountId, amount (^\\d
 // post through them).
 const FEED_NOT_PENDING_NOTE = 'An item that is not waiting for this action is 409 FEED_ITEM_NOT_PENDING {status} (feed-idempotency-v1; '
   + 'was 400).';
+const FEED_POSSIBLE_DUPLICATE_NOTE = 'feed-guards-v1: an item still flagged as a possible duplicate is 409 '
+  + 'FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf}, as the transfer and deposit routes: keep or remove it first with '
+  + 'POST /banking/feed/:id/duplicate (keep clears the flag).';
 const feedKeyedTxn = idempotent({
   successStatus: 200,
   replay: async (req, entity) => ({
@@ -262,6 +269,8 @@ const feedAcceptSchema = z.object({
   afterId: z.string().uuid().optional(),
   closingPassword: z.string().optional(),
   overrideConfirmed: z.boolean().optional(),
+  // feed-guards-v1 (U-200): the transfer window of the has_match signal (default 3).
+  transferWindowDays: z.number().int().min(1).max(10).optional(),
 }).strict().superRefine((b, ctx) => {
   const ruleMode = b.ruleId !== undefined;
   if (ruleMode === (b.items !== undefined)) {
@@ -315,7 +324,7 @@ bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter
   bulkClosingPasswordPrecheck, requireFeedAcceptDraftPermission, feedAcceptGroupReplay, validate(feedAcceptSchema), describe({
     summary: 'Accept bank feed rows: one, a selection, or all from one rule (feed-accept-v1)',
     description: 'Body {items: [{id, accountId?, contactId?, tagId?, memo?, splits?, matchTransactionId?, journalLineId?}] (1-500) '
-      + '| ruleId + ruleKind (conditional | legacy) + ruleUpdatedAt + bankConnectionId? + afterId?, closingPassword?}. One database '
+      + '| ruleId + ruleKind (conditional | legacy) + ruleUpdatedAt + bankConnectionId? + afterId?, closingPassword?, transferWindowDays?}. One database '
       + 'transaction: every row is validated first, then the rows that pass post together (all or nothing on an unexpected error). '
       + 'A row posts the owner’s values when sent (accountId without splits is one line), else its staged assignment, else its '
       + 'suggestion; matchTransactionId (+ journalLineId) matches it to an existing entry instead (as PUT /feed/:id/match). '
@@ -352,14 +361,18 @@ bankingRouter.post('/feed/accept', requireIdempotencyKey, closingPasswordLimiter
       + 'any vendor\'s posted bills, expenses, card charges and checks (open bills too) with the same reference, or the same '
       + 'total within ' + `${DUPLICATE_WINDOW_DAYS_NO_VENDOR}` + ' days; those matches carry noVendor: true. Send the '
       + 'match ids in acknowledgeDuplicateOf to post it once (recorded on the draft\'s audit row as acknowledgedDuplicates). '
-      + 'Matches to an existing entry and money-in rows are not checked.',
+      + 'Matches to an existing entry and money-in rows are not checked. feed-guards-v1: transferWindowDays (integer 1-10, '
+      + 'default 3) sets the window of has_match\'s transfer signal (the other side of a transfer waiting on another account), '
+      + 'as GET /banking/feed transferWindowDays; send the owner\'s window so both sides of a transfer dated further apart are '
+      + 'held, never posted as two transfers.',
     body: feedAcceptSchema,
     response: feedAcceptResultDoc,
   }), async (req, res) => {
     const b = req.body as z.infer<typeof feedAcceptSchema>;
     const request: feedAccept.AcceptRequest = b.ruleId
-      ? { rule: { ruleId: b.ruleId, ruleKind: b.ruleKind!, ruleUpdatedAt: b.ruleUpdatedAt!, bankConnectionId: b.bankConnectionId, afterId: b.afterId } }
-      : { items: b.items! };
+      ? { rule: { ruleId: b.ruleId, ruleKind: b.ruleKind!, ruleUpdatedAt: b.ruleUpdatedAt!, bankConnectionId: b.bankConnectionId, afterId: b.afterId },
+        transferWindowDays: b.transferWindowDays }
+      : { items: b.items!, transferWindowDays: b.transferWindowDays };
     res.json(await feedAccept.acceptFeedItems(req.tenantId, req.companyId, req.userId, request, draftAttachPermissionsOf(req)));
   });
 
@@ -418,7 +431,8 @@ bankingRouter.post('/feed/undo', requireIdempotencyKey, closingPasswordLimiter, 
 bankingRouter.put('/feed/:id/categorize', closingPasswordLimiter, lockContextMiddleware, feedKeyedTxn, validate(categorizeSchema), describe({
   summary: 'Categorize (post) a bank feed item',
   description: 'Response {transaction}. Takes a pending or assigned item (feed-idempotency-v1); the claim, the posting and the '
-    + 'status change are one database transaction. ' + FEED_NOT_PENDING_NOTE + ' ' + FEED_SPLITS_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
+    + 'status change are one database transaction. ' + FEED_NOT_PENDING_NOTE + ' ' + FEED_POSSIBLE_DUPLICATE_NOTE + ' '
+    + FEED_SPLITS_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
 }), async (req, res) => {
   const txn = await bankFeedService.categorize(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId, { ownerChoice: true });
   res.json({ transaction: txn });
@@ -438,7 +452,7 @@ bankingRouter.put('/feed/:id/assign', validate(assignSchema), describe({
 bankingRouter.post('/feed/:id/approve', closingPasswordLimiter, lockContextMiddleware, feedKeyedTxn, describe({
   summary: 'Approve (post) a bank feed item\'s assigned category',
   description: 'Response {transaction}. Takes an assigned item; the claim, the posting and the status change are one database '
-    + 'transaction. ' + FEED_NOT_PENDING_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
+    + 'transaction. ' + FEED_NOT_PENDING_NOTE + ' ' + FEED_POSSIBLE_DUPLICATE_NOTE + ' ' + FEED_CLOSED_PERIOD_NOTE,
 }), async (req, res) => {
   const txn = await bankFeedService.approve(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ transaction: txn });
@@ -450,7 +464,8 @@ bankingRouter.put('/feed/:id/match', feedKeyed, validate(matchSchema), describe(
     + 'journal line of the posted entry: on the item\'s bank account, a credit for money out (feed amount > 0) or a debit for money '
     + 'in (< 0), for exactly the amount. journalLineId may be left out when only one line fits (else 400 LINE_REQUIRED '
     + '{journalLineIds}). 400 MATCH_MISMATCH {field: transactionId | journalLineId | account | amount}; 409 LINE_ALREADY_MATCHED '
-    + '{journalLineId} when another item holds the line; ' + FEED_NOT_PENDING_NOTE + ' Audited. undoGroupId (feed-undo-v1) '
+    + '{journalLineId} when another item holds the line; ' + FEED_NOT_PENDING_NOTE + ' ' + FEED_POSSIBLE_DUPLICATE_NOTE
+    + ' Audited. undoGroupId (feed-undo-v1) '
     + 'names the accept record for POST /banking/feed/undo (Undo unlinks a match; the entry stays).',
   body: matchSchema,
 }), async (req, res) => {
@@ -475,14 +490,20 @@ bankingRouter.post('/feed/:id/duplicate', requireIdempotencyKey, feedKeyed, vali
   res.json(await bankFeedService.decideDuplicate(req.tenantId, req.params['id']!, req.body.decision, req.userId, req.companyId));
 });
 
-// Q-P26u (feed-match-v2): a row whose entry was voided goes back to waiting.
+// Q-P26u (feed-match-v2): a row whose entry was voided goes back to waiting;
+// U-199 (feed-entry-changed-v1): so does one whose entry was changed.
 bankingRouter.post('/feed/:id/review-again', requireIdempotencyKey, feedKeyed, describe({
-  summary: 'Review again a bank feed item whose entry was voided (feed-match-v2)',
+  summary: 'Review again a bank feed item whose entry was voided or changed (feed-match-v2, feed-entry-changed-v1)',
   description: 'Response {item}. Voiding an entry a feed item points at is allowed: the item keeps its status and link and is flagged '
-    + 'entryVoided (list filter entryVoided=true, /counts entryVoided, audit row). This unlinks it (clears the entry, its line and the '
-    + 'flag) and puts it back to pending with its suggestion and without staged values, audited. The void entry stays void. 409 '
-    + 'ENTRY_NOT_VOIDED {status} on any other row. Needs an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). No closing-date password '
-    + '(nothing in the books changes).',
+    + 'entryVoided (list filter entryVoided=true, /counts entryVoided, audit row). feed-entry-changed-v1: so is an edit of the entry '
+    + 'that changes the amount of the item’s line or moves it to another account (Q-PR5a): the item keeps its status and entry and '
+    + 'is flagged entryChanged (entryChangedAt; list filter entryChanged=true, /counts entryChanged, audit row bank_feed '
+    + 'entry_changed). Its matchedJournalLineId names the entry’s new line when the edit kept one line on the bank account on the '
+    + 'same side (no other bank line can take it), else null (the entry’s lines are free to match again). A flagged item is never '
+    + 'a reconcile pre-check source and never fromBankFeed. Review again unlinks it (clears the entry, its line and both flags) and '
+    + 'puts it back to pending with its suggestion and without staged values, audited. The entry stays as it is (void, or as '
+    + 'edited). 409 ENTRY_NOT_VOIDED {status} on any other row (neither voided nor changed). Needs an Idempotency-Key (400 '
+    + 'IDEMPOTENCY_KEY_REQUIRED). No closing-date password (nothing in the books changes).',
 }), async (req, res) => {
   const item = await bankFeedService.reviewAgain(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ item });
@@ -520,6 +541,8 @@ const transferCandidatesQuery = z.object({
 const feedTransferSchema = z.object({
   otherFeedItemId: z.string().uuid().optional(),
   toAccountId: z.string().uuid().optional(),
+  // feed-guards-v1 (U-200): record the transfer although the line matches an entry already in the books.
+  force: z.boolean().optional(),
   closingPassword: z.string().optional(),
   overrideConfirmed: z.boolean().optional(),
 }).strict().refine((b) => (b.otherFeedItemId ? 1 : 0) + (b.toAccountId ? 1 : 0) === 1, {
@@ -569,7 +592,7 @@ const undoGroupIdDoc = z.string().uuid().describe('feed-undo-v1: POST /banking/f
 bankingRouter.post('/feed/:id/transfer', requireIdempotencyKey, closingPasswordLimiter, lockContextMiddleware,
   idempotent({ successStatus: 200 }), validate(feedTransferSchema), describe({
     summary: 'Post one transfer for a bank line and its other side, and match it (feed-match-post-v1)',
-    description: 'Body {otherFeedItemId | toAccountId, closingPassword?}. Posts ONE transfer (source bank_feed, source id = this '
+    description: 'Body {otherFeedItemId | toAccountId, force?, closingPassword?}. Posts ONE transfer (source bank_feed, source id = this '
       + 'item) and matches this item, and otherFeedItemId when sent, to it in one database transaction: both or nothing. The '
       + 'transfer is dated on the money-out side (the item with the positive amount; with toAccountId, this item\'s date) and the '
       + 'closing date is checked against that date. Amounts post exactly as stored. otherFeedItemId must be a pending or assigned '
@@ -578,8 +601,12 @@ bankingRouter.post('/feed/:id/transfer', requireIdempotencyKey, closingPasswordL
       + 'TRANSFER_MISMATCH {field: otherFeedItemId | account | amount | date | toAccountId}. Response {transaction, items: '
       + '[{feedItemId, journalLineId}]} (the transfer line on each item\'s account). 409 FEED_ITEM_NOT_PENDING {id, status}, 409 '
       + 'FEED_ITEM_IN_USE {id}, 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf} (either item still flagged as a '
-      + 'possible duplicate: keep or remove it first with POST /banking/feed/:id/duplicate). Idempotency-Key required (400 '
-      + 'IDEMPOTENCY_KEY_REQUIRED). Audited per item. '
+      + 'possible duplicate: keep or remove it first with POST /banking/feed/:id/duplicate). feed-guards-v1: with toAccountId, '
+      + 'a bank line that matches an entry already in the books (a candidate of GET /banking/feed/:id/match-candidates, e.g. the '
+      + 'other side of a transfer accepted from the other account\'s file) is 409 FEED_ITEM_HAS_MATCH {id, candidates: '
+      + '[{transactionId, journalLineId, txnType, txnDate}] (closest date first, at most 5)} and nothing posts; match it instead, '
+      + 'or send force: true to record the transfer anyway. otherFeedItemId is not checked (both lines are waiting). '
+      + 'Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED). Audited per item. '
       + FEED_CLOSED_PERIOD_NOTE,
     params: feedItemIdParam,
     body: feedTransferSchema,
@@ -588,8 +615,8 @@ bankingRouter.post('/feed/:id/transfer', requireIdempotencyKey, closingPasswordL
     const id = parseFeedItemId(req);
     const body = req.body as z.infer<typeof feedTransferSchema>;
     const target: feedTransfer.TransferRequest = body.otherFeedItemId
-      ? { otherFeedItemId: body.otherFeedItemId }
-      : { toAccountId: body.toAccountId! };
+      ? { otherFeedItemId: body.otherFeedItemId, force: body.force }
+      : { toAccountId: body.toAccountId!, force: body.force };
     res.json(await feedTransfer.postFeedTransfer(req.tenantId, req.companyId, id, target, req.userId));
   });
 
@@ -914,12 +941,18 @@ const importRowResultSchema = z.object({
   existingItemId: z.string().uuid().optional(),
   existingImportedAt: z.string().optional(),
   existingPending: z.boolean().optional(),
+  existingReplaceable: z.boolean().optional()
+    .describe('feed-guards-v1: changedAction replace would update the existing item (pending, nothing staged, not matched); '
+      + 'existingPending stays true for an assigned item, which replace leaves alone'),
   existingAmount: z.string().optional()
     .describe('changed rows only (Q-P25af): the existing item\'s amount before this batch, decimal string in the feed sign, at least 2 decimals'),
   existingDate: z.string().optional().describe('changed rows only (Q-P25af): the existing item\'s date (YYYY-MM-DD) before this batch'),
   closedPeriod: z.boolean(),
   inserted: z.boolean(),
   replaced: z.boolean().optional(),
+  replaceRefused: z.enum(['not_waiting', 'staged']).optional()
+    .describe('feed-guards-v1, commit only, with replaced false: not_waiting (the existing item was accepted, excluded or is '
+      + 'being posted: it may already be in the books) or staged (an account or split was staged on it, or it is matched)'),
 });
 const importBatchResponseSchema = z.object({
   batchId: z.string().uuid().optional().describe('commit only'),

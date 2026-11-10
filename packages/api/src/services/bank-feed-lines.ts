@@ -14,7 +14,8 @@
  * The line's transaction is posted (a voided entry's lines never are), the
  * line is not a void reversal, and no other feed item holds the line (or,
  * for an item matched before migration 0265 with no line recorded, the
- * whole transaction). The transaction type and its total don't matter: a
+ * whole transaction; not an item flagged entry_changed_at whose line was
+ * cleared, U-199: its entry's lines are free again). The transaction type and its total don't matter: a
  * payroll entry's two bank lines (net pay, taxes) are two candidates, and a
  * transfer's bank line matches the side imported later.
  *
@@ -73,7 +74,8 @@ export function lineCandidatePredicate(p: LinePredicateInput): SQL {
       SELECT 1 FROM bank_feed_items bx
       WHERE bx.tenant_id = ${p.tenantId} ${self}
         AND (bx.matched_journal_line_id = ${jl}.id
-          OR (bx.matched_journal_line_id IS NULL AND bx.matched_transaction_id = ${jl}.transaction_id))
+          OR (bx.matched_journal_line_id IS NULL AND bx.matched_transaction_id = ${jl}.transaction_id
+            AND bx.entry_changed_at IS NULL))
     )`;
 }
 
@@ -123,7 +125,8 @@ export async function resolveMatchLine(
       (SELECT bx.id FROM bank_feed_items bx
         WHERE bx.tenant_id = ${tenantId} AND bx.id <> ${item.id}
           AND (bx.matched_journal_line_id = jl.id
-            OR (bx.matched_journal_line_id IS NULL AND bx.matched_transaction_id = jl.transaction_id))
+            OR (bx.matched_journal_line_id IS NULL AND bx.matched_transaction_id = jl.transaction_id
+              AND bx.entry_changed_at IS NULL))
         LIMIT 1) AS taken_by
     FROM journal_lines jl
     WHERE jl.tenant_id = ${tenantId} AND jl.transaction_id = ${transactionId}

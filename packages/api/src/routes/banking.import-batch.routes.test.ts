@@ -317,6 +317,7 @@ describe('bank-import-batch-v1', () => {
     // Q-P25af: old vs new side by side (the existing item's values, exact strings).
     expect(prev.json.rows[0]).toMatchObject({
       status: 'changed', existingItemId: item!.id, existingPending: true, existingAmount: '80.00', existingDate: '2026-11-20',
+      existingReplaceable: true,
     });
 
     const rep = await commit(batch([{ ...changed, changedAction: 'replace' }]));
@@ -329,10 +330,21 @@ describe('bank-import-batch-v1', () => {
 
     await db.update(bankFeedItems).set({ status: 'assigned', assignedAt: new Date(), assignedAccountId: expenseId }).where(eq(bankFeedItems.id, item!.id));
     const again = { ...changed, amount: '90.00' };
+    // T3 (feed-guards-v1, PR-5 S1): the preview says what commit will do, and commit says why it didn't.
+    const staged = await preview(batch([again]));
+    expect(staged.json.rows[0]).toMatchObject({ status: 'changed', existingPending: true, existingReplaceable: false });
     const refused = await commit(batch([{ ...again, changedAction: 'replace' }]));
-    expect(refused.json.rows[0]).toMatchObject({ status: 'changed', replaced: false, inserted: false });
+    expect(refused.json.rows[0]).toMatchObject({ status: 'changed', replaced: false, inserted: false, replaceRefused: 'staged' });
     const add = await commit(batch([{ ...again, changedAction: 'add' }]));
     expect(add.json.rows[0]).toMatchObject({ status: 'changed', inserted: true, existingAmount: '85.00', existingDate: '2026-11-21' });
+    // An accepted item: not waiting, so the transaction may already be in the books.
+    await db.update(bankFeedItems).set({ status: 'categorized' }).where(eq(bankFeedItems.id, item!.id));
+    const accepted = { ...changed, amount: '95.00' };
+    const acceptedPrev = await preview(batch([accepted]));
+    expect(acceptedPrev.json.rows[0]).toMatchObject({ existingItemId: item!.id, existingPending: false, existingReplaceable: false });
+    const notWaiting = await commit(batch([{ ...accepted, changedAction: 'replace' }]));
+    expect(notWaiting.json.rows[0]).toMatchObject({ replaced: false, replaceRefused: 'not_waiting' });
+    expect(rep.json.rows[0]).not.toHaveProperty('replaceRefused');
     // Only changed rows carry them.
     expect(Object.keys((await preview(batch(OFX, { sourceFileSha256: '6'.repeat(64) }))).json.rows[0])).not.toContain('existingAmount');
     const [added] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, add.json.insertedItemIds[0]));
@@ -481,6 +493,13 @@ describe('bank-import-batch-v1', () => {
     expect((await call('DELETE', `/api/v1/banking/feed/import-batches/${csv.json.batchId}`)).status).toBe(200);
     const [after] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, flagged!.id));
     expect(after).toMatchObject({ possibleDuplicate: true, possibleDuplicateOf: null });
+    // T9 (PR-5): the list still shows the flag without the reference, and Keep still works.
+    const listed = (await call('GET', '/api/v1/banking/feed?limit=50&possibleDuplicate=true')).json.data;
+    expect(listed.map((i: any) => [i.id, i.possibleDuplicateOf, i.duplicateOf ?? null])).toEqual([[flagged!.id, null, null]]);
+    const keep = await call('POST', `/api/v1/banking/feed/${flagged!.id}/duplicate`, { decision: 'keep' }, { key: randomUUID() });
+    expect(keep.status).toBe(200);
+    const [kept] = await db.select().from(bankFeedItems).where(eq(bankFeedItems.id, flagged!.id));
+    expect(kept).toMatchObject({ possibleDuplicate: false, status: 'pending' });
   });
 
   it('two concurrent first commits make one connection and insert each key once', async () => {

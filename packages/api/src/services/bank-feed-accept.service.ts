@@ -151,7 +151,13 @@ export interface AcceptRuleSelection {
   afterId?: string;
 }
 
-export type AcceptRequest = { items: AcceptItemInput[]; rule?: undefined } | { rule: AcceptRuleSelection; items?: undefined };
+export type AcceptRequest = ({ items: AcceptItemInput[]; rule?: undefined } | { rule: AcceptRuleSelection; items?: undefined }) & {
+  /**
+   * feed-guards-v1 (U-200, PR-5 N1): the transfer-twin window of the
+   * has_match signal, 1-10 days (default 3), as GET /feed transferWindowDays.
+   */
+  transferWindowDays?: number;
+};
 
 export interface AcceptFailure { id: string; code: string; error: string; details?: Record<string, unknown> }
 
@@ -404,7 +410,8 @@ export async function acceptFeedItems(
       return locked.has(id) && !i.matchTransactionId && !i.accountId && !(i.splits && i.splits.length > 0);
     });
     const signalled = new Set(needSignal.length === 0 ? [] : (await tx.select({ id: bankFeedItems.id }).from(bankFeedItems)
-      .where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, needSignal), matchSignalSql(tenantId))))
+      .where(and(eq(bankFeedItems.tenantId, tenantId), inArray(bankFeedItems.id, needSignal),
+        matchSignalSql(tenantId, req.transferWindowDays))))
       .map((r) => r.id));
 
     // Document drafts to attach (feed-accept-draft-v1): locked before any entry.
@@ -615,6 +622,26 @@ async function reconciled(tx: Tx, tenantId: string, opts: { transactionId?: stri
   return rows.length > 0;
 }
 
+/**
+ * The lines an unlink would free, for the reconciled check: each row's
+ * stored line; for a row whose entry was changed (entry_changed_at, U-199)
+ * or that names no line, the entry's current lines on the row's bank
+ * account (the stored id may name a line the edit replaced).
+ */
+async function unlinkLineIds(tx: Tx, tenantId: string, unit: UndoUnit): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const l of unit.linked) {
+    if (l.matchedJournalLineId && !l.entryChangedAt) { ids.add(l.matchedJournalLineId); continue; }
+    const bank = await connectionAccountId(tx, tenantId, l);
+    if (!bank) continue;
+    const lines = await tx.select({ id: journalLines.id }).from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, unit.transactionId),
+        eq(journalLines.accountId, bank), eq(journalLines.isVoidReversal, false)));
+    for (const x of lines) ids.add(x.id);
+  }
+  return [...ids];
+}
+
 /** What an undone post teaches the history: the account of its first non-bank line (an override, Q-P26k). */
 async function overrideFor(tx: Tx, tenantId: string, item: FeedRow, txnId: string): Promise<feed.FeedLearning | null> {
   const bank = await connectionAccountId(tx, tenantId, item);
@@ -728,7 +755,7 @@ export async function undoFeedAccepts(
       if (!voided) {
         const isReconciled = unit.action === 'delete'
           ? await reconciled(tx, tenantId, { transactionId: unit.transactionId })
-          : await reconciled(tx, tenantId, { lineIds: unit.linked.map((l) => l.matchedJournalLineId).filter((v): v is string => !!v) });
+          : await reconciled(tx, tenantId, { lineIds: await unlinkLineIds(tx, tenantId, unit) });
         if (isReconciled) {
           failAll('FEED_UNDO_RECONCILED', 'This entry is part of a completed bank reconciliation, so it can\'t be undone. '
             + 'Undo the reconciliation first.');
@@ -787,6 +814,7 @@ export async function undoFeedAccepts(
           matchedTransactionId: null,
           matchedJournalLineId: null,
           entryVoidedAt: null,
+          entryChangedAt: null,
           updatedAt: new Date(),
         }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
         await tx.update(transactionClassificationState).set({ transactionId: null, updatedAt: new Date() })

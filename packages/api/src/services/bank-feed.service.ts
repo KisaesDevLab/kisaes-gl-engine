@@ -58,7 +58,8 @@ function scopeConditions(tenantId: string, filters: Pick<BankFeedFilters, 'bankC
  * predicates as GET /feed?bucket= / status / entryVoided / possibleDuplicate,
  * so each count equals that list's total. `waiting` = ready + review +
  * matches (pending and assigned rows); `accepted` = categorized and matched
- * rows, `entryVoided` included (Accepted · Entry voided); `inProgress` =
+ * rows, `entryVoided` included (Accepted · Entry voided) and `entryChanged`
+ * (Accepted · Entry changed, U-199); `inProgress` =
  * rows being posted right now.
  */
 export async function counts(
@@ -72,10 +73,13 @@ export async function counts(
     possibleDuplicate: sql<number>`COUNT(*) FILTER (WHERE ${waitingSql()} AND ${bankFeedItems.possibleDuplicate})::int`,
     accepted: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.status} IN ('categorized', 'matched'))::int`,
     entryVoided: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.entryVoidedAt} IS NOT NULL)::int`,
+    entryChanged: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.entryChangedAt} IS NOT NULL)::int`,
     excluded: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.status} = 'excluded')::int`,
     inProgress: sql<number>`COUNT(*) FILTER (WHERE ${bankFeedItems.status} = 'categorizing')::int`,
   }).from(bankFeedItems).where(and(...scopeConditions(tenantId, filters)));
-  const r = row ?? { ready: 0, review: 0, matches: 0, possibleDuplicate: 0, accepted: 0, entryVoided: 0, excluded: 0, inProgress: 0 };
+  const r = row ?? {
+    ready: 0, review: 0, matches: 0, possibleDuplicate: 0, accepted: 0, entryVoided: 0, entryChanged: 0, excluded: 0, inProgress: 0,
+  };
   return { waiting: r.ready + r.review + r.matches, ...r };
 }
 
@@ -109,6 +113,9 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
   }
   if (filters.entryVoided !== undefined) {
     conditions.push(filters.entryVoided ? sql`${bankFeedItems.entryVoidedAt} IS NOT NULL` : sql`${bankFeedItems.entryVoidedAt} IS NULL`);
+  }
+  if (filters.entryChanged !== undefined) {
+    conditions.push(filters.entryChanged ? sql`${bankFeedItems.entryChangedAt} IS NOT NULL` : sql`${bankFeedItems.entryChangedAt} IS NULL`);
   }
 
   // Separate aliases for the payee/vendor contact display names so the
@@ -230,6 +237,9 @@ export async function list(tenantId: string, filters: BankFeedFilters) {
       matchedJournalLineId: bankFeedItems.matchedJournalLineId,
       entryVoided: sql<boolean>`(${bankFeedItems.entryVoidedAt} IS NOT NULL)`,
       entryVoidedAt: bankFeedItems.entryVoidedAt,
+      // U-199 (feed-entry-changed-v1): an edit of the entry changed this row's line.
+      entryChanged: sql<boolean>`(${bankFeedItems.entryChangedAt} IS NOT NULL)`,
+      entryChangedAt: bankFeedItems.entryChangedAt,
       exclusionReason: bankFeedItems.exclusionReason,
       // U-174: the waiting row's review bucket (null when not waiting).
       bucket,
@@ -490,6 +500,21 @@ export function feedItemNotPending(status: string | null, message?: string): App
 }
 
 /**
+ * feed-guards-v1 (U-200, PR-5 N2): a waiting row still flagged as a possible
+ * duplicate (Q-P25c) is not posted or matched by a single-row route
+ * (categorize, approve, match, a payment received or a bill paid for the
+ * line): 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf}, as the
+ * transfer and deposit routes answer. The owner decides first with POST
+ * /banking/feed/:id/duplicate (keep clears the flag; remove excludes it).
+ * POST /feed/accept skips such rows (possible_duplicate).
+ */
+export function assertNotPossibleDuplicate(item: Pick<typeof bankFeedItems.$inferSelect, 'id' | 'possibleDuplicate' | 'possibleDuplicateOf'>): void {
+  if (!item.possibleDuplicate) return;
+  throw AppError.conflict('This bank line may be a duplicate of one already imported. Keep it or remove it first.',
+    'FEED_ITEM_POSSIBLE_DUPLICATE', { id: item.id, possibleDuplicateOf: item.possibleDuplicateOf ?? null });
+}
+
+/**
  * Shared posting body for BOTH the direct-post path (categorize(), used by
  * bulkCategorize, bulk approve and rule posting outside desktop mode) and the
  * two-phase approve() path.
@@ -521,6 +546,7 @@ async function postFeedItem(
       throw feedItemNotPending(item.status, item.status === 'pending' && !allowed.includes('pending')
         ? 'Bank feed item is not assigned (current status: pending). Assign a category before approving.' : undefined);
     }
+    assertNotPossibleDuplicate(item);
     const posted = await postFeedItemInTx(tx, tenantId, item, resolve(item), userId, companyId);
     // U-169: the accept record Undo works from (B5).
     await recordAcceptGroup(tx, {
@@ -735,6 +761,7 @@ export async function postFeedItemInTx(
       matchedTransactionId: t.id,
       matchedJournalLineId: cash?.id ?? null,
       entryVoidedAt: null,
+      entryChangedAt: null,
       updatedAt: new Date(),
     }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)));
     return {
@@ -966,6 +993,7 @@ export async function matchInTx(
     throw AppError.notFound('Bank feed item not found');
   }
   if (item.status !== 'pending' && item.status !== 'assigned') throw feedItemNotPending(item.status);
+  assertNotPossibleDuplicate(item);
   const [conn] = await executor.select({ accountId: bankConnections.accountId }).from(bankConnections)
     .where(and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, item.bankConnectionId))).limit(1);
   if (!conn) throw AppError.notFound('Bank connection not found');
@@ -989,6 +1017,7 @@ export async function matchInTx(
         matchedTransactionId: transactionId,
         matchedJournalLineId: lineId,
         entryVoidedAt: null,
+        entryChangedAt: null,
         updatedAt: new Date(),
       })
       .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
@@ -1012,9 +1041,12 @@ export async function matchInTx(
     await recordAcceptItem(executor, { tenantId, companyId: opts.companyId, groupId: opts.acceptGroupId, ...record });
     opts.onRecorded?.(opts.acceptGroupId);
   } else {
-    opts.onRecorded?.(await recordAcceptGroup(executor, {
+    // Recorded also without onRecorded (api-v2, match-apply): `f?.(await g())`
+    // would skip g() when f is absent, leaving the match without its Undo record.
+    const groupId = await recordAcceptGroup(executor, {
       tenantId, companyId: opts.companyId, userId: opts.userId, source: record.kind, items: [record],
-    }));
+    });
+    opts.onRecorded?.(groupId);
   }
   return matched;
 }
@@ -1234,11 +1266,11 @@ export function setPriorStateRestorer(fn: PriorStateRestorer | null): void {
 }
 
 /**
- * "Review again" on a row whose entry was voided (Q-P26u, U-166): unlinks
- * it (clears the entry, its line and entry_voided_at) and puts it back to
- * waiting, audited, in one database transaction (claims the
- * Idempotency-Key). 409 ENTRY_NOT_VOIDED {status} on any other row. The void
- * entry itself stays as it is (void, in the audit trail).
+ * "Review again" on a row whose entry was voided (Q-P26u, U-166) or changed
+ * (entry_changed_at, U-199): unlinks it (clears the entry, its line and both
+ * flags) and puts it back to waiting, audited, in one database transaction
+ * (claims the Idempotency-Key). 409 ENTRY_NOT_VOIDED {status} on any other
+ * row. The entry itself stays as it is (void, or as edited).
  */
 export async function reviewAgain(tenantId: string, feedItemId: string, userId?: string, companyId?: string) {
   return db.transaction(async (tx) => {
@@ -1247,8 +1279,8 @@ export async function reviewAgain(tenantId: string, feedItemId: string, userId?:
       .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId)))
       .for('update');
     if (!item || (companyId && item.companyId && item.companyId !== companyId)) throw AppError.notFound('Bank feed item not found');
-    if (!item.entryVoidedAt) {
-      throw AppError.conflict('The entry for this bank line was not voided, so there is nothing to review again.', 'ENTRY_NOT_VOIDED',
+    if (!item.entryVoidedAt && !item.entryChangedAt) {
+      throw AppError.conflict('The entry for this bank line was not voided or changed, so there is nothing to review again.', 'ENTRY_NOT_VOIDED',
         { status: item.status });
     }
     const restored = priorStateRestorer ? await priorStateRestorer(tx, tenantId, item) : null;
@@ -1264,12 +1296,14 @@ export async function reviewAgain(tenantId: string, feedItemId: string, userId?:
       matchedTransactionId: null,
       matchedJournalLineId: null,
       entryVoidedAt: null,
+      entryChangedAt: null,
       closeReviewedAt: null,
       closeReviewedBy: null,
       updatedAt: new Date(),
     }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, feedItemId))).returning();
     await auditLog(tenantId, 'update', 'bank_feed', feedItemId,
-      { status: item.status, matchedTransactionId: item.matchedTransactionId, entryVoidedAt: item.entryVoidedAt },
+      { status: item.status, matchedTransactionId: item.matchedTransactionId, matchedJournalLineId: item.matchedJournalLineId,
+        entryVoidedAt: item.entryVoidedAt, entryChangedAt: item.entryChangedAt },
       { action: 'review_again', status: updated!.status }, userId, tx);
     return updated!;
   });
