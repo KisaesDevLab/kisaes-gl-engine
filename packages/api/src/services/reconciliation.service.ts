@@ -273,7 +273,8 @@ async function eligibleNewLineIds(
 /**
  * Bank-file pre-check (Q-100): of `lineIds`, the lines an accepted bank-file
  * row stands behind, the bank having posted it on or before the statement
- * date (feed_date, not the entry date), entry not voided. The row names the
+ * date (feed_date, not the entry date), entry not voided and not changed
+ * since (entry_changed_at, U-199). The row names the
  * line (matched_journal_line_id, migration 0265) or, for rows from before
  * it, the entry, when the row's own bank account is the reconciled account.
  */
@@ -292,7 +293,7 @@ async function bankFeedPrecheckIds(
           SELECT 1 FROM bank_feed_items b
           WHERE b.tenant_id = ${tenantId} AND b.matched_journal_line_id = jl.id
             AND b.status IN ('matched', 'categorized')
-            AND b.entry_voided_at IS NULL AND b.feed_date <= ${recon.statementDate}
+            AND b.entry_voided_at IS NULL AND b.entry_changed_at IS NULL AND b.feed_date <= ${recon.statementDate}
         )
         OR EXISTS (
           SELECT 1 FROM bank_feed_items b
@@ -301,7 +302,7 @@ async function bankFeedPrecheckIds(
             AND b.matched_transaction_id = jl.transaction_id
             AND jl.account_id = ${recon.accountId} AND bc.account_id = ${recon.accountId}
             AND b.status IN ('matched', 'categorized')
-            AND b.entry_voided_at IS NULL AND b.feed_date <= ${recon.statementDate}
+            AND b.entry_voided_at IS NULL AND b.entry_changed_at IS NULL AND b.feed_date <= ${recon.statementDate}
         )
       )
   `);
@@ -674,13 +675,13 @@ async function loadReconciliation(tenantId: string, reconciliationId: string, wi
       (EXISTS (
         SELECT 1 FROM bank_feed_items b
         WHERE b.tenant_id = ${tenantId} AND b.matched_journal_line_id = jl.id
-          AND b.status IN ('matched', 'categorized')
+          AND b.status IN ('matched', 'categorized') AND b.entry_changed_at IS NULL
       ) OR EXISTS (
         SELECT 1 FROM bank_feed_items b
         JOIN bank_connections bc ON bc.id = b.bank_connection_id
         WHERE b.tenant_id = ${tenantId} AND b.matched_journal_line_id IS NULL
           AND b.matched_transaction_id = jl.transaction_id AND bc.account_id = jl.account_id
-          AND b.status IN ('matched', 'categorized')
+          AND b.status IN ('matched', 'categorized') AND b.entry_changed_at IS NULL
       )) AS from_bank_feed
     FROM reconciliation_lines rl
     JOIN journal_lines jl ON jl.id = rl.journal_line_id

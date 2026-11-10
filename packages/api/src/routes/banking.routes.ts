@@ -106,9 +106,12 @@ bankingRouter.get('/feed', describe({
   summary: 'List bank feed items (paged)',
   description: 'Response {data, total}. Filters: status = pending | assigned | matched | categorized | excluded, or accepted '
     + '(feed-accept-v1: categorized and matched rows, entryVoided included, the same rows as GET /banking/feed/counts accepted); '
-    + 'bucket = ready | review | matches; possibleDuplicate, entryVoided, actionableOnly, ruleOnly; bankConnectionId, startDate, '
+    + 'bucket = ready | review | matches; possibleDuplicate, entryVoided, entryChanged, actionableOnly, ruleOnly; bankConnectionId, startDate, '
     + 'endDate, search; sortBy, sortDir; limit (1-500, default 50), offset. Rows carry, among others, bucket, matchCandidateCount, '
-    + 'duplicateOf, suggestedRule, entryVoided, entryVoidedAt, matchedJournalLineId and transferCandidate (feed-accept-v1): on a '
+    + 'duplicateOf, suggestedRule, entryVoided, entryVoidedAt, entryChanged, entryChangedAt (feed-entry-changed-v1: an edit of the '
+    + 'entry changed the amount or account of this accepted row's line; the row stays accepted with its entry, is never a reconcile '
+    + 'pre-check source and holds no line unless matchedJournalLineId names the new one; Review again puts it back to waiting), '
+    + 'matchedJournalLineId and transferCandidate (feed-accept-v1): on a '
     + 'waiting, unmatched row, {feedItemId, accountId, accountName} of the other side of a transfer when exactly one exists (a waiting '
     + 'row on another GL account of the company with the exact opposite amount within 3 days, the rule of GET '
     + '/banking/feed/:id/transfer-candidates and of the matches bucket), else null. transferWindowDays (1-10, default 3; '
@@ -143,13 +146,14 @@ bankingRouter.get('/feed/suggest-account', async (req, res) => {
 // predicates as the list filters (one SQL builder), so they always agree.
 bankingRouter.get('/feed/counts', describe({
   summary: 'Bank feed counts per review bucket and state (feed-review-v1)',
-  description: 'Response {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, excluded, inProgress}. '
+  description: 'Response {waiting, ready, review, matches, possibleDuplicate, accepted, entryVoided, entryChanged, excluded, inProgress}. '
     + 'waiting = ready + review + matches (pending and assigned rows), each equal to the total of GET /banking/feed?bucket=<b>. '
     + 'Buckets, first match wins: a possible duplicate is review; any match signal (a candidate journal line on the bank account, '
     + 'payroll lines included, one Payments Clearing item for exactly a money-in amount within 10 days, or the other side of a '
     + 'transfer within transferWindowDays, 1-10, default 3, feed-transfer-window-v1) is matches; no account, '
     + 'a non-rule suggestion under 0.80 confidence, a rule mark_for_review, or a staged split that cannot post is review; the rest '
-    + 'is ready. accepted = categorized and matched rows (entryVoided included: Accepted, Entry voided, never waiting); inProgress = '
+    + 'is ready. accepted = categorized and matched rows (entryVoided and entryChanged included: Accepted, Entry voided / Entry '
+    + 'changed, never waiting); entryChanged (feed-entry-changed-v1) = rows the list filter entryChanged=true returns; inProgress = '
     + 'rows being posted. Scope: bankConnectionId, startDate, endDate.',
   query: bankFeedCountsQuerySchema,
 }), async (req, res) => {
@@ -475,14 +479,20 @@ bankingRouter.post('/feed/:id/duplicate', requireIdempotencyKey, feedKeyed, vali
   res.json(await bankFeedService.decideDuplicate(req.tenantId, req.params['id']!, req.body.decision, req.userId, req.companyId));
 });
 
-// Q-P26u (feed-match-v2): a row whose entry was voided goes back to waiting.
+// Q-P26u (feed-match-v2): a row whose entry was voided goes back to waiting;
+// U-199 (feed-entry-changed-v1): so does one whose entry was changed.
 bankingRouter.post('/feed/:id/review-again', requireIdempotencyKey, feedKeyed, describe({
-  summary: 'Review again a bank feed item whose entry was voided (feed-match-v2)',
+  summary: 'Review again a bank feed item whose entry was voided or changed (feed-match-v2, feed-entry-changed-v1)',
   description: 'Response {item}. Voiding an entry a feed item points at is allowed: the item keeps its status and link and is flagged '
-    + 'entryVoided (list filter entryVoided=true, /counts entryVoided, audit row). This unlinks it (clears the entry, its line and the '
-    + 'flag) and puts it back to pending with its suggestion and without staged values, audited. The void entry stays void. 409 '
-    + 'ENTRY_NOT_VOIDED {status} on any other row. Needs an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED). No closing-date password '
-    + '(nothing in the books changes).',
+    + 'entryVoided (list filter entryVoided=true, /counts entryVoided, audit row). feed-entry-changed-v1: so is an edit of the entry '
+    + 'that changes the amount of the item's line or moves it to another account (Q-PR5a): the item keeps its status and entry and '
+    + 'is flagged entryChanged (entryChangedAt; list filter entryChanged=true, /counts entryChanged, audit row bank_feed '
+    + 'entry_changed). Its matchedJournalLineId names the entry's new line when the edit kept one line on the bank account on the '
+    + 'same side (no other bank line can take it), else null (the entry's lines are free to match again). A flagged item is never '
+    + 'a reconcile pre-check source and never fromBankFeed. Review again unlinks it (clears the entry, its line and both flags) and '
+    + 'puts it back to pending with its suggestion and without staged values, audited. The entry stays as it is (void, or as '
+    + 'edited). 409 ENTRY_NOT_VOIDED {status} on any other row (neither voided nor changed). Needs an Idempotency-Key (400 '
+    + 'IDEMPOTENCY_KEY_REQUIRED). No closing-date password (nothing in the books changes).',
 }), async (req, res) => {
   const item = await bankFeedService.reviewAgain(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ item });

@@ -127,6 +127,9 @@ export interface BankFeedFilters {
   // U-166 (feed-match-v2, Q-P26u): rows whose entry was voided (true) or
   // the others (false).
   entryVoided?: boolean;
+  // U-199 (feed-entry-changed-v1): rows whose entry was changed since it was
+  // accepted (true) or the others (false).
+  entryChanged?: boolean;
   // U-177 (feed-transfer-window-v1): transfer window in days (1-10, default 3).
   transferWindowDays?: number;
   // Server-side column sort — the list paginates, so ordering must happen

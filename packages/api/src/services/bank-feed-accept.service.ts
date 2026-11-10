@@ -615,6 +615,26 @@ async function reconciled(tx: Tx, tenantId: string, opts: { transactionId?: stri
   return rows.length > 0;
 }
 
+/**
+ * The lines an unlink would free, for the reconciled check: each row's
+ * stored line; for a row whose entry was changed (entry_changed_at, U-199)
+ * or that names no line, the entry's current lines on the row's bank
+ * account (the stored id may name a line the edit replaced).
+ */
+async function unlinkLineIds(tx: Tx, tenantId: string, unit: UndoUnit): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const l of unit.linked) {
+    if (l.matchedJournalLineId && !l.entryChangedAt) { ids.add(l.matchedJournalLineId); continue; }
+    const bank = await connectionAccountId(tx, tenantId, l);
+    if (!bank) continue;
+    const lines = await tx.select({ id: journalLines.id }).from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, unit.transactionId),
+        eq(journalLines.accountId, bank), eq(journalLines.isVoidReversal, false)));
+    for (const x of lines) ids.add(x.id);
+  }
+  return [...ids];
+}
+
 /** What an undone post teaches the history: the account of its first non-bank line (an override, Q-P26k). */
 async function overrideFor(tx: Tx, tenantId: string, item: FeedRow, txnId: string): Promise<feed.FeedLearning | null> {
   const bank = await connectionAccountId(tx, tenantId, item);
@@ -728,7 +748,7 @@ export async function undoFeedAccepts(
       if (!voided) {
         const isReconciled = unit.action === 'delete'
           ? await reconciled(tx, tenantId, { transactionId: unit.transactionId })
-          : await reconciled(tx, tenantId, { lineIds: unit.linked.map((l) => l.matchedJournalLineId).filter((v): v is string => !!v) });
+          : await reconciled(tx, tenantId, { lineIds: await unlinkLineIds(tx, tenantId, unit) });
         if (isReconciled) {
           failAll('FEED_UNDO_RECONCILED', 'This entry is part of a completed bank reconciliation, so it can\'t be undone. '
             + 'Undo the reconciliation first.');
@@ -787,6 +807,7 @@ export async function undoFeedAccepts(
           matchedTransactionId: null,
           matchedJournalLineId: null,
           entryVoidedAt: null,
+          entryChangedAt: null,
           updatedAt: new Date(),
         }).where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, item.id)));
         await tx.update(transactionClassificationState).set({ transactionId: null, updatedAt: new Date() })

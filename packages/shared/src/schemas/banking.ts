@@ -55,6 +55,8 @@ export const bankFeedFiltersSchema = z.object({
   bucket: z.enum(['ready', 'review', 'matches']).optional(),
   possibleDuplicate: optionalQueryBoolean,
   entryVoided: optionalQueryBoolean,
+  // U-199 (feed-entry-changed-v1): rows whose entry was changed (true) or the others.
+  entryChanged: optionalQueryBoolean,
   // U-177 (feed-transfer-window-v1): the transfer window for bucket, the
   // matches filter and transferCandidate. Absent = 3 days.
   transferWindowDays: transferWindowDaysQuery,

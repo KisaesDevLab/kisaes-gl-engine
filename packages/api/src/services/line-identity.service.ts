@@ -22,8 +22,15 @@
  *   worksheet row  re-pointed; still ticked only if the amount is unchanged,
  *                  otherwise unticked and audited. Without a pairing the row
  *                  is deleted (refresh adds the new line).
- *   feed row       re-pointed only if the amount is unchanged; otherwise
- *                  left as it was (a changed amount is a separate review).
+ *   feed row       re-pointed when the amount is unchanged. Otherwise
+ *                  (feed-entry-changed-v1, U-199, Q-PR5a) the row is
+ *                  flagged entry_changed_at, audited (bank_feed,
+ *                  entry_changed), and keeps its status and entry: with a
+ *                  pairing of another amount it is re-pointed to the new
+ *                  line (so no other bank line can take it); without one
+ *                  (an account move, an ambiguous pairing) or when another
+ *                  feed row already holds the new line, its line is
+ *                  cleared. "Review again" puts it back to waiting.
  * Completed reconciliations are never touched: the ledger refuses the edits
  * that would replace their lines.
  */
@@ -48,8 +55,10 @@ export interface CarryResult {
   worksheetUnticked: number;
   /** Worksheet rows deleted for want of a single matching line. */
   worksheetRemoved: number;
-  /** Feed rows moved to the new line. */
+  /** Feed rows moved to the new line (flagged ones included). */
   feedRepointed: number;
+  /** Feed rows flagged entry_changed_at (amount or account changed). */
+  feedFlagged: number;
 }
 
 function amountOf(l: LineRef) {
@@ -86,6 +95,16 @@ export function pairLines(oldLines: readonly LineRef[], newLines: readonly LineR
   return pairs;
 }
 
+/** Another feed row already names this line. */
+async function lineHeld(tx: Tx, tenantId: string, lineId: string, exceptFeedItemId: string): Promise<boolean> {
+  const res = await tx.execute(sql`
+    SELECT 1 FROM bank_feed_items
+    WHERE tenant_id = ${tenantId} AND matched_journal_line_id = ${lineId} AND id <> ${exceptFeedItemId}
+    LIMIT 1
+  `);
+  return res.rows.length > 0;
+}
+
 export async function carryLineReferences(
   tx: Tx,
   tenantId: string,
@@ -94,7 +113,7 @@ export async function carryLineReferences(
   newLines: readonly LineRef[],
   userId?: string,
 ): Promise<CarryResult> {
-  const result: CarryResult = { worksheetRepointed: 0, worksheetUnticked: 0, worksheetRemoved: 0, feedRepointed: 0 };
+  const result: CarryResult = { worksheetRepointed: 0, worksheetUnticked: 0, worksheetRemoved: 0, feedRepointed: 0, feedFlagged: 0 };
   if (oldLines.length === 0) return result;
   const oldIds = oldLines.map((l) => l.id);
 
@@ -107,10 +126,13 @@ export async function carryLineReferences(
   `);
   const wsRows = wsRes.rows as Array<{ id: string; reconciliation_id: string; journal_line_id: string; is_cleared: boolean | null }>;
   const feedRes = await tx.execute(sql`
-    SELECT id, matched_journal_line_id FROM bank_feed_items
+    SELECT id, status, matched_journal_line_id, matched_transaction_id FROM bank_feed_items
     WHERE tenant_id = ${tenantId} AND matched_journal_line_id = ANY(${uuidArray(oldIds)}::uuid[])
+    ORDER BY id
   `);
-  const feedRows = feedRes.rows as Array<{ id: string; matched_journal_line_id: string }>;
+  const feedRows = feedRes.rows as Array<{
+    id: string; status: string | null; matched_journal_line_id: string; matched_transaction_id: string | null;
+  }>;
   if (wsRows.length === 0 && feedRows.length === 0) return result;
 
   const oldById = new Map(oldLines.map((l) => [l.id, l]));
@@ -150,13 +172,34 @@ export async function carryLineReferences(
 
   for (const row of feedRows) {
     const next = pairs.get(row.matched_journal_line_id);
-    if (!next) continue;
-    if (!amountOf(oldById.get(row.matched_journal_line_id)!).equals(amountOf(next))) continue;
+    const sameAmount = !!next && amountOf(oldById.get(row.matched_journal_line_id)!).equals(amountOf(next));
+    // Never two feed rows on one line (uq_bfi_matched_journal_line): a new
+    // line another row already holds is not taken over.
+    const heldElsewhere = next ? await lineHeld(tx, tenantId, next.id, row.id) : false;
+    if (next && sameAmount && !heldElsewhere) {
+      await tx.execute(sql`
+        UPDATE bank_feed_items SET matched_journal_line_id = ${next.id}, updated_at = now()
+        WHERE id = ${row.id} AND tenant_id = ${tenantId}
+      `);
+      result.feedRepointed += 1;
+      continue;
+    }
+    const lineAfter = next && !heldElsewhere ? next.id : null;
     await tx.execute(sql`
-      UPDATE bank_feed_items SET matched_journal_line_id = ${next.id}, updated_at = now()
+      UPDATE bank_feed_items
+      SET matched_journal_line_id = ${lineAfter},
+          entry_changed_at = COALESCE(entry_changed_at, now()),
+          updated_at = now()
       WHERE id = ${row.id} AND tenant_id = ${tenantId}
     `);
-    result.feedRepointed += 1;
+    if (lineAfter) result.feedRepointed += 1;
+    result.feedFlagged += 1;
+    await auditLog(tenantId, 'update', 'bank_feed', row.id,
+      { status: row.status, matchedTransactionId: row.matched_transaction_id, matchedJournalLineId: row.matched_journal_line_id },
+      { action: 'entry_changed', status: row.status, matchedTransactionId: row.matched_transaction_id,
+        matchedJournalLineId: lineAfter, reason: !next ? 'line_replaced' : heldElsewhere ? 'line_held' : 'amount_changed',
+        transactionId },
+      userId, tx);
   }
   return result;
 }

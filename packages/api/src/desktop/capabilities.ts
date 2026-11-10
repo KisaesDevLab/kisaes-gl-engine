@@ -1007,5 +1007,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * link to its successor (U-192).
    */
   'reconciled-category-edit-v1',
+  /**
+   * Bank lines whose entry was changed (U-199, ClientLedger PR-5 B1, Q-PR5a). An edit of an entry that changes the amount of
+   * a bank feed row's line, or moves it to another account, is kept (never refused); the row keeps its status and entry and
+   * gets entryChanged / entryChangedAt (list filter entryChanged=true|false, /feed/counts entryChanged, audit bank_feed
+   * entry_changed). matchedJournalLineId names the entry's new line when one line on the bank account and side pairs and no
+   * other row holds it (the line stays held), else null (no line held, and the row no longer holds the whole entry). A flagged
+   * row is never a reconcile pre-check source or fromBankFeed. POST /feed/:id/review-again takes it (as entryVoided) back to
+   * waiting. POST /feed/undo's reconciled check for an unlink uses the entry's current lines on the row's account. Migration
+   * 0273 clears and flags rows whose line was already gone (audited, reason backfill_0273).
+   */
+  'feed-entry-changed-v1',
 ];
 

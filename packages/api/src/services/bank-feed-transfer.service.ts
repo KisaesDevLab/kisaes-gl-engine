@@ -130,6 +130,7 @@ export async function linkFeedItemToEntry(
     matchedTransactionId: transactionId,
     matchedJournalLineId: journalLineId,
     entryVoidedAt: null,
+    entryChangedAt: null,
     updatedAt: new Date(),
   }).where(and(
     eq(bankFeedItems.tenantId, tenantId),
