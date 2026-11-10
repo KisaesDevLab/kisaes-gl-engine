@@ -57059,7 +57059,7 @@
     },
     "/api/v1/reports/account-activity-summary": {
       "get": {
-        "description": "data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_account_activity_summary",
         "parameters": [
           {
@@ -57170,7 +57170,7 @@
     },
     "/api/v1/reports/ap-1099-prep": {
       "get": {
-        "description": "data[] {total_paidExact}, totalPaidExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {total_paidExact}, totalPaidExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_1099_prep",
         "parameters": [
           {
@@ -57250,7 +57250,7 @@
     },
     "/api/v1/reports/ap-aging-detail": {
       "get": {
-        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_aging_detail",
         "parameters": [
           {
@@ -57330,7 +57330,7 @@
     },
     "/api/v1/reports/ap-aging-summary": {
       "get": {
-        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_aging_summary",
         "parameters": [
           {
@@ -57473,7 +57473,7 @@
     },
     "/api/v1/reports/balance-sheet": {
       "get": {
-        "description": "assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_balance_sheet",
         "parameters": [
           {
@@ -57598,7 +57598,7 @@
     },
     "/api/v1/reports/bank-balances": {
       "get": {
-        "description": "accounts[] {balanceExact}, totalBalanceExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "accounts[] {balanceExact}, totalBalanceExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_bank_balances",
         "parameters": [
           {
@@ -57699,7 +57699,7 @@
     },
     "/api/v1/reports/bill-payment-history": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_bill_payment_history",
         "parameters": [
           {
@@ -57831,7 +57831,7 @@
     },
     "/api/v1/reports/check-register": {
       "get": {
-        "description": "data[] {debitExact, creditExact}, totalsExact {debit, credit}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {debitExact, creditExact}, totalsExact {debit, credit}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_check_register",
         "parameters": [
           {
@@ -57930,7 +57930,7 @@
     },
     "/api/v1/reports/customer-balance-detail": {
       "get": {
-        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_customer_balance_detail",
         "parameters": [
           {
@@ -58002,7 +58002,7 @@
     },
     "/api/v1/reports/customer-balance-summary": {
       "get": {
-        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_customer_balance_summary",
         "parameters": [
           {
@@ -58214,7 +58214,7 @@
     },
     "/api/v1/reports/deposit-detail": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_deposit_detail",
         "parameters": [
           {
@@ -58369,7 +58369,7 @@
     },
     "/api/v1/reports/expense-by-category": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] {lineId, debitExact, creditExact, balanceExact}} and grandTotalExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] {lineId, debitExact, creditExact, balanceExact}} and grandTotalExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_expense_by_category",
         "parameters": [
           {
@@ -58490,7 +58490,7 @@
     },
     "/api/v1/reports/expense-by-vendor": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalExact, accounts[] {totalExact}}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalExact, accounts[] {totalExact}}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_expense_by_vendor",
         "parameters": [
           {
@@ -58603,7 +58603,7 @@
     },
     "/api/v1/reports/general-ledger": {
       "get": {
-        "description": "accounts[] {accountId, beginningBalanceExact, periodDebitsExact, periodCreditsExact, endingBalanceExact, lines[] {lineId, transactionId, debitExact, creditExact, runningBalanceExact}}, totalDebitsExact, totalCreditsExact, rowCount (all lines), truncated. limit returns at most that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "accounts[] {accountId, beginningBalanceExact, periodDebitsExact, periodCreditsExact, endingBalanceExact, lines[] {lineId, transactionId, debitExact, creditExact, runningBalanceExact}}, totalDebitsExact, totalCreditsExact, rowCount (all lines), truncated. limit returns at most that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_general_ledger",
         "parameters": [
           {
@@ -58874,7 +58874,7 @@
     },
     "/api/v1/reports/invoice-list": {
       "get": {
-        "description": "data[] {totalExact, amount_paidExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact, amount_paidExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_invoice_list",
         "parameters": [
           {
@@ -58972,7 +58972,7 @@
     },
     "/api/v1/reports/journal-entry-report": {
       "get": {
-        "description": "Journal entries, one row per line: data[] {id, lineId, debitExact, creditExact, amountExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "Journal entries, one row per line: data[] {id, lineId, debitExact, creditExact, amountExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_journal_entry_report",
         "parameters": [
           {
@@ -60129,7 +60129,7 @@
     },
     "/api/v1/reports/profit-loss": {
       "get": {
-        "description": "Standard: revenue/cogs/expenses/otherRevenue/otherExpenses[] {accountId, amount, amountExact, parentAccountId, depth, rollupExact?}, total*Exact, grossProfitExact, operatingIncomeExact, netIncomeExact; group_by adds groups[].subtotalExact. compare=previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag: rows[].valuesExact and groups[].valuesExact (amounts; $ change; % change at 1 place, null on a zero base), total*Exact / netIncomeExact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "Standard: revenue/cogs/expenses/otherRevenue/otherExpenses[] {accountId, amount, amountExact, parentAccountId, depth, rollupExact?}, total*Exact, grossProfitExact, operatingIncomeExact, netIncomeExact; group_by adds groups[].subtotalExact. compare=previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag: rows[].valuesExact and groups[].valuesExact (amounts; $ change; % change at 1 place, null on a zero base), total*Exact / netIncomeExact arrays. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_profit_loss",
         "parameters": [
           {
@@ -60358,7 +60358,7 @@
     },
     "/api/v1/reports/revenue-by-category": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] {lineId, debitExact, creditExact, balanceExact}} and grandTotalExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] {lineId, debitExact, creditExact, balanceExact}} and grandTotalExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_revenue_by_category",
         "parameters": [
           {
@@ -60479,7 +60479,7 @@
     },
     "/api/v1/reports/sales-by-customer": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_sales_by_customer",
         "parameters": [
           {
@@ -60581,7 +60581,7 @@
     },
     "/api/v1/reports/sales-by-item": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_sales_by_item",
         "parameters": [
           {
@@ -61172,7 +61172,7 @@
     },
     "/api/v1/reports/transaction-list": {
       "get": {
-        "description": "One row per journal line: data[] {id (transaction), lineId (journal line; null on cash basis), debitExact, creditExact, amountExact (debit - credit)}, totalsExact {debit, credit, amount}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "One row per journal line: data[] {id (transaction), lineId (journal line; null on cash basis), debitExact, creditExact, amountExact (debit - credit)}, totalsExact {debit, credit, amount}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_transaction_list",
         "parameters": [
           {
@@ -61303,7 +61303,7 @@
     },
     "/api/v1/reports/transaction-list-by-vendor": {
       "get": {
-        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact}, totalsExact {total}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_transaction_list_by_vendor",
         "parameters": [
           {
@@ -61402,7 +61402,7 @@
     },
     "/api/v1/reports/trial-balance": {
       "get": {
-        "description": "data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, depth, rollupExact?}, totalDebitsExact, totalCreditsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, depth, rollupExact?}, totalDebitsExact, totalCreditsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_trial_balance",
         "parameters": [
           {
@@ -61525,7 +61525,7 @@
     },
     "/api/v1/reports/unpaid-bills": {
       "get": {
-        "description": "data[] {totalExact, amount_paidExact, credits_appliedExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {totalExact, amount_paidExact, credits_appliedExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_unpaid_bills",
         "parameters": [
           {
@@ -61621,7 +61621,7 @@
     },
     "/api/v1/reports/vendor-1099-summary": {
       "get": {
-        "description": "Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, boxNumber, label, thresholdExact}, rows[] {contactId, name, tinLast4, is1099Eligible, boxes {box code: exact amount}, totalExact, meetsThreshold}, totalsExact {box code..., total}} from the 1099 account-to-box mapping (the 1099 Center source), for the company. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, boxNumber, label, thresholdExact}, rows[] {contactId, name, tinLast4, is1099Eligible, boxes {box code: exact amount}, totalExact, meetsThreshold}, totalsExact {box code..., total}} from the 1099 account-to-box mapping (the 1099 Center source), for the company. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_vendor_1099_summary",
         "parameters": [
           {
@@ -61701,7 +61701,7 @@
     },
     "/api/v1/reports/vendor-balance-summary": {
       "get": {
-        "description": "data[] {total_spentExact}, totalsExact {total_spent}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "data[] {total_spentExact}, totalsExact {total_spent}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_vendor_balance_summary",
         "parameters": [
           {
@@ -61773,7 +61773,7 @@
     },
     "/api/v1/reports/vendor-statement": {
       "get": {
-        "description": "openingBalanceExact, closingBalanceExact, totalChargesExact, totalPaymentsExact, lines[] {id, chargeExact, paymentExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.",
+        "description": "openingBalanceExact, closingBalanceExact, totalChargesExact, totalPaymentsExact, lines[] {id, chargeExact, paymentExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_vendor_statement",
         "parameters": [
           {

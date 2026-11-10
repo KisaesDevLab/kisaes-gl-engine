@@ -135,8 +135,9 @@ const COMMON_Q = {
 const BASIS_Q = { basis: z.enum(['accrual', 'cash']).optional() };
 const ADJ_Q = { adjusting: z.enum(['include', 'exclude', 'only']).optional() };
 const META_DOC = 'meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. '
-  + 'Every *Exact is the unrounded decimal string (at least 4 places), same sign as its number field; totals are Decimal sums of the rows. '
-  + 'Account rows on P&L, Balance Sheet and Trial Balance carry parentAccountId, depth and (parents) rollupExact; zero-amount ancestors are added so the tree is complete.';
+  + 'Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis '
+  + 'allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry '
+  + 'parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.';
 
 function doc(summary: string, description: string, query: Record<string, z.ZodTypeAny>) {
   return describe({
