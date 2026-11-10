@@ -32,6 +32,9 @@ import { getLeadsheetMap, groupByLeadsheet } from './report-leadsheets.js';
 import {
   applyAccountTree, dec, dsum, exactStr, legacyNum, type AccountTreeNode, type MoneyIn,
 } from './report-exact.js';
+import {
+  ACCRUAL_COLS, CASH_COLS, lensIsEmpty, lensSql, loadGroupTags, type LineLens,
+} from './report-lens.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -300,7 +303,7 @@ export function cashBasisLinesWith(
         t.id AS transaction_id, t.txn_date, t.txn_type, t.txn_number, t.memo,
         t.contact_id AS txn_contact_id, jl.contact_id AS line_contact_id,
         jl.description, jl.item_id, jl.line_order,
-        jl.debit::numeric AS debit, jl.credit::numeric AS credit,
+        jl.debit::numeric AS debit, jl.credit::numeric AS credit, jl.id AS line_id,
         cmr.id AS refund_memo_id, vcr.id AS refund_credit_id, arp.applied AS ar_applied, bp.applied AS ap_applied,
         -- Q-SPF3: how much of this (payment or bounce) line is write-off
         -- (or its bad-debt tax) and leaves the cash ledger.
@@ -369,7 +372,10 @@ export function cashBasisLinesWith(
              THEN GREATEST(r.credit - COALESCE(r.ar_applied, 0), 0)
              WHEN r.txn_type = 'returned_payment'
              THEN r.credit - LEAST(r.credit, GREATEST(r.reduce_by - r.before_amount, 0))
-             ELSE r.credit END AS credit
+             ELSE r.credit END AS credit,
+        -- U-202: the journal line a pass-through line is (NULL on the scaled
+        -- and virtual lines below), for the cleared lens and drill ids.
+        r.line_id
       FROM cb_r2 r CROSS JOIN cb_ur ur
 
       UNION ALL
@@ -384,7 +390,8 @@ export function cashBasisLinesWith(
         pay.contact_id AS txn_contact_id, ml.contact_id AS line_contact_id,
         ml.description, ml.item_id, ml.line_order,
         ml.debit::numeric  * pay.total::numeric / NULLIF(m.total::numeric, 0) AS debit,
-        ml.credit::numeric * pay.total::numeric / NULLIF(m.total::numeric, 0) AS credit
+        ml.credit::numeric * pay.total::numeric / NULLIF(m.total::numeric, 0) AS credit,
+        NULL::uuid AS line_id
       FROM transactions pay
       JOIN transactions m ON m.id = pay.source_payment_id AND m.tenant_id = ${tenantId}
         AND m.txn_type = 'credit_memo' AND m.status = 'posted' AND NULLIF(m.total::numeric, 0) IS NOT NULL
@@ -407,7 +414,8 @@ export function cashBasisLinesWith(
         dep.id, dep.txn_date, dep.txn_type, dep.txn_number, dep.memo,
         dep.contact_id, vl.contact_id, vl.description, vl.item_id, vl.line_order,
         vl.debit::numeric  * (rl.credit::numeric - rl.debit::numeric) / NULLIF(vc.total::numeric, 0),
-        vl.credit::numeric * (rl.credit::numeric - rl.debit::numeric) / NULLIF(vc.total::numeric, 0)
+        vl.credit::numeric * (rl.credit::numeric - rl.debit::numeric) / NULLIF(vc.total::numeric, 0),
+        NULL::uuid
       FROM journal_lines rl
       JOIN accounts ra ON ra.id = rl.account_id AND ra.tenant_id = ${tenantId} AND ra.detail_type = 'accounts_payable'
       JOIN transactions dep ON dep.id = rl.transaction_id AND dep.tenant_id = ${tenantId} AND dep.status = 'posted'
@@ -428,7 +436,7 @@ export function cashBasisLinesWith(
         pay.id, app.rec_date, pay.txn_type, pay.txn_number, pay.memo,
         pay.contact_id, pay.contact_id,
         NULL::text, NULL::uuid, 0,
-        app.amount, 0::numeric
+        app.amount, 0::numeric, NULL::uuid
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
@@ -451,7 +459,8 @@ export function cashBasisLinesWith(
         pay.contact_id AS txn_contact_id, il.contact_id AS line_contact_id,
         il.description, il.item_id, il.line_order,
         il.debit::numeric  * (CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.amount ELSE app.cash_amount END) / NULLIF(inv.total::numeric, 0) AS debit,
-        il.credit::numeric * (CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.amount ELSE app.cash_amount END) / NULLIF(inv.total::numeric, 0) AS credit
+        il.credit::numeric * (CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.amount ELSE app.cash_amount END) / NULLIF(inv.total::numeric, 0) AS credit,
+        NULL::uuid AS line_id
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
@@ -475,7 +484,8 @@ export function cashBasisLinesWith(
         cm.contact_id AS txn_contact_id, dl.contact_id AS line_contact_id,
         dl.description, dl.item_id, dl.line_order,
         dl.debit::numeric  * pa.amount::numeric / NULLIF(doc.total::numeric, 0) AS debit,
-        dl.credit::numeric * pa.amount::numeric / NULLIF(doc.total::numeric, 0) AS credit
+        dl.credit::numeric * pa.amount::numeric / NULLIF(doc.total::numeric, 0) AS credit,
+        NULL::uuid AS line_id
       FROM payment_applications pa
       JOIN transactions cm ON cm.id = pa.payment_id AND cm.tenant_id = ${tenantId}
         AND cm.txn_type = 'credit_memo' AND cm.status = 'posted' AND cm.basis <> 'accrual'
@@ -495,7 +505,7 @@ export function cashBasisLinesWith(
         t.id AS transaction_id, t.txn_date, t.txn_type, t.txn_number, t.memo,
         t.contact_id AS txn_contact_id, zl.contact_id AS line_contact_id,
         zl.description, zl.item_id, zl.line_order,
-        zl.debit::numeric AS debit, zl.credit::numeric AS credit
+        zl.debit::numeric AS debit, zl.credit::numeric AS credit, zl.id AS line_id
       FROM transactions t
       JOIN journal_lines zl ON zl.transaction_id = t.id AND zl.tenant_id = ${tenantId}
         AND zl.is_void_reversal = false AND zl.line_role IN (${CASH_DERIVED_ROLES})
@@ -512,7 +522,8 @@ export function cashBasisLinesWith(
         pay.contact_id AS txn_contact_id, bl.contact_id AS line_contact_id,
         bl.description, bl.item_id, bl.line_order,
         bl.debit::numeric  * (app.amount::numeric + app.discount_amount::numeric) / NULLIF(bill.total::numeric, 0) AS debit,
-        bl.credit::numeric * (app.amount::numeric + app.discount_amount::numeric) / NULLIF(bill.total::numeric, 0) AS credit
+        bl.credit::numeric * (app.amount::numeric + app.discount_amount::numeric) / NULLIF(bill.total::numeric, 0) AS credit,
+        NULL::uuid AS line_id
       FROM bill_payment_applications app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
@@ -2084,6 +2095,8 @@ export async function buildSalesByCustomer(
   companyId: string | null = null,
   tagId: string | null = null,
   basis: Basis = 'accrual',
+  // U-202 (E11): the U-60 adjusting lens (default include).
+  adjusting: AdjustingFilter | null = null,
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
@@ -2092,7 +2105,7 @@ export async function buildSalesByCustomer(
   // contact. Accrual counts sale-document revenue by the document's contact.
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
-        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
           SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total
         FROM cb_lines cb
@@ -2128,6 +2141,7 @@ export async function buildSalesByCustomer(
       AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
       AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
       AND ${companyFilter(companyId)}
+      AND ${adjustingCond(adjusting, 't.is_adjusting')}
       ${tagClause}
     GROUP BY c.id, c.display_name ORDER BY total DESC
   `);
@@ -2147,12 +2161,14 @@ export async function buildSalesByItem(
   companyId: string | null = null,
   tagId: string | null = null,
   basis: Basis = 'accrual',
+  // U-202 (E11): the U-60 adjusting lens (default include).
+  adjusting: AdjustingFilter | null = null,
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
-        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT
           cb.item_id,
           COALESCE(i.name, 'Uncategorized') as item_name,
@@ -2194,6 +2210,7 @@ export async function buildSalesByItem(
       AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
       AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
       AND ${companyFilter(companyId)}
+      AND ${adjustingCond(adjusting, 't.is_adjusting')}
       ${tagClause}
     GROUP BY jl.item_id, i.name
     ORDER BY total DESC
@@ -2770,10 +2787,21 @@ export async function buildGeneralLedger(
   // exactAmounts (U-14): *Exact decimal strings on lines, accounts and
   // totals. limit: return at most this many lines (report order); totals,
   // balances and rowCount still cover every line, truncated says so.
-  glOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; limit?: number | null } = {},
+  // lens (U-202, reports-drill-v1): per-line contact / tag / amount /
+  // cleared / type filters (report-lens.ts), applied to the beginning
+  // balances and the period lines alike, so a drill sums to its cell.
+  // tagSplitGroupId (U-201): each account gains tagSplit rows (lines without
+  // a tag from the group, each group tag with activity, the account total).
+  glOpts: {
+    adjusting?: AdjustingFilter | null; exactAmounts?: boolean; limit?: number | null;
+    lens?: LineLens | null; tagSplitGroupId?: string | null;
+  } = {},
 ) {
   const adjusting = glOpts.adjusting ?? null;
   const exactMode = !!glOpts.exactAmounts;
+  const lens = lensIsEmpty(glOpts.lens) ? null : glOpts.lens!;
+  const accrualLens = lens ? sql` AND ${lensSql(tenantId, lens, ACCRUAL_COLS)}` : sql``;
+  const cashLens = lens ? sql` AND ${lensSql(tenantId, lens, CASH_COLS)}` : sql``;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
   // colRef is a code-controlled constant, never user input; the ids
   // themselves are bound parameters.
@@ -2835,11 +2863,33 @@ export async function buildGeneralLedger(
                  WHEN cb.txn_date >= ${fyStart} THEN cb.credit ELSE 0 END
           ), 0) AS begin_credit
         FROM accounts a
-        LEFT JOIN cb_lines cb ON cb.account_id = a.id${cbTag}
+        LEFT JOIN cb_lines cb ON cb.account_id = a.id${cbTag}${cashLens}
         WHERE a.tenant_id = ${tenantId}${idFilter('a.id')}
         GROUP BY a.id
       `)
-    : await db.execute(sql`
+    : lens
+      // With a lens the lines join their transaction before the filter
+      // (the lens reads the transaction's contact and type).
+      ? await db.execute(sql`
+        SELECT a.id,
+          COALESCE(SUM(CASE WHEN a.account_type IN ('asset','liability','equity') THEN x.debit
+                            WHEN x.txn_date >= ${fyStart} THEN x.debit ELSE 0 END), 0) AS begin_debit,
+          COALESCE(SUM(CASE WHEN a.account_type IN ('asset','liability','equity') THEN x.credit
+                            WHEN x.txn_date >= ${fyStart} THEN x.credit ELSE 0 END), 0) AS begin_credit
+        FROM accounts a
+        LEFT JOIN (
+          SELECT jl.account_id, jl.debit, jl.credit, t.txn_date
+          FROM journal_lines jl
+          JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
+          WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted' AND t.txn_date < ${startDate}
+            AND t.basis <> 'cash'
+            AND ${companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`}
+            AND ${adjustingCond(adjusting, 't.is_adjusting')}${tagClause}${accrualLens}
+        ) x ON x.account_id = a.id
+        WHERE a.tenant_id = ${tenantId}${idFilter('a.id')}
+        GROUP BY a.id
+      `)
+      : await db.execute(sql`
     SELECT a.id,
       COALESCE(SUM(
         CASE
@@ -2882,11 +2932,13 @@ export async function buildGeneralLedger(
           cb.tag_id AS line_tag_id, tag.name AS line_tag_name,
           cb.transaction_id, cb.txn_date, cb.txn_type, cb.txn_number,
           cb.memo AS txn_memo,
-          c.display_name AS contact_name
+          c.display_name AS contact_name,
+          cb.line_id AS source_line_id,
+          COALESCE(cb.line_contact_id, cb.txn_contact_id) AS line_contact_id
         FROM cb_lines cb
         LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
         LEFT JOIN tags tag ON tag.id = cb.tag_id AND tag.tenant_id = ${tenantId}
-        WHERE (cb.debit <> 0 OR cb.credit <> 0)${cbTag}${idFilter('cb.account_id')}
+        WHERE (cb.debit <> 0 OR cb.credit <> 0)${cbTag}${idFilter('cb.account_id')}${cashLens}
         ORDER BY cb.account_id, cb.txn_date, cb.line_order
       `)
     : await db.execute(sql`
@@ -2907,7 +2959,9 @@ export async function buildGeneralLedger(
       t.memo AS txn_memo,
       -- STATEMENT_CHECK_PAYEE_V1 — show the check-image payee when no
       -- contact is linked (e.g. statement-imported checks).
-      COALESCE(c.display_name, t.payee_name_on_check) AS contact_name
+      COALESCE(c.display_name, t.payee_name_on_check) AS contact_name,
+      jl.id AS source_line_id,
+      COALESCE(jl.contact_id, t.contact_id) AS line_contact_id
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id
     LEFT JOIN contacts c ON c.id = t.contact_id
@@ -2918,7 +2972,7 @@ export async function buildGeneralLedger(
       AND t.txn_date >= ${startDate}
       AND t.txn_date <= ${endDate}
       AND ${adjustingCond(adjusting, 't.is_adjusting')}
-      AND ${companyFilter(companyId)}${tagClause}${idFilter('jl.account_id')}
+      AND ${companyFilter(companyId)}${tagClause}${idFilter('jl.account_id')}${accrualLens}
     ORDER BY jl.account_id, t.txn_date, t.created_at, jl.line_order
   `);
 
@@ -2947,6 +3001,8 @@ export async function buildGeneralLedger(
     txn_number: string | null;
     txn_memo: string | null;
     contact_name: string | null;
+    source_line_id: string | null;
+    line_contact_id: string | null;
   };
 
   const allAccounts = accountsResult.rows as unknown as AccountRow[];
@@ -2977,6 +3033,39 @@ export async function buildGeneralLedger(
   let totalDebitsD = new Decimal(0);
   let totalCreditsD = new Decimal(0);
   let rowCount = 0;
+
+  // U-201 tag split: the group's tags in display order.
+  const splitTags = glOpts.tagSplitGroupId ? (await loadGroupTags(tenantId, glOpts.tagSplitGroupId)) ?? [] : null;
+  const glTagSplit = (accountType: string, periodLines: LineRow[]) => {
+    if (!splitTags) return {};
+    type Acc = { d: D; c: D };
+    const zero = (): Acc => ({ d: new Decimal(0), c: new Decimal(0) });
+    const byTag = new Map<string, Acc>();
+    const untagged = zero();
+    const total = zero();
+    const inGroup = new Set(splitTags.map((t) => t.id));
+    for (const l of periodLines) {
+      const d = dec(l.debit); const c = dec(l.credit);
+      const tgt = l.line_tag_id && inGroup.has(l.line_tag_id)
+        ? (byTag.get(l.line_tag_id) ?? (byTag.set(l.line_tag_id, zero()), byTag.get(l.line_tag_id)!))
+        : untagged;
+      tgt.d = tgt.d.plus(d); tgt.c = tgt.c.plus(c);
+      total.d = total.d.plus(d); total.c = total.c.plus(c);
+    }
+    const row = (a: Acc) => ({
+      periodDebitsExact: exactStr(a.d), periodCreditsExact: exactStr(a.c),
+      netChangeExact: exactStr(naturalBalance(accountType, a.d, a.c)),
+    });
+    return {
+      tagSplit: [
+        { rowKind: 'account' as const, tagId: null, tagNumber: null, tagName: null, ...row(untagged) },
+        ...splitTags.filter((t) => byTag.has(t.id)).map((t) => ({
+          rowKind: 'tag' as const, tagId: t.id, tagNumber: t.tagNumber, tagName: t.name, ...row(byTag.get(t.id)!),
+        })),
+        { rowKind: 'account_total' as const, tagId: null, tagNumber: null, tagName: null, ...row(total) },
+      ],
+    };
+  };
 
   const accounts = allAccounts
     .map((acct) => {
@@ -3027,7 +3116,14 @@ export async function buildGeneralLedger(
           tagLabel: line.line_tag_name || '',
           runningBalance: legacyNum(running),
           ...(exactMode
-            ? { debitExact: exactStr(debitD), creditExact: exactStr(creditD), runningBalanceExact: exactStr(running) }
+            ? {
+                debitExact: exactStr(debitD), creditExact: exactStr(creditD), runningBalanceExact: exactStr(running),
+                // U-202: the journal line (cash basis: the line passed through,
+                // null for a share of a paid document) and the line's client.
+                sourceLineId: line.source_line_id ?? null,
+                contactId: line.line_contact_id ?? null,
+                lineOrder: Number(line.line_order ?? 0),
+              }
             : {}),
         };
       });
@@ -3054,6 +3150,10 @@ export async function buildGeneralLedger(
               periodDebitsExact: exactStr(periodDebitsD),
               periodCreditsExact: exactStr(periodCreditsD),
               endingBalanceExact: exactStr(running),
+              // U-202: the period's activity in the account's natural sign
+              // (ending - beginning); what a P&L cell drills to.
+              netChangeExact: exactStr(running.minus(beginningD)),
+              ...glTagSplit(acct.account_type, periodLines),
             }
           : {}),
       };
@@ -3395,11 +3495,24 @@ export async function buildTransactionList(tenantId: string, filters?: {
   basis?: Basis;
   /** U-60 adjusting lens (default include). */
   adjusting?: AdjustingFilter | null;
-  /** Exact reports (U-14): rows also carry line_id (the journal line; null on cash basis). */
+  /**
+   * Exact reports (U-14): rows also carry line_id (the journal line; on cash
+   * basis the line passed through, null for a share of a paid document),
+   * account_id and line_contact_id (the line's client, U-202).
+   */
   exactAmounts?: boolean;
+  /** U-202: several accounts (line level). */
+  accountIds?: string[] | null;
+  /** U-202: per-line lens (report-lens.ts). */
+  lens?: LineLens | null;
 }, companyId: string | null = null) {
-  const lineIdCol = filters?.exactAmounts ? sql`jl.id AS line_id, ` : sql``;
-  const cbLineIdCol = filters?.exactAmounts ? sql`NULL::uuid AS line_id, ` : sql``;
+  const lineIdCol = filters?.exactAmounts
+    ? sql`jl.id AS line_id, jl.account_id, COALESCE(jl.contact_id, t.contact_id) AS line_contact_id, ` : sql``;
+  const cbLineIdCol = filters?.exactAmounts
+    ? sql`cb.line_id AS line_id, cb.account_id, COALESCE(cb.line_contact_id, cb.txn_contact_id) AS line_contact_id, ` : sql``;
+  const lens = lensIsEmpty(filters?.lens) ? null : filters!.lens!;
+  const ids = filters?.accountIds && filters.accountIds.length > 0 ? filters.accountIds : null;
+  const idsIn = (col: string) => sql`${sql.raw(col)} IN (${sql.join(ids!.map((id) => sql`${id}`), sql`, `)})`;
   // Cash basis: list the virtual cash-basis ledger (income/expense recognition
   // moved to payment dates), one row per cash-basis line. Accrual: the posted
   // journal (excluding cash-only entries).
@@ -3409,6 +3522,8 @@ export async function buildTransactionList(tenantId: string, filters?: {
     const typeCond = filters?.txnType ? sql`AND cb.txn_type = ${filters.txnType}` : sql``;
     const acctCond = filters?.accountId ? sql`AND cb.account_id = ${filters.accountId}` : sql``;
     const tagCond = filters?.tagId ? sql`AND cb.tag_id IN ${tagIn(filters.tagId)}` : sql``;
+    const idsCond = ids ? sql`AND ${idsIn('cb.account_id')}` : sql``;
+    const lensCond = lens ? sql`AND ${lensSql(tenantId, lens, CASH_COLS)}` : sql``;
     const cashRows = await executeCashBasis(sql`
       WITH ${cashBasisLinesWith(tenantId, start, end, companyId, filters?.adjusting ?? null)}
       SELECT cb.transaction_id AS id, ${cbLineIdCol}cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
@@ -3424,7 +3539,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
       JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}
       LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
       LEFT JOIN tags tg ON tg.id = cb.tag_id AND tg.tenant_id = ${tenantId}
-      WHERE (cb.debit <> 0 OR cb.credit <> 0) ${typeCond} ${acctCond} ${tagCond}
+      WHERE (cb.debit <> 0 OR cb.credit <> 0) ${typeCond} ${acctCond} ${tagCond} ${idsCond} ${lensCond}
       ORDER BY cb.txn_date DESC, cb.transaction_id, cb.line_order
     `);
     return { title: 'Transaction List', data: cashRows.rows };
@@ -3441,6 +3556,8 @@ export async function buildTransactionList(tenantId: string, filters?: {
   if (filters?.tagId) {
     conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = t.id AND jl.tenant_id = ${tenantId} AND jl.tag_id IN ${tagIn(filters.tagId)})`);
   }
+  if (ids) conditions.push(idsIn('jl.account_id'));
+  if (lens) conditions.push(lensSql(tenantId, lens, ACCRUAL_COLS));
 
   // One row per journal LINE (not per transaction), so a split shows each of
   // its lines with its account instead of a single "Split" row. `amount` is
