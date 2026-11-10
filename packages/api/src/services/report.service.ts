@@ -1564,9 +1564,11 @@ export interface ExpenseCategoryDetailLine {
   memo: string;
   debit: number;
   credit: number;
-  // Present only with opts.exactAmounts: unrounded decimal strings of debit / credit.
+  // Present only with opts.exactAmounts: unrounded decimal strings of debit /
+  // credit and the running balance.
   debitExact?: string;
   creditExact?: string;
+  balanceExact?: string;
   // Running period total for the account (starts at 0, accumulates
   // debit − credit through Decimal like the General Ledger).
   balance: number;
@@ -1587,6 +1589,12 @@ export interface ExpenseCategoryGroup {
   // period net. Undefined for P&L-style reports that reset each period.
   beginningBalance?: number;
   endingBalance?: number;
+  // Exact reports (U-14).
+  totalDebitsExact?: string;
+  totalCreditsExact?: string;
+  subtotalExact?: string;
+  beginningBalanceExact?: string;
+  endingBalanceExact?: string;
 }
 
 export async function buildExpenseByCategory(
@@ -1606,6 +1614,8 @@ export async function buildExpenseByCategory(
   // totals; api-v2 / MCP callers read the same netted `data`.
   detail = false,
   basis: Basis = 'accrual',
+  // exactAmounts (U-14): *Exact strings in detail mode.
+  ebcOpts: { exactAmounts?: boolean } = {},
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
@@ -1739,26 +1749,51 @@ export async function buildExpenseByCategory(
     linesByAccount.set(line.account_id, arr);
   }
 
-  let grandTotal = 0;
-  const groups: ExpenseCategoryGroup[] = [];
-  for (const acct of acctResult.rows as unknown as DetailAcctRow[]) {
-    const periodLines = linesByAccount.get(acct.id) || [];
-    // Zero-activity accounts only appear when explicitly selected;
-    // otherwise they're noise on the report.
-    if (periodLines.length === 0 && !hasIdFilter) continue;
+  const built = buildDetailGroups(
+    acctResult.rows as unknown as DetailAcctRow[], linesByAccount,
+    { creditNormal: false, carryForward: false, hasIdFilter, exact: !!ebcOpts.exactAmounts, beginByAccount: new Map(), dropZeroSubtotal: true },
+  );
+  return { ...summary, groups: built.groups, grandTotal: built.grandTotal, ...(built.grandTotalExact !== undefined ? { grandTotalExact: built.grandTotalExact } : {}) };
+}
 
-    let running = 0;
-    let totalDebits = 0;
-    let totalCredits = 0;
+// Shared GL-style section builder for Expenses by Category and the
+// "<Group> by Account" reports. Every amount is a Decimal of the
+// unrounded SQL value (U-14); the legacy numbers come from the same
+// Decimals and exact reports add *Exact strings on lines, groups and the
+// grand total.
+function buildDetailGroups(
+  accts: Array<{ id: string; account_number: string | null; name: string; account_type: string }>,
+  linesByAccount: Map<string, Array<{
+    line_id: string; debit: string; credit: string; line_description: string | null; transaction_id: string;
+    txn_date: string; txn_type: string; txn_number: string | null; txn_memo: string | null; contact_name: string | null;
+  }>>,
+  o: {
+    creditNormal: boolean; carryForward: boolean; hasIdFilter: boolean; exact: boolean;
+    beginByAccount: Map<string, InstanceType<typeof Decimal>>;
+    // Expenses by Category drops a section that nets to zero (wash /
+    // clearing accounts) unless it was explicitly selected.
+    dropZeroSubtotal: boolean;
+  },
+): { groups: ExpenseCategoryGroup[]; grandTotal: number; grandTotalExact?: string } {
+  let grandD = new Decimal(0);
+  const groups: ExpenseCategoryGroup[] = [];
+  for (const acct of accts) {
+    const periodLines = linesByAccount.get(acct.id) || [];
+    const beginD = o.beginByAccount.get(acct.id) ?? new Decimal(0);
+    // Skip only accounts with no period activity AND (for carry-forward) no
+    // opening balance — unless the account was explicitly selected.
+    if (periodLines.length === 0 && !o.hasIdFilter && (!o.carryForward || beginD.abs().lt('0.005'))) continue;
+
+    let running = o.carryForward ? beginD : new Decimal(0);
+    let debitsD = new Decimal(0);
+    let creditsD = new Decimal(0);
     const reportLines: ExpenseCategoryDetailLine[] = periodLines.map((line) => {
-      const debit = num(line.debit);
-      const credit = num(line.credit);
-      // Running balance accumulates through many lines — go through
-      // Decimal on every add (same rationale as the GL) so the column
-      // stays exact to the cent.
-      running = Number(new Decimal(running).plus(debit).minus(credit).toFixed(4));
-      totalDebits = Number(new Decimal(totalDebits).plus(debit).toFixed(4));
-      totalCredits = Number(new Decimal(totalCredits).plus(credit).toFixed(4));
+      const debitD = dec(line.debit);
+      const creditD = dec(line.credit);
+      // Credit-normal groups read positive when credits exceed debits.
+      running = o.creditNormal ? running.plus(creditD).minus(debitD) : running.plus(debitD).minus(creditD);
+      debitsD = debitsD.plus(debitD);
+      creditsD = creditsD.plus(creditD);
       return {
         lineId: line.line_id,
         transactionId: line.transaction_id,
@@ -1768,31 +1803,45 @@ export async function buildExpenseByCategory(
         contactName: line.contact_name,
         // Prefer the per-line description, fall back to the txn memo.
         memo: line.line_description || line.txn_memo || '',
-        debit,
-        credit,
-        balance: running,
+        debit: legacyNum(debitD),
+        credit: legacyNum(creditD),
+        ...(o.exact
+          ? { debitExact: exactStr(debitD), creditExact: exactStr(creditD), balanceExact: exactStr(running) }
+          : {}),
+        balance: legacyNum(running),
       };
     });
 
-    const subtotal = sub(totalDebits, totalCredits);
+    const subD = o.creditNormal ? creditsD.minus(debitsD) : debitsD.minus(creditsD);
     // A wash/clearing account (equal debits and credits, e.g. Payroll
     // Clearing) nets to zero — drop its section unless the user explicitly
     // filtered to it, so it doesn't read as a phantom expense line.
-    if (subtotal === 0 && !hasIdFilter) continue;
-    grandTotal = Number(new Decimal(grandTotal).plus(subtotal).toFixed(4));
+    if (o.dropZeroSubtotal && legacyNum(subD) === 0 && !o.hasIdFilter) continue;
+    const endD = beginD.plus(subD);
+    // Grand total ties to the Balance Sheet (sum of ending balances) for
+    // carry-forward reports; P&L-style reports total the period net.
+    grandD = grandD.plus(o.carryForward ? endD : subD);
     groups.push({
       accountId: acct.id,
       accountNumber: acct.account_number,
       name: acct.name,
       accountType: acct.account_type,
       lines: reportLines,
-      totalDebits,
-      totalCredits,
-      subtotal,
+      totalDebits: legacyNum(debitsD),
+      totalCredits: legacyNum(creditsD),
+      subtotal: legacyNum(subD),
+      ...(o.carryForward ? { beginningBalance: legacyNum(beginD), endingBalance: legacyNum(endD) } : {}),
+      ...(o.exact
+        ? {
+            totalDebitsExact: exactStr(debitsD),
+            totalCreditsExact: exactStr(creditsD),
+            subtotalExact: exactStr(subD),
+            ...(o.carryForward ? { beginningBalanceExact: exactStr(beginD), endingBalanceExact: exactStr(endD) } : {}),
+          }
+        : {}),
     });
   }
-
-  return { ...summary, groups, grandTotal };
+  return { groups, grandTotal: legacyNum(grandD), ...(o.exact ? { grandTotalExact: exactStr(grandD) } : {}) };
 }
 
 // ─── Generic "<Group> by Account" detail report ──────────────────
@@ -1958,7 +2007,7 @@ export async function buildAccountDetailReport(
   // Carry-forward opening balance per account: the natural balance of all
   // posted (accrual) activity BEFORE the period start. Same scoping as the
   // period query so filters stay consistent.
-  const beginByAccount = new Map<string, number>();
+  const beginByAccount = new Map<string, InstanceType<typeof Decimal>>();
   if (carryForward) {
     // Day before the period start — the cash-basis ledger's date window is
     // inclusive, so this gives all recognition strictly before the period.
@@ -1990,68 +2039,16 @@ export async function buildAccountDetailReport(
       GROUP BY jl.account_id
     `);
     for (const r of beginRows.rows as unknown as { account_id: string; begin_debit: string; begin_credit: string }[]) {
-      const bal = creditNormal ? sub(num(r.begin_credit), num(r.begin_debit)) : sub(num(r.begin_debit), num(r.begin_credit));
+      const bal = creditNormal ? dec(r.begin_credit).minus(dec(r.begin_debit)) : dec(r.begin_debit).minus(dec(r.begin_credit));
       beginByAccount.set(r.account_id, bal);
     }
   }
 
-  let grandTotal = 0;
-  const groups: ExpenseCategoryGroup[] = [];
-  for (const acct of acctResult.rows as unknown as DetailAcctRow[]) {
-    const periodLines = linesByAccount.get(acct.id) || [];
-    const beginningBalance = beginByAccount.get(acct.id) || 0;
-    // Skip only accounts with no period activity AND (for carry-forward) no
-    // opening balance — unless the account was explicitly selected.
-    if (periodLines.length === 0 && !hasIdFilter && (!carryForward || Math.abs(beginningBalance) < 0.005)) continue;
-
-    let running = carryForward ? beginningBalance : 0;
-    let totalDebits = 0;
-    let totalCredits = 0;
-    const reportLines: ExpenseCategoryDetailLine[] = periodLines.map((line) => {
-      const debit = num(line.debit);
-      const credit = num(line.credit);
-      // Credit-normal groups read positive when credits exceed debits.
-      running = creditNormal
-        ? Number(new Decimal(running).plus(credit).minus(debit).toFixed(4))
-        : Number(new Decimal(running).plus(debit).minus(credit).toFixed(4));
-      totalDebits = Number(new Decimal(totalDebits).plus(debit).toFixed(4));
-      totalCredits = Number(new Decimal(totalCredits).plus(credit).toFixed(4));
-      return {
-        lineId: line.line_id,
-        transactionId: line.transaction_id,
-        date: line.txn_date,
-        txnType: line.txn_type,
-        txnNumber: line.txn_number,
-        contactName: line.contact_name,
-        memo: line.line_description || line.txn_memo || '',
-        debit,
-        credit,
-        ...(opts.exactAmounts
-          ? { debitExact: new Decimal(line.debit || 0).toString(), creditExact: new Decimal(line.credit || 0).toString() }
-          : {}),
-        balance: running,
-      };
-    });
-
-    const subtotal = creditNormal ? sub(totalCredits, totalDebits) : sub(totalDebits, totalCredits);
-    const endingBalance = carryForward ? Number(new Decimal(beginningBalance).plus(subtotal).toFixed(4)) : undefined;
-    // Grand total ties to the Balance Sheet (sum of ending balances) for
-    // carry-forward reports; P&L-style reports total the period net.
-    grandTotal = Number(new Decimal(grandTotal).plus(carryForward ? endingBalance! : subtotal).toFixed(4));
-    groups.push({
-      accountId: acct.id,
-      accountNumber: acct.account_number,
-      name: acct.name,
-      accountType: acct.account_type,
-      lines: reportLines,
-      totalDebits,
-      totalCredits,
-      subtotal,
-      ...(carryForward ? { beginningBalance, endingBalance } : {}),
-    });
-  }
-
-  return { ...summary, groups, grandTotal };
+  const built = buildDetailGroups(
+    acctResult.rows as unknown as DetailAcctRow[], linesByAccount,
+    { creditNormal, carryForward, hasIdFilter, exact: !!opts.exactAmounts, beginByAccount, dropZeroSubtotal: false },
+  );
+  return { ...summary, groups: built.groups, grandTotal: built.grandTotal, ...(built.grandTotalExact !== undefined ? { grandTotalExact: built.grandTotalExact } : {}) };
 }
 
 // ─── SALES ────────────────────────────────────────────────────────
@@ -2745,9 +2742,13 @@ export async function buildGeneralLedger(
   // no activity still gets an (empty) section. Null/empty = all.
   accountIds: string[] | null = null,
   // U-60 adjusting lens (beginning balances and period lines alike).
-  glOpts: { adjusting?: AdjustingFilter | null } = {},
+  // exactAmounts (U-14): *Exact decimal strings on lines, accounts and
+  // totals. limit: return at most this many lines (report order); totals,
+  // balances and rowCount still cover every line, truncated says so.
+  glOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; limit?: number | null } = {},
 ) {
   const adjusting = glOpts.adjusting ?? null;
+  const exactMode = !!glOpts.exactAmounts;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
   // colRef is a code-controlled constant, never user input; the ids
   // themselves are bound parameters.
@@ -2927,10 +2928,13 @@ export async function buildGeneralLedger(
   const beginRows = beginResult.rows as unknown as BeginRow[];
   const lines = linesResult.rows as unknown as LineRow[];
 
-  // Index beginning balances and period lines by account id
-  const beginMap = new Map<string, { debit: number; credit: number }>();
+  // Index beginning balances and period lines by account id. Every
+  // amount stays a Decimal of the unrounded SQL value (U-14); the legacy
+  // number fields are derived from the same Decimals.
+  type D = InstanceType<typeof Decimal>;
+  const beginMap = new Map<string, { debit: D; credit: D }>();
   for (const r of beginRows) {
-    beginMap.set(r.id, { debit: num(r.begin_debit), credit: num(r.begin_credit) });
+    beginMap.set(r.id, { debit: dec(r.begin_debit), credit: dec(r.begin_credit) });
   }
   const linesByAccount = new Map<string, LineRow[]>();
   for (const line of lines) {
@@ -2942,39 +2946,40 @@ export async function buildGeneralLedger(
   // Helper: signed balance using the account's natural sign convention.
   // asset / cogs / expense / other_expense are debit-normal; the rest
   // (liability / equity / revenue / other_revenue) are credit-normal.
-  const naturalBalance = (type: string, debit: number, credit: number) =>
-    isDebitNormalShared(type) ? debit - credit : credit - debit;
+  const naturalBalance = (type: string, debit: D, credit: D) =>
+    isDebitNormalShared(type) ? debit.minus(credit) : credit.minus(debit);
 
-  let totalDebits = 0;
-  let totalCredits = 0;
+  let totalDebitsD = new Decimal(0);
+  let totalCreditsD = new Decimal(0);
+  let rowCount = 0;
 
   const accounts = allAccounts
     .map((acct) => {
-      const begin = beginMap.get(acct.id) || { debit: 0, credit: 0 };
-      const beginningBalance = naturalBalance(acct.account_type, begin.debit, begin.credit);
+      const begin = beginMap.get(acct.id) || { debit: new Decimal(0), credit: new Decimal(0) };
+      const beginningD = naturalBalance(acct.account_type, begin.debit, begin.credit);
+      const beginningBalance = legacyNum(beginningD);
       const periodLines = linesByAccount.get(acct.id) || [];
 
       // Skip accounts with no activity AND no beginning balance — they're
       // noise on the report. (This is what every commercial GL does.)
       // Explicitly selected accounts are kept: a user filtering to 3
       // accounts should see all 3.
-      if (!hasIdFilter && periodLines.length === 0 && Math.abs(beginningBalance) < 0.005) {
+      if (!hasIdFilter && periodLines.length === 0 && beginningD.abs().lt('0.005')) {
         return null;
       }
 
-      let running = beginningBalance;
-      let periodDebits = 0;
-      let periodCredits = 0;
+      let running = beginningD;
+      let periodDebitsD = new Decimal(0);
+      let periodCreditsD = new Decimal(0);
 
       const reportLines = periodLines.map((line) => {
-        const debit = num(line.debit);
-        const credit = num(line.credit);
-        // Running balance accumulates through many lines — running +=
-        // naturalBalance via float drifts at the cent level. Go
-        // through Decimal on every add to keep the GL column exact.
-        running = Number(new Decimal(running).plus(naturalBalance(acct.account_type, debit, credit)).toFixed(4));
-        periodDebits = Number(new Decimal(periodDebits).plus(debit).toFixed(4));
-        periodCredits = Number(new Decimal(periodCredits).plus(credit).toFixed(4));
+        const debitD = dec(line.debit);
+        const creditD = dec(line.credit);
+        // Running balance in Decimal on every add, so the GL column stays
+        // exact however many lines accumulate.
+        running = running.plus(naturalBalance(acct.account_type, debitD, creditD));
+        periodDebitsD = periodDebitsD.plus(debitD);
+        periodCreditsD = periodCreditsD.plus(creditD);
 
         return {
           lineId: line.line_id,
@@ -2985,8 +2990,8 @@ export async function buildGeneralLedger(
           contactName: line.contact_name,
           // Prefer the per-line description, fall back to the transaction memo
           description: line.line_description || line.txn_memo || '',
-          debit,
-          credit,
+          debit: legacyNum(debitD),
+          credit: legacyNum(creditD),
           // ADR 0XX §6.3 — per-line tag flows to the GL response so
           // CSV/Excel exports can include a `line_tag` column.
           tagId: line.line_tag_id,
@@ -2995,12 +3000,16 @@ export async function buildGeneralLedger(
           // untagged) — exactly what the line-level tag filter matches.
           // No transaction-level fallback (owner decision).
           tagLabel: line.line_tag_name || '',
-          runningBalance: running,
+          runningBalance: legacyNum(running),
+          ...(exactMode
+            ? { debitExact: exactStr(debitD), creditExact: exactStr(creditD), runningBalanceExact: exactStr(running) }
+            : {}),
         };
       });
 
-      totalDebits += periodDebits;
-      totalCredits += periodCredits;
+      totalDebitsD = totalDebitsD.plus(periodDebitsD);
+      totalCreditsD = totalCreditsD.plus(periodCreditsD);
+      rowCount += reportLines.length;
 
       return {
         id: acct.id,
@@ -3010,12 +3019,36 @@ export async function buildGeneralLedger(
         normalBalance: isDebitNormalShared(acct.account_type) ? ('debit' as const) : ('credit' as const),
         beginningBalance,
         lines: reportLines,
-        periodDebits,
-        periodCredits,
-        endingBalance: running,
+        periodDebits: legacyNum(periodDebitsD),
+        periodCredits: legacyNum(periodCreditsD),
+        endingBalance: legacyNum(running),
+        ...(exactMode
+          ? {
+              accountId: acct.id,
+              beginningBalanceExact: exactStr(beginningD),
+              periodDebitsExact: exactStr(periodDebitsD),
+              periodCreditsExact: exactStr(periodCreditsD),
+              endingBalanceExact: exactStr(running),
+            }
+          : {}),
       };
     })
     .filter((a): a is NonNullable<typeof a> => a !== null);
+
+  // ?limit: keep the first `limit` lines in report order. Every account
+  // keeps its section and its full balances and totals.
+  const limit = glOpts.limit && glOpts.limit > 0 ? glOpts.limit : null;
+  let truncated = false;
+  if (limit !== null && rowCount > limit) {
+    truncated = true;
+    let left = limit;
+    for (const a of accounts) {
+      if (a.lines.length > left) a.lines = a.lines.slice(0, left);
+      left -= a.lines.length;
+    }
+  }
+  const totalDebits = legacyNum(totalDebitsD);
+  const totalCredits = legacyNum(totalCreditsD);
 
   return {
     title: 'General Ledger',
@@ -3025,6 +3058,8 @@ export async function buildGeneralLedger(
     accounts,
     totalDebits,
     totalCredits,
+    ...(exactMode ? { totalDebitsExact: exactStr(totalDebitsD), totalCreditsExact: exactStr(totalCreditsD) } : {}),
+    ...(exactMode || limit !== null ? { rowCount, truncated } : {}),
     // Present only when filtered: the tenant-owned accounts the filter
     // resolved to (foreign / unknown ids already dropped), in report
     // order — drives the printed header note.
