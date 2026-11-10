@@ -46,6 +46,7 @@ import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import { recordAcceptGroup } from './bank-feed-accept-records.js';
 import { lockFeedRows } from './bank-feed-row-locks.js';
+import { lineCandidatePredicate } from './bank-feed-lines.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
@@ -216,7 +217,32 @@ export async function listTransferCandidates(
       || a.date.localeCompare(b.date) || a.feedItemId.localeCompare(b.feedItemId));
 }
 
-export type TransferRequest = { otherFeedItemId: string; toAccountId?: undefined } | { toAccountId: string; otherFeedItemId?: undefined };
+export type TransferRequest = ({ otherFeedItemId: string; toAccountId?: undefined } | { toAccountId: string; otherFeedItemId?: undefined }) & {
+  /** feed-guards-v1: post the transfer to an account although the line matches an entry already in the books. */
+  force?: boolean;
+};
+
+/** At most this many candidates are named in FEED_ITEM_HAS_MATCH. */
+const HAS_MATCH_LIST_MAX = 5;
+
+/**
+ * feed-guards-v1 (U-200, PR-5 S3): the entry lines this bank line already
+ * matches (the U-166 candidate predicate of GET /feed/:id/match-candidates),
+ * closest date first, at most HAS_MATCH_LIST_MAX.
+ */
+async function matchCandidatesInTx(tx: Tx, tenantId: string, item: FeedRow, bankAccountId: string) {
+  const res = await tx.execute(sql`
+    SELECT t.id AS transaction_id, jl.id AS journal_line_id, t.txn_type, t.txn_date::text AS txn_date
+    FROM journal_lines jl, transactions t
+    WHERE ${lineCandidatePredicate({
+      tenantId, bankAccountId: sql`${bankAccountId}`, amount: sql`${item.amount}`, feedDate: sql`${item.feedDate}`,
+      itemId: sql`${item.id}`,
+    })}
+    ORDER BY ABS(t.txn_date - CAST(${item.feedDate} AS date)), t.id, jl.id
+    LIMIT ${HAS_MATCH_LIST_MAX}`);
+  return (res.rows as Array<{ transaction_id: string; journal_line_id: string; txn_type: string; txn_date: string }>)
+    .map((r) => ({ transactionId: r.transaction_id, journalLineId: r.journal_line_id, txnType: r.txn_type, txnDate: r.txn_date }));
+}
 
 export interface FeedTransferResult {
   transaction: Awaited<ReturnType<typeof ledger.postTransaction>>;
@@ -270,6 +296,15 @@ export async function postFeedTransferInTx(
     if (!BALANCE_SHEET_TYPES.includes(acct.accountType) || (acct.systemTag && TRANSFER_REFUSED_TAGS.includes(acct.systemTag))) {
       throw mismatch('A transfer goes to a bank, card, asset, liability or equity account (not Payments Clearing, '
         + 'Accounts Receivable or Accounts Payable).', 'toAccountId');
+    }
+    // S3: the bank line may already be in the books (the other side of a
+    // transfer accepted from the other account's file): ask first.
+    if (!req.force) {
+      const candidates = await matchCandidatesInTx(tx, tenantId, item, thisAccount.id);
+      if (candidates.length > 0) {
+        throw AppError.conflict('This bank line matches an entry already in your books. Match it instead, or send force to '
+          + 'record the transfer again.', 'FEED_ITEM_HAS_MATCH', { id: item.id, candidates });
+      }
     }
     otherAccountId = acct.id;
   }

@@ -500,6 +500,21 @@ export function feedItemNotPending(status: string | null, message?: string): App
 }
 
 /**
+ * feed-guards-v1 (U-200, PR-5 N2): a waiting row still flagged as a possible
+ * duplicate (Q-P25c) is not posted or matched by a single-row route
+ * (categorize, approve, match, a payment received or a bill paid for the
+ * line): 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf}, as the
+ * transfer and deposit routes answer. The owner decides first with POST
+ * /banking/feed/:id/duplicate (keep clears the flag; remove excludes it).
+ * POST /feed/accept skips such rows (possible_duplicate).
+ */
+export function assertNotPossibleDuplicate(item: Pick<typeof bankFeedItems.$inferSelect, 'id' | 'possibleDuplicate' | 'possibleDuplicateOf'>): void {
+  if (!item.possibleDuplicate) return;
+  throw AppError.conflict('This bank line may be a duplicate of one already imported. Keep it or remove it first.',
+    'FEED_ITEM_POSSIBLE_DUPLICATE', { id: item.id, possibleDuplicateOf: item.possibleDuplicateOf ?? null });
+}
+
+/**
  * Shared posting body for BOTH the direct-post path (categorize(), used by
  * bulkCategorize, bulk approve and rule posting outside desktop mode) and the
  * two-phase approve() path.
@@ -531,6 +546,7 @@ async function postFeedItem(
       throw feedItemNotPending(item.status, item.status === 'pending' && !allowed.includes('pending')
         ? 'Bank feed item is not assigned (current status: pending). Assign a category before approving.' : undefined);
     }
+    assertNotPossibleDuplicate(item);
     const posted = await postFeedItemInTx(tx, tenantId, item, resolve(item), userId, companyId);
     // U-169: the accept record Undo works from (B5).
     await recordAcceptGroup(tx, {
@@ -977,6 +993,7 @@ export async function matchInTx(
     throw AppError.notFound('Bank feed item not found');
   }
   if (item.status !== 'pending' && item.status !== 'assigned') throw feedItemNotPending(item.status);
+  assertNotPossibleDuplicate(item);
   const [conn] = await executor.select({ accountId: bankConnections.accountId }).from(bankConnections)
     .where(and(eq(bankConnections.tenantId, tenantId), eq(bankConnections.id, item.bankConnectionId))).limit(1);
   if (!conn) throw AppError.notFound('Bank connection not found');

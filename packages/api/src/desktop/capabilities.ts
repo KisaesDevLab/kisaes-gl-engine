@@ -1018,5 +1018,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * 0273 clears and flags rows whose line was already gone (audited, reason backfill_0273).
    */
   'feed-entry-changed-v1',
+  /**
+   * Bank feed guards for direct callers (U-200, ClientLedger PR-5 S1, S3, N1, N2). POST /feed/accept takes transferWindowDays
+   * (1-10, default 3) for its has_match transfer signal. PUT /feed/:id/categorize, POST /feed/:id/approve, PUT /feed/:id/match,
+   * POST /payments/receive {bankFeedItemId} and a bill payment for a bank line answer 409 FEED_ITEM_POSSIBLE_DUPLICATE {id,
+   * possibleDuplicateOf} for a row still flagged as a possible duplicate (bulk approve/categorize list it in failures[]); POST
+   * /feed/:id/duplicate keep clears the flag, as for transfer and deposit. POST /feed/:id/transfer {toAccountId} answers 409
+   * FEED_ITEM_HAS_MATCH {id, candidates: [{transactionId, journalLineId, txnType, txnDate}]} when the line matches an entry already
+   * in the books, unless force: true. Import batch rows carry existingReplaceable (Replace would update the item) and, on commit,
+   * replaceRefused not_waiting | staged with replaced false.
+   */
+  'feed-guards-v1',
 ];
 

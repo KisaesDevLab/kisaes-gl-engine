@@ -57,7 +57,9 @@ const receiveErrors = '400 AMOUNT_REQUIRED (amount 0); 400 APPLICATIONS_EXCEED_A
   'deposit as a creditApplications source draws on it: one customer payment per deposit inside this one (Dr Customer Deposits, Cr ' +
   'A/R, fromDepositId, source_txn_id = this payment), voided with it; over its remaining 409 DEPOSIT_NOT_AVAILABLE. ' +
   'bankFeedItemId (feed-customer-payments-v1): the pending bank-feed line this payment is, matched in the same transaction; depositTo ' +
-  'must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING. ' +
+  'must be its bank account and amount exactly its amount (400 FEED_ITEM_MISMATCH); not pending 409 FEED_ITEM_NOT_PENDING; ' +
+  'still flagged as a possible duplicate 409 FEED_ITEM_POSSIBLE_DUPLICATE {id, possibleDuplicateOf} (feed-guards-v1; keep or remove ' +
+  'it first with POST /banking/feed/:id/duplicate). ' +
   'sales-tax-ssuta-v1 (U-153): while the company setting salesTaxSsuta is on, a discount D and a write-off W carry their share of the ' +
   'invoice\'s sales tax (d, w: the running total over cash + discount + write-off, split by largest remainder): Dr Sales Tax Payable ' +
   'd + w, the discount line D - d, the write-off line W - w; the shares are stored with the application (discount and bad-debt tax ' +

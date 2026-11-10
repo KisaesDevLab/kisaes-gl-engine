@@ -109,6 +109,12 @@ export interface RowResult {
   existingItemId?: string;
   existingImportedAt?: string;
   existingPending?: boolean;
+  /**
+   * feed-guards-v1 (U-200, PR-5 S1): commit's Replace would update the
+   * existing item (pending, nothing staged, not matched). existingPending
+   * stays true for an assigned item, which Replace leaves alone.
+   */
+  existingReplaceable?: boolean;
   /** A `changed` row (Q-P25af): the existing item's amount (feed sign, at least 2 decimals) and date before this batch. */
   existingAmount?: string;
   existingDate?: string;
@@ -116,6 +122,13 @@ export interface RowResult {
   inserted: boolean;
   /** A `changed` row with changedAction "replace": the existing item was updated. */
   replaced?: boolean;
+  /**
+   * feed-guards-v1 (U-200): why a Replace was not done (replaced false):
+   * not_waiting (accepted, excluded or being posted: the transaction may
+   * already be in the books) or staged (the owner staged an account or
+   * split on it, or it is matched).
+   */
+  replaceRefused?: 'not_waiting' | 'staged';
 }
 
 /** A `changed` row's existing item that a batch replaced (bank_import_batches.replaced_items). */
@@ -205,6 +218,8 @@ export interface ExistingItem {
   description: string;
   checkNumber: number | null;
   status: string;
+  /** Commit's Replace would update it: pending, nothing staged, not matched (feed-guards-v1). */
+  replaceable?: boolean;
   createdAt: string;
   dedupeKey: string | null;
   rowKey: string | null;
@@ -483,7 +498,7 @@ const uuidList = (values: readonly string[]) => sql`(SELECT x::uuid FROM jsonb_a
 interface ItemRow {
   id: string; bank_connection_id: string; provider_transaction_id: string | null; feed_date: string; amount: string;
   original_description: string | null; description: string | null; check_number: number | null; status: string | null;
-  created_at: string; dedupe_key: string | null; row_key: string | null;
+  created_at: string; dedupe_key: string | null; row_key: string | null; replaceable?: boolean | null;
 }
 
 function toExisting(r: ItemRow): ExistingItem {
@@ -491,12 +506,14 @@ function toExisting(r: ItemRow): ExistingItem {
     id: r.id, connectionId: r.bank_connection_id, fitid: r.provider_transaction_id, date: r.feed_date, amount: r.amount,
     description: r.original_description ?? r.description ?? '', checkNumber: r.check_number, status: r.status ?? 'pending',
     createdAt: r.created_at, dedupeKey: r.dedupe_key?.trim() ?? null, rowKey: r.row_key?.trim() ?? null,
+    replaceable: r.replaceable === true,
   };
 }
 
 const ITEM_COLUMNS = sql`id, bank_connection_id, provider_transaction_id, feed_date::text AS feed_date, amount::text AS amount,
   original_description, description, check_number, status, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
-  dedupe_key, row_key`;
+  dedupe_key, row_key,
+  (status = 'pending' AND assigned_at IS NULL AND matched_transaction_id IS NULL) AS replaceable`;
 
 async function lookups(
   ex: DbOrTx, tenantId: string, connIds: string[], rows: ReadonlyArray<BatchRowInput>, keyed: ReadonlyArray<KeyedRow>,
@@ -736,6 +753,7 @@ function rowResult(row: BatchRowInput, c: Classified, lockDate: string | null): 
       existingItemId: c.existing.id,
       existingImportedAt: c.existing.createdAt,
       existingPending: c.existing.status === 'pending' || c.existing.status === 'assigned',
+      existingReplaceable: c.existing.replaceable === true,
     } : {}),
     ...(c.status === 'changed' && c.existing ? { existingAmount: exactAmount(c.existing.amount), existingDate: c.existing.date } : {}),
     closedPeriod: lockDate !== null && row.date <= lockDate,
@@ -888,6 +906,7 @@ export async function commitBatch(actor: BatchActor, input: BatchInput): Promise
         .where(and(eq(bankFeedItems.tenantId, tenantId), eq(bankFeedItems.id, c.existing.id))).for('update');
       if (!before || before.status !== 'pending' || before.assignedAt || before.matchedTransactionId) {
         rows[i]!.replaced = false;
+        rows[i]!.replaceRefused = before && (before.status === 'pending' || before.status === 'assigned') ? 'staged' : 'not_waiting';
         continue;
       }
       // The row key follows the new values (a re-import of this file is then same_row).
