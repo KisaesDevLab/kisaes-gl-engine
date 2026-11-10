@@ -415,13 +415,13 @@ export async function buildProfitAndLossColumns(tenantId: string, o: PlColumnsOp
   }
   for (const step of plan) step();
 
-  const sets: SumSet[] = await mapLimit(windows, 4, async (w) => {
-    const rows = await lineSums(tenantId, {
-      basis: o.basis, companyId: o.companyId, adjusting: o.adjusting, from: w.from, to: w.to,
-      accountTypes: PL_TYPES, dimension, lens,
-    });
-    return buildSumSet(rows, (r) => naturalAmount(r.accountType, r.debit, r.credit));
+  // One pass over the ledger for every column window.
+  const allRows = await lineSums(tenantId, {
+    basis: o.basis, companyId: o.companyId, adjusting: o.adjusting, from: null, to: mainRange.to,
+    accountTypes: PL_TYPES, dimension, lens, windows,
   });
+  const sets: SumSet[] = windows.map((_, i) =>
+    buildSumSet(allRows.filter((r) => r.window === i), (r) => naturalAmount(r.accountType, r.debit, r.credit)));
 
   if (o.compare) {
     const set = 0;
@@ -598,11 +598,13 @@ export async function buildBalanceSheetColumns(tenantId: string, o: BsColumnsOpt
   const accounts = await loadOrderedAccounts(tenantId, [...BS_TYPES, ...PL_TYPES]);
   const reAccount = accounts.find((a) => a.accountType === 'equity' && a.systemTag === 'retained_earnings') ?? null;
   type DateSums = { bs: SumSet; priorNi: Map<string | null, Dec>; currentNi: Map<string | null, Dec> };
-  const perDate: DateSums[] = await mapLimit(dates, 4, async (asOf) => {
-    const fyStart = fiscalYearStartOf(asOf, fyMonth);
-    const rows = await lineSums(tenantId, {
-      basis: o.basis, companyId: o.companyId, adjusting: o.adjusting, from: null, to: asOf, dimension, splitDate: fyStart, lens,
-    });
+  // One pass over the ledger: a window from the beginning to each as-of date.
+  const allRows = await lineSums(tenantId, {
+    basis: o.basis, companyId: o.companyId, adjusting: o.adjusting, from: null, to: dates[0]!, dimension, lens,
+    windows: dates.map((asOf) => ({ from: '0001-01-01', to: asOf, splitDate: fiscalYearStartOf(asOf, fyMonth) })),
+  });
+  const perDate: DateSums[] = dates.map((_, wi) => {
+    const rows = allRows.filter((r) => r.window === wi);
     const isPl = (t: string) => (PL_TYPES as readonly string[]).includes(t);
     const bs = buildSumSet(rows, (r) => (isPl(r.accountType) ? null : naturalAmount(r.accountType, r.debit, r.credit)));
     const priorNi = new Map<string | null, Dec>();

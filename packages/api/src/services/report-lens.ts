@@ -177,6 +177,8 @@ export interface LineSum {
   key: string | null;
   /** True when the lines are dated before `splitDate`. */
   pre: boolean;
+  /** Index into `windows` (0 without windows). */
+  window: number;
   debit: Dec;
   credit: Dec;
 }
@@ -194,6 +196,13 @@ export interface LineSumOptions {
   /** Splits each sum into lines before this date (pre) and from it on. */
   splitDate?: string | null;
   lens?: LineLens | null;
+  /**
+   * Several date windows in one pass (from/to are then ignored): each line
+   * counts once in every window containing its date, and each sum carries
+   * its window index. One cash-basis ledger serves every column. A window's
+   * own splitDate replaces the option's.
+   */
+  windows?: ReadonlyArray<{ from: string; to: string; splitDate?: string | null }> | null;
 }
 
 /**
@@ -213,42 +222,56 @@ export async function lineSums(tenantId: string, o: LineSumOptions): Promise<Lin
       ? sql`${raw(cols.contact)}`
       : tagInGroupKey(tenantId, dim.groupId, cols.tag);
   const dateCol = cash ? 'cb.txn_date' : 't.txn_date';
-  const preExpr = o.splitDate ? sql`(${raw(dateCol)} < ${o.splitDate})` : sql`false`;
+  const winSplit = !!o.windows?.some((w) => w.splitDate);
+  const preExpr = winSplit
+    ? sql`(${raw(dateCol)} < win.s)`
+    : o.splitDate ? sql`(${raw(dateCol)} < ${o.splitDate})` : sql`false`;
   const typeCond = o.accountTypes && o.accountTypes.length > 0
     ? sql`a.account_type IN (${sql.join(o.accountTypes.map((t) => sql`${t}`), sql`, `)})`
     : sql`TRUE`;
   const lens = lensSql(tenantId, o.lens, cols);
+  const wins = o.windows && o.windows.length > 0 ? o.windows : null;
+  const from = wins ? wins.reduce((m, w) => (w.from < m ? w.from : m), wins[0]!.from) : o.from;
+  const to = wins ? wins.reduce((m, w) => (w.to > m ? w.to : m), wins[0]!.to) : o.to;
+  const winJoin = wins
+    ? sql`JOIN (VALUES ${sql.join(wins.map((w, i) => sql`(${i}::int, ${w.from}::date, ${w.to}::date, ${w.splitDate ?? w.from}::date)`), sql`, `)}) win(i, f, t, s)
+        ON ${raw(dateCol)} >= win.f AND ${raw(dateCol)} <= win.t`
+    : sql``;
+  const winExpr = wins ? sql`win.i` : sql`0`;
 
   const res = cash
     ? await executeCashBasis(sql`
-        WITH ${cashBasisLinesWith(tenantId, o.from, o.to, o.companyId, o.adjusting)}
-        SELECT cb.account_id, a.account_type, ${keyExpr} AS k, ${preExpr} AS pre,
+        WITH ${cashBasisLinesWith(tenantId, from, to, o.companyId, o.adjusting)}
+        SELECT cb.account_id, a.account_type, ${keyExpr} AS k, ${preExpr} AS pre, ${winExpr} AS w,
           COALESCE(SUM(cb.debit), 0) AS d, COALESCE(SUM(cb.credit), 0) AS c
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}
+        ${winJoin}
         WHERE ${typeCond} AND ${lens}
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 4, 5
       `)
     : await db.execute(sql`
-        SELECT jl.account_id, a.account_type, ${keyExpr} AS k, ${preExpr} AS pre,
+        SELECT jl.account_id, a.account_type, ${keyExpr} AS k, ${preExpr} AS pre, ${winExpr} AS w,
           COALESCE(SUM(jl.debit), 0) AS d, COALESCE(SUM(jl.credit), 0) AS c
         FROM journal_lines jl
         JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
         JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = ${tenantId}
+        ${winJoin}
         WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
           AND t.basis <> 'cash'
-          ${o.from ? sql`AND t.txn_date >= ${o.from}` : sql``}
-          AND t.txn_date <= ${o.to}
+          ${from ? sql`AND t.txn_date >= ${from}` : sql``}
+          AND t.txn_date <= ${to}
           AND ${o.companyId ? sql`t.company_id = ${o.companyId}` : sql`TRUE`}
           AND ${adjustingCond(o.adjusting, 't.is_adjusting')}
           AND ${typeCond} AND ${lens}
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 4, 5
       `);
   return (res.rows as Array<Record<string, unknown>>).map((r) => ({
     accountId: String(r['account_id']),
     accountType: String(r['account_type']),
     key: (r['k'] as string | null) ?? null,
     pre: r['pre'] === true,
+    window: Number(r['w'] ?? 0),
     debit: dec(r['d'] as string),
     credit: dec(r['c'] as string),
   }));

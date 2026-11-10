@@ -324,6 +324,25 @@ describe('reports-columns-v1 / reports-drill-v1 (U-201, U-202)', () => {
     });
   }
 
+  it('36 monthly cash-basis columns with prior year and tag split run in one ledger pass', async () => {
+    const months = Array.from({ length: 36 }, (_, i) => {
+      const y = 2024 + Math.floor(i / 12);
+      const m = (i % 12) + 1;
+      const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      return `${y}-${String(m).padStart(2, '0')}-01..${y}-${String(m).padStart(2, '0')}-${last}`;
+    });
+    const t0 = Date.now();
+    const r = await get(`/profit-loss?exact=1&basis=cash&period_ranges=${months.join(',')}&prior=year&tag_split=1&tag_group_id=${ids['region']}&pct_of_income=1`);
+    const ms = Date.now() - t0;
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.columns.length).toBe(36 * 4 + 1);
+    expect(ms).toBeLessThan(15000);
+    const mar = r.body.columns.findIndex((c: any) => c.from === '2026-03-01' && c.kind === 'period');
+    const { body } = await plAmounts('2026-03-01', '2026-03-31', '&basis=cash');
+    expect(D(r.body.totalsExact.netIncome[mar]).eq(D(body.netIncomeExact))).toBe(true);
+    expect(checkSplitIdentity(r.body, PL_SECTIONS)).toBeGreaterThan(3);
+  });
+
   it('% of income rounds half away from zero at x.x5', async () => {
     // Jan 10: income 1000, no rent; Mar 5: rent 12.50, no income; Total: 12.50 / 1000 = 1.25% -> 1.3.
     const m = await get('/profit-loss?exact=1&period_ranges=2026-01-10..2026-01-10,2026-03-05..2026-03-05&pct_of_income=1');
