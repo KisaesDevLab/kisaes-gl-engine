@@ -1024,9 +1024,12 @@ export async function matchInTx(
     await recordAcceptItem(executor, { tenantId, companyId: opts.companyId, groupId: opts.acceptGroupId, ...record });
     opts.onRecorded?.(opts.acceptGroupId);
   } else {
-    opts.onRecorded?.(await recordAcceptGroup(executor, {
+    // Recorded also without onRecorded (api-v2, match-apply): `f?.(await g())`
+    // would skip g() when f is absent, leaving the match without its Undo record.
+    const groupId = await recordAcceptGroup(executor, {
       tenantId, companyId: opts.companyId, userId: opts.userId, source: record.kind, items: [record],
-    }));
+    });
+    opts.onRecorded?.(groupId);
   }
   return matched;
 }

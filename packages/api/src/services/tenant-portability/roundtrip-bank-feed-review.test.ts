@@ -46,7 +46,7 @@ async function q<T = Record<string, unknown>>(text: string, params: unknown[] = 
 /** The feed state with ids replaced by what they point at. */
 async function feedShape(tid: string) {
   return q(`
-    SELECT b.description, b.status, b.exclusion_reason AS reason, b.entry_voided_at IS NOT NULL AS voided,
+    SELECT b.description, b.status, b.exclusion_reason AS reason, b.entry_voided_at IS NOT NULL AS voided, b.entry_changed_at IS NOT NULL AS changed,
       jl.credit::text AS line_credit, (jl.transaction_id = b.matched_transaction_id) AS line_of_txn,
       b.suggested_rule_kind AS rule_kind, br.name AS rule_name, sbr.name AS state_rule
     FROM bank_feed_items b
@@ -103,6 +103,17 @@ beforeAll(async () => {
     tenantId, companyId, bankFeedItemId: ruled!.id, bucket: 'rule', matchedBankRuleId: rule!.id,
   });
   await db.insert(bankFeedItems).values({ ...base, amount: '5.0000', description: 'D removed', status: 'excluded', exclusionReason: 'duplicate' });
+  // U-199 (feed-entry-changed-v1): a matched entry whose amount was edited afterwards.
+  const e3 = await ledger.postTransaction(tenantId, {
+    txnType: 'expense', txnDate: '2026-06-15', total: '44.0000',
+    lines: [{ accountId: expense.id, debit: '44.0000', credit: '0' }, { accountId: bank.id, debit: '0', credit: '44.0000' }],
+  }, undefined, companyId);
+  const [changed] = await db.insert(bankFeedItems).values({ ...base, amount: '44.0000', description: 'E changed' }).returning();
+  await bankFeed.match(tenantId, changed!.id, e3.id);
+  await ledger.updateTransaction(tenantId, e3.id, {
+    txnType: 'expense', txnDate: '2026-06-15', total: '46.0000',
+    lines: [{ accountId: expense.id, debit: '46.0000', credit: '0' }, { accountId: bank.id, debit: '0', credit: '46.0000' }],
+  }, undefined, companyId);
 
   archive = await runExport(tenantId, callerId, { passphrase: PASS, host: { app: 'ClientLedger', kind: 'backup' } });
 }, 180_000);
@@ -124,7 +135,7 @@ afterAll(async () => {
   delete process.env['CL_ARCHIVE_DIR'];
 });
 
-describe('bank feed review columns in tenant archives (U-166, U-168, U-174)', () => {
+describe('bank feed review columns in tenant archives (U-166, U-168, U-174, U-199)', () => {
   it('classifies the new columns', () => {
     expect(SOFT_REFS['bank_feed_items.matched_journal_line_id']).toBe('tenant-ref:journal_lines');
     expect(SOFT_REFS['bank_feed_items.suggested_rule_id']).toBe('polymorphic');
@@ -140,6 +151,7 @@ describe('bank feed review columns in tenant archives (U-166, U-168, U-174)', ()
       expect.objectContaining({ description: 'B voided', status: 'matched', voided: true, line_credit: '43.0000', line_of_txn: true }),
       expect.objectContaining({ description: 'C UTILITY', rule_kind: 'legacy', rule_name: 'Utility rule', state_rule: 'Utility rule' }),
       expect.objectContaining({ description: 'D removed', status: 'excluded', reason: 'duplicate' }),
+      expect.objectContaining({ description: 'E changed', status: 'matched', changed: true, line_credit: '46.0000', line_of_txn: true }),
     ]);
     const imported = await runImport({ filePath: archive.path!, passphrase: PASS, callerUserId: callerId });
     createdTenants.push(imported.tenantId);
