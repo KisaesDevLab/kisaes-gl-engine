@@ -492,8 +492,17 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     'Standard: revenue/cogs/expenses/otherRevenue/otherExpenses[] {accountId, amount, amountExact, parentAccountId, depth, rollupExact?}, '
     + 'total*Exact, grossProfitExact, operatingIncomeExact, netIncomeExact; group_by adds groups[].subtotalExact. compare=previous_period|'
     + 'previous_year|ytd_vs_prior_ytd|multi_period|by_tag: rows[].valuesExact and groups[].valuesExact (amounts; $ change; % change at 1 place, '
-    + 'null on a zero base), total*Exact / netIncomeExact arrays.',
-    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), periods: z.string().optional(), period_type: z.string().optional(),
+    + 'null on a zero base), total*Exact / netIncomeExact arrays. Column layout (reports-columns-v1; with period_ranges, ytd, prior, '
+    + 'compare=by_contact, compare=by_tag&tag_group_id, tag_split, pct_of_income or tag_id=untagged): {layout: "columns", columns[] {key, caption, '
+    + 'kind period|total|ytd|prior|change|pct_change|contact|others|no_contact|tag|no_tag, valueType amount|percent, from, to, contactId?, tagId?, '
+    + 'baseKey?, drill}, revenue/cogs/expenses/otherRevenue/otherExpenses[] {rowKind account|tag|account_total, accountId, name, accountNumber, '
+    + 'parentAccountId, depth, tagId?, tagNumber?, tagName?, valuesExact[] (one per column), rollupValuesExact?, pctOfIncomeExact?, drill}, '
+    + 'totalsExact {totalRevenue, totalCogs, totalExpenses, totalOtherRevenue, totalOtherExpenses, grossProfit|null, operatingIncome|null, '
+    + 'netIncome: values[]}, pctOfIncomeTotalsExact?, tagSplit {tagGroupId, tags[]}|null, drillTarget {path, amount: netChangeExact, params}}. '
+    + 'A cell drills to GET /reports/general-ledger with drillTarget.params + column.drill + row.drill (exact=1); the account\'s netChangeExact '
+    + 'equals the cell.',
+    { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, compare: z.string().optional().describe('previous_period|previous_year|ytd_vs_prior_ytd|multi_period|by_tag|by_contact'),
+      periods: z.string().optional(), period_type: z.string().optional(),
       group_by: z.enum(['detail_type', 'leadsheet']).optional(), ...COLUMNS_Q }),
   needsExact(COLUMN_PARAMS, (req) => (req.query['compare'] === 'by_contact' ? 'compare' : untaggedNeedsExact(req))),
   exactOnly(async (req) => {
@@ -523,7 +532,11 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
 
   router.get('/balance-sheet', doc('Balance Sheet',
     'assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and '
-    + 'equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays.',
+    + 'equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. Column layout '
+    + '(reports-columns-v1; with period_ranges, prior, tag_split or tag_id=untagged): as on the P&L, sections assets/liabilities/equity, one '
+    + 'column per as-of date (kind as_of, asOf), totalsExact {totalAssets, totalLiabilities, totalEquity, totalLiabilitiesAndEquity}; '
+    + 'calculated: true rows (Retained Earnings (Prior Years), Net Income (Current Year)) and the Retained Earnings account '
+    + '(includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column).',
     { as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), group_by: z.enum(['detail_type', 'leadsheet']).optional(),
       start_date: z.string().optional().describe('With prior=period and no period_ranges: the period start (prior as-of = the day before)'),
       period_ranges: COLUMNS_Q.period_ranges, prior: COLUMNS_Q.prior, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
@@ -548,7 +561,9 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
 
   router.get('/trial-balance', doc('Trial Balance',
     'data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, '
-    + 'depth, rollupExact?}, totalDebitsExact, totalCreditsExact.',
+    + 'depth, rollupExact?}, totalDebitsExact, totalCreditsExact, drillTarget {path, amount: endingBalanceExact, startDate, endDate, params}. '
+    + 'tag_split=1&tag_group_id= (reports-columns-v1): each row becomes rowKind account (untagged in the group), tag rows and account_total '
+    + '(the unsplit row), each with drill; totals unchanged.',
     { ...RANGE_Q, as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
   needsExact(['tag_split', 'tag_group_id']),
   exactOnly(async (req) => {
@@ -584,7 +599,11 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   router.get('/general-ledger', doc('General Ledger',
     'accounts[] {accountId, beginningBalanceExact, periodDebitsExact, periodCreditsExact, endingBalanceExact, lines[] {lineId, transactionId, '
     + 'debitExact, creditExact, runningBalanceExact}}, totalDebitsExact, totalCreditsExact, rowCount (all lines), truncated. limit returns at most '
-    + 'that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids.',
+    + 'that many lines in report order; balances and totals still cover every line. Cash-basis lineIds are row numbers, not journal line ids. '
+    + 'reports-drill-v1: accounts[].netChangeExact (ending - beginning, natural sign; what a P&L cell drills to), lines[].sourceLineId (the '
+    + 'journal line; cash basis: the line passed through, null for a share of a paid document), lines[].contactId (the line\'s client); the '
+    + 'drill filters apply to beginning balances and lines alike; tag_split=1&tag_group_id= adds accounts[].tagSplit[] {rowKind account|tag|'
+    + 'account_total, tagId, tagNumber, tagName, periodDebitsExact, periodCreditsExact, netChangeExact}.',
     { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, limit: z.string().optional().describe('1-100000'),
       ...DRILL_Q, tag_split: COLUMNS_Q.tag_split,
       group_by: z.enum(['transaction']).optional().describe('transaction = the Journal: transactions[] {transactionId, date, txnType, txnNumber, '
