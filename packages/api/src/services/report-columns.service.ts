@@ -194,7 +194,7 @@ function anyNonZero(values: Array<Dec | string | null>, defs: ColDef[]): boolean
 
 // ─── Rows ────────────────────────────────────────────────────────
 
-export type RowKind = 'account' | 'tag' | 'account_total' | 'calculated';
+export type RowKind = 'account' | 'tag' | 'account_total';
 
 export interface ColumnRow {
   rowKind: RowKind;
@@ -210,6 +210,8 @@ export interface ColumnRow {
   /** Own amount + every descendant, per column (parents only; account rows). */
   rollupValuesExact?: Array<string | null>;
   pctOfIncomeExact?: Array<string | null>;
+  /** Balance Sheet rows with no account behind them (prior years' income, current-year net income). */
+  calculated?: boolean;
   /** Added to a column's drill, selects the row's lines on the General Ledger; null = no drill. */
   drill: Drill | null;
 }
@@ -638,6 +640,13 @@ export async function buildBalanceSheetColumns(tenantId: string, o: BsColumnsOpt
   const assets = section('asset');
   const liabilities = section('liability');
   const equity = section('equity');
+  // The designated Retained Earnings account also carries the prior years'
+  // income, which no ledger line holds: its rows have no drill.
+  if (reAccount) {
+    for (const row of equity.rows) {
+      if (row.accountId === reAccount.id) { row.drill = null; (row as ColumnRow & { includesPriorYearsIncome?: boolean }).includesPriorYearsIncome = true; }
+    }
+  }
 
   // Calculated rows: prior years' income (when no Retained Earnings account
   // is designated) and the current year's net income. They have no drill.
@@ -647,10 +656,10 @@ export async function buildBalanceSheetColumns(tenantId: string, o: BsColumnsOpt
     const v = calcValues(which, all);
     if (!anyNonZero(v, defs)) return;
     equityTotal = rederive(addValues(equityTotal, v, defs), defs);
-    const base = { accountId: null, name, accountNumber: null, parentAccountId: null, depth: 0 };
-    if (!split) { calcRows.push({ rowKind: 'calculated', ...base, valuesExact: toWire(v, defs), drill: null }); return; }
+    const base = { accountId: null, name, accountNumber: null, parentAccountId: null, depth: 0, calculated: true };
+    if (!split) { calcRows.push({ rowKind: 'account', ...base, valuesExact: toWire(v, defs), drill: null }); return; }
     const inGroup = new Set(split.tags.map((t) => t.id));
-    calcRows.push({ rowKind: 'calculated', ...base, tagId: null, tagNumber: null, tagName: null,
+    calcRows.push({ rowKind: 'account', ...base, tagId: null, tagNumber: null, tagName: null,
       valuesExact: toWire(calcValues(which, (k) => k === null || !inGroup.has(k)), defs), drill: null });
     for (const t of split.tags) {
       const tv = calcValues(which, (k) => k === t.id);

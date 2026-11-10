@@ -1058,5 +1058,31 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * and tenant archives with ids remapped.
    */
   'report-defs-v1',
+  /**
+   * Report columns and tag split (U-201, ClientLedger P28 PR-B). With exact=1 on /reports/profit-loss and /reports/balance-sheet:
+   * period_ranges=YYYY-MM-DD..YYYY-MM-DD,… (at most 36, in date order, not overlapping; 4-4-5 or custom; Balance Sheet as of each end),
+   * ytd=1[&fiscal_year_start=] (P&L), prior=period|year ($ change = current - prior, % change = change / |prior|), compare=by_contact
+   * (P&L: the 36 most active clients by name, an engine-summed All others, No client, Total; client = the line's contact, else its
+   * transaction's), compare=by_tag&tag_group_id= (P&L: each group tag with activity, No tag in group, Total), pct_of_income=1 (P&L),
+   * tag_id=untagged, tag_split=1&tag_group_id= (rows per account: rowKind account = lines without a tag from the group, tag per group
+   * tag with activity, account_total = untagged + tags; section totals unchanged; also on /reports/trial-balance and
+   * /reports/general-ledger accounts[].tagSplit). Column layout: {layout: 'columns', columns [{key, caption, kind, valueType, from, to,
+   * asOf?, contactId?, tagId?, baseKey?, drill}], sections of rows {rowKind, accountId, parentAccountId, depth, tagId?, valuesExact[],
+   * rollupValuesExact?, pctOfIncomeExact?, drill}, totalsExact {section: values[]}, drillTarget {path, amount, params}}. Percents are
+   * 1 place, half away from zero, null on a zero base. All values exact and Decimal-summed. Errors 400 INVALID_PARAM / INVALID_DATE_RANGE
+   * (details.param), 404 unknown tag group; a new option without exact=1 (or with format=) is 400.
+   */
+  'reports-columns-v1',
+  /**
+   * Drill targets (U-202, ClientLedger P28 PR-B). With exact=1, /reports/general-ledger and /reports/transaction-list filter per line by
+   * contact_id (ids | none | others&exclude_contact_ids=), account_ids (at most 500; POST the same parameters as a JSON body for long
+   * lists), tag_id (ids | untagged), tag_scope=untagged_in_group&tag_group_id=, amount_min / amount_max (|debit - credit|, decimal
+   * strings), cleared=cleared|uncleared|reconciled, txn_types, adjusting; balances and lines alike, so a report cell's drill (its row
+   * drill + its column drill + drillTarget.params) sums exactly to the cell (GL netChangeExact for P&L, endingBalanceExact for Balance
+   * Sheet and Trial Balance). GL accounts gain netChangeExact, lines sourceLineId and contactId; transaction-list rows accountId and
+   * contactId, and cash-basis rows carry the journal line id of a line passed through. group_by=transaction on the GL is the Journal.
+   * Sales by Client / by Item take adjusting and return grandTotalExact.
+   */
+  'reports-drill-v1',
 ];
 
