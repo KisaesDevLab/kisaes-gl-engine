@@ -1044,5 +1044,19 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * response shapes are unchanged (their number totals are now summed in Decimal); an exact value other than 1/0/true/false is 400.
    */
   'reports-exact-v1',
+  /**
+   * Saved report definitions (U-118, ClientLedger P28 PR-F; ADD-03 Q-310 / Q-312; migration 0274). GET/POST
+   * /report-builder/definitions (?groupId=<id>|none, ?kind=), GET/PUT/DELETE /report-builder/definitions/:id, GET/POST
+   * /report-builder/definition-groups, PUT/DELETE /report-builder/definition-groups/:id (a deleted group's reports move to no
+   * group, each with a new version). Definition {schemaVersion: 1, kind: 'standard', reportKey /^[a-z0-9_]{1,64}$/, options};
+   * ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.budgetId, and they
+   * must be in the company. Row {id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt};
+   * group {id, name, sort, version, definitionCount, updatedAt}. Needs report access (reports read); only the author, an owner or
+   * a super admin changes or deletes a saved report (403 NOT_AUTHOR). POST/PUT take Idempotency-Key; PUT body and DELETE
+   * ?version= carry the version read (409 STALE_VERSION details.current). 409 NAME_TAKEN (unique per company, case-insensitive,
+   * live rows), 400 DEFINITION_INVALID details.path, 413 DEFINITION_TOO_LARGE (64 KB). Soft delete; audited; carried by backups
+   * and tenant archives with ids remapped.
+   */
+  'report-defs-v1',
 ];
 
