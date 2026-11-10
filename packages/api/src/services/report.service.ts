@@ -3191,10 +3191,17 @@ export async function buildTrialBalance(
   // the number fields are derived from the same Decimals.
   const exactMode = !!tbOpts.exactAmounts;
   const netOf = new Map<object, InstanceType<typeof Decimal>>();
-  // Rows stay loosely typed as before (the raw SQL row plus the netted columns).
-  const tbRow = (base: Record<string, unknown>, dD: InstanceType<typeof Decimal>, cD: InstanceType<typeof Decimal>): any => {
+  type TBRow = {
+    id: string | null; account_number: string | null; name: string; account_type: string;
+    total_debit: number; total_credit: number; debit: number; credit: number;
+    // Exact reports only.
+    accountId?: string | null; total_debitExact?: string; total_creditExact?: string;
+    debitExact?: string; creditExact?: string; netExact?: string;
+  };
+  type TBBase = { id: string | null; account_number: string | null; name: string; account_type: string };
+  const tbRow = (base: TBBase, dD: InstanceType<typeof Decimal>, cD: InstanceType<typeof Decimal>): TBRow => {
     const net = dD.minus(cD);
-    const row: Record<string, unknown> = {
+    const row: TBRow = {
       ...base,
       total_debit: legacyNum(dD),
       total_credit: legacyNum(cD),
@@ -3202,7 +3209,7 @@ export async function buildTrialBalance(
       credit: net.lt(0) ? legacyNum(net.abs()) : 0,
       ...(exactMode
         ? {
-            accountId: (base['id'] as string | null) ?? null,
+            accountId: base.id,
             total_debitExact: exactStr(dD),
             total_creditExact: exactStr(cD),
             debitExact: exactStr(net.gt(0) ? net : 0),
@@ -3214,12 +3221,12 @@ export async function buildTrialBalance(
     netOf.set(row, net);
     return row;
   };
-  const data: any[] = (rows.rows as any[]).map((r) => tbRow(r, new Decimal(r.total_debit || 0), new Decimal(r.total_credit || 0)))
+  const data: TBRow[] = (rows.rows as any[]).map((r) => tbRow(r, new Decimal(r.total_debit || 0), new Decimal(r.total_credit || 0)))
     // The HAVING above keeps accounts with LIFETIME activity; drop rows
     // that net to zero after the fiscal-YTD CASE and debit/credit netting
     // (fully-offset accounts, prior-fiscal-year-only income accounts).
     // Legacy responses also drop a net that rounds to 0 at 4 places.
-    .filter((r) => !netOf.get(r)!.isZero() && (exactMode || r['debit'] !== 0 || r['credit'] !== 0));
+    .filter((r) => !netOf.get(r)!.isZero() && (exactMode || r.debit !== 0 || r.credit !== 0));
 
   // Add Retained Earnings row for prior-year net income (virtual closing).
   //
@@ -3267,12 +3274,12 @@ export async function buildTrialBalance(
   });
 
   if (exactMode) {
-    let out: any[] = data;
+    let out: TBRow[] = data;
     if (tbOpts.accountTree) {
       const tree = await loadAccountTree(tenantId);
-      out = applyAccountTree(data as Array<{ accountId: string | null }>, tree,
-        (r) => netOf.get(r) ?? dec((r as Record<string, string>)['netExact']),
-        (n) => tbRow({ id: n.id, account_number: n.accountNumber, name: n.name, account_type: n.accountType }, new Decimal(0), new Decimal(0)));
+      out = applyAccountTree(data as Array<TBRow & { accountId: string | null }>, tree,
+        (r) => netOf.get(r) ?? dec(r.netExact),
+        (n) => tbRow({ id: n.id, account_number: n.accountNumber, name: n.name, account_type: n.accountType }, new Decimal(0), new Decimal(0)) as TBRow & { accountId: string | null });
     }
     return {
       title: 'Trial Balance', startDate, endDate, data: out, totalDebits, totalCredits,
