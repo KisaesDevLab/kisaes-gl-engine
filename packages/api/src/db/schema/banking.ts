@@ -97,6 +97,10 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   // and when the entry the item points at was voided (Q-P26u).
   matchedJournalLineId: uuid('matched_journal_line_id'),
   entryVoidedAt: timestamp('entry_voided_at', { withTimezone: true }),
+  // Migration 0273 (U-199, feed-entry-changed-v1): when an edit of the entry
+  // changed this item's line (amount or account; Q-PR5a). Status and entry
+  // are kept; "Review again" clears it.
+  entryChangedAt: timestamp('entry_changed_at', { withTimezone: true }),
   // Migration 0266 (U-168, U-174): the rule that staged the suggestion
   // ('conditional' = conditional_rules, 'legacy' = bank_rules), written with
   // the suggestion; why an excluded item was excluded ('duplicate' or NULL).
@@ -127,6 +131,8 @@ export const bankFeedItems = pgTable('bank_feed_items', {
   matchedTxnIdx: index('idx_bfi_matched_txn').on(table.tenantId, table.matchedTransactionId)
     .where(sql`matched_transaction_id IS NOT NULL`),
   entryVoidedIdx: index('idx_bfi_entry_voided').on(table.tenantId, table.entryVoidedAt).where(sql`entry_voided_at IS NOT NULL`),
+  // Migration 0273.
+  entryChangedIdx: index('idx_bfi_entry_changed').on(table.tenantId, table.entryChangedAt).where(sql`entry_changed_at IS NOT NULL`),
   // Migration 0268: the transfer-twin match signal (bank-feed-buckets.ts).
   waitingAmountIdx: index('idx_bfi_waiting_amount').on(table.tenantId, table.amount)
     .where(sql`status IN ('pending', 'assigned')`),

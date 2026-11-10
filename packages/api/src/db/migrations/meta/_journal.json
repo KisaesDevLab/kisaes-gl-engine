@@ -1912,6 +1912,13 @@
       "when": 1787900024380,
       "tag": "0272_reconciliations_one_in_progress",
       "breakpoints": true
+    },
+    {
+      "idx": 273,
+      "version": "7",
+      "when": 1788000024380,
+      "tag": "0273_bank_feed_entry_changed",
+      "breakpoints": true
     }
   ]
 }
