@@ -57057,6 +57057,553 @@
         ]
       }
     },
+    "/api/v1/report-builder/definition-groups": {
+      "get": {
+        "description": "Response `{groups: [group]}` by sort then name, group `{id, name, sort, version, definitionCount, updatedAt}`.",
+        "operationId": "get_api_v1_report_builder_definition_groups",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List saved-report groups (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      },
+      "post": {
+        "description": "Response 201 `{group}`, group `{id, name, sort, version, definitionCount, updatedAt}`. 409 NAME_TAKEN (unique per company, case-insensitive, among groups not deleted).",
+        "operationId": "post_api_v1_report_builder_definition_groups",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sort": {
+                    "maximum": 100000,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a saved-report group (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/report-builder/definition-groups/{id}": {
+      "delete": {
+        "description": "204. Each moved report gets a new version (audited). 409 STALE_VERSION {details.current}.",
+        "operationId": "delete_api_v1_report_builder_definition_groups_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a saved-report group (soft); its reports move to no group (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      },
+      "put": {
+        "description": "Body `{version, name?, sort?}`. Response `{group}`. 409 STALE_VERSION {details.current}, NAME_TAKEN.",
+        "operationId": "put_api_v1_report_builder_definition_groups_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sort": {
+                    "maximum": 100000,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "version": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Rename or reorder a saved-report group (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/report-builder/definitions": {
+      "get": {
+        "description": "Every saved report of the company, by name. Response `{definitions: [row]}`, row `{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310).",
+        "operationId": "get_api_v1_report_builder_definitions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "groupId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "const": "none",
+                  "type": "string"
+                }
+              ],
+              "description": "a group id, or none for reports in no group"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "enum": [
+                "standard"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List saved reports (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      },
+      "post": {
+        "description": "Body `{name, groupId?, kind?, definition: {schemaVersion: 1, kind: 'standard', reportKey, options}}`. Response 201 `{definition: row}`, row `{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310). The caller is the author. 400 DEFINITION_INVALID {details.path} (shape, a uuid outside the id paths, or an id not in this company), VALIDATION_ERROR {details.field: groupId}; 409 NAME_TAKEN (names are unique per company, case-insensitive, among saved reports not deleted); 413 DEFINITION_TOO_LARGE {details.limit}.",
+        "operationId": "post_api_v1_report_builder_definitions",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "definition": {
+                    "additionalProperties": false,
+                    "description": "at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})",
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "standard"
+                        ],
+                        "type": "string"
+                      },
+                      "options": {
+                        "additionalProperties": {},
+                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId and options.budgetId",
+                        "type": "object"
+                      },
+                      "reportKey": {
+                        "description": "the report, /^[a-z0-9_]{1,64}$/",
+                        "pattern": "^[a-z0-9_]{1,64}$",
+                        "type": "string"
+                      },
+                      "schemaVersion": {
+                        "const": 1,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "schemaVersion",
+                      "kind",
+                      "reportKey",
+                      "options"
+                    ],
+                    "type": "object"
+                  },
+                  "groupId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "kind": {
+                    "description": "optional; must equal definition.kind",
+                    "enum": [
+                      "standard"
+                    ],
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "definition"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Save a report (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/report-builder/definitions/{id}": {
+      "delete": {
+        "description": "204. 403 NOT_AUTHOR (only the author, an owner or a super admin); 409 STALE_VERSION {details.current}.",
+        "operationId": "delete_api_v1_report_builder_definitions_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete a saved report (soft) (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      },
+      "get": {
+        "description": "Response `{definition: row}`, row `{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310). Another company's or a deleted report: 404.",
+        "operationId": "get_api_v1_report_builder_definitions_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Get a saved report (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      },
+      "put": {
+        "description": "Body `{version, name?, groupId?, definition?}` (groupId null moves it to no group; the kind cannot change). Response `{definition: row}` with the next version. 403 NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.",
+        "operationId": "put_api_v1_report_builder_definitions_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "definition": {
+                    "additionalProperties": false,
+                    "description": "at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})",
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "standard"
+                        ],
+                        "type": "string"
+                      },
+                      "options": {
+                        "additionalProperties": {},
+                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId and options.budgetId",
+                        "type": "object"
+                      },
+                      "reportKey": {
+                        "description": "the report, /^[a-z0-9_]{1,64}$/",
+                        "pattern": "^[a-z0-9_]{1,64}$",
+                        "type": "string"
+                      },
+                      "schemaVersion": {
+                        "const": 1,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "schemaVersion",
+                      "kind",
+                      "reportKey",
+                      "options"
+                    ],
+                    "type": "object"
+                  },
+                  "groupId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "version": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Change a saved report (report-defs-v1)",
+        "tags": [
+          "report-builder"
+        ],
+        "x-idempotency": true
+      }
+    },
     "/api/v1/reports/account-activity-summary": {
       "get": {
         "description": "data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",

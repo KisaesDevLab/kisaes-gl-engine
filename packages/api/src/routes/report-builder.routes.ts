@@ -51,7 +51,7 @@ const definitionDoc = z.object({
   kind: z.enum(REPORT_DEFINITION_KINDS),
   reportKey: z.string().regex(defs.REPORT_KEY_RE).describe('the report, /^[a-z0-9_]{1,64}$/'),
   options: z.record(z.unknown()).describe('report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId and options.budgetId'),
-}).describe('at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})');
+}).strict().describe('at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})');
 
 const createDefinitionSchema = z.object({
   name: name(200),
@@ -78,6 +78,13 @@ const listQuery = z.object({
   groupId: z.union([z.string().uuid(), z.literal('none')]).optional().describe('a group id, or none for reports in no group'),
   kind: z.enum(REPORT_DEFINITION_KINDS).optional(),
 });
+
+/**
+ * The documented body: `definition` is checked by the service (so its errors
+ * are DEFINITION_INVALID / DEFINITION_TOO_LARGE), but documented in full.
+ * Placed after validate(): the OpenAPI export takes the last body in the chain.
+ */
+const bodyDoc = (schema: z.ZodTypeAny) => describe({ body: schema });
 
 const ROW_DOC = '`{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310).';
 const GROUP_DOC = '`{id, name, sort, version, definitionCount, updatedAt}`';
@@ -108,8 +115,7 @@ reportBuilderRouter.get('/definitions', describe({
 reportBuilderRouter.post('/definitions', describe({
   summary: 'Save a report (report-defs-v1)',
   description: `Body \`{name, groupId?, kind?, definition: {schemaVersion: 1, kind: 'standard', reportKey, options}}\`. Response 201 \`{definition: row}\`, row ${ROW_DOC} The caller is the author. 400 DEFINITION_INVALID {details.path} (shape, a uuid outside the id paths, or an id not in this company), VALIDATION_ERROR {details.field: groupId}; 409 NAME_TAKEN (names are unique per company, case-insensitive, among saved reports not deleted); 413 DEFINITION_TOO_LARGE {details.limit}.`,
-  body: createDefinitionSchema.extend({ definition: definitionDoc }),
-}), validate(createDefinitionSchema), idempotent({
+}), validate(createDefinitionSchema), bodyDoc(createDefinitionSchema.extend({ definition: definitionDoc })), idempotent({
   successStatus: 201,
   replay: async (req, entity) => ({ definition: await defs.getDefinition(req.tenantId, req.companyId, entity!.id, viewer(req)) }),
 }), async (req, res) => {
@@ -129,11 +135,10 @@ reportBuilderRouter.put('/definitions/:id', describe({
   summary: 'Change a saved report (report-defs-v1)',
   description: `Body \`{version, name?, groupId?, definition?}\` (groupId null moves it to no group; the kind cannot change). Response \`{definition: row}\` with the next version. 403 NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.`,
   params: idParams,
-  body: updateDefinitionSchema.extend({ definition: definitionDoc.optional() }),
 }), authorMw, idempotent({
   successStatus: 200,
   replay: async (req) => ({ definition: await defs.getDefinition(req.tenantId, req.companyId, req.params['id']!, viewer(req)) }),
-}), validate(updateDefinitionSchema), async (req, res) => {
+}), validate(updateDefinitionSchema), bodyDoc(updateDefinitionSchema.extend({ definition: definitionDoc.optional() })), async (req, res) => {
   const id = uuidParam(req.params['id'], defs.definitionNotFound);
   res.json({ definition: await defs.updateDefinition(req.tenantId, req.companyId, viewer(req), id, req.body) });
 });
