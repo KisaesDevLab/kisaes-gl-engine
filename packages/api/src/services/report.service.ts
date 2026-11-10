@@ -3,8 +3,10 @@
 // See LICENSE and NOTICE.md for terms.
 
 import { eq, and, sql, lte, gte, between, count, or, ne, type SQL } from 'drizzle-orm';
-import DecimalLib from 'decimal.js';
-const Decimal = DecimalLib.default || DecimalLib;
+// Report arithmetic runs at 60 significant digits (ReportDecimal): a
+// cash-basis allocation carries many places, and the default 20 digits
+// would round a sum of them (U-14).
+import { ReportDecimal as Decimal } from './report-exact.js';
 import {
   type PLSectionLabels,
   type BSSectionLabels,
@@ -1425,7 +1427,7 @@ export interface ExpenseVendorAccountRow {
   name: string;
   total: number;
   // Exact reports (U-14): the same total as a decimal string.
-  totalExact: string;
+  totalExact?: string;
 }
 
 // A vendor with the accounts it was paid to and the vendor total.
@@ -1434,7 +1436,7 @@ export interface ExpenseVendorGroup {
   vendorName: string;
   accounts: ExpenseVendorAccountRow[];
   total: number;
-  totalExact: string;
+  totalExact?: string;
 }
 
 export async function buildExpenseByVendor(
@@ -1449,6 +1451,8 @@ export async function buildExpenseByVendor(
   // so wash/clearing accounts don't double-count (see the summary query).
   detail = false,
   basis: Basis = 'accrual',
+  // exactAmounts (U-14): totalExact on detail groups and their accounts.
+  evOpts: { exactAmounts?: boolean } = {},
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
@@ -1553,9 +1557,16 @@ export async function buildExpenseByVendor(
     g.totalExact = exactStr(dec(g.totalExact).plus(totalD));
     g.total = legacyNum(g.totalExact);
   }
+  const byTotal = (a: { totalExact?: string }, b: { totalExact?: string }) => dec(b.totalExact).comparedTo(dec(a.totalExact));
+  const strip = <T extends { totalExact?: string }>(x: T): T => {
+    if (evOpts.exactAmounts) return x;
+    const { totalExact: _drop, ...rest } = x;
+    return rest as T;
+  };
   const groups = [...byVendor.values()]
-    .map((g) => ({ ...g, accounts: g.accounts.sort((a, b) => dec(b.totalExact).comparedTo(dec(a.totalExact))) }))
-    .sort((a, b) => dec(b.totalExact).comparedTo(dec(a.totalExact)));
+    .map((g) => ({ ...g, accounts: g.accounts.sort(byTotal).map(strip) }))
+    .sort(byTotal)
+    .map(strip);
 
   return { ...summary, groups };
 }
@@ -2252,6 +2263,8 @@ export async function buildBankBalances(
   tenantId: string,
   asOfDate: string,
   companyId: string | null = null,
+  // exactAmounts (U-14): balanceExact and totalBalanceExact.
+  bbOpts: { exactAmounts?: boolean } = {},
 ) {
   const companyCond = companyId ? sql`company_id = ${companyId}` : sql`TRUE`;
   const detailList = sql.join(BANK_ACCOUNT_DETAIL_TYPES.map((d) => sql`${d}`), sql`, `);
@@ -2280,7 +2293,7 @@ export async function buildBankBalances(
     name: string;
     balance: number;
     // Exact reports (U-14): the balance as a decimal string.
-    balanceExact: string;
+    balanceExact?: string;
     isInactive: boolean;
   };
   const entries: BankBalanceEntry[] = [];
@@ -2302,7 +2315,7 @@ export async function buildBankBalances(
       accountNumber: row.account_number,
       name: isInactive ? `${row.name} (inactive)` : row.name,
       balance,
-      balanceExact: exactStr(balD),
+      ...(bbOpts.exactAmounts ? { balanceExact: exactStr(balD) } : {}),
       isInactive,
     });
     total = total.plus(balD);
@@ -2315,7 +2328,7 @@ export async function buildBankBalances(
     footer,
     accounts: entries,
     totalBalance: legacyNum(total),
-    totalBalanceExact: exactStr(total),
+    ...(bbOpts.exactAmounts ? { totalBalanceExact: exactStr(total) } : {}),
   };
 }
 
@@ -3309,6 +3322,8 @@ export async function buildAccountActivitySummary(
   // include every line of any transaction that has at least one line
   // carrying the tag, so both sides of a tagged entry stay visible.
   tagId: string | null = null,
+  // exactAmounts (U-14): *Exact strings on rows and totals.
+  aaOpts: { exactAmounts?: boolean } = {},
 ) {
   const tagExistsClause = tagId
     ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id IN ${tagIn(tagId)})`
@@ -3352,8 +3367,9 @@ export async function buildAccountActivitySummary(
     tc = tc.plus(c);
     return {
       ...r, total_debit: legacyNum(d), total_credit: legacyNum(c), net: legacyNum(d.minus(c)),
-      // Exact reports (U-14).
-      total_debitExact: exactStr(d), total_creditExact: exactStr(c), netExact: exactStr(d.minus(c)),
+      ...(aaOpts.exactAmounts
+        ? { total_debitExact: exactStr(d), total_creditExact: exactStr(c), netExact: exactStr(d.minus(c)) }
+        : {}),
     };
   });
 
@@ -3365,9 +3381,9 @@ export async function buildAccountActivitySummary(
     totalDebits: legacyNum(td),
     totalCredits: legacyNum(tc),
     totalNet: legacyNum(td.minus(tc)),
-    totalDebitsExact: exactStr(td),
-    totalCreditsExact: exactStr(tc),
-    totalNetExact: exactStr(td.minus(tc)),
+    ...(aaOpts.exactAmounts
+      ? { totalDebitsExact: exactStr(td), totalCreditsExact: exactStr(tc), totalNetExact: exactStr(td.minus(tc)) }
+      : {}),
   };
 }
 
@@ -3379,7 +3395,11 @@ export async function buildTransactionList(tenantId: string, filters?: {
   basis?: Basis;
   /** U-60 adjusting lens (default include). */
   adjusting?: AdjustingFilter | null;
+  /** Exact reports (U-14): rows also carry line_id (the journal line; null on cash basis). */
+  exactAmounts?: boolean;
 }, companyId: string | null = null) {
+  const lineIdCol = filters?.exactAmounts ? sql`jl.id AS line_id, ` : sql``;
+  const cbLineIdCol = filters?.exactAmounts ? sql`NULL::uuid AS line_id, ` : sql``;
   // Cash basis: list the virtual cash-basis ledger (income/expense recognition
   // moved to payment dates), one row per cash-basis line. Accrual: the posted
   // journal (excluding cash-only entries).
@@ -3391,7 +3411,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
     const tagCond = filters?.tagId ? sql`AND cb.tag_id IN ${tagIn(filters.tagId)}` : sql``;
     const cashRows = await executeCashBasis(sql`
       WITH ${cashBasisLinesWith(tenantId, start, end, companyId, filters?.adjusting ?? null)}
-      SELECT cb.transaction_id AS id, NULL::uuid AS line_id, cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
+      SELECT cb.transaction_id AS id, ${cbLineIdCol}cb.txn_type, cb.txn_number, cb.txn_date, cb.memo, 'posted' AS status,
         c.display_name AS contact_name,
         a.account_number, a.name AS account_name,
         CASE WHEN a.account_number IS NOT NULL AND a.account_number <> ''
@@ -3428,7 +3448,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
   // Void transactions are already excluded (status = 'posted' above); the
   // is_void_reversal filter drops the reversing lines the voider persisted.
   const rows = await db.execute(sql`
-    SELECT t.id, jl.id AS line_id, t.txn_type, t.txn_number, t.txn_date, t.memo, t.status,
+    SELECT t.id, ${lineIdCol}t.txn_type, t.txn_number, t.txn_date, t.memo, t.status,
       -- STATEMENT_CHECK_PAYEE_V1 — fall back to the check-image payee.
       COALESCE(c.display_name, t.payee_name_on_check) as contact_name,
       a.account_number, a.name AS account_name,
@@ -3460,10 +3480,11 @@ export async function buildJournalEntryReport(
   // Detail views, which filter line-by-line.
   tagId: string | null = null,
   adjusting: AdjustingFilter | null = null,
+  jeOpts: { exactAmounts?: boolean } = {},
 ) {
   return buildTransactionList(
     tenantId,
-    { ...dateRange, txnType: 'journal_entry', ...(tagId ? { tagId } : {}), adjusting },
+    { ...dateRange, txnType: 'journal_entry', ...(tagId ? { tagId } : {}), adjusting, exactAmounts: jeOpts.exactAmounts },
     companyId,
   );
 }

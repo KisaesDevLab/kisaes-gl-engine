@@ -16,7 +16,16 @@
 // into a JS number.
 
 import DecimalLib from 'decimal.js';
-const Decimal = DecimalLib.default || DecimalLib;
+const BaseDecimal = DecimalLib.default || DecimalLib;
+
+/**
+ * Decimal for report arithmetic: 60 significant digits. A cash-basis
+ * allocation (line x applied / document total) keeps PostgreSQL's full
+ * quotient, and decimal.js's default 20 digits would round a sum of such
+ * values; 60 digits keeps every report sum exact.
+ */
+export const ReportDecimal = BaseDecimal.clone({ precision: 60, rounding: BaseDecimal.ROUND_HALF_UP });
+const Decimal = ReportDecimal;
 
 export type Dec = InstanceType<typeof Decimal>;
 export type MoneyIn = Dec | string | number | null | undefined;
@@ -29,8 +38,8 @@ export const STORED_SCALE = 4;
 /** A Decimal from a pg numeric string, a Decimal, or (legacy) a number. */
 export function dec(x: MoneyIn): Dec {
   if (x === null || x === undefined || x === '') return new Decimal(0);
-  if (x instanceof Decimal) return x as Dec;
-  return new Decimal(typeof x === 'number' ? String(x) : x);
+  if (BaseDecimal.isDecimal(x)) return new Decimal(x as Dec);
+  return new Decimal(typeof x === 'number' ? String(x) : (x as string));
 }
 
 /**
@@ -114,7 +123,7 @@ export function normalizeReportDates<T>(value: T): T {
   const walk = (v: unknown, key: string | null): unknown => {
     if (v instanceof Date) return key !== null && isDateKey(key) ? toCalendarDate(v) : v;
     if (Array.isArray(v)) return v.map((x) => walk(x, key));
-    if (v && typeof v === 'object' && !(v instanceof Decimal)) {
+    if (v && typeof v === 'object' && !BaseDecimal.isDecimal(v)) {
       const o: Record<string, unknown> = {};
       for (const [k, x] of Object.entries(v as Record<string, unknown>)) o[k] = walk(x, k);
       return o;
@@ -230,11 +239,23 @@ export function applyAccountTree<E extends { accountId: string | null }>(
     parentOf.set(e.accountId, p && byId.has(p) ? p : null);
   }
   const children = new Map<string | null, E[]>();
-  // Original order for children; added ancestors sort by number then name.
-  const order = [...entries, ...added.sort((a, b) => {
-    const na = tree.get(a.accountId!)!; const nb = tree.get(b.accountId!)!;
-    return (na.accountNumber ?? '').localeCompare(nb.accountNumber ?? '', undefined, { numeric: true }) || na.name.localeCompare(nb.name);
-  })];
+  // Siblings keep the report's order: each row sorts by the earliest
+  // original position of itself or any descendant, so an added parent
+  // sits where its first child was (not after every other root).
+  const rank = new Map<E, number>();
+  entries.forEach((e, i) => rank.set(e, i));
+  for (const [i, e] of entries.entries()) {
+    if (!e.accountId) continue;
+    const seen = new Set<string>([e.accountId]);
+    let p = parentOf.get(e.accountId) ?? null;
+    while (p && !seen.has(p)) {
+      seen.add(p);
+      const pe = byId.get(p)!;
+      if ((rank.get(pe) ?? Infinity) > i) rank.set(pe, i);
+      p = parentOf.get(p) ?? null;
+    }
+  }
+  const order = [...entries, ...added].sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity));
   for (const e of order) {
     const p = e.accountId ? (parentOf.get(e.accountId) ?? null) : null;
     const arr = children.get(p) ?? [];

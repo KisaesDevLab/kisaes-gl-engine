@@ -25,7 +25,7 @@ import type { AddressInfo, Server } from 'net';
 import { sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db, pool } from '../db/index.js';
-import { accounts, contacts, vendor1099AccountMappings } from '../db/schema/index.js';
+import { accounts, contacts, paymentApplications, vendor1099AccountMappings } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
 import * as ledger from '../services/ledger.service.js';
 import { ytdTotalsByBox } from '../services/portal-1099.service.js';
@@ -34,7 +34,8 @@ import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { reportsRouter } from './reports.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 
-const Decimal = DecimalLib.default || DecimalLib;
+// The test sums at 80 digits so a cash-basis share is never rounded here.
+const Decimal = (DecimalLib.default || DecimalLib).clone({ precision: 80 });
 
 let server: Server | null = null;
 let port = 0;
@@ -113,6 +114,7 @@ beforeAll(async () => {
   const salesParent = await mkAccount({ name: 'Sales (parent)', accountNumber: '4100', accountType: 'revenue', detailType: 'sales_of_product_income' });
   const salesA = await mkAccount({ name: 'Sales A', accountNumber: '4110', accountType: 'revenue', detailType: 'sales_of_product_income', parentId: salesParent.id });
   const salesB = await mkAccount({ name: 'Sales B', accountNumber: '4120', accountType: 'revenue', detailType: 'sales_of_product_income', parentId: salesParent.id });
+  const otherSales = await mkAccount({ name: 'Other Sales', accountNumber: '4200', accountType: 'revenue', detailType: 'sales_of_product_income' });
   const contractors = await mkAccount({ name: 'Contract Labor', accountNumber: '6110', accountType: 'expense', detailType: 'other_business_expenses' });
   const royalties = await mkAccount({ name: 'Royalties Paid', accountNumber: '6120', accountType: 'expense', detailType: 'other_business_expenses' });
   const deposits = (await db.query.accounts.findFirst({
@@ -120,7 +122,7 @@ beforeAll(async () => {
   })) ?? await mkAccount({ name: 'Customer Deposits', accountNumber: '2300', accountType: 'liability', detailType: 'other_current_liabilities' });
   Object.assign(ids, {
     checking: checking.id, salesParent: salesParent.id, salesA: salesA.id, salesB: salesB.id,
-    contractors: contractors.id, royalties: royalties.id, deposits: deposits.id,
+    contractors: contractors.id, royalties: royalties.id, deposits: deposits.id, otherSales: otherSales.id,
   });
 
   const [vendor] = await db.insert(contacts).values({
@@ -163,6 +165,38 @@ beforeAll(async () => {
   await expense('2026-04-01', vendor!.id, contractors.id, '600.10');
   await expense('2026-04-02', vendor!.id, contractors.id, '0.20');
   await expense('2026-04-03', author!.id, royalties.id, '9.99');
+  // A root revenue account after the (posting-free) parent in number order.
+  await je('2026-06-10', 'Other sale', [
+    { accountId: checking.id, debit: '5.00', credit: '0' },
+    { accountId: otherSales.id, debit: '0', credit: '5.00' },
+  ]);
+
+  // Cash basis (2027): an invoice over three income lines, paid in part,
+  // so each line's cash share is an unrounded quotient with more than 20
+  // significant digits.
+  const ar = (await db.query.accounts.findFirst({
+    where: (a, { and, eq }) => and(eq(a.tenantId, tenantId), eq(a.systemTag, 'accounts_receivable')),
+  })) ?? await mkAccount({ name: 'Accounts Receivable', accountNumber: '1200', accountType: 'asset', detailType: 'accounts_receivable', systemTag: 'accounts_receivable', isSystem: true });
+  const [customer] = await db.insert(contacts).values({
+    tenantId, companyId, contactType: 'customer', displayName: 'Cy Customer',
+  } as typeof contacts.$inferInsert).returning();
+  const invoice = await ledger.postTransaction(tenantId, {
+    txnType: 'invoice', txnDate: '2027-02-01', contactId: customer!.id, total: '3000000.00', memo: 'Big invoice',
+    lines: [
+      { accountId: ar.id, debit: '3000000.00', credit: '0' },
+      { accountId: salesA.id, debit: '0', credit: '1000000.00' },
+      { accountId: salesB.id, debit: '0', credit: '1000000.00' },
+      { accountId: otherSales.id, debit: '0', credit: '1000000.00' },
+    ],
+  } as Parameters<typeof ledger.postTransaction>[1], undefined, companyId);
+  const payment = await ledger.postTransaction(tenantId, {
+    txnType: 'customer_payment', txnDate: '2027-02-15', contactId: customer!.id, total: '1000000.01', memo: 'Part payment',
+    lines: [
+      { accountId: checking.id, debit: '1000000.01', credit: '0' },
+      { accountId: ar.id, debit: '0', credit: '1000000.01' },
+    ],
+  } as Parameters<typeof ledger.postTransaction>[1], undefined, companyId);
+  await db.insert(paymentApplications).values({ tenantId, paymentId: payment.id, invoiceId: invoice.id, amount: '1000000.01' });
 }, 60000);
 
 afterAll(async () => {
@@ -186,10 +220,10 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
   });
 
   it('P&L: the 0.1 + 0.2 regression, exact sections, account tree', async () => {
-    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&exact=1');
+    const r = await get('/profit-loss?start_date=2026-01-01&end_date=2026-03-31&exact=1');
     expect(r.status).toBe(200);
     const pl = r.body;
-    expect(pl.meta).toMatchObject({ exact: true, basis: 'accrual', cashBasisRules: null, from: '2026-01-01', to: '2026-12-31', reportSchemaVersion: '2' });
+    expect(pl.meta).toMatchObject({ exact: true, basis: 'accrual', cashBasisRules: null, from: '2026-01-01', to: '2026-03-31', reportSchemaVersion: '2' });
     expect(pl.totalRevenueExact).toBe('0.3000');
     expect(pl.totalRevenue).toBe(0.3);
     const own = pl.revenue.filter((e: any) => e.accountId !== ids['salesParent']);
@@ -210,6 +244,34 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
     }
     // Same sign for the number and the exact string.
     for (const e of [...pl.revenue, ...pl.expenses]) expect(Math.sign(e.amount)).toBe(D(e.amountExact).isZero() ? 0 : D(e.amountExact).s);
+    // An added parent sits where its first child was, ahead of a later root.
+    const year = (await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&exact=1')).body;
+    expect(year.revenue.map((e: any) => e.accountId)).toEqual([ids['salesParent'], ids['salesA'], ids['salesB'], ids['otherSales']]);
+    expect(year.totalRevenueExact).toBe('5.3000');
+  });
+
+  it('cash basis: unrounded allocation shares, totals still equal the rows', async () => {
+    const q = 'start_date=2027-01-01&end_date=2027-12-31&basis=cash&exact=1';
+    const pl = (await get(`/profit-loss?${q}`)).body;
+    expect(pl.meta.basis).toBe('cash');
+    const shares = pl.revenue.filter((e: any) => !e.rollupExact);
+    expect(shares.length).toBe(3);
+    // More places than the stored scale: the share is not rounded.
+    expect(shares.some((e: any) => e.amountExact.split('.')[1].length > 4)).toBe(true);
+    expect(D(pl.totalRevenueExact).eq(sumOf(pl.revenue, 'amountExact'))).toBe(true);
+    expect(D(pl.netIncomeExact).eq(D(pl.totalRevenueExact).minus(D(pl.totalExpensesExact)))).toBe(true);
+    const gl = (await get(`/general-ledger?${q}`)).body;
+    for (const a of gl.accounts) {
+      expect(D(a.periodCreditsExact).eq(sumOf(a.lines, 'creditExact')), a.name).toBe(true);
+      expect(D(a.periodDebitsExact).eq(sumOf(a.lines, 'debitExact')), a.name).toBe(true);
+    }
+    expect(D(gl.totalCreditsExact).eq(sumOf(gl.accounts, 'periodCreditsExact'))).toBe(true);
+    const tb = (await get('/trial-balance?start_date=2027-01-01&end_date=2027-12-31&basis=cash&exact=1')).body;
+    expect(D(tb.totalDebitsExact).eq(sumOf(tb.data, 'debitExact'))).toBe(true);
+    expect(D(tb.totalCreditsExact).eq(sumOf(tb.data, 'creditExact'))).toBe(true);
+    const parent = tb.data.find((r: any) => r.accountId === ids['salesParent']);
+    const kids = tb.data.filter((r: any) => r.parentAccountId === ids['salesParent']);
+    expect(D(parent.rollupExact).eq(sumOf(kids, 'netExact'))).toBe(true);
   });
 
   it('P&L grouped and comparative carry exact subtotals and columns', async () => {
@@ -322,7 +384,7 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
     expect(D(ebc.grandTotalExact).eq(sumOf(ebc.groups, 'subtotalExact'))).toBe(true);
     for (const g of ebc.groups) expect(D(g.totalDebitsExact).eq(sumOf(g.lines, 'debitExact'))).toBe(true);
     const rev = (await get('/revenue-by-category?start_date=2026-01-01&end_date=2026-12-31&display=detail&exact=1')).body;
-    expect(rev.grandTotalExact).toBe('0.3000');
+    expect(rev.grandTotalExact).toBe('5.3000');
     const ap = (await get('/ap-aging-summary?as_of_date=2026-12-31&exact=1')).body;
     expect(ap.meta.asOf).toBe('2026-12-31');
     expect(D(ap.totalsExact.total).eq(sumOf(ap.vendors, 'totalExact'))).toBe(true);

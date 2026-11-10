@@ -234,7 +234,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     'data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact.', { ...RANGE_Q }),
   exactOnly(async (req) => {
     const { from, to } = range(req);
-    const data = await reportService.buildAccountActivitySummary(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req));
+    const data = await reportService.buildAccountActivitySummary(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req), { exactAmounts: true });
     return { ...data, meta: meta(req, { basis: 'accrual', from, to }) };
   }));
 
@@ -250,7 +250,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const tagId = h.readTagFilter(req);
     const data = await reportService.buildTransactionList(req.tenantId, {
       startDate: from || undefined, endDate: to || undefined, txnType: qs(req, 'txn_type'), accountId, ...(tagId ? { tagId } : {}),
-      basis: b, adjusting: h.readAdjusting(req),
+      basis: b, adjusting: h.readAdjusting(req), exactAmounts: true,
     }, h.resolveCompanyScope(req));
     return { ...exactList(data as { data: unknown[] }, ['debit', 'credit', 'amount'], (r) => ({ lineId: r['line_id'] ?? null })), meta: meta(req, { basis: b, from: from || undefined, to: to || undefined }) };
   }));
@@ -260,7 +260,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   exactOnly(async (req) => {
     const { from, to } = range(req, 'start_date', 'end_date', false);
     const data = await reportService.buildJournalEntryReport(req.tenantId, { startDate: from || undefined, endDate: to || undefined },
-      h.resolveCompanyScope(req), h.readTagFilter(req), h.readAdjusting(req));
+      h.resolveCompanyScope(req), h.readTagFilter(req), h.readAdjusting(req), { exactAmounts: true });
     return { ...exactList(data as { data: unknown[] }, ['debit', 'credit', 'amount'], (r) => ({ lineId: r['line_id'] ?? null })), title: 'Journal Entry Report',
       meta: meta(req, { basis: 'accrual', from: from || undefined, to: to || undefined }) };
   }));
@@ -297,7 +297,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
       + 'details[] {bill_id, totalExact, paidExact, balanceExact}.', { as_of_date: z.string().optional() }),
     exactOnly(async (req) => {
       const asOf = date(req, 'as_of_date') ?? today();
-      const data = await apReportService.buildApAgingSummary(req.tenantId, asOf, h.resolveCompanyScope(req), h.readTagFilter(req));
+      const data = await apReportService.buildApAgingSummary(req.tenantId, asOf, h.resolveCompanyScope(req), h.readTagFilter(req), { exactAmounts: true });
       return { ...data, meta: meta(req, { basis: null, asOf }) };
     }));
   }
@@ -321,7 +321,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   exactOnly(async (req) => {
     const vendorId = uuid(req, 'vendor_id', true)!;
     const { from, to } = range(req);
-    const data = await apReportService.buildVendorStatement(req.tenantId, vendorId, { startDate: from, endDate: to }, h.resolveCompanyScope(req));
+    const data = await apReportService.buildVendorStatement(req.tenantId, vendorId, { startDate: from, endDate: to }, h.resolveCompanyScope(req), { exactAmounts: true });
     return { ...data, meta: meta(req, { basis: null, from, to }) };
   }));
   router.get('/transaction-list-by-vendor', doc('Transactions by Vendor', 'data[] {totalExact}, totalsExact {total}.',
@@ -335,8 +335,8 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact}, totalPaidExact.', { tax_year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'tax_year', 9999) ?? new Date().getFullYear();
-    const data = await apReportService.buildAp1099Prep(req.tenantId, year, h.resolveCompanyScope(req));
-    return { ...data, meta: meta(req, { basis: 'cash', from: `${year}-01-01`, to: `${year}-12-31` }) };
+    const data = await apReportService.buildAp1099Prep(req.tenantId, year, h.resolveCompanyScope(req), { exactAmounts: true });
+    return { ...data, meta: meta(req, { basis: null, from: `${year}-01-01`, to: `${year}-12-31` }) };
   }));
   router.get('/vendor-1099-summary', doc('1099 Summary by box (U-205)',
     'Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, '
@@ -347,7 +347,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const year = posInt(req, 'year', 9999) ?? new Date().getFullYear();
     if (year < 1900) throw bad('year', 'year must be a four-digit year');
     const data = await buildVendor1099SummaryByBox(req.tenantId, year, h.resolveCompanyScope(req));
-    return { ...data, meta: meta(req, { basis: 'cash', from: `${year}-01-01`, to: `${year}-12-31` }) };
+    return { ...data, meta: meta(req, { basis: null, from: `${year}-01-01`, to: `${year}-12-31` }) };
   }));
 
   // ── Sales and spending ──
@@ -369,7 +369,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   exactOnly(async (req) => {
     const { from, to } = range(req);
     const b = basis(req);
-    const data = await reportService.buildExpenseByVendor(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req), req.query['display'] === 'detail', b);
+    const data = await reportService.buildExpenseByVendor(req.tenantId, from, to, h.resolveCompanyScope(req), h.readTagFilter(req), req.query['display'] === 'detail', b, { exactAmounts: true });
     return { ...exactList(data as { data: unknown[] }, ['total']), meta: meta(req, { basis: b, from, to }) };
   }));
   router.get('/expense-by-category', doc('Expenses by Category',
@@ -416,7 +416,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   router.get('/bank-balances', doc('Bank Account Balances', 'accounts[] {balanceExact}, totalBalanceExact.', { as_of_date: z.string().optional() }),
   exactOnly(async (req) => {
     const asOf = date(req, 'as_of_date') ?? today();
-    const data = await reportService.buildBankBalances(req.tenantId, asOf, h.resolveCompanyScope(req));
+    const data = await reportService.buildBankBalances(req.tenantId, asOf, h.resolveCompanyScope(req), { exactAmounts: true });
     return { ...data, meta: meta(req, { basis: 'accrual', asOf }) };
   }));
 }
