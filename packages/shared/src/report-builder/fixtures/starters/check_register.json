@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_month"
+  },
+  "columns": {
+    "detailFields": [
+      "date",
+      "txn_type",
+      "number",
+      "contact",
+      "memo",
+      "cleared",
+      "debit",
+      "credit",
+      "running_balance"
+    ],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "register",
+      "caption": "Check Register",
+      "source": "bank",
+      "measure": "amount",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "revenue",
+      "caption": "Revenue",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "revenue",
+            "other_revenue"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Revenue",
+      "hideZero": true
+    }
+  ]
+}

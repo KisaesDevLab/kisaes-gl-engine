@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {},
+    "agingBuckets": true,
+    "periods": "month"
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "income",
+      "caption": "Income",
+      "source": "ar_open",
+      "measure": "open_balance",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "contact"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Income",
+      "hideZero": true
+    }
+  ]
+}

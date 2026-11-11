@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "asOf",
+    "preset": "today"
+  },
+  "columns": {
+    "detailFields": [
+      "date",
+      "txn_type",
+      "number",
+      "contact",
+      "due_date",
+      "days_past_due",
+      "original_amount"
+    ],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "payables",
+      "caption": "Unpaid Bills",
+      "source": "ap_open",
+      "measure": "open_balance",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "contact"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": true,
+      "totalCaption": "Total",
+      "hideZero": true
+    }
+  ]
+}
