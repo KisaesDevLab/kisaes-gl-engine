@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requirePermission, requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
@@ -34,7 +34,9 @@ const statementDoc = 'CustomerStatement: {contact: {id, name, address: string[],
 export const customerStatementReportsRouter = Router();
 customerStatementReportsRouter.use(authenticate);
 customerStatementReportsRouter.use(companyContext);
-customerStatementReportsRouter.use(requireResource('reports'));
+// GET-only on the shared /reports base: a router-level requireResource would
+// turn every POST under /reports (ask, email) into a 'create' check and 403 it.
+customerStatementReportsRouter.use(requirePermission('reports', 'read'));
 
 const statementQuery = z.object({
   contactId: z.string().uuid(), asOf: isoDate, format: format.optional(), start: isoDate.optional(),

@@ -10,7 +10,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requirePermission } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
@@ -20,7 +20,9 @@ import { resolveToday } from '../services/dashboard.service.js';
 export const inventoryReportsRouter = Router();
 inventoryReportsRouter.use(authenticate);
 inventoryReportsRouter.use(companyContext);
-inventoryReportsRouter.use(requireResource('reports'));
+// GET-only on the shared /reports base: a router-level requireResource would
+// turn every POST under /reports (ask, email) into a 'create' check and 403 it.
+inventoryReportsRouter.use(requirePermission('reports', 'read'));
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date YYYY-MM-DD');
 // The engine's today: the database's CURRENT_DATE (dashboard.resolveToday), not Node's UTC date.

@@ -5,7 +5,7 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requirePermission, requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
@@ -433,7 +433,9 @@ for (const [path, active] of [['deactivate', false], ['reactivate', true]] as co
 export const salesTaxReportsRouter = Router();
 salesTaxReportsRouter.use(authenticate);
 salesTaxReportsRouter.use(companyContext);
-salesTaxReportsRouter.use(requireResource('reports'));
+// GET-only on the shared /reports base: a router-level requireResource would
+// turn every POST under /reports (ask, email) into a 'create' check and 403 it.
+salesTaxReportsRouter.use(requirePermission('reports', 'read'));
 
 const liabilityQuery = z.object({
   start_date: isoDate.optional(), end_date: isoDate.optional(), basis: basisEnum.optional(), agency_id: z.string().uuid().optional(),
