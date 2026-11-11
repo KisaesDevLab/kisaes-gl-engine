@@ -23,6 +23,7 @@ import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
 import { buildVendor1099SummaryByBox } from '../services/vendor-1099-summary.service.js';
+import * as openBalances from '../services/open-balances.service.js';
 import { exactRows, exactStr, dsum, isIsoDate, normalizeReportDates, reportMeta, ReportDecimal } from '../services/report-exact.js';
 import { loadGroupTags, type ContactLens, type LineLens, type TagLens } from '../services/report-lens.js';
 import {
@@ -389,6 +390,17 @@ const DRILL_Q = {
   txn_types: z.string().optional().describe('Comma-separated transaction types'),
 };
 const ADJ_Q = { adjusting: z.enum(['include', 'exclude', 'only']).optional() };
+// U-121 (open-balances-asof-v1, ap-aging-exact-v1); each needs exact=1.
+const AS_OF_Q = { as_of_date: z.string().optional().describe('YYYY-MM-DD; default today. Needs exact=1.') };
+const OPEN_Q = { open: z.enum(['1', '0']).optional().describe('1 = Open Invoices as of as_of_date. Needs exact=1.') };
+
+/** An exact-only route: without exact=1 (or with an export format) it is 400. */
+function requireExact(req: Request, _res: Response, next: NextFunction) {
+  if (!readExact(req) || (req.query['format'] !== undefined && req.query['format'] !== '')) {
+    throw bad('exact', 'this report needs exact=1 and no export format');
+  }
+  next();
+}
 const META_DOC = 'meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. '
   + 'Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis '
   + 'allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry '
@@ -714,49 +726,94 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
       meta: meta(req, { basis: 'accrual', from: from || undefined, to: to || undefined }) };
   }));
 
-  router.get('/invoice-list', doc('Invoice List', 'data[] {totalExact, amount_paidExact, balance_dueExact}, totalsExact.',
-    { ...RANGE_Q, status: z.string().optional() }),
+  router.get('/invoice-list', doc('Invoice List',
+    'data[] {totalExact, amount_paidExact, balance_dueExact}, totalsExact. With open=1 (open-balances-asof-v1): Open Invoices, the invoices '
+    + 'still open on as_of_date (payments, credits, discounts and write-offs dated on or before it count; start_date / end_date filter the '
+    + 'invoice date): data[] {id, contact_id, customer_name, txn_number, txn_date, due_date, invoice_status, status, days_overdue, '
+    + 'totalExact, amount_paidExact (settled by the date), balance_dueExact (open on the date)}.',
+    { ...RANGE_Q, status: z.string().optional(), ...OPEN_Q, ...AS_OF_Q }),
+  needsExact(['open', 'as_of_date']),
   exactOnly(async (req) => {
     const { from, to } = range(req, 'start_date', 'end_date', false);
     const tagId = h.readTagFilter(req);
+    if (flag(req, 'open')) {
+      if (qs(req, 'status') !== undefined) throw bad('status', 'status does not go with open=1');
+      const asOf = date(req, 'as_of_date') ?? today();
+      const data = await openBalances.buildOpenInvoicesAsOf(req.tenantId, asOf, { startDate: from || undefined, endDate: to || undefined, tagId }, h.resolveCompanyScope(req));
+      return { ...exactList(data, ['total', 'amount_paid', 'balance_due']), meta: meta(req, { basis: null, asOf, from: from || undefined, to: to || undefined }) };
+    }
+    if (qs(req, 'as_of_date') !== undefined) throw bad('as_of_date', 'as_of_date needs open=1');
     const data = await reportService.buildInvoiceList(req.tenantId, { startDate: from || undefined, endDate: to || undefined, status: qs(req, 'status'), ...(tagId ? { tagId } : {}) }, h.resolveCompanyScope(req));
     return { ...exactList(data as { data: unknown[] }, ['total', 'amount_paid', 'balance_due']), meta: meta(req, { basis: null, from: from || undefined, to: to || undefined }) };
   }));
 
-  router.get('/customer-balance-summary', doc('Customer Balance Summary', 'data[] {balanceExact}, totalsExact {balance}.', {}),
-  exactOnly(async (req) => {
-    const data = await reportService.buildCustomerBalanceSummary(req.tenantId, h.resolveCompanyScope(req), h.readTagFilter(req));
-    return { ...exactList(data, ['balance']), meta: meta(req, { basis: null }) };
-  }));
-  router.get('/customer-balance-detail', doc('Customer Balance Detail', 'data[] {balanceExact}, totalsExact {balance}.', {}),
-  exactOnly(async (req) => {
-    const data = await reportService.buildCustomerBalanceDetail(req.tenantId, h.resolveCompanyScope(req), h.readTagFilter(req));
-    return { ...exactList(data, ['balance']), meta: meta(req, { basis: null }) };
-  }));
-  router.get('/vendor-balance-summary', doc('Vendor Balance Summary', 'data[] {total_spentExact}, totalsExact {total_spent}.', {}),
-  exactOnly(async (req) => {
-    const data = await reportService.buildVendorBalanceSummary(req.tenantId, h.resolveCompanyScope(req));
-    return { ...exactList(data, ['total_spent']), meta: meta(req, { basis: null }) };
-  }));
+  // Open balances as of a date (U-121, open-balances-asof-v1): open documents less open credits, from the
+  // A/R and A/P open items, so each total is the A/R or A/P balance on as_of_date.
+  for (const [path, detail] of [['/customer-balance-summary', false], ['/customer-balance-detail', true]] as const) {
+    router.get(path, doc(detail ? 'Customer Balance Detail' : 'Customer Balance Summary',
+      'Open balances as of as_of_date (default today; open-balances-asof-v1): open invoices and charges less open credit memos and '
+      + 'unapplied payments, counting only payments, credits and applications dated on or before the date. data[] {id (null = A/R lines '
+      + 'without a client, "(no client)"), display_name, balanceExact}'
+      + (detail
+        ? ' and items[] {txnId, txnType, kind, number, date, dueDate, amountExact, openExact, runningBalanceExact}: the open documents in date order.'
+        : '; clients whose open documents net to zero are left out.')
+      + ' totalsExact {balance} is the A/R balance on the date.', { ...AS_OF_Q }),
+    needsExact(['as_of_date']),
+    exactOnly(async (req) => {
+      const asOf = date(req, 'as_of_date') ?? today();
+      const data = await openBalances.buildCustomerBalanceAsOf(req.tenantId, asOf, h.resolveCompanyScope(req), h.readTagFilter(req), detail);
+      return { ...exactList(data, ['balance']), meta: meta(req, { basis: null, asOf }) };
+    }));
+  }
+  for (const [path, detail] of [['/vendor-balance-summary', false], ['/vendor-balance-detail', true]] as const) {
+    router.get(path, doc(detail ? 'Vendor Balance Detail' : 'Vendor Balance Summary',
+      'Open balances as of as_of_date (default today; open-balances-asof-v1): open bills less open vendor credits and unapplied payments, '
+      + 'counting only payments, credits, discounts and refunds dated on or before the date. data[] {id (null = A/P lines without a vendor, '
+      + '"(no vendor)"), display_name, balanceExact}'
+      + (detail
+        ? ' and items[] {txnId, txnType, kind, number, date, dueDate, amountExact, openExact, runningBalanceExact}: the open documents in date order.'
+          + ' Exact only (exact=1).'
+        : '; vendors whose open documents net to zero are left out. (Before open-balances-asof-v1 the exact response was total_spent; '
+          + 'without exact=1 the legacy response is unchanged.)')
+      + ' totalsExact {balance} is the A/P balance on the date.', { ...AS_OF_Q }),
+    needsExact(['as_of_date']),
+    ...(detail ? [requireExact] : []),
+    exactOnly(async (req) => {
+      const asOf = date(req, 'as_of_date') ?? today();
+      const data = await openBalances.buildVendorBalanceAsOf(req.tenantId, asOf, h.resolveCompanyScope(req), h.readTagFilter(req), detail);
+      return { ...exactList(data, ['balance']), meta: meta(req, { basis: null, asOf }) };
+    }));
+  }
 
   // ── A/P ──
   for (const path of ['/ap-aging-summary', '/ap-aging-detail'] as const) {
     router.get(path, doc(path === '/ap-aging-summary' ? 'A/P Aging Summary' : 'A/P Aging Detail',
-      'vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), '
-      + 'details[] {bill_id, totalExact, paidExact, balanceExact}.', { as_of_date: z.string().optional() }),
+      'True as of as_of_date (ap-aging-exact-v1): payments, discounts, vendor credits and refunds count only when dated on or before it. '
+      + 'vendors[] {contact_id (null = "(no vendor)"), vendor_name, currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, '
+      + 'bucketOver90Exact, totalExact}, totalsExact (same keys; total = the A/P balance on the date), details[] {bill_id (the open '
+      + 'transaction), txn_type, kind (bill | credit | charge | other), txn_number, vendor_invoice_number, txn_date, due_date, days_overdue, '
+      + 'bucket (current | 1_30 | 31_60 | 61_90 | over_90), totalExact, paidExact (settled by the date), balanceExact (open on the date)}. '
+      + 'Open vendor credits and unapplied payments are negative rows. Buckets by days past the due date (else the date): current, 1-30, '
+      + '31-60, 61-90, 91 and over.', { as_of_date: z.string().optional() }),
     exactOnly(async (req) => {
       const asOf = date(req, 'as_of_date') ?? today();
-      const data = await apReportService.buildApAgingSummary(req.tenantId, asOf, h.resolveCompanyScope(req), h.readTagFilter(req), { exactAmounts: true });
+      const data = await openBalances.buildApAgingAsOf(req.tenantId, asOf, h.resolveCompanyScope(req), h.readTagFilter(req));
       return { ...data, meta: meta(req, { basis: null, asOf }) };
     }));
   }
-  router.get('/unpaid-bills', doc('Unpaid Bills', 'data[] {totalExact, amount_paidExact, credits_appliedExact, balance_dueExact}, totalsExact.',
-    { contact_id: z.string().optional(), due_on_or_before: z.string().optional(), overdue_only: z.string().optional() }),
+  router.get('/unpaid-bills', doc('Unpaid Bills',
+    'The bills still open on as_of_date (default today; ap-aging-exact-v1), counting only payments, discounts and vendor credits dated on '
+    + 'or before it: data[] {id, contact_id, vendor_name, txn_number, vendor_invoice_number, txn_date, due_date, bill_status (unpaid | '
+    + 'partial on the date), days_overdue, totalExact, amount_paidExact, discount_amountExact, credits_appliedExact, balance_dueExact}, '
+    + 'totalsExact. overdue_only=true: due before the as-of date.',
+    { contact_id: z.string().optional(), due_on_or_before: z.string().optional(), overdue_only: z.string().optional(), ...AS_OF_Q }),
+  needsExact(['as_of_date']),
   exactOnly(async (req) => {
-    const data = await apReportService.buildUnpaidBills(req.tenantId, {
+    const asOf = date(req, 'as_of_date') ?? today();
+    const data = await openBalances.buildUnpaidBillsAsOf(req.tenantId, asOf, {
       contactId: uuid(req, 'contact_id', false), dueOnOrBefore: date(req, 'due_on_or_before'), overdueOnly: req.query['overdue_only'] === 'true',
     }, h.resolveCompanyScope(req));
-    return { ...exactList(data, ['total', 'amount_paid', 'credits_applied', 'balance_due']), meta: meta(req, { basis: null }) };
+    return { ...exactList(data, ['total', 'amount_paid', 'discount_amount', 'credits_applied', 'balance_due']), meta: meta(req, { basis: null, asOf }) };
   }));
   router.get('/bill-payment-history', doc('Bill Payment History', 'data[] {totalExact}, totalsExact {total}.', { ...RANGE_Q }),
   exactOnly(async (req) => {

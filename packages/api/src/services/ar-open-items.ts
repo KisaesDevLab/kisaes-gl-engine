@@ -54,6 +54,8 @@ export interface OpenItem {
   dueDate: string | null;
   /** The transaction's own A/R amount for the client (debit positive), 2 places. */
   original: string;
+  /** The same, exact (4 places; U-121 open-balances-asof-v1). */
+  originalExact: string;
   /** Open as of asOf, round2 half up, 2 places (never 0.00). */
   open: string;
   /** Open as of asOf, exact (4 places). */
@@ -249,6 +251,7 @@ export async function arOpenItemsAsOf(executor: DbOrTx, q: OpenItemsQuery): Prom
       date: w.date,
       dueDate: w.dueDate,
       original: r2(w.original).toFixed(2),
+      originalExact: w.original.toFixed(4),
       open: cents.toFixed(2),
       openExact: w.open.toFixed(4),
       kind: kindOf(w.txnType, w.open),
