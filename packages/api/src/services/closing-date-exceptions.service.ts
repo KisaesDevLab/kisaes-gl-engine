@@ -176,15 +176,25 @@ export async function buildClosingDateExceptions(
     SELECT a.id, ${TS_KEY} AS k, ${TS_ISO} AS iso, to_char(a.created_at, 'YYYY-MM-DD') AS d, a.user_id, a.action, a.entity_type, a.entity_id,
            -- Only the keys read here, as text: amounts never become JS numbers
            -- and whole row images (lines included) are not loaded.
+           -- U-209: debits, the debit total of the image's lines (void
+           -- reversal lines aside), is the amount of a transaction that has
+           -- no total (a journal entry).
            CASE WHEN j.b ? 'txnDate' OR a.entity_type = 'closing_date_override' THEN jsonb_build_object(
              'txnDate', j.b->>'txnDate', 'total', j.b->>'total', 'txnType', j.b->>'txnType',
-             'txnNumber', j.b->>'txnNumber', 'lockDate', j.b->>'lockDate') END AS b,
+             'txnNumber', j.b->>'txnNumber', 'lockDate', j.b->>'lockDate',
+             'debits', (SELECT SUM((l->>'debit')::numeric)::text
+                        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(j.b->'lines') = 'array' THEN j.b->'lines' ELSE '[]'::jsonb END) l
+                        WHERE l->>'debit' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                          AND COALESCE(l->>'isVoidReversal', 'false') <> 'true')) END AS b,
            jsonb_build_object(
              'txnDate', j.x->>'txnDate', 'total', j.x->>'total', 'txnType', j.x->>'txnType',
              'transactionId', j.x->>'transactionId', 'method', j.x->>'method',
              'oldDate', j.x->>'oldDate', 'newDate', j.x->>'newDate') AS x,
            (SELECT COALESCE(NULLIF(u.display_name, ''), u.email) FROM users u WHERE u.id = a.user_id) AS user_name,
-           to_char(t.txn_date, 'YYYY-MM-DD') AS live_date, t.total::text AS live_total, t.txn_type AS live_type,
+           to_char(t.txn_date, 'YYYY-MM-DD') AS live_date,
+           COALESCE(t.total::text, CASE WHEN t.id IS NOT NULL THEN (SELECT SUM(jl.debit)::text FROM journal_lines jl
+             WHERE jl.tenant_id = a.tenant_id AND jl.transaction_id = t.id AND jl.is_void_reversal = false) END) AS live_total,
+           t.txn_type AS live_type,
            t.txn_number AS live_number, t.status AS live_status
     FROM audit_log a
     CROSS JOIN LATERAL (SELECT ${doc('a.before_data')} AS b, ${doc('a.after_data')} AS x) j
@@ -229,7 +239,7 @@ export async function buildClosingDateExceptions(
   };
 
   for (const [txnId, rows] of byTxn) {
-    const state = (r: AuditTxnRow | undefined) => (r?.b ? { date: day(r.b['txnDate']), total: money(r.b['total']) } : null);
+    const state = (r: AuditTxnRow | undefined) => (r?.b ? { date: day(r.b['txnDate']), total: money(r.b['total']) ?? money(r.b['debits']) } : null);
     let prevAfter: { date: string | null; total: string | null } | null = null;
     rows.forEach((r, i) => {
       const own = state(r);

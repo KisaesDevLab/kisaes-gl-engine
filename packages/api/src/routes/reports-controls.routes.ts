@@ -36,7 +36,8 @@ export function registerControlReportRoutes(router: Router): void {
       + 'plus the current setting; changes made before any closing date was set are not listed. Rows, oldest change first: {auditId, at, '
       + 'userId, userName, action (create|update|void|delete|override), transactionId, txnType, txnNumber, txnDateBefore, txnDateAfter, '
       + 'closingDate (in effect at the time), method (password|confirmed|null: the override that allowed it, if any), amountBeforeExact, '
-      + 'amountAfterExact (decimal strings, at least 4 places; null on a create (before), a void or delete (after), and on override-only rows)}. '
+      + 'amountAfterExact (decimal strings, at least 4 places; null on a create (before), a void or delete (after), and on override-only rows; the transaction total, or for a transaction with '
+      + 'no total such as a journal entry its debit total (U-209))}. '
       + 'Before and after come from the audit images: a change\'s after state is the next change\'s before-image, else the live '
       + 'transaction. Needs reports and audit_log read.',
     query: exceptionsQuery,

@@ -171,6 +171,34 @@ describe('Closing Date Exceptions (closing-exceptions-v1)', () => {
     ]);
   });
 
+  it('a journal entry (no total) shows its debit total before and after (U-209)', async () => {
+    expect(DESKTOP_CAPABILITIES).toContain('report-fixes-v1');
+    await tbClosingDate('2026-09-30');
+    await db.update(companies).set({ closingPasswordHash: await bcrypt.hash(PASSWORD, 4) }).where(eq(companies.id, c.companyId));
+    const jeBody = (amount: string) => ({
+      txnType: 'journal_entry', txnDate: '2026-09-15', memo: 'Reclass',
+      lines: [
+        { accountId: c.roles['expense'], debit: amount, credit: '0' },
+        { accountId: c.roles['checking'], debit: '0', credit: amount },
+      ],
+      closingPassword: PASSWORD,
+    });
+    let r = await h.request('POST', '/api/v1/transactions', c.token, jeBody('12.34'));
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const je = String(r.json['transaction']?.id ?? r.json['id']);
+    const rep1 = await exceptions();
+    expect(rep1.data.map((x: any) => [x.action, x.transactionId, x.amountBeforeExact, x.amountAfterExact])).toEqual([
+      ['create', je, null, '12.3400'],
+    ]);
+    r = await h.request('PUT', `/api/v1/transactions/${je}`, c.token, jeBody('15.00'));
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const rep2 = await exceptions();
+    expect(rep2.data.map((x: any) => [x.action, x.amountBeforeExact, x.amountAfterExact])).toEqual([
+      ['create', null, '12.3400'],
+      ['update', '12.3400', '15.0000'],
+    ]);
+  });
+
   it('an override row with no transaction row is listed on its own', async () => {
     await tbClosingDate('2026-03-31');
     await auditLog(c.tenantId, 'override', 'closing_date_override', c.companyId,
