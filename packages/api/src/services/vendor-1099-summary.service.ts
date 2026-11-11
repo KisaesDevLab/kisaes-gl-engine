@@ -8,7 +8,9 @@
 // portal-1099.service ytdTotalsByBoxExact, the same account -> (form, box)
 // mapping query the filing export uses, narrowed to the report's company.
 // Amounts are decimal strings summed in Decimal; the threshold check is a
-// Decimal comparison per box (royalties at $10, everything else at $600).
+// Decimal comparison per box at the report year's threshold (boxThreshold,
+// U-212: royalties $10, attorney proceeds $600, the rest $600 through 2025
+// and $2,000 from 2026).
 //
 // U-209 (ClientLedger P28 QA-8): the rows are the vendors the 1099 Center
 // files for (exportFiling): marked 1099-eligible and not excluded on their
@@ -20,7 +22,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { contacts, vendor1099Profile } from '../db/schema/index.js';
 import { ytdTotalsByBoxExact } from './portal-1099.service.js';
-import { BOX_THRESHOLDS, FORM_1099_BOXES, type FormBox } from './portal-1099.boxes.js';
+import { FORM_1099_BOXES, boxThreshold, type FormBox } from './portal-1099.boxes.js';
 import { dec, dsum, exactStr } from './report-exact.js';
 
 export interface Vendor1099SummaryRow {
@@ -99,7 +101,7 @@ export async function buildVendor1099SummaryByBox(
       is1099Eligible: true,
       boxes,
       totalExact: exactStr(dsum(entries.map(([, v]) => v))),
-      meetsThreshold: entries.some(([box, v]) => dec(v).gte(dec(BOX_THRESHOLDS[box]))),
+      meetsThreshold: entries.some(([box, v]) => dec(v).gte(dec(boxThreshold(box, year)))),
     };
   }).sort((a, b) => a.name.localeCompare(b.name) || a.contactId.localeCompare(b.contactId));
 
@@ -114,7 +116,7 @@ export async function buildVendor1099SummaryByBox(
     title: '1099 Summary',
     year: String(year),
     boxCatalog: FORM_1099_BOXES.map((b) => ({
-      box: b.value, form: b.form, boxNumber: b.box, label: b.label, thresholdExact: exactStr(BOX_THRESHOLDS[b.value]),
+      box: b.value, form: b.form, boxNumber: b.box, label: b.label, thresholdExact: exactStr(boxThreshold(b.value, year)),
     })),
     rows,
     totalsExact,

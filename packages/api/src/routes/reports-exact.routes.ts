@@ -839,7 +839,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const data = await reportService.buildTransactionListByVendor(req.tenantId, vendorId, { startDate: from || undefined, endDate: to || undefined }, h.resolveCompanyScope(req));
     return { ...exactList(data, ['total']), meta: meta(req, { basis: null, from: from || undefined, to: to || undefined }) };
   }));
-  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: ' + 'the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, ' + 'totalPaidExact, totalReportableExact.', { tax_year: z.string().optional() }),
+  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: ' + 'the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, ' + 'U-212: total_paid and the reportable amounts count the same payments, cash paid in the year: bill payments (a bill counts when paid, not at its date), expenses and checks. ' + 'totalPaidExact, totalReportableExact.', { tax_year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'tax_year', 9999) ?? new Date().getFullYear();
     const data = await apReportService.buildAp1099Prep(req.tenantId, year, h.resolveCompanyScope(req), { exactAmounts: true });
@@ -849,7 +849,8 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     'Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, '
     + 'boxNumber, label, thresholdExact}, rows[] {contactId, name, tinLast4, is1099Eligible, boxes {box code: exact amount}, totalExact, '
     + 'meetsThreshold}, totalsExact {box code..., total}} from the 1099 account-to-box mapping (the 1099 Center source), for the company. '
-    + 'Rows are the vendors the 1099 Center files for: marked 1099-eligible and not excluded on their 1099 profile (U-209).',
+    + 'Rows are the vendors the 1099 Center files for: marked 1099-eligible and not excluded on their 1099 profile (U-209). '
+    + 'Amounts are cash paid in the year (U-212): expenses and checks at their date; a bill payment at its date as the mapped lines of the bill it paid, scaled by its cash. meetsThreshold / thresholdExact use the threshold of the year: NEC and MISC 1, 3, 6 at 600 through 2025 and 2000 from 2026; royalties 10; attorney proceeds 600.',
     { year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'year', 9999) ?? new Date().getFullYear();

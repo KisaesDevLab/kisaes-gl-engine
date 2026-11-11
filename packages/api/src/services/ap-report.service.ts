@@ -7,7 +7,8 @@ import { db } from '../db/index.js';
 import { tagIn } from './report.service.js';
 import { ReportDecimal as Decimal, dec, dsum, exactStr, legacyNum } from './report-exact.js';
 import { reportable1099Buckets } from './vendor-1099-summary.service.js';
-import { BOX_THRESHOLDS } from './portal-1099.boxes.js';
+import { boxThreshold, general1099Threshold } from './portal-1099.boxes.js';
+import { PAYMENT_1099_TXN_TYPES } from './portal-1099.service.js';
 
 // Helper: add `b` to `a` via Decimal and return a plain number rounded
 // to 4 decimals. Reports expose `number` to the UI, but accumulation
@@ -336,14 +337,18 @@ export async function buildAp1099Prep(
   const start = `${taxYear}-01-01`;
   const end = `${taxYear}-12-31`;
 
+  // U-212 (report-1099-paid-v1): total_paid is the cash paid in the year,
+  // the same payments the per-box 1099 amounts are drawn from
+  // (PAYMENT_1099_TXN_TYPES: bill payments, expenses, checks; before, a
+  // 'check' transaction was left out).
   const rows = await db.execute(sql`
     SELECT c.id, c.display_name, c.tax_id,
       c.billing_line1, c.billing_city, c.billing_state, c.billing_zip,
       COALESCE(SUM(CAST(t.total AS DECIMAL)), 0) as total_paid
     FROM contacts c
     LEFT JOIN transactions t ON t.contact_id = c.id AND t.tenant_id = ${tenantId}
-      AND t.status = 'posted'
-      AND t.txn_type IN ('expense', 'bill_payment')
+      AND t.status = 'posted' AND t.voided_at IS NULL
+      AND t.txn_type IN (${sql.join(PAYMENT_1099_TXN_TYPES.map((x) => sql`${x}`), sql`, `)})
       AND t.txn_date >= ${start} AND t.txn_date <= ${end}
       AND ${companyFilter(companyId)}
     WHERE c.tenant_id = ${tenantId}
@@ -363,10 +368,11 @@ export async function buildAp1099Prep(
   for (const b of buckets) {
     const cur = reportable.get(b.contactId) ?? { total: new Decimal(0), meets: false };
     cur.total = cur.total.plus(b.total);
-    cur.meets = cur.meets || dec(b.total).gte(dec(BOX_THRESHOLDS[b.formBox]));
+    cur.meets = cur.meets || dec(b.total).gte(dec(boxThreshold(b.formBox, taxYear)));
     reportable.set(b.contactId, cur);
   }
 
+  const overThreshold = dec(general1099Threshold(taxYear));
   const data = (rows.rows as any[]).map((row) => {
     const parts = [row.billing_line1, row.billing_city, row.billing_state, row.billing_zip].filter(Boolean);
     // 1099 threshold check must not drift — $599.99999 should NOT hit
@@ -381,7 +387,8 @@ export async function buildAp1099Prep(
       tax_id: row.tax_id,
       total_paid: Number(totalPaid.toFixed(4)),
       ...(prepOpts.exactAmounts ? { total_paidExact: exactStr(totalPaid) } : {}),
-      over_threshold: totalPaid.greaterThanOrEqualTo(600),
+      // U-212: the year's threshold ($600 through 2025, $2,000 from 2026).
+      over_threshold: totalPaid.greaterThanOrEqualTo(overThreshold),
       reportable_total: Number(repTotal.toFixed(4)),
       ...(prepOpts.exactAmounts ? { reportable_totalExact: exactStr(repTotal) } : {}),
       reportable_meets_threshold: rep?.meets ?? false,
