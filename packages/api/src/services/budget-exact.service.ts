@@ -350,7 +350,14 @@ export async function fillFromActuals(tenantId: string, companyId: string | null
   });
 }
 
-/** Copy: the source budget's lines replace the same accounts' lines on the target. */
+/**
+ * Copy: the source budget's lines replace ALL of the target's lines
+ * (U-211, ClientLedger P28 QA-11; before, a merge left accounts missing
+ * from the source at their old amounts). One transaction: the source is
+ * read first (a copy onto itself keeps its lines), then the target's lines
+ * are deleted and the source's written; a stale version (409) changes
+ * nothing.
+ */
 export async function copyFromBudget(tenantId: string, companyId: string | null, targetId: string, sourceId: string,
   input: { version?: number }, userId?: string): Promise<void> {
   await budgetForAccess(tenantId, companyId, sourceId);
@@ -358,6 +365,7 @@ export async function copyFromBudget(tenantId: string, companyId: string | null,
     const locked = await lockBudget(tx, tenantId, companyId, targetId);
     checkVersion(locked, input.version);
     const src = await readLines(sourceId, tx);
+    await tx.execute(sql`DELETE FROM budget_lines WHERE budget_id = ${targetId}`);
     await writeLines(tx, tenantId, companyId, targetId, src.map((l) => ({ accountId: l.accountId, cells: l.cells })), false);
     const v = await bump(tx, locked);
     await claimAndRecord(tx, 'budget', targetId);

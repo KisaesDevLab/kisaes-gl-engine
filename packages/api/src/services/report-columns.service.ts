@@ -72,6 +72,24 @@ export function fiscalYearStartOf(d: string, fyStartMonth: number): string {
   return `${String(fy).padStart(4, '0')}-${String(fyStartMonth).padStart(2, '0')}-01`;
 }
 
+/** The longest fiscal year a start list may cover (a 53-week year is 371 days). */
+export const MAX_FISCAL_YEAR_DAYS = 371;
+
+/**
+ * U-213 (report-fixes-v2): the fiscal year start for `d` from an explicit,
+ * ascending list of fiscal year starts (`fiscal_year_start`, e.g. a retail
+ * 52-53 week calendar): the latest start on or before `d`, or null when no
+ * listed start covers `d` (none on or before it, or more than 371 days
+ * before it). Without a list: the month rule (fiscalYearStartOf).
+ */
+export function fiscalYearStartIn(d: string, starts: readonly string[] | null | undefined, fyStartMonth: number): string | null {
+  if (!starts || starts.length === 0) return fiscalYearStartOf(d, fyStartMonth);
+  let best: string | null = null;
+  for (const s of starts) if (s <= d && (best === null || s > best)) best = s;
+  if (best === null || daysBetween(best, d) >= MAX_FISCAL_YEAR_DAYS) return null;
+  return best;
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function fmtDay(d: string): string {
   return `${MONTHS[parseInt(d.slice(5, 7), 10) - 1]} ${parseInt(d.slice(8, 10), 10)}, ${d.slice(0, 4)}`;
@@ -116,6 +134,8 @@ export interface ReportColumn {
   from: string | null;
   to: string | null;
   asOf?: string | null;
+  /** Balance Sheet as-of columns (U-213): the fiscal year start where income splits into prior years and the current year. */
+  fiscalYearStart?: string | null;
   contactId?: string | null;
   tagId?: string | null;
   tagNumber?: string | null;
@@ -566,6 +586,8 @@ export interface BsColumnsOptions {
   /** prior=period: the prior range of each column (its end is the prior as-of date). */
   priorRanges?: DateRange[] | null;
   tagSplitGroupId: string | null;
+  /** U-213: explicit fiscal year starts (validated by the route to cover every as-of date); null = the month rule. */
+  fiscalYearStarts?: readonly string[] | null;
 }
 
 /** The calculated equity rows the Balance Sheet adds (no account behind them). */
@@ -578,6 +600,11 @@ export async function buildBalanceSheetColumns(tenantId: string, o: BsColumnsOpt
   if (o.tagSplitGroupId && groupTags === null) throw new ReportColumnsError('tag_group_id', 'tag group not found', 'NOT_FOUND');
   const dimension = o.tagSplitGroupId ? { kind: 'tag_group' as const, groupId: o.tagSplitGroupId } : null;
   const fyMonth = await getFiscalYearStart(tenantId, o.companyId);
+  const splitOf = (asOf: string) => {
+    const s = fiscalYearStartIn(asOf, o.fiscalYearStarts, fyMonth);
+    if (s === null) throw new ReportColumnsError('fiscal_year_start', `fiscal_year_start has no fiscal year start for ${asOf}`);
+    return s;
+  };
 
   const dates: string[] = [];
   const dateIndex = (d: string) => { const i = dates.indexOf(d); if (i >= 0) return i; dates.push(d); return dates.length - 1; };
@@ -587,12 +614,12 @@ export async function buildBalanceSheetColumns(tenantId: string, o: BsColumnsOpt
     const idx = defs.length;
     const key = o.periodColumns ? `p${i}` : 'total';
     defs.push({ col: { key, caption: o.periodColumns ? `As of ${fmtDay(c.asOf)}` : 'Total', kind: o.periodColumns ? 'as_of' : 'total', valueType: 'amount',
-      from: c.from, to: c.asOf, asOf: c.asOf, drill: { end_date: c.asOf } }, src: { type: 'sums', set: dateIndex(c.asOf), pick: all } });
+      from: c.from, to: c.asOf, asOf: c.asOf, fiscalYearStart: splitOf(c.asOf), drill: { end_date: c.asOf } }, src: { type: 'sums', set: dateIndex(c.asOf), pick: all } });
     if (o.prior) {
       const pAsOf = o.prior === 'year' ? shiftYear(c.asOf, -1) : (o.priorRanges?.[i]?.to ?? addDays(c.from!, -1));
       const pIdx = defs.length;
       defs.push({ col: { key: `${key}_prior`, caption: o.prior === 'year' ? 'Prior year' : 'Prior period', kind: 'prior', valueType: 'amount',
-        from: null, to: pAsOf, asOf: pAsOf, baseKey: key, drill: { end_date: pAsOf } }, src: { type: 'sums', set: dateIndex(pAsOf), pick: all } });
+        from: null, to: pAsOf, asOf: pAsOf, fiscalYearStart: splitOf(pAsOf), baseKey: key, drill: { end_date: pAsOf } }, src: { type: 'sums', set: dateIndex(pAsOf), pick: all } });
       defs.push({ col: { key: `${key}_change`, caption: '$ Change', kind: 'change', valueType: 'amount', from: null, to: null, baseKey: key, drill: null },
         src: { type: 'change', cur: idx, prior: pIdx } });
       defs.push({ col: { key: `${key}_pct_change`, caption: '% Change', kind: 'pct_change', valueType: 'percent', from: null, to: null, baseKey: key, drill: null },
@@ -609,7 +636,7 @@ export async function buildBalanceSheetColumns(tenantId: string, o: BsColumnsOpt
   // One pass over the ledger: a window from the beginning to each as-of date.
   const allRows = await lineSums(tenantId, {
     basis: o.basis, companyId: o.companyId, adjusting: o.adjusting, from: null, to: dates[0]!, dimension, lens,
-    windows: dates.map((asOf) => ({ from: '0001-01-01', to: asOf, splitDate: fiscalYearStartOf(asOf, fyMonth) })),
+    windows: dates.map((asOf) => ({ from: '0001-01-01', to: asOf, splitDate: splitOf(asOf) })),
   });
   const perDate: DateSums[] = dates.map((_, wi) => {
     const rows = allRows.filter((r) => r.window === wi);
@@ -711,17 +738,17 @@ type TbRow = Record<string, unknown> & { accountId?: string | null; id?: string 
  * computed Retained Earnings (Prior Years) row is split the same way.
  * Totals are unchanged. Values follow the Trial Balance window (balance-sheet
  * accounts through the end date, income-statement accounts from the fiscal
- * year start; retained earnings on the accrual basis, as buildTrialBalance).
+ * year start; retained earnings on the report's basis, as buildTrialBalance).
  */
 export async function applyTrialBalanceTagSplit<T extends { data: TbRow[]; endDate: string }>(
   tenantId: string,
   tb: T,
-  o: { basis: Basis; companyId: string | null; adjusting: AdjustingFilter | null; tagGroupId: string },
+  o: { basis: Basis; companyId: string | null; adjusting: AdjustingFilter | null; tagGroupId: string; fiscalYearStart?: string | null },
 ): Promise<T & { tagSplit: { tagGroupId: string; tags: Array<{ tagId: string; tagNumber: string | null; tagName: string }> } }> {
   const tags = await loadGroupTags(tenantId, o.tagGroupId);
   if (tags === null) throw new ReportColumnsError('tag_group_id', 'tag group not found', 'NOT_FOUND');
   const fyMonth = await getFiscalYearStart(tenantId, o.companyId);
-  const fyStart = fiscalYearStartOf(tb.endDate, fyMonth);
+  const fyStart = o.fiscalYearStart || fiscalYearStartOf(tb.endDate, fyMonth);
   const dimension = { kind: 'tag_group' as const, groupId: o.tagGroupId };
   const rows = await lineSums(tenantId, {
     basis: o.basis, companyId: o.companyId, adjusting: o.adjusting, from: null, to: tb.endDate, dimension, splitDate: fyStart,
@@ -737,13 +764,9 @@ export async function applyTrialBalanceTagSplit<T extends { data: TbRow[]; endDa
     m.set(r.key, { d: cur.d.plus(r.debit), c: cur.c.plus(r.credit) });
     net.set(r.accountId, m);
   }
-  // Retained earnings (prior years): accrual P&L lines before the fiscal year.
-  const reRows = o.basis === 'accrual'
-    ? rows.filter((r) => isPl(r.accountType) && r.pre)
-    : (await lineSums(tenantId, {
-        basis: 'accrual', companyId: o.companyId, adjusting: o.adjusting, from: null, to: addDays(fyStart, -1),
-        accountTypes: PL_TYPES, dimension,
-      }));
+  // Retained earnings (prior years): the same-basis P&L lines before the
+  // fiscal year (U-213, ClientLedger PR-6 B1: was always accrual).
+  const reRows = rows.filter((r) => isPl(r.accountType) && r.pre);
   // The computed row shows its net on one side (as buildTrialBalance does).
   const reNetOnly = new Map<string | null, Dec>();
   for (const r of reRows) reNetOnly.set(r.key, (reNetOnly.get(r.key) ?? ZERO()).plus(r.debit.minus(r.credit)));
