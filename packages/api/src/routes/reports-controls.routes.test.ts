@@ -39,7 +39,7 @@ import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { decodeReportAttachment } from '../services/report-email.service.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
 
-const PASSWORD = 'closing-exceptions-pass-1';
+const PASSWORD = 'practice';
 const PDF = Buffer.from('%PDF-1.4\n% report\n').toString('base64');
 const h = new Harness();
 let c: Co;
