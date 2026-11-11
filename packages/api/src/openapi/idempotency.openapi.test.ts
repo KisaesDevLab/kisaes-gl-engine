@@ -208,7 +208,13 @@ export const IDEMPOTENCY_BUDGETS_EXACT_V1_ROUTES = [
   'post /api/v1/budgets/{id}/adjust-by-percent',
 ].sort();
 
+/** Keyed by reports-email-v1 (U-207): a report file emailed once per key. */
+export const IDEMPOTENCY_REPORTS_EMAIL_V1_ROUTES = [
+  'post /api/v1/reports/email',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_REPORTS_EMAIL_V1_ROUTES,
   ...IDEMPOTENCY_BUDGETS_EXACT_V1_ROUTES,
   ...IDEMPOTENCY_REPORT_DEFS_V1_ROUTES,
   ...IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES,

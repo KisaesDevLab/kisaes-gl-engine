@@ -777,7 +777,8 @@ export async function postTransaction(
       ? await costing.apply(tx, tenantId, txn.id, { lock: costingLock, userId })
       : [];
 
-    await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total }, userId, tx);
+    // txnDate (U-204): Closing Date Exceptions reads the date a transaction was created with.
+    await auditLog(tenantId, 'create', 'transaction', txn.id, null, { txnType: txn.txnType, total: input.total, txnDate: txn.txnDate }, userId, tx);
     if (lockOverride) {
       await auditLockOverride(tx, tenantId, lockOverride, { txnId: txn.id, oldDate: null, newDate: input.txnDate });
     }

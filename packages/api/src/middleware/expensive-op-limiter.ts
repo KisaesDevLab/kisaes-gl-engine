@@ -4,6 +4,21 @@
 
 import rateLimit from 'express-rate-limit';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
+import { isDesktop } from '../desktop/profile.js';
+
+/** Server / MyBooks Online: 30 report or export requests per user per minute. */
+export const EXPENSIVE_OP_MAX_SERVER = 30;
+/**
+ * Desktop profile (CL_MODE=desktop): a local sidecar for one owner, where
+ * drilling through a report fires a burst of report reads (ClientLedger P28;
+ * 30/min gave 429s). Still bounded per user, since LAN mode has several.
+ */
+export const EXPENSIVE_OP_MAX_DESKTOP = 600;
+
+/** The per-user limit for this process, read per request (the profile can load after this module). */
+export function expensiveOpMax(): number {
+  return isDesktop() ? EXPENSIVE_OP_MAX_DESKTOP : EXPENSIVE_OP_MAX_SERVER;
+}
 
 // Shared per-user limiter for endpoints that do meaningful work on each call:
 // report generation hits big aggregate queries, PDF export spins up Puppeteer
@@ -15,10 +30,11 @@ import { getRateLimitStore } from '../utils/rate-limit-store.js';
 // 30/min/user leaves plenty of headroom for interactive use (clicking through
 // reports, re-running with different filters) while keeping a hostile caller
 // bounded to something the DB and Puppeteer pool can handle without OOM.
+// The desktop profile raises it to 600/min (expensiveOpMax above).
 export const expensiveOpLimiter = rateLimit({
   store: getRateLimitStore('expensive-op-limiter:expensiveOp'),
   windowMs: 60 * 1000,
-  max: 30,
+  max: () => expensiveOpMax(),
   standardHeaders: true,
   legacyHeaders: false,
   // Route tests mount the whole reports router and fire dozens of report

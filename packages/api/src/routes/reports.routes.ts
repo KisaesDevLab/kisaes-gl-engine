@@ -13,6 +13,7 @@ import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as reportService from '../services/report.service.js';
 import { describe } from '../middleware/describe.js';
 import { registerExactReportRoutes } from './reports-exact.routes.js';
+import { registerControlReportRoutes } from './reports-controls.routes.js';
 import { buildReconciliationDiscrepancy } from '../services/reconciliation-discrepancy.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as exportService from '../services/report-export.service.js';
@@ -55,6 +56,8 @@ registerExactReportRoutes(reportsRouter, {
   resolveCompanyScope, readTagFilter, readAdjusting, readAccountIds, readGroupBy,
   reportSchemaVersion: REPORT_SCHEMA_VERSION,
 });
+// Closing Date Exceptions (U-204) and report email (U-207).
+registerControlReportRoutes(reportsRouter);
 
 function resolveCompanyScope(req: Request): string | null {
   const scope = req.query['scope'] as string | undefined;
