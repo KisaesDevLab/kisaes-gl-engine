@@ -15,7 +15,6 @@ import {
   w9Requests,
   annual1099Filings,
   transactions,
-  journalLines,
 } from '../db/schema/index.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
 import { AppError } from '../utils/errors.js';
@@ -38,7 +37,8 @@ import {
   type VendorStatus,
 } from './portal-1099.status.js';
 import {
-  BOX_THRESHOLDS,
+  boxThreshold,
+  general1099Threshold,
   FORM_BOX_LABELS,
   FORM_1099_BOXES,
   formOf,
@@ -50,7 +50,6 @@ import { escapeHtml } from '../utils/html-escape.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 14 + 15 — 1099 / W-9.
 
-const NEC_THRESHOLD = 600;
 const W9_REQUEST_TTL_DAYS = 30;
 
 function sha256Hex(value: string): string {
@@ -60,6 +59,15 @@ function sha256Hex(value: string): string {
 function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
+
+// U-212 (ClientLedger P28): the payments a 1099 counts, by the date they
+// were paid (1099s are cash basis): bill payments, direct expenses (Write
+// Checks posts an expense with is_check) and checks. Never 'bill' (the
+// accrual document; counting it and its bill payment double-counted every
+// paid bill, and an unpaid bill is no payment). Shared by ytdTotals, the
+// 1099 Vendor Summary, 1099 Preparation's total_paid and, through the bill
+// payments' bills, the per-box totals below.
+export const PAYMENT_1099_TXN_TYPES = ['bill_payment', 'expense', 'check'] as const;
 
 // 14.4 — YTD totals per vendor for a given tax year. Excludes
 // non-1099 transaction types (refunds, transfers). Implements as
@@ -83,12 +91,8 @@ export async function ytdTotals(
         sql`${transactions.contactId} IS NOT NULL`,
         gte(transactions.txnDate, yearStart),
         lte(transactions.txnDate, yearEnd),
-        // 1099-relevant txn types: actual CASH disbursements only —
-        // bill payments, direct expenses, checks. 'bill' is excluded:
-        // it's the accrual document, and counting the bill AND its
-        // bill_payment double-counted every paid bill (a $1,000 bill
-        // reported $2,000). Matches report.service.build1099VendorSummary.
-        inArray(transactions.txnType, ['bill_payment', 'expense', 'check']),
+        // Actual CASH disbursements only (PAYMENT_1099_TXN_TYPES).
+        inArray(transactions.txnType, [...PAYMENT_1099_TXN_TYPES]),
         // Drafts are not yet money out the door — exclude them.
         eq(transactions.status, 'posted'),
         sql`${transactions.voidedAt} IS NULL`,
@@ -100,23 +104,9 @@ export async function ytdTotals(
     .map((r) => ({ contactId: r.contactId, total: Number(r.total) }));
 }
 
-// Per-box YTD aggregator. Joins transactions → journal_lines →
-// vendor_1099_account_mappings to attribute each expense leg to a
-// (form, box) bucket, then groups by (contactId × form_box).
-//
-// Why we use journal_lines.debit − credit rather than transactions.total:
-//   • A vendor credit reverses an expense — the journal entry has a
-//     credit on the same expense account that the original bill
-//     debited, so debit − credit nets the refund out automatically.
-//   • A multi-line bill that splits one transaction across several
-//     mapped accounts (e.g. legal services + court filing fees)
-//     attributes correctly to each box rather than lumping under
-//     whichever box the operator picked.
-//
-// Bill payments are intentionally omitted from the txnType filter:
-// their journal lines hit AP and Cash, neither of which is a mapped
-// expense account, so they'd contribute zero anyway. Skipping them
-// is cheaper than joining them and filtering by mapped account.
+// Per-box YTD aggregator: attributes each payment to a vendor to the
+// (form, box) buckets of the accounts it paid for (ytdTotalsByBoxExact),
+// grouped by (contactId x form_box).
 export async function ytdTotalsByBox(
   tenantId: string,
   taxYear: number,
@@ -126,11 +116,32 @@ export async function ytdTotalsByBox(
     .filter((r) => r.total > 0);
 }
 
-// The one per-box query behind ytdTotalsByBox and the 1099 Summary report
-// (U-205, reports-exact-v1): totals stay pg numeric strings (exact), and a
-// companyId narrows the transactions to one company (the 1099 Center
-// passes none and stays tenant-wide). Every (vendor, box) bucket is
-// returned, including non-positive ones; callers filter.
+// The one per-box query behind ytdTotalsByBox, the 1099 Summary report
+// (U-205, reports-exact-v1) and 1099 Preparation's reportable amounts
+// (U-209): totals stay pg numeric strings (exact), and a companyId narrows
+// the payments to one company (the 1099 Center passes none and stays
+// tenant-wide). Every (vendor, box) bucket is returned, including
+// non-positive ones; callers filter.
+//
+// U-212 (ClientLedger P28, report-1099-paid-v1): cash paid in the calendar
+// year, the same payments as 1099 Preparation's total_paid
+// (PAYMENT_1099_TXN_TYPES). Journal lines (debit - credit) are used so a
+// refund line on the same account nets out and a split payment lands in
+// each of its boxes.
+//   - An expense or check: its own lines on mapped accounts, at its date.
+//   - A bill payment: at the payment's date, the mapped lines of each bill
+//     it paid, scaled by the cash it put on that bill over the bill's
+//     total: round(net * p_k / T, 2) - round(net * p_prev / T, 2), with
+//     p_k / p_prev the bill's running cash through this payment and before
+//     it over all its live payments, whatever the year (the cash-basis
+//     ledger's rule; the cents a payment's buckets miss against its cash
+//     go to its largest non-tax bucket). A bill paid in full in cash gives
+//     each box back exactly, a payment's buckets add up to its cash, and a
+//     bill paid across two years loses no cent. Only cash
+//     counts: a vendor credit applied or an early-payment discount taken
+//     is not a payment, so that part of the bill stays out.
+// Before U-212 the bill itself counted at its bill date: an unpaid bill
+// was reported, and a bill paid in a later year counted in the wrong year.
 export async function ytdTotalsByBoxExact(
   tenantId: string,
   taxYear: number,
@@ -138,49 +149,92 @@ export async function ytdTotalsByBoxExact(
 ): Promise<Array<{ contactId: string; formBox: FormBox; total: string }>> {
   const yearStart = `${taxYear}-01-01`;
   const yearEnd = `${taxYear}-12-31`;
-  const rows = await db
-    .select({
-      contactId: transactions.contactId,
-      formBox: vendor1099AccountMappings.formBox,
-      total: sql<string>`COALESCE(SUM(${journalLines.debit} - ${journalLines.credit}), 0)::text`,
-    })
-    .from(transactions)
-    .innerJoin(
-      journalLines,
-      and(
-        eq(journalLines.transactionId, transactions.id),
-        eq(journalLines.tenantId, transactions.tenantId),
-      ),
+  const companyT = companyId ? sql`t.company_id = ${companyId}` : sql`TRUE`;
+  const companyPay = companyId ? sql`pay.company_id = ${companyId}` : sql`TRUE`;
+  const res = await db.execute(sql`
+    WITH ap_run AS (
+      -- Each live cash application with the bill's running cash through it
+      -- (p_k) and before it (p_prev), over all years.
+      SELECT app.id AS app_id, app.payment_id, app.bill_id,
+        SUM(app.amount::numeric) OVER w AS p_k,
+        SUM(app.amount::numeric) OVER w - app.amount::numeric AS p_prev
+      FROM bill_payment_applications app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
+        AND pay.txn_type = 'bill_payment' AND pay.status = 'posted' AND pay.voided_at IS NULL
+      WHERE app.tenant_id = ${tenantId} AND pay.txn_date <= ${yearEnd}
+      WINDOW w AS (PARTITION BY app.bill_id ORDER BY pay.txn_date, app.created_at, app.id
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ),
+    bill_bucket AS (
+      -- A paid bill's non-A/P lines by 1099 box (unmapped lines by account).
+      SELECT bl.transaction_id AS bill_id,
+        COALESCE(m.form_box, 'acct:' || bl.account_id::text) AS bucket, m.form_box,
+        bool_and(COALESCE(a.system_tag = 'sales_tax_payable', false)) AS is_tax,
+        SUM(bl.debit::numeric - bl.credit::numeric) AS net
+      FROM journal_lines bl
+      JOIN accounts a ON a.id = bl.account_id AND a.tenant_id = ${tenantId}
+      LEFT JOIN vendor_1099_account_mappings m ON m.account_id = bl.account_id AND m.tenant_id = ${tenantId}
+      WHERE bl.tenant_id = ${tenantId} AND bl.is_void_reversal = false
+        AND a.system_tag IS DISTINCT FROM 'accounts_payable' AND a.detail_type IS DISTINCT FROM 'accounts_payable'
+        AND bl.transaction_id IN (SELECT bill_id FROM ap_run)
+      GROUP BY bl.transaction_id, COALESCE(m.form_box, 'acct:' || bl.account_id::text), m.form_box
+    ),
+    bp_src AS (
+      -- The report year's payments; cents when every amount is in cents,
+      -- else the journal's 4 places.
+      SELECT s.*,
+        CASE WHEN bool_and(s.net % 0.01 = 0) OVER (PARTITION BY s.app_id) AND s.p_k % 0.01 = 0
+               AND s.p_prev % 0.01 = 0 AND s.doc_total % 0.01 = 0 THEN 2 ELSE 4 END AS sc
+      FROM (
+        SELECT r.app_id, pay.contact_id, bb.bucket, bb.form_box, bb.is_tax, bb.net, r.p_k, r.p_prev,
+          bill.total::numeric AS doc_total
+        FROM ap_run r
+        JOIN transactions pay ON pay.id = r.payment_id AND pay.tenant_id = ${tenantId}
+          AND pay.txn_date >= ${yearStart} AND pay.txn_date <= ${yearEnd} AND ${companyPay}
+        JOIN transactions bill ON bill.id = r.bill_id AND bill.tenant_id = ${tenantId}
+          AND bill.status = 'posted' AND NULLIF(bill.total::numeric, 0) IS NOT NULL
+        JOIN bill_bucket bb ON bb.bill_id = bill.id
+        WHERE pay.contact_id IS NOT NULL
+      ) s
+    ),
+    bp_x AS (
+      SELECT s.*,
+        round(s.net * s.p_k / s.doc_total, s.sc) - round(s.net * s.p_prev / s.doc_total, s.sc) AS x,
+        round(SUM(s.net) OVER g * s.p_k / s.doc_total, s.sc) - round(SUM(s.net) OVER g * s.p_prev / s.doc_total, s.sc) AS target,
+        row_number() OVER (PARTITION BY s.app_id ORDER BY s.is_tax, abs(s.net) DESC, s.bucket) AS plug_rank
+      FROM bp_src s
+      WINDOW g AS (PARTITION BY s.app_id)
+    ),
+    bp AS (
+      -- The cents the buckets of one payment miss against its cash go to
+      -- the largest non-tax bucket (as the cash-basis ledger), so a
+      -- payment's buckets add up to the cash it put on the bill.
+      SELECT x.contact_id, x.form_box,
+        x.x + CASE WHEN x.plug_rank = 1 THEN x.target - SUM(x.x) OVER (PARTITION BY x.app_id) ELSE 0::numeric END AS amt
+      FROM bp_x x
+    ),
+    paid AS (
+      SELECT t.contact_id, m.form_box, (jl.debit::numeric - jl.credit::numeric) AS amt
+      FROM transactions t
+      JOIN journal_lines jl ON jl.transaction_id = t.id AND jl.tenant_id = t.tenant_id
+      JOIN vendor_1099_account_mappings m ON m.account_id = jl.account_id AND m.tenant_id = t.tenant_id
+      WHERE t.tenant_id = ${tenantId} AND t.contact_id IS NOT NULL
+        AND t.txn_date >= ${yearStart} AND t.txn_date <= ${yearEnd}
+        AND t.txn_type IN ('expense', 'check')
+        AND t.status = 'posted' AND t.voided_at IS NULL AND ${companyT}
+      UNION ALL
+      SELECT contact_id, form_box, amt FROM bp WHERE form_box IS NOT NULL
     )
-    .innerJoin(
-      vendor1099AccountMappings,
-      and(
-        eq(vendor1099AccountMappings.accountId, journalLines.accountId),
-        eq(vendor1099AccountMappings.tenantId, transactions.tenantId),
-      ),
-    )
-    .where(
-      and(
-        eq(transactions.tenantId, tenantId),
-        sql`${transactions.contactId} IS NOT NULL`,
-        gte(transactions.txnDate, yearStart),
-        lte(transactions.txnDate, yearEnd),
-        inArray(transactions.txnType, ['bill', 'expense', 'check']),
-        eq(transactions.status, 'posted'),
-        sql`${transactions.voidedAt} IS NULL`,
-        ...(companyId ? [eq(transactions.companyId, companyId)] : []),
-      ),
-    )
-    .groupBy(transactions.contactId, vendor1099AccountMappings.formBox);
+    SELECT contact_id, form_box, COALESCE(SUM(amt), 0)::text AS total
+    FROM paid
+    GROUP BY contact_id, form_box
+  `);
 
-  return rows
-    .filter(
-      (r): r is { contactId: string; formBox: string; total: string } =>
-        r.contactId !== null && isValidFormBox(r.formBox),
-    )
+  return (res.rows as Array<{ contact_id: string | null; form_box: string; total: string }>)
+    .filter((r) => r.contact_id !== null && isValidFormBox(r.form_box))
     .map((r) => ({
-      contactId: r.contactId,
-      formBox: r.formBox as FormBox,
+      contactId: r.contact_id as string,
+      formBox: r.form_box as FormBox,
       total: r.total,
     }));
 }
@@ -248,7 +302,8 @@ export async function summary(tenantId: string, taxYear: number): Promise<Summar
   const reportable = await ytdReportableTotals(tenantId, taxYear);
   const inScopeTotals = [...inScopeIds].map((id) => reportable.get(id) ?? 0);
   const ytdPaymentTotal = inScopeTotals.reduce((s, t) => s + t, 0);
-  const vendorsOverThreshold = inScopeTotals.filter((t) => t >= NEC_THRESHOLD).length;
+  const necThreshold = Number(general1099Threshold(taxYear));
+  const vendorsOverThreshold = inScopeTotals.filter((t) => t >= necThreshold).length;
 
   let w9sMissing = 0;
   let w9sExpiring = 0;
@@ -328,7 +383,7 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
       ytdTotal: total,
       w9OnFile: w9,
       exclusionReason: profile?.exclusionReason ?? null,
-      necThreshold: NEC_THRESHOLD,
+      necThreshold: Number(general1099Threshold(taxYear)),
     });
     return {
       contactId: v.contactId,
@@ -372,7 +427,7 @@ export async function scanThresholds(
   const rows = await listVendors(tenantId, taxYear);
   return rows
     .filter(
-      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && r.ytdTotal >= NEC_THRESHOLD,
+      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && r.ytdTotal >= Number(general1099Threshold(taxYear)),
     )
     .map((r) => ({
       contactId: r.contactId,
@@ -1401,9 +1456,9 @@ export async function exportFiling(
   // Filter to the requested form. The operator picks "1099-NEC" or
   // "1099-MISC" at export time; we emit every (vendor, formBox) row
   // whose form matches and whose amount clears the box-specific
-  // threshold (royalties at $10, everything else at $600).
+  // threshold for the tax year (boxThreshold, U-212).
   const formMatches = byBox.filter(
-    (r) => formOf(r.formBox) === input.formType && r.total >= BOX_THRESHOLDS[r.formBox],
+    (r) => formOf(r.formBox) === input.formType && r.total >= Number(boxThreshold(r.formBox, input.taxYear)),
   );
 
   if (formMatches.length === 0) {

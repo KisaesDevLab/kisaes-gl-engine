@@ -451,7 +451,8 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
     expect(r.status).toBe(200);
     const s = r.body;
     const ada = s.rows.find((x: any) => x.contactId === ids['vendor']);
-    expect(ada).toMatchObject({ name: 'Ada Contractor', tinLast4: '6789', boxes: { 'NEC-1': '600.3000' }, totalExact: '600.3000', meetsThreshold: true });
+    expect(ada).toMatchObject({ name: 'Ada Contractor', tinLast4: '6789', boxes: { 'NEC-1': '600.3000' }, totalExact: '600.3000', meetsThreshold: false });
+    // U-212: 2026 payments report from $2,000 (NEC); $600 was the threshold through 2025.
     const bo = s.rows.find((x: any) => x.contactId === ids['author']);
     expect(bo).toMatchObject({ tinLast4: null, boxes: { 'MISC-2': '9.9900' }, meetsThreshold: false });
     expect(JSON.stringify(s)).not.toContain('3456789');

@@ -1175,6 +1175,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'reports-ask-v1',
   /**
+   * 1099 amounts are cash paid in the year (U-212, ClientLedger P28; Q-P28aj). The 1099 Summary by box (GET
+   * /reports/vendor-1099-summary?exact=1), 1099 Preparation's reportable_total / reportable_totalExact / reportable_meets_threshold
+   * and the 1099 Center's per-box totals and filing count the same payments as 1099 Preparation's total_paid: bill payments, expenses
+   * (Write Checks included) and checks, each at its own date. A bill no longer counts at its bill date: each bill payment counts at the
+   * payment's date as the bill's mapped lines scaled by the cash it put on the bill / the bill's total (whole cents; a bill paid in
+   * full in cash gives each box back exactly; a vendor credit applied or an early-payment discount taken is not cash and is left out).
+   * An unpaid bill is not on a 1099; a bill paid in a later year counts in that year. total_paid also counts 'check' transactions.
+   * Thresholds depend on the year paid (One Big Beautiful Bill Act): NEC-1, MISC-1, MISC-3 and MISC-6 report from $600.00 through
+   * 2025 and $2,000.00 from 2026 (a table keyed by year for later indexed amounts); MISC-2 royalties $10, MISC-10 attorney proceeds
+   * $600. Applied to the Summary's meetsThreshold and boxCatalog thresholdExact, ap-1099-prep over_threshold and
+   * reportable_meets_threshold, and the 1099 Center's tiles, statuses, threshold scan and filing. Response shapes are unchanged.
+   * No migration.
+   */
+  'report-1099-paid-v1',
+  /**
    * Report fixes 2 (U-213, ClientLedger PR-6 review; also U-210, U-211). Trial Balance: the computed Retained Earnings (Prior Years) row
    * is on the report's basis (it was accrual on a cash TB, which then didn't balance after an invoice or bill open at a year end), tag
    * split too; exact responses add fiscalYearStart. Exact Balance Sheet (standard layout): computed equity rows calculated: true; the
