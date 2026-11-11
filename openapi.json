@@ -57804,7 +57804,7 @@
     },
     "/api/v1/reports/ap-aging-detail": {
       "get": {
-        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "True as of as_of_date (ap-aging-exact-v1): payments, discounts, vendor credits and refunds count only when dated on or before it. vendors[] {contact_id (null = \"(no vendor)\"), vendor_name, currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys; total = the A/P balance on the date), details[] {bill_id (the open transaction), txn_type, kind (bill | credit | charge | other), txn_number, vendor_invoice_number, txn_date, due_date, days_overdue, bucket (current | 1_30 | 31_60 | 61_90 | over_90), totalExact, paidExact (settled by the date), balanceExact (open on the date)}. Open vendor credits and unapplied payments are negative rows. Buckets by days past the due date (else the date): current, 1-30, 31-60, 61-90, 91 and over. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_aging_detail",
         "parameters": [
           {
@@ -57884,7 +57884,7 @@
     },
     "/api/v1/reports/ap-aging-summary": {
       "get": {
-        "description": "vendors[] {currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys), details[] {bill_id, totalExact, paidExact, balanceExact}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "True as of as_of_date (ap-aging-exact-v1): payments, discounts, vendor credits and refunds count only when dated on or before it. vendors[] {contact_id (null = \"(no vendor)\"), vendor_name, currentExact, bucket1to30Exact, bucket31to60Exact, bucket61to90Exact, bucketOver90Exact, totalExact}, totalsExact (same keys; total = the A/P balance on the date), details[] {bill_id (the open transaction), txn_type, kind (bill | credit | charge | other), txn_number, vendor_invoice_number, txn_date, due_date, days_overdue, bucket (current | 1_30 | 31_60 | 61_90 | over_90), totalExact, paidExact (settled by the date), balanceExact (open on the date)}. Open vendor credits and unapplied payments are negative rows. Buckets by days past the due date (else the date): current, 1-30, 31-60, 61-90, 91 and over. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_aging_summary",
         "parameters": [
           {
@@ -58547,7 +58547,7 @@
     },
     "/api/v1/reports/customer-balance-detail": {
       "get": {
-        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "Open balances as of as_of_date (default today; open-balances-asof-v1): open invoices and charges less open credit memos and unapplied payments, counting only payments, credits and applications dated on or before the date. data[] {id (null = A/R lines without a client, \"(no client)\"), display_name, balanceExact} and items[] {txnId, txnType, kind, number, date, dueDate, amountExact, openExact, runningBalanceExact}: the open documents in date order. totalsExact {balance} is the A/R balance on the date. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_customer_balance_detail",
         "parameters": [
           {
@@ -58596,6 +58596,15 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today. Needs exact=1.",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -58619,7 +58628,7 @@
     },
     "/api/v1/reports/customer-balance-summary": {
       "get": {
-        "description": "data[] {balanceExact}, totalsExact {balance}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "Open balances as of as_of_date (default today; open-balances-asof-v1): open invoices and charges less open credit memos and unapplied payments, counting only payments, credits and applications dated on or before the date. data[] {id (null = A/R lines without a client, \"(no client)\"), display_name, balanceExact}; clients whose open documents net to zero are left out. totalsExact {balance} is the A/R balance on the date. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_customer_balance_summary",
         "parameters": [
           {
@@ -58666,6 +58675,15 @@
                 "csv",
                 "pdf"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today. Needs exact=1.",
               "type": "string"
             }
           }
@@ -59667,7 +59685,7 @@
     },
     "/api/v1/reports/invoice-list": {
       "get": {
-        "description": "data[] {totalExact, amount_paidExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "data[] {totalExact, amount_paidExact, balance_dueExact}, totalsExact. With open=1 (open-balances-asof-v1): Open Invoices, the invoices still open on as_of_date (payments, credits, discounts and write-offs dated on or before it count; start_date / end_date filter the invoice date): data[] {id, contact_id, customer_name, txn_number, txn_date, due_date, invoice_status, status, days_overdue, totalExact, amount_paidExact (settled by the date), balance_dueExact (open on the date)}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_invoice_list",
         "parameters": [
           {
@@ -59740,6 +59758,28 @@
             "name": "status",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "open",
+            "required": false,
+            "schema": {
+              "description": "1 = Open Invoices as of as_of_date. Needs exact=1.",
+              "enum": [
+                "1",
+                "0"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today. Needs exact=1.",
               "type": "string"
             }
           }
@@ -62616,7 +62656,7 @@
     },
     "/api/v1/reports/unpaid-bills": {
       "get": {
-        "description": "data[] {totalExact, amount_paidExact, credits_appliedExact, balance_dueExact}, totalsExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "The bills still open on as_of_date (default today; ap-aging-exact-v1), counting only payments, discounts and vendor credits dated on or before it: data[] {id, contact_id, vendor_name, txn_number, vendor_invoice_number, txn_date, due_date, bill_status (unpaid | partial on the date), days_overdue, totalExact, amount_paidExact, discount_amountExact, credits_appliedExact, balance_dueExact}, totalsExact. overdue_only=true: due before the as-of date. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_unpaid_bills",
         "parameters": [
           {
@@ -62687,6 +62727,15 @@
             "name": "overdue_only",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today. Needs exact=1.",
               "type": "string"
             }
           }
@@ -62790,9 +62839,90 @@
         ]
       }
     },
+    "/api/v1/reports/vendor-balance-detail": {
+      "get": {
+        "description": "Open balances as of as_of_date (default today; open-balances-asof-v1): open bills less open vendor credits and unapplied payments, counting only payments, credits, discounts and refunds dated on or before the date. data[] {id (null = A/P lines without a vendor, \"(no vendor)\"), display_name, balanceExact} and items[] {txnId, txnType, kind, number, date, dueDate, amountExact, openExact, runningBalanceExact}: the open documents in date order. Exact only (exact=1). totalsExact {balance} is the A/P balance on the date. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "operationId": "get_api_v1_reports_vendor_balance_detail",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "description": "1 = exact report (reports-exact-v1): *Exact decimal strings, Decimal totals, YYYY-MM-DD dates and meta. Ignored with format=csv|pdf.",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_id",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag ids",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "pdf"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today. Needs exact=1.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Vendor Balance Detail",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/api/v1/reports/vendor-balance-summary": {
       "get": {
-        "description": "data[] {total_spentExact}, totalsExact {total_spent}. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "Open balances as of as_of_date (default today; open-balances-asof-v1): open bills less open vendor credits and unapplied payments, counting only payments, credits, discounts and refunds dated on or before the date. data[] {id (null = A/P lines without a vendor, \"(no vendor)\"), display_name, balanceExact}; vendors whose open documents net to zero are left out. (Before open-balances-asof-v1 the exact response was total_spent; without exact=1 the legacy response is unchanged.) totalsExact {balance} is the A/P balance on the date. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_vendor_balance_summary",
         "parameters": [
           {
@@ -62839,6 +62969,15 @@
                 "csv",
                 "pdf"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD; default today. Needs exact=1.",
               "type": "string"
             }
           }

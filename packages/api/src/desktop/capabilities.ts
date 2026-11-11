@@ -1085,5 +1085,28 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Sales by Client / by Item take adjusting and return grandTotalExact.
    */
   'reports-drill-v1',
+  /**
+   * A/P aging true as of a date (U-121 A/P half, ClientLedger P28 PR-D; the twin of ar-aging-exact-v1). With exact=1,
+   * /reports/ap-aging-summary|detail?as_of_date= and /reports/unpaid-bills?as_of_date= (default today) are built from the A/P ledger
+   * (services/ap-open-items.ts): a bill is open by the bill payments, early-payment discounts and vendor credits applied by payments
+   * dated on or before the date (an application is dated by its payment; a voided payment never counts), a vendor credit by the
+   * refund deposits dated on or before it. Aging: the #33 shape plus open vendor credits and unapplied payments (negative rows,
+   * details[].kind bill | credit | charge | other, txn_type) and a "(no vendor)" row (contact_id null), so totalsExact.total is the
+   * A/P balance on the date; buckets current, 1-30, 31-60, 61-90, over 90 days past due (Q-105); every value exact and Decimal-summed.
+   * Unpaid Bills: data[] adds discount_amountExact, contact_id, days_overdue; amounts and bill_status (unpaid | partial) as of the
+   * date; overdue_only means due before the as-of date. Without exact=1 the legacy responses are unchanged (today's balances).
+   */
+  'ap-aging-exact-v1',
+  /**
+   * As-of open balances (U-121, ClientLedger P28 PR-D; Q-307). With exact=1 and as_of_date (default today):
+   * /reports/customer-balance-summary|detail (from the A/R open items) and /reports/vendor-balance-summary|detail (A/P; detail is
+   * new and exact only) return each contact's open documents less open credits on the date: data[] {id (null = no contact),
+   * display_name, balanceExact}, Detail adds items[] {txnId, txnType, kind, number, date, dueDate, amountExact, openExact,
+   * runningBalanceExact}; totalsExact.balance is the A/R or A/P balance on the date (it equals the aging total). The exact Vendor
+   * Balance Summary was total_spent (reports-exact-v1); it is now the open balance. /reports/invoice-list?open=1&as_of_date= is Open
+   * Invoices: the invoices still open on the date, amount_paidExact = settled by then, balance_dueExact = open then (status does
+   * not go with open=1). as_of_date and open without exact=1 are 400 INVALID_PARAM; the legacy responses are unchanged.
+   */
+  'open-balances-asof-v1',
 ];
 
