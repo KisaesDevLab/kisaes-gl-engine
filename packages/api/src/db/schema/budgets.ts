@@ -20,6 +20,9 @@ export const budgets = pgTable('budgets', {
   // stays for backward compat with the existing month_N code paths.
   fiscalYearStart: date('fiscal_year_start'),
   createdBy: uuid('created_by'),
+  // U-203 (migration 0275): bumped by every write to the budget or its
+  // lines; a caller that sends the version it read gets 409 STALE_VERSION.
+  version: integer('version').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
