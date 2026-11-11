@@ -6,6 +6,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tagIn } from './report.service.js';
 import { ReportDecimal as Decimal, dec, dsum, exactStr, legacyNum } from './report-exact.js';
+import { reportable1099Buckets } from './vendor-1099-summary.service.js';
+import { BOX_THRESHOLDS } from './portal-1099.boxes.js';
 
 // Helper: add `b` to `a` via Decimal and return a plain number rounded
 // to 4 decimals. Reports expose `number` to the UI, but accumulation
@@ -351,11 +353,27 @@ export async function buildAp1099Prep(
     ORDER BY c.display_name
   `);
 
+  // U-209 (ClientLedger P28 QA-8): the 1099 amount, from the same mapped
+  // accounts and vendor rules as the 1099 Summary by box and the 1099
+  // Center filing (reportable1099Buckets). total_paid stays every payment
+  // to the vendor; reportable_total is what a 1099 reports (0 for a vendor
+  // excluded on its 1099 profile or paid only from unmapped accounts).
+  const { buckets } = await reportable1099Buckets(tenantId, taxYear, companyId);
+  const reportable = new Map<string, { total: InstanceType<typeof Decimal>; meets: boolean }>();
+  for (const b of buckets) {
+    const cur = reportable.get(b.contactId) ?? { total: new Decimal(0), meets: false };
+    cur.total = cur.total.plus(b.total);
+    cur.meets = cur.meets || dec(b.total).gte(dec(BOX_THRESHOLDS[b.formBox]));
+    reportable.set(b.contactId, cur);
+  }
+
   const data = (rows.rows as any[]).map((row) => {
     const parts = [row.billing_line1, row.billing_city, row.billing_state, row.billing_zip].filter(Boolean);
     // 1099 threshold check must not drift — $599.99999 should NOT hit
     // the 1099 bucket. Decimal comparison is exact.
     const totalPaid = new Decimal(row.total_paid || '0');
+    const rep = reportable.get(row.id);
+    const repTotal = rep?.total ?? new Decimal(0);
     return {
       contact_id: row.id,
       vendor_name: row.display_name,
@@ -364,11 +382,17 @@ export async function buildAp1099Prep(
       total_paid: Number(totalPaid.toFixed(4)),
       ...(prepOpts.exactAmounts ? { total_paidExact: exactStr(totalPaid) } : {}),
       over_threshold: totalPaid.greaterThanOrEqualTo(600),
+      reportable_total: Number(repTotal.toFixed(4)),
+      ...(prepOpts.exactAmounts ? { reportable_totalExact: exactStr(repTotal) } : {}),
+      reportable_meets_threshold: rep?.meets ?? false,
     };
   });
 
   return {
     title: '1099 Vendor Preparation', taxYear, data,
-    ...(prepOpts.exactAmounts ? { totalPaidExact: exactStr(dsum(data.map((r) => r.total_paidExact))) } : {}),
+    ...(prepOpts.exactAmounts ? {
+      totalPaidExact: exactStr(dsum(data.map((r) => r.total_paidExact))),
+      totalReportableExact: exactStr(dsum(data.map((r) => r.reportable_totalExact))),
+    } : {}),
   };
 }

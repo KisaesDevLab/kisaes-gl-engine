@@ -491,24 +491,24 @@
       ],
       "asOf": {
         "2026-01-31": {
-          "cash": { "income": "10.00", "salesTax": "0.81", "cogsShare": "3.5875", "cogs": "3.59", "inventoryShare": "29.7425", "inventory": "29.74" },
+          "cash": { "income": "10.00", "salesTax": "0.81", "cogsShare": "3.59", "cogs": "3.59", "inventoryShare": "29.74", "inventory": "29.74" },
           "accrual": { "valuation": "39.48", "glInventory": "39.48" },
           "basisNote": true
         }
       },
       "settlements": {
-        "rule": "Q-PR4a (PR-4 S3, amends Q-SPF5): on cash basis COGS and the stock it takes off are recognised as the sale is settled by any means (cash + discount + write-off, an applied credit memo, or at once for a $0 sale), in proportion to the amount settled; a credit memo's returned units come back as it is applied (or refunded). Shares are unrounded; the reports round at display.",
+        "rule": "Q-PR4a (PR-4 S3, amends Q-SPF5): on cash basis COGS and the stock it takes off are recognised as the sale is settled by any means (cash + discount + write-off, an applied credit memo, or at once for a $0 sale), in proportion to the amount settled; a credit memo's returned units come back as it is applied (or refunded). Shares are whole cents per settlement (U-209): round(line x settled-to-date / total) differences, so a fully settled sale gives the line back.",
         "steps": [
           { "n": 6, "doc": "G1", "event": "credit_memo", "date": "2026-01-20", "item": "W", "quantity": "1", "returnOf": "A3", "taxable": true, "total": "10.81",
             "applyTo": "A3", "applied": "10.81",
-            "expect": { "value": "3.59", "asOf": "2026-01-31", "cash": { "cogsShare": "3.585", "inventoryShare": "29.745" },
-              "note": "A3 settled 21.62 / 43.24 = 1/2: 7.175 relieved; the memo (fully applied) puts back 3.59" } },
+            "expect": { "value": "3.59", "asOf": "2026-01-31", "cash": { "cogsShare": "3.59", "inventoryShare": "29.74" },
+              "note": "A3 settled 21.62 / 43.24 = 1/2: 3.59 + 3.59 relieved (each settlement to the cent, U-209); the memo (fully applied) puts back 3.59" } },
           { "n": 7, "doc": "G2", "event": "invoice", "date": "2026-01-21", "item": "W", "quantity": "1", "unitPrice": "0.00", "total": "0.00",
-            "expect": { "value": "-3.59", "asOf": "2026-01-31", "cash": { "cogsShare": "7.175", "inventoryShare": "26.155" },
+            "expect": { "value": "-3.59", "asOf": "2026-01-31", "cash": { "cogsShare": "7.18", "inventoryShare": "26.15" },
               "note": "round2(43.07 / 12) = 3.59, recognised in full on Jan 21" } },
           { "n": 8, "event": "write_off", "date": "2026-02-28", "invoice": "A3", "amount": "21.62",
             "expect": { "asOf": "2026-02-28", "cash": { "income": "10.00", "cogsShare": "14.35", "inventoryShare": "18.98" },
-              "note": "A3 fully settled: 14.35 relieved; 33.33 - 14.35 + 3.59 - 3.59" } }
+              "note": "A3 fully settled: 14.35 relieved (3.59 + 3.59 + 7.17); 33.33 - 14.35 + 3.59 - 3.59" } }
         ]
       }
     },

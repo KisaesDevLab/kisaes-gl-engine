@@ -25,7 +25,7 @@ import type { AddressInfo, Server } from 'net';
 import { sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db, pool } from '../db/index.js';
-import { accounts, contacts, paymentApplications, vendor1099AccountMappings } from '../db/schema/index.js';
+import { accounts, contacts, paymentApplications, vendor1099AccountMappings, vendor1099Profile } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
 import * as ledger from '../services/ledger.service.js';
 import { ytdTotalsByBox } from '../services/portal-1099.service.js';
@@ -250,14 +250,14 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
     expect(year.totalRevenueExact).toBe('5.3000');
   });
 
-  it('cash basis: unrounded allocation shares, totals still equal the rows', async () => {
+  it('cash basis: allocation shares to the cent (U-209), totals still equal the rows', async () => {
     const q = 'start_date=2027-01-01&end_date=2027-12-31&basis=cash&exact=1';
     const pl = (await get(`/profit-loss?${q}`)).body;
     expect(pl.meta.basis).toBe('cash');
     const shares = pl.revenue.filter((e: any) => !e.rollupExact);
     expect(shares.length).toBe(3);
-    // More places than the stored scale: the share is not rounded.
-    expect(shares.some((e: any) => e.amountExact.split('.')[1].length > 4)).toBe(true);
+    // U-209: a pro-rated share is whole cents (before: up to 16 places).
+    for (const e of shares) expect(D(e.amountExact).decimalPlaces(), e.amountExact).toBeLessThanOrEqual(2);
     expect(D(pl.totalRevenueExact).eq(sumOf(pl.revenue, 'amountExact'))).toBe(true);
     expect(D(pl.netIncomeExact).eq(D(pl.totalRevenueExact).minus(D(pl.totalExpensesExact)))).toBe(true);
     const gl = (await get(`/general-ledger?${q}`)).body;
@@ -402,6 +402,48 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
     expect(cash.meta.basis).toBe('cash');
     expect(typeof cash.meta.cashBasisRules).toBe('string');
     expect(D(cash.totalExpensesExact).eq(sumOf(cash.expenses, 'amountExact'))).toBe(true);
+  });
+
+  it('1099 Summary by box and 1099 Preparation list the vendors the 1099 Center files for (U-209)', async () => {
+    // A vendor not marked for 1099s and an eligible one excluded on its
+    // profile, both paid from the NEC-mapped account: no 1099 for either.
+    const [shop] = await db.insert(contacts).values({
+      tenantId, companyId, contactType: 'vendor', displayName: 'Cy Supplies', is1099Eligible: false,
+    } as typeof contacts.$inferInsert).returning();
+    const [corp] = await db.insert(contacts).values({
+      tenantId, companyId, contactType: 'vendor', displayName: 'Di Corp', is1099Eligible: true,
+    } as typeof contacts.$inferInsert).returning();
+    await db.insert(vendor1099Profile).values({ tenantId, contactId: corp!.id, exclusionReason: 'corporation' } as typeof vendor1099Profile.$inferInsert);
+    for (const c of [shop!, corp!]) {
+      await ledger.postTransaction(tenantId, {
+        txnType: 'expense', txnDate: '2026-05-01', contactId: c.id, total: '444.20', memo: 'Paid',
+        lines: [
+          { accountId: ids['contractors']!, debit: '444.20', credit: '0' },
+          { accountId: ids['checking']!, debit: '0', credit: '444.20' },
+        ],
+      }, undefined, companyId);
+    }
+    const s = (await get('/vendor-1099-summary?year=2026&exact=1')).body;
+    expect(s.rows.map((x: any) => x.contactId).sort()).toEqual([ids['vendor'], ids['author']].sort());
+    expect(s.rows.every((x: any) => x.is1099Eligible === true)).toBe(true);
+    expect(s.totalsExact).toEqual({ 'NEC-1': '600.3000', 'MISC-2': '9.9900', total: '610.2900' });
+    // 1099 Preparation: the same 1099 amount per vendor; total_paid stays every payment.
+    const prep = (await get('/ap-1099-prep?tax_year=2026&exact=1')).body;
+    for (const row of s.rows) {
+      const p = prep.data.find((x: any) => x.contact_id === row.contactId);
+      expect(D(p.reportable_totalExact).eq(D(row.totalExact)), row.name).toBe(true);
+      expect(p.reportable_meets_threshold).toBe(row.meetsThreshold);
+    }
+    const pc = prep.data.find((x: any) => x.contact_id === corp!.id);
+    expect(D(pc.reportable_totalExact).isZero()).toBe(true);
+    expect(pc.reportable_meets_threshold).toBe(false);
+    expect(D(pc.total_paidExact).eq(D('444.20'))).toBe(true);
+    expect(prep.data.find((x: any) => x.contact_id === shop!.id)).toBeUndefined();
+    expect(D(prep.totalReportableExact).eq(D(s.totalsExact.total))).toBe(true);
+    // Remove the extra vendors' entries so later tests see the base fixture.
+    await db.execute(sql`DELETE FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id IN (
+      SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND contact_id IN (${shop!.id}, ${corp!.id}))`);
+    await db.execute(sql`DELETE FROM transactions WHERE tenant_id = ${tenantId} AND contact_id IN (${shop!.id}, ${corp!.id})`);
   });
 
   it('1099 Summary by box matches the 1099 Center mapping totals', async () => {

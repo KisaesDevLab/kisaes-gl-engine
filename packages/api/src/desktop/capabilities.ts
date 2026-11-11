@@ -1035,7 +1035,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * customer-balance-summary|detail, vendor-balance-summary, ap-aging-summary|detail, unpaid-bills, bill-payment-history, vendor-statement,
    * transaction-list-by-vendor, ap-1099-prep, vendor-1099-summary, sales-by-customer, sales-by-item, expense-by-vendor, expense-by-category,
    * revenue-by-category, deposit-detail, check-register, bank-balances): every money field x gains xExact (unrounded decimal string, same
-   * sign; 4 places from the journal, more for a cash-basis allocation share, never rounded), totals are Decimal sums of the rows, dates are
+   * sign; 4 places from the journal; a cash-basis allocation share in whole cents since U-209), totals are Decimal sums of the rows, dates are
    * YYYY-MM-DD, and meta {exact, basis, cashBasisRules, from, to | asOf, reportSchemaVersion} is added. Standard P&L / Balance Sheet / Trial
    * Balance account rows carry parentAccountId, depth and rollupExact on parents (comparative columns do not); GL lines and accrual
    * transaction-list rows carry lineId; GL takes limit and returns rowCount and truncated; comparative rows carry valuesExact (% at 1 place).
@@ -1134,6 +1134,19 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * amountAfterExact}. The ledger's create audit row now carries txnDate. Read-only; no migration.
    */
   'closing-exceptions-v1',
+  /**
+   * Report fixes (U-209, ClientLedger P28 QA). Cash basis: every pro-rated line of a partly settled document (bill or invoice
+   * payments, credit memo applications, refunds of a memo or vendor credit) is whole cents (a document or settlement stored with
+   * sub-cent places keeps them on one line so the settlement still balances); the lines of one settlement foot to it
+   * (largest non-tax line takes the rounding), a fully settled document gives each line back, Sales Tax Payable moves as the cash sales
+   * tax report rounds it, and P&L cells, totals and their drills all read the same cents. General Ledger, expense/revenue detail,
+   * Transaction List (both bases) rows carry a check's check number as txnNumber / txn_number (else the document number). GET
+   * /reports/vendor-1099-summary?exact=1 lists only vendors the 1099 Center files for (is1099Eligible and not excluded on their 1099
+   * profile; is1099Eligible is always true); GET /reports/ap-1099-prep rows add reportable_total, reportable_meets_threshold (and
+   * reportable_totalExact, totalReportableExact with exact=1) from the same buckets; total_paid is unchanged. Closing Date Exceptions:
+   * a transaction with no total (journal entry) shows its debit total as amountBeforeExact / amountAfterExact. No migration.
+   */
+  'report-fixes-v1',
   /**
    * Audit trail filters (U-204, ClientLedger P28 PR-E). GET /audit-log (and /audit-log/export) take user_id and entity_id (uuids, else
    * 400 VALIDATION_ERROR) and company ("current" = the request's company, or a company id checked as X-Company-Id; 403 otherwise): rows

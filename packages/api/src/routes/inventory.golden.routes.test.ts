@@ -850,7 +850,7 @@ describe('inventory-costing-v1 on cash basis (golden G, U-158)', () => {
     const reports = await import('../services/report.service.js');
     const pl = await reports.buildProfitAndLoss(c.tenantId, '2026-01-01', '2026-01-31', 'cash', c.companyId, null, null, { exactAmounts: true });
     const cogs = pl.cogs.find((e) => e.accountId === w.cogs)!;
-    expect(cogs.amountExact && new Decimal(cogs.amountExact).toString(), 'cash COGS share, unrounded').toBe(new Decimal(want.cash.cogsShare).toString());
+    expect(cogs.amountExact && new Decimal(cogs.amountExact).toString(), 'cash COGS share, to the cent (U-209)').toBe(new Decimal(want.cash.cogsShare).toString());
     expect(cogs.amount.toFixed(2)).toBe(want.cash.cogs);
     expect(pl.totalRevenue.toFixed(2)).toBe(want.cash.income);
     const bs = await reports.buildBalanceSheet(c.tenantId, '2026-01-31', 'cash', c.companyId);

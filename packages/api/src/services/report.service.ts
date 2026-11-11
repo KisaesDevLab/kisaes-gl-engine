@@ -249,6 +249,68 @@ export function arAppsCte(tenantId: string) {
     )`;
 }
 
+/**
+ * U-209 (ClientLedger P28 QA-6): a document's lines pro-rated over one
+ * settlement, to the cent. `src` yields one row per (settlement, document
+ * line) with the virtual-line columns plus:
+ *   alloc_key   one settlement of one document (the footing group, with grp)
+ *   grp         true for the costing walk's derived lines, which scale by
+ *               their own factor and net to zero on their own
+ *   is_tax      a Sales Tax Payable line (never takes the rounding plug)
+ *   net         the line's debit - credit; side_debit: which column it uses
+ *   p_k, p_prev the document's running settled amount through this
+ *               settlement and before it (all live settlements, report
+ *               filters aside, so a period and the year agree)
+ *   doc_total   the document total the lines are scaled against
+ *   src_line_id the document line (ordering only)
+ *
+ * Each line gets round(net * p_k / T, 2) - round(net * p_prev / T, 2), the
+ * rule the cash sales tax report uses (Q-P23e), so a fully settled document
+ * gives every line back exactly. The cents the lines of one settlement then
+ * miss against round(N * p_k / T, 2) - round(N * p_prev / T, 2) (N the
+ * group's net: the settled amount itself when the lines net to the total)
+ * go to the group's largest non-tax line. Over all settlements those plugs
+ * sum to zero, so the plug line also comes back exactly.
+ */
+/**
+ * U-209 (ClientLedger P28 QA-4): the number a report row shows for its
+ * transaction: a check's check number (checks, and bill payments or
+ * expenses paid by check, keep it in check_number), else the document
+ * number. Same precedence as the Check Register and Deposit Detail.
+ */
+export function docNumberSql(alias: string) {
+  return sql.raw(`COALESCE(${alias}.check_number::text, ${alias}.txn_number)`);
+}
+
+function centAllocated(src: SQL) {
+  return sql`
+    SELECT a.account_id, a.tag_id, a.transaction_id, a.txn_date, a.txn_type, a.txn_number, a.memo,
+      a.txn_contact_id, a.line_contact_id, a.description, a.item_id, a.line_order,
+      CASE WHEN a.side_debit THEN a.amt ELSE 0::numeric END AS debit,
+      CASE WHEN a.side_debit THEN 0::numeric ELSE -a.amt END AS credit,
+      NULL::uuid AS line_id
+    FROM (
+      SELECT s.*, s.x + CASE WHEN s.plug_rank = 1 THEN s.target - SUM(s.x) OVER (PARTITION BY s.alloc_key, s.grp) ELSE 0::numeric END AS amt
+      FROM (
+        SELECT s0.*,
+          round(s0.net * s0.p_k / s0.doc_total, 2) - round(s0.net * s0.p_prev / s0.doc_total, 2) AS x,
+          -- Whole cents when the document and its settlements are; an
+          -- amount stored with sub-cent places keeps them (the journal's 4)
+          -- on the plug line, so the virtual transaction still balances.
+          round(SUM(s0.net) OVER g * s0.p_k / s0.doc_total, s0.sc) - round(SUM(s0.net) OVER g * s0.p_prev / s0.doc_total, s0.sc) AS target,
+          row_number() OVER (PARTITION BY s0.alloc_key, s0.grp
+            ORDER BY s0.is_tax, abs(s0.net) DESC, s0.line_order, s0.src_line_id) AS plug_rank
+        FROM (
+          SELECT s1.*,
+            CASE WHEN SUM(s1.net) OVER (PARTITION BY s1.alloc_key, s1.grp) % 0.01 = 0 AND s1.p_k % 0.01 = 0
+                   AND s1.p_prev % 0.01 = 0 AND s1.doc_total % 0.01 = 0 THEN 2 ELSE 4 END AS sc
+          FROM (${src}) s1
+        ) s0
+        WINDOW g AS (PARTITION BY s0.alloc_key, s0.grp)
+      ) s
+    ) a`;
+}
+
 // Exported for the TB module's five-column workpaper engine
 // (services/tb/balance-engine.service.ts), which must compute cash-basis
 // columns on the SAME virtual ledger as every other report (D12) —
@@ -298,9 +360,72 @@ export function cashBasisLinesWith(
       FROM transaction_tax_lines WHERE tenant_id = ${tenantId} AND kind = 'bad_debt'
       GROUP BY transaction_id
     ),
+    -- U-209: running settled amounts per document, over every live
+    -- settlement (report date, company and adjusting filters aside), for
+    -- the cent allocation (centAllocated). Orders match the cash sales tax
+    -- report's, so Sales Tax Payable here ties to it.
+    cb_ar_run AS (
+      SELECT app.*,
+        SUM(app.cash_amount) OVER w AS cash_k, SUM(app.cash_amount) OVER w - app.cash_amount AS cash_prev,
+        SUM(app.amount) OVER w AS set_k, SUM(app.amount) OVER w - app.amount AS set_prev
+      FROM ar_apps app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId} AND pay.status = 'posted'
+      WHERE COALESCE(app.rec_date, pay.txn_date) <= ${endDate}
+      WINDOW w AS (PARTITION BY app.invoice_id ORDER BY COALESCE(app.rec_date, pay.txn_date), app.app_created, app.kind, app.app_id
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ),
+    cb_mr_run AS (
+      SELECT pay.id AS refund_id,
+        SUM(pay.total::numeric) OVER w AS p_k, SUM(pay.total::numeric) OVER w - pay.total::numeric AS p_prev
+      FROM transactions pay
+      JOIN transactions m ON m.id = pay.source_payment_id AND m.tenant_id = pay.tenant_id AND m.txn_type = 'credit_memo' AND m.status = 'posted'
+      WHERE pay.tenant_id = ${tenantId} AND pay.txn_type = 'customer_refund' AND pay.status = 'posted'
+        AND pay.basis <> 'accrual' AND pay.txn_date <= ${endDate}
+      WINDOW w AS (PARTITION BY pay.source_payment_id ORDER BY pay.txn_date, pay.created_at, pay.id
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ),
+    cb_vr_run AS (
+      SELECT rl.id AS refund_line_id,
+        SUM(rl.credit::numeric - rl.debit::numeric) OVER w AS p_k,
+        SUM(rl.credit::numeric - rl.debit::numeric) OVER w - (rl.credit::numeric - rl.debit::numeric) AS p_prev
+      FROM journal_lines rl
+      JOIN accounts ra ON ra.id = rl.account_id AND ra.tenant_id = ${tenantId} AND ra.detail_type = 'accounts_payable'
+      JOIN transactions dep ON dep.id = rl.transaction_id AND dep.tenant_id = ${tenantId} AND dep.status = 'posted'
+        AND dep.basis <> 'accrual' AND dep.txn_date <= ${endDate}
+      JOIN transactions vc ON vc.id = rl.source_transaction_id AND vc.tenant_id = ${tenantId}
+        AND vc.txn_type = 'vendor_credit' AND vc.status = 'posted'
+      WHERE rl.tenant_id = ${tenantId} AND rl.is_void_reversal = false
+      WINDOW w AS (PARTITION BY rl.source_transaction_id ORDER BY dep.txn_date, dep.created_at, rl.id
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ),
+    cb_cm_run AS (
+      SELECT pa.id AS pa_id,
+        SUM(pa.amount::numeric) OVER wi AS inv_k, SUM(pa.amount::numeric) OVER wi - pa.amount::numeric AS inv_prev,
+        SUM(pa.amount::numeric) OVER wm AS cm_k, SUM(pa.amount::numeric) OVER wm - pa.amount::numeric AS cm_prev
+      FROM payment_applications pa
+      JOIN transactions cm ON cm.id = pa.payment_id AND cm.tenant_id = ${tenantId}
+        AND cm.txn_type = 'credit_memo' AND cm.status = 'posted' AND cm.basis <> 'accrual'
+      JOIN transactions inv ON inv.id = pa.invoice_id AND inv.tenant_id = ${tenantId} AND inv.status = 'posted'
+      WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL
+        AND COALESCE(pa.applied_date, cm.txn_date) <= ${endDate}
+      WINDOW wi AS (PARTITION BY pa.invoice_id ORDER BY COALESCE(pa.applied_date, cm.txn_date), pa.created_at, pa.id
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+             wm AS (PARTITION BY pa.payment_id ORDER BY COALESCE(pa.applied_date, cm.txn_date), pa.created_at, pa.id
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ),
+    cb_ap_run AS (
+      SELECT app.id AS app_id,
+        SUM(app.amount::numeric + app.discount_amount::numeric) OVER w AS p_k,
+        SUM(app.amount::numeric + app.discount_amount::numeric) OVER w - (app.amount::numeric + app.discount_amount::numeric) AS p_prev
+      FROM bill_payment_applications app
+      JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId} AND pay.status = 'posted'
+      WHERE app.tenant_id = ${tenantId} AND pay.txn_date <= ${endDate}
+      WINDOW w AS (PARTITION BY app.bill_id ORDER BY pay.txn_date, app.created_at, app.id
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ),
     cb_r2 AS (
       SELECT jl.account_id, a.detail_type, a.system_tag, jl.tag_id,
-        t.id AS transaction_id, t.txn_date, t.txn_type, t.txn_number, t.memo,
+        t.id AS transaction_id, t.txn_date, t.txn_type, ${docNumberSql('t')} AS txn_number, t.memo,
         t.contact_id AS txn_contact_id, jl.contact_id AS line_contact_id,
         jl.description, jl.item_id, jl.line_order,
         jl.debit::numeric AS debit, jl.credit::numeric AS credit, jl.id AS line_id,
@@ -385,14 +510,18 @@ export function cashBasisLinesWith(
       -- at the refund's date, scaled by refund / memo total. Credit memo
       -- applications are not cash and are left out of ar_apps (as vendor
       -- credits are on the AP side).
+      ${centAllocated(sql`
       SELECT ml.account_id, ml.tag_id,
-        pay.id AS transaction_id, pay.txn_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.id AS transaction_id, pay.txn_date, pay.txn_type, ${docNumberSql('pay')} AS txn_number, pay.memo,
         pay.contact_id AS txn_contact_id, ml.contact_id AS line_contact_id,
         ml.description, ml.item_id, ml.line_order,
-        ml.debit::numeric  * pay.total::numeric / NULLIF(m.total::numeric, 0) AS debit,
-        ml.credit::numeric * pay.total::numeric / NULLIF(m.total::numeric, 0) AS credit,
-        NULL::uuid AS line_id
+        ml.id AS src_line_id, 'mr:' || pay.id::text AS alloc_key,
+        COALESCE(ml.line_role IN (${CASH_DERIVED_ROLES}), false) AS grp,
+        COALESCE(ma.system_tag = 'sales_tax_payable', false) AS is_tax,
+        ml.debit::numeric - ml.credit::numeric AS net, ml.debit::numeric >= ml.credit::numeric AS side_debit,
+        run.p_k, run.p_prev, m.total::numeric AS doc_total
       FROM transactions pay
+      JOIN cb_mr_run run ON run.refund_id = pay.id
       JOIN transactions m ON m.id = pay.source_payment_id AND m.tenant_id = ${tenantId}
         AND m.txn_type = 'credit_memo' AND m.status = 'posted' AND NULLIF(m.total::numeric, 0) IS NOT NULL
       JOIN journal_lines ml ON ml.transaction_id = m.id AND ml.tenant_id = ${tenantId}
@@ -401,7 +530,7 @@ export function cashBasisLinesWith(
       WHERE pay.tenant_id = ${tenantId} AND pay.txn_type = 'customer_refund' AND pay.status = 'posted'
         AND pay.basis <> 'accrual'
         AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
-        AND ma.detail_type IS DISTINCT FROM 'accounts_receivable'
+        AND ma.detail_type IS DISTINCT FROM 'accounts_receivable'`)}
 
       UNION ALL
 
@@ -410,13 +539,17 @@ export function cashBasisLinesWith(
       -- those expenses: the credit's non-A/P lines at the refund's date,
       -- scaled by the refunded amount / credit total; its A/P line is dropped
       -- in rule 2, so A/P carries no residue.
+      ${centAllocated(sql`
       SELECT vl.account_id, vl.tag_id,
-        dep.id, dep.txn_date, dep.txn_type, dep.txn_number, dep.memo,
-        dep.contact_id, vl.contact_id, vl.description, vl.item_id, vl.line_order,
-        vl.debit::numeric  * (rl.credit::numeric - rl.debit::numeric) / NULLIF(vc.total::numeric, 0),
-        vl.credit::numeric * (rl.credit::numeric - rl.debit::numeric) / NULLIF(vc.total::numeric, 0),
-        NULL::uuid
+        dep.id AS transaction_id, dep.txn_date, dep.txn_type, ${docNumberSql('dep')} AS txn_number, dep.memo,
+        dep.contact_id AS txn_contact_id, vl.contact_id AS line_contact_id, vl.description, vl.item_id, vl.line_order,
+        vl.id AS src_line_id, 'vr:' || rl.id::text AS alloc_key,
+        COALESCE(vl.line_role IN (${CASH_DERIVED_ROLES}), false) AS grp,
+        COALESCE(va.system_tag = 'sales_tax_payable', false) AS is_tax,
+        vl.debit::numeric - vl.credit::numeric AS net, vl.debit::numeric >= vl.credit::numeric AS side_debit,
+        run.p_k, run.p_prev, vc.total::numeric AS doc_total
       FROM journal_lines rl
+      JOIN cb_vr_run run ON run.refund_line_id = rl.id
       JOIN accounts ra ON ra.id = rl.account_id AND ra.tenant_id = ${tenantId} AND ra.detail_type = 'accounts_payable'
       JOIN transactions dep ON dep.id = rl.transaction_id AND dep.tenant_id = ${tenantId} AND dep.status = 'posted'
         AND dep.basis <> 'accrual' AND dep.txn_date >= ${startDate ?? '0001-01-01'} AND dep.txn_date <= ${endDate}
@@ -426,14 +559,14 @@ export function cashBasisLinesWith(
       JOIN journal_lines vl ON vl.transaction_id = vc.id AND vl.tenant_id = ${tenantId} AND vl.is_void_reversal = false
       JOIN accounts va ON va.id = vl.account_id AND va.tenant_id = ${tenantId}
       WHERE rl.tenant_id = ${tenantId} AND rl.is_void_reversal = false
-        AND va.detail_type IS DISTINCT FROM 'accounts_payable'
+        AND va.detail_type IS DISTINCT FROM 'accounts_payable'`)}
 
       UNION ALL
 
       -- Rule 2b (AR, U-133, U-152): a credit applied later takes its amount
       -- out of Unapplied receipts (A/R before U-152) on the day it is applied.
       SELECT COALESCE(ur.id, ara.id), NULL::uuid,
-        pay.id, app.rec_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.id, app.rec_date, pay.txn_type, ${docNumberSql('pay')} AS txn_number, pay.memo,
         pay.contact_id, pay.contact_id,
         NULL::text, NULL::uuid, 0,
         app.amount, 0::numeric, NULL::uuid
@@ -454,14 +587,19 @@ export function cashBasisLinesWith(
       -- the stock they take off) follow the settled amount, cash + discount
       -- + write-off, so goods already gone never stay on the cash balance
       -- sheet. Each derived pair balances on its own.
+      ${centAllocated(sql`
       SELECT il.account_id, il.tag_id,
-        pay.id AS transaction_id, COALESCE(app.rec_date, pay.txn_date), pay.txn_type, pay.txn_number, pay.memo,
+        pay.id AS transaction_id, COALESCE(app.rec_date, pay.txn_date) AS txn_date, pay.txn_type, ${docNumberSql('pay')} AS txn_number, pay.memo,
         pay.contact_id AS txn_contact_id, il.contact_id AS line_contact_id,
         il.description, il.item_id, il.line_order,
-        il.debit::numeric  * (CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.amount ELSE app.cash_amount END) / NULLIF(inv.total::numeric, 0) AS debit,
-        il.credit::numeric * (CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.amount ELSE app.cash_amount END) / NULLIF(inv.total::numeric, 0) AS credit,
-        NULL::uuid AS line_id
-      FROM ar_apps app
+        il.id AS src_line_id, app.kind || ':' || app.app_id::text AS alloc_key,
+        COALESCE(il.line_role IN (${CASH_DERIVED_ROLES}), false) AS grp,
+        COALESCE(ia.system_tag = 'sales_tax_payable', false) AS is_tax,
+        il.debit::numeric - il.credit::numeric AS net, il.debit::numeric >= il.credit::numeric AS side_debit,
+        CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.set_k ELSE app.cash_k END AS p_k,
+        CASE WHEN il.line_role IN (${CASH_DERIVED_ROLES}) THEN app.set_prev ELSE app.cash_prev END AS p_prev,
+        inv.total::numeric AS doc_total
+      FROM cb_ar_run app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
       JOIN transactions inv ON inv.id = app.invoice_id AND inv.tenant_id = ${tenantId}
@@ -469,7 +607,7 @@ export function cashBasisLinesWith(
       JOIN journal_lines il ON il.transaction_id = inv.id AND il.tenant_id = ${tenantId}
         AND il.is_void_reversal = false
       JOIN accounts ia ON ia.id = il.account_id AND ia.tenant_id = ${tenantId}
-      WHERE ia.detail_type IS DISTINCT FROM 'accounts_receivable'
+      WHERE ia.detail_type IS DISTINCT FROM 'accounts_receivable'`)}
 
       UNION ALL
 
@@ -479,14 +617,19 @@ export function cashBasisLinesWith(
       -- scaled by applied / invoice total, and the memo's (the returned
       -- units back in stock) scaled by applied / memo total. Income and tax
       -- of either document stay off cash (no cash moved).
+      ${centAllocated(sql`
       SELECT dl.account_id, dl.tag_id,
-        cm.id AS transaction_id, COALESCE(pa.applied_date, cm.txn_date), cm.txn_type, cm.txn_number, cm.memo,
+        cm.id AS transaction_id, COALESCE(pa.applied_date, cm.txn_date) AS txn_date, cm.txn_type, ${docNumberSql('cm')} AS txn_number, cm.memo,
         cm.contact_id AS txn_contact_id, dl.contact_id AS line_contact_id,
         dl.description, dl.item_id, dl.line_order,
-        dl.debit::numeric  * pa.amount::numeric / NULLIF(doc.total::numeric, 0) AS debit,
-        dl.credit::numeric * pa.amount::numeric / NULLIF(doc.total::numeric, 0) AS credit,
-        NULL::uuid AS line_id
+        dl.id AS src_line_id, 'cm:' || pa.id::text || ':' || doc.id::text AS alloc_key,
+        true AS grp, false AS is_tax,
+        dl.debit::numeric - dl.credit::numeric AS net, dl.debit::numeric >= dl.credit::numeric AS side_debit,
+        CASE WHEN doc.id = inv.id THEN run.inv_k ELSE run.cm_k END AS p_k,
+        CASE WHEN doc.id = inv.id THEN run.inv_prev ELSE run.cm_prev END AS p_prev,
+        doc.total::numeric AS doc_total
       FROM payment_applications pa
+      JOIN cb_cm_run run ON run.pa_id = pa.id
       JOIN transactions cm ON cm.id = pa.payment_id AND cm.tenant_id = ${tenantId}
         AND cm.txn_type = 'credit_memo' AND cm.status = 'posted' AND cm.basis <> 'accrual'
         AND ${companyId ? sql`cm.company_id = ${companyId}` : sql`TRUE`} AND ${adjustingCond(adjusting, 'cm.is_adjusting')}
@@ -495,14 +638,14 @@ export function cashBasisLinesWith(
       JOIN journal_lines dl ON dl.transaction_id = doc.id AND dl.tenant_id = ${tenantId}
         AND dl.is_void_reversal = false AND dl.line_role IN (${CASH_DERIVED_ROLES})
       WHERE pa.tenant_id = ${tenantId} AND pa.voided_at IS NULL
-        AND COALESCE(pa.applied_date, cm.txn_date) >= ${startDate ?? '0001-01-01'} AND COALESCE(pa.applied_date, cm.txn_date) <= ${endDate}
+        AND COALESCE(pa.applied_date, cm.txn_date) >= ${startDate ?? '0001-01-01'} AND COALESCE(pa.applied_date, cm.txn_date) <= ${endDate}`)}
 
       UNION ALL
 
       -- Rule 3d (Q-PR4a): a $0 invoice or credit memo is settled when it is
       -- posted: its derived costing lines in full at its own date.
       SELECT zl.account_id, zl.tag_id,
-        t.id AS transaction_id, t.txn_date, t.txn_type, t.txn_number, t.memo,
+        t.id AS transaction_id, t.txn_date, t.txn_type, ${docNumberSql('t')} AS txn_number, t.memo,
         t.contact_id AS txn_contact_id, zl.contact_id AS line_contact_id,
         zl.description, zl.item_id, zl.line_order,
         zl.debit::numeric AS debit, zl.credit::numeric AS credit, zl.id AS line_id
@@ -517,14 +660,18 @@ export function cashBasisLinesWith(
 
       -- Rule 3 (AP): scaled bill distributions at the payment date, by cash
       -- plus the early-payment discount (Q-SPF7).
+      ${centAllocated(sql`
       SELECT bl.account_id, bl.tag_id,
-        pay.id AS transaction_id, pay.txn_date, pay.txn_type, pay.txn_number, pay.memo,
+        pay.id AS transaction_id, pay.txn_date, pay.txn_type, ${docNumberSql('pay')} AS txn_number, pay.memo,
         pay.contact_id AS txn_contact_id, bl.contact_id AS line_contact_id,
         bl.description, bl.item_id, bl.line_order,
-        bl.debit::numeric  * (app.amount::numeric + app.discount_amount::numeric) / NULLIF(bill.total::numeric, 0) AS debit,
-        bl.credit::numeric * (app.amount::numeric + app.discount_amount::numeric) / NULLIF(bill.total::numeric, 0) AS credit,
-        NULL::uuid AS line_id
+        bl.id AS src_line_id, 'bp:' || app.id::text AS alloc_key,
+        COALESCE(bl.line_role IN (${CASH_DERIVED_ROLES}), false) AS grp,
+        COALESCE(ba.system_tag = 'sales_tax_payable', false) AS is_tax,
+        bl.debit::numeric - bl.credit::numeric AS net, bl.debit::numeric >= bl.credit::numeric AS side_debit,
+        run.p_k, run.p_prev, bill.total::numeric AS doc_total
       FROM bill_payment_applications app
+      JOIN cb_ap_run run ON run.app_id = app.id
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondPay} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
       JOIN transactions bill ON bill.id = app.bill_id AND bill.tenant_id = ${tenantId}
@@ -533,7 +680,7 @@ export function cashBasisLinesWith(
         AND bl.is_void_reversal = false
       JOIN accounts ba ON ba.id = bl.account_id AND ba.tenant_id = ${tenantId}
       WHERE app.tenant_id = ${tenantId}
-        AND ba.detail_type IS DISTINCT FROM 'accounts_payable'
+        AND ba.detail_type IS DISTINCT FROM 'accounts_payable'`)}
     )`;
 }
 
@@ -1738,7 +1885,7 @@ export async function buildExpenseByCategory(
       t.id AS transaction_id,
       t.txn_date,
       t.txn_type,
-      t.txn_number,
+      ${docNumberSql('t')} AS txn_number,
       t.memo AS txn_memo,
       -- STATEMENT_CHECK_PAYEE_V1 — show the check-image payee when no
       -- contact is linked (same as the General Ledger).
@@ -2003,7 +2150,7 @@ export async function buildAccountDetailReport(
       t.id AS transaction_id,
       t.txn_date,
       t.txn_type,
-      t.txn_number,
+      ${docNumberSql('t')} AS txn_number,
       t.memo AS txn_memo,
       COALESCE(c.display_name, t.payee_name_on_check) AS contact_name
     FROM journal_lines jl
@@ -2955,7 +3102,7 @@ export async function buildGeneralLedger(
       t.id AS transaction_id,
       t.txn_date,
       t.txn_type,
-      t.txn_number,
+      ${docNumberSql('t')} AS txn_number,
       t.memo AS txn_memo,
       -- STATEMENT_CHECK_PAYEE_V1 — show the check-image payee when no
       -- contact is linked (e.g. statement-imported checks).
@@ -3565,7 +3712,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
   // Void transactions are already excluded (status = 'posted' above); the
   // is_void_reversal filter drops the reversing lines the voider persisted.
   const rows = await db.execute(sql`
-    SELECT t.id, ${lineIdCol}t.txn_type, t.txn_number, t.txn_date, t.memo, t.status,
+    SELECT t.id, ${lineIdCol}t.txn_type, ${docNumberSql('t')} AS txn_number, t.txn_date, t.memo, t.status,
       -- STATEMENT_CHECK_PAYEE_V1 — fall back to the check-image payee.
       COALESCE(c.display_name, t.payee_name_on_check) as contact_name,
       a.account_number, a.name AS account_name,
