@@ -55,14 +55,14 @@ export function readExact(req: Request): boolean {
   throw bad('exact', 'exact must be 1 or 0');
 }
 
-function qs(req: Request, name: string): string | undefined {
+export function qs(req: Request, name: string): string | undefined {
   const v = req.query[name];
   if (v === undefined || v === '') return undefined;
   if (typeof v !== 'string') throw bad(name, `${name} must be given once`);
   return v;
 }
 
-function date(req: Request, name: string): string | undefined {
+export function date(req: Request, name: string): string | undefined {
   const v = qs(req, name);
   if (v !== undefined && !isIsoDate(v)) throw bad(name, `${name} must be a date (YYYY-MM-DD)`);
   return v;
@@ -77,7 +77,7 @@ function range(req: Request, startName = 'start_date', endName = 'end_date', def
   return { from, to };
 }
 
-function basis(req: Request): 'accrual' | 'cash' {
+export function basis(req: Request): 'accrual' | 'cash' {
   const v = qs(req, 'basis');
   if (v === undefined || v === 'accrual') return 'accrual';
   if (v === 'cash') return 'cash';
@@ -91,14 +91,14 @@ function oneOf<T extends string>(req: Request, name: string, allowed: readonly T
   return v as T;
 }
 
-function posInt(req: Request, name: string, max: number): number | undefined {
+export function posInt(req: Request, name: string, max: number): number | undefined {
   const v = qs(req, name);
   if (v === undefined) return undefined;
   if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > max) throw bad(name, `${name} must be a whole number from 1 to ${max}`);
   return Number(v);
 }
 
-function uuid(req: Request, name: string, required: boolean): string | undefined {
+export function uuid(req: Request, name: string, required: boolean): string | undefined {
   const v = qs(req, name);
   if (v === undefined) {
     if (required) throw bad(name, `${name} is required`);
@@ -116,7 +116,7 @@ function uuid(req: Request, name: string, required: boolean): string | undefined
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const MAX_DRILL_IDS = 500;
 
-function flag(req: Request, name: string): boolean {
+export function flag(req: Request, name: string): boolean {
   const v = qs(req, name);
   if (v === undefined || v === '0' || v === 'false') return false;
   if (v === '1' || v === 'true') return true;
@@ -199,7 +199,7 @@ function readLineLens(req: Request): LineLens {
 }
 
 /** period_ranges=YYYY-MM-DD..YYYY-MM-DD,… (at most 36, ascending, not overlapping). */
-function readPeriodRanges(req: Request, name = 'period_ranges', ordered = true): DateRange[] | null {
+export function readPeriodRanges(req: Request, name = 'period_ranges', ordered = true): DateRange[] | null {
   const v = qs(req, name);
   if (v === undefined) return null;
   const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
