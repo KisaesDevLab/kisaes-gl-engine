@@ -16,7 +16,9 @@
 //   - a partial payment over two boxes is whole cents and adds up to its
 //     cash; a bill paid in full gives each box back exactly;
 //   - thresholds follow the cash: $300 + $300 over two years meets in
-//     neither, an unpaid $600 bill does not meet.
+//     neither, an unpaid $600 bill does not meet;
+//   - the threshold follows the year paid: $600 through 2025, $2,000 from
+//     2026 (One Big Beautiful Bill Act), royalties $10.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
@@ -35,6 +37,7 @@ import * as ledger from './ledger.service.js';
 import { buildAp1099Prep } from './ap-report.service.js';
 import { buildVendor1099SummaryByBox } from './vendor-1099-summary.service.js';
 import { ytdTotalsByBox, ytdTotalsByBoxExact } from './portal-1099.service.js';
+import { boxThreshold, general1099Threshold } from './portal-1099.boxes.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
@@ -166,6 +169,26 @@ beforeAll(async () => {
     credits: [{ creditId: credit.id, billId: big.id, amount: '100.00' }], discountAccountId: discounts.id,
   });
 
+  // Year thresholds: $600.00 in 2025 meets; in 2026 $1,999.99 does not and
+  // $2,000.00 does; royalties stay at $10.
+  const exp = async (contactId: string, txnDate: string, accountId: string, amount: string) =>
+    ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate, contactId, total: amount, memo: 'Paid',
+      lines: [
+        { accountId, debit: amount, credit: '0' },
+        { accountId: bank.id, debit: '0', credit: amount },
+      ],
+    });
+  const royalties = await accountsService.create(tenantId, { name: 'Royalties', accountType: 'expense', accountNumber: '6140' });
+  await db.insert(vendor1099AccountMappings).values({ tenantId, accountId: royalties.id, formBox: 'MISC-2' });
+  ids['near'] = await vendor('Hal Near');
+  await exp(ids['near'], '2025-03-01', labor.id, '600.00');
+  await exp(ids['near'], '2026-03-01', labor.id, '1999.99');
+  ids['at'] = await vendor('Ivy At');
+  await exp(ids['at'], '2026-03-01', labor.id, '2000.00');
+  ids['royal'] = await vendor('Jo Royalty');
+  await exp(ids['royal'], '2026-03-01', royalties.id, '10.00');
+
   // Two boxes, a partial payment that does not divide evenly, rest next year.
   ids['cents'] = await vendor('Gus Cents');
   const odd = await bill(ids['cents'], '2026-07-01', [
@@ -190,7 +213,7 @@ describe('1099 Preparation and Summary count the same payments (U-212)', () => {
     const p = prepRow(r, ids['byCheck']!);
     expect(p.total_paidExact).toBe('750.0000');
     expect(p.reportable_totalExact).toBe('750.0000');
-    expect(summaryRow(r, ids['byCheck']!)).toMatchObject({ boxes: { 'NEC-1': '750.0000' }, totalExact: '750.0000', meetsThreshold: true });
+    expect(summaryRow(r, ids['byCheck']!)).toMatchObject({ boxes: { 'NEC-1': '750.0000' }, totalExact: '750.0000', meetsThreshold: false });
   });
 
   it('a vendor paid by expense: the mapped part is the 1099 amount', async () => {
@@ -252,6 +275,35 @@ describe('1099 Preparation and Summary count the same payments (U-212)', () => {
     expect(D(u.reportable_totalExact).isZero()).toBe(true);
     expect(u.reportable_meets_threshold).toBe(false);
     expect(summaryRow(r, ids['unpaid']!)).toBeUndefined();
+  });
+
+  it('the threshold depends on the year paid: $600 through 2025, $2,000 from 2026', async () => {
+    const r25 = await reports(2025);
+    const n25 = prepRow(r25, ids['near']!);
+    expect([n25.reportable_totalExact, n25.reportable_meets_threshold, n25.over_threshold]).toEqual(['600.0000', true, true]);
+    expect(summaryRow(r25, ids['near']!)!.meetsThreshold).toBe(true);
+    expect(r25.summary.boxCatalog.find((b) => b.box === 'NEC-1')!.thresholdExact).toBe('600.0000');
+
+    const r26 = await reports(2026);
+    const n26 = prepRow(r26, ids['near']!);
+    expect([n26.reportable_totalExact, n26.reportable_meets_threshold, n26.over_threshold]).toEqual(['1999.9900', false, false]);
+    expect(summaryRow(r26, ids['near']!)!.meetsThreshold).toBe(false);
+    const at = prepRow(r26, ids['at']!);
+    expect([at.reportable_meets_threshold, at.over_threshold]).toEqual([true, true]);
+    expect(summaryRow(r26, ids['at']!)!.meetsThreshold).toBe(true);
+    expect(summaryRow(r26, ids['royal']!)!.meetsThreshold).toBe(true);
+    expect(prepRow(r26, ids['royal']!).reportable_meets_threshold).toBe(true);
+    const cat = Object.fromEntries(r26.summary.boxCatalog.map((b) => [b.box, b.thresholdExact]));
+    expect(cat).toMatchObject({ 'NEC-1': '2000.0000', 'MISC-1': '2000.0000', 'MISC-2': '10.0000', 'MISC-10': '600.0000' });
+  });
+
+  it('threshold table: one row per indexed year', () => {
+    expect(general1099Threshold(2024)).toBe('600.00');
+    expect(general1099Threshold(2025)).toBe('600.00');
+    expect(general1099Threshold(2026)).toBe('2000.00');
+    expect(boxThreshold('NEC-1', 2025)).toBe('600.00');
+    expect(boxThreshold('NEC-1', 2026)).toBe('2000.00');
+    expect(boxThreshold('MISC-2', 2026)).toBe('10.00');
   });
 
   it('every vendor: Summary, Preparation and the 1099 Center agree per vendor and per box', async () => {

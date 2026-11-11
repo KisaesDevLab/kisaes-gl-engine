@@ -20,7 +20,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { decrypt } from '../utils/encryption.js';
 import { ytdTotalsByBox } from './portal-1099.service.js';
-import { BOX_THRESHOLDS, formOf, FORM_1099_BOXES, type FormBox } from './portal-1099.boxes.js';
+import { boxThreshold, formOf, FORM_1099_BOXES, type FormBox } from './portal-1099.boxes.js';
 import { getActiveForTenant } from './tenant-firm-assignment.service.js';
 import * as firmUsersService from './firm-users.service.js';
 import * as firmIntegrations from './firm-integrations.service.js';
@@ -120,7 +120,7 @@ export async function submitFilings(tenantId: string, ctx: SubmitterContext, inp
   // ── Vendor set — identical filters to exportFiling ──
   const byBox = await ytdTotalsByBox(tenantId, input.taxYear);
   const formMatches = byBox.filter(
-    (r) => formOf(r.formBox as FormBox) === input.formType && r.total >= BOX_THRESHOLDS[r.formBox as FormBox],
+    (r) => formOf(r.formBox as FormBox) === input.formType && r.total >= Number(boxThreshold(r.formBox as FormBox, input.taxYear)),
   );
   if (formMatches.length === 0) {
     throw AppError.badRequest(`No vendor activity above threshold for ${input.formType}. Check the 1099 Account Mapping panel.`);

@@ -850,7 +850,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     + 'boxNumber, label, thresholdExact}, rows[] {contactId, name, tinLast4, is1099Eligible, boxes {box code: exact amount}, totalExact, '
     + 'meetsThreshold}, totalsExact {box code..., total}} from the 1099 account-to-box mapping (the 1099 Center source), for the company. '
     + 'Rows are the vendors the 1099 Center files for: marked 1099-eligible and not excluded on their 1099 profile (U-209). '
-    + 'Amounts are cash paid in the year (U-212): expenses and checks at their date; a bill payment at its date as the mapped lines of the bill it paid, scaled by its cash.',
+    + 'Amounts are cash paid in the year (U-212): expenses and checks at their date; a bill payment at its date as the mapped lines of the bill it paid, scaled by its cash. meetsThreshold / thresholdExact use the threshold of the year: NEC and MISC 1, 3, 6 at 600 through 2025 and 2000 from 2026; royalties 10; attorney proceeds 600.',
     { year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'year', 9999) ?? new Date().getFullYear();

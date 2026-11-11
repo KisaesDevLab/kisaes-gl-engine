@@ -7,7 +7,7 @@ import { db } from '../db/index.js';
 import { tagIn } from './report.service.js';
 import { ReportDecimal as Decimal, dec, dsum, exactStr, legacyNum } from './report-exact.js';
 import { reportable1099Buckets } from './vendor-1099-summary.service.js';
-import { BOX_THRESHOLDS } from './portal-1099.boxes.js';
+import { boxThreshold, general1099Threshold } from './portal-1099.boxes.js';
 import { PAYMENT_1099_TXN_TYPES } from './portal-1099.service.js';
 
 // Helper: add `b` to `a` via Decimal and return a plain number rounded
@@ -368,10 +368,11 @@ export async function buildAp1099Prep(
   for (const b of buckets) {
     const cur = reportable.get(b.contactId) ?? { total: new Decimal(0), meets: false };
     cur.total = cur.total.plus(b.total);
-    cur.meets = cur.meets || dec(b.total).gte(dec(BOX_THRESHOLDS[b.formBox]));
+    cur.meets = cur.meets || dec(b.total).gte(dec(boxThreshold(b.formBox, taxYear)));
     reportable.set(b.contactId, cur);
   }
 
+  const overThreshold = dec(general1099Threshold(taxYear));
   const data = (rows.rows as any[]).map((row) => {
     const parts = [row.billing_line1, row.billing_city, row.billing_state, row.billing_zip].filter(Boolean);
     // 1099 threshold check must not drift — $599.99999 should NOT hit
@@ -386,7 +387,8 @@ export async function buildAp1099Prep(
       tax_id: row.tax_id,
       total_paid: Number(totalPaid.toFixed(4)),
       ...(prepOpts.exactAmounts ? { total_paidExact: exactStr(totalPaid) } : {}),
-      over_threshold: totalPaid.greaterThanOrEqualTo(600),
+      // U-212: the year's threshold ($600 through 2025, $2,000 from 2026).
+      over_threshold: totalPaid.greaterThanOrEqualTo(overThreshold),
       reportable_total: Number(repTotal.toFixed(4)),
       ...(prepOpts.exactAmounts ? { reportable_totalExact: exactStr(repTotal) } : {}),
       reportable_meets_threshold: rep?.meets ?? false,

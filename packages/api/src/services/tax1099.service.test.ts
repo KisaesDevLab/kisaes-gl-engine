@@ -164,8 +164,8 @@ describe('submission end-to-end (client mocked)', () => {
     await ledger.postTransaction(tenantId, {
       txnType: 'expense', txnDate: '2026-06-01', memo: 'contract work', contactId: vendor!.id,
       lines: [
-        { accountId: expAcct!.id, debit: '1200', credit: '0' },
-        { accountId: checking!.id, debit: '0', credit: '1200' },
+        { accountId: expAcct!.id, debit: '2400', credit: '0' },
+        { accountId: checking!.id, debit: '0', credit: '2400' },
       ],
     });
 
@@ -175,13 +175,13 @@ describe('submission end-to-end (client mocked)', () => {
     );
     expect(result.providerReference).toBe('TEST-REF-1');
     expect(result.vendorCount).toBe(1);
-    expect(result.totalAmount).toBeCloseTo(1200, 2);
+    expect(result.totalAmount).toBeCloseTo(2400, 2);
 
     // Adapter got a complete payer + recipient payload.
     const submitArgs = (client.submitForms as any).mock.calls[0][1];
     expect(submitArgs.payer.ein).toBe('12-3456789');
     expect(submitArgs.recipients[0].tin).toBe('123-45-6789');
-    expect(submitArgs.recipients[0].boxes['1']).toBeCloseTo(1200, 2);
+    expect(submitArgs.recipients[0].boxes['1']).toBeCloseTo(2400, 2);
 
     // Filing row: tax1099 format, submitted, masked snapshot only.
     const [filing] = await db.select().from(annual1099Filings)

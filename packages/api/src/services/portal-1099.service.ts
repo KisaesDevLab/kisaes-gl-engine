@@ -37,7 +37,8 @@ import {
   type VendorStatus,
 } from './portal-1099.status.js';
 import {
-  BOX_THRESHOLDS,
+  boxThreshold,
+  general1099Threshold,
   FORM_BOX_LABELS,
   FORM_1099_BOXES,
   formOf,
@@ -49,7 +50,6 @@ import { escapeHtml } from '../utils/html-escape.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 14 + 15 — 1099 / W-9.
 
-const NEC_THRESHOLD = 600;
 const W9_REQUEST_TTL_DAYS = 30;
 
 function sha256Hex(value: string): string {
@@ -302,7 +302,8 @@ export async function summary(tenantId: string, taxYear: number): Promise<Summar
   const reportable = await ytdReportableTotals(tenantId, taxYear);
   const inScopeTotals = [...inScopeIds].map((id) => reportable.get(id) ?? 0);
   const ytdPaymentTotal = inScopeTotals.reduce((s, t) => s + t, 0);
-  const vendorsOverThreshold = inScopeTotals.filter((t) => t >= NEC_THRESHOLD).length;
+  const necThreshold = Number(general1099Threshold(taxYear));
+  const vendorsOverThreshold = inScopeTotals.filter((t) => t >= necThreshold).length;
 
   let w9sMissing = 0;
   let w9sExpiring = 0;
@@ -382,7 +383,7 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
       ytdTotal: total,
       w9OnFile: w9,
       exclusionReason: profile?.exclusionReason ?? null,
-      necThreshold: NEC_THRESHOLD,
+      necThreshold: Number(general1099Threshold(taxYear)),
     });
     return {
       contactId: v.contactId,
@@ -426,7 +427,7 @@ export async function scanThresholds(
   const rows = await listVendors(tenantId, taxYear);
   return rows
     .filter(
-      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && r.ytdTotal >= NEC_THRESHOLD,
+      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && r.ytdTotal >= Number(general1099Threshold(taxYear)),
     )
     .map((r) => ({
       contactId: r.contactId,
@@ -1455,9 +1456,9 @@ export async function exportFiling(
   // Filter to the requested form. The operator picks "1099-NEC" or
   // "1099-MISC" at export time; we emit every (vendor, formBox) row
   // whose form matches and whose amount clears the box-specific
-  // threshold (royalties at $10, everything else at $600).
+  // threshold for the tax year (boxThreshold, U-212).
   const formMatches = byBox.filter(
-    (r) => formOf(r.formBox) === input.formType && r.total >= BOX_THRESHOLDS[r.formBox],
+    (r) => formOf(r.formBox) === input.formType && r.total >= Number(boxThreshold(r.formBox, input.taxYear)),
   );
 
   if (formMatches.length === 0) {

@@ -1182,7 +1182,11 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * payment's date as the bill's mapped lines scaled by the cash it put on the bill / the bill's total (whole cents; a bill paid in
    * full in cash gives each box back exactly; a vendor credit applied or an early-payment discount taken is not cash and is left out).
    * An unpaid bill is not on a 1099; a bill paid in a later year counts in that year. total_paid also counts 'check' transactions.
-   * Response shapes are unchanged. No migration.
+   * Thresholds depend on the year paid (One Big Beautiful Bill Act): NEC-1, MISC-1, MISC-3 and MISC-6 report from $600.00 through
+   * 2025 and $2,000.00 from 2026 (a table keyed by year for later indexed amounts); MISC-2 royalties $10, MISC-10 attorney proceeds
+   * $600. Applied to the Summary's meetsThreshold and boxCatalog thresholdExact, ap-1099-prep over_threshold and
+   * reportable_meets_threshold, and the 1099 Center's tiles, statuses, threshold scan and filing. Response shapes are unchanged.
+   * No migration.
    */
   'report-1099-paid-v1',
 ];
