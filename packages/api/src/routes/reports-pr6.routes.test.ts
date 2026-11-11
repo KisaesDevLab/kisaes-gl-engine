@@ -34,7 +34,7 @@ let port = 0;
 let token = '';
 let tenantId = '';
 let companyId = '';
-const ids: Record<string, string> = {};
+const ids = { checking: '', sales: '', supplies: '', ar: '', ap: '', re: '' };
 
 async function cleanDb() {
   await db.execute(sql`TRUNCATE
@@ -81,13 +81,13 @@ async function post(txnType: string, txnDate: string, lines: Line[], total?: str
 }
 /** An invoice and a payment applied to it in full. */
 async function paidInvoice(invDate: string, payDate: string, amount: string, tagId: string | null = null) {
-  const inv = await post('invoice', invDate, [dr(ids.ar!, amount), cr(ids.sales!, amount, tagId)], amount);
-  const pay = await post('customer_payment', payDate, [dr(ids.checking!, amount), cr(ids.ar!, amount)], amount);
+  const inv = await post('invoice', invDate, [dr(ids.ar, amount), cr(ids.sales, amount, tagId)], amount);
+  const pay = await post('customer_payment', payDate, [dr(ids.checking, amount), cr(ids.ar, amount)], amount);
   await db.insert(paymentApplications).values({ tenantId, paymentId: pay.id, invoiceId: inv.id, amount });
 }
 async function paidBill(billDate: string, payDate: string, amount: string) {
-  const bill = await post('bill', billDate, [dr(ids.supplies!, amount), cr(ids.ap!, amount)], amount);
-  const pay = await post('bill_payment', payDate, [dr(ids.ap!, amount), cr(ids.checking!, amount)], amount);
+  const bill = await post('bill', billDate, [dr(ids.supplies, amount), cr(ids.ap, amount)], amount);
+  const pay = await post('bill_payment', payDate, [dr(ids.ap, amount), cr(ids.checking, amount)], amount);
   await db.insert(billPaymentApplications).values({ tenantId, paymentId: pay.id, billId: bill.id, amount });
 }
 
@@ -140,7 +140,7 @@ describe('B1: prior-years retained earnings on the report basis', () => {
     // A cash-only entry before the year start.
     await ledger.postTransaction(tenantId, {
       txnType: 'journal_entry', txnDate: '2025-11-30', memo: 'cash only', basis: 'cash',
-      lines: [dr(ids.checking!, '50.0000'), cr(ids.sales!, '50.0000')],
+      lines: [dr(ids.checking, '50.0000'), cr(ids.sales, '50.0000')],
     } as Parameters<typeof ledger.postTransaction>[1], undefined, companyId);
 
     const cash = await get('/trial-balance?exact=1&basis=cash&start_date=2026-01-01&end_date=2026-01-31');
@@ -148,8 +148,8 @@ describe('B1: prior-years retained earnings on the report basis', () => {
     tbBalances(cash.body);
     // Cash prior years: only the cash-only 50 (the invoice and bill were paid in 2026).
     expect(tbRow(cash.body, 'Retained Earnings (Prior Years)').creditExact).toBe('50.0000');
-    expect(tbAccount(cash.body, ids.sales!).creditExact).toBe('1000.0000');
-    expect(tbAccount(cash.body, ids.supplies!).debitExact).toBe('400.0000');
+    expect(tbAccount(cash.body, ids.sales).creditExact).toBe('1000.0000');
+    expect(tbAccount(cash.body, ids.supplies).debitExact).toBe('400.0000');
 
     const accrual = await get('/trial-balance?exact=1&basis=accrual&start_date=2026-01-01&end_date=2026-01-31');
     tbBalances(accrual.body);
@@ -174,8 +174,8 @@ describe('B1: prior-years retained earnings on the report basis', () => {
 
 describe('B2: Balance Sheet equity rows say what drills', () => {
   it('flags the Retained Earnings account holding prior years\' income and the calculated rows', async () => {
-    await post('journal_entry', '2025-06-01', [dr(ids.checking!, '1000.0000'), cr(ids.sales!, '1000.0000')]);
-    await post('journal_entry', '2026-01-15', [dr(ids.checking!, '200.0000'), cr(ids.sales!, '200.0000')]);
+    await post('journal_entry', '2025-06-01', [dr(ids.checking, '1000.0000'), cr(ids.sales, '1000.0000')]);
+    await post('journal_entry', '2026-01-15', [dr(ids.checking, '200.0000'), cr(ids.sales, '200.0000')]);
     const bs = await get('/balance-sheet?exact=1&as_of_date=2026-01-31');
     expect(bs.status, JSON.stringify(bs.body)).toBe(200);
     const re = bs.body.equity.find((e: any) => e.accountId === ids.re);
@@ -202,27 +202,27 @@ describe('B2: Balance Sheet equity rows say what drills', () => {
 describe('S1: fiscal_year_start (retail calendars)', () => {
   it('splits the Trial Balance, Balance Sheet and General Ledger at the given start, and the drills sum to the cells', async () => {
     // FY2026 of a calendar-year 4-4-5 company: 2025-12-28 .. 2026-12-26.
-    await post('journal_entry', '2025-12-29', [dr(ids.checking!, '5000.0000'), cr(ids.sales!, '5000.0000')]);
-    await post('journal_entry', '2026-01-10', [dr(ids.checking!, '300.0000'), cr(ids.sales!, '300.0000')]);
-    await post('journal_entry', '2025-06-10', [dr(ids.checking!, '70.0000'), cr(ids.sales!, '70.0000')]);
+    await post('journal_entry', '2025-12-29', [dr(ids.checking, '5000.0000'), cr(ids.sales, '5000.0000')]);
+    await post('journal_entry', '2026-01-10', [dr(ids.checking, '300.0000'), cr(ids.sales, '300.0000')]);
+    await post('journal_entry', '2025-06-10', [dr(ids.checking, '70.0000'), cr(ids.sales, '70.0000')]);
     const fy = 'fiscal_year_start=2024-12-29,2025-12-28';
 
     // Without the parameter: the month rule (Jan 1).
     const plain = await get('/trial-balance?exact=1&start_date=2026-01-01&end_date=2026-01-24');
-    expect(tbAccount(plain.body, ids.sales!).creditExact).toBe('300.0000');
+    expect(tbAccount(plain.body, ids.sales).creditExact).toBe('300.0000');
     expect(plain.body.fiscalYearStart).toBe('2026-01-01');
 
     const tb = await get(`/trial-balance?exact=1&start_date=2025-12-28&end_date=2026-01-24&${fy}`);
     expect(tb.status, JSON.stringify(tb.body)).toBe(200);
     tbBalances(tb.body);
-    expect(tbAccount(tb.body, ids.sales!).creditExact).toBe('5300.0000');
+    expect(tbAccount(tb.body, ids.sales).creditExact).toBe('5300.0000');
     expect(tbRow(tb.body, 'Retained Earnings (Prior Years)').creditExact).toBe('70.0000');
     expect(tb.body.fiscalYearStart).toBe('2025-12-28');
     expect(tb.body.drillTarget).toMatchObject({ startDate: '2025-12-28', endDate: '2026-01-24' });
     expect(tb.body.drillTarget.params.fiscal_year_start).toBe('2025-12-28');
 
     // The drill: GL from the drill target's start with its params.
-    const p = new URLSearchParams({ ...tb.body.drillTarget.params, exact: '1', account_ids: ids.sales!,
+    const p = new URLSearchParams({ ...tb.body.drillTarget.params, exact: '1', account_ids: ids.sales,
       start_date: tb.body.drillTarget.startDate, end_date: tb.body.drillTarget.endDate });
     const gl = await get(`/general-ledger?${p.toString()}`);
     expect(gl.status, JSON.stringify(gl.body)).toBe(200);
@@ -287,8 +287,8 @@ describe('S2: tag filters on balance reports', () => {
     const [lake] = await db.insert(tags).values({ tenantId, groupId: group!.id, name: 'Lake', tagNumber: '10', sortOrder: 1 }).returning();
     const lakeId = lake!.id;
     // A check to Supplies tagged Lake, the bank line untagged (this year and last year).
-    await post('expense', '2026-01-12', [dr(ids.supplies!, '100.0000', lakeId), cr(ids.checking!, '100.0000')], '100.0000');
-    await post('expense', '2025-07-12', [dr(ids.supplies!, '40.0000', lakeId), cr(ids.checking!, '40.0000')], '40.0000');
+    await post('expense', '2026-01-12', [dr(ids.supplies, '100.0000', lakeId), cr(ids.checking, '100.0000')], '100.0000');
+    await post('expense', '2025-07-12', [dr(ids.supplies, '40.0000', lakeId), cr(ids.checking, '40.0000')], '40.0000');
     // A paid invoice whose revenue line is tagged; the payment is untagged.
     await paidInvoice('2026-01-03', '2026-01-20', '250.0000', lakeId);
     for (const basis of ['cash', 'accrual'] as const) {
@@ -309,8 +309,8 @@ describe('S2: tag filters on balance reports', () => {
 describe('S5: cash-basis A/R and A/P residue', () => {
   it('meta.cashArApResidue names what A/R and A/P keep on cash from entries other than payments', async () => {
     await paidInvoice('2026-01-03', '2026-01-20', '250.0000');
-    await post('journal_entry', '2026-01-15', [dr(ids.ar!, '300.0000'), cr(ids.sales!, '300.0000')]);
-    await post('journal_entry', '2026-01-16', [dr(ids.supplies!, '80.0000'), cr(ids.ap!, '80.0000')]);
+    await post('journal_entry', '2026-01-15', [dr(ids.ar, '300.0000'), cr(ids.sales, '300.0000')]);
+    await post('journal_entry', '2026-01-16', [dr(ids.supplies, '80.0000'), cr(ids.ap, '80.0000')]);
     const bs = await get('/balance-sheet?exact=1&basis=cash&as_of_date=2026-01-31');
     expect(bs.status, JSON.stringify(bs.body)).toBe(200);
     expect(bs.body.meta.cashArApResidue).toEqual({

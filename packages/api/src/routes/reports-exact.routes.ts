@@ -22,7 +22,7 @@ import { describe } from '../middleware/describe.js';
 import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
-import { buildVendor1099SummaryByBox } from '../services/vendor-1099-summary.service.js';
+import { buildVendor1099SummaryByBox, tinLast4 } from '../services/vendor-1099-summary.service.js';
 import * as openBalances from '../services/open-balances.service.js';
 import { exactRows, exactStr, dsum, isIsoDate, normalizeReportDates, reportMeta, ReportDecimal } from '../services/report-exact.js';
 import { loadGroupTags, type ContactLens, type LineLens, type TagLens } from '../services/report-lens.js';
@@ -916,11 +916,14 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const data = await reportService.buildTransactionListByVendor(req.tenantId, vendorId, { startDate: from || undefined, endDate: to || undefined }, h.resolveCompanyScope(req));
     return { ...exactList(data, ['total']), meta: meta(req, { basis: null, from: from || undefined, to: to || undefined }) };
   }));
-  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: ' + 'the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, ' + 'U-212: total_paid and the reportable amounts count the same payments, cash paid in the year: bill payments (a bill counts when paid, not at its date), expenses and checks. ' + 'totalPaidExact, totalReportableExact.', { tax_year: z.string().optional() }),
+  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: ' + 'the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, ' + 'U-212: total_paid and the reportable amounts count the same payments, cash paid in the year: bill payments (a bill counts when paid, not at its date), expenses and checks. ' + 'totalPaidExact, totalReportableExact. '
+    + 'U-213 (report-fixes-v2): with exact=1 the tax id is masked: tax_id and tinLast4 are its last four digits (null with fewer than four); the full number stays on the vendor record.', { tax_year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'tax_year', 9999) ?? new Date().getFullYear();
     const data = await apReportService.buildAp1099Prep(req.tenantId, year, h.resolveCompanyScope(req), { exactAmounts: true });
-    return { ...data, meta: meta(req, { basis: null, from: `${year}-01-01`, to: `${year}-12-31` }) };
+    // U-213 (ClientLedger PR-6 security review): a report shows the last four digits only.
+    const rows = data.data.map((r) => { const last4 = tinLast4(r.tax_id); return { ...r, tax_id: last4, tinLast4: last4 }; });
+    return { ...data, data: rows, meta: meta(req, { basis: null, from: `${year}-01-01`, to: `${year}-12-31` }) };
   }));
   router.get('/vendor-1099-summary', doc('1099 Summary by box (U-205)',
     'Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, '
