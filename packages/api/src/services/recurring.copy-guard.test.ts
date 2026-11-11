@@ -169,6 +169,24 @@ describe('recurring copy path (U-64)', () => {
     const [h2] = await db.select().from(transactions).where(eq(transactions.id, second.id));
     expect(h2!.checkNumber).toBe(1002);
 
+    // Two credit lines (a credit to another account listed first): the number
+    // comes from the bank account's counter (1003 follows 1001, 1002).
+    const [refunds] = await db.insert(accounts).values({ tenantId, name: 'Refunds', accountNumber: '4990', accountType: 'revenue', detailType: 'service' }).returning();
+    const split = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-01-07', contactId: vendorId, total: '80.0000', paymentMethod: 'check',
+      lines: [
+        { accountId: refunds!.id, debit: '0', credit: '20.0000' },
+        { accountId: expId, debit: '100.0000', credit: '0' },
+        { accountId: bankId, debit: '0', credit: '80.0000' },
+      ],
+    }, userId, companyId);
+    await db.update(transactions).set({ isCheck: true, printStatus: 'hand_written', checkNumber: 7001 })
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, split.id)));
+    const sSched = await recurring.create(tenantId, split.id, { frequency: 'monthly', startDate: '2026-02-07' }, userId);
+    const sTxn = await recurring.postNext(tenantId, sSched!.id) as { id: string };
+    const [sHeader] = await db.select().from(transactions).where(eq(transactions.id, sTxn.id));
+    expect(sHeader).toMatchObject({ isCheck: true, printStatus: 'hand_written', checkNumber: 1003 });
+
     const queued = await postCheck('queue', null);
     const qSched = await recurring.create(tenantId, queued.id, { frequency: 'monthly', startDate: '2026-02-05' }, userId);
     const qTxn = await recurring.postNext(tenantId, qSched!.id) as { id: string };

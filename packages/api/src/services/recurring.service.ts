@@ -416,16 +416,20 @@ export async function postLegacyClone(
     // the bank account's next number (hand-written) unless the template
     // waits in the print queue (queued, no number). Posted and numbered in
     // one transaction. Before, the copy was a plain expense, not a check.
-    const bankLine = template.txnType === 'expense' && (template.isCheck || template.printStatus)
-      ? template.lines.find((l) => new Decimal(l.credit || '0').greaterThan(0))
+    // The bank account the source check is drawn on, as the check routes read
+    // it (its credit line on an asset / bank account), for the number counter.
+    const isCheck = template.txnType === 'expense' && (template.isCheck || !!template.printStatus);
+    const bankAccountId = isCheck
+      ? (await checkService.checkBankAccountId(db, tenantId, template.id))
+        ?? template.lines.find((l) => new Decimal(l.credit || '0').greaterThan(0))?.accountId
       : undefined;
-    if (bankLine) {
+    if (bankAccountId) {
       const queued = template.printStatus === 'queue';
       txn = await db.transaction(async (tx) => {
         let checkNumber: number | null = null;
         if (!queued) {
           await checkService.lockCheckCounter(tx, tenantId, companyId);
-          checkNumber = await checkService.allocateNextCheckNumber(tx, tenantId, bankLine.accountId, companyId);
+          checkNumber = await checkService.allocateNextCheckNumber(tx, tenantId, bankAccountId, companyId);
         }
         const t = await ledger.postTransaction(tenantId, { ...input, paymentMethod: 'check' }, undefined, companyId, tx);
         const printStatus = queued ? 'queue' : 'hand_written';

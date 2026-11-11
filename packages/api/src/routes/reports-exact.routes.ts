@@ -627,7 +627,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   router.get('/balance-sheet', doc('Balance Sheet',
     'assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and '
     + 'equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. Column layout '
-    + '(reports-columns-v1; with period_ranges, prior, tag_split or tag_id=untagged): as on the P&L, sections assets/liabilities/equity, one '
+    + '(reports-columns-v1; with period_ranges, prior or tag_split; tag_id=untagged is refused since report-fixes-v2): as on the P&L, sections assets/liabilities/equity, one '
     + 'column per as-of date (kind as_of, asOf), totalsExact {totalAssets, totalLiabilities, totalEquity, totalLiabilitiesAndEquity}; '
     + 'calculated: true rows (Retained Earnings (Prior Years), Net Income (Current Year)) and the Retained Earnings account '
     + '(includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column); '

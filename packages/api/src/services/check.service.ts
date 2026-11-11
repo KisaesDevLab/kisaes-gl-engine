@@ -733,8 +733,8 @@ function bankAccountSubselect(t: ReturnType<typeof sql>) {
   )`;
 }
 
-/** The bank account a check is drawn on (see bankAccountSubselect), or null. */
-async function checkBankAccountId(executor: DbOrTx, tenantId: string, txnId: string): Promise<string | null> {
+/** The bank account a check is drawn on (see bankAccountSubselect), or null. Exported for recurring copies (U-210). */
+export async function checkBankAccountId(executor: DbOrTx, tenantId: string, txnId: string): Promise<string | null> {
   const res = await executor.execute(sql`
     SELECT ${bankAccountSubselect(sql`t`)} AS bank_account_id
     FROM transactions t WHERE t.tenant_id = ${tenantId} AND t.id = ${txnId}

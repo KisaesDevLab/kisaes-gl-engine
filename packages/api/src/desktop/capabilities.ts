@@ -1065,7 +1065,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * number of days just before] ($ change = current - prior, % change = change / |prior|), compare=by_contact
    * (P&L: the 36 most active clients by name, an engine-summed All others, No client, Total; client = the line's contact, else its
    * transaction's), compare=by_tag&tag_group_id= (P&L: each group tag with activity, No tag in group, Total), pct_of_income=1 (P&L),
-   * tag_id=untagged, tag_split=1&tag_group_id= (rows per account: rowKind account = lines without a tag from the group, tag per group
+   * tag_id=untagged (on the Balance Sheet refused since report-fixes-v2), tag_split=1&tag_group_id= (rows per account: rowKind account = lines without a tag from the group, tag per group
    * tag with activity, account_total = untagged + tags; section totals unchanged; also on /reports/trial-balance and
    * /reports/general-ledger accounts[].tagSplit). Column layout: {layout: 'columns', columns [{key, caption, kind, valueType, from, to,
    * asOf?, contactId?, tagId?, baseKey?, drill}], sections of rows {rowKind, accountId, parentAccountId, depth, tagId?, valuesExact[],
@@ -1200,7 +1200,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * date for retail 52-53 week years; the TB drillTarget carries it. Exact /balance-sheet and /trial-balance refuse tag_id with 400
    * TAG_FILTER_NOT_AVAILABLE (use tag_split); the cash TB's tag filter (legacy route) is per transaction, as the accrual one. Cash
    * exact Balance Sheet / Trial Balance meta.cashArApResidue {accountsReceivableExact, accountsPayableExact, accountIds, txnTypes} | null:
-   * what A/R and A/P keep from entries other than payments. A recurring check copied by the legacy template path is a check (isCheck,
+   * what A/R and A/P keep from entries other than payments. GET /reports/ap-1099-prep?exact=1: tax_id and tinLast4 are the tax id's
+   * last four digits (legacy response unchanged). A recurring check copied by the legacy template path is a check (isCheck,
    * printStatus, a new number unless queued). Budget copy (POST /budgets/:id/copy-from/:sourceId) replaces all of the target's lines.
    * No migration.
    */
