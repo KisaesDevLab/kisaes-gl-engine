@@ -215,6 +215,7 @@ describe('U-121 A/P half and as-of open balances', () => {
       bucketOver90Exact: '0.0000', totalExact: '800.0000',
     });
     const b1 = r.body.details.find((d: any) => d.bill_id === ids['b1']);
+    expect(b1).toMatchObject({ txn_date: '2026-09-01', due_date: '2026-10-01' });
     expect(b1).toMatchObject({ kind: 'bill', txn_type: 'bill', totalExact: '1000.0000', paidExact: '400.0000', balanceExact: '600.0000', bucket: '31_60', days_overdue: 60 });
     const credit = r.body.details.find((d: any) => d.bill_id === ids['vc1']);
     expect(credit).toMatchObject({ kind: 'credit', txn_type: 'vendor_credit', balanceExact: '-100.0000' });
@@ -297,6 +298,8 @@ describe('U-121 A/P half and as-of open balances', () => {
       [ids['b1'], '600.0000'], [ids['b2'], '300.0000'], [ids['vc1'], '-100.0000'],
     ]);
     expect(ada.items.at(-1).runningBalanceExact).toBe(ada.balanceExact);
+    expect(ada.items[0]).toMatchObject({ date: '2026-09-01', dueDate: '2026-10-01' });
+    expect(ada.items[2]).toMatchObject({ date: '2026-10-20', dueDate: null });
     expect(D(ada.balanceExact).eq(sumOf(ada.items, 'openExact'))).toBe(true);
     expect((await get('/vendor-balance-detail?as_of_date=2026-11-30')).status).toBe(400);
   });
@@ -314,7 +317,7 @@ describe('U-121 A/P half and as-of open balances', () => {
     expect(cy.items.find((i: any) => i.txnId === ids['cm']).kind).toBe('credit');
     const oi = (await get('/invoice-list?open=1&as_of_date=2026-11-30&exact=1')).body;
     expect(oi.meta.asOf).toBe('2026-11-30');
-    expect(oi.data.find((r: any) => r.id === ids['i1'])).toMatchObject({ totalExact: '1000.0000', amount_paidExact: '400.0000', balance_dueExact: '600.0000', days_overdue: 60 });
+    expect(oi.data.find((r: any) => r.id === ids['i1'])).toMatchObject({ txn_date: '2026-09-01', due_date: '2026-10-01', totalExact: '1000.0000', amount_paidExact: '400.0000', balance_dueExact: '600.0000', days_overdue: 60 });
     expect(D(oi.totalsExact.balance_due).eq(sumOf(oi.data, 'balance_dueExact'))).toBe(true);
     expect(oi.totalsExact.balance_due).toBe('900.0000');
     // After 12-05, I1 is settled (500 + 10 discount + 90 credit).
