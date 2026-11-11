@@ -32,7 +32,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
-  adjustingCond, cashBasisLinesWith, executeCashBasis, type AdjustingFilter,
+  adjustingCond, cashBasisLinesWith, executeCashBasis, executeCashBasisIn, type AdjustingFilter,
 } from './report.service.js';
 import { dec, type Dec } from './report-exact.js';
 
@@ -203,7 +203,12 @@ export interface LineSumOptions {
    * own splitDate replaces the option's.
    */
   windows?: ReadonlyArray<{ from: string; to: string; splitDate?: string | null }> | null;
+  /** Runs the query in the caller's transaction (default: the pool). */
+  exec?: SqlExecutor;
 }
+
+/** The pool or a transaction: anything a report query can run on. */
+export type SqlExecutor = Pick<typeof db, 'execute'>;
 
 /**
  * Debit and credit sums per account (and per dimension key, and before or
@@ -239,8 +244,9 @@ export async function lineSums(tenantId: string, o: LineSumOptions): Promise<Lin
     : sql``;
   const winExpr = wins ? sql`win.i` : sql`0`;
 
+  const exec = o.exec ?? db;
   const res = cash
-    ? await executeCashBasis(sql`
+    ? await executeCashBasisIn(exec, sql`
         WITH ${cashBasisLinesWith(tenantId, from, to, o.companyId, o.adjusting)}
         SELECT cb.account_id, a.account_type, ${keyExpr} AS k, ${preExpr} AS pre, ${winExpr} AS w,
           COALESCE(SUM(cb.debit), 0) AS d, COALESCE(SUM(cb.credit), 0) AS c
@@ -250,7 +256,7 @@ export async function lineSums(tenantId: string, o: LineSumOptions): Promise<Lin
         WHERE ${typeCond} AND ${lens}
         GROUP BY 1, 2, 3, 4, 5
       `)
-    : await db.execute(sql`
+    : await exec.execute(sql`
         SELECT jl.account_id, a.account_type, ${keyExpr} AS k, ${preExpr} AS pre, ${winExpr} AS w,
           COALESCE(SUM(jl.debit), 0) AS d, COALESCE(SUM(jl.credit), 0) AS c
         FROM journal_lines jl

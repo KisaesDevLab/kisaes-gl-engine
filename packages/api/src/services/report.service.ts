@@ -35,6 +35,7 @@ import {
 import {
   ACCRUAL_COLS, CASH_COLS, lensIsEmpty, lensSql, loadGroupTags, type LineLens,
 } from './report-lens.js';
+import { equityEarnings, earningsTotal } from './equity-earnings.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -288,7 +289,10 @@ function centAllocated(src: SQL) {
       a.txn_contact_id, a.line_contact_id, a.description, a.item_id, a.line_order,
       CASE WHEN a.side_debit THEN a.amt ELSE 0::numeric END AS debit,
       CASE WHEN a.side_debit THEN 0::numeric ELSE -a.amt END AS credit,
-      NULL::uuid AS line_id
+      NULL::uuid AS line_id,
+      -- U-119: the virtual line's key, unique within its transaction (the
+      -- Report Builder's keyset): one settlement, one document line, one group.
+      a.alloc_key || ':' || a.src_line_id::text || ':' || a.grp::text AS vkey
     FROM (
       SELECT s.*, s.x + CASE WHEN s.plug_rank = 1 THEN s.target - SUM(s.x) OVER (PARTITION BY s.alloc_key, s.grp) ELSE 0::numeric END AS amt
       FROM (
@@ -500,7 +504,9 @@ export function cashBasisLinesWith(
              ELSE r.credit END AS credit,
         -- U-202: the journal line a pass-through line is (NULL on the scaled
         -- and virtual lines below), for the cleared lens and drill ids.
-        r.line_id
+        r.line_id,
+        -- U-119: every branch carries vkey, unique within its transaction.
+        r.line_id::text AS vkey
       FROM cb_r2 r CROSS JOIN cb_ur ur
 
       UNION ALL
@@ -569,7 +575,7 @@ export function cashBasisLinesWith(
         pay.id, app.rec_date, pay.txn_type, ${docNumberSql('pay')} AS txn_number, pay.memo,
         pay.contact_id, pay.contact_id,
         NULL::text, NULL::uuid, 0,
-        app.amount, 0::numeric, NULL::uuid
+        app.amount, 0::numeric, NULL::uuid, '2b:' || app.app_id::text
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
@@ -648,7 +654,7 @@ export function cashBasisLinesWith(
         t.id AS transaction_id, t.txn_date, t.txn_type, ${docNumberSql('t')} AS txn_number, t.memo,
         t.contact_id AS txn_contact_id, zl.contact_id AS line_contact_id,
         zl.description, zl.item_id, zl.line_order,
-        zl.debit::numeric AS debit, zl.credit::numeric AS credit, zl.id AS line_id
+        zl.debit::numeric AS debit, zl.credit::numeric AS credit, zl.id AS line_id, zl.id::text AS vkey
       FROM transactions t
       JOIN journal_lines zl ON zl.transaction_id = t.id AND zl.tenant_id = ${tenantId}
         AND zl.is_void_reversal = false AND zl.line_role IN (${CASH_DERIVED_ROLES})
@@ -707,6 +713,23 @@ export async function executeCashBasis(query: SQL) {
     await tx.execute(sql`SELECT set_config('enable_nestloop', 'off', true), set_config('jit', 'off', true)`);
     return tx.execute(query);
   });
+}
+
+/**
+ * executeCashBasis on a caller's executor (U-119): on the pool, as above; in
+ * a caller's transaction (the Report Builder's snapshot), the two settings
+ * are switched off for this one statement and put back after it, so the
+ * transaction's other statements plan as usual.
+ */
+export async function executeCashBasisIn(exec: Pick<typeof db, 'execute'>, query: SQL) {
+  if (exec === db) return executeCashBasis(query);
+  const prev = await exec.execute(sql`SELECT current_setting('enable_nestloop') AS n, current_setting('jit') AS j`);
+  const { n, j } = prev.rows[0] as { n: string; j: string };
+  await exec.execute(sql`SELECT set_config('enable_nestloop', 'off', true), set_config('jit', 'off', true)`);
+  // A failed statement aborts the caller's transaction: nothing to put back then.
+  const res = await exec.execute(query);
+  await exec.execute(sql`SELECT set_config('enable_nestloop', ${n}, true), set_config('jit', ${j}, true)`);
+  return res;
 }
 
 // Exact reports: the tenant's accounts with their parents, for the
@@ -1219,14 +1242,14 @@ export async function buildBalanceSheet(
   const currentFYStart = bsOpts.fiscalYearStart || `${currentFYStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
   // Retained Earnings = net income for all completed fiscal years (before
-  // current FY start). The P&L hands back its Decimal net income
-  // (netIncomeExact) so the equity rows never round-trip through a float.
-  const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', (() => {
-    const d = new Date(currentFYStart + 'T00:00:00Z');
-    d.setUTCDate(d.getUTCDate() - 1);
-    return d.toISOString().split('T')[0]!;
-  })(), basis, companyId, tagId, null, { adjusting, exactAmounts: true });
-  const retainedD = dec(retainedPL.netIncomeExact);
+  // current FY start); Net Income (Current Year) = the fiscal year through
+  // asOfDate. U-119: both from one equity-earnings pass (the lines and sums
+  // the two Profit and Loss runs used), in Decimal.
+  const [earnings] = await equityEarnings(tenantId, {
+    basis, companyId, adjusting, asOfs: [{ asOf: asOfDate, fiscalYearStart: currentFYStart }],
+    lens: tagId ? { tag: { kind: 'ids', ids: tagId.split(',').map((x) => x.trim()).filter(Boolean) } } : null,
+  });
+  const retainedD = earningsTotal(earnings!.priorYears);
   // Prior-years retained earnings. When a system Retained Earnings account is
   // designated (systemTag='retained_earnings'), FOLD the accumulated prior-year
   // net income into that account's line — one "Retained Earnings" line = posted
@@ -1256,8 +1279,7 @@ export async function buildBalanceSheet(
   }
 
   // Current year net income
-  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId, null, { adjusting, exactAmounts: true });
-  const currentD = dec(currentPL.netIncomeExact);
+  const currentD = earningsTotal(earnings!.currentYear);
   if (!currentD.isZero()) {
     const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: 0, ...(exactMode ? { calculated: true as const } : {}) };
     setBal(row, currentD);
@@ -3586,12 +3608,14 @@ export async function buildTrialBalance(
   if (fyStart > '1900-01-02') {
     // UTC arithmetic so the day-before subtraction can't drift across a
     // month boundary in a non-UTC container.
-    const priorEndDate = new Date(fyStart + 'T00:00:00Z');
-    priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
-    const priorEnd = priorEndDate.toISOString().split('T')[0]!;
+    // U-119: the untagged figure comes from equity-earnings (line mode); the
+    // tagged one is its transaction mode, summed here from the same rows
+    // (equity-earnings' priorYearsIncomeByTransactionTag is that sum).
     const reD = tagId
       ? dsum((rows.rows as Array<{ pre_net?: string | number | null }>).map((r) => r.pre_net ?? 0))
-      : dec((await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, basis, companyId, null, null, { adjusting, exactAmounts: true })).netIncomeExact);
+      : earningsTotal((await equityEarnings(tenantId, {
+        basis, companyId, adjusting, asOfs: [{ asOf: endDate, fiscalYearStart: fyStart }],
+      }))[0]!.priorYears);
     if (!reD.isZero()) {
       // Retained earnings is a credit-balance equity account. Numbered
       // 30120 to sort beside the posted Retained Earnings account (the
