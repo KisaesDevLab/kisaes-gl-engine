@@ -3590,7 +3590,7 @@ export async function buildTrialBalance(
     priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
     const priorEnd = priorEndDate.toISOString().split('T')[0]!;
     const reD = tagId
-      ? dsum((rows.rows as any[]).map((r) => r.pre_net ?? 0))
+      ? dsum((rows.rows as Array<{ pre_net?: string | number | null }>).map((r) => r.pre_net ?? 0))
       : dec((await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, basis, companyId, null, null, { adjusting, exactAmounts: true })).netIncomeExact);
     if (!reD.isZero()) {
       // Retained earnings is a credit-balance equity account. Numbered
