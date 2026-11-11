@@ -483,6 +483,7 @@ describe('no float money in the exact report modules', () => {
     '../services/report-columns.service.ts',
     '../services/ap-open-items.ts',
     '../services/open-balances.service.ts',
+    '../services/budget-exact.service.ts',
   ];
   // Non-money counters that may use +=, by exact line text.
   const ALLOW = new Set(['rowCount += reportLines.length;', 'rowCount += t.lines.length;']);

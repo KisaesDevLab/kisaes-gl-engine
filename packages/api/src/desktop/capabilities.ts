@@ -1108,5 +1108,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * not go with open=1). as_of_date and open without exact=1 are 400 INVALID_PARAM; the legacy responses are unchanged.
    */
   'open-balances-asof-v1',
+  /**
+   * Exact budgets and Budget vs. Actual (U-203, ClientLedger P28 PR-C; Q-P28c, Q-P28n; migration 0275). /budgets is company-scoped
+   * (the company's budgets plus those saved before budgets had a company; new budgets take the request's company). budgets.version:
+   * PUT /budgets/:id, PUT /budgets/:id/lines, POST fill-from-actuals, copy-from/:sourceId and adjust-by-percent take body version
+   * (409 STALE_VERSION details.current; absent = last write wins) and bump it; they and POST /budgets take Idempotency-Key. PUT lines is
+   * validated: P&L accounts of the company, cells at most 2 decimal places by value, periods month1..month12, each account once (400
+   * BUDGET_LINE_INVALID details.index/field). Fill from actuals and adjust % compute in Decimal and round each cell to the cent, half away
+   * from zero. GET /budgets/:id/lines and the write responses add lines[].periodsExact[12], totalExact, version and totalsExact per
+   * section and net income. GET /budgets/:id/vs-actual?exact=1&period_ranges=&first_period=&basis=&adjusting=[&tag_split=1&tag_group_id=]:
+   * range i = budget period first_period + i taken whole (default the 12 calendar months of the budget year); actuals are the P&L lines
+   * of the company and basis matched by account id; rows = every P&L account with a budget or activity (tree fields, rollupCells);
+   * cells[] per column {actualExact, budgetExact, overExact = actual - budget, pctOfBudgetExact = actual / budget x 100 at 1 place, null
+   * on a zero budget}; section totals, grossProfit, netIncome; tag split rows as reports-columns-v1 with the budget on account_total
+   * only; drillTarget to the GL (netChangeExact). Without exact=1 the response is unchanged.
+   */
+  'budgets-exact-v1',
 ];
 
