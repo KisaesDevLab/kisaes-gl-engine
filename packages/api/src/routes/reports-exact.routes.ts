@@ -403,7 +403,8 @@ function requireExact(req: Request, _res: Response, next: NextFunction) {
 }
 const META_DOC = 'meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. '
   + 'Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis '
-  + 'allocation share is whole cents, the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry '
+  + 'allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement '
+  + 'footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry '
   + 'parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.';
 
 function doc(summary: string, description: string, query: Record<string, z.ZodTypeAny>) {

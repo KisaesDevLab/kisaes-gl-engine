@@ -202,9 +202,12 @@ describe('cash basis pro-rates to the cent (U-209)', () => {
     const inv = await post('invoice', '2026-09-01', [
       { accountId: ar.id, debit: '100.00', credit: '0' },
       { accountId: rev.id, debit: '0', credit: '100.00' },
-      { accountId: plants.id, debit: '33.33', credit: '0', lineRole: 'cogs' } as any,
-      { accountId: inventory.id, debit: '0', credit: '33.33', lineRole: 'inventory_relief' } as any,
+      { accountId: plants.id, debit: '33.33', credit: '0' },
+      { accountId: inventory.id, debit: '0', credit: '33.33' },
     ], { total: '100.00' });
+    // The costing walk's roles (only the engine's costing writes them through the API).
+    await db.update(journalLines).set({ lineRole: 'cogs' }).where(and(eq(journalLines.transactionId, inv.id), eq(journalLines.accountId, plants.id)));
+    await db.update(journalLines).set({ lineRole: 'inventory_relief' }).where(and(eq(journalLines.transactionId, inv.id), eq(journalLines.accountId, inventory.id)));
     for (const [d, amt] of [['2026-09-10', '33.33'], ['2026-10-10', '66.67']] as const) {
       const p = await post('customer_payment', d, [
         { accountId: cash.id, debit: amt, credit: '0' },

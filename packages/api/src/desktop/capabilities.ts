@@ -1136,7 +1136,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
   'closing-exceptions-v1',
   /**
    * Report fixes (U-209, ClientLedger P28 QA). Cash basis: every pro-rated line of a partly settled document (bill or invoice
-   * payments, credit memo applications, refunds of a memo or vendor credit) is whole cents; the lines of one settlement foot to it
+   * payments, credit memo applications, refunds of a memo or vendor credit) is whole cents (a document or settlement stored with
+   * sub-cent places keeps them on one line so the settlement still balances); the lines of one settlement foot to it
    * (largest non-tax line takes the rounding), a fully settled document gives each line back, Sales Tax Payable moves as the cash sales
    * tax report rounds it, and P&L cells, totals and their drills all read the same cents. General Ledger, expense/revenue detail,
    * Transaction List (both bases) rows carry a check's check number as txnNumber / txn_number (else the document number). GET
