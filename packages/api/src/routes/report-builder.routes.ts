@@ -31,7 +31,7 @@ import { idempotent } from '../middleware/idempotent.js';
 import { AppError } from '../utils/errors.js';
 import * as defs from '../services/report-definitions.service.js';
 import { REPORT_DEFINITION_KINDS } from '../db/schema/index.js';
-import { builderDefinitionSchema, RB_ERROR_CODES } from '@kis-books/shared';
+import { builderDefinitionSchema, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES } from '@kis-books/shared';
 
 export const reportBuilderRouter = Router();
 reportBuilderRouter.use(authenticate);
@@ -60,7 +60,7 @@ const builderDefinitionDoc = (builderDefinitionSchema as unknown as z.ZodTypeAny
   'kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 '
   + 'DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at '
   + 'nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of '
-  + `${RB_ERROR_CODES.join(', ')}.`,
+  + `${[...RB_ERROR_CODES, ...RB_ENGINE_ERROR_CODES].join(', ')}. Text is stored as sent (no trimming; captions may not start or end with a space); lengths count UTF-16 units.`,
 );
 
 const definitionDoc = z.union([standardDefinitionDoc, builderDefinitionDoc]);

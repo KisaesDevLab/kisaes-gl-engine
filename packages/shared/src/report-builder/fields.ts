@@ -64,7 +64,7 @@ export const RB_SCALAR_FILTER_FIELDS = ['amount'] as const;
 export const RB_DETAIL_FIELDS = [
   'date', 'txn_type', 'number', 'contact', 'memo', 'description', 'account', 'item', 'quantity', 'unit_price',
   'tag', 'cleared', 'debit', 'credit', 'amount', 'running_balance', 'due_date', 'days_past_due', 'aging_bucket',
-  'open_balance', 'original_amount',
+  'open_balance', 'original_amount', 'service_date',
 ] as const;
 export type RbDetailField = (typeof RB_DETAIL_FIELDS)[number];
 
@@ -74,8 +74,14 @@ export const RB_ACCOUNT_TYPES = [
 /** Account types whose natural balance is a debit; the rest are credit-normal. */
 export const RB_DEBIT_NORMAL_TYPES = ['asset', 'cogs', 'expense', 'other_expense'] as const;
 
+/**
+ * Transaction types as the builder names them: every engine TxnType, except
+ * that a check (an `expense` row with is_check) is its own value `check`,
+ * and `expense` means an expense that is not a check. Rights follow these
+ * values (a section admitting `check` needs the checks right).
+ */
 export const RB_TXN_TYPES = [
-  'invoice', 'customer_payment', 'cash_sale', 'expense', 'deposit', 'transfer', 'journal_entry',
+  'invoice', 'customer_payment', 'cash_sale', 'expense', 'check', 'deposit', 'transfer', 'journal_entry',
   'credit_memo', 'customer_refund', 'bill', 'vendor_credit', 'bill_payment', 'daily_sales', 'aje',
   'returned_payment', 'sales_tax_payment', 'bad_debt_recovery', 'inventory_adjustment',
 ] as const;
@@ -117,7 +123,7 @@ export interface RbSourceInfo {
   tiesTo: string | null;
 }
 
-const LINE_FIELDS = ['date', 'txn_type', 'number', 'contact', 'memo', 'description', 'account', 'item', 'tag', 'debit', 'credit', 'amount'] as const;
+const LINE_FIELDS = ['date', 'txn_type', 'number', 'contact', 'memo', 'description', 'account', 'item', 'tag', 'debit', 'credit', 'amount', 'service_date'] as const;
 const LINE_GROUPS = ['account', 'account_type', 'contact', 'item', 'txn_type', 'tag', 'month', 'quarter', 'year'] as const;
 const LINE_FILTERS = ['account', 'account_type', 'contact', 'item', 'tag', 'txn_type', 'amount'] as const;
 const OPEN_FIELDS = ['date', 'txn_type', 'number', 'contact', 'memo', 'due_date', 'days_past_due', 'aging_bucket', 'open_balance', 'original_amount'] as const;

@@ -59,7 +59,7 @@ function generated(): Array<[string, string, unknown, Expect, string?]> {
   out.push(['valid/nodes_200.json', `${RB_MAX_NODES} nodes (nested)`, withNodes([
     { type: 'group', id: 'outer', caption: 'Outer', showTotal: false, children: Array.from({ length: RB_MAX_NODES - 1 }, (_, i) => blank(`b${i}`)) },
   ]), { ok: true }]);
-  out.push(['valid/detail_fields_21.json', `every detail field (${RB_DETAIL_FIELDS.length}; the cap is 24)`, mut((d) => {
+  out.push(['valid/detail_fields_all.json', `every detail field (${RB_DETAIL_FIELDS.length}; the cap is 24)`, mut((d) => {
     d.columns.detailFields = [...RB_DETAIL_FIELDS];
     d.nodes = [{ ...sec(d), source: 'gl', polarity: 'debit', display: 'detail', filters: [] }];
   }), { ok: true }]);
@@ -69,6 +69,17 @@ function generated(): Array<[string, string, unknown, Expect, string?]> {
     d.nodes.push({ type: 'text', id: 'note', text: '売上高と費用 ✓ '.repeat(20) });
   }), { ok: true }]);
 
+  out.push(['valid/nodes_200_flat.json', `${RB_MAX_NODES} nodes in one list`, withNodes(Array.from({ length: RB_MAX_NODES }, (_, i) => blank(`b${i}`))), { ok: true }]);
+  out.push(['valid/caption_astral_200_units.json', 'a caption of 100 emoji: 200 UTF-16 units (the cap; lengths count UTF-16 units)', mut((d) => { sec(d).caption = '📈'.repeat(100); }), { ok: true }]);
+  out.push(['valid/check_type.json', 'the check transaction type (an expense with is_check)', mut((d) => {
+    d.nodes = [{ ...sec(d), source: 'purchases', filters: [{ field: 'txn_type', op: 'in', values: ['check', 'expense'] }], groupBy: [{ key: 'contact' }] }];
+  }), { ok: true }]);
+  out.push(['invalid/caption_astral_202_units.json', 'a caption of 101 emoji: 101 characters but 202 UTF-16 units', mut((d) => { sec(d).caption = '📈'.repeat(101); }),
+    { code: 'SCHEMA', path: 'definition.nodes.0.caption' }, 'count String::encode_utf16().count(), not chars or bytes']);
+  out.push(['invalid/caption_edge_space.json', 'a caption ending in a space (text is stored as sent, never trimmed)', mut((d) => { sec(d).caption = 'Income '; }),
+    { code: 'SCHEMA', path: 'definition.nodes.0.caption' }]);
+  out.push(['invalid/nodes_201_flat.json', `${RB_MAX_NODES + 1} nodes in one list (same rule as nested)`, withNodes(Array.from({ length: RB_MAX_NODES + 1 }, (_, i) => blank(`b${i}`))),
+    { code: 'TOO_MANY_NODES', path: 'definition.nodes' }]);
   out.push(['invalid/unknown_field.json', 'an unknown key on a section', mut((d) => { (sec(d) as unknown as Record<string, unknown>)['sortBy'] = 'amount'; }),
     { code: 'SCHEMA', path: 'definition.nodes.0' }]);
   out.push(['invalid/unknown_top_field.json', 'an unknown top-level key', mut((d) => { d['extra'] = true; }), { code: 'SCHEMA', path: 'definition' }]);
@@ -80,7 +91,7 @@ function generated(): Array<[string, string, unknown, Expect, string?]> {
   out.push(['invalid/depth_9.json', 'groups nested 9 deep', withNodes([nested(9)]),
     { code: 'TOO_DEEP', path: 'definition.nodes.0.children.0.children.0.children.0.children.0.children.0.children.0.children.0.children.0' }]);
   out.push(['invalid/detail_fields_25.json', '25 detail fields (repeats)', mut((d) => {
-    d.columns.detailFields = [...RB_DETAIL_FIELDS, 'date', 'memo', 'amount', 'debit'];
+    d.columns.detailFields = [...RB_DETAIL_FIELDS, 'date', 'memo', 'amount'];
   }), { code: 'SCHEMA', path: 'definition.columns.detailFields' }]);
   out.push(['invalid/detail_field_repeated.json', 'a detail field twice', mut((d) => { d.columns.detailFields = ['date', 'date']; }),
     { code: 'SCHEMA', path: 'definition.columns.detailFields' }]);

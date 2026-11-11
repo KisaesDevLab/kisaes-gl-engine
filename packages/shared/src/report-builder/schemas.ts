@@ -55,6 +55,8 @@ export const RB_ERROR_CODES = [
   'FORMULA_FORWARD_REF', 'FORMULA_UNITS', 'PERCENT_BASE', 'EARNINGS_FILTER', 'BUCKETS_PERIODS',
   'RUNNING_BALANCE', 'MIXED_POLARITY',
 ] as const;
+/** Codes only the engine gives (they need the database): an id that is not a row of this company. */
+export const RB_ENGINE_ERROR_CODES = ['NOT_IN_COMPANY'] as const;
 export type RbErrorCode = (typeof RB_ERROR_CODES)[number];
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -116,7 +118,12 @@ export interface BuilderDefinition {
 // ── Zod ────────────────────────────────────────────────────────────
 
 const nodeId = z.string().regex(RB_NODE_ID_RE, 'node ids are 1–32 of a-z, 0-9, _ and -');
-const caption = z.string().trim().min(1).max(200);
+/**
+ * Text is stored exactly as sent: no trimming. Lengths count UTF-16 code
+ * units (JavaScript string length), so a character outside the BMP counts 2.
+ */
+const noEdgeSpace = (s: string) => s.length > 0 && s.trim() === s;
+const caption = z.string().max(200).refine(noEdgeSpace, { message: 'must not be empty or start or end with a space' });
 
 const filterSchema = z.object({
   field: z.enum(RB_FILTER_FIELDS),
@@ -165,7 +172,8 @@ export const rbNodeSchema: z.ZodType<RbNode> = z.lazy(() => z.discriminatedUnion
     type: z.literal('group'),
     id: nodeId,
     caption,
-    children: z.array(rbNodeSchema).max(RB_MAX_NODES),
+    // Node counts are one rule over the whole tree (TOO_MANY_NODES), not per array.
+    children: z.array(rbNodeSchema),
     showTotal: z.boolean(),
     totalCaption: caption.optional(),
   }).strict(),
@@ -194,10 +202,10 @@ export const builderDefinitionSchema: z.ZodType<BuilderDefinition> = z.object({
       percentChange: z.boolean(),
     }).strict()).max(RB_MAX_COMPARE),
     percentOf: z.union([nodeId, z.literal('section')]).optional(),
-    headers: z.record(z.string().regex(RB_COLUMN_KEY_RE), z.string().trim().min(1).max(80))
+    headers: z.record(z.string().regex(RB_COLUMN_KEY_RE), z.string().max(80).refine(noEdgeSpace, { message: 'must not be empty or start or end with a space' }))
       .refine((h) => Object.keys(h).length <= RB_MAX_HEADERS, { message: `at most ${RB_MAX_HEADERS} headers` }),
   }).strict(),
-  nodes: z.array(rbNodeSchema).max(RB_MAX_NODES),
+  nodes: z.array(rbNodeSchema),
 }).strict() as unknown as z.ZodType<BuilderDefinition>;
 
 // ── Rules ──────────────────────────────────────────────────────────

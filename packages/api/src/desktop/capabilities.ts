@@ -1214,7 +1214,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * values per filter list; entity ids only at nodes.**.filters.N.ids (typed by the filter's field) and nodes.**.groupBy.N.tagGroupId,
    * a uuid anywhere else refused. 400 DEFINITION_INVALID {path, code}: SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT,
    * NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE,
-   * MIXED_POLARITY. Ids must be rows of this company. ?kind=builder filters the list. Standard definitions are unchanged (64 KB,
+   * MIXED_POLARITY, NOT_IN_COMPANY (an id not of this company). Text is stored as sent (captions may not start or end with a
+   * space); lengths count UTF-16 units. Transaction type values name a check (an expense with is_check) `check`. ?kind=builder filters the list. Standard definitions are unchanged (64 KB,
    * 1000 ids, {path}). Tenant archives remap builder ids as standard ones; an engine older than 0276 can't import builder rows.
    */
   'report-defs-builder-v1',

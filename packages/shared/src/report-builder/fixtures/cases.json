@@ -14,8 +14,8 @@
     }
   },
   {
-    "file": "valid/detail_fields_21.json",
-    "note": "every detail field (21; the cap is 24)",
+    "file": "valid/detail_fields_all.json",
+    "note": "every detail field (22; the cap is 24)",
     "engine": {
       "ok": true
     }
@@ -32,6 +32,52 @@
     "note": "multibyte text (each character 3–4 bytes in UTF-8)",
     "engine": {
       "ok": true
+    }
+  },
+  {
+    "file": "valid/nodes_200_flat.json",
+    "note": "200 nodes in one list",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/caption_astral_200_units.json",
+    "note": "a caption of 100 emoji: 200 UTF-16 units (the cap; lengths count UTF-16 units)",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/check_type.json",
+    "note": "the check transaction type (an expense with is_check)",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "invalid/caption_astral_202_units.json",
+    "note": "a caption of 101 emoji: 101 characters but 202 UTF-16 units",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.0.caption"
+    },
+    "desktop": "count String::encode_utf16().count(), not chars or bytes"
+  },
+  {
+    "file": "invalid/caption_edge_space.json",
+    "note": "a caption ending in a space (text is stored as sent, never trimmed)",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.0.caption"
+    }
+  },
+  {
+    "file": "invalid/nodes_201_flat.json",
+    "note": "201 nodes in one list (same rule as nested)",
+    "engine": {
+      "code": "TOO_MANY_NODES",
+      "path": "definition.nodes"
     }
   },
   {

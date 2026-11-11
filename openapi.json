@@ -57863,7 +57863,7 @@
                       },
                       {
                         "additionalProperties": false,
-                        "description": "kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT, NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE, MIXED_POLARITY.",
+                        "description": "kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT, NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE, MIXED_POLARITY, NOT_IN_COMPANY. Text is stored as sent (no trimming; captions may not start or end with a space); lengths count UTF-16 units.",
                         "properties": {
                           "adjusting": {
                             "enum": [
@@ -57942,7 +57942,8 @@
                                     "days_past_due",
                                     "aging_bucket",
                                     "open_balance",
-                                    "original_amount"
+                                    "original_amount",
+                                    "service_date"
                                   ],
                                   "type": "string"
                                 },
@@ -57952,7 +57953,6 @@
                               "headers": {
                                 "additionalProperties": {
                                   "maxLength": 80,
-                                  "minLength": 1,
                                   "type": "string"
                                 },
                                 "propertyNames": {
@@ -58020,7 +58020,6 @@
                                   "properties": {
                                     "caption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "defaultExpanded": {
@@ -58183,7 +58182,6 @@
                                     },
                                     "totalCaption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "type": {
@@ -58211,12 +58209,10 @@
                                   "properties": {
                                     "caption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "children": {
                                       "items": {},
-                                      "maxItems": 200,
                                       "type": "array"
                                     },
                                     "id": {
@@ -58228,7 +58224,6 @@
                                     },
                                     "totalCaption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "type": {
@@ -58250,7 +58245,6 @@
                                   "properties": {
                                     "caption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "id": {
@@ -58357,7 +58351,6 @@
                                 }
                               ]
                             },
-                            "maxItems": 200,
                             "type": "array"
                           },
                           "schemaVersion": {
@@ -58366,7 +58359,6 @@
                           },
                           "title": {
                             "maxLength": 200,
-                            "minLength": 1,
                             "type": "string"
                           }
                         },
@@ -58575,7 +58567,7 @@
                       },
                       {
                         "additionalProperties": false,
-                        "description": "kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT, NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE, MIXED_POLARITY.",
+                        "description": "kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT, NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE, MIXED_POLARITY, NOT_IN_COMPANY. Text is stored as sent (no trimming; captions may not start or end with a space); lengths count UTF-16 units.",
                         "properties": {
                           "adjusting": {
                             "enum": [
@@ -58654,7 +58646,8 @@
                                     "days_past_due",
                                     "aging_bucket",
                                     "open_balance",
-                                    "original_amount"
+                                    "original_amount",
+                                    "service_date"
                                   ],
                                   "type": "string"
                                 },
@@ -58664,7 +58657,6 @@
                               "headers": {
                                 "additionalProperties": {
                                   "maxLength": 80,
-                                  "minLength": 1,
                                   "type": "string"
                                 },
                                 "propertyNames": {
@@ -58732,7 +58724,6 @@
                                   "properties": {
                                     "caption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "defaultExpanded": {
@@ -58895,7 +58886,6 @@
                                     },
                                     "totalCaption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "type": {
@@ -58923,12 +58913,10 @@
                                   "properties": {
                                     "caption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "children": {
                                       "items": {},
-                                      "maxItems": 200,
                                       "type": "array"
                                     },
                                     "id": {
@@ -58940,7 +58928,6 @@
                                     },
                                     "totalCaption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "type": {
@@ -58962,7 +58949,6 @@
                                   "properties": {
                                     "caption": {
                                       "maxLength": 200,
-                                      "minLength": 1,
                                       "type": "string"
                                     },
                                     "id": {
@@ -59069,7 +59055,6 @@
                                 }
                               ]
                             },
-                            "maxItems": 200,
                             "type": "array"
                           },
                           "schemaVersion": {
@@ -59078,7 +59063,6 @@
                           },
                           "title": {
                             "maxLength": 200,
-                            "minLength": 1,
                             "type": "string"
                           }
                         },

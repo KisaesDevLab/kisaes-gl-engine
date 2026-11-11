@@ -27,7 +27,8 @@
       "days_past_due",
       "aging_bucket",
       "open_balance",
-      "original_amount"
+      "original_amount",
+      "service_date"
     ],
     "compare": [],
     "headers": {}

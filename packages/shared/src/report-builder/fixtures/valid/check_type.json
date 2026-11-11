@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "income",
+      "caption": "Income",
+      "source": "purchases",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "txn_type",
+          "op": "in",
+          "values": [
+            "check",
+            "expense"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "contact"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Income",
+      "hideZero": true
+    }
+  ]
+}

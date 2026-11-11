@@ -28,10 +28,10 @@
       "aging_bucket",
       "open_balance",
       "original_amount",
+      "service_date",
       "date",
       "memo",
-      "amount",
-      "debit"
+      "amount"
     ],
     "compare": [],
     "headers": {}
