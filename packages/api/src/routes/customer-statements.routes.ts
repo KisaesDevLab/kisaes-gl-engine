@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
-import { requireResource } from '../middleware/permission.js';
+import { requirePermission, requireResource } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
@@ -34,7 +34,10 @@ const statementDoc = 'CustomerStatement: {contact: {id, name, address: string[],
 export const customerStatementReportsRouter = Router();
 customerStatementReportsRouter.use(authenticate);
 customerStatementReportsRouter.use(companyContext);
-customerStatementReportsRouter.use(requireResource('reports'));
+// GET-only on the shared /reports base. requireResource would map every POST
+// passing through (ask, email) to an 'update' check, which no one passes:
+// 'reports' is read-only (capped at view), so even the owner got 403.
+customerStatementReportsRouter.use(requirePermission('reports', 'read'));
 
 const statementQuery = z.object({
   contactId: z.string().uuid(), asOf: isoDate, format: format.optional(), start: isoDate.optional(),
