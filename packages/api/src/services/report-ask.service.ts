@@ -159,7 +159,8 @@ export function isIsoDate(s: unknown): s is string {
 // ── Names ──────────────────────────────────────────────────────────
 
 const norm = (s: string) => s.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
-const hasDigit = (s: string) => /\d/.test(s);
+/** Any digit, fullwidth and other scripts included (after NFKC). */
+const hasDigit = (s: string) => /\p{N}/u.test(s.normalize('NFKC'));
 const UUIDISH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 /** Words of the question used to pick the contacts the model may see. */
@@ -225,12 +226,13 @@ export async function promptNames(tenantId: string, companyId: string, question:
   const tg = await db.select({ name: tags.name }).from(tags)
     .where(and(eq(tags.tenantId, tenantId), inCompany(tags.companyId, companyId), eq(tags.isActive, true)))
     .orderBy(sql`lower(${tags.name})`).limit(ASK_LIMITS.promptTags);
-  // Only the contacts the question names (a shared word): the user already
-  // typed them, and the rest of the contact list stays here.
+  // Only the contacts the question names (a whole word in common): the user
+  // already typed them, and the rest of the contact list stays here.
   const words = questionWords(question);
   let ct: Array<{ name: string }> = [];
   if (words.length > 0) {
-    const likes = words.map((w) => sql`lower(${contacts.displayName}) LIKE ${'%' + w.replace(/[\\%_]/g, (c) => '\\' + c) + '%'}`);
+    // \m and \M: PostgreSQL word boundaries, so "rent" never picks "Trent Bros".
+    const likes = words.map((w) => sql`lower(${contacts.displayName}) ~ ${'\\m' + w.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '\\M'}`);
     ct = await db.select({ name: contacts.displayName }).from(contacts)
       .where(and(eq(contacts.tenantId, tenantId), inCompany(contacts.companyId, companyId), eq(contacts.isActive, true),
         or(...likes)))
@@ -341,9 +343,10 @@ export async function validateMapping(parsed: unknown, input: AskRequest, resolv
   for (const [k, v] of Object.entries(p)) {
     if (KNOWN_KEYS.has(k)) continue;
     // There is no amount filter; an amount-like key is a refusal, not a drop.
-    if (AMOUNT_KEY.test(k)) throw unmapped(k, 'amount_filter');
+    // The field is a fixed label: a key the model made up is never echoed.
+    if (AMOUNT_KEY.test(k)) throw unmapped('reply', 'amount_filter');
     // Free text (an explanation, a note) is dropped unread — but never a number.
-    if (typeof v === 'number') throw unmapped(k, 'number');
+    if (typeof v === 'number') throw unmapped('reply', 'number');
   }
 
   const reportKey = token(p['reportKey'], 'reportKey', input.reports.map((r) => r.key));
@@ -394,7 +397,7 @@ export async function validateMapping(parsed: unknown, input: AskRequest, resolv
     if (typeof f !== 'object' || Array.isArray(f)) throw unmapped('filters', 'not_object');
     const fq = norm(input.question);
     for (const [k, v] of Object.entries(f as Record<string, unknown>)) {
-      if (!(k in FILTER_KINDS)) throw unmapped(`filters.${k}`, AMOUNT_KEY.test(k) ? 'amount_filter' : 'unknown');
+      if (!(k in FILTER_KINDS)) throw unmapped('filters', AMOUNT_KEY.test(k) ? 'amount_filter' : 'unknown');
       const kind = FILTER_KINDS[k as keyof typeof FILTER_KINDS];
       const texts = textList(v, `filters.${k}`, ASK_LIMITS.namesPerKind);
       if (texts.length === 0) continue;

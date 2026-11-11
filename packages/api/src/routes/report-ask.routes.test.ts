@@ -131,6 +131,8 @@ beforeEach(async () => {
   }).returning();
   rentId = rent!.id;
   await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Zephyr Holdings' });
+  // Shares letters, not a word, with the question ("rent"): never sent.
+  await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Trent Parent Bros' });
   const [bravo] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyB, contactType: 'customer', displayName: 'Bravo Only Co' }).returning();
   otherCoContact = bravo!.id;
   const [t] = await db.insert(transactions).values({
@@ -190,7 +192,7 @@ describe('POST /reports/ask', () => {
     expect(params.userPrompt).toContain('profit_and_loss');
     expect(params.userPrompt).toContain('last_quarter');
     expect(params.userPrompt).toContain('Today is 2026-11-10');
-    for (const secret of ['98765', '13579', 'quince', 'Zephyr Holdings', 'Bravo Only Co', '555-123-4567']) {
+    for (const secret of ['98765', '13579', 'quince', 'Zephyr Holdings', 'Trent Parent Bros', 'Bravo Only Co', '555-123-4567']) {
       expect(params.userPrompt).not.toContain(secret);
       expect(params.systemPrompt).not.toContain(secret);
     }
@@ -241,9 +243,10 @@ describe('POST /reports/ask', () => {
   it.each([
     ['an unknown report key', { reportKey: 'cash_flow_forecast' }, 'reportKey', 'unknown'],
     ['no report', { reportKey: null }, 'reportKey', 'no_report'],
-    ['an amount filter', { ...GOOD, amountMin: '500.00' }, 'amountMin', 'amount_filter'],
-    ['an amount filter inside filters', { ...GOOD, filters: { amountMax: '500' } }, 'filters.amountMax', 'amount_filter'],
-    ['ids from the model', { ...GOOD, filters: { accountIds: ['00000000-0000-4000-8000-000000000000'] } }, 'filters.accountIds', 'unknown'],
+    ['an amount filter', { ...GOOD, amountMin: '500.00' }, 'reply', 'amount_filter'],
+    ['a digit-bearing amount key (never echoed)', { ...GOOD, min_500: true }, 'reply', 'amount_filter'],
+    ['an amount filter inside filters', { ...GOOD, filters: { amountMax: '500' } }, 'filters', 'amount_filter'],
+    ['ids from the model', { ...GOOD, filters: { accountIds: ['00000000-0000-4000-8000-000000000000'] } }, 'filters', 'unknown'],
     ['a uuid as a name', { ...GOOD, filters: { accountNames: ['00000000-0000-4000-8000-000000000000'] } }, 'filters.accountNames', 'id'],
     ['a JSON number', { ...GOOD, columns: 500 }, 'columns', 'number'],
     ['a number in a name', { ...GOOD, filters: { contactNames: ['Over 500 dollars'] } }, 'filters.contactNames', 'number'],
@@ -257,7 +260,7 @@ describe('POST /reports/ask', () => {
     ['a range on an as-of report', { reportKey: 'balance_sheet', from: '2026-01-01', to: '2026-03-31' }, 'from', 'not_taken'],
     ['basis on a report without it', { reportKey: 'ar_aging_summary', basis: 'cash' }, 'basis', 'not_taken'],
     ['a filter the report does not take', { reportKey: 'balance_sheet', filters: { accountNames: ['Rent Kumquat Hall'] } }, 'filters.accountNames', 'not_taken'],
-    ['a free-text key holding a number', { ...GOOD, note: 1234.56 }, 'note', 'number'],
+    ['a free-text key holding a number', { ...GOOD, note: 1234.56 }, 'reply', 'number'],
     ['a reply that is not an object', ['profit_and_loss'], 'reply', 'not_json'],
   ])('refuses %s with 422 ASK_UNMAPPED', async (_name, parsed, field, reason) => {
     await enableAi();
@@ -330,15 +333,20 @@ describe('POST /reports/ask', () => {
     expect(rows.map((r) => r.errorMessage).join(' ')).not.toContain('rent');
   });
 
-  it('no provider is 503 AI_UNAVAILABLE without a call', async () => {
+  it('no provider, or the chat function off, is 503 AI_UNAVAILABLE without a call or a job', async () => {
     await enableAi();
-    await aiConfigService.updateConfig({ chatProvider: null as never, categorizationProvider: null as never });
-    const res = await post(request());
-    // A provider change may bump the disclosure (consent_stale, 403) or leave no provider (503); never a call.
-    expect([403, 503]).toContain(res.status);
+    // Straight to the row, so the disclosure version does not move.
+    await db.update(aiConfig).set({ chatProvider: null, categorizationProvider: null });
+    const r1 = await post(request());
+    expect(r1.status).toBe(503);
+    expect(r1.json.error).toMatchObject({ code: 'AI_UNAVAILABLE', details: { provider: null, reason: 'no_provider' } });
+    await db.update(aiConfig).set({ chatProvider: 'anthropic', taskOptions: { chat: { enabled: false } } });
+    const r2 = await post(request());
+    expect(r2.status).toBe(503);
+    expect(r2.json.error).toMatchObject({ code: 'AI_UNAVAILABLE', details: { provider: 'anthropic', reason: 'function_disabled' } });
     expect(m.execute).not.toHaveBeenCalled();
+    expect(await jobs()).toHaveLength(0);
   });
-
   it('a self-hosted provider (Ollama) answers as self_hosted', async () => {
     await enableAi();
     m.execute.mockResolvedValueOnce(reply(GOOD, { provider: 'ollama', model: 'llama' }));
@@ -388,8 +396,13 @@ describe('report ask validation (no database)', () => {
     expect(Object.keys(r).sort()).toEqual(['basis', 'columns', 'dates', 'extras', 'filters', 'reportKey', 'unresolved']);
     for (const key of ['min_total', 'maxAmount', 'over', 'balanceAbove', 'amount_gte']) {
       await expect(validateMapping({ reportKey: 'profit_and_loss', [key]: '1' }, request(), none))
-        .rejects.toMatchObject({ details: { field: key, reason: 'amount_filter' } });
+        .rejects.toMatchObject({ details: { field: 'reply', reason: 'amount_filter' } });
     }
+  });
+
+  it('fullwidth digits count as digits: such a name is refused, never echoed', async () => {
+    await expect(validateMapping({ reportKey: 'profit_and_loss', filters: { contactNames: ['５００'] } }, request({ question: 'sales over ５００' }), none))
+      .rejects.toMatchObject({ details: { field: 'filters.contactNames', reason: 'number' } });
   });
 
   it('a preset on a report that takes no dates is refused', async () => {
