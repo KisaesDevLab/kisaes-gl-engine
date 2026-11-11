@@ -10,7 +10,7 @@
 // rounds it (round(tax x running paid / total) differences).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { ReportDecimal as Decimal } from './report-exact.js';
 import { db } from '../db/index.js';
 import {
@@ -65,10 +65,10 @@ const net = (l: VLine) => new Decimal(l.debit).minus(l.credit);
 const sumFor = (lines: VLine[], pred: (l: VLine) => boolean) =>
   lines.filter(pred).reduce((s, l) => s.plus(net(l)), new Decimal(0));
 
-function expectCentsAndBalanced(lines: VLine[]) {
+function expectCentsAndBalanced(lines: VLine[], places = 2) {
   for (const l of lines) {
-    expect(new Decimal(l.debit).decimalPlaces(), `debit ${l.debit}`).toBeLessThanOrEqual(2);
-    expect(new Decimal(l.credit).decimalPlaces(), `credit ${l.credit}`).toBeLessThanOrEqual(2);
+    expect(new Decimal(l.debit).decimalPlaces(), `debit ${l.debit}`).toBeLessThanOrEqual(places);
+    expect(new Decimal(l.credit).decimalPlaces(), `credit ${l.credit}`).toBeLessThanOrEqual(places);
   }
   const byTxn = new Map<string, InstanceType<typeof Decimal>>();
   for (const l of lines) byTxn.set(l.transaction_id, (byTxn.get(l.transaction_id) ?? new Decimal(0)).plus(net(l)));
@@ -179,5 +179,69 @@ describe('cash basis pro-rates to the cent (U-209)', () => {
     expect(sumFor(all, (l) => l.account_id === rev.id).negated().toFixed(4)).toBe('61.0000');
     expect(sumFor(all, (l) => l.account_id === rev2.id).negated().toFixed(4)).toBe('39.0000');
     expect(sumFor(all, (l) => l.account_id === tax.id).negated().toFixed(4)).toBe('7.0000');
+  });
+
+  it('a sub-cent bill paid in full keeps its places, so the payment still balances', async () => {
+    const bill = await post('bill', '2026-11-01', [
+      { accountId: repairs.id, debit: '20.005', credit: '0' },
+      { accountId: ap.id, debit: '0', credit: '20.005' },
+    ], { total: '20.005' });
+    const p = await post('bill_payment', '2026-11-05', [
+      { accountId: ap.id, debit: '20.005', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '20.005' },
+    ], { total: '20.005' });
+    await db.insert(billPaymentApplications).values({ tenantId, paymentId: p.id, billId: bill.id, amount: '20.005' });
+    const all = await virtualLedger(null, '2026-12-31');
+    expectCentsAndBalanced(all, 4);
+    expect(sumFor(all, (l) => l.account_id === repairs.id).toFixed(4)).toBe('20.0050');
+  });
+
+  it('inventory costing lines, a credit memo refund and a vendor credit refund: cents, balanced, given back', async () => {
+    const inventory = await mk('Inventory', 'asset', '1300', 'inventory');
+    // Invoice 100.00 with its costing pair 33.33, paid 33.33 then 66.67.
+    const inv = await post('invoice', '2026-09-01', [
+      { accountId: ar.id, debit: '100.00', credit: '0' },
+      { accountId: rev.id, debit: '0', credit: '100.00' },
+      { accountId: plants.id, debit: '33.33', credit: '0', lineRole: 'cogs' } as any,
+      { accountId: inventory.id, debit: '0', credit: '33.33', lineRole: 'inventory_relief' } as any,
+    ], { total: '100.00' });
+    for (const [d, amt] of [['2026-09-10', '33.33'], ['2026-10-10', '66.67']] as const) {
+      const p = await post('customer_payment', d, [
+        { accountId: cash.id, debit: amt, credit: '0' },
+        { accountId: ar.id, debit: '0', credit: amt },
+      ], { total: amt });
+      await db.insert(paymentApplications).values({ tenantId, paymentId: p.id, invoiceId: inv.id, amount: amt });
+    }
+    // Credit memo 10.70 (income 10.00 + tax 0.70), 3.33 of it refunded.
+    const memo = await post('credit_memo', '2026-10-01', [
+      { accountId: rev.id, debit: '10.00', credit: '0' },
+      { accountId: tax.id, debit: '0.70', credit: '0' },
+      { accountId: ar.id, debit: '0', credit: '10.70' },
+    ], { total: '10.70' });
+    const refund = await post('customer_refund', '2026-10-15', [
+      { accountId: ar.id, debit: '3.33', credit: '0' },
+      { accountId: cash.id, debit: '0', credit: '3.33' },
+    ], { total: '3.33' });
+    await db.update(transactions).set({ sourcePaymentId: memo.id }).where(eq(transactions.id, refund.id));
+    // Vendor credit 50.00 on Repairs, 16.67 of it refunded by deposit.
+    const vc = await post('vendor_credit', '2026-10-02', [
+      { accountId: ap.id, debit: '50.00', credit: '0' },
+      { accountId: repairs.id, debit: '0', credit: '50.00' },
+    ], { total: '50.00' });
+    const dep = await post('deposit', '2026-10-20', [
+      { accountId: cash.id, debit: '16.67', credit: '0' },
+      { accountId: ap.id, debit: '0', credit: '16.67' },
+    ], { total: '16.67' });
+    await db.update(journalLines).set({ sourceTransactionId: vc.id })
+      .where(and(eq(journalLines.transactionId, dep.id), eq(journalLines.accountId, ap.id)));
+
+    const all = await virtualLedger(null, '2026-12-31');
+    expectCentsAndBalanced(all);
+    // The costing pair comes back in full once the invoice is paid.
+    expect(sumFor(all, (l) => l.account_id === plants.id).toFixed(4)).toBe('33.3300');
+    expect(sumFor(all, (l) => l.account_id === inventory.id).toFixed(4)).toBe('-33.3300');
+    // The refunds: 3.33 of the memo's lines, 16.67 of the vendor credit's.
+    expect(sumFor(all, (l) => l.transaction_id === refund.id && [rev.id, tax.id].includes(l.account_id)).toFixed(4)).toBe('3.3300');
+    expect(sumFor(all, (l) => l.transaction_id === dep.id && l.account_id === repairs.id).toFixed(4)).toBe('-16.6700');
   });
 });

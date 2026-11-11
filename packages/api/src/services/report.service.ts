@@ -294,10 +294,18 @@ function centAllocated(src: SQL) {
       FROM (
         SELECT s0.*,
           round(s0.net * s0.p_k / s0.doc_total, 2) - round(s0.net * s0.p_prev / s0.doc_total, 2) AS x,
-          round(SUM(s0.net) OVER g * s0.p_k / s0.doc_total, 2) - round(SUM(s0.net) OVER g * s0.p_prev / s0.doc_total, 2) AS target,
+          -- Whole cents when the document and its settlements are; an
+          -- amount stored with sub-cent places keeps them (the journal's 4)
+          -- on the plug line, so the virtual transaction still balances.
+          round(SUM(s0.net) OVER g * s0.p_k / s0.doc_total, s0.sc) - round(SUM(s0.net) OVER g * s0.p_prev / s0.doc_total, s0.sc) AS target,
           row_number() OVER (PARTITION BY s0.alloc_key, s0.grp
             ORDER BY s0.is_tax, abs(s0.net) DESC, s0.line_order, s0.src_line_id) AS plug_rank
-        FROM (${src}) s0
+        FROM (
+          SELECT s1.*,
+            CASE WHEN SUM(s1.net) OVER (PARTITION BY s1.alloc_key, s1.grp) % 0.01 = 0 AND s1.p_k % 0.01 = 0
+                   AND s1.p_prev % 0.01 = 0 AND s1.doc_total % 0.01 = 0 THEN 2 ELSE 4 END AS sc
+          FROM (${src}) s1
+        ) s0
         WINDOW g AS (PARTITION BY s0.alloc_key, s0.grp)
       ) s
     ) a`;

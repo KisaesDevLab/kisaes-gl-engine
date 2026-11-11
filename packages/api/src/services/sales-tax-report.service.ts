@@ -95,7 +95,7 @@ function eventsSql(tenantId: string, companyId: string | null, basis: SalesTaxBa
       st AS (
         -- Each live settlement of an invoice with its running cash + discount
         -- (Q-P23e), on the cash virtual ledger's dates.
-        SELECT app.invoice_id, COALESCE(app.rec_date, pay.txn_date) AS d, app.cash_amount,
+        SELECT app.invoice_id, app.kind || ':' || app.app_id::text AS settlement, COALESCE(app.rec_date, pay.txn_date) AS d, app.cash_amount,
           SUM(app.cash_amount) OVER w AS p_k,
           SUM(app.cash_amount) OVER w - app.cash_amount AS p_prev
         FROM ar_apps app
@@ -106,7 +106,7 @@ function eventsSql(tenantId: string, companyId: string | null, basis: SalesTaxBa
       ),
       mr AS (
         -- U-137 rule 3b: refunds of a credit memo's credit, running total.
-        SELECT pay.source_payment_id AS memo_id, pay.txn_date AS d, pay.total::numeric AS cash_amount,
+        SELECT pay.source_payment_id AS memo_id, pay.id::text AS settlement, pay.txn_date AS d, pay.total::numeric AS cash_amount,
           SUM(pay.total::numeric) OVER w AS p_k,
           SUM(pay.total::numeric) OVER w - pay.total::numeric AS p_prev
         FROM transactions pay
@@ -120,20 +120,30 @@ function eventsSql(tenantId: string, companyId: string | null, basis: SalesTaxBa
         SELECT r.tax_item_id, r.agency_id, r.tax_code_id, 'collected' AS col, st.d,
           round(r.base::numeric * st.p_k / t.total::numeric, 2) - round(r.base::numeric * st.p_prev / t.total::numeric, 2) AS base,
           round(r.tax::numeric * st.p_k / t.total::numeric, 2) - round(r.tax::numeric * st.p_prev / t.total::numeric, 2) AS tax,
-          r.tax::numeric * st.cash_amount / t.total::numeric AS exact
+          -- U-209: the cash ledger moves the invoice's Sales Tax line in cents,
+          -- round(tax total x running paid / total) differences; exact is this
+          -- row's share of that, so roundingDifference is what the GL moved
+          -- less the rows rounded one by one.
+          COALESCE((round(SUM(r.tax::numeric) OVER s * st.p_k / t.total::numeric, 2)
+                    - round(SUM(r.tax::numeric) OVER s * st.p_prev / t.total::numeric, 2))
+            * r.tax::numeric / NULLIF(SUM(r.tax::numeric) OVER s, 0), 0) AS exact
         FROM st
         JOIN transactions t ON t.id = st.invoice_id AND t.tenant_id = ${tenantId} AND t.status = 'posted' AND NULLIF(t.total::numeric, 0) IS NOT NULL
         JOIN transaction_tax_lines r ON r.transaction_id = t.id AND r.tenant_id = ${tenantId} AND r.kind = 'sale'
         WHERE ${coT}
+        WINDOW s AS (PARTITION BY t.id, st.settlement)
         UNION ALL
         SELECT r.tax_item_id, r.agency_id, r.tax_code_id, 'collected', mr.d,
           round(r.base::numeric * mr.p_k / t.total::numeric, 2) - round(r.base::numeric * mr.p_prev / t.total::numeric, 2),
           round(r.tax::numeric * mr.p_k / t.total::numeric, 2) - round(r.tax::numeric * mr.p_prev / t.total::numeric, 2),
-          r.tax::numeric * mr.cash_amount / t.total::numeric
+          COALESCE((round(SUM(r.tax::numeric) OVER s * mr.p_k / t.total::numeric, 2)
+                    - round(SUM(r.tax::numeric) OVER s * mr.p_prev / t.total::numeric, 2))
+            * r.tax::numeric / NULLIF(SUM(r.tax::numeric) OVER s, 0), 0)
         FROM mr
         JOIN transactions t ON t.id = mr.memo_id AND t.tenant_id = ${tenantId} AND NULLIF(t.total::numeric, 0) IS NOT NULL
         JOIN transaction_tax_lines r ON r.transaction_id = t.id AND r.tenant_id = ${tenantId} AND r.kind = 'sale'
         WHERE ${coT}
+        WINDOW s AS (PARTITION BY t.id, mr.settlement)
         UNION ALL
         -- Sales receipts, daily sales and any other row-bearing transaction
         -- on their date; SSUTA discount rows on both bases (bad debts and
