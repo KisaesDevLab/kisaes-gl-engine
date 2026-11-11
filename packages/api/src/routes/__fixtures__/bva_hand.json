@@ -1,0 +1,125 @@
+{
+  "about": "Budget vs. Actual hand fixture (U-203, budgets-exact-v1; ClientLedger P28 AC4). Every expected value below was computed by hand from the entries and budget lines in this file, not copied from engine output. Shared with the desktop contract test (ClientLedger fixtures/budgets/bva_hand.json is a copy). Amounts are decimal strings compared by value; pct is actual / budget x 100 at 1 place, half away from zero, null on a zero budget; over is actual - budget. Accounts are keyed by number. Periods are 4-4-5 style (not calendar months) and map to budget periods 1..3.",
+  "fiscalYearStart": "2026-01-01",
+  "accounts": [
+    { "number": "1000", "name": "BvA Checking", "type": "asset", "detailType": "bank" },
+    { "number": "1100", "name": "BvA Receivable", "type": "asset", "detailType": "accounts_receivable" },
+    { "number": "4000", "name": "BvA Sales", "type": "revenue", "detailType": "sales_of_product_income" },
+    { "number": "4010", "name": "BvA Sales - Online", "type": "revenue", "detailType": "sales_of_product_income", "parent": "4000" },
+    { "number": "5000", "name": "BvA Materials", "type": "cogs", "detailType": "supplies_materials_cogs" },
+    { "number": "6000", "name": "Rent", "type": "expense", "detailType": "rent_or_lease_of_buildings" },
+    { "number": "6100", "name": "BvA Supplies", "type": "expense", "detailType": "supplies" },
+    { "number": "6200", "name": "BvA Travel", "type": "expense", "detailType": "travel" },
+    { "number": "6300", "name": "Rent", "type": "expense", "detailType": "rent_or_lease_of_buildings" },
+    { "number": "7000", "name": "BvA Interest", "type": "other_revenue", "detailType": "interest_earned" }
+  ],
+  "tagGroups": [
+    { "name": "Region", "tags": [{ "key": "east", "name": "East", "number": "10" }, { "key": "west", "name": "West", "number": "20" }] },
+    { "name": "Fund", "tags": [{ "key": "f1", "name": "Fund One", "number": "1" }] }
+  ],
+  "budget": {
+    "name": "FY2026 hand budget",
+    "fiscalYear": 2026,
+    "lines": {
+      "4000": ["1000.00", "1000.00", "1500.00", "9999.00", "0", "0", "0", "0", "0", "0", "0", "0"],
+      "4010": ["200.00", "0", "300.00", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+      "5000": ["400.00", "400.00", "600.00", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+      "6000": ["500.00", "500.00", "500.00", "500.00", "0", "0", "0", "0", "0", "0", "0", "0"],
+      "6200": ["0", "150.00", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+      "6300": ["100.00", "100.00", "100.00", "0", "0", "0", "0", "0", "0", "0", "0", "0"]
+    }
+  },
+  "entries": [
+    { "date": "2025-12-31", "note": "before the periods", "lines": [{ "account": "1000", "debit": "777.00" }, { "account": "4000", "credit": "777.00" }] },
+    { "date": "2026-01-05", "lines": [{ "account": "6000", "debit": "500.00" }, { "account": "1000", "credit": "500.00" }] },
+    { "date": "2026-01-06", "lines": [{ "account": "6300", "debit": "100.05" }, { "account": "1000", "credit": "100.05" }] },
+    { "date": "2026-01-10", "lines": [{ "account": "1000", "debit": "1234.56" }, { "account": "4000", "credit": "1234.56", "tag": "east" }] },
+    { "date": "2026-01-12", "txnType": "invoice", "note": "unpaid invoice: accrual only", "total": "300.00",
+      "lines": [{ "account": "1100", "debit": "300.00" }, { "account": "4000", "credit": "300.00" }] },
+    { "date": "2026-01-15", "lines": [{ "account": "1000", "debit": "200.10" }, { "account": "4010", "credit": "200.10" }] },
+    { "date": "2026-01-20", "lines": [{ "account": "5000", "debit": "333.33" }, { "account": "1000", "credit": "333.33" }] },
+    { "date": "2026-02-02", "lines": [{ "account": "1000", "debit": "900.00" }, { "account": "4000", "credit": "900.00", "tag": "f1" }] },
+    { "date": "2026-02-02", "company": "other", "note": "another company of the tenant", "lines": [{ "account": "1000", "debit": "999.99" }, { "account": "4000", "credit": "999.99" }] },
+    { "date": "2026-02-03", "lines": [{ "account": "5000", "debit": "410.00" }, { "account": "1000", "credit": "410.00" }] },
+    { "date": "2026-02-10", "lines": [{ "account": "6000", "debit": "500.00" }, { "account": "1000", "credit": "500.00" }] },
+    { "date": "2026-02-12", "note": "a refund", "lines": [{ "account": "1000", "debit": "10.05" }, { "account": "6300", "credit": "10.05" }] },
+    { "date": "2026-02-14", "lines": [{ "account": "6100", "debit": "75.25" }, { "account": "1000", "credit": "75.25" }] },
+    { "date": "2026-02-20", "lines": [{ "account": "1000", "debit": "12.34" }, { "account": "7000", "credit": "12.34" }] },
+    { "date": "2026-03-05", "lines": [{ "account": "1000", "debit": "1500.00" }, { "account": "4000", "credit": "1500.00", "tag": "west" }] },
+    { "date": "2026-03-10", "lines": [{ "account": "1000", "debit": "299.99" }, { "account": "4010", "credit": "299.99" }] },
+    { "date": "2026-03-15", "lines": [{ "account": "5000", "debit": "600.00" }, { "account": "1000", "credit": "600.00" }] },
+    { "date": "2026-03-31", "lines": [{ "account": "6000", "debit": "500.00" }, { "account": "1000", "credit": "500.00" }] },
+    { "date": "2026-04-01", "lines": [{ "account": "6000", "debit": "500.00" }, { "account": "1000", "credit": "500.00" }] },
+    { "date": "2026-04-02", "note": "after the periods", "lines": [{ "account": "1000", "debit": "5000.00" }, { "account": "4000", "credit": "5000.00" }] }
+  ],
+  "request": {
+    "periodRanges": ["2026-01-01..2026-01-28", "2026-01-29..2026-02-25", "2026-02-26..2026-04-01"],
+    "firstPeriod": 1
+  },
+  "expected": {
+    "accrual": {
+      "rows": {
+        "4000": { "actual": ["1534.56", "900.00", "1500.00", "3934.56"], "budget": ["1000.00", "1000.00", "1500.00", "3500.00"],
+                  "over": ["534.56", "-100.00", "0.00", "434.56"], "pct": ["153.5", "90.0", "100.0", "112.4"] },
+        "4010": { "actual": ["200.10", "0.00", "299.99", "500.09"], "budget": ["200.00", "0.00", "300.00", "500.00"],
+                  "over": ["0.10", "0.00", "-0.01", "0.09"], "pct": ["100.1", null, "100.0", "100.0"] },
+        "5000": { "actual": ["333.33", "410.00", "600.00", "1343.33"], "budget": ["400.00", "400.00", "600.00", "1400.00"],
+                  "over": ["-66.67", "10.00", "0.00", "-56.67"], "pct": ["83.3", "102.5", "100.0", "96.0"] },
+        "6000": { "actual": ["500.00", "500.00", "1000.00", "2000.00"], "budget": ["500.00", "500.00", "500.00", "1500.00"],
+                  "over": ["0.00", "0.00", "500.00", "500.00"], "pct": ["100.0", "100.0", "200.0", "133.3"] },
+        "6100": { "actual": ["0.00", "75.25", "0.00", "75.25"], "budget": ["0.00", "0.00", "0.00", "0.00"],
+                  "over": ["0.00", "75.25", "0.00", "75.25"], "pct": [null, null, null, null] },
+        "6200": { "actual": ["0.00", "0.00", "0.00", "0.00"], "budget": ["0.00", "150.00", "0.00", "150.00"],
+                  "over": ["0.00", "-150.00", "0.00", "-150.00"], "pct": [null, "0.0", null, "0.0"] },
+        "6300": { "actual": ["100.05", "-10.05", "0.00", "90.00"], "budget": ["100.00", "100.00", "100.00", "300.00"],
+                  "over": ["0.05", "-110.05", "-100.00", "-210.00"], "pct": ["100.1", "-10.1", "0.0", "30.0"] },
+        "7000": { "actual": ["0.00", "12.34", "0.00", "12.34"], "budget": ["0.00", "0.00", "0.00", "0.00"],
+                  "over": ["0.00", "12.34", "0.00", "12.34"], "pct": [null, null, null, null] }
+      },
+      "rollups": {
+        "4000": { "actual": ["1734.66", "900.00", "1799.99", "4434.65"], "budget": ["1200.00", "1000.00", "1800.00", "4000.00"],
+                  "over": ["534.66", "-100.00", "-0.01", "434.65"], "pct": ["144.6", "90.0", "100.0", "110.9"] }
+      },
+      "parents": { "4010": "4000" },
+      "totals": {
+        "totalRevenue": { "actual": ["1734.66", "900.00", "1799.99", "4434.65"], "budget": ["1200.00", "1000.00", "1800.00", "4000.00"],
+                          "over": ["534.66", "-100.00", "-0.01", "434.65"], "pct": ["144.6", "90.0", "100.0", "110.9"] },
+        "totalCogs": { "actual": ["333.33", "410.00", "600.00", "1343.33"], "budget": ["400.00", "400.00", "600.00", "1400.00"],
+                       "over": ["-66.67", "10.00", "0.00", "-56.67"], "pct": ["83.3", "102.5", "100.0", "96.0"] },
+        "grossProfit": { "actual": ["1401.33", "490.00", "1199.99", "3091.32"], "budget": ["800.00", "600.00", "1200.00", "2600.00"],
+                         "over": ["601.33", "-110.00", "-0.01", "491.32"], "pct": ["175.2", "81.7", "100.0", "118.9"] },
+        "totalExpenses": { "actual": ["600.05", "565.20", "1000.00", "2165.25"], "budget": ["600.00", "750.00", "600.00", "1950.00"],
+                           "over": ["0.05", "-184.80", "400.00", "215.25"], "pct": ["100.0", "75.4", "166.7", "111.0"] },
+        "totalOtherRevenue": { "actual": ["0.00", "12.34", "0.00", "12.34"], "budget": ["0.00", "0.00", "0.00", "0.00"],
+                               "over": ["0.00", "12.34", "0.00", "12.34"], "pct": [null, null, null, null] },
+        "totalOtherExpenses": { "actual": ["0.00", "0.00", "0.00", "0.00"], "budget": ["0.00", "0.00", "0.00", "0.00"],
+                                "over": ["0.00", "0.00", "0.00", "0.00"], "pct": [null, null, null, null] },
+        "netIncome": { "actual": ["801.28", "-62.86", "199.99", "938.41"], "budget": ["200.00", "-150.00", "600.00", "650.00"],
+                       "over": ["601.28", "87.14", "-400.01", "288.41"], "pct": ["400.6", "41.9", "33.3", "144.4"] }
+      }
+    },
+    "cash": {
+      "note": "The unpaid invoice of 2026-01-12 is not income on cash basis; everything else is a cash entry.",
+      "rows": {
+        "4000": { "actual": ["1234.56", "900.00", "1500.00", "3634.56"], "budget": ["1000.00", "1000.00", "1500.00", "3500.00"],
+                  "over": ["234.56", "-100.00", "0.00", "134.56"], "pct": ["123.5", "90.0", "100.0", "103.8"] }
+      },
+      "totals": {
+        "netIncome": { "actual": ["501.28", "-62.86", "199.99", "638.41"], "budget": ["200.00", "-150.00", "600.00", "650.00"],
+                       "over": ["301.28", "87.14", "-400.01", "-11.59"], "pct": ["250.6", "41.9", "33.3", "98.2"] }
+      }
+    },
+    "tagSplit": {
+      "group": "Region",
+      "note": "Budget is per account: null on account (untagged) and tag rows, set on account_total. The Fund One line counts as untagged in Region.",
+      "rows": [
+        { "account": "4000", "rowKind": "account", "tag": null, "actual": ["300.00", "900.00", "0.00", "1200.00"], "budget": [null, null, null, null] },
+        { "account": "4000", "rowKind": "tag", "tag": "east", "actual": ["1234.56", "0.00", "0.00", "1234.56"], "budget": [null, null, null, null] },
+        { "account": "4000", "rowKind": "tag", "tag": "west", "actual": ["0.00", "0.00", "1500.00", "1500.00"], "budget": [null, null, null, null] },
+        { "account": "4000", "rowKind": "account_total", "tag": null, "actual": ["1534.56", "900.00", "1500.00", "3934.56"], "budget": ["1000.00", "1000.00", "1500.00", "3500.00"] },
+        { "account": "4010", "rowKind": "account", "tag": null, "actual": ["200.10", "0.00", "299.99", "500.09"], "budget": [null, null, null, null] },
+        { "account": "4010", "rowKind": "account_total", "tag": null, "actual": ["200.10", "0.00", "299.99", "500.09"], "budget": ["200.00", "0.00", "300.00", "500.00"] }
+      ]
+    }
+  }
+}
