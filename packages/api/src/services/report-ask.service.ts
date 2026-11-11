@@ -286,8 +286,14 @@ export function buildUserPrompt(input: AskRequest, question: string, today: stri
 
 // ── Validation of the model's answer ───────────────────────────────
 
-/** Top-level keys that would carry an amount condition. */
-const AMOUNT_KEY = /amount|min|max|total|balance|price|sum|value|cost|threshold/i;
+/** Words of a key that would carry an amount condition (amountMin, min_total, …; not "summary"). */
+const AMOUNT_WORDS = new Set(['amount', 'amounts', 'min', 'max', 'minimum', 'maximum', 'total', 'balance', 'price', 'sum', 'value',
+  'cost', 'threshold', 'over', 'under', 'above', 'below', 'greater', 'less', 'gt', 'gte', 'lt', 'lte']);
+const AMOUNT_KEY = {
+  test(key: string): boolean {
+    return key.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z]+/).some((w) => AMOUNT_WORDS.has(w));
+  },
+};
 const KNOWN_KEYS = new Set(['reportKey', 'datePreset', 'from', 'to', 'asOf', 'basis', 'columns', 'extras', 'filters']);
 const FILTER_KINDS = { accountNames: 'account', contactNames: 'contact', tagNames: 'tag' } as const;
 const FILTER_PARAM: Record<'account' | 'contact' | 'tag', AskParam> = { account: 'accounts', contact: 'contacts', tag: 'tags' };
