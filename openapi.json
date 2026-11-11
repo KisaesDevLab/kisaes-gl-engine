@@ -12523,7 +12523,92 @@
     },
     "/api/v1/audit-log": {
       "get": {
+        "description": "Response {data[], total}, newest first. Rows {id, tenant_id, user_id, userName (display name, else email; null for system rows), action, entity_type, entity_id, before_data, after_data, ip_address, user_agent, created_at}. Filters: entity_type, action, start_date, end_date, search, and (audit-filters-v1) user_id, entity_id and company (\"current\" or a company id: rows of that company plus rows that belong to no company). A malformed id is 400 VALIDATION_ERROR; a company the caller cannot open is 403.",
         "operationId": "get_api_v1_audit_log",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "entity_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "entity_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "company",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -12537,6 +12622,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List the audit trail",
         "tags": [
           "audit-log"
         ]
@@ -58956,6 +59042,58 @@
         ]
       }
     },
+    "/api/v1/reports/closing-date-exceptions": {
+      "get": {
+        "description": "Response {data[], total, truncated, closingDate (now), timeline[] {at, closingDate}}. Every create, update, void or delete of a transaction of the company whose date before or after the change was on or before the closing date in effect when the change was made, plus every closing_date_override row (Q-P28q). The timeline is the closing-date changes in the audit trail plus the current setting; changes made before any closing date was set are not listed. Rows, oldest change first: {auditId, at, userId, userName, action (create|update|void|delete|override), transactionId, txnType, txnNumber, txnDateBefore, txnDateAfter, closingDate (in effect at the time), method (password|confirmed|null: the override that allowed it, if any), amountBeforeExact, amountAfterExact (decimal strings, at least 4 places; null on a create (before), a void or delete (after), and on override-only rows)}. Before and after come from the audit images: a change's after state is the next change's before-image, else the live transaction. Needs reports and audit_log read.",
+        "operationId": "get_api_v1_reports_closing_date_exceptions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD: changes made on or after this day (the day of the change, not the transaction date)",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD: changes made on or before this day",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "description": "Rows returned, 1..10000 (default 5000); total and truncated tell the rest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Closing Date Exceptions (closing-exceptions-v1)",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/api/v1/reports/customer-balance-detail": {
       "get": {
         "description": "Open balances as of as_of_date (default today; open-balances-asof-v1): open invoices and charges less open credit memos and unapplied payments, counting only payments, credits and applications dated on or before the date. data[] {id (null = A/R lines without a client, \"(no client)\"), display_name, balanceExact} and items[] {txnId, txnType, kind, number, date, dueDate, amountExact, openExact, runningBalanceExact}: the open documents in date order. totalsExact {balance} is the A/R balance on the date. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
@@ -59346,6 +59484,117 @@
         "tags": [
           "reports"
         ]
+      }
+    },
+    "/api/v1/reports/email": {
+      "post": {
+        "description": "Response {sent: true, filename, recipientCount}. Sends the client-made report file (filename ending .pdf, .xlsx or .csv; fileBase64, or pdfBase64 as an alias; at most 10 MB decoded, else 400 ATTACHMENT_TOO_LARGE; contents must match the type, else 400 VALIDATION_ERROR) through the company mail server as invoices are sent: 400 SMTP_NOT_CONFIGURED, 400 SMTP_SEND_FAILED {reason}, 503 OFFLINE_UNAVAILABLE. A recipient that is not an email address is 400 INVALID_RECIPIENT {field, index}. Takes Idempotency-Key (a replay sends nothing). Writes one audit row create/report_email {filename, contentType, bytes, recipients, reportKey, companyId}. Subject, body and file are never logged or stored.",
+        "operationId": "post_api_v1_reports_email",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bcc": {
+                    "default": [],
+                    "items": {
+                      "maxLength": 320,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "body": {
+                    "maxLength": 20000,
+                    "type": "string"
+                  },
+                  "cc": {
+                    "default": [],
+                    "items": {
+                      "maxLength": 320,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "fileBase64": {
+                    "description": "The file, base64 (at most 10 MB decoded). Exactly one of fileBase64 and pdfBase64.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "filename": {
+                    "description": "Ends in .pdf, .xlsx or .csv; no path separators or control characters (else 400 VALIDATION_ERROR)",
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "pdfBase64": {
+                    "description": "Alias of fileBase64 (the plan's name).",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "reportKey": {
+                    "description": "The report's catalog key, for the audit row only",
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "subject": {
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "to": {
+                    "items": {
+                      "maxLength": 320,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "to",
+                  "subject",
+                  "body",
+                  "filename"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Email a report file (reports-email-v1)",
+        "tags": [
+          "reports"
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/reports/equity-by-account": {
