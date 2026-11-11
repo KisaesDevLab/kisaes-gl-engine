@@ -141,6 +141,36 @@ describe('Closing Date Exceptions (closing-exceptions-v1)', () => {
     expect(r.status).toBe(400);
   });
 
+  it('reconstructs before and after across edits, a move out of the closed period and a delete', async () => {
+    // Created and edited before any closing date: not listed.
+    const a = await expense('2026-01-10', '5.00');
+    let r = await h.request('PUT', `/api/v1/transactions/${a}`, c.token, expenseBody('2026-01-10', '6.00'));
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const b = await expense('2026-02-10', '9.99');
+
+    await tbClosingDate('2026-03-31');
+    await db.update(companies).set({ closingPasswordHash: await bcrypt.hash(PASSWORD, 4) }).where(eq(companies.id, c.companyId));
+
+    for (const amount of ['7.00', '8.00']) {
+      r = await h.request('PUT', `/api/v1/transactions/${a}`, c.token, { ...expenseBody('2026-01-10', amount), closingPassword: PASSWORD });
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+    }
+    // Out of the closed period: the old date counts.
+    r = await h.request('PUT', `/api/v1/transactions/${b}`, c.token, { ...expenseBody('2026-05-05', '9.99'), closingPassword: PASSWORD });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    r = await h.request('DELETE', `/api/v1/transactions/${a}`, c.token, { reason: 'dup', closingPassword: PASSWORD });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+
+    const rep = await exceptions();
+    const pick = (x: any) => [x.action, x.transactionId, x.txnDateBefore, x.txnDateAfter, x.amountBeforeExact, x.amountAfterExact, x.method];
+    expect(rep.data.map(pick)).toEqual([
+      ['update', a, '2026-01-10', '2026-01-10', '6.0000', '7.0000', 'password'],
+      ['update', a, '2026-01-10', '2026-01-10', '7.0000', '8.0000', 'password'],
+      ['update', b, '2026-02-10', '2026-05-05', '9.9900', '9.9900', 'password'],
+      ['delete', a, '2026-01-10', null, '8.0000', null, 'password'],
+    ]);
+  });
+
   it('an override row with no transaction row is listed on its own', async () => {
     await tbClosingDate('2026-03-31');
     await auditLog(c.tenantId, 'override', 'closing_date_override', c.companyId,
@@ -189,7 +219,7 @@ describe('GET /audit-log filters (audit-filters-v1)', () => {
     for (const q of ['user_id=nope', 'entity_id=1', 'company=other']) {
       r = await h.request('GET', `/api/v1/audit-log?${q}`, c.token);
       expect(r.status, q).toBe(400);
-      expect(r.json.error.code).toBe('VALIDATION_ERROR');
+      expect(r.json['error'].code).toBe('VALIDATION_ERROR');
     }
     r = await h.request('GET', '/api/v1/audit-log?company=00000000-0000-4000-8000-000000000000', c.token);
     expect(r.status).toBe(403);
@@ -206,7 +236,7 @@ describe('POST /reports/email (reports-email-v1)', () => {
   it('sends the file through the company mail server once and audits it', async () => {
     let r = await h.request('POST', '/api/v1/reports/email', c.token, { ...msg, filename: 'pl.pdf', pdfBase64: PDF });
     expect(r.status).toBe(400);
-    expect(r.json.error.code).toBe('SMTP_NOT_CONFIGURED');
+    expect(r.json['error'].code).toBe('SMTP_NOT_CONFIGURED');
 
     await db.update(companies).set({ smtpHost: 'mail.example.test', smtpPort: 587, smtpFrom: 'books@example.test' }).where(eq(companies.id, c.companyId));
     const k = key();
@@ -246,7 +276,7 @@ describe('POST /reports/email (reports-email-v1)', () => {
     await db.update(companies).set({ smtpHost: 'mail.example.test', smtpPort: 587, smtpFrom: 'books@example.test' }).where(eq(companies.id, c.companyId));
     let r = await h.request('POST', '/api/v1/reports/email', c.token, { ...msg, bcc: ['ok@example.test', 'not an address'], filename: 'a.pdf', fileBase64: PDF });
     expect(r.status).toBe(400);
-    expect(r.json.error).toMatchObject({ code: 'INVALID_RECIPIENT', details: { field: 'bcc', index: 1 } });
+    expect(r.json['error']).toMatchObject({ code: 'INVALID_RECIPIENT', details: { field: 'bcc', index: 1 } });
     for (const bad of [
       { filename: 'a.exe', fileBase64: PDF },
       { filename: '../a.pdf', fileBase64: PDF },
@@ -257,7 +287,7 @@ describe('POST /reports/email (reports-email-v1)', () => {
     ]) {
       r = await h.request('POST', '/api/v1/reports/email', c.token, { ...msg, ...bad });
       expect(r.status, JSON.stringify(bad)).toBe(400);
-      expect(r.json.error.code).toBe('VALIDATION_ERROR');
+      expect(r.json['error'].code).toBe('VALIDATION_ERROR');
     }
     // Over 10 MB decoded (checked on the decoder: the test app's body limit is 12 MB).
     expect(() => decodeReportAttachment('big.pdf', Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(10 * 1024 * 1024)]).toString('base64')))

@@ -94,22 +94,25 @@ async function loadTimeline(tenantId: string, companyId: string): Promise<{ poin
   const company = (companyRes.rows as Array<{ lock_date: string | null; set_key: string | null; set_iso: string | null }>)[0];
   const res = await db.execute(sql`
     SELECT ${TS_KEY} AS k, ${TS_ISO} AS iso, a.id, a.entity_type,
-           ${doc('a.before_data')} AS b, ${doc('a.after_data')} AS x
-    FROM audit_log a
+           j.x ? 'closingDate' AS has_closing, j.x->>'closingDate' AS closing,
+           j.x ? 'lockDate' AS has_lock, j.x->>'lockDate' AS lock_after,
+           j.b ? 'lockDate' AS had_lock, j.b->>'lockDate' AS lock_before
+    FROM audit_log a, LATERAL (SELECT ${doc('a.before_data')} AS b, ${doc('a.after_data')} AS x) j
     WHERE a.tenant_id = ${tenantId} AND a.entity_id = ${companyId}
       AND a.entity_type IN ('closing_date', 'company') AND a.action = 'update'
     ORDER BY a.created_at, a.id`);
   const points: TimelinePoint[] = [];
-  for (const r of res.rows as Array<{ k: string; iso: string; entity_type: string; b: Record<string, unknown> | null; x: Record<string, unknown> | null }>) {
-    const after = r.x ?? {};
-    const before = r.b ?? {};
+  for (const r of res.rows as Array<{
+    k: string; iso: string; entity_type: string; has_closing: boolean | null; closing: string | null;
+    has_lock: boolean | null; lock_after: string | null; had_lock: boolean | null; lock_before: string | null;
+  }>) {
     if (r.entity_type === 'closing_date') {
-      if (!('closingDate' in after)) continue;
-      points.push({ atMicros: r.k, atIso: r.iso, closingDate: day(after['closingDate']) });
+      if (!r.has_closing) continue;
+      points.push({ atMicros: r.k, atIso: r.iso, closingDate: day(r.closing) });
     } else {
-      if (!('lockDate' in after)) continue;
-      const next = day(after['lockDate']);
-      if ('lockDate' in before && day(before['lockDate']) === next) continue;
+      if (!r.has_lock) continue;
+      const next = day(r.lock_after);
+      if (r.had_lock && day(r.lock_before) === next) continue;
       points.push({ atMicros: r.k, atIso: r.iso, closingDate: next });
     }
   }
@@ -144,8 +147,10 @@ interface AuditTxnRow {
   action: string;
   entity_type: string;
   entity_id: string | null;
-  b: Record<string, unknown> | null;
-  x: Record<string, unknown> | null;
+  /** The before-image keys this report reads, as text; null when the image has no txnDate (override rows: always set). */
+  b: Record<string, string | null> | null;
+  /** The after-image keys this report reads, as text. */
+  x: Record<string, string | null> | null;
   live_date: string | null;
   live_total: string | null;
   live_type: string | null;
@@ -160,29 +165,39 @@ export async function buildClosingDateExceptions(
 ): Promise<ClosingDateExceptionsResult> {
   const { points, current } = await loadTimeline(tenantId, companyId);
   const timeline = points.map((p) => ({ at: p.atIso, closingDate: p.closingDate }));
+  // Transaction rows count from the first closing date on; override rows
+  // carry their own closing date and are always read.
   const first = points.find((p) => p.closingDate !== null);
-  if (!first) return { data: [], total: 0, truncated: false, closingDate: current, timeline };
 
   // A row belongs to the company of its transaction (or, for a transaction
   // row that is gone, the companyId of its images); rows with no company at
   // all are kept, as the company-scoped reports keep company_id IS NULL.
   const res = await db.execute(sql`
     SELECT a.id, ${TS_KEY} AS k, ${TS_ISO} AS iso, to_char(a.created_at, 'YYYY-MM-DD') AS d, a.user_id, a.action, a.entity_type, a.entity_id,
-           ${doc('a.before_data')} AS b, ${doc('a.after_data')} AS x,
+           -- Only the keys read here, as text: amounts never become JS numbers
+           -- and whole row images (lines included) are not loaded.
+           CASE WHEN j.b ? 'txnDate' OR a.entity_type = 'closing_date_override' THEN jsonb_build_object(
+             'txnDate', j.b->>'txnDate', 'total', j.b->>'total', 'txnType', j.b->>'txnType',
+             'txnNumber', j.b->>'txnNumber', 'lockDate', j.b->>'lockDate') END AS b,
+           jsonb_build_object(
+             'txnDate', j.x->>'txnDate', 'total', j.x->>'total', 'txnType', j.x->>'txnType',
+             'transactionId', j.x->>'transactionId', 'method', j.x->>'method',
+             'oldDate', j.x->>'oldDate', 'newDate', j.x->>'newDate') AS x,
            (SELECT COALESCE(NULLIF(u.display_name, ''), u.email) FROM users u WHERE u.id = a.user_id) AS user_name,
            to_char(t.txn_date, 'YYYY-MM-DD') AS live_date, t.total::text AS live_total, t.txn_type AS live_type,
            t.txn_number AS live_number, t.status AS live_status
     FROM audit_log a
+    CROSS JOIN LATERAL (SELECT ${doc('a.before_data')} AS b, ${doc('a.after_data')} AS x) j
     LEFT JOIN transactions t ON t.tenant_id = a.tenant_id AND t.id = COALESCE(
       CASE WHEN a.entity_type = 'closing_date_override'
-        THEN NULLIF(${doc('a.after_data')}->>'transactionId', '')::uuid END,
+        THEN NULLIF(j.x->>'transactionId', '')::uuid END,
       a.entity_id)
     WHERE a.tenant_id = ${tenantId}
-      AND a.created_at >= ${first.atIso}::timestamptz - interval '1 millisecond'
-      AND ((a.entity_type = 'transaction' AND a.action IN ('create', 'update', 'void', 'delete'))
+      AND ((a.entity_type = 'transaction' AND a.action IN ('create', 'update', 'void', 'delete')
+            AND a.created_at >= ${first?.atIso ?? null}::timestamptz - interval '1 millisecond')
         OR (a.entity_type = 'closing_date_override' AND a.action = 'override'))
       AND COALESCE(a.company_id::text, t.company_id::text,
-            ${doc('a.after_data')}->>'companyId', ${doc('a.before_data')}->>'companyId', ${companyId}::text) = ${companyId}::text
+            j.x->>'companyId', j.b->>'companyId', ${companyId}::text) = ${companyId}::text
     ORDER BY a.entity_id, a.created_at, a.id`);
   const all = res.rows as unknown as AuditTxnRow[];
   const txnRows = all.filter((r) => r.entity_type === 'transaction');
