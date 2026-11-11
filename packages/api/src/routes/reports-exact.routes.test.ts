@@ -345,7 +345,8 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
       ['/invoice-list?start_date=2026-01-01&end_date=2026-12-31', ['total', 'amount_paid', 'balance_due']],
       ['/customer-balance-summary', ['balance']],
       ['/customer-balance-detail', ['balance']],
-      ['/vendor-balance-summary', ['total_spent']],
+      // open-balances-asof-v1: the open balance (was total_spent); covered in reports-open-balances.routes.test.ts.
+      ['/vendor-balance-summary', ['balance']],
       ['/unpaid-bills', ['total', 'amount_paid', 'credits_applied', 'balance_due']],
       ['/bill-payment-history?start_date=2026-01-01&end_date=2026-12-31', ['total']],
       [`/transaction-list-by-vendor?vendor_id=${ids['vendor']}&start_date=2026-01-01&end_date=2026-12-31`, ['total']],
@@ -480,6 +481,8 @@ describe('no float money in the exact report modules', () => {
     '../services/report-comparison.service.ts',
     '../services/report-lens.ts',
     '../services/report-columns.service.ts',
+    '../services/ap-open-items.ts',
+    '../services/open-balances.service.ts',
   ];
   // Non-money counters that may use +=, by exact line text.
   const ALLOW = new Set(['rowCount += reportLines.length;', 'rowCount += t.lines.length;']);
