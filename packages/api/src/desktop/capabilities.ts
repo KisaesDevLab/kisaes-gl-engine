@@ -1174,5 +1174,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * {field, reason}, 503 AI_UNAVAILABLE {provider, reason}.
    */
   'reports-ask-v1',
+  /**
+   * Report fixes 2 (U-213, ClientLedger PR-6 review; also U-210, U-211). Trial Balance: the computed Retained Earnings (Prior Years) row
+   * is on the report's basis (it was accrual on a cash TB, which then didn't balance after an invoice or bill open at a year end), tag
+   * split too; exact responses add fiscalYearStart. Exact Balance Sheet (standard layout): computed equity rows calculated: true; the
+   * Retained Earnings account, when prior years' income is folded in, includesPriorYearsIncome: true and priorYearsIncomeExact; top-level
+   * fiscalYearStart and calculatedEquityExact (the part of totalEquityExact no ledger line holds); column-layout as-of/prior columns add
+   * fiscalYearStart. fiscal_year_start=YYYY-MM-DD[,…] (ascending, ≤ 50; each date uses the latest start on or before it, ≤ 371 days;
+   * else 400 INVALID_PARAM) on exact /balance-sheet, /trial-balance (and its tag split) and /general-ledger: the income split / reset
+   * date for retail 52-53 week years; the TB drillTarget carries it. Exact /balance-sheet and /trial-balance refuse tag_id with 400
+   * TAG_FILTER_NOT_AVAILABLE (use tag_split); the cash TB's tag filter (legacy route) is per transaction, as the accrual one. Cash
+   * exact Balance Sheet / Trial Balance meta.cashArApResidue {accountsReceivableExact, accountsPayableExact, accountIds, txnTypes} | null:
+   * what A/R and A/P keep from entries other than payments. A recurring check copied by the legacy template path is a check (isCheck,
+   * printStatus, a new number unless queued). Budget copy (POST /budgets/:id/copy-from/:sourceId) replaces all of the target's lines.
+   * No migration.
+   */
+  'report-fixes-v2',
 ];
 
