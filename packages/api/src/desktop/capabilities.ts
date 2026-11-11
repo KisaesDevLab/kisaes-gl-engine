@@ -1150,5 +1150,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * companyId}. The body may be up to 15 MB (as the invoice email route).
    */
   'reports-email-v1',
+  /**
+   * Ask a question (U-206, ClientLedger P28 PR-G; Q-73, Q-P28g). POST /reports/ask {question, reports: [{key, title, description?,
+   * params: (range | as_of | basis | accounts | contacts | tags)[], columns?, extras?}], datePresets[], today?}. The company's AI
+   * provider (the chat function, Ollama included) maps the question to ONE sent report with its options; the client runs the report.
+   * The model sees the question, the catalog, today and names (active accounts, active tags, contacts the question names), never an
+   * amount. Response {reportKey, dates: {preset} | {from, to} | {asOf} | null, basis, columns, extras[], filters: {accountIds,
+   * contactIds, tagIds} (resolved by the engine from names), unresolved: [{kind, text}] (question text only, no digits), reader, provider,
+   * model}. No amount filter. 403 AI_CONSENT_REQUIRED {reason} (needs the report_summary task; no provider call), 422 ASK_UNMAPPED
+   * {field, reason}, 503 AI_UNAVAILABLE {provider, reason}.
+   */
+  'reports-ask-v1',
 ];
 

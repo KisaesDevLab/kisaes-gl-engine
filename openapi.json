@@ -58501,6 +58501,130 @@
         ]
       }
     },
+    "/api/v1/reports/ask": {
+      "post": {
+        "description": "The company's AI provider maps a plain-language question to ONE report of the catalog the client sends, with its options; the client then runs the report and the engine computes every figure. The model sees the question, the catalog, today's date and names from the books (active accounts, active tags, contacts the question names); never an amount. Response `{reportKey, dates: {preset} | {from, to} | {asOf} | null, basis: accrual | cash | null, columns: <choice> | null, extras[], filters: {accountIds[], contactIds[], tagIds[]}, unresolved: [{kind: account | contact | tag, text}], reader: self_hosted | cloud, provider, model}`: only tokens the client sent, ISO dates, and ids the engine resolved from names (the model never gives an id). An unresolved name is returned only when it is text from the question with no digit. There is no amount filter. Errors: 403 AI_CONSENT_REQUIRED {reason, task: report_summary} (AI off, the company not opted in, a stale disclosure, or the report_summary task off; no provider call); 422 ASK_UNMAPPED {field, reason} (no report fits, a key, preset, column or extra that was not sent, a bad date, an option the report does not take, an amount filter, a number or an id, an invented name, a reply that is not JSON); 503 AI_UNAVAILABLE {provider, reason: no_provider | function_disabled | offline | provider_error}.",
+        "operationId": "post_api_v1_reports_ask",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "datePresets": {
+                    "default": [],
+                    "description": "the client's date preset keys; the client resolves them (fiscal, 4-4-5)",
+                    "items": {
+                      "pattern": "^[a-z0-9_]{1,64}$",
+                      "type": "string"
+                    },
+                    "maxItems": 40,
+                    "type": "array"
+                  },
+                  "question": {
+                    "maxLength": 500,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "reports": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "columns": {
+                          "description": "the column choices the report offers",
+                          "items": {
+                            "pattern": "^[a-z0-9_]{1,64}$",
+                            "type": "string"
+                          },
+                          "maxItems": 30,
+                          "type": "array"
+                        },
+                        "description": {
+                          "maxLength": 300,
+                          "type": "string"
+                        },
+                        "extras": {
+                          "description": "the extras the report offers (e.g. pct_of_income, ytd)",
+                          "items": {
+                            "pattern": "^[a-z0-9_]{1,64}$",
+                            "type": "string"
+                          },
+                          "maxItems": 30,
+                          "type": "array"
+                        },
+                        "key": {
+                          "description": "the catalog report key, /^[a-z0-9_]{1,64}$/",
+                          "pattern": "^[a-z0-9_]{1,64}$",
+                          "type": "string"
+                        },
+                        "params": {
+                          "default": [],
+                          "description": "the options the report takes: range (from/to), as_of, basis, accounts, contacts, tags",
+                          "items": {
+                            "enum": [
+                              "range",
+                              "as_of",
+                              "basis",
+                              "accounts",
+                              "contacts",
+                              "tags"
+                            ],
+                            "type": "string"
+                          },
+                          "maxItems": 6,
+                          "type": "array"
+                        },
+                        "title": {
+                          "maxLength": 120,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "title"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 100,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "today": {
+                    "description": "the client's local date for relative questions; default the server's UTC date",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "question",
+                  "reports"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Ask a question: map it to a catalog report (reports-ask-v1)",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/api/v1/reports/assets-by-account": {
       "get": {
         "operationId": "get_api_v1_reports_assets_by_account",

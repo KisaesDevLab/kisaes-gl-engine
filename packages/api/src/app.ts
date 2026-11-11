@@ -33,6 +33,7 @@ import { reportsRouter } from './routes/reports.routes.js';
 import { customerStatementReportsRouter, customerStatementRunsRouter, customerStatementsRouter } from './routes/customer-statements.routes.js';
 import { reportPacksRouter } from './routes/report-packs.routes.js';
 import { reportBuilderRouter } from './routes/report-builder.routes.js';
+import { reportAskRouter } from './routes/report-ask.routes.js';
 import { bankingRouter } from './routes/banking.routes.js';
 import { dashboardRouter } from './routes/dashboard.routes.js';
 import { ledgerVersionRouter } from './routes/ledger-version.routes.js';
@@ -589,6 +590,8 @@ app.use('/api/v1/reports', customerStatementReportsRouter);
 app.use('/api/v1/reports', salesTaxReportsRouter);
 // Inventory valuation, stock status and reorder (U-160, U-78).
 app.use('/api/v1/reports', inventoryReportsRouter);
+// Ask a question (U-206): POST /reports/ask, its own middleware chain.
+app.use('/api/v1/reports', reportAskRouter);
 app.use('/api/v1/reports', reportsRouter);
 app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
