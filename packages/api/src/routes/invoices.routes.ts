@@ -186,7 +186,8 @@ export const INVOICE_EMAIL_JSON_LIMIT = '15mb';
 const invoiceEmailJsonParser = express.json({ limit: INVOICE_EMAIL_JSON_LIMIT });
 // U-140: a customer statement email carries its PDF the same way; U-144
 // credit memos and sales receipts too.
-const INVOICE_EMAIL_PATH = /^\/api\/v1\/(invoices|customer-statements|credit-memos|sales-receipts)\/[^/]+\/email\/?$/;
+// U-207: a report file (POST /reports/email) too.
+const INVOICE_EMAIL_PATH = /^\/api\/v1\/(?:(?:invoices|customer-statements|credit-memos|sales-receipts)\/[^/]+|reports)\/email\/?$/;
 const INVOICE_EMAIL_JSON_MAX_BYTES = 15 * 1024 * 1024;
 
 /**

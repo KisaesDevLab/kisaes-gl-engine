@@ -1124,5 +1124,31 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * only; drillTarget to the GL (netChangeExact). Without exact=1 the response is unchanged.
    */
   'budgets-exact-v1',
+  /**
+   * Closing Date Exceptions (U-204, ClientLedger P28 PR-E; Q-P28c, Q-P28q). GET /reports/closing-date-exceptions?start_date&end_date
+   * &limit (reports and audit_log read; dates filter the day of the change) → {data[], total, truncated, closingDate, timeline[] {at,
+   * closingDate}, meta}: every create/update/void/delete of a company transaction whose date before or after the change was on or before
+   * the closing date in effect at that moment (timeline = closing_date and company lockDate audit rows plus the current setting), and
+   * every closing_date_override row; nothing before the first closing date. Rows oldest first {auditId, at, userId, userName, action,
+   * transactionId, txnType, txnNumber, txnDateBefore, txnDateAfter, closingDate, method (password|confirmed|null), amountBeforeExact,
+   * amountAfterExact}. The ledger's create audit row now carries txnDate. Read-only; no migration.
+   */
+  'closing-exceptions-v1',
+  /**
+   * Audit trail filters (U-204, ClientLedger P28 PR-E). GET /audit-log (and /audit-log/export) take user_id and entity_id (uuids, else
+   * 400 VALIDATION_ERROR) and company ("current" = the request's company, or a company id checked as X-Company-Id; 403 otherwise): rows
+   * of that company (company_id, the transaction's or company's own id, or the images' companyId) plus rows of no company. List rows add
+   * userName (display name, else email; null for system rows). Default responses are unchanged.
+   */
+  'audit-filters-v1',
+  /**
+   * Report email (U-207, ClientLedger P28 PR-E). POST /reports/email {to[], cc?[], bcc?[], subject, body, filename (.pdf|.xlsx|.csv),
+   * fileBase64 | pdfBase64, reportKey?} (reports read; Idempotency-Key) → {sent: true, filename, recipientCount}: the client-made file
+   * (at most 10 MB decoded, 400 ATTACHMENT_TOO_LARGE; contents must match the type, 400 VALIDATION_ERROR) through the company mail
+   * server as U-127 invoice email: 400 SMTP_NOT_CONFIGURED, 400 SMTP_SEND_FAILED {reason}, 503 OFFLINE_UNAVAILABLE; a bad address
+   * is 400 INVALID_RECIPIENT {field, index}. One audit row create/report_email {filename, contentType, bytes, recipients, reportKey,
+   * companyId}. The body may be up to 15 MB (as the invoice email route).
+   */
+  'reports-email-v1',
 ];
 

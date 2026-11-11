@@ -453,6 +453,23 @@ export async function sendFormEmail(
   prepare: (tx: Tx) => Promise<(recipients: string[]) => Promise<void>>,
 ) {
   const pdf = decodePdf(input.pdfBase64);
+  await sendWithAttachment(tenantId, companyId, input,
+    { filename: input.pdfFileName.trim(), content: pdf, contentType: 'application/pdf' }, prepare);
+}
+
+/** One email attachment, already decoded and checked. */
+export interface MailAttachment { filename: string; content: Buffer; contentType: string }
+
+/**
+ * sendFormEmail with any attachment (U-207 report email): mail server
+ * checked first, then in one database transaction the Idempotency-Key
+ * claim, `prepare`, the send and the record. Recipients, subject and body
+ * are never logged.
+ */
+export async function sendWithAttachment(
+  tenantId: string, companyId: string | undefined, input: InvoiceEmailMessage, attachment: MailAttachment,
+  prepare: (tx: Tx) => Promise<(recipients: string[]) => Promise<void>>,
+) {
   const smtp = await resolveSmtp(tenantId, companyId);
   let transport: ReturnType<typeof createMailTransport>;
   try {
@@ -472,7 +489,7 @@ export async function sendFormEmail(
         ...(input.bcc.length ? { bcc: input.bcc } : {}),
         subject: oneLine(input.subject),
         text: input.body,
-        attachments: [{ filename: input.pdfFileName.trim(), content: pdf, contentType: 'application/pdf' }],
+        attachments: [attachment],
       });
     } catch (err) {
       throw mailError(err);
