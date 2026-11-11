@@ -104,19 +104,21 @@ const CELL_RE = /^-?\d{1,15}(\.\d+)?$/;
 
 /**
  * A budget cell from a request: a decimal string (or, for older callers, a
- * JSON number) with at most 2 places by value ("100.5000" is fine). Empty,
- * null or absent is 0. Otherwise 400 BUDGET_LINE_INVALID.
+ * JSON number). Empty, null or absent is 0. More than 4 places (the stored
+ * scale) or not a number is 400 BUDGET_LINE_INVALID. 3 or 4 places by value
+ * are returned with `subCent`: the caller accepts them only when they equal
+ * the stored cell (sub-cent amounts written by the old float fill / adjust).
  */
-export function parseCell(v: unknown, where: { index: number; field: string }): Dec {
-  if (v === undefined || v === null || v === '') return ZERO();
+export function parseCell(v: unknown, where: { index: number; field: string }): { d: Dec; subCent: boolean } {
+  if (v === undefined || v === null || v === '') return { d: ZERO(), subCent: false };
   let s: string;
   if (typeof v === 'string') s = v.trim();
   else if (typeof v === 'number' && Number.isFinite(v)) s = String(v);
   else throw lineInvalid(`${where.field} must be an amount`, where);
   if (!CELL_RE.test(s)) throw lineInvalid(`${where.field} must be an amount like 1234.56`, where);
   const d = dec(s);
-  if (d.decimalPlaces() > 2) throw lineInvalid(`${where.field} has more than 2 decimal places`, where);
-  return d;
+  if (d.decimalPlaces() > 4) throw lineInvalid(`${where.field} has more than 2 decimal places`, where);
+  return { d, subCent: d.decimalPlaces() > 2 };
 }
 
 /** Round to the cent, half away from zero. */
@@ -202,7 +204,12 @@ export async function linesTotals(tenantId: string, budgetId: string, exec: Tx |
 
 // ── Writes ─────────────────────────────────────────────────────────
 
-export interface LineInput { accountId: string; cells: Dec[] }
+export interface LineInput {
+  accountId: string;
+  cells: Dec[];
+  /** Period indexes (0-based) with 3-4 places: accepted only when equal to the stored cell. */
+  subCent?: number[];
+}
 
 /** Validates a PUT /:id/lines body's `lines` into accounts x 12 cells. */
 export function parseLines(raw: unknown): LineInput[] {
@@ -224,20 +231,27 @@ export function parseLines(raw: unknown): LineInput[] {
     const id = accountId.toLowerCase();
     if (seen.has(id)) throw lineInvalid('an account appears twice', { index, field: 'accountId', accountId: id });
     seen.add(id);
-    return { accountId: id, cells: PERIOD_KEYS.map((field) => parseCell(o[field], { index, field })) };
+    const parsed = PERIOD_KEYS.map((field) => parseCell(o[field], { index, field }));
+    const subCent = parsed.flatMap((c, i) => (c.subCent ? [i] : []));
+    return { accountId: id, cells: parsed.map((c) => c.d), ...(subCent.length > 0 ? { subCent } : {}) };
   });
 }
 
-/** Upserts lines (each replaces the account's twelve cells) after checking the accounts. */
-async function writeLines(tx: Tx, tenantId: string, companyId: string | null, budgetId: string, lines: LineInput[]): Promise<void> {
+/**
+ * Upserts lines (each replaces the account's twelve cells). checkAccounts:
+ * P&L accounts of the company only (PUT lines, fill); a copy takes the
+ * source budget's lines as they are, as before.
+ */
+async function writeLines(tx: Tx, tenantId: string, companyId: string | null, budgetId: string, lines: LineInput[],
+  checkAccounts = true): Promise<void> {
   if (lines.length === 0) return;
-  const allowed = new Map((await loadPlAccounts(tenantId, companyId, tx)).map((a) => [a.id, a]));
+  const allowed = checkAccounts ? new Map((await loadPlAccounts(tenantId, companyId, tx)).map((a) => [a.id, a])) : null;
   lines.forEach((l, index) => {
-    if (!allowed.has(l.accountId)) {
+    if (allowed && !allowed.has(l.accountId)) {
       throw lineInvalid('Budgets take income and expense (Profit and Loss) accounts of this company only', { index, field: 'accountId', accountId: l.accountId });
     }
   });
-  for (let i = 0; i < lines.length; i += 200) {
+  for (let i = 0; i < lines.length; i = i + 200) {
     const chunk = lines.slice(i, i + 200);
     await tx.execute(sql`
       INSERT INTO budget_lines (budget_id, account_id, month_1, month_2, month_3, month_4, month_5, month_6,
@@ -259,6 +273,16 @@ export async function putLines(tenantId: string, companyId: string | null, budge
   await db.transaction(async (tx) => {
     const row = await lockBudget(tx, tenantId, companyId, budgetId);
     checkVersion(row, input.version);
+    // 3-4 places pass only unchanged (a row saved back with an old sub-cent cell).
+    if (input.lines.some((l) => l.subCent)) {
+      const stored = new Map((await readLines(budgetId, tx)).map((l) => [l.accountId, l.cells]));
+      input.lines.forEach((l, index) => {
+        for (const i of l.subCent ?? []) {
+          const was = stored.get(l.accountId)?.[i];
+          if (!was || !was.eq(l.cells[i]!)) throw lineInvalid(`month${i + 1} has more than 2 decimal places`, { index, field: `month${i + 1}` });
+        }
+      });
+    }
     await writeLines(tx, tenantId, companyId, budgetId, input.lines);
     const v = await bump(tx, row);
     await claimAndRecord(tx, 'budget', budgetId);
@@ -334,7 +358,7 @@ export async function copyFromBudget(tenantId: string, companyId: string | null,
     const locked = await lockBudget(tx, tenantId, companyId, targetId);
     checkVersion(locked, input.version);
     const src = await readLines(sourceId, tx);
-    await writeLines(tx, tenantId, companyId, targetId, src.map((l) => ({ accountId: l.accountId, cells: l.cells })));
+    await writeLines(tx, tenantId, companyId, targetId, src.map((l) => ({ accountId: l.accountId, cells: l.cells })), false);
     const v = await bump(tx, locked);
     await claimAndRecord(tx, 'budget', targetId);
     await auditLog(tenantId, 'update', 'budget_lines', targetId, { version: locked.version }, { ...linesAudit('copy', v, src.length), sourceBudgetId: sourceId }, userId, tx);

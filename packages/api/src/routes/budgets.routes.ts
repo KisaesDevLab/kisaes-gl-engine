@@ -118,6 +118,12 @@ async function linesView(req: Request, id: string) {
   };
 }
 
+/** The old fill / copy / adjust handlers read no body: a POST without one (no Content-Type) is an empty body. */
+function bodyOrEmpty(req: Request, _res: Response, next: NextFunction) {
+  if (req.body === undefined || req.body === null) req.body = {};
+  next();
+}
+
 const replayLines = (message: string) => async (req: Request) => ({ message, ...(await linesView(req, budgetIdOf(req))) });
 
 budgetsRouter.get('/', async (req, res) => {
@@ -192,7 +198,7 @@ budgetsRouter.post('/:id/fill-from-actuals', describe({
     + `409 STALE_VERSION. Takes Idempotency-Key. Response \`{message, ...lines}\`. ${LINES_DOC}`,
   params: idParams,
 }), budgetInScope, idempotent({ successStatus: 200, replay: replayLines('Filled from actuals') }),
-validate(fillBodySchema), async (req, res) => {
+bodyOrEmpty, validate(fillBodySchema), async (req, res) => {
   const id = budgetIdOf(req);
   await budgetService.fillFromActuals(req.tenantId, id, { companyId: req.companyId, version: req.body.version, basis: req.body.basis, userId: req.userId });
   res.json({ message: 'Filled from actuals', ...(await linesView(req, id)) });
@@ -203,7 +209,7 @@ budgetsRouter.post('/:id/copy-from/:sourceId', describe({
   description: `Body \`{version?}\` (the target's). 409 STALE_VERSION. Takes Idempotency-Key. Response \`{message, ...lines}\`. ${LINES_DOC}`,
   params: z.object({ id: z.string().uuid(), sourceId: z.string().uuid() }),
 }), budgetInScope, idempotent({ successStatus: 200, replay: replayLines('Copied from source budget') }),
-validate(versionBodySchema), async (req, res) => {
+bodyOrEmpty, validate(versionBodySchema), async (req, res) => {
   const id = budgetIdOf(req);
   await budgetService.copyFromBudget(req.tenantId, id, budgetIdOf(req, 'sourceId'), { companyId: req.companyId, version: req.body.version, userId: req.userId });
   res.json({ message: 'Copied from source budget', ...(await linesView(req, id)) });
@@ -215,7 +221,7 @@ budgetsRouter.post('/:id/adjust-by-percent', describe({
     + `a bad percent is 400 VALIDATION_ERROR. 409 STALE_VERSION. Takes Idempotency-Key. Response \`{message, ...lines}\`. ${LINES_DOC}`,
   params: idParams,
 }), budgetInScope, idempotent({ successStatus: 200, replay: replayLines('Adjustment applied') }),
-validate(adjustBodySchema), async (req, res) => {
+bodyOrEmpty, validate(adjustBodySchema), async (req, res) => {
   const id = budgetIdOf(req);
   await budgetService.adjustByPercent(req.tenantId, id, req.body.percent, { companyId: req.companyId, version: req.body.version, userId: req.userId });
   res.json({ message: 'Adjustment applied', ...(await linesView(req, id)) });
@@ -312,8 +318,9 @@ budgetsRouter.get('/:id/vs-actual', describe({
   }));
 });
 
-// Legacy Budget vs. Actual (without exact=1): unchanged.
-budgetsRouter.get('/:id/vs-actual', async (req, res) => {
+// Legacy Budget vs. Actual (without exact=1): unchanged, except that the
+// budget must be the company's (or have no company).
+budgetsRouter.get('/:id/vs-actual', budgetInScope, async (req, res) => {
   const { start_date, end_date, format } = req.query as Record<string, string>;
   const today = new Date();
   const data = await budgetService.buildBudgetVsActual(
@@ -449,7 +456,7 @@ budgetsRouter.get('/:id/vs-actual', async (req, res) => {
   res.json(data);
 });
 
-budgetsRouter.get('/:id/overview', async (req, res) => {
+budgetsRouter.get('/:id/overview', budgetInScope, async (req, res) => {
   const data = await budgetService.buildBudgetOverview(req.tenantId, req.params['id']!);
   res.json(data);
 });
@@ -458,11 +465,13 @@ budgetsRouter.get('/:id/overview', async (req, res) => {
 // scope when aggregating actuals from journal_lines. Requires the
 // TAG_BUDGETS_V1 env flag to be enabled. Returns a per-account,
 // per-month matrix with variances.
-budgetsRouter.get('/:id/tag-actuals', async (req, res) => {
+budgetsRouter.get('/:id/tag-actuals', budgetInScope, async (req, res) => {
+  // Actuals stay tenant-wide, as before the router had a company context
+  // (authenticate never set req.companyId, so this passed null).
   const data = await budgetService.runTagScopedBudgetVsActuals(
     req.tenantId,
     req.params['id']!,
-    req.companyId ?? null,
+    null,
   );
   res.json(data);
 });

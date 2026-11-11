@@ -241,6 +241,24 @@ describe('budgets-exact-v1 (U-203)', () => {
     for (const [key, exp] of Object.entries(FX.expected.accrual.totals)) expectCells(b.totalsExact[key], exp, key);
   });
 
+  it('first_period maps range i to budget period first_period + i', async () => {
+    const [, p2, p3] = FX.request.periodRanges;
+    const r = await get(`/budgets/${budgetId}/vs-actual?exact=1&period_ranges=${p2},${p3}&first_period=2`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.columns.map((c: any) => c.periodIndex)).toEqual([2, 3, null]);
+    const rows = allRows(r.body);
+    for (const [num, exp] of Object.entries(FX.expected.accrual.rows)) {
+      const row = rows.find((x) => x.accountId === acct[num]);
+      const want = { actual: exp.actual.slice(1, 3), budget: exp.budget.slice(1, 3), over: exp.over!.slice(1, 3), pct: exp.pct!.slice(1, 3) };
+      if (!row) {
+        // No budget and no activity in periods 2-3.
+        expect(want.actual.every((x) => D(x).isZero()) && want.budget.every((x) => D(x).isZero()), num).toBe(true);
+        continue;
+      }
+      expectCells(row.cells.slice(0, 2), want, `p2-3 ${num}`);
+    }
+  });
+
   it('matches the hand fixture on cash basis', async () => {
     const r = await bva('&basis=cash');
     expect(r.status, JSON.stringify(r.body)).toBe(200);
@@ -312,6 +330,9 @@ describe('budgets-exact-v1 (U-203)', () => {
     expect((await get(`/budgets/${id}/vs-actual?exact=1`)).status).toBe(404);
     expect((await call('PUT', `/budgets/${id}/lines`, { lines: [] })).status).toBe(404);
     expect((await call('PUT', `/budgets/${id}`, { name: 'x' })).status).toBe(404);
+    for (const path of ['overview', 'tag-actuals', 'vs-actual?start_date=2027-01-01&end_date=2027-01-31']) {
+      expect((await get(`/budgets/${id}/${path}`)).status, path).toBe(404);
+    }
     const list = (await get('/budgets')).body.budgets.map((x: any) => x.id);
     expect(list).toContain(budgetId);
     expect(list).not.toContain(id);
@@ -401,6 +422,17 @@ describe('budgets-exact-v1 (U-203)', () => {
     const ok = await put([{ accountId: acct['6000'], month1: '100.5000', month2: 12.5, month3: '-3.10' }]);
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(ok.body.lines[0].periodsExact.slice(0, 3)).toEqual(['100.5000', '12.5000', '-3.1000']);
+
+    // A sub-cent cell written by the old float fill / adjust: saving the row
+    // back unchanged is fine; a new sub-cent value is not.
+    await db.execute(sql`UPDATE budget_lines SET month_4 = 10.6050 WHERE budget_id = ${id} AND account_id = ${acct['6000']}`);
+    const row = (m1: string, m4: string) => [{ accountId: acct['6000'], month1: m1, month2: '12.50', month3: '-3.10', month4: m4 }];
+    const kept = await put(row('99.00', '10.6050'));
+    expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+    expect(kept.body.lines[0].periodsExact.slice(0, 4)).toEqual(['99.0000', '12.5000', '-3.1000', '10.6050']);
+    await bad(row('99.00', '10.6051'), 'month4');
+    await bad(row('99.001', '10.6050'), 'month1');
+    await bad([{ accountId: acct['6000'], month1: '1.00001' }], 'month1');
   });
 
   it('fill from actuals and adjust % round each cell to the cent, half away from zero', async () => {
@@ -435,6 +467,12 @@ describe('budgets-exact-v1 (U-203)', () => {
     // 10.10 x 1.05 = 10.605 -> 10.61 (binary floating point gives 10.60); -10.605 -> -10.61; 0.0105 -> 0.01.
     expect(line(adj.body, '6000').periodsExact.slice(0, 3)).toEqual(['10.6100', '-10.6100', '0.0100']);
     expect(line(adj.body, '6100').periodsExact[0]).toBe('10.5100'); // 10.01 x 1.05 = 10.5105
+    // Older callers POST fill / copy without a body.
+    const noBody = await call('POST', `/budgets/${id}/fill-from-actuals`);
+    expect(noBody.status, JSON.stringify(noBody.body)).toBe(200);
+    const copyNoBody = await call('POST', `/budgets/${id}/copy-from/${budgetId}`);
+    expect(copyNoBody.status, JSON.stringify(copyNoBody.body)).toBe(200);
+    expect(line(copyNoBody.body, '4000').periodsExact[3]).toBe('9999.0000');
     const badPct = await call('POST', `/budgets/${id}/adjust-by-percent`, { percent: 'abc' });
     expect(badPct.status).toBe(400);
     expect((await call('POST', `/budgets/${id}/adjust-by-percent`, { percent: '-101' })).status).toBe(400);
