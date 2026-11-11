@@ -21875,7 +21875,7 @@
     },
     "/api/v1/budgets/{id}/copy-from/{sourceId}": {
       "post": {
-        "description": "Body `{version?}` (the target's). 409 STALE_VERSION. Takes Idempotency-Key. Response `{message, ...lines}`. Response adds (budgets-exact-v1) `lines[]` {..., periodsExact[12], totalExact}, `version`, and `totalsExact` {revenue|cogs|expenses|otherRevenue|otherExpenses|netIncome: {periodsExact[12], totalExact}} (net income = revenue + other revenue - cogs - expenses - other expenses). Exact strings, 4 places.",
+        "description": "The source's lines replace all of the target's lines (U-211; accounts not on the source are removed). Body `{version?}` (the target's). 409 STALE_VERSION changes nothing. Takes Idempotency-Key. Response `{message, ...lines}`. Response adds (budgets-exact-v1) `lines[]` {..., periodsExact[12], totalExact}, `version`, and `totalsExact` {revenue|cogs|expenses|otherRevenue|otherExpenses|netIncome: {periodsExact[12], totalExact}} (net income = revenue + other revenue - cogs - expenses - other expenses). Exact strings, 4 places.",
         "operationId": "post_api_v1_budgets_by_id_copy_from_by_sourceId",
         "parameters": [
           {
@@ -58221,7 +58221,7 @@
     },
     "/api/v1/reports/ap-1099-prep": {
       "get": {
-        "description": "data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, U-212: total_paid and the reportable amounts count the same payments, cash paid in the year: bill payments (a bill counts when paid, not at its date), expenses and checks. totalPaidExact, totalReportableExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, U-212: total_paid and the reportable amounts count the same payments, cash paid in the year: bill payments (a bill counts when paid, not at its date), expenses and checks. totalPaidExact, totalReportableExact. U-213 (report-fixes-v2): with exact=1 the tax id is masked: tax_id and tinLast4 are its last four digits (null with fewer than four); the full number stays on the vendor record. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_ap_1099_prep",
         "parameters": [
           {
@@ -58648,7 +58648,7 @@
     },
     "/api/v1/reports/balance-sheet": {
       "get": {
-        "description": "assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. Column layout (reports-columns-v1; with period_ranges, prior, tag_split or tag_id=untagged): as on the P&L, sections assets/liabilities/equity, one column per as-of date (kind as_of, asOf), totalsExact {totalAssets, totalLiabilities, totalEquity, totalLiabilitiesAndEquity}; calculated: true rows (Retained Earnings (Prior Years), Net Income (Current Year)) and the Retained Earnings account (includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column). meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. Column layout (reports-columns-v1; with period_ranges, prior, tag_split or tag_id=untagged): as on the P&L, sections assets/liabilities/equity, one column per as-of date (kind as_of, asOf), totalsExact {totalAssets, totalLiabilities, totalEquity, totalLiabilitiesAndEquity}; calculated: true rows (Retained Earnings (Prior Years), Net Income (Current Year)) and the Retained Earnings account (includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column); as-of and prior columns carry fiscalYearStart (the income split). U-213 (report-fixes-v2): standard layout equity rows add calculated: true (the computed rows) and, on the Retained Earnings account when the income of prior years is folded in, includesPriorYearsIncome: true and priorYearsIncomeExact (its ledger lines hold balanceExact - priorYearsIncomeExact); fiscalYearStart (the income split used; Net Income (Current Year) = the P&L from it to as_of_date) and calculatedEquityExact (the part of totalEquityExact no ledger line holds). tag_id is 400 TAG_FILTER_NOT_AVAILABLE (a tag-filtered sheet need not balance; use tag_split). meta.cashArApResidue (cash basis, else null): {accountsReceivableExact, accountsPayableExact, accountIds, txnTypes} what A/R and A/P keep from entries other than payments (journal entries ...) as of the last date, whole books; GL basis=cash&account_ids=&txn_types= selects those lines; null when zero. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_balance_sheet",
         "parameters": [
           {
@@ -58748,6 +58748,15 @@
                 "detail_type",
                 "leadsheet"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fiscal_year_start",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD,… one or more fiscal year start dates in ascending order (at most 50), e.g. a retail 52-53 week calendar; each report date uses the latest start on or before it (at most 371 days before; else 400 INVALID_PARAM). Default: the 1st of the company fiscal start month. Balance Sheet: where income splits into prior years and the current year (every as-of and prior as-of date must be covered); Trial Balance: the year start of the income accounts and the retained-earnings split; General Ledger: where the beginning balances of income accounts reset (the start for start_date).",
               "type": "string"
             }
           },
@@ -60223,6 +60232,15 @@
                 "1",
                 "0"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fiscal_year_start",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD,… one or more fiscal year start dates in ascending order (at most 50), e.g. a retail 52-53 week calendar; each report date uses the latest start on or before it (at most 371 days before; else 400 INVALID_PARAM). Default: the 1st of the company fiscal start month. Balance Sheet: where income splits into prior years and the current year (every as-of and prior as-of date must be covered); Trial Balance: the year start of the income accounts and the retained-earnings split; General Ledger: where the beginning balances of income accounts reset (the start for start_date).",
               "type": "string"
             }
           },
@@ -63294,7 +63312,7 @@
     },
     "/api/v1/reports/trial-balance": {
       "get": {
-        "description": "data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, depth, rollupExact?}, totalDebitsExact, totalCreditsExact, drillTarget {path, amount: endingBalanceExact, startDate, endDate, params}. tag_split=1&tag_group_id= (reports-columns-v1): each row becomes rowKind account (untagged in the group), tag rows and account_total (the unsplit row), each with drill; totals unchanged. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
+        "description": "data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, depth, rollupExact?}, totalDebitsExact, totalCreditsExact, drillTarget {path, amount: endingBalanceExact, startDate, endDate, params}. tag_split=1&tag_group_id= (reports-columns-v1): each row becomes rowKind account (untagged in the group), tag rows and account_total (the unsplit row), each with drill; totals unchanged. U-213 (report-fixes-v2): the computed Retained Earnings (Prior Years) row is on the report's basis (cash included); fiscalYearStart (the income accounts' year start used, = drillTarget.startDate; drillTarget.params carries fiscal_year_start when it was given); tag_id is 400 TAG_FILTER_NOT_AVAILABLE (use tag_split); meta.cashArApResidue as on the Balance Sheet (as of end_date). meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
         "operationId": "get_api_v1_reports_trial_balance",
         "parameters": [
           {
@@ -63415,6 +63433,15 @@
             "schema": {
               "description": "The tag group for tag_split or compare=by_tag",
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fiscal_year_start",
+            "required": false,
+            "schema": {
+              "description": "YYYY-MM-DD,… one or more fiscal year start dates in ascending order (at most 50), e.g. a retail 52-53 week calendar; each report date uses the latest start on or before it (at most 371 days before; else 400 INVALID_PARAM). Default: the 1st of the company fiscal start month. Balance Sheet: where income splits into prior years and the current year (every as-of and prior as-of date must be covered); Trial Balance: the year start of the income accounts and the retained-earnings split; General Ledger: where the beginning balances of income accounts reset (the start for start_date).",
               "type": "string"
             }
           }

@@ -206,7 +206,7 @@ bodyOrEmpty, validate(fillBodySchema), async (req, res) => {
 
 budgetsRouter.post('/:id/copy-from/:sourceId', describe({
   summary: 'Copy another budget\'s lines',
-  description: `Body \`{version?}\` (the target's). 409 STALE_VERSION. Takes Idempotency-Key. Response \`{message, ...lines}\`. ${LINES_DOC}`,
+  description: `The source's lines replace all of the target's lines (U-211; accounts not on the source are removed). Body \`{version?}\` (the target's). 409 STALE_VERSION changes nothing. Takes Idempotency-Key. Response \`{message, ...lines}\`. ${LINES_DOC}`,
   params: z.object({ id: z.string().uuid(), sourceId: z.string().uuid() }),
 }), budgetInScope, idempotent({ successStatus: 200, replay: replayLines('Copied from source budget') }),
 bodyOrEmpty, validate(versionBodySchema), async (req, res) => {
