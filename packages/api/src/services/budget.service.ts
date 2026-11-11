@@ -9,9 +9,17 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as reportService from './report.service.js';
 import { env } from '../config/env.js';
+import * as exact from './budget-exact.service.js';
+import { claimAndRecord } from './idempotency.service.js';
 
-export async function list(tenantId: string, opts?: { limit?: number; offset?: number }) {
-  const where = eq(budgets.tenantId, tenantId);
+// U-203 (budgets-exact-v1): the read/write paths take an optional company
+// (the budgets router passes the request's; MyBooks Online callers without
+// one keep the tenant-wide view) and every write runs in one transaction
+// with the version check, Idempotency-Key claim and audit row. The exact
+// line math lives in budget-exact.service.ts.
+
+export async function list(tenantId: string, opts?: { limit?: number; offset?: number; companyId?: string | null }) {
+  const where = exact.budgetScope(tenantId, opts?.companyId ?? null);
   const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 500);
   const offset = Math.max(opts?.offset ?? 0, 0);
 
@@ -23,10 +31,8 @@ export async function list(tenantId: string, opts?: { limit?: number; offset?: n
   return { data, total: totalRows[0]?.total ?? 0, limit, offset };
 }
 
-export async function getById(tenantId: string, id: string) {
-  const budget = await db.query.budgets.findFirst({ where: and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)) });
-  if (!budget) throw AppError.notFound('Budget not found');
-  return budget;
+export async function getById(tenantId: string, id: string, companyId: string | null = null) {
+  return exact.budgetForAccess(tenantId, companyId, id);
 }
 
 export interface CreateBudgetInput {
@@ -40,7 +46,8 @@ export interface CreateBudgetInput {
   fiscalYearStart?: string | null;
 }
 
-export async function create(tenantId: string, input: CreateBudgetInput, userId?: string) {
+export async function create(tenantId: string, input: CreateBudgetInput, userId?: string, companyId: string | null = null) {
+  // The fiscal year is still unique per tenant (idx_budgets_tenant_year).
   const existing = await db.query.budgets.findFirst({
     where: and(eq(budgets.tenantId, tenantId), eq(budgets.fiscalYear, input.fiscalYear)),
   });
@@ -57,24 +64,29 @@ export async function create(tenantId: string, input: CreateBudgetInput, userId?
   if (!fiscalYearStart) {
     const fyRow = await db.execute(sql`
       SELECT fiscal_year_start_month FROM companies
-      WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT 1
+      WHERE tenant_id = ${tenantId} ${companyId ? sql`AND id = ${companyId}` : sql``} ORDER BY created_at LIMIT 1
     `);
     const fyMonth = Number((fyRow.rows as Array<{ fiscal_year_start_month: number | null }>)[0]?.fiscal_year_start_month || 1);
     fiscalYearStart = `${input.fiscalYear}-${String(fyMonth).padStart(2, '0')}-01`;
   }
 
-  const [budget] = await db.insert(budgets).values({
-    tenantId,
-    name: input.name,
-    fiscalYear: input.fiscalYear,
-    tagId: input.tagId ?? null,
-    description: input.description ?? null,
-    periodType: input.periodType ?? 'monthly',
-    status: input.status ?? 'active',
-    fiscalYearStart,
-  }).returning();
-  if (budget) await auditLog(tenantId, 'create', 'budget', budget.id, null, budget, userId);
-  return budget;
+  return db.transaction(async (tx) => {
+    const [budget] = await tx.insert(budgets).values({
+      tenantId,
+      companyId,
+      name: input.name,
+      fiscalYear: input.fiscalYear,
+      tagId: input.tagId ?? null,
+      description: input.description ?? null,
+      periodType: input.periodType ?? 'monthly',
+      status: input.status ?? 'active',
+      fiscalYearStart,
+      createdBy: userId ?? null,
+    }).returning();
+    await claimAndRecord(tx, 'budget', budget!.id);
+    await auditLog(tenantId, 'create', 'budget', budget!.id, null, budget, userId, tx);
+    return budget;
+  });
 }
 
 export interface UpdateBudgetInput {
@@ -83,18 +95,26 @@ export interface UpdateBudgetInput {
   tagId?: string | null;
   description?: string | null;
   status?: 'draft' | 'active' | 'archived';
+  /** The version read (U-203): 409 STALE_VERSION when the budget changed since; absent = last write wins. */
+  version?: number;
 }
 
-export async function update(tenantId: string, id: string, input: UpdateBudgetInput, userId?: string) {
-  const before = await db.query.budgets.findFirst({ where: and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)) });
-  const [updated] = await db.update(budgets).set({ ...input, updatedAt: new Date() })
-    .where(and(eq(budgets.tenantId, tenantId), eq(budgets.id, id))).returning();
-  if (!updated) throw AppError.notFound('Budget not found');
-  await auditLog(tenantId, 'update', 'budget', updated.id, before ?? null, updated, userId);
-  return updated;
+export async function update(tenantId: string, id: string, input: UpdateBudgetInput, userId?: string, companyId: string | null = null) {
+  const { version, ...fields } = input;
+  return db.transaction(async (tx) => {
+    const [before] = await tx.select().from(budgets)
+      .where(and(exact.budgetScope(tenantId, companyId), eq(budgets.id, id))).for('update').limit(1);
+    if (!before) throw AppError.notFound('Budget not found');
+    if (version !== undefined && before.version !== version) throw exact.stale(before.version);
+    const [updated] = await tx.update(budgets).set({ ...fields, version: before.version + 1, updatedAt: new Date() })
+      .where(and(eq(budgets.tenantId, tenantId), eq(budgets.id, id))).returning();
+    await claimAndRecord(tx, 'budget', id);
+    await auditLog(tenantId, 'update', 'budget', updated!.id, before, updated, userId, tx);
+    return updated!;
+  });
 }
 
-export async function remove(tenantId: string, id: string, userId?: string) {
+export async function remove(tenantId: string, id: string, userId?: string, companyId: string | null = null) {
   // `budget_lines` has no tenant_id column — it's scoped transitively
   // via `budget_id → budgets.tenant_id`. We verify ownership before
   // deleting the lines so a malformed id can't wipe another tenant's
@@ -102,9 +122,8 @@ export async function remove(tenantId: string, id: string, userId?: string) {
   // partial failure doesn't leave dangling lines.
   let removedBudget: typeof budgets.$inferSelect | undefined;
   await db.transaction(async (tx) => {
-    const budget = await tx.query.budgets.findFirst({
-      where: and(eq(budgets.tenantId, tenantId), eq(budgets.id, id)),
-    });
+    const [budget] = await tx.select().from(budgets)
+      .where(and(exact.budgetScope(tenantId, companyId), eq(budgets.id, id))).limit(1);
     if (!budget) throw AppError.notFound('Budget not found');
     removedBudget = budget;
 
@@ -116,8 +135,8 @@ export async function remove(tenantId: string, id: string, userId?: string) {
   }
 }
 
-export async function getLines(tenantId: string, budgetId: string) {
-  await getById(tenantId, budgetId);
+export async function getLines(tenantId: string, budgetId: string, companyId: string | null = null) {
+  await getById(tenantId, budgetId, companyId);
   const lines = await db.execute(sql`
     SELECT bl.*, a.name as account_name, a.account_number, a.account_type
     FROM budget_lines bl
@@ -128,137 +147,29 @@ export async function getLines(tenantId: string, budgetId: string) {
   return lines.rows;
 }
 
-export async function updateLines(tenantId: string, budgetId: string, lines: Array<{
-  accountId: string; month1?: string; month2?: string; month3?: string; month4?: string;
-  month5?: string; month6?: string; month7?: string; month8?: string;
-  month9?: string; month10?: string; month11?: string; month12?: string;
-}>) {
-  await getById(tenantId, budgetId);
-
-  for (const line of lines) {
-    const existing = await db.query.budgetLines.findFirst({
-      where: and(eq(budgetLines.budgetId, budgetId), eq(budgetLines.accountId, line.accountId)),
-    });
-
-    const values = {
-      month1: line.month1 || '0', month2: line.month2 || '0', month3: line.month3 || '0',
-      month4: line.month4 || '0', month5: line.month5 || '0', month6: line.month6 || '0',
-      month7: line.month7 || '0', month8: line.month8 || '0', month9: line.month9 || '0',
-      month10: line.month10 || '0', month11: line.month11 || '0', month12: line.month12 || '0',
-    };
-
-    if (existing) {
-      // budgetLines has no own tenantId column — tenancy is inherited
-      // via budgetId. Verified at line 106 (getById throws if budget
-      // doesn't belong to tenant) and re-asserted here so the mutation
-      // can't touch a row from another budget if `existing.id` ever
-      // came from elsewhere.
-      await db.update(budgetLines)
-        .set(values)
-        .where(and(eq(budgetLines.budgetId, budgetId), eq(budgetLines.id, existing.id)));
-    } else {
-      await db.insert(budgetLines).values({ budgetId, accountId: line.accountId, ...values });
-    }
-  }
+/**
+ * Saves lines (each replaces its account's twelve periods). Validated
+ * (U-203): P&L accounts of the company only, cells with at most 2 decimal
+ * places, periods month1..month12; else 400 BUDGET_LINE_INVALID.
+ */
+export async function updateLines(tenantId: string, budgetId: string, lines: unknown,
+  opts: { companyId?: string | null; version?: number; userId?: string } = {}) {
+  await exact.putLines(tenantId, opts.companyId ?? null, budgetId, { version: opts.version, lines: exact.parseLines(lines) }, opts.userId);
 }
 
-export async function fillFromActuals(tenantId: string, budgetId: string) {
-  const budget = await getById(tenantId, budgetId);
-
-  // Get company fiscal year start
-  const companyResult = await db.execute(sql`SELECT fiscal_year_start_month FROM companies WHERE tenant_id = ${tenantId} LIMIT 1`);
-  const fyStartMonth = (companyResult.rows as any[])[0]?.fiscal_year_start_month || 1;
-
-  // ADR 0XW §4 — when the budget is tag-scoped, the seed must also be
-  // tag-scoped so next year's plan mirrors the same slice of actuals
-  // the Budget vs. Actuals report will later evaluate. When the budget
-  // is company-wide (tagId is null) we aggregate every line, matching
-  // the prior behavior.
-  const budgetTagId = (budget as { tagId?: string | null }).tagId ?? null;
-
-  // Get actuals for the prior fiscal year
-  const priorYear = budget.fiscalYear - 1;
-  const revenueExpenseAccounts = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true)));
-
-  for (const account of revenueExpenseAccounts.filter((a) => ['revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'].includes(a.accountType))) {
-    const monthlyAmounts: string[] = [];
-    for (let m = 0; m < 12; m++) {
-      const month = ((fyStartMonth - 1 + m) % 12) + 1;
-      const year = fyStartMonth > 1 && month < fyStartMonth ? priorYear + 1 : priorYear;
-      const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-      // UTC month-end: the local-time version shifted to the PRIOR day
-      // when serialized in a UTC+N container, silently dropping every
-      // month's last day from the seeded actuals.
-      const endD = new Date(Date.UTC(year, month, 0));
-      const endDate = endD.toISOString().split('T')[0]!;
-
-      const result = await db.execute(sql`
-        SELECT COALESCE(SUM(jl.debit), 0) as total_debit, COALESCE(SUM(jl.credit), 0) as total_credit
-        FROM journal_lines jl
-        JOIN transactions t ON t.id = jl.transaction_id
-        WHERE jl.tenant_id = ${tenantId} AND jl.account_id = ${account.id}
-          AND t.status = 'posted' AND t.basis <> 'cash'
-          AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-          ${budgetTagId ? sql`AND jl.tag_id = ${budgetTagId}` : sql``}
-      `);
-      const row = (result.rows as any[])[0] || { total_debit: '0', total_credit: '0' };
-      // Signed, normal-balance convention (matches the P&L the budget is
-      // later compared against): income credit−debit, costs debit−credit.
-      const isIncome = account.accountType === 'revenue' || account.accountType === 'other_revenue';
-      const amount = isIncome
-        ? parseFloat(row.total_credit) - parseFloat(row.total_debit)
-        : parseFloat(row.total_debit) - parseFloat(row.total_credit);
-      monthlyAmounts.push(amount.toFixed(4));
-    }
-
-    await updateLines(tenantId, budgetId, [{
-      accountId: account.id,
-      month1: monthlyAmounts[0], month2: monthlyAmounts[1], month3: monthlyAmounts[2],
-      month4: monthlyAmounts[3], month5: monthlyAmounts[4], month6: monthlyAmounts[5],
-      month7: monthlyAmounts[6], month8: monthlyAmounts[7], month9: monthlyAmounts[8],
-      month10: monthlyAmounts[9], month11: monthlyAmounts[10], month12: monthlyAmounts[11],
-    }]);
-  }
+export async function fillFromActuals(tenantId: string, budgetId: string,
+  opts: { companyId?: string | null; version?: number; basis?: 'accrual' | 'cash'; userId?: string } = {}) {
+  await exact.fillFromActuals(tenantId, opts.companyId ?? null, budgetId, { version: opts.version, basis: opts.basis }, opts.userId);
 }
 
-export async function copyFromBudget(tenantId: string, targetBudgetId: string, sourceBudgetId: string) {
-  await getById(tenantId, targetBudgetId);
-  const sourceLines = await getLines(tenantId, sourceBudgetId);
-
-  const linesToCopy = (sourceLines as any[]).map((line) => ({
-    accountId: line.account_id,
-    month1: line.month_1 || '0', month2: line.month_2 || '0', month3: line.month_3 || '0',
-    month4: line.month_4 || '0', month5: line.month_5 || '0', month6: line.month_6 || '0',
-    month7: line.month_7 || '0', month8: line.month_8 || '0', month9: line.month_9 || '0',
-    month10: line.month_10 || '0', month11: line.month_11 || '0', month12: line.month_12 || '0',
-  }));
-
-  await updateLines(tenantId, targetBudgetId, linesToCopy);
+export async function copyFromBudget(tenantId: string, targetBudgetId: string, sourceBudgetId: string,
+  opts: { companyId?: string | null; version?: number; userId?: string } = {}) {
+  await exact.copyFromBudget(tenantId, opts.companyId ?? null, targetBudgetId, sourceBudgetId, { version: opts.version }, opts.userId);
 }
 
-export async function adjustByPercent(tenantId: string, budgetId: string, percent: number) {
-  await getById(tenantId, budgetId);
-  const lines = await getLines(tenantId, budgetId);
-  const multiplier = 1 + percent / 100;
-
-  const adjusted = (lines as any[]).map((line) => ({
-    accountId: line.account_id,
-    month1: (parseFloat(line.month_1 || '0') * multiplier).toFixed(4),
-    month2: (parseFloat(line.month_2 || '0') * multiplier).toFixed(4),
-    month3: (parseFloat(line.month_3 || '0') * multiplier).toFixed(4),
-    month4: (parseFloat(line.month_4 || '0') * multiplier).toFixed(4),
-    month5: (parseFloat(line.month_5 || '0') * multiplier).toFixed(4),
-    month6: (parseFloat(line.month_6 || '0') * multiplier).toFixed(4),
-    month7: (parseFloat(line.month_7 || '0') * multiplier).toFixed(4),
-    month8: (parseFloat(line.month_8 || '0') * multiplier).toFixed(4),
-    month9: (parseFloat(line.month_9 || '0') * multiplier).toFixed(4),
-    month10: (parseFloat(line.month_10 || '0') * multiplier).toFixed(4),
-    month11: (parseFloat(line.month_11 || '0') * multiplier).toFixed(4),
-    month12: (parseFloat(line.month_12 || '0') * multiplier).toFixed(4),
-  }));
-
-  await updateLines(tenantId, budgetId, adjusted);
+export async function adjustByPercent(tenantId: string, budgetId: string, percent: unknown,
+  opts: { companyId?: string | null; version?: number; userId?: string } = {}) {
+  await exact.adjustByPercent(tenantId, opts.companyId ?? null, budgetId, { version: opts.version, percent: exact.parsePercent(percent) }, opts.userId);
 }
 
 export async function buildBudgetVsActual(tenantId: string, budgetId: string, startDate: string, endDate: string, companyId: string | null = null) {

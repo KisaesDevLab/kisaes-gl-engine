@@ -21456,7 +21456,20 @@
         ]
       },
       "post": {
+        "description": "Response 201 `{budget}` (with `version`, budgets-exact-v1). The budget belongs to the request's company. Takes Idempotency-Key. 409 when the tenant already has a budget for the fiscal year.",
         "operationId": "post_api_v1_budgets",
+        "parameters": [
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21535,9 +21548,11 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Create a budget",
         "tags": [
           "budgets"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/budgets/{id}": {
@@ -21600,6 +21615,7 @@
         ]
       },
       "put": {
+        "description": "Body fields as before plus `version` (budgets-exact-v1). Response `{budget}` with the next version. 409 STALE_VERSION {details.current}. Takes Idempotency-Key.",
         "operationId": "put_api_v1_budgets_by_id",
         "parameters": [
           {
@@ -21607,6 +21623,17 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
@@ -21654,6 +21681,11 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "version": {
+                    "description": "The version read (budgets-exact-v1); a different current version is 409 STALE_VERSION {details.current}. Absent: last write wins.",
+                    "minimum": 1,
+                    "type": "integer"
                   }
                 },
                 "type": "object"
@@ -21675,13 +21707,16 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Change a budget",
         "tags": [
           "budgets"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/budgets/{id}/adjust-by-percent": {
       "post": {
+        "description": "Each cell times (1 + percent / 100) in Decimal, rounded to the cent, half away from zero. Body `{percent, version?}`; a bad percent is 400 VALIDATION_ERROR. 409 STALE_VERSION. Takes Idempotency-Key. Response `{message, ...lines}`. Response adds (budgets-exact-v1) `lines[]` {..., periodsExact[12], totalExact}, `version`, and `totalsExact` {revenue|cogs|expenses|otherRevenue|otherExpenses|netIncome: {periodsExact[12], totalExact}} (net income = revenue + other revenue - cogs - expenses - other expenses). Exact strings, 4 places.",
         "operationId": "post_api_v1_budgets_by_id_adjust_by_percent",
         "parameters": [
           {
@@ -21689,10 +21724,49 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "percent": {
+                    "description": "Decimal string like \"5\" or \"-2.5\" (a number is accepted); -100 or more",
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  },
+                  "version": {
+                    "description": "The version read (budgets-exact-v1); a different current version is 409 STALE_VERSION {details.current}. Absent: last write wins.",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "percent"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -21706,13 +21780,16 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Adjust every budget cell by a percent",
         "tags": [
           "budgets"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/budgets/{id}/copy-from/{sourceId}": {
       "post": {
+        "description": "Body `{version?}` (the target's). 409 STALE_VERSION. Takes Idempotency-Key. Response `{message, ...lines}`. Response adds (budgets-exact-v1) `lines[]` {..., periodsExact[12], totalExact}, `version`, and `totalsExact` {revenue|cogs|expenses|otherRevenue|otherExpenses|netIncome: {periodsExact[12], totalExact}} (net income = revenue + other revenue - cogs - expenses - other expenses). Exact strings, 4 places.",
         "operationId": "post_api_v1_budgets_by_id_copy_from_by_sourceId",
         "parameters": [
           {
@@ -21720,6 +21797,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           },
@@ -21728,10 +21806,39 @@
             "name": "sourceId",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "version": {
+                    "description": "The version read (budgets-exact-v1); a different current version is 409 STALE_VERSION {details.current}. Absent: last write wins.",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -21745,13 +21852,16 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Copy another budget's lines",
         "tags": [
           "budgets"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/budgets/{id}/fill-from-actuals": {
       "post": {
+        "description": "Each P&L account's actual for the twelve months before the budget's fiscal year (the company's lines, the budget's tag when it has one, natural sign), computed in Decimal and rounded to the cent, half away from zero. Body `{version?, basis?}`. 409 STALE_VERSION. Takes Idempotency-Key. Response `{message, ...lines}`. Response adds (budgets-exact-v1) `lines[]` {..., periodsExact[12], totalExact}, `version`, and `totalsExact` {revenue|cogs|expenses|otherRevenue|otherExpenses|netIncome: {periodsExact[12], totalExact}} (net income = revenue + other revenue - cogs - expenses - other expenses). Exact strings, 4 places.",
         "operationId": "post_api_v1_budgets_by_id_fill_from_actuals",
         "parameters": [
           {
@@ -21759,10 +21869,47 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "basis": {
+                    "description": "Default accrual",
+                    "enum": [
+                      "accrual",
+                      "cash"
+                    ],
+                    "type": "string"
+                  },
+                  "version": {
+                    "description": "The version read (budgets-exact-v1); a different current version is 409 STALE_VERSION {details.current}. Absent: last write wins.",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -21776,13 +21923,16 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Fill a budget from last year's actuals",
         "tags": [
           "budgets"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/budgets/{id}/lines": {
       "get": {
+        "description": "Response `{lines}` as before. Response adds (budgets-exact-v1) `lines[]` {..., periodsExact[12], totalExact}, `version`, and `totalsExact` {revenue|cogs|expenses|otherRevenue|otherExpenses|netIncome: {periodsExact[12], totalExact}} (net income = revenue + other revenue - cogs - expenses - other expenses). Exact strings, 4 places.",
         "operationId": "get_api_v1_budgets_by_id_lines",
         "parameters": [
           {
@@ -21790,6 +21940,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -21807,11 +21958,13 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Budget lines",
         "tags": [
           "budgets"
         ]
       },
       "put": {
+        "description": "Body `{version?, lines: [{accountId, month1..month12}]}` (budgets-exact-v1 validation): P&L accounts of the company only, cells with at most 2 decimal places, periods month1..month12, an account once; else 400 BUDGET_LINE_INVALID {details.index, details.field}. 409 STALE_VERSION {details.current}. Takes Idempotency-Key. Response `{message, budget, version, lines, totalsExact}`. Response adds (budgets-exact-v1) `lines[]` {..., periodsExact[12], totalExact}, `version`, and `totalsExact` {revenue|cogs|expenses|otherRevenue|otherExpenses|netIncome: {periodsExact[12], totalExact}} (net income = revenue + other revenue - cogs - expenses - other expenses). Exact strings, 4 places.",
         "operationId": "put_api_v1_budgets_by_id_lines",
         "parameters": [
           {
@@ -21819,10 +21972,144 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
               "type": "string"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "lines": {
+                    "description": "Each line replaces its account's twelve periods (month1..month12 = budget periods 1..12). P&L accounts of the company only.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "accountId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "month1": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month10": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month11": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month12": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month2": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month3": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month4": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month5": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month6": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month7": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month8": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "month9": {
+                          "description": "Decimal string with at most 2 places by value (e.g. \"1234.50\"; \"1234.5000\" is fine); absent or empty = 0",
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "accountId"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 2000,
+                    "type": "array"
+                  },
+                  "version": {
+                    "description": "The version read (budgets-exact-v1); a different current version is 409 STALE_VERSION {details.current}. Absent: last write wins.",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "lines"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -21836,9 +22123,11 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Save budget lines",
         "tags": [
           "budgets"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/budgets/{id}/overview": {
@@ -21905,6 +22194,7 @@
     },
     "/api/v1/budgets/{id}/vs-actual": {
       "get": {
+        "description": "With exact=1 (budgets-exact-v1): period_ranges=YYYY-MM-DD..YYYY-MM-DD,… (at most 12, in date order, not overlapping) gives each budget period's dates (4-4-5 or calendar months, from the caller's fiscal calendar); range i is budget period first_period + i (first_period 1..12, default 1), taken whole. Without period_ranges: the twelve calendar months from the budget's fiscal year start. Actuals: the P&L's lines for the basis, adjusting filter and company (scope=consolidated: every company), matched by account id, the budget's tag when it has one, summed in Decimal. Rows: every P&L account with a budget or activity in the periods, in sections revenue / cogs / expenses / otherRevenue / otherExpenses, with parentAccountId, depth (zero ancestors added) and rollupCells on parents. Each row has cells[] aligned with columns[] (the periods, then Total): {actualExact, budgetExact, overExact (actual - budget), pctOfBudgetExact (actual / budget x 100, 1 place, half away from zero, null on a zero budget)}. totalsExact {totalRevenue, totalCogs, totalExpenses, totalOtherRevenue, totalOtherExpenses, grossProfit (null without cogs rows), netIncome}: cells[] each. tag_split=1&tag_group_id=: under each account rowKind account = actual of lines without a tag from the group, tag = one per group tag with activity, account_total = the whole account; the budget is per account, so budgetExact / overExact / pctOfBudgetExact are null on account and tag rows and set on account_total (and the totals). A cell drills to GET /reports/general-ledger with drillTarget.params + column.drill + row.drill (exact=1); its actualExact is that ledger's netChangeExact. Response {title, layout: 'budget_vs_actual', budget {id, name, fiscalYear, fiscalYearStart, tagId, version}, basis, firstPeriod, startDate, endDate, columns [{key, caption, kind period|total, periodIndex, from, to, drill}], sections, totalsExact, tagSplit, drillTarget, meta}. Errors 400 INVALID_PARAM / INVALID_DATE_RANGE {details.param} (incl. ranges past period 12, tag_split on a budget for one tag, start_date / end_date with exact=1), 404 budget or tag group. Without exact=1 the response is unchanged (start_date / end_date, accrual).",
         "operationId": "get_api_v1_budgets_by_id_vs_actual",
         "parameters": [
           {
@@ -21912,6 +22202,126 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exact",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period_ranges",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "first_period",
+            "required": false,
+            "schema": {
+              "description": "1..12, default 1",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "basis",
+            "required": false,
+            "schema": {
+              "enum": [
+                "accrual",
+                "cash"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "adjusting",
+            "required": false,
+            "schema": {
+              "enum": [
+                "include",
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "enum": [
+                "consolidated"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_split",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1",
+                "0"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag_group_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "description": "Without exact=1 only",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "description": "Without exact=1 only",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "description": "Without exact=1 only",
+              "enum": [
+                "csv",
+                "pdf"
+              ],
               "type": "string"
             }
           }
@@ -21929,6 +22339,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Budget vs. Actual",
         "tags": [
           "budgets"
         ]

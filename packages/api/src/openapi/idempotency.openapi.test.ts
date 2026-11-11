@@ -198,7 +198,18 @@ export const IDEMPOTENCY_REPORT_DEFS_V1_ROUTES = [
   'put /api/v1/report-builder/definition-groups/{id}',
 ].sort();
 
+/** Keyed by budgets-exact-v1 (U-203): budget create and every budget write. */
+export const IDEMPOTENCY_BUDGETS_EXACT_V1_ROUTES = [
+  'post /api/v1/budgets',
+  'put /api/v1/budgets/{id}',
+  'put /api/v1/budgets/{id}/lines',
+  'post /api/v1/budgets/{id}/fill-from-actuals',
+  'post /api/v1/budgets/{id}/copy-from/{sourceId}',
+  'post /api/v1/budgets/{id}/adjust-by-percent',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_BUDGETS_EXACT_V1_ROUTES,
   ...IDEMPOTENCY_REPORT_DEFS_V1_ROUTES,
   ...IDEMPOTENCY_FEED_ACCEPT_V1_ROUTES,
   ...IDEMPOTENCY_FEED_REVIEW_V1_ROUTES,
