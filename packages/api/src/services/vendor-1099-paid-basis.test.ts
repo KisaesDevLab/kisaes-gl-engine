@@ -189,6 +189,13 @@ beforeAll(async () => {
   ids['royal'] = await vendor('Jo Royalty');
   await exp(ids['royal'], '2026-03-01', royalties.id, '10.00');
 
+  // A voided bill payment is no payment; the bill's later payment still counts.
+  ids['voided'] = await vendor('Kim Voided');
+  const vb = await bill(ids['voided'], '2026-08-01', [{ accountId: labor.id, amount: '800.00' }]);
+  const first = await pay('2026-08-10', [{ billId: vb.id, amount: '300.00' }]);
+  await billPaymentService.voidBillPayment(tenantId, first.payments[0]!.id, 'test');
+  await pay('2026-08-20', [{ billId: vb.id, amount: '500.00' }]);
+
   // Two boxes, a partial payment that does not divide evenly, rest next year.
   ids['cents'] = await vendor('Gus Cents');
   const odd = await bill(ids['cents'], '2026-07-01', [
@@ -246,6 +253,13 @@ describe('1099 Preparation and Summary count the same payments (U-212)', () => {
     expect(p.total_paidExact).toBe('880.0000');
     expect(p.reportable_totalExact).toBe('880.0000');
     expect(summaryRow(r, ids['credit']!)!.totalExact).toBe('880.0000');
+  });
+
+  it('a voided bill payment drops out of both reports', async () => {
+    const r = await reports(2026);
+    const p = prepRow(r, ids['voided']!);
+    expect([p.total_paidExact, p.reportable_totalExact]).toEqual(['500.0000', '500.0000']);
+    expect(summaryRow(r, ids['voided']!)!.totalExact).toBe('500.0000');
   });
 
   it('a partial payment over two boxes is whole cents and adds up to its cash; the bill comes back exactly', async () => {
@@ -321,7 +335,7 @@ describe('1099 Preparation and Summary count the same payments (U-212)', () => {
       }
       expect(r.center.length).toBe(r.summary.rows.reduce((n, x) => n + Object.keys(x.boxes).length, 0));
       // Vendors paid only from mapped accounts: every payment is a 1099 amount.
-      for (const v of ['byCheck', 'byBill', 'split', 'credit', 'cents']) {
+      for (const v of ['byCheck', 'byBill', 'split', 'credit', 'cents', 'voided', 'near', 'at', 'royal']) {
         const p = prepRow(r, ids[v]!);
         expect(D(p.total_paidExact).eq(D(p.reportable_totalExact)), `${year} ${v}`).toBe(true);
       }
