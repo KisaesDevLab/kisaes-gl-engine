@@ -141,6 +141,69 @@ describe('recurring copy path (U-64)', () => {
     expect(jeHeader).toMatchObject({ basis: 'accrual', isAdjusting: true, recurringScheduleId: jeSched!.id });
   });
 
+  it('a check the template system cannot hold copies as a check: check fields and a new number, or queued (U-210)', async () => {
+    // A check without a payee name on its face: the template snapshot can't
+    // hold it, so the schedule takes the legacy copy path.
+    const postCheck = async (printStatus: 'hand_written' | 'queue', checkNumber: number | null) => {
+      const t = await ledger.postTransaction(tenantId, {
+        txnType: 'expense', txnDate: '2026-01-05', contactId: vendorId, total: '80.0000', paymentMethod: 'check',
+        lines: [
+          { accountId: expId, debit: '80.0000', credit: '0' },
+          { accountId: bankId, debit: '0', credit: '80.0000' },
+        ],
+      }, userId, companyId);
+      await db.update(transactions).set({ isCheck: true, printStatus, checkNumber, printedMemo: 'Rent' })
+        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
+      return t;
+    };
+    const handWritten = await postCheck('hand_written', 5001);
+    const sched = await recurring.create(tenantId, handWritten.id, { frequency: 'monthly', startDate: '2026-02-05' }, userId);
+    const txn = await recurring.postNext(tenantId, sched!.id) as { id: string };
+    const [header] = await db.select().from(transactions).where(eq(transactions.id, txn.id));
+    expect(header).toMatchObject({
+      txnType: 'expense', isCheck: true, printStatus: 'hand_written', paymentMethod: 'check', printedMemo: 'Rent', txnDate: '2026-02-05',
+    });
+    // The bank account's next number (the counter starts at 1001).
+    expect(header!.checkNumber).toBe(1001);
+    const second = await recurring.postNext(tenantId, sched!.id) as { id: string };
+    const [h2] = await db.select().from(transactions).where(eq(transactions.id, second.id));
+    expect(h2!.checkNumber).toBe(1002);
+
+    // Two credit lines (a credit to another account listed first): the number
+    // comes from the bank account's counter (1003 follows 1001, 1002).
+    const [refunds] = await db.insert(accounts).values({ tenantId, name: 'Refunds', accountNumber: '4990', accountType: 'revenue', detailType: 'service' }).returning();
+    const split = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-01-07', contactId: vendorId, total: '80.0000', paymentMethod: 'check',
+      lines: [
+        { accountId: refunds!.id, debit: '0', credit: '20.0000' },
+        { accountId: expId, debit: '100.0000', credit: '0' },
+        { accountId: bankId, debit: '0', credit: '80.0000' },
+      ],
+    }, userId, companyId);
+    await db.update(transactions).set({ isCheck: true, printStatus: 'hand_written', checkNumber: 7001 })
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, split.id)));
+    const sSched = await recurring.create(tenantId, split.id, { frequency: 'monthly', startDate: '2026-02-07' }, userId);
+    const sTxn = await recurring.postNext(tenantId, sSched!.id) as { id: string };
+    const [sHeader] = await db.select().from(transactions).where(eq(transactions.id, sTxn.id));
+    expect(sHeader).toMatchObject({ isCheck: true, printStatus: 'hand_written', checkNumber: 1003 });
+
+    const queued = await postCheck('queue', null);
+    const qSched = await recurring.create(tenantId, queued.id, { frequency: 'monthly', startDate: '2026-02-05' }, userId);
+    const qTxn = await recurring.postNext(tenantId, qSched!.id) as { id: string };
+    const [qHeader] = await db.select().from(transactions).where(eq(transactions.id, qTxn.id));
+    expect(qHeader).toMatchObject({ isCheck: true, printStatus: 'queue', checkNumber: null, paymentMethod: 'check' });
+
+    // A plain expense stays a plain expense.
+    const plain = await ledger.postTransaction(tenantId, {
+      txnType: 'expense', txnDate: '2026-01-06', total: '5.0000',
+      lines: [{ accountId: expId, debit: '5.0000', credit: '0' }, { accountId: bankId, debit: '0', credit: '5.0000' }],
+    }, userId, companyId);
+    const pSched = await recurring.create(tenantId, plain.id, { frequency: 'monthly', startDate: '2026-02-06' }, userId);
+    const pTxn = await recurring.postNext(tenantId, pSched!.id) as { id: string };
+    const [pHeader] = await db.select().from(transactions).where(eq(transactions.id, pTxn.id));
+    expect(pHeader).toMatchObject({ isCheck: false, printStatus: null, checkNumber: null });
+  });
+
   it('a recurring bill copies the template amounts exactly', async () => {
     const bill = await billService.createBill(tenantId, {
       contactId: vendorId, txnDate: '2026-01-10', termsDays: 30,

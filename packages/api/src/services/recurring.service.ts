@@ -7,13 +7,14 @@ import { nextRecurrenceDate } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
-import { recurringSchedules, accounts, templateTransactions } from '../db/schema/index.js';
+import { recurringSchedules, accounts, templateTransactions, transactions } from '../db/schema/index.js';
 import { templateForSchedule } from './templates/templates.service.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
 import * as invoiceService from './invoice.service.js';
+import * as checkService from './check.service.js';
 import * as salesTaxSvc from './sales-tax.service.js';
 import { incCounter, recordSchedulerTick } from '../utils/metrics.js';
 import { log } from '../utils/logger.js';
@@ -393,7 +394,7 @@ export async function postLegacyClone(
         ...(l.itemId && l.unitId ? { unitId: l.unitId } : {}),
     }));
 
-    txn = await ledger.postTransaction(tenantId, {
+    const input = {
       txnType: template.txnType as any,
       txnDate: sched.nextOccurrence,
       contactId: template.contactId || undefined,
@@ -408,7 +409,41 @@ export async function postLegacyClone(
       sourceId: sched.id,
       salesTaxId: template.salesTaxId ?? null,
       lines,
-    }, undefined, template.companyId || undefined);
+    };
+    const companyId = template.companyId || undefined;
+    // U-210 (ClientLedger P28 QA): a check copies as a check, as the check
+    // routes write one (check.service createCheck): the check fields, and
+    // the bank account's next number (hand-written) unless the template
+    // waits in the print queue (queued, no number). Posted and numbered in
+    // one transaction. Before, the copy was a plain expense, not a check.
+    // The bank account the source check is drawn on, as the check routes read
+    // it (its credit line on an asset / bank account), for the number counter.
+    const isCheck = template.txnType === 'expense' && (template.isCheck || !!template.printStatus);
+    const bankAccountId = isCheck
+      ? (await checkService.checkBankAccountId(db, tenantId, template.id))
+        ?? template.lines.find((l) => new Decimal(l.credit || '0').greaterThan(0))?.accountId
+      : undefined;
+    if (bankAccountId) {
+      const queued = template.printStatus === 'queue';
+      txn = await db.transaction(async (tx) => {
+        let checkNumber: number | null = null;
+        if (!queued) {
+          await checkService.lockCheckCounter(tx, tenantId, companyId);
+          checkNumber = await checkService.allocateNextCheckNumber(tx, tenantId, bankAccountId, companyId);
+        }
+        const t = await ledger.postTransaction(tenantId, { ...input, paymentMethod: 'check' }, undefined, companyId, tx);
+        const printStatus = queued ? 'queue' : 'hand_written';
+        await tx.update(transactions).set({
+          checkNumber, printStatus, isCheck: true,
+          payeeNameOnCheck: template.payeeNameOnCheck ?? null,
+          payeeAddress: template.payeeAddress ?? null,
+          printedMemo: template.printedMemo ?? null,
+        }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, t.id)));
+        return { ...t, checkNumber, printStatus, isCheck: true, paymentMethod: 'check' };
+      });
+    } else {
+      txn = await ledger.postTransaction(tenantId, input, undefined, companyId);
+    }
   }
 
   return txn;

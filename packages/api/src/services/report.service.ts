@@ -1088,7 +1088,11 @@ export async function buildBalanceSheet(
   // U-60 adjusting lens; also applied to the retained-earnings and
   // current-year net-income rows.
   // exactAmounts / accountTree: exact report fields (U-14), as on the P&L.
-  bsOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; accountTree?: boolean } = {},
+  // fiscalYearStart (U-213, report-fixes-v2): the start of the fiscal year
+  // containing asOfDate, where income splits into prior years and the current
+  // year (a retail 52-53 week year starts on its own day); default: the 1st
+  // of the company's fiscal start month.
+  bsOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; accountTree?: boolean; fiscalYearStart?: string | null } = {},
 ) {
   const adjusting = bsOpts.adjusting ?? null;
   const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
@@ -1135,6 +1139,13 @@ export async function buildBalanceSheet(
     accountId: string | null; name: string; accountNumber: string | null; balance: number; detailType?: string | null;
     // Exact reports only (U-14).
     balanceExact?: string;
+    // Exact reports only (U-213, report-fixes-v2): a computed row no ledger
+    // line holds (no drill), and the Retained Earnings account when the
+    // prior years' income is folded into it (its ledger lines hold only
+    // priorYearsIncomeExact less than the balance).
+    calculated?: true;
+    includesPriorYearsIncome?: true;
+    priorYearsIncomeExact?: string;
   };
   const exactMode = !!bsOpts.exactAmounts;
   // Balances accumulate in Decimal from the unrounded SQL sums (U-14); the
@@ -1205,7 +1216,7 @@ export async function buildBalanceSheet(
   const asOf = new Date(asOfDate + 'T00:00:00Z');
   let currentFYStartYear = asOf.getUTCFullYear();
   if (asOf.getUTCMonth() + 1 < fyStartMonth) currentFYStartYear--;
-  const currentFYStart = `${currentFYStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
+  const currentFYStart = bsOpts.fiscalYearStart || `${currentFYStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
   // Retained Earnings = net income for all completed fiscal years (before
   // current FY start). The P&L hands back its Decimal net income
@@ -1225,6 +1236,10 @@ export async function buildBalanceSheet(
     if (!retainedD.isZero()) {
       setBal(reEntry, balD.get(reEntry)!.plus(retainedD));
       equityD = equityD.plus(retainedD);
+      if (exactMode) {
+        reEntry.includesPriorYearsIncome = true;
+        reEntry.priorYearsIncomeExact = exactStr(retainedD);
+      }
     }
     // A fully-zero RE line (no posted balance and no prior income) is noise —
     // drop it, matching the $0 skip applied to every other account.
@@ -1233,7 +1248,7 @@ export async function buildBalanceSheet(
       if (i >= 0) equity.splice(i, 1);
     }
   } else if (!retainedD.isZero()) {
-    const row: BSEntry = { accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: 0 };
+    const row: BSEntry = { accountId: null, name: 'Retained Earnings (Prior Years)', accountNumber: null, balance: 0, ...(exactMode ? { calculated: true as const } : {}) };
     setBal(row, retainedD);
     equity.push(row);
     calculatedEquity.push(row);
@@ -1244,7 +1259,7 @@ export async function buildBalanceSheet(
   const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId, null, { adjusting, exactAmounts: true });
   const currentD = dec(currentPL.netIncomeExact);
   if (!currentD.isZero()) {
-    const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: 0 };
+    const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: 0, ...(exactMode ? { calculated: true as const } : {}) };
     setBal(row, currentD);
     equity.push(row);
     calculatedEquity.push(row);
@@ -1284,6 +1299,12 @@ export async function buildBalanceSheet(
           totalLiabilitiesExact: exactStr(liabD),
           totalEquityExact: exactStr(equityD),
           totalLiabilitiesAndEquityExact: exactStr(liabD.plus(equityD)),
+          // U-213 (report-fixes-v2): the year split used, and the part of
+          // total equity no ledger line holds (prior years' and current-year
+          // income); the equity total drills to its accounts' lines only
+          // when this is zero.
+          fiscalYearStart: currentFYStart,
+          calculatedEquityExact: exactStr(retainedD.plus(currentD)),
         }
       : {}),
     ...(grouped
@@ -2939,9 +2960,11 @@ export async function buildGeneralLedger(
   // balances and the period lines alike, so a drill sums to its cell.
   // tagSplitGroupId (U-201): each account gains tagSplit rows (lines without
   // a tag from the group, each group tag with activity, the account total).
+  // fiscalYearStart (U-213): the start of the fiscal year containing
+  // startDate; income-statement beginning balances count from it.
   glOpts: {
     adjusting?: AdjustingFilter | null; exactAmounts?: boolean; limit?: number | null;
-    lens?: LineLens | null; tagSplitGroupId?: string | null;
+    lens?: LineLens | null; tagSplitGroupId?: string | null; fiscalYearStart?: string | null;
   } = {},
 ) {
   const adjusting = glOpts.adjusting ?? null;
@@ -2970,7 +2993,9 @@ export async function buildGeneralLedger(
   const startDt = new Date(startDate + 'T00:00:00Z');
   let fyStartYear = startDt.getUTCFullYear();
   if (startDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
-  const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
+  // U-213 (report-fixes-v2): an explicit fiscal year start (a retail 52-53
+  // week year) replaces the month rule for the income accounts' reset.
+  const fyStart = glOpts.fiscalYearStart || `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
   // 1. All accounts (so we can include accounts that have beginning
   //    balance only and no period activity).
@@ -3341,6 +3366,45 @@ export async function buildGeneralLedger(
   };
 }
 
+/**
+ * U-213 (ClientLedger PR-6 S5, Q-SPF7, report-fixes-v2): what A/R and A/P
+ * keep on the cash basis through `asOfDate` from entries other than customer
+ * and vendor payments (journal entries and other entries posted straight to
+ * A/R or A/P pass through the cash ledger unchanged). A/R in debit sign, A/P
+ * in credit sign, whole books (company scope and adjusting lens, no tag
+ * filter); accountIds and txnTypes select those lines on the cash General
+ * Ledger. Null when both are zero.
+ */
+export async function cashBasisArApResidue(
+  tenantId: string, asOfDate: string, companyId: string | null, adjusting: AdjustingFilter | null = null,
+): Promise<{ accountsReceivableExact: string; accountsPayableExact: string; accountIds: string[]; txnTypes: string[] } | null> {
+  const res = await executeCashBasis(sql`
+    WITH ${cashBasisLinesWith(tenantId, null, asOfDate, companyId, adjusting)}
+    SELECT a.id, a.detail_type, cb.txn_type, COALESCE(SUM(cb.debit - cb.credit), 0) AS net
+    FROM cb_lines cb
+    JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}
+    WHERE a.detail_type IN ('accounts_receivable', 'accounts_payable')
+      AND cb.txn_type NOT IN ('customer_payment', 'returned_payment', 'customer_refund', 'bill_payment')
+    GROUP BY a.id, a.detail_type, cb.txn_type
+  `);
+  let ar = new Decimal(0);
+  let ap = new Decimal(0);
+  const accountIds = new Set<string>();
+  const txnTypes = new Set<string>();
+  for (const r of res.rows as Array<{ id: string; detail_type: string; txn_type: string; net: string }>) {
+    const n = new Decimal(r.net || 0);
+    if (n.isZero()) continue;
+    if (r.detail_type === 'accounts_receivable') ar = ar.plus(n); else ap = ap.minus(n);
+    accountIds.add(r.id);
+    txnTypes.add(r.txn_type);
+  }
+  if (ar.isZero() && ap.isZero()) return null;
+  return {
+    accountsReceivableExact: exactStr(ar), accountsPayableExact: exactStr(ap),
+    accountIds: [...accountIds].sort(), txnTypes: [...txnTypes].sort(),
+  };
+}
+
 export async function buildTrialBalance(
   tenantId: string,
   startDate: string,
@@ -3361,18 +3425,25 @@ export async function buildTrialBalance(
   // exactAmounts / accountTree: exact report fields (U-14). Exact rows add
   // accountId, total_debitExact, total_creditExact, debitExact, creditExact
   // and netExact (debit − credit; rollupExact on parent rows is the same sign).
-  tbOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; accountTree?: boolean } = {},
+  // fiscalYearStart (U-213, report-fixes-v2): the fiscal year start to split
+  // at (a retail 52-53 week year starts on its own day); default: the 1st of
+  // the company's fiscal start month on or before endDate.
+  tbOpts: { adjusting?: AdjustingFilter | null; exactAmounts?: boolean; accountTree?: boolean; fiscalYearStart?: string | null } = {},
 ) {
   const adjusting = tbOpts.adjusting ?? null;
-  const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
-
-  // Compute current fiscal year start based on the report end date.
-  // UTC getters — see the identical note in buildGeneralLedger; local
-  // getters flipped the fiscal year for boundary dates west of UTC.
-  const endDt = new Date(endDate + 'T00:00:00Z');
-  let fyStartYear = endDt.getUTCFullYear();
-  if (endDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
-  const fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
+  let fyStart: string;
+  if (tbOpts.fiscalYearStart) {
+    fyStart = tbOpts.fiscalYearStart;
+  } else {
+    const fyStartMonth = await getFiscalYearStart(tenantId, companyId);
+    // Compute current fiscal year start based on the report end date.
+    // UTC getters — see the identical note in buildGeneralLedger; local
+    // getters flipped the fiscal year for boundary dates west of UTC.
+    const endDt = new Date(endDate + 'T00:00:00Z');
+    let fyStartYear = endDt.getUTCFullYear();
+    if (endDt.getUTCMonth() + 1 < fyStartMonth) fyStartYear--;
+    fyStart = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
+  }
   const tagExistsClause = tagId
     ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id IN ${tagIn(tagId)})`
     : sql``;
@@ -3384,11 +3455,25 @@ export async function buildTrialBalance(
   // Cash basis reads the virtual cash-basis ledger (already scoped to
   // <= endDate); the fiscal-year cutoff for P&L accounts uses each line's
   // recognition date (cb.txn_date). Accrual reads the posted journal.
-  const cashTagClause = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
+  // U-213 (ClientLedger PR-6 S2): the cash TB uses the same transaction-level
+  // tag semantic as the accrual one — every virtual line of a transaction
+  // (payment, check, …) that has a line with the tag — so a tag-filtered
+  // cash TB balances too. Each virtual group is balanced and belongs to one
+  // transaction, so whole transactions balance.
+  const cashTagClause = tagId
+    ? sql`AND EXISTS (SELECT 1 FROM cb_lines cb2 WHERE cb2.transaction_id = cb.transaction_id AND cb2.tag_id IN ${tagIn(tagId)})`
+    : sql``;
+  // With a tag filter, the prior-years income (retained earnings row) is
+  // summed from the same transaction-level set (pre_net below); without
+  // one, from the same-basis P&L as before.
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, null, endDate, companyId, adjusting)}
         SELECT a.id, a.account_number, a.name, a.account_type,
+          COALESCE(SUM(
+            CASE WHEN a.account_type NOT IN ('asset', 'liability', 'equity') AND cb.txn_date < ${fyStart}
+              THEN cb.credit - cb.debit ELSE 0 END
+          ), 0) as pre_net,
           COALESCE(SUM(
             CASE WHEN a.account_type IN ('asset', 'liability', 'equity')
               THEN cb.debit ELSE CASE WHEN cb.txn_date >= ${fyStart} THEN cb.debit ELSE 0 END END
@@ -3406,6 +3491,10 @@ export async function buildTrialBalance(
       `)
     : await db.execute(sql`
     SELECT a.id, a.account_number, a.name, a.account_type,
+      COALESCE(SUM(
+        CASE WHEN a.account_type NOT IN ('asset', 'liability', 'equity') AND t.txn_date < ${fyStart}
+          THEN jl.credit - jl.debit ELSE 0 END
+      ), 0) as pre_net,
       COALESCE(SUM(
         CASE WHEN a.account_type IN ('asset', 'liability', 'equity')
           THEN jl.debit ELSE
@@ -3481,32 +3570,28 @@ export async function buildTrialBalance(
     netOf.set(row, net);
     return row;
   };
-  const data: TBRow[] = (rows.rows as any[]).map((r) => tbRow(r, new Decimal(r.total_debit || 0), new Decimal(r.total_credit || 0)))
+  const data: TBRow[] = (rows.rows as any[]).map(({ pre_net: _preNet, ...r }) => tbRow(r, new Decimal(r.total_debit || 0), new Decimal(r.total_credit || 0)))
     // The HAVING above keeps accounts with LIFETIME activity; drop rows
     // that net to zero after the fiscal-YTD CASE and debit/credit netting
     // (fully-offset accounts, prior-fiscal-year-only income accounts).
     // Legacy responses also drop a net that rounds to 0 at 4 places.
     .filter((r) => !netOf.get(r)!.isZero() && (exactMode || r.debit !== 0 || r.credit !== 0));
 
-  // Add Retained Earnings row for prior-year net income (virtual closing).
-  //
-  // Caveat: this injection delegates to buildProfitAndLoss, which uses
-  // the LINE-LEVEL tag filter even though TB itself uses the EXISTS
-  // filter. For pure-uniform-tag tenants the two semantics agree, so
-  // the common case stays correct. A mixed-tag tenant running prior-
-  // year data through a tag-filtered TB will see RE computed on the
-  // line-level subset, which can reintroduce a small debits-vs-credits
-  // drift limited to the prior-year RE row. Revisit in Phase 10 if any
-  // tenant trips this; the fix is an EXISTS-semantic prior-year P&L
-  // variant. Captured in tags-v2 followups.
+  // Add Retained Earnings row for prior-year net income (virtual closing),
+  // on the report's basis (U-213, ClientLedger PR-6 B1: it was always the
+  // accrual P&L, so a cash TB with an invoice open at a year end did not
+  // balance). With a tag filter it is the prior-years income of the same
+  // transaction-level set as the rows (U-213 S2; the line-level P&L could
+  // drift on mixed-tag entries).
   if (fyStart > '1900-01-02') {
     // UTC arithmetic so the day-before subtraction can't drift across a
     // month boundary in a non-UTC container.
     const priorEndDate = new Date(fyStart + 'T00:00:00Z');
     priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
     const priorEnd = priorEndDate.toISOString().split('T')[0]!;
-    const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, 'accrual', companyId, tagId, null, { adjusting, exactAmounts: true });
-    const reD = dec(retainedPL.netIncomeExact);
+    const reD = tagId
+      ? dsum((rows.rows as Array<{ pre_net?: string | number | null }>).map((r) => r.pre_net ?? 0))
+      : dec((await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, basis, companyId, null, null, { adjusting, exactAmounts: true })).netIncomeExact);
     if (!reD.isZero()) {
       // Retained earnings is a credit-balance equity account. Numbered
       // 30120 to sort beside the posted Retained Earnings account (the

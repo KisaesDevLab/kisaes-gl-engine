@@ -478,6 +478,35 @@ describe('budgets-exact-v1 (U-203)', () => {
     expect((await call('POST', `/budgets/${id}/adjust-by-percent`, { percent: '-101' })).status).toBe(400);
   });
 
+  it('copy replaces every target line with the source lines (U-211); stale 409 and a copy onto itself change nothing', async () => {
+    const src = (await call('POST', '/budgets', { name: 'Copy source 2034', fiscalYear: 2034 })).body.budget.id;
+    const dst = (await call('POST', '/budgets', { name: 'Copy target 2035', fiscalYear: 2035 })).body.budget.id;
+    expect((await call('PUT', `/budgets/${src}/lines`, { lines: [{ accountId: acct['4000'], month1: '100.00' }] })).status).toBe(200);
+    expect((await call('PUT', `/budgets/${dst}/lines`, {
+      lines: [{ accountId: acct['4000'], month1: '1.00', month2: '2.00' }, { accountId: acct['6000'], month1: '50.00' }],
+    })).status).toBe(200);
+    const accountsOf = (body: any) => body.lines.map((l: any) => l.account_id).sort();
+    const before = await get(`/budgets/${dst}/lines`);
+    // A stale version: 409, the target keeps its lines.
+    const stale = await call('POST', `/budgets/${dst}/copy-from/${src}`, { version: 1 });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('STALE_VERSION');
+    expect((await get(`/budgets/${dst}/lines`)).body.lines).toEqual(before.body.lines);
+    // The copy: 6000 (not on the source) is gone, 4000 is the source's line, month2 included.
+    const version = (await get(`/budgets/${dst}`)).body.budget.version;
+    const copied = await call('POST', `/budgets/${dst}/copy-from/${src}`, { version });
+    expect(copied.status, JSON.stringify(copied.body)).toBe(200);
+    expect(copied.body.version).toBe(version + 1);
+    expect(accountsOf(copied.body)).toEqual([acct['4000']]);
+    const l4000 = copied.body.lines.find((l: any) => l.account_id === acct['4000']);
+    expect(l4000.periodsExact.slice(0, 2)).toEqual(['100.0000', '0.0000']);
+    // A copy onto itself keeps its lines.
+    const self = await call('POST', `/budgets/${src}/copy-from/${src}`);
+    expect(self.status, JSON.stringify(self.body)).toBe(200);
+    expect(accountsOf(self.body)).toEqual([acct['4000']]);
+    expect(self.body.lines[0].periodsExact[0]).toBe('100.0000');
+  });
+
   it('vs-actual errors; without exact=1 the legacy response is unchanged', async () => {
     const err = async (q: string, param: string, status = 400) => {
       const r = await get(`/budgets/${budgetId}/vs-actual?${q}`);

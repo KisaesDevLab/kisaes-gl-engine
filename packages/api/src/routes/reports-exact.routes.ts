@@ -22,13 +22,13 @@ import { describe } from '../middleware/describe.js';
 import * as reportService from '../services/report.service.js';
 import * as apReportService from '../services/ap-report.service.js';
 import * as comparisonService from '../services/report-comparison.service.js';
-import { buildVendor1099SummaryByBox } from '../services/vendor-1099-summary.service.js';
+import { buildVendor1099SummaryByBox, tinLast4 } from '../services/vendor-1099-summary.service.js';
 import * as openBalances from '../services/open-balances.service.js';
 import { exactRows, exactStr, dsum, isIsoDate, normalizeReportDates, reportMeta, ReportDecimal } from '../services/report-exact.js';
 import { loadGroupTags, type ContactLens, type LineLens, type TagLens } from '../services/report-lens.js';
 import {
   MAX_PERIOD_RANGES, ReportColumnsError, applyTrialBalanceTagSplit, buildBalanceSheetColumns, buildProfitAndLossColumns,
-  fiscalYearStartOf, type DateRange,
+  fiscalYearStartIn, fiscalYearStartOf, type DateRange,
 } from '../services/report-columns.service.js';
 
 export interface ExactRouteHelpers {
@@ -217,6 +217,42 @@ export function readPeriodRanges(req: Request, name = 'period_ranges', ordered =
   return ranges;
 }
 
+/**
+ * U-213 (report-fixes-v2): fiscal_year_start on the Balance Sheet, Trial
+ * Balance and General Ledger — one or more fiscal year start dates
+ * (YYYY-MM-DD, comma-separated, ascending; at most 50), e.g. a retail 52-53
+ * week calendar. Each report date uses the latest start on or before it.
+ */
+const MAX_FY_STARTS = 50;
+export function readFiscalYearStarts(req: Request): string[] | null {
+  const v = qs(req, 'fiscal_year_start');
+  if (v === undefined) return null;
+  const parts = v.split(',').map((x) => x.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  if (parts.length > MAX_FY_STARTS) throw bad('fiscal_year_start', `fiscal_year_start takes at most ${MAX_FY_STARTS} dates`);
+  if (parts.some((d) => !isIsoDate(d))) throw bad('fiscal_year_start', 'fiscal_year_start must be YYYY-MM-DD dates, comma-separated');
+  for (let i = 1; i < parts.length; i++) {
+    if (parts[i]! <= parts[i - 1]!) throw bad('fiscal_year_start', 'fiscal_year_start dates must be in ascending order');
+  }
+  return parts;
+}
+/** The listed fiscal year start for `d` (400 INVALID_PARAM when none covers it); null without a list. */
+function fyStartFor(starts: string[] | null, d: string): string | null {
+  if (!starts) return null;
+  const s = fiscalYearStartIn(d, starts, 1);
+  if (s === null) throw bad('fiscal_year_start', `fiscal_year_start has no fiscal year start for ${d} (the latest start on or before it, at most 371 days before)`);
+  return s;
+}
+/** The exact Balance Sheet and Trial Balance take no tag filter (U-213, ClientLedger PR-6 S2). */
+function refuseBalanceTag(req: Request, report: string) {
+  if (qs(req, 'tag_id') !== undefined || qs(req, 'tagId') !== undefined) {
+    throw AppError.badRequest(
+      `A ${report} filtered to a tag doesn't balance when an entry's lines carry different tags. Use tag_split=1&tag_group_id= for balances by tag.`,
+      'TAG_FILTER_NOT_AVAILABLE', { param: 'tag_id' },
+    );
+  }
+}
+
 /** prior_ranges (with prior=period): one range per column, aligned with period_ranges (or the single range). */
 function readPriorRanges(req: Request, prior: 'period' | 'year' | null, columns: number): DateRange[] | null {
   const pr = readPeriodRanges(req, 'prior_ranges', false);
@@ -390,6 +426,14 @@ const DRILL_Q = {
   txn_types: z.string().optional().describe('Comma-separated transaction types'),
 };
 const ADJ_Q = { adjusting: z.enum(['include', 'exclude', 'only']).optional() };
+// U-213 (report-fixes-v2); needs exact=1.
+const FY_STARTS_Q = {
+  fiscal_year_start: z.string().optional().describe('YYYY-MM-DD,… one or more fiscal year start dates in ascending order (at most 50), e.g. a retail '
+    + '52-53 week calendar; each report date uses the latest start on or before it (at most 371 days before; else 400 INVALID_PARAM). '
+    + 'Default: the 1st of the company fiscal start month. Balance Sheet: where income splits into prior years and the current year (every '
+    + 'as-of and prior as-of date must be covered); Trial Balance: the year start of the income accounts and the retained-earnings split; General '
+    + 'Ledger: where the beginning balances of income accounts reset (the start for start_date).'),
+};
 // U-121 (open-balances-asof-v1, ap-aging-exact-v1); each needs exact=1.
 const AS_OF_Q = { as_of_date: z.string().optional().describe('YYYY-MM-DD; default today. Needs exact=1.') };
 const OPEN_Q = { open: z.enum(['1', '0']).optional().describe('1 = Open Invoices as of as_of_date. Needs exact=1.') };
@@ -418,6 +462,19 @@ function doc(summary: string, description: string, query: Record<string, z.ZodTy
 export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers): void {
   const meta = (req: Request, o: { basis?: 'accrual' | 'cash' | null; from?: string; to?: string; asOf?: string }) =>
     reportMeta({ basis: o.basis ?? null, from: o.from, to: o.to, asOf: o.asOf, reportSchemaVersion: h.reportSchemaVersion });
+
+  /**
+   * Balance Sheet / Trial Balance meta (U-213, report-fixes-v2): adds
+   * cashArApResidue — on the cash basis, what A/R and A/P keep from entries
+   * other than payments (reportService.cashBasisArApResidue), else null.
+   */
+  const balanceMeta = async (req: Request, b: 'accrual' | 'cash', adjusting: reportService.AdjustingFilter,
+    o: { from?: string; to?: string; asOf?: string }, residueDate: string) => ({
+    ...meta(req, { basis: b, ...o }),
+    cashArApResidue: b === 'cash'
+      ? await reportService.cashBasisArApResidue(req.tenantId, residueDate, h.resolveCompanyScope(req), adjusting)
+      : null,
+  });
 
   /** The parameters every drill of this report adds (basis, adjusting, report tag filter). */
   const drillBase = (req: Request, b: 'accrual' | 'cash', adjusting: string, tag: TagLens | null): Record<string, string> => ({
@@ -485,18 +542,19 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const prior = oneOf(req, 'prior', ['period', 'year'] as const) ?? null;
     const tagSplit = flag(req, 'tag_split');
     const groupId = uuid(req, 'tag_group_id', false) ?? null;
-    const tagFilter = readTagLens(req, { allowUntagged: true, allowScope: false });
+    refuseBalanceTag(req, 'Balance Sheet');
+    const tagFilter: TagLens | null = null;
+    const fiscalYearStarts = readFiscalYearStarts(req);
     if (flag(req, 'ytd')) throw bad('ytd', 'ytd is not available on the Balance Sheet');
     if (flag(req, 'pct_of_income')) throw bad('pct_of_income', 'pct_of_income is not available on the Balance Sheet');
-    const columnsMode = !!ranges || !!prior || tagSplit || tagFilter?.kind === 'untagged';
+    const columnsMode = !!ranges || !!prior || tagSplit;
     if (!columnsMode) {
       if (groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1');
       return null;
     }
-    if (qs(req, 'compare')) throw bad('compare', 'compare does not combine with period_ranges, prior, tag_split or tag_id=untagged');
+    if (qs(req, 'compare')) throw bad('compare', 'compare does not combine with period_ranges, prior or tag_split');
     if (tagSplit && !groupId) throw bad('tag_group_id', 'tag_split needs tag_group_id');
     if (!tagSplit && groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1');
-    if (tagSplit && tagFilter) throw bad('tag_id', 'tag_id does not combine with tag_split');
     if (h.readGroupBy(req)) throw bad('group_by', 'group_by is not available in the column layout');
     let asOfs: Array<{ asOf: string; from: string | null }>;
     if (ranges) {
@@ -513,12 +571,13 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const adjusting = h.readAdjusting(req);
     const data = await buildBalanceSheetColumns(req.tenantId, {
       basis: b, companyId: h.resolveCompanyScope(req), adjusting, tagFilter, asOfs, periodColumns: !!ranges, prior, priorRanges,
-      tagSplitGroupId: tagSplit ? groupId : null,
+      tagSplitGroupId: tagSplit ? groupId : null, fiscalYearStarts,
     }).catch(columnsError);
+    const lastAsOf = asOfs[asOfs.length - 1]!.asOf;
     return {
       ...data,
       drillTarget: { path: '/reports/general-ledger', amount: 'endingBalanceExact', params: drillBase(req, b, adjusting, tagFilter) },
-      meta: meta(req, { basis: b, asOf: asOfs[asOfs.length - 1]!.asOf }),
+      meta: await balanceMeta(req, b, adjusting, { asOf: lastAsOf }, lastAsOf),
     };
   }
 
@@ -568,11 +627,18 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   router.get('/balance-sheet', doc('Balance Sheet',
     'assets/liabilities/equity[] {accountId, balance, balanceExact, parentAccountId, depth, rollupExact?} in natural sign (liabilities and '
     + 'equity credit-positive), total*Exact; compare=previous_period|previous_year: rows[].valuesExact, total*Exact arrays. Column layout '
-    + '(reports-columns-v1; with period_ranges, prior, tag_split or tag_id=untagged): as on the P&L, sections assets/liabilities/equity, one '
+    + '(reports-columns-v1; with period_ranges, prior or tag_split; tag_id=untagged is refused since report-fixes-v2): as on the P&L, sections assets/liabilities/equity, one '
     + 'column per as-of date (kind as_of, asOf), totalsExact {totalAssets, totalLiabilities, totalEquity, totalLiabilitiesAndEquity}; '
     + 'calculated: true rows (Retained Earnings (Prior Years), Net Income (Current Year)) and the Retained Earnings account '
-    + '(includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column).',
-    { as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), group_by: z.enum(['detail_type', 'leadsheet']).optional(),
+    + '(includesPriorYearsIncome) have no drill; drillTarget.amount endingBalanceExact (any GL start_date, end_date from the column); '
+    + 'as-of and prior columns carry fiscalYearStart (the income split). U-213 (report-fixes-v2): standard layout equity rows add calculated: '
+    + 'true (the computed rows) and, on the Retained Earnings account when the income of prior years is folded in, includesPriorYearsIncome: true '
+    + 'and priorYearsIncomeExact (its ledger lines hold balanceExact - priorYearsIncomeExact); fiscalYearStart (the income split used; Net '
+    + 'Income (Current Year) = the P&L from it to as_of_date) and calculatedEquityExact (the part of totalEquityExact no ledger line holds). '
+    + 'tag_id is 400 TAG_FILTER_NOT_AVAILABLE (a tag-filtered sheet need not balance; use tag_split). meta.cashArApResidue (cash basis, else '
+    + 'null): {accountsReceivableExact, accountsPayableExact, accountIds, txnTypes} what A/R and A/P keep from entries other than payments '
+    + '(journal entries ...) as of the last date, whole books; GL basis=cash&account_ids=&txn_types= selects those lines; null when zero.',
+    { as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, compare: z.string().optional(), group_by: z.enum(['detail_type', 'leadsheet']).optional(), ...FY_STARTS_Q,
       start_date: z.string().optional().describe('With prior=period and no period_ranges: the period start (prior as-of = the day before)'),
       period_ranges: COLUMNS_Q.period_ranges, prior: COLUMNS_Q.prior, prior_ranges: COLUMNS_Q.prior_ranges, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
   needsExact(COLUMN_PARAMS, untaggedNeedsExact),
@@ -585,12 +651,15 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const companyId = h.resolveCompanyScope(req);
     const adjusting = h.readAdjusting(req);
     const groupBy = h.readGroupBy(req);
-    const m = meta(req, { basis: b, asOf });
+    const fyStarts = readFiscalYearStarts(req);
+    const m = await balanceMeta(req, b, adjusting, { asOf }, asOf);
     if (compare) {
+      if (fyStarts) throw bad('fiscal_year_start', 'fiscal_year_start does not combine with compare; use period_ranges or prior');
       const data = await comparisonService.buildComparativeBS(req.tenantId, asOf, b, compare, companyId, groupBy, { adjusting, exact: true });
       return { ...data, meta: m };
     }
-    const data = await reportService.buildBalanceSheet(req.tenantId, asOf, b, companyId, h.readTagFilter(req), groupBy, { adjusting, exactAmounts: true, accountTree: true });
+    const data = await reportService.buildBalanceSheet(req.tenantId, asOf, b, companyId, null, groupBy,
+      { adjusting, exactAmounts: true, accountTree: true, fiscalYearStart: fyStartFor(fyStarts, asOf) });
     return { ...data, meta: m };
   }));
 
@@ -598,9 +667,12 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     'data[] {accountId, debit, credit, debitExact, creditExact, netExact (debit - credit), total_debitExact, total_creditExact, parentAccountId, '
     + 'depth, rollupExact?}, totalDebitsExact, totalCreditsExact, drillTarget {path, amount: endingBalanceExact, startDate, endDate, params}. '
     + 'tag_split=1&tag_group_id= (reports-columns-v1): each row becomes rowKind account (untagged in the group), tag rows and account_total '
-    + '(the unsplit row), each with drill; totals unchanged.',
-    { ...RANGE_Q, as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id }),
-  needsExact(['tag_split', 'tag_group_id']),
+    + '(the unsplit row), each with drill; totals unchanged. U-213 (report-fixes-v2): the computed Retained Earnings (Prior Years) row is on '
+    + 'the report\'s basis (cash included); fiscalYearStart (the income accounts\' year start used, = drillTarget.startDate; drillTarget.params '
+    + 'carries fiscal_year_start when it was given); tag_id is 400 TAG_FILTER_NOT_AVAILABLE (use tag_split); meta.cashArApResidue as on the '
+    + 'Balance Sheet (as of end_date).',
+    { ...RANGE_Q, as_of_date: z.string().optional(), ...BASIS_Q, ...ADJ_Q, tag_split: COLUMNS_Q.tag_split, tag_group_id: COLUMNS_Q.tag_group_id, ...FY_STARTS_Q }),
+  needsExact(['tag_split', 'tag_group_id', 'fiscal_year_start']),
   exactOnly(async (req) => {
     const asOf = date(req, 'as_of_date');
     const from = date(req, 'start_date') ?? yearStart();
@@ -611,23 +683,27 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const groupId = uuid(req, 'tag_group_id', false) ?? null;
     if (tagSplit && !groupId) throw bad('tag_group_id', 'tag_split needs tag_group_id');
     if (!tagSplit && groupId) throw bad('tag_group_id', 'tag_group_id needs tag_split=1');
-    if (tagSplit && (req.query['tag_id'] ?? req.query['tagId'])) throw bad('tag_id', 'tag_id does not combine with tag_split');
+    refuseBalanceTag(req, 'Trial Balance');
     const companyId = h.resolveCompanyScope(req);
     const adjusting = h.readAdjusting(req);
-    const data = await reportService.buildTrialBalance(req.tenantId, from, to, companyId, h.readTagFilter(req), b,
-      { adjusting, exactAmounts: true, accountTree: true });
+    const fyStarts = readFiscalYearStarts(req);
+    const fyStart = fyStartFor(fyStarts, to) ?? fiscalYearStartOf(to, await reportService.getFiscalYearStart(req.tenantId, companyId));
+    const data = await reportService.buildTrialBalance(req.tenantId, from, to, companyId, null, b,
+      { adjusting, exactAmounts: true, accountTree: true, fiscalYearStart: fyStart });
     const out = tagSplit
-      ? await applyTrialBalanceTagSplit(req.tenantId, data as typeof data & { data: Array<Record<string, unknown>> }, { basis: b, companyId, adjusting, tagGroupId: groupId! })
+      ? await applyTrialBalanceTagSplit(req.tenantId, data as typeof data & { data: Array<Record<string, unknown>> },
+        { basis: b, companyId, adjusting, tagGroupId: groupId!, fiscalYearStart: fyStart })
         .catch(columnsError)
       : data;
     return {
       ...out,
+      fiscalYearStart: fyStart,
       drillTarget: { path: '/reports/general-ledger', amount: 'endingBalanceExact',
-        startDate: fiscalYearStartOf(to, await reportService.getFiscalYearStart(req.tenantId, companyId)), endDate: to,
+        startDate: fyStart, endDate: to,
         note: 'GL start_date = startDate (the fiscal year start of the end date), end_date = endDate; the GL ending balance is in the account\'s natural sign '
           + '(netExact for debit-normal accounts, -netExact for credit-normal ones). The computed retained-earnings row has no drill.',
-        params: drillBase(req, b, adjusting, null) },
-      meta: meta(req, { basis: b, from, to }),
+        params: { ...drillBase(req, b, adjusting, null), ...(fyStarts ? { fiscal_year_start: fyStart } : {}) } },
+      meta: await balanceMeta(req, b, adjusting, { from, to }, to),
     };
   }));
 
@@ -640,11 +716,11 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     + 'drill filters apply to beginning balances and lines alike; tag_split=1&tag_group_id= adds accounts[].tagSplit[] {rowKind account|tag|'
     + 'account_total, tagId, tagNumber, tagName, periodDebitsExact, periodCreditsExact, netChangeExact}.',
     { ...RANGE_Q, ...BASIS_Q, ...ADJ_Q, limit: z.string().optional().describe('1-100000'),
-      ...DRILL_Q, tag_split: COLUMNS_Q.tag_split,
+      ...DRILL_Q, tag_split: COLUMNS_Q.tag_split, ...FY_STARTS_Q,
       group_by: z.enum(['transaction']).optional().describe('transaction = the Journal: transactions[] {transactionId, date, txnType, txnNumber, '
         + 'contactName, lines[] {lineId, accountId, accountNumber, accountName, debitExact, creditExact, tagId, contactId}, totalDebitsExact, '
         + 'totalCreditsExact} in date order, totalDebitsExact, totalCreditsExact, rowCount, truncated') }),
-  needsExact([...DRILL_PARAMS, 'tag_split', 'tag_group_id'],
+  needsExact([...DRILL_PARAMS, 'tag_split', 'tag_group_id', 'fiscal_year_start'],
     (req) => (req.query['group_by'] === 'transaction' ? 'group_by' : untaggedNeedsExact(req))),
   exactOnly(generalLedger));
   router.post('/general-ledger', doc('General Ledger (POST)',
@@ -670,8 +746,9 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
       if (tags === null) throw AppError.notFound('tag group not found');
     }
     const adjusting = h.readAdjusting(req);
+    const fiscalYearStart = fyStartFor(readFiscalYearStarts(req), from);
     const data = await reportService.buildGeneralLedger(req.tenantId, from, to, h.resolveCompanyScope(req), null, b,
-      accountIds, { adjusting, exactAmounts: true, limit: groupBy ? null : limit ?? null, lens, tagSplitGroupId: tagSplit ? groupId : null });
+      accountIds, { adjusting, exactAmounts: true, limit: groupBy ? null : limit ?? null, lens, tagSplitGroupId: tagSplit ? groupId : null, fiscalYearStart });
     const m = meta(req, { basis: b, from, to });
     if (groupBy === 'transaction') return { ...journalOf(data, limit ?? null), meta: m };
     return { ...data, meta: m };
@@ -839,11 +916,14 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const data = await reportService.buildTransactionListByVendor(req.tenantId, vendorId, { startDate: from || undefined, endDate: to || undefined }, h.resolveCompanyScope(req));
     return { ...exactList(data, ['total']), meta: meta(req, { basis: null, from: from || undefined, to: to || undefined }) };
   }));
-  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: ' + 'the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, ' + 'U-212: total_paid and the reportable amounts count the same payments, cash paid in the year: bill payments (a bill counts when paid, not at its date), expenses and checks. ' + 'totalPaidExact, totalReportableExact.', { tax_year: z.string().optional() }),
+  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: ' + 'the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, ' + 'U-212: total_paid and the reportable amounts count the same payments, cash paid in the year: bill payments (a bill counts when paid, not at its date), expenses and checks. ' + 'totalPaidExact, totalReportableExact. '
+    + 'U-213 (report-fixes-v2): with exact=1 the tax id is masked: tax_id and tinLast4 are its last four digits (null with fewer than four); the full number stays on the vendor record.', { tax_year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'tax_year', 9999) ?? new Date().getFullYear();
     const data = await apReportService.buildAp1099Prep(req.tenantId, year, h.resolveCompanyScope(req), { exactAmounts: true });
-    return { ...data, meta: meta(req, { basis: null, from: `${year}-01-01`, to: `${year}-12-31` }) };
+    // U-213 (ClientLedger PR-6 security review): a report shows the last four digits only.
+    const rows = data.data.map((r) => { const last4 = tinLast4(r.tax_id); return { ...r, tax_id: last4, tinLast4: last4 }; });
+    return { ...data, data: rows, meta: meta(req, { basis: null, from: `${year}-01-01`, to: `${year}-12-31` }) };
   }));
   router.get('/vendor-1099-summary', doc('1099 Summary by box (U-205)',
     'Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, '
