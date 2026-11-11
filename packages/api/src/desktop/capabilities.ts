@@ -1206,5 +1206,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * No migration.
    */
   'report-fixes-v2',
+  /**
+   * Report Builder definitions (U-118 / U-119, ClientLedger A07 PR-A; migration 0276). Saved reports (report-defs-v1) take kind
+   * 'builder': a Report Builder schema v1 definition (@kis-books/shared report-builder: schemas.ts, fields.ts, starters.ts; the
+   * shared fixtures under packages/shared/src/report-builder/fixtures). Strict (unknown keys refused; any new field is schema v2),
+   * at most 256 KB as JSON (413 DEFINITION_TOO_LARGE {limit}), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or
+   * values per filter list; entity ids only at nodes.**.filters.N.ids (typed by the filter's field) and nodes.**.groupBy.N.tagGroupId,
+   * a uuid anywhere else refused. 400 DEFINITION_INVALID {path, code}: SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT,
+   * NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE,
+   * MIXED_POLARITY. Ids must be rows of this company. ?kind=builder filters the list. Standard definitions are unchanged (64 KB,
+   * 1000 ids, {path}). Tenant archives remap builder ids as standard ones; an engine older than 0276 can't import builder rows.
+   */
+  'report-defs-builder-v1',
 ];
 

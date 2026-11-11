@@ -57782,7 +57782,8 @@
             "required": false,
             "schema": {
               "enum": [
-                "standard"
+                "standard",
+                "builder"
               ],
               "type": "string"
             }
@@ -57828,37 +57829,557 @@
                 "additionalProperties": false,
                 "properties": {
                   "definition": {
-                    "additionalProperties": false,
-                    "description": "at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})",
-                    "properties": {
-                      "kind": {
-                        "enum": [
-                          "standard"
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "kind standard: at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})",
+                        "properties": {
+                          "kind": {
+                            "const": "standard",
+                            "type": "string"
+                          },
+                          "options": {
+                            "additionalProperties": {},
+                            "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId",
+                            "type": "object"
+                          },
+                          "reportKey": {
+                            "description": "the report, /^[a-z0-9_]{1,64}$/",
+                            "pattern": "^[a-z0-9_]{1,64}$",
+                            "type": "string"
+                          },
+                          "schemaVersion": {
+                            "const": 1,
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "kind",
+                          "reportKey",
+                          "options"
                         ],
-                        "type": "string"
-                      },
-                      "options": {
-                        "additionalProperties": {},
-                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId",
                         "type": "object"
                       },
-                      "reportKey": {
-                        "description": "the report, /^[a-z0-9_]{1,64}$/",
-                        "pattern": "^[a-z0-9_]{1,64}$",
-                        "type": "string"
-                      },
-                      "schemaVersion": {
-                        "const": 1,
-                        "type": "number"
+                      {
+                        "additionalProperties": false,
+                        "description": "kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT, NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE, MIXED_POLARITY.",
+                        "properties": {
+                          "adjusting": {
+                            "enum": [
+                              "include",
+                              "exclude",
+                              "only"
+                            ],
+                            "type": "string"
+                          },
+                          "basis": {
+                            "enum": [
+                              "accrual",
+                              "cash"
+                            ],
+                            "type": "string"
+                          },
+                          "columns": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "agingBuckets": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "compare": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "amount": {
+                                      "type": "boolean"
+                                    },
+                                    "base": {
+                                      "enum": [
+                                        "prior_period",
+                                        "prior_year"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "dollarChange": {
+                                      "type": "boolean"
+                                    },
+                                    "percentChange": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "base",
+                                    "amount",
+                                    "dollarChange",
+                                    "percentChange"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 2,
+                                "type": "array"
+                              },
+                              "detailFields": {
+                                "items": {
+                                  "enum": [
+                                    "date",
+                                    "txn_type",
+                                    "number",
+                                    "contact",
+                                    "memo",
+                                    "description",
+                                    "account",
+                                    "item",
+                                    "quantity",
+                                    "unit_price",
+                                    "tag",
+                                    "cleared",
+                                    "debit",
+                                    "credit",
+                                    "amount",
+                                    "running_balance",
+                                    "due_date",
+                                    "days_past_due",
+                                    "aging_bucket",
+                                    "open_balance",
+                                    "original_amount"
+                                  ],
+                                  "type": "string"
+                                },
+                                "maxItems": 24,
+                                "type": "array"
+                              },
+                              "headers": {
+                                "additionalProperties": {
+                                  "maxLength": 80,
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "propertyNames": {
+                                  "pattern": "^[a-z0-9_.:-]{1,64}$"
+                                },
+                                "type": "object"
+                              },
+                              "percentOf": {
+                                "anyOf": [
+                                  {
+                                    "pattern": "^[a-z0-9_-]{1,32}$",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "section",
+                                    "type": "string"
+                                  }
+                                ]
+                              },
+                              "periods": {
+                                "enum": [
+                                  "month",
+                                  "quarter",
+                                  "year"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "detailFields",
+                              "compare",
+                              "headers"
+                            ],
+                            "type": "object"
+                          },
+                          "dates": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "mode": {
+                                "enum": [
+                                  "range",
+                                  "asOf"
+                                ],
+                                "type": "string"
+                              },
+                              "preset": {
+                                "pattern": "^[a-z0-9_]{1,40}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "mode"
+                            ],
+                            "type": "object"
+                          },
+                          "kind": {
+                            "const": "builder",
+                            "type": "string"
+                          },
+                          "nodes": {
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "caption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "defaultExpanded": {
+                                      "type": "boolean"
+                                    },
+                                    "display": {
+                                      "enum": [
+                                        "summary",
+                                        "detail",
+                                        "expandable"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "earnings": {
+                                      "enum": [
+                                        "balance_sheet",
+                                        "trial_balance"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "filters": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "field": {
+                                            "enum": [
+                                              "account",
+                                              "account_type",
+                                              "contact",
+                                              "item",
+                                              "tag",
+                                              "txn_type",
+                                              "cleared",
+                                              "due_status",
+                                              "aging_bucket",
+                                              "amount"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "ids": {
+                                            "items": {
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                                              "type": "string"
+                                            },
+                                            "maxItems": 500,
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "enum": [
+                                              "in",
+                                              "not_in",
+                                              "is_none",
+                                              "gte",
+                                              "lte"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "value": {
+                                            "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                                            "type": "string"
+                                          },
+                                          "values": {
+                                            "items": {
+                                              "maxLength": 40,
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            "maxItems": 500,
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": [
+                                          "field",
+                                          "op"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "maxItems": 20,
+                                      "type": "array"
+                                    },
+                                    "groupBy": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "key": {
+                                            "enum": [
+                                              "account",
+                                              "account_type",
+                                              "contact",
+                                              "item",
+                                              "txn_type",
+                                              "tag",
+                                              "month",
+                                              "quarter",
+                                              "year",
+                                              "cleared",
+                                              "due_status",
+                                              "aging_bucket"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "tagGroupId": {
+                                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "key"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "maxItems": 3,
+                                      "type": "array"
+                                    },
+                                    "hideZero": {
+                                      "type": "boolean"
+                                    },
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "measure": {
+                                      "enum": [
+                                        "amount",
+                                        "debit",
+                                        "credit",
+                                        "balance",
+                                        "tb_net",
+                                        "count",
+                                        "quantity",
+                                        "open_balance",
+                                        "original_amount"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "polarity": {
+                                      "enum": [
+                                        "natural",
+                                        "debit",
+                                        "credit"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "showTotal": {
+                                      "type": "boolean"
+                                    },
+                                    "source": {
+                                      "enum": [
+                                        "sales",
+                                        "item_sales",
+                                        "purchases",
+                                        "item_purchases",
+                                        "ar_open",
+                                        "ap_open",
+                                        "gl",
+                                        "bank",
+                                        "tax"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "totalCaption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "section",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "caption",
+                                    "source",
+                                    "measure",
+                                    "filters",
+                                    "groupBy",
+                                    "display",
+                                    "defaultExpanded",
+                                    "showTotal",
+                                    "hideZero"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "caption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "children": {
+                                      "items": {},
+                                      "maxItems": 200,
+                                      "type": "array"
+                                    },
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "showTotal": {
+                                      "type": "boolean"
+                                    },
+                                    "totalCaption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "group",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "caption",
+                                    "children",
+                                    "showTotal"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "caption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "terms": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "nodeId": {
+                                            "pattern": "^[a-z0-9_-]{1,32}$",
+                                            "type": "string"
+                                          },
+                                          "sign": {
+                                            "enum": [
+                                              1,
+                                              -1
+                                            ],
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "nodeId",
+                                          "sign"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "maxItems": 20,
+                                      "minItems": 1,
+                                      "type": "array"
+                                    },
+                                    "type": {
+                                      "const": "formula",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "caption",
+                                    "terms"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "maxLength": 500,
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "text",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "text"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "blank",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "page_break",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            },
+                            "maxItems": 200,
+                            "type": "array"
+                          },
+                          "schemaVersion": {
+                            "const": 1,
+                            "type": "number"
+                          },
+                          "title": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "kind",
+                          "dates",
+                          "columns",
+                          "nodes"
+                        ],
+                        "type": "object"
                       }
-                    },
-                    "required": [
-                      "schemaVersion",
-                      "kind",
-                      "reportKey",
-                      "options"
-                    ],
-                    "type": "object"
+                    ]
                   },
                   "groupId": {
                     "anyOf": [
@@ -57874,7 +58395,8 @@
                   "kind": {
                     "description": "optional; must equal definition.kind",
                     "enum": [
-                      "standard"
+                      "standard",
+                      "builder"
                     ],
                     "type": "string"
                   },
@@ -58019,37 +58541,557 @@
                 "additionalProperties": false,
                 "properties": {
                   "definition": {
-                    "additionalProperties": false,
-                    "description": "at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})",
-                    "properties": {
-                      "kind": {
-                        "enum": [
-                          "standard"
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "kind standard: at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})",
+                        "properties": {
+                          "kind": {
+                            "const": "standard",
+                            "type": "string"
+                          },
+                          "options": {
+                            "additionalProperties": {},
+                            "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId",
+                            "type": "object"
+                          },
+                          "reportKey": {
+                            "description": "the report, /^[a-z0-9_]{1,64}$/",
+                            "pattern": "^[a-z0-9_]{1,64}$",
+                            "type": "string"
+                          },
+                          "schemaVersion": {
+                            "const": 1,
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "kind",
+                          "reportKey",
+                          "options"
                         ],
-                        "type": "string"
-                      },
-                      "options": {
-                        "additionalProperties": {},
-                        "description": "report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId",
                         "type": "object"
                       },
-                      "reportKey": {
-                        "description": "the report, /^[a-z0-9_]{1,64}$/",
-                        "pattern": "^[a-z0-9_]{1,64}$",
-                        "type": "string"
-                      },
-                      "schemaVersion": {
-                        "const": 1,
-                        "type": "number"
+                      {
+                        "additionalProperties": false,
+                        "description": "kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of SCHEMA, TOO_MANY_NODES, TOO_DEEP, DUPLICATE_ID, UUID_IN_TEXT, NOT_IN_SOURCE, FILTER_OP, FORMULA_FORWARD_REF, FORMULA_UNITS, PERCENT_BASE, EARNINGS_FILTER, BUCKETS_PERIODS, RUNNING_BALANCE, MIXED_POLARITY.",
+                        "properties": {
+                          "adjusting": {
+                            "enum": [
+                              "include",
+                              "exclude",
+                              "only"
+                            ],
+                            "type": "string"
+                          },
+                          "basis": {
+                            "enum": [
+                              "accrual",
+                              "cash"
+                            ],
+                            "type": "string"
+                          },
+                          "columns": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "agingBuckets": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "compare": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "amount": {
+                                      "type": "boolean"
+                                    },
+                                    "base": {
+                                      "enum": [
+                                        "prior_period",
+                                        "prior_year"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "dollarChange": {
+                                      "type": "boolean"
+                                    },
+                                    "percentChange": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "base",
+                                    "amount",
+                                    "dollarChange",
+                                    "percentChange"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 2,
+                                "type": "array"
+                              },
+                              "detailFields": {
+                                "items": {
+                                  "enum": [
+                                    "date",
+                                    "txn_type",
+                                    "number",
+                                    "contact",
+                                    "memo",
+                                    "description",
+                                    "account",
+                                    "item",
+                                    "quantity",
+                                    "unit_price",
+                                    "tag",
+                                    "cleared",
+                                    "debit",
+                                    "credit",
+                                    "amount",
+                                    "running_balance",
+                                    "due_date",
+                                    "days_past_due",
+                                    "aging_bucket",
+                                    "open_balance",
+                                    "original_amount"
+                                  ],
+                                  "type": "string"
+                                },
+                                "maxItems": 24,
+                                "type": "array"
+                              },
+                              "headers": {
+                                "additionalProperties": {
+                                  "maxLength": 80,
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "propertyNames": {
+                                  "pattern": "^[a-z0-9_.:-]{1,64}$"
+                                },
+                                "type": "object"
+                              },
+                              "percentOf": {
+                                "anyOf": [
+                                  {
+                                    "pattern": "^[a-z0-9_-]{1,32}$",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "section",
+                                    "type": "string"
+                                  }
+                                ]
+                              },
+                              "periods": {
+                                "enum": [
+                                  "month",
+                                  "quarter",
+                                  "year"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "detailFields",
+                              "compare",
+                              "headers"
+                            ],
+                            "type": "object"
+                          },
+                          "dates": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "mode": {
+                                "enum": [
+                                  "range",
+                                  "asOf"
+                                ],
+                                "type": "string"
+                              },
+                              "preset": {
+                                "pattern": "^[a-z0-9_]{1,40}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "mode"
+                            ],
+                            "type": "object"
+                          },
+                          "kind": {
+                            "const": "builder",
+                            "type": "string"
+                          },
+                          "nodes": {
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "caption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "defaultExpanded": {
+                                      "type": "boolean"
+                                    },
+                                    "display": {
+                                      "enum": [
+                                        "summary",
+                                        "detail",
+                                        "expandable"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "earnings": {
+                                      "enum": [
+                                        "balance_sheet",
+                                        "trial_balance"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "filters": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "field": {
+                                            "enum": [
+                                              "account",
+                                              "account_type",
+                                              "contact",
+                                              "item",
+                                              "tag",
+                                              "txn_type",
+                                              "cleared",
+                                              "due_status",
+                                              "aging_bucket",
+                                              "amount"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "ids": {
+                                            "items": {
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                                              "type": "string"
+                                            },
+                                            "maxItems": 500,
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "enum": [
+                                              "in",
+                                              "not_in",
+                                              "is_none",
+                                              "gte",
+                                              "lte"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "value": {
+                                            "pattern": "^-?\\d{1,15}(\\.\\d{1,4})?$",
+                                            "type": "string"
+                                          },
+                                          "values": {
+                                            "items": {
+                                              "maxLength": 40,
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            "maxItems": 500,
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": [
+                                          "field",
+                                          "op"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "maxItems": 20,
+                                      "type": "array"
+                                    },
+                                    "groupBy": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "key": {
+                                            "enum": [
+                                              "account",
+                                              "account_type",
+                                              "contact",
+                                              "item",
+                                              "txn_type",
+                                              "tag",
+                                              "month",
+                                              "quarter",
+                                              "year",
+                                              "cleared",
+                                              "due_status",
+                                              "aging_bucket"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "tagGroupId": {
+                                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "key"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "maxItems": 3,
+                                      "type": "array"
+                                    },
+                                    "hideZero": {
+                                      "type": "boolean"
+                                    },
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "measure": {
+                                      "enum": [
+                                        "amount",
+                                        "debit",
+                                        "credit",
+                                        "balance",
+                                        "tb_net",
+                                        "count",
+                                        "quantity",
+                                        "open_balance",
+                                        "original_amount"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "polarity": {
+                                      "enum": [
+                                        "natural",
+                                        "debit",
+                                        "credit"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "showTotal": {
+                                      "type": "boolean"
+                                    },
+                                    "source": {
+                                      "enum": [
+                                        "sales",
+                                        "item_sales",
+                                        "purchases",
+                                        "item_purchases",
+                                        "ar_open",
+                                        "ap_open",
+                                        "gl",
+                                        "bank",
+                                        "tax"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "totalCaption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "section",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "caption",
+                                    "source",
+                                    "measure",
+                                    "filters",
+                                    "groupBy",
+                                    "display",
+                                    "defaultExpanded",
+                                    "showTotal",
+                                    "hideZero"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "caption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "children": {
+                                      "items": {},
+                                      "maxItems": 200,
+                                      "type": "array"
+                                    },
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "showTotal": {
+                                      "type": "boolean"
+                                    },
+                                    "totalCaption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "group",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "caption",
+                                    "children",
+                                    "showTotal"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "caption": {
+                                      "maxLength": 200,
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "terms": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "nodeId": {
+                                            "pattern": "^[a-z0-9_-]{1,32}$",
+                                            "type": "string"
+                                          },
+                                          "sign": {
+                                            "enum": [
+                                              1,
+                                              -1
+                                            ],
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "nodeId",
+                                          "sign"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "maxItems": 20,
+                                      "minItems": 1,
+                                      "type": "array"
+                                    },
+                                    "type": {
+                                      "const": "formula",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "caption",
+                                    "terms"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "maxLength": 500,
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "text",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id",
+                                    "text"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "blank",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^[a-z0-9_-]{1,32}$",
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "const": "page_break",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "id"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            },
+                            "maxItems": 200,
+                            "type": "array"
+                          },
+                          "schemaVersion": {
+                            "const": 1,
+                            "type": "number"
+                          },
+                          "title": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "kind",
+                          "dates",
+                          "columns",
+                          "nodes"
+                        ],
+                        "type": "object"
                       }
-                    },
-                    "required": [
-                      "schemaVersion",
-                      "kind",
-                      "reportKey",
-                      "options"
-                    ],
-                    "type": "object"
+                    ]
                   },
                   "groupId": {
                     "anyOf": [
@@ -58065,7 +59107,8 @@
                   "kind": {
                     "description": "optional; must equal the saved kind",
                     "enum": [
-                      "standard"
+                      "standard",
+                      "builder"
                     ],
                     "type": "string"
                   },

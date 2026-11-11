@@ -24,13 +24,14 @@ import type { Server } from 'http';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, auditLog, reportDefinitions, tagGroups, userPermissions, users, userTenantAccess } from '../db/schema/index.js';
+import { accounts, auditLog, contacts, reportDefinitions, tagGroups, userPermissions, users, userTenantAccess } from '../db/schema/index.js';
 import { reportBuilderRouter } from './report-builder.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as authService from '../services/auth.service.js';
 import { makeCompany, cleanTenant, suffix, type Co } from '../services/templates/templates.test-helpers.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { DESKTOP_KEPT } from '../desktop/features.js';
+import { BUILDER_STARTERS, type BuilderDefinition } from '@kis-books/shared';
 
 let server: Server | null = null;
 let port = 0;
@@ -217,7 +218,8 @@ describe('report-defs-v1 (U-118)', () => {
       expect(r.json.error).toMatchObject({ code: 'DEFINITION_INVALID', details: { path } });
     };
     await bad({ schemaVersion: 2, kind: 'standard', reportKey: 'pl', options: {} }, 'definition.schemaVersion');
-    await bad({ schemaVersion: 1, kind: 'builder', reportKey: 'pl', options: {} }, 'definition.kind');
+    // A builder kind is checked as a builder definition (report-defs-builder-v1).
+    await bad({ schemaVersion: 1, kind: 'builder', reportKey: 'pl', options: {} }, 'definition.dates');
     await bad({ schemaVersion: 1, kind: 'standard', reportKey: 'Profit-Loss', options: {} }, 'definition.reportKey');
     await bad({ schemaVersion: 1, kind: 'standard', reportKey: 'pl', options: {}, extra: 1 }, 'definition');
     await bad(def({ accountId: c.bank }), 'options.accountId');
@@ -294,5 +296,83 @@ describe('report-defs-v1 (U-118)', () => {
     expect(p2.status).toBe(200);
     expect(p2.json.version).toBe(2);
     expect(await db.select().from(reportDefinitions).where(eq(reportDefinitions.tenantId, c.tenantId))).toHaveLength(1);
+  });
+});
+
+describe('report-defs-builder-v1 (U-118 / U-119, migration 0276)', () => {
+  const starter = (key: string): BuilderDefinition => JSON.parse(JSON.stringify(BUILDER_STARTERS.find((x) => x.key === key)!.definition)) as BuilderDefinition;
+  const section = (d: BuilderDefinition, i = 0) => d.nodes[i] as Extract<BuilderDefinition['nodes'][number], { type: 'section' }>;
+
+  it('is advertised', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('report-defs-builder-v1');
+  });
+
+  it('every starter saves as kind builder and reads back unchanged; ?kind=builder lists them', async () => {
+    for (const s of BUILDER_STARTERS) {
+      const r = await create({ name: s.title, definition: s.definition });
+      expect(r.status, `${s.key} ${JSON.stringify(r.json)}`).toBe(201);
+      expect(r.json).toMatchObject({ kind: 'builder', definition: s.definition, version: 1 });
+    }
+    await create({ name: 'Standard one', definition: def() });
+    const list = await call('GET', '/definitions?kind=builder', c.token);
+    expect(list.json.definitions).toHaveLength(BUILDER_STARTERS.length);
+    const all = await call('GET', '/definitions', c.token);
+    expect(all.json.definitions).toHaveLength(BUILDER_STARTERS.length + 1);
+  });
+
+  it('ids at any depth must be rows of this company (NOT_IN_COMPANY); a deactivated contact is kept', async () => {
+    const [own] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'customer', displayName: `Own ${suffix()}` }).returning();
+    const [foreign] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyB, contactType: 'customer', displayName: `B ${suffix()}` }).returning();
+    const [group] = await db.insert(tagGroups).values({ tenantId: c.tenantId, companyId: c.companyId, name: `Crews ${suffix()}` }).returning();
+    const d = starter('sales_by_client');
+    d.nodes = [{ type: 'group', id: 'outer', caption: 'Outer', showTotal: true, children: [{
+      ...section(d), filters: [{ field: 'contact', op: 'in', ids: [own!.id] }, { field: 'account', op: 'in', ids: [c.bank] }],
+      groupBy: [{ key: 'tag', tagGroupId: group!.id }, { key: 'contact' }],
+    }] }];
+    const ok = await create({ name: 'Nested ids', definition: d });
+    expect(ok.status, JSON.stringify(ok.json)).toBe(201);
+    // Deactivating the contact later leaves the saved report readable as it was.
+    await db.update(contacts).set({ isActive: false }).where(eq(contacts.id, own!.id));
+    const got = await call('GET', `/definitions/${ok.json.id}`, c.token);
+    expect(got.json.definition).toEqual(d);
+
+    const bad = JSON.parse(JSON.stringify(d)) as BuilderDefinition;
+    ((bad.nodes[0] as { children: BuilderDefinition['nodes'] }).children[0] as ReturnType<typeof section>).filters[0]!.ids = [own!.id, foreign!.id];
+    const r = await create({ name: 'Foreign', definition: bad });
+    expect(r.status).toBe(400);
+    expect(r.json.error).toMatchObject({ code: 'DEFINITION_INVALID', details: { path: 'definition.nodes.0.children.0.filters.0.ids', code: 'NOT_IN_COMPANY' } });
+    const missingGroup = JSON.parse(JSON.stringify(d)) as BuilderDefinition;
+    ((missingGroup.nodes[0] as { children: BuilderDefinition['nodes'] }).children[0] as ReturnType<typeof section>).groupBy[0]!.tagGroupId = crypto.randomUUID();
+    const r2 = await create({ name: 'No group', definition: missingGroup });
+    expect(r2.json.error).toMatchObject({ details: { path: 'definition.nodes.0.children.0.groupBy.0.tagGroupId', code: 'NOT_IN_COMPANY' } });
+  });
+
+  it('400 DEFINITION_INVALID {path, code}; 413 over 256 KB; a builder report keeps its kind', async () => {
+    const d = starter('profit_loss');
+    section(d).filters = [];
+    const r = await create({ name: 'Mixed', definition: d });
+    expect(r.status).toBe(400);
+    expect(r.json.error).toMatchObject({ code: 'DEFINITION_INVALID', details: { path: 'definition.nodes.0.polarity', code: 'MIXED_POLARITY' } });
+    const unknown = await create({ name: 'Unknown', definition: { ...starter('profit_loss'), sortBy: 'amount' } });
+    expect(unknown.json.error).toMatchObject({ details: { path: 'definition', code: 'SCHEMA' } });
+
+    // 150 KB is fine for a builder definition (a standard one stops at 64 KB).
+    const roomy = starter('profit_loss');
+    roomy.nodes.push(...Array.from({ length: 150 }, (_, i) => ({ type: 'text' as const, id: `t${i}`, text: 'x'.repeat(480) })));
+    roomy.nodes.push(...Array.from({ length: 40 }, (_, i) => ({ type: 'text' as const, id: `u${i}`, text: '東'.repeat(480) })));
+    const fine = await create({ name: 'Roomy', definition: roomy });
+    expect(fine.status, JSON.stringify(fine.json).slice(0, 300)).toBe(201);
+    const huge = starter('profit_loss');
+    huge.nodes.push(...Array.from({ length: 190 }, (_, i) => ({ type: 'text' as const, id: `t${i}`, text: '東'.repeat(480) })));
+    const big = await create({ name: 'Huge', definition: huge });
+    expect(big.status).toBe(413);
+    expect(big.json.error).toMatchObject({ code: 'DEFINITION_TOO_LARGE', details: { limit: 262144 } });
+
+    const to = await call('PUT', `/definitions/${fine.json.id}`, c.token, { version: 1, definition: def() });
+    expect(to.status).toBe(400);
+    expect(to.json.error).toMatchObject({ details: { path: 'definition.kind' } });
+    const upd = await call('PUT', `/definitions/${fine.json.id}`, c.token, { version: 1, definition: starter('balance_sheet') });
+    expect(upd.status, JSON.stringify(upd.json).slice(0, 300)).toBe(200);
+    expect(upd.json).toMatchObject({ kind: 'builder', version: 2, definition: starter('balance_sheet') });
   });
 });

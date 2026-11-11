@@ -14,12 +14,16 @@
  * of idempotent()). Writes take the row FOR UPDATE and compare the
  * `version` the caller read: 409 STALE_VERSION {current} on a mismatch.
  *
- * A definition is {schemaVersion: 1, kind: 'standard', reportKey, options},
- * at most 64 KB as JSON (413 DEFINITION_TOO_LARGE). Entity ids may appear
- * only at the fixed option paths below, so tenant archives remap them
- * (plan.ts classifies definition_json as contains-ids); a uuid anywhere
- * else is 400 DEFINITION_INVALID. Ids at those paths must be rows of this
- * tenant visible to this company.
+ * A standard definition is {schemaVersion: 1, kind: 'standard', reportKey,
+ * options}, at most 64 KB as JSON (413 DEFINITION_TOO_LARGE). Entity ids may
+ * appear only at the fixed option paths below, so tenant archives remap
+ * them (plan.ts classifies definition_json as contains-ids); a uuid anywhere
+ * else is 400 DEFINITION_INVALID {path}. A builder definition (kind
+ * 'builder', migration 0276, report-defs-builder-v1) is Report Builder
+ * schema v1 from @kis-books/shared: at most 256 KB, ids only at
+ * nodes.**.filters.N.ids (500 per list) and nodes.**.groupBy.N.tagGroupId;
+ * errors are 400 DEFINITION_INVALID {path, code}. Ids at those paths must be
+ * rows of this tenant visible to this company.
  *
  * Names are never logged; audit rows carry ids, kind, reportKey and
  * versions.
@@ -27,6 +31,7 @@
 
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { parseBuilderDefinition, RB_MAX_DEFINITION_BYTES, type BuilderDefinition } from '@kis-books/shared';
 import { db, type Tx } from '../db/index.js';
 import {
   accounts, budgets, contacts, items, reportDefinitionGroups, reportDefinitions, tagGroups, tags, users,
@@ -69,8 +74,12 @@ export function groupNotFound(): AppError {
   return AppError.notFound('Report group not found');
 }
 
-function invalid(message: string, path: string): AppError {
-  return AppError.badRequest(message, 'DEFINITION_INVALID', { path });
+function invalid(message: string, path: string, code?: string): AppError {
+  return AppError.badRequest(message, 'DEFINITION_INVALID', code ? { path, code } : { path });
+}
+
+function tooLarge(limit: number): AppError {
+  return new AppError(413, 'This saved report is too large to store.', 'DEFINITION_TOO_LARGE', { limit });
 }
 
 function pgCode(err: unknown): { code?: string; constraint?: string } {
@@ -92,12 +101,13 @@ function isUnique(err: unknown, constraint: string): boolean {
 
 // ── Definition validation ──────────────────────────────────────────
 
-export interface ReportDefinition {
+export interface StandardDefinition {
   schemaVersion: 1;
-  kind: ReportDefinitionKind;
+  kind: 'standard';
   reportKey: string;
   options: Record<string, unknown>;
 }
+export type ReportDefinition = StandardDefinition | BuilderDefinition;
 
 const definitionShape = z.object({
   schemaVersion: z.literal(1),
@@ -130,24 +140,34 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return Object.prototype.toString.call(v) === '[object Object]';
 }
 
+/** A builder definition (Report Builder schema v1): 413 over 256 KB, else 400 DEFINITION_INVALID {path, code}. */
+export function parseBuilder(raw: unknown): { definition: BuilderDefinition; refs: DefinitionRefs } {
+  const r = parseBuilderDefinition(raw);
+  if (r.ok) return { definition: r.definition, refs: r.refs };
+  if (r.tooLarge) throw tooLarge(RB_MAX_DEFINITION_BYTES);
+  const { issue } = r;
+  const message = issue.code === 'SCHEMA' ? `The saved report is not valid: ${issue.message}.` : issue.message;
+  throw invalid(message, issue.path, issue.code);
+}
+
 /**
  * Checks the shape, size and id paths of a definition; returns it with the
- * ids it names, by kind. Throws 413 DEFINITION_TOO_LARGE or 400
- * DEFINITION_INVALID {path}.
+ * ids it names, by kind. Branches on `kind`: builder definitions go to
+ * parseBuilder. Throws 413 DEFINITION_TOO_LARGE or 400 DEFINITION_INVALID
+ * {path} ({path, code} for builder definitions).
  */
 export function parseDefinition(raw: unknown): { definition: ReportDefinition; refs: DefinitionRefs } {
   if (raw === undefined || raw === null) throw invalid('A definition is required.', 'definition');
+  if (isPlainObject(raw) && raw['kind'] === 'builder') return parseBuilder(raw);
   const text = JSON.stringify(raw);
-  if (Buffer.byteLength(text, 'utf8') > MAX_DEFINITION_BYTES) {
-    throw new AppError(413, 'This saved report is too large to store.', 'DEFINITION_TOO_LARGE', { limit: MAX_DEFINITION_BYTES });
-  }
+  if (Buffer.byteLength(text, 'utf8') > MAX_DEFINITION_BYTES) throw tooLarge(MAX_DEFINITION_BYTES);
   const parsed = definitionShape.safeParse(raw);
   if (!parsed.success) {
     const issue = parsed.error.issues[0]!;
     const path = ['definition', ...issue.path].join('.');
     throw invalid(`The saved report is not valid: ${issue.message}.`, path);
   }
-  const definition = parsed.data as ReportDefinition;
+  const definition = parsed.data as StandardDefinition;
   const refs: DefinitionRefs = [];
 
   const walk = (v: unknown, path: string, depth: number): void => {
@@ -188,18 +208,24 @@ export function parseDefinition(raw: unknown): { definition: ReportDefinition; r
 
 const REF_TABLES = { accounts, contacts, tags, items, tagGroups, budgets } as const;
 
-/** Every id must be a row of this tenant, shared or of this company. */
-async function assertRefsInScope(tx: Tx, tenantId: string, companyId: string, refs: DefinitionRefs): Promise<void> {
+/**
+ * Every id must be a row of this tenant, shared or of this company. `code`
+ * (builder definitions: NOT_IN_COMPANY) goes in the error's details.
+ */
+export async function assertRefsInScope(tx: Tx, tenantId: string, companyId: string, refs: DefinitionRefs, code?: string): Promise<void> {
   for (const { kind, path, ids } of refs) {
     if (ids.length === 0) continue;
     const table = REF_TABLES[kind];
     const rows = await tx.select({ id: table.id, companyId: table.companyId }).from(table)
       .where(and(eq(table.tenantId, tenantId), inArray(table.id, ids)));
     if (rows.length !== ids.length || rows.some((r) => r.companyId !== null && r.companyId !== companyId)) {
-      throw invalid('The saved report names something that is not in this company.', path);
+      throw invalid('The saved report names something that is not in this company.', path, code);
     }
   }
 }
+
+/** Builder definitions name the code of an out-of-company id; standard ones keep {path} only. */
+export const refCode = (d: ReportDefinition): string | undefined => (d.kind === 'builder' ? 'NOT_IN_COMPANY' : undefined);
 
 // ── Reads ──────────────────────────────────────────────────────────
 
@@ -289,7 +315,7 @@ export async function createDefinition(tenantId: string, companyId: string, view
   try {
     const id = await db.transaction(async (tx) => {
       await assertGroup(tx, tenantId, companyId, input.groupId);
-      await assertRefsInScope(tx, tenantId, companyId, refs);
+      await assertRefsInScope(tx, tenantId, companyId, refs, refCode(definition));
       const [row] = await tx.insert(reportDefinitions).values({
         tenantId, companyId, groupId: input.groupId ?? null, name: input.name, kind: definition.kind,
         definitionJson: definition as unknown as Record<string, unknown>,
@@ -318,7 +344,7 @@ export async function updateDefinition(tenantId: string, companyId: string, view
       if (parsed && parsed.definition.kind !== row.kind) throw invalid('A saved report cannot change its kind.', 'definition.kind');
       if (input.kind !== undefined && input.kind !== row.kind) throw invalid('A saved report cannot change its kind.', 'kind');
       if (input.groupId !== undefined) await assertGroup(tx, tenantId, companyId, input.groupId);
-      if (parsed) await assertRefsInScope(tx, tenantId, companyId, parsed.refs);
+      if (parsed) await assertRefsInScope(tx, tenantId, companyId, parsed.refs, refCode(parsed.definition));
       const [next] = await tx.update(reportDefinitions).set({
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),

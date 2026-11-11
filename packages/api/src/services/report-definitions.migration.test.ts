@@ -4,10 +4,11 @@
 //
 // U-118: migration 0274 adds report_definitions and report_definition_groups
 // (new, empty tables). It is listed after 0273 and additive; kind is limited
-// by the named CHECK report_definitions_kind_check (A07 widens it); live
-// names are unique per company, case-insensitive; the rollback drops both
-// tables; applying the forward file twice changes nothing. The forward file
-// is applied again at the end so the rest of the suite sees the schema.
+// by the named CHECK report_definitions_kind_check (0276 widens it to
+// 'builder'); live names are unique per company, case-insensitive; the
+// rollback drops both tables; applying the forward file twice changes
+// nothing. The forward files (0274, then 0276) are applied again at the end
+// so the rest of the suite sees the schema.
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -38,6 +39,7 @@ const tenantIds: string[] = [];
 
 afterAll(async () => {
   if (!(await hasTables())) await run('0274_report_definitions.sql');
+  await run('0276_report_definitions_builder.sql');
   while (tenantIds.length) await cleanTenant(tenantIds.pop()!);
 });
 
@@ -62,7 +64,7 @@ describe('migration 0274 report definitions', () => {
     await ins('Monthly', 'standard', true);
     await ins('Monthly');
     await expect(ins('MONTHLY')).rejects.toThrow();
-    await expect(ins('Builder one', 'builder')).rejects.toThrow();
+    await expect(ins('Other one', 'other')).rejects.toThrow();
     await ins('Monthly', 'standard', false).catch(() => undefined);
     const n = await db.execute(sql`SELECT count(*)::int AS n FROM report_definitions WHERE tenant_id = ${co.tenantId}`);
     expect((n.rows[0] as { n: number }).n).toBe(2);
@@ -73,5 +75,6 @@ describe('migration 0274 report definitions', () => {
     await run('0274_report_definitions.sql');
     await run('0274_report_definitions.sql');
     expect(await hasTables()).toBe(true);
+    await run('0276_report_definitions_builder.sql');
   });
 });

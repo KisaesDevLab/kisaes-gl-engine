@@ -4,8 +4,8 @@
 
 // Saved report definitions (memorized reports) and their groups — U-118,
 // capability report-defs-v1, migration 0274. Company-scoped. `kind` is
-// 'standard' (a catalog report and its options) for now; the Report Builder
-// (A07) adds 'builder' by widening report_definitions_kind_check. Both
+// 'standard' (a catalog report and its options) or, since migration 0276
+// (report-defs-builder-v1), 'builder' (a Report Builder definition). Both
 // tables soft-delete and carry a `version` (409 STALE_VERSION when stale).
 
 import { pgTable, uuid, varchar, integer, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
@@ -13,7 +13,7 @@ import { sql } from 'drizzle-orm';
 import { tenants } from './auth.js';
 import { companies } from './company.js';
 
-export const REPORT_DEFINITION_KINDS = ['standard'] as const;
+export const REPORT_DEFINITION_KINDS = ['standard', 'builder'] as const;
 export type ReportDefinitionKind = (typeof REPORT_DEFINITION_KINDS)[number];
 
 export const reportDefinitionGroups = pgTable('report_definition_groups', {
@@ -38,7 +38,8 @@ export const reportDefinitions = pgTable('report_definitions', {
   groupId: uuid('group_id').references(() => reportDefinitionGroups.id, { onDelete: 'set null' }),
   name: varchar('name', { length: 200 }).notNull(),
   kind: varchar('kind', { length: 20 }).notNull().$type<ReportDefinitionKind>(),
-  // {schemaVersion, kind, reportKey, options}; ids only at fixed option paths.
+  // standard: {schemaVersion, kind, reportKey, options}, ids only at fixed option paths;
+  // builder: schema v1 (@kis-books/shared report-builder), ids only at filter ids and tagGroupId.
   definitionJson: jsonb('definition_json').notNull().$type<Record<string, unknown>>(),
   version: integer('version').notNull().default(1),
   // The author (Q-310). No FK: users are identity rows (tenant archives remap them).
