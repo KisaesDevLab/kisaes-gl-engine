@@ -20,8 +20,9 @@ import { resolveToday } from '../services/dashboard.service.js';
 export const inventoryReportsRouter = Router();
 inventoryReportsRouter.use(authenticate);
 inventoryReportsRouter.use(companyContext);
-// GET-only on the shared /reports base: a router-level requireResource would
-// turn every POST under /reports (ask, email) into a 'create' check and 403 it.
+// GET-only on the shared /reports base. requireResource would map every POST
+// passing through (ask, email) to an 'update' check, which no one passes:
+// 'reports' is read-only (capped at view), so even the owner got 403.
 inventoryReportsRouter.use(requirePermission('reports', 'read'));
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'a date YYYY-MM-DD');

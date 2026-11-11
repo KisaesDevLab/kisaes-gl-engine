@@ -433,8 +433,9 @@ for (const [path, active] of [['deactivate', false], ['reactivate', true]] as co
 export const salesTaxReportsRouter = Router();
 salesTaxReportsRouter.use(authenticate);
 salesTaxReportsRouter.use(companyContext);
-// GET-only on the shared /reports base: a router-level requireResource would
-// turn every POST under /reports (ask, email) into a 'create' check and 403 it.
+// GET-only on the shared /reports base. requireResource would map every POST
+// passing through (ask, email) to an 'update' check, which no one passes:
+// 'reports' is read-only (capped at view), so even the owner got 403.
 salesTaxReportsRouter.use(requirePermission('reports', 'read'));
 
 const liabilityQuery = z.object({
