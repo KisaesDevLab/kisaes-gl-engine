@@ -1035,7 +1035,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * customer-balance-summary|detail, vendor-balance-summary, ap-aging-summary|detail, unpaid-bills, bill-payment-history, vendor-statement,
    * transaction-list-by-vendor, ap-1099-prep, vendor-1099-summary, sales-by-customer, sales-by-item, expense-by-vendor, expense-by-category,
    * revenue-by-category, deposit-detail, check-register, bank-balances): every money field x gains xExact (unrounded decimal string, same
-   * sign; 4 places from the journal, more for a cash-basis allocation share, never rounded), totals are Decimal sums of the rows, dates are
+   * sign; 4 places from the journal; a cash-basis allocation share in whole cents since U-209), totals are Decimal sums of the rows, dates are
    * YYYY-MM-DD, and meta {exact, basis, cashBasisRules, from, to | asOf, reportSchemaVersion} is added. Standard P&L / Balance Sheet / Trial
    * Balance account rows carry parentAccountId, depth and rollupExact on parents (comparative columns do not); GL lines and accrual
    * transaction-list rows carry lineId; GL takes limit and returns rowCount and truncated; comparative rows carry valuesExact (% at 1 place).

@@ -402,8 +402,8 @@ function requireExact(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 const META_DOC = 'meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. '
-  + 'Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal, more for a cash-basis '
-  + 'allocation share (never rounded). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry '
+  + 'Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis '
+  + 'allocation share is whole cents, the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry '
   + 'parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.';
 
 function doc(summary: string, description: string, query: Record<string, z.ZodTypeAny>) {
@@ -838,7 +838,7 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     const data = await reportService.buildTransactionListByVendor(req.tenantId, vendorId, { startDate: from || undefined, endDate: to || undefined }, h.resolveCompanyScope(req));
     return { ...exactList(data, ['total']), meta: meta(req, { basis: null, from: from || undefined, to: to || undefined }) };
   }));
-  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact}, totalPaidExact.', { tax_year: z.string().optional() }),
+  router.get('/ap-1099-prep', doc('1099 Preparation', 'data[] {total_paidExact (every payment), reportable_total, reportable_totalExact, reportable_meets_threshold (U-209: ' + 'the 1099 amount from the account-to-box mapping, as the 1099 Summary; 0 / false for a vendor excluded on its 1099 profile)}, ' + 'totalPaidExact, totalReportableExact.', { tax_year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'tax_year', 9999) ?? new Date().getFullYear();
     const data = await apReportService.buildAp1099Prep(req.tenantId, year, h.resolveCompanyScope(req), { exactAmounts: true });
@@ -847,7 +847,8 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
   router.get('/vendor-1099-summary', doc('1099 Summary by box (U-205)',
     'Without exact: the legacy {title, year, data[] {id, display_name, tax_id, total_paid}}. With exact=1: {title, year, boxCatalog[] {box, form, '
     + 'boxNumber, label, thresholdExact}, rows[] {contactId, name, tinLast4, is1099Eligible, boxes {box code: exact amount}, totalExact, '
-    + 'meetsThreshold}, totalsExact {box code..., total}} from the 1099 account-to-box mapping (the 1099 Center source), for the company.',
+    + 'meetsThreshold}, totalsExact {box code..., total}} from the 1099 account-to-box mapping (the 1099 Center source), for the company. '
+    + 'Rows are the vendors the 1099 Center files for: marked 1099-eligible and not excluded on their 1099 profile (U-209).',
     { year: z.string().optional() }),
   exactOnly(async (req) => {
     const year = posInt(req, 'year', 9999) ?? new Date().getFullYear();
