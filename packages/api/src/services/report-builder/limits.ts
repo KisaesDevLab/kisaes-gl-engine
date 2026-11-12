@@ -23,6 +23,8 @@ export const MAX_LINE_ROWS = 100_000;
 /** Detail rows per run on screen, and for an export (A09). */
 export const MAX_DETAIL_ROWS_SCREEN = 5_000;
 export const MAX_DETAIL_ROWS_EXPORT = 100_000;
+/** Detail rows per line in a preview run (purpose preview, U-217): the rest is a more row with a cursor. */
+export const PREVIEW_DETAIL_ROWS_PER_LINE = 50;
 /** Detail rows per /run/detail page. */
 export const DETAIL_PAGE_ROWS = 500;
 

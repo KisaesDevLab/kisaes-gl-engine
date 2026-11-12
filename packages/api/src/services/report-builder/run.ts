@@ -40,7 +40,7 @@ import { definitionForAccess, parseBuilder, assertRefsInScope, stale, definition
 import { ZERO_COMPANY_UUID } from '../ledger-version.service.js';
 import { AppError } from '../../utils/errors.js';
 import {
-  inSnapshot, tooLargeError, MAX_LINE_ROWS, MAX_DETAIL_ROWS_SCREEN, MAX_DETAIL_ROWS_EXPORT, DETAIL_PAGE_ROWS, type RunExec,
+  inSnapshot, tooLargeError, MAX_LINE_ROWS, MAX_DETAIL_ROWS_SCREEN, MAX_DETAIL_ROWS_EXPORT, DETAIL_PAGE_ROWS, PREVIEW_DETAIL_ROWS_PER_LINE, type RunExec,
 } from './limits.js';
 import {
   fingerprintOf, encodeCursor, decodeCursor, runChanged, type RunRequest, type DetailRequest, type Cursor,
@@ -673,7 +673,11 @@ const pathId = (p: string[]) => p.join('\u0001');
 export interface RunResult {
   columns: RunColumn[];
   rows: RunRow[];
-  meta: { basis: string; dates: unknown; notes: string[]; truncated: boolean; hiddenNotice: null; denied: string[] };
+  meta: {
+    basis: string; dates: unknown; notes: string[]; truncated: boolean; hiddenNotice: null; denied: string[];
+    /** Preview runs only (report-builder-preview-v1): the per-line detail row cut. */
+    preview?: { detailRowsPerLine: number };
+  };
   fingerprint: string;
   stamp: number;
 }
@@ -704,6 +708,11 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
   const open = new Set(req.open.map(pathId));
   const collapsed = new Set(req.collapsed.map(pathId));
   const detailCap = req.purpose === 'export' ? MAX_DETAIL_ROWS_EXPORT : MAX_DETAIL_ROWS_SCREEN;
+  // Preview (U-217): the same walk and detail query as a screen run, cut at
+  // PREVIEW_DETAIL_ROWS_PER_LINE rows per line, so the rows up to the cut are
+  // the full run's rows; the cut is the usual more row with its cursor.
+  const preview = req.purpose === 'preview';
+  const perLine = preview ? PREVIEW_DETAIL_ROWS_PER_LINE : DETAIL_PAGE_ROWS * 10;
   let detailLeft = detailCap;
   let lineRows = 0;
   let truncated = false;
@@ -860,7 +869,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
           row({ kind: 'more', nodeId: s.id, level: lvl, path, caption: 'More rows', cells: plan.cols.map(() => null), cursor: null });
           return;
         }
-        const take = Math.min(detailLeft, DETAIL_PAGE_ROWS * 10);
+        const take = Math.min(detailLeft, perLine);
         const page = await detailPage(ctx, s, path, null, take);
         detailLeft -= page.rows.length;
         for (const r of page.rows) rows.push({ ...r, level: lvl });
@@ -893,7 +902,10 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
   return {
     columns: plan.cols.filter((c) => c.kind !== 'hidden').length === plan.cols.length ? plan.cols : plan.cols,
     rows,
-    meta: { basis: plan.basis, dates: null, notes, truncated, hiddenNotice: null, denied },
+    meta: {
+      basis: plan.basis, dates: null, notes, truncated, hiddenNotice: null, denied,
+      ...(preview ? { preview: { detailRowsPerLine: PREVIEW_DETAIL_ROWS_PER_LINE } } : {}),
+    },
   };
 }
 

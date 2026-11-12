@@ -43,7 +43,8 @@ export const runRequestSchema = z.object({
   open: z.array(path).max(MAX_PATHS).default([]).describe('expanded paths (≤ 1,000); sections with defaultExpanded need no entry'),
   collapsed: z.array(path).max(MAX_PATHS).default([]).describe('paths closed under a defaultExpanded section (≤ 1,000)'),
   expandAll: z.boolean().default(false).describe('every expandable row expanded (bounded by the row caps)'),
-  purpose: z.enum(['screen', 'export']).default('screen').describe('export allows 100,000 detail rows instead of 5,000'),
+  purpose: z.enum(['screen', 'export', 'preview']).default('screen')
+    .describe('export allows 100,000 detail rows instead of 5,000; preview (report-builder-preview-v1) shows at most 50 detail rows per line, the rest behind a more row'),
 }).strict();
 export type RunRequest = z.infer<typeof runRequestSchema>;
 

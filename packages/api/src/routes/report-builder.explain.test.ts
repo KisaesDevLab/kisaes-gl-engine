@@ -91,6 +91,12 @@ describe.skipIf(!ON)('Report Builder worst case on ~1M lines (RB_EXPLAIN=1)', ()
       const ms = Date.now() - t0;
       console.log(`[rb-explain] ${basis}: ${ms} ms, ${r.rows.length} rows, truncated ${r.meta.truncated}`);
       expect(ms).toBeLessThan(30_000);
+      // Preview (U-217): the same run cut at 50 detail rows per line.
+      const t1 = Date.now();
+      const p = await runReport({ tenantId: c.tenantId, companyId: c.companyId, permissions: perms }, { ...req, purpose: 'preview' });
+      const pms = Date.now() - t1;
+      console.log(`[rb-explain] ${basis} preview: ${pms} ms, ${p.rows.length} rows, truncated ${p.meta.truncated}`);
+      expect(pms).toBeLessThan(30_000);
     }, 120_000);
   }
 });
