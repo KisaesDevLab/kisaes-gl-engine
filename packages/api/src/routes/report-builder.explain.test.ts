@@ -93,4 +93,32 @@ describe.skipIf(!ON)('Report Builder worst case on ~1M lines (RB_EXPLAIN=1)', ()
       expect(ms).toBeLessThan(30_000);
     }, 120_000);
   }
+  // Preview (U-217, report-builder-preview-v1): the same worst case cut at 50
+  // detail rows per line, timed on its own so a slow full run doesn't hide it.
+  for (const basis of ['cash', 'accrual'] as const) {
+    it(`${basis} preview of the same worst case within 30 s`, async () => {
+      const bs = BUILDER_STARTERS.find((s) => s.key === 'balance_sheet')!.definition;
+      const gl = BUILDER_STARTERS.find((s) => s.key === 'transaction_detail_by_account')!.definition;
+      const def: BuilderDefinition = {
+        ...bs,
+        columns: { ...bs.columns, periods: 'month' },
+        nodes: [...bs.nodes, { ...(gl.nodes[0] as object), id: 'ledger', display: 'detail' } as BuilderDefinition['nodes'][number]],
+      };
+      const months = Array.from({ length: 36 }, (_, i) => {
+        const y = 2024 + Math.floor(i / 12), m = (i % 12) + 1;
+        const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        return { from: `${y}-${String(m).padStart(2, '0')}-01`, to: `${y}-${String(m).padStart(2, '0')}-${last}` };
+      });
+      const req = runRequestSchema.parse({
+        definition: def, dates: { asOf: '2026-12-31' }, periodRanges: months, basis,
+        fiscalYearStarts: ['2024-01-01', '2025-01-01', '2026-01-01'], purpose: 'preview',
+      });
+      const perms = new Proxy({}, { get: () => 'full' }) as never;
+      const t0 = Date.now();
+      const r = await runReport({ tenantId: c.tenantId, companyId: c.companyId, permissions: perms }, req);
+      const ms = Date.now() - t0;
+      console.log(`[rb-explain] ${basis} preview: ${ms} ms, ${r.rows.length} rows, truncated ${r.meta.truncated}`);
+      expect(ms).toBeLessThan(30_000);
+    }, 120_000);
+  }
 });

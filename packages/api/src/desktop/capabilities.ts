@@ -1281,5 +1281,13 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * net to zero are left out (as in Expenses by Category); a net can be negative. Detail mode unchanged. No migration.
    */
   'reports-revenue-net-v1',
+  /**
+   * Report Builder preview (U-217, ClientLedger A08). POST /report-builder/run takes purpose: 'preview': the same run as
+   * purpose screen (same snapshot, walk, detail query and order) with at most 50 detail rows per line (a running-balance line's opening row comes first and is not counted); a line with more
+   * ends in the usual `more` row whose cursor pages /run/detail, so preview rows equal the full run's rows up to the cut.
+   * meta.truncated is true when a line was cut; meta.preview = {detailRowsPerLine: 50} on preview runs only. The 5,000
+   * detail rows per run cap still applies. fingerprint ignores purpose (a preview's cursors page the same run). No migration.
+   */
+  'report-builder-preview-v1',
 ];
 
