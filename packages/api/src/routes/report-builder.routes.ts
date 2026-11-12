@@ -233,6 +233,8 @@ const RUN_DOC = 'Response `{columns: [{key, caption, kind, field?, range?}], row
   + 'Column kinds: field, total, period, prior, change, pct_change, percent, bucket, and for tb_net the *_debit / *_credit pairs; kind hidden marks a compare amount that only feeds a change (its cells are null). '
   + 'Paths are ["n:<nodeId>", "<key>:<id|value|none>", …]. Amounts are exact strings (never -0); percents 1 place, null on a zero base. '
   + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter), 404 (deleted saved report), 409 STALE_VERSION {current}, 422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
+  + 'Drills: line and total rows {type: detail, nodeId, path} (page /run/detail), detail rows {type: transaction, txnId, txnType}, earnings rows {type: profit_loss, from, to, tagIds?} (tagIds: a tag-filtered section; the lines carry one of them) or null in Trial Balance tag mode; detail rows of open items carry the path of their line. '
+  + 'Aging columns age as of the report date: periodRanges (other than one range ending on it) and compareRanges are 400 INVALID_PARAM. '
   + 'A section the role cannot see is one denied row, and anything built on it shows null cells.';
 
 reportBuilderRouter.post('/run', describe({
@@ -249,9 +251,11 @@ reportBuilderRouter.post('/run', describe({
 });
 
 reportBuilderRouter.post('/run/detail', describe({
-  summary: 'Page the detail rows of one Report Builder row (report-builder-v1)',
-  description: 'The same definition, dates and ranges as the run, the nodeId and path of the row (innermost grouping, or the section without group-bys), range? (a period column), cursor? (from a more row or a previous page), fingerprint and stamp of the run. '
-    + 'Response `{rows (≤ 500, kind detail; a range balance starts with an opening row), cursor: string|null, subtotal: cells}`; subtotal is the own cells of the row, for an equality check. '
+  summary: 'Page the detail rows of one Report Builder row (report-builder-v1, report-builder-drill-v1)',
+  description: 'The same definition, dates and ranges as the run, the nodeId and path of the row, range? (one column), cursor? (from a more row or a previous page), fingerprint and stamp of the run. '
+    + 'The path is any drill path of the run (report-builder-drill-v1): a group-by line at any level (all lines under it), a section ["n:<id>"] (its Total: every line of the section plus, for an earnings section, the earnings lines), or an earnings row ["n:<id>", "earnings:prior" | "earnings:current"] (income-statement lines, credit - debit; debit - credit for a tb or debit section). In Trial Balance tag mode the section and earnings paths are 400 INVALID_PARAM. '
+    + 'range is the range of one column as the run gave it ({from: null, to} for an as-of column): rows and subtotal hold that column only (its other value columns are null); a range of no column, or a range on aging columns, is 400 INVALID_PARAM. '
+    + 'Response `{rows (≤ 500, kind detail; a range balance starts with an opening row), cursor: string|null, subtotal: cells}`; subtotal is the own cells of the row, for an equality check (percent cells are null). A running balance is filled only on an innermost line. '
     + '409 RUN_CHANGED {reason: params} when the fingerprint differs, {reason: books} when the ledger stamp moved; 403 PERMISSION_DENIED for a denied section; 400 CURSOR_INVALID.',
   body: detailRequestSchema,
 }), validate(detailRequestSchema), async (req, res) => {

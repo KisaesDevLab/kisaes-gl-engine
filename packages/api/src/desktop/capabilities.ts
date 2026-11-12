@@ -1252,5 +1252,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * without new indexes).
    */
   'report-builder-starters-v1',
+  /**
+   * Report Builder drills (U-119e, ClientLedger A07 PR-E). POST /report-builder/run/detail takes every drill path of a run:
+   * a group-by line at any level, a section's Total ["n:<id>"] (every line of the section plus its earnings lines) and an
+   * earnings row ["n:<id>", "earnings:prior|current"]; range? ({from|null, to}) picks one column (rows and subtotal of
+   * that column only; a range of no column is 400 INVALID_PARAM). Earnings drills of a tag-filtered section carry tagIds;
+   * open-item detail rows in /run carry their line's path; the Trial Balance's prior-years row has path earnings:prior;
+   * aging columns refuse periodRanges/compareRanges (400 INVALID_PARAM). No migration.
+   */
+  'report-builder-drill-v1',
 ];
 
