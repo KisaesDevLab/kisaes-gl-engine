@@ -117,6 +117,8 @@ describe('report-builder-v1 runs (U-119)', () => {
       expect(pl.status, JSON.stringify(pl.json).slice(0, 400)).toBe(200);
       sample(`profit_loss_${basis}`, { definition: '<starters/profit_loss.json>', dates, basis, fiscalYearStarts: FY }, scrub(pl.json));
       const std = await reportService.buildProfitAndLoss(c.tenantId, dates.from, dates.to, basis, c.companyId, null, null, { exactAmounts: true });
+      // Every amount cell is an exact string (no float formatting, never -0).
+      for (const row of [...pl.json.rows]) for (const x of row.cells) if (x !== null) { expect(x).toMatch(/^-?\d+\.\d{2,4}$/); expect(x).not.toMatch(/^-0(\.0+)?$/); }
       const ni = pl.json.rows.find((r: { kind: string; nodeId: string }) => r.kind === 'formula' && r.nodeId === 'net_income');
       expect(cell(ni, 0).toFixed(4)).toBe(new Decimal(std.netIncomeExact!).toFixed(4));
 
