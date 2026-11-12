@@ -1243,5 +1243,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * GET /report-builder/fields: the field catalogue. Exact strings, percents 1 place.
    */
   'report-builder-v1',
+  /**
+   * Report Builder starters (U-119, ClientLedger A07 PR-D). GET /report-builder/starters -> {starters: [{key, title, tiesTo,
+   * definition}]}: 20 builder definitions (P&L, by month, with % of income, Balance Sheet, Trial Balance, Transaction Detail by
+   * Account, Revenue / Expenses by Category, A/R and A/P Aging Summary and Detail, Open Invoices, Unpaid Bills, Customer / Vendor
+   * Balance Summary, Sales by Client, Sales by Item, Check Register, Bank Account Balances). The tie-out suite proves each
+   * summary starter equals its standard report to the cent on both bases. No migration (the 1M-line run stays within 30 s
+   * without new indexes).
+   */
+  'report-builder-starters-v1',
 ];
 

@@ -34,7 +34,7 @@ const ALLOW: Array<{ file: string; pattern: string; line: RegExp; reason: string
   { file: 'report-builder/limits.ts', pattern: 'Math', line: /Math\.floor\(deadline - Date\.now\(\)\)/, reason: 'milliseconds left' },
   { file: 'report-builder/run.ts', pattern: 'Number(', line: /MONTHS\[Number\(/, reason: 'a month number for a caption' },
   { file: 'report-builder/run.ts', pattern: 'Number(', line: /Number\(cols\[i\]!\.key\.split/, reason: 'a compare index' },
-  { file: 'report-builder/run.ts', pattern: 'Number(', line: /slot: Number\(r\['w'\]\)/, reason: 'a column window index' },
+  { file: 'report-builder/run.ts', pattern: 'Number(', line: /const bi = Number\(r\['b'\]\)/, reason: 'a date bucket index' },
   { file: 'report-builder/run.ts', pattern: 'Number(', line: /return Number\(\(r\.rows\[0\] as \{ n: string \}\)\.n\)/, reason: 'the ledger stamp counter' },
   { file: 'report-columns/planner.ts', pattern: 'Math', line: /Math\.round\(\(Date\.parse/, reason: 'whole days between dates' },
 ];

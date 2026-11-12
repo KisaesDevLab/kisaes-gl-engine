@@ -32,7 +32,7 @@ import { AppError } from '../utils/errors.js';
 import * as defs from '../services/report-definitions.service.js';
 import { REPORT_DEFINITION_KINDS } from '../db/schema/index.js';
 import {
-  builderDefinitionSchema, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES, RB_SOURCE_INFO, RB_UNAVAILABLE_SOURCES, RB_MEASURE_UNIT,
+  builderDefinitionSchema, BUILDER_STARTERS, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES, RB_SOURCE_INFO, RB_UNAVAILABLE_SOURCES, RB_MEASURE_UNIT,
   RB_FILTER_VALUES, RB_DETAIL_FIELDS,
 } from '@kis-books/shared';
 import { runRequestSchema, detailRequestSchema } from '../services/report-builder/request.js';
@@ -264,4 +264,13 @@ reportBuilderRouter.get('/fields', describe({
   description: 'Response `{sources: {<source>: {key, caption, lines, sign, openItems, measures, accrualOnly, filters, groupBy, detailFields, rights, tiesTo}}, unavailable: [{key, reason}], measureUnits, filterValues, detailFields}` (packages/shared/src/report-builder/fields.ts).',
 }), (_req, res) => {
   res.json({ sources: RB_SOURCE_INFO, unavailable: RB_UNAVAILABLE_SOURCES, measureUnits: RB_MEASURE_UNIT, filterValues: RB_FILTER_VALUES, detailFields: RB_DETAIL_FIELDS });
+});
+
+reportBuilderRouter.get('/starters', describe({
+  summary: 'Report Builder starters (report-builder-starters-v1)',
+  description: 'Response `{starters: [{key, title, tiesTo, definition}]}`: builder definitions (schema v1) that reproduce standard reports; '
+    + 'tiesTo is the standard report route (/reports/<tiesTo>) a starter ties to, to the cent, when run with the same dates, ranges, fiscal year starts, basis and adjusting '
+    + '(packages/shared/src/report-builder/starters.ts; the same definitions as fixtures/starters/*.json).',
+}), (_req, res) => {
+  res.json({ starters: BUILDER_STARTERS });
 });

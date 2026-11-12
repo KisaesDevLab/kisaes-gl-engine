@@ -59585,6 +59585,29 @@
         ]
       }
     },
+    "/api/v1/report-builder/starters": {
+      "get": {
+        "description": "Response `{starters: [{key, title, tiesTo, definition}]}`: builder definitions (schema v1) that reproduce standard reports; tiesTo is the standard report route (/reports/<tiesTo>) a starter ties to, to the cent, when run with the same dates, ranges, fiscal year starts, basis and adjusting (packages/shared/src/report-builder/starters.ts; the same definitions as fixtures/starters/*.json).",
+        "operationId": "get_api_v1_report_builder_starters",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Report Builder starters (report-builder-starters-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      }
+    },
     "/api/v1/reports/account-activity-summary": {
       "get": {
         "description": "data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",
