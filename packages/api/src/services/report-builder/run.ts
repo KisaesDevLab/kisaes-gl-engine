@@ -672,7 +672,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
   let truncated = false;
   const denied: string[] = [];
   const totals = new Map<string, NodeTotal>();
-  const sectionData = new Map<string, { tree: Tree; earnings: Array<{ caption: string; vals: Vals; drill: RunDrill | null }> }>();
+  const sectionData = new Map<string, { tree: Tree; earnings: EarningsRow[] }>();
 
   // Rights, then every line section's facts (and line-mode earnings) in one statement.
   const allowed = sectionsOf(def.nodes).filter((x) => {
@@ -839,7 +839,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
       for (const e of data.earnings) {
         const cells = cellsOf(plan, e.vals, base);
         emitLine(cells);
-        row({ kind: 'earnings', nodeId: s.id, level: level + 1, path: [...np, `earnings:${e.caption === PRIOR_YEARS ? 'prior' : 'current'}`], caption: e.caption, cells, drill: e.drill });
+        row({ kind: 'earnings', nodeId: s.id, level: level + 1, path: [...np, `earnings:${e.part}`], caption: e.caption, cells, drill: e.drill });
       }
       if (s.showTotal) {
         const cells = tb
@@ -870,6 +870,9 @@ async function checkPolarity(ctx: Ctx, s: RbSectionNode): Promise<void> {
   if (sides.size > 1) throw invalidAt(`node:${s.id}.polarity`, 'MIXED_POLARITY', 'Natural signs need accounts of one kind (all debit or all credit); choose Debit or Credit.');
 }
 
+/** An earnings row: 'prior' (prior years, also the TB's one row) or 'current' (this year); its path ends in earnings:<part>. */
+interface EarningsRow { part: 'prior' | 'current'; caption: string; vals: Vals; drill: RunDrill | null }
+
 const PRIOR_YEARS = 'Prior years\' net income';
 const CURRENT_YEAR = 'Net income this year';
 
@@ -881,7 +884,7 @@ function earningsSection(s: RbSectionNode): RbSectionNode {
   };
 }
 
-async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): Promise<Array<{ caption: string; vals: Vals; drill: RunDrill | null }>> {
+async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): Promise<EarningsRow[]> {
   const { plan } = ctx;
   const n = nVals(plan);
   const tagF = s.filters.find((f) => f.field === 'tag' && f.op === 'in');
@@ -899,7 +902,7 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
     if (prior.every((x) => x.isZero())) return [];
     // In tag mode the transaction-level figure has no line-level drill (the one exemption).
     const sl = slots[0]!;
-    return [{ caption: 'Retained Earnings (Prior Years)', vals: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
+    return [{ part: 'prior', caption: 'Retained Earnings (Prior Years)', vals: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
   }
   // Line mode (equity-earnings' rule: credit - debit over every income-statement line, line-level tag), from the run's batch.
   const sign = s.polarity === 'debit' ? -1 : 1;
@@ -917,9 +920,9 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
   // A tag-filtered section drills to a P&L of the same lines: tagIds = the tags a line may carry (every tag filter holds).
   const tagFs = s.filters.filter((f) => f.field === 'tag' && f.op === 'in');
   const tags = tagFs.length ? { tagIds: tagFs.slice(1).reduce((acc, f) => acc.filter((x) => f.ids!.includes(x)), [...tagFs[0]!.ids!]) } : {};
-  const out: Array<{ caption: string; vals: Vals; drill: RunDrill | null }> = [];
-  if (prior.some((x) => !x.isZero())) out.push({ caption: PRIOR_YEARS, vals: prior, drill: { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1), ...tags } });
-  if (current.some((x) => !x.isZero())) out.push({ caption: CURRENT_YEAR, vals: current, drill: { type: 'profit_loss', from: sl.fy, to: sl.to, ...tags } });
+  const out: EarningsRow[] = [];
+  if (prior.some((x) => !x.isZero())) out.push({ part: 'prior', caption: PRIOR_YEARS, vals: prior, drill: { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1), ...tags } });
+  if (current.some((x) => !x.isZero())) out.push({ part: 'current', caption: CURRENT_YEAR, vals: current, drill: { type: 'profit_loss', from: sl.fy, to: sl.to, ...tags } });
   return out;
 }
 
@@ -1193,8 +1196,7 @@ export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSig
     if (earnings !== 'none') {
       const pre = await bucketFacts(ctx, [{ sid: 'e', s: earningsSection(s), pathKeys: [], earningsOf: true }]);
       for (const e of await earningsRows(ctx, s, pre.get('e') ?? [])) {
-        const part = e.caption === CURRENT_YEAR ? 'current' : 'prior';
-        if (earnings === 'all' || earnings === part) addInto(vals, e.vals);
+        if (earnings === 'all' || earnings === e.part) addInto(vals, e.vals);
       }
     }
     let subtotal: Array<string | null>;
