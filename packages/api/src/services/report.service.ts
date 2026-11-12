@@ -1475,11 +1475,18 @@ export async function buildARAgingSummary(
   tagId: string | null = null,
 ) {
   const { arOpenItemsAsOf, ageOpenItems } = await import('./ar-open-items.js');
+  const { ageExact } = await import('./ap-open-items.js');
   const items = await arOpenItemsAsOf(db, {
     tenantId, companyId, asOf: asOfDate,
     tagIds: tagId ? tagId.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
   });
   const aging = ageOpenItems(items, asOfDate);
+  // U-119 (Q-A07c): the summary ages each item's exact open, as the A/P
+  // aging does, so A/R and A/P agree and a sub-cent item counts once. The
+  // legacy number fields, the per-item cents (balance) and customers[]
+  // buckets / total are unchanged; bucketsExact (was the cents sums) is now
+  // the exact sums, and customers[] add bucketsExact / totalExact.
+  const exact = ageExact(items, asOfDate);
 
   const contactIds = [...new Set(items.map((i) => i.contactId).filter((x): x is string => x !== null))];
   const names = new Map<string, string>();
@@ -1528,11 +1535,15 @@ export async function buildARAgingSummary(
   for (const it of aging.items) perContact.set(it.contactId, [...(perContact.get(it.contactId) ?? []), it]);
   const customers = [...perContact.entries()].map(([contactId, rows]) => {
     const a = ageOpenItems(rows, asOfDate);
+    const x = ageExact(rows, asOfDate);
     return {
       contactId,
       name: contactId ? (names.get(contactId) ?? '') : '(no client)',
       buckets: a.buckets,
       total: a.total,
+      // U-119 (Q-A07c): the client's exact aging (each item's exact open).
+      bucketsExact: x.buckets,
+      totalExact: x.totalExact,
     };
   }).sort((x, y) => (x.contactId === null ? 1 : y.contactId === null ? -1 : x.name.localeCompare(y.name)));
 
@@ -1545,8 +1556,8 @@ export async function buildARAgingSummary(
     },
     total: n(aging.total),
     details,
-    bucketsExact: aging.buckets,
-    totalExact: aging.totalExact,
+    bucketsExact: exact.buckets,
+    totalExact: exact.totalExact,
     difference: aging.difference,
     customers,
   };
@@ -2278,6 +2289,36 @@ export async function buildAccountDetailReport(
 // when tagId is supplied we narrow the aggregation to lines that
 // carry the tag (project-accounting semantic, same as P&L and
 // Expenses by Vendor).
+// ─── Sales rule (U-119, Q-A07b) ──────────────────────────────────
+//
+// One rule for Sales by Client, Sales by Item and the Report Builder's
+// sales / item_sales sources: income lines (revenue, other revenue) of sale
+// documents, natural net (credit - debit, so a discount line reduces sales
+// and a credit memo counts negative), the line's client, else its document's.
+// Accrual: invoices, sales receipts, credit memos and daily sales posted on
+// accrual (t.basis <> 'cash'). Cash: the cash-basis lines of those documents
+// as the payments re-emit them (rule-3 types), less money not yet applied
+// (Unapplied receipts). A bounce's own income credits now count: under the
+// natural net a payment's discount debit reduces sales, and the bounce that
+// reverses the payment gives it back (U-146 S4: a bounced payment nets to 0).
+
+export const SALES_ACCRUAL_TYPES = ['invoice', 'cash_sale', 'credit_memo', 'daily_sales'] as const;
+export const SALES_CASH_TYPES = ['invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund'] as const;
+
+/** Accrual sale lines: conditions over journal_lines `jl`, transactions `t`, accounts `a`. */
+export function salesAccrualCond() {
+  return sql`a.account_type IN ('revenue', 'other_revenue') AND t.basis <> 'cash'
+    AND t.txn_type IN (${sql.join(SALES_ACCRUAL_TYPES.map((x) => sql`${x}`), sql`, `)})`;
+}
+
+/** Cash sale lines: conditions over cb_lines `cb` and accounts `a`. */
+export function salesCashCond() {
+  return sql`a.account_type IN ('revenue', 'other_revenue')
+    -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
+    AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
+    AND cb.txn_type IN (${sql.join(SALES_CASH_TYPES.map((x) => sql`${x}`), sql`, `)})`;
+}
+
 export async function buildSalesByCustomer(
   tenantId: string,
   startDate: string,
@@ -2290,46 +2331,30 @@ export async function buildSalesByCustomer(
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
-  // Cash basis recognizes revenue when the customer pays (cb_lines Rule 3 for
-  // invoices at payment; cash sales pass through) grouped by the payment's
-  // contact. Accrual counts sale-document revenue by the document's contact.
+  // The sales rule (U-119, Q-A07b, above): natural net of sale lines by the
+  // line's client, else the document's; cash basis recognizes revenue when
+  // the customer pays (cb_lines rule 3; cash sales pass through).
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
-          SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total
+          SUM(cb.credit - cb.debit) as total
         FROM cb_lines cb
-        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
-        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
-          -- U-146 S4: a bounce counts only its rule-3 mirror rows (credit <= 0); its own
-          -- credit to a discount or write-off account is not a sale (the payment's own
-          -- discount debit was never counted).
-          AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
-          -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
-          AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
-          -- Sale documents + the payments their revenue re-emits at
-          -- (cb_lines rule 3 stamps the PAYMENT's txn_type). Without this,
-          -- cash-basis "Sales" would count revenue credits from deposits and
-          -- journal entries — semantically broader than the accrual report.
-          -- A refund of a credit memo re-emits the memo's income debits at the
-          -- refund date (cb_lines rule 3b): returns, counted negative.
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund')
+        JOIN accounts a ON a.id = cb.account_id
+        LEFT JOIN contacts c ON c.id = COALESCE(cb.line_contact_id, cb.txn_contact_id) AND c.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND ${salesCashCond()} ${cbTag}
         GROUP BY c.id, c.display_name ORDER BY total DESC
       `)
     : await db.execute(sql`
     SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
-      SUM(CASE WHEN t.txn_type = 'credit_memo' THEN jl.credit - jl.debit ELSE jl.credit END) as total
+      SUM(jl.credit - jl.debit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('revenue', 'other_revenue')
-    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id
+    LEFT JOIN contacts c ON c.id = COALESCE(jl.contact_id, t.contact_id) AND c.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      -- Credit memos debit income (returns): counted negative, net of any
-      -- negative memo line.
-      AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
-      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
+      AND ${salesAccrualCond()}
       AND ${companyFilter(companyId)}
       AND ${adjustingCond(adjusting, 't.is_adjusting')}
       ${tagClause}
@@ -2363,22 +2388,12 @@ export async function buildSalesByItem(
           cb.item_id,
           COALESCE(i.name, 'Uncategorized') as item_name,
           '' as item_sku, -- items has no sku column; kept for the response shape
-          SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total,
+          SUM(cb.credit - cb.debit) as total,
           COUNT(DISTINCT cb.transaction_id)::int as txn_count
         FROM cb_lines cb
-        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
+        JOIN accounts a ON a.id = cb.account_id
         LEFT JOIN items i ON i.id = cb.item_id AND i.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
-          -- U-146 S4: a bounce counts only its rule-3 mirror rows (credit <= 0); its own
-          -- credit to a discount or write-off account is not a sale (the payment's own
-          -- discount debit was never counted).
-          AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
-          -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
-          AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
-          -- Same sale-document restriction as Sales by Customer (see note there).
-          -- A refund of a credit memo re-emits the memo's income debits at the
-          -- refund date (cb_lines rule 3b): returns, counted negative.
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund')
+        WHERE a.tenant_id = ${tenantId} AND ${salesCashCond()} ${cbTag}
         GROUP BY cb.item_id, i.name
         ORDER BY total DESC
       `)
@@ -2387,18 +2402,15 @@ export async function buildSalesByItem(
       jl.item_id,
       COALESCE(i.name, 'Uncategorized') as item_name,
       '' as item_sku, -- items has no sku column; kept for the response shape
-      SUM(CASE WHEN t.txn_type = 'credit_memo' THEN jl.credit - jl.debit ELSE jl.credit END) as total,
+      SUM(jl.credit - jl.debit) as total,
       COUNT(DISTINCT jl.transaction_id)::int as txn_count
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('revenue', 'other_revenue')
+    JOIN accounts a ON a.id = jl.account_id
     LEFT JOIN items i ON i.id = jl.item_id AND i.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      -- Credit memos debit income (returns): counted negative, net of any
-      -- negative memo line.
-      AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
-      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
+      AND ${salesAccrualCond()}
       AND ${companyFilter(companyId)}
       AND ${adjustingCond(adjusting, 't.is_adjusting')}
       ${tagClause}
