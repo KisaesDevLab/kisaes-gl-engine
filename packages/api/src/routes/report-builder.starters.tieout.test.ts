@@ -65,10 +65,13 @@ function call(method: string, p: string, body?: unknown): Promise<{ status: numb
 
 type Row = { kind: string; nodeId: string; path: string[]; caption: string; cells: Array<string | null> };
 const starter = (key: string): BuilderDefinition => JSON.parse(JSON.stringify(BUILDER_STARTERS.find((s) => s.key === key)!.definition)) as BuilderDefinition;
+/** A starter's run with its detail-field columns cut off: cell 0 is the first value column. */
 async function run(key: string, extra: Record<string, unknown>): Promise<{ rows: Row[]; columns: Array<{ key: string; kind: string }> }> {
   const r = await call('POST', '/run', { definition: starter(key), fiscalYearStarts: FY, expandAll: true, ...extra });
   expect(r.status, `${key} ${JSON.stringify(r.json).slice(0, 300)}`).toBe(200);
-  return r.json;
+  const cols = r.json.columns as Array<{ key: string; kind: string }>;
+  const fv = cols.findIndex((x) => x.kind !== 'field');
+  return { columns: cols.slice(fv), rows: (r.json.rows as Row[]).map((x) => ({ ...x, cells: x.cells.slice(fv) })) };
 }
 const D = (x: string | number | null | undefined) => new Decimal(x ?? 0).toFixed(4);
 /** Line rows of a section keyed by the id in their last path segment ("none" for a NULL key). */
@@ -130,6 +133,9 @@ beforeAll(async () => {
   const bill = await post('bill', '2026-03-12', [{ accountId: c.expense2, debit: '45.00', credit: '0' }, { accountId: c.ap, debit: '0', credit: '45.00' }], { contactId: c.vendor, dueDate: '2026-04-11' });
   const bp = await post('bill_payment', '2026-04-01', [{ accountId: c.ap, debit: '20.00', credit: '0' }, { accountId: c.bank, debit: '0', credit: '20.00' }], { contactId: c.vendor });
   await db.insert(billPaymentApplications).values({ tenantId: c.tenantId, companyId: c.companyId, paymentId: bp.id, billId: bill.id, amount: '20.0000' });
+  // Journal entries on A/R and A/P with a name: open items, but not invoices or bills (U-119f).
+  await post('journal_entry', '2026-04-05', [{ accountId: c.ar, debit: '15.00', credit: '0', contactId: customer2 }, { accountId: c.income, debit: '0', credit: '15.00' }]);
+  await post('journal_entry', '2026-04-06', [{ accountId: c.expense2, debit: '8.00', credit: '0' }, { accountId: c.ap, debit: '0', credit: '8.00', contactId: c.vendor }]);
   // A cash-only entry.
   await post('cash_sale', '2026-05-05', [{ accountId: c.bank, debit: '7.00', credit: '0' }, { accountId: c.income, debit: '0', credit: '7.00' }], { contactId: c.customer, basis: 'cash' });
 }, 120_000);
@@ -222,6 +228,62 @@ describe('starters tie to the standard reports (report-builder-starters-v1)', ()
       const std = await reportService.buildBalanceSheet(c.tenantId, AS_OF, basis, c.companyId, null, null, { exactAmounts: true }) as unknown as Record<string, unknown>;
       const bankStd = (std['assets'] as Array<{ accountId: string | null; balanceExact?: string }>).find((e) => e.accountId === c.bank);
       expect(byKey(bb.rows, 'banks')[c.bank]).toBe(D(bankStd?.balanceExact));
+    });
+
+    it(`Transaction Detail by Account lists the standard General Ledger's accounts, signed as there (${basis})`, async () => {
+      let openingOnly = 0;
+      for (const dates of [RANGE, { from: '2026-05-01', to: AS_OF }]) {
+        const r = await call('POST', '/run', { definition: starter('transaction_detail_by_account'), fiscalYearStarts: FY, dates, basis, expandAll: true });
+        expect(r.status, JSON.stringify(r.json).slice(0, 300)).toBe(200);
+        const cols = r.json.columns as Col[];
+        const rows = r.json.rows as DRow[];
+        const tot = cols.findIndex((x) => x.key === 'total');
+        const bal = cols.findIndex((x) => x.key === 'f:running_balance');
+        expect(cols.some((x) => x.key === 'f:amount')).toBe(false);
+        const std = await reportService.buildGeneralLedger(c.tenantId, dates.from, dates.to, c.companyId, null, basis, null, { exactAmounts: true, fiscalYearStart: '2026-01-01' });
+        const accts = (std.accounts as Array<{ accountId: string; beginningBalanceExact: string; endingBalanceExact: string; netChangeExact: string } | null>).filter((a) => a !== null);
+        const lines = rows.filter((x) => x.kind === 'line');
+        expect(lines.map((l) => l.path[1]!.split(':')[1]).sort(), `${dates.from} accounts`).toEqual(accts.map((a) => a.accountId).sort());
+        for (const a of accts) {
+          const line = lines.find((l) => l.path[1] === `account:${a.accountId}`)!;
+          expect(D(line.cells[tot]), `${dates.from} ${a.accountId} net`).toBe(D(a.netChangeExact));
+          const under = rows.filter((x) => (x.kind === 'opening' || x.kind === 'detail') && x.path.join('/') === line.path.join('/'));
+          expect(under[0]!.kind).toBe('opening');
+          expect(D(under[0]!.cells[bal]), `${dates.from} ${a.accountId} opening`).toBe(D(a.beginningBalanceExact));
+          expect(D(under[under.length - 1]!.cells[bal]), `${dates.from} ${a.accountId} ending`).toBe(D(a.endingBalanceExact));
+          if (under.length === 1) openingOnly++;
+        }
+        if (dates === RANGE) {
+          // Credit-balance accounts read positive, as on the standard report.
+          const income = lines.find((l) => l.path[1] === `account:${c.income}`)!;
+          expect(new Decimal(income.cells[tot]!).gt(0)).toBe(true);
+          expect(income.nodeId).toBe('income');
+        }
+      }
+      expect(openingOnly).toBeGreaterThan(0);
+    });
+
+    it(`Open Invoices and Unpaid Bills list the standard reports' documents, row by row (${basis})`, async () => {
+      let seen = 0;
+      for (const asOf of ['2026-04-30', AS_OF, '2026-07-31']) {
+        const detailRows = (x: { rows: Row[] }) => (x.rows as DRow[]).filter((r) => r.kind === 'detail');
+        const byTxn = (x: { rows: Row[] }) => Object.fromEntries(detailRows(x).map((r) => [(r as unknown as { fields: { txnId: string } }).fields.txnId, D(r.cells[0])]));
+        const oi = await run('open_invoices', { dates: { asOf }, basis });
+        const soi = await openBalances.buildOpenInvoicesAsOf(c.tenantId, asOf, {}, c.companyId);
+        expect(byTxn(oi), `open invoices ${asOf}`).toEqual(Object.fromEntries(soi.data.map((d) => [d.id, D(d.balance_due)])));
+        expect(total(oi.rows, 'receivables')).toBe(soi.data.reduce((acc, d) => acc.plus(d.balance_due), new Decimal(0)).toFixed(4));
+        const ub = await run('unpaid_bills', { dates: { asOf }, basis });
+        const sub = await openBalances.buildUnpaidBillsAsOf(c.tenantId, asOf, {}, c.companyId);
+        expect(byTxn(ub), `unpaid bills ${asOf}`).toEqual(Object.fromEntries(sub.data.map((d) => [d.id, D(d.balance_due)])));
+        expect(total(ub.rows, 'payables')).toBe(sub.data.reduce((acc, d) => acc.plus(d.balance_due), new Decimal(0)).toFixed(4));
+        seen += soi.data.length + sub.data.length;
+        // The journal entries on A/R and A/P are open items (the agings list them) but not documents of these reports.
+        for (const key of ['ar_aging_detail', 'ap_aging_detail']) {
+          const ag = await run(key, { dates: { asOf }, basis });
+          expect(detailRows(ag).some((r) => (r as unknown as { fields: { txnType: string } }).fields.txnType === 'journal_entry'), `${key} ${asOf}`).toBe(true);
+        }
+      }
+      expect(seen).toBeGreaterThan(3);
     });
   }
 
@@ -342,7 +404,7 @@ describe('drills (A07 PR-E)', () => {
           expect(d.rows.length).toBeGreaterThan(0);
           if (e.path[1] === 'earnings:current') {
             const pl = await reportService.buildProfitAndLoss(c.tenantId, '2026-01-01', AS_OF, basis, c.companyId, null, null, { exactAmounts: true });
-            expect(D(e.cells[0])).toBe(D(pl.netIncomeExact));
+            expect(D(e.cells[valueCols(run.columns)[0]!])).toBe(D(pl.netIncomeExact));
           }
         }
       }
@@ -450,9 +512,10 @@ describe('drills (A07 PR-E)', () => {
     const run = await runDef(def, ref);
     const cur = run.rows.find((r) => r.kind === 'earnings' && r.path[1] === 'earnings:current')!;
     expect(cur.drill).toMatchObject({ type: 'profit_loss', from: '2026-01-01', to: AS_OF, tagIds: [tag!.id] });
-    expect(D(cur.cells[0])).toBe('12.0000');
+    const v0 = valueCols(run.columns)[0]!;
+    expect(D(cur.cells[v0])).toBe('12.0000');
     const d = await drill(def, ref, run, cur.nodeId, cur.path);
-    expect(D(d.subtotal[0])).toBe('12.0000');
+    expect(D(d.subtotal[v0])).toBe('12.0000');
     expect(d.rows).toHaveLength(1);
     // Untagged sections keep their drills without tagIds.
     const plain = await runDef(starter('balance_sheet'), ref);

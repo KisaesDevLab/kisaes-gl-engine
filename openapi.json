@@ -59594,7 +59594,7 @@
     },
     "/api/v1/report-builder/starters": {
       "get": {
-        "description": "Response `{starters: [{key, title, tiesTo, definition}]}`: builder definitions (schema v1) that reproduce standard reports; tiesTo is the standard report route (/reports/<tiesTo>) a starter ties to, to the cent, when run with the same dates, ranges, fiscal year starts, basis and adjusting (packages/shared/src/report-builder/starters.ts; the same definitions as fixtures/starters/*.json).",
+        "description": "Response `{starters: [{key, title, tiesTo, definition}]}`: builder definitions (schema v1) that reproduce standard reports; tiesTo is the standard report route (/reports/<tiesTo>) a starter ties to, to the cent, when run with the same dates, ranges, fiscal year starts, basis and adjusting (packages/shared/src/report-builder/starters.ts; the same definitions as fixtures/starters/*.json). report-builder-starters-v2: every starter has detail fields; Transaction Detail by Account is one natural-sign section per account type; Open Invoices and Unpaid Bills list invoices and bills only.",
         "operationId": "get_api_v1_report_builder_starters",
         "responses": {
           "default": {
@@ -59609,7 +59609,7 @@
             "ApiKeyAuth": []
           }
         ],
-        "summary": "Report Builder starters (report-builder-starters-v1)",
+        "summary": "Report Builder starters (report-builder-starters-v1, v2)",
         "tags": [
           "report-builder"
         ]

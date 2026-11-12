@@ -67,24 +67,53 @@ function profitLossNodes(): RbNode[] {
   ];
 }
 
+/**
+ * Detail fields (U-119f, report-builder-starters-v2): every starter drills to
+ * detail, so each names the columns its detail rows show, as its standard
+ * report's drill does. The value columns carry the amount, so no `amount`
+ * field (it would repeat it). Fields are definition-wide: a summary run
+ * sends them as columns whose cells are all null (the desktop hides those).
+ */
 const AR_DETAIL: RbDetailField[] = ['date', 'txn_type', 'number', 'contact', 'due_date', 'days_past_due', 'original_amount'];
-const LEDGER_DETAIL: RbDetailField[] = ['date', 'txn_type', 'number', 'contact', 'memo', 'debit', 'credit', 'amount', 'running_balance'];
+/** Line drills: a Total spans accounts, so the account is shown too. */
+const LINE_DETAIL: RbDetailField[] = ['date', 'txn_type', 'number', 'contact', 'memo', 'description', 'account'];
+const LEDGER_DETAIL: RbDetailField[] = ['date', 'txn_type', 'number', 'contact', 'memo', 'description', 'debit', 'credit', 'running_balance'];
 
-function openItems(source: 'ar_open' | 'ap_open', caption: string, groupBy: RbGroupBy[], display: RbSectionNode['display'], total: string): RbSectionNode {
+function openItems(
+  source: 'ar_open' | 'ap_open', caption: string, groupBy: RbGroupBy[], display: RbSectionNode['display'], total: string, filters: RbFilter[] = [],
+): RbSectionNode {
   return section(source === 'ar_open' ? 'receivables' : 'payables', caption, source, 'open_balance', {
-    groupBy, display, defaultExpanded: display !== 'summary', totalCaption: total, hideZero: true,
+    filters, groupBy, display, defaultExpanded: display !== 'summary', totalCaption: total, hideZero: true,
   });
 }
 
+/** Open Invoices / Unpaid Bills: the document type their standard report lists (U-119f). */
+const docType = (t: 'invoice' | 'bill'): RbFilter => ({ field: 'txn_type', op: 'in', values: [t] });
+
+/**
+ * Transaction Detail by Account (U-119f): one section per account type, in
+ * the standard General Ledger's order, each in its natural sign (a credit
+ * account's balance positive, as the standard report shows it). A single
+ * natural section over every account would be MIXED_POLARITY.
+ */
+const LEDGER_TYPES: Array<[string, string, string]> = [
+  ['assets', 'Assets', 'asset'], ['liabilities', 'Liabilities', 'liability'], ['equity', 'Equity', 'equity'],
+  ['income', 'Income', 'revenue'], ['cogs', 'Cost of Goods Sold', 'cogs'], ['expenses', 'Expenses', 'expense'],
+  ['other_income', 'Other Income', 'other_revenue'], ['other_expenses', 'Other Expenses', 'other_expense'],
+];
+const ledgerNodes = (): RbNode[] => LEDGER_TYPES.map(([id, caption, type]) => section(id, caption, 'gl', 'amount', {
+  filters: [types(type)], display: 'detail', defaultExpanded: true, showTotal: false,
+}));
+
 export const BUILDER_STARTERS: BuilderStarter[] = [
-  { key: 'profit_loss', title: 'Profit and Loss', tiesTo: 'profit-loss', definition: def('range', 'this_year_to_date', profitLossNodes()) },
+  { key: 'profit_loss', title: 'Profit and Loss', tiesTo: 'profit-loss', definition: def('range', 'this_year_to_date', profitLossNodes(), { detailFields: LINE_DETAIL }) },
   {
     key: 'profit_loss_by_month', title: 'Profit and Loss by Month', tiesTo: 'profit-loss',
-    definition: def('range', 'this_year_to_date', profitLossNodes(), { periods: 'month' }),
+    definition: def('range', 'this_year_to_date', profitLossNodes(), { detailFields: LINE_DETAIL, periods: 'month' }),
   },
   {
     key: 'profit_loss_pct_income', title: 'Profit and Loss with % of Income', tiesTo: 'profit-loss',
-    definition: def('range', 'this_year_to_date', profitLossNodes(), { percentOf: 'income' }),
+    definition: def('range', 'this_year_to_date', profitLossNodes(), { detailFields: LINE_DETAIL, percentOf: 'income' }),
   },
   {
     key: 'balance_sheet', title: 'Balance Sheet', tiesTo: 'balance-sheet',
@@ -93,37 +122,33 @@ export const BUILDER_STARTERS: BuilderStarter[] = [
       section('liabilities', 'Liabilities', 'gl', 'balance', { filters: [types('liability')], totalCaption: 'Total Liabilities' }),
       section('equity', 'Equity', 'gl', 'balance', { filters: [types('equity')], totalCaption: 'Total Equity', earnings: 'balance_sheet' }),
       { type: 'formula', id: 'liabilities_equity', caption: 'Total Liabilities and Equity', terms: [{ nodeId: 'liabilities', sign: 1 }, { nodeId: 'equity', sign: 1 }] },
-    ]),
+    ], { detailFields: LINE_DETAIL }),
   },
   {
     key: 'trial_balance', title: 'Trial Balance', tiesTo: 'trial-balance',
     definition: def('asOf', 'today', [
       section('accounts', 'Trial Balance', 'gl', 'tb_net', { totalCaption: 'Total', earnings: 'trial_balance' }),
-    ]),
+    ], { detailFields: LINE_DETAIL }),
   },
   {
     key: 'transaction_detail_by_account', title: 'Transaction Detail by Account', tiesTo: 'general-ledger',
-    definition: def('range', 'this_month', [
-      section('ledger', 'Transaction Detail by Account', 'gl', 'amount', {
-        polarity: 'debit', display: 'detail', defaultExpanded: true, showTotal: false,
-      }),
-    ], { detailFields: LEDGER_DETAIL }),
+    definition: def('range', 'this_month', ledgerNodes(), { detailFields: LEDGER_DETAIL }),
   },
   {
     key: 'revenue_by_category', title: 'Revenue by Category', tiesTo: 'profit-loss',
     definition: def('range', 'this_year_to_date', [
       section('revenue', 'Revenue', 'gl', 'amount', { filters: [types('revenue', 'other_revenue')], totalCaption: 'Total Revenue' }),
-    ]),
+    ], { detailFields: LINE_DETAIL }),
   },
   {
     key: 'expenses_by_category', title: 'Expenses by Category', tiesTo: 'expense-by-category',
     definition: def('range', 'this_year_to_date', [
       section('expenses', 'Expenses', 'gl', 'amount', { filters: [types('cogs', 'expense', 'other_expense')], totalCaption: 'Total Expenses' }),
-    ]),
+    ], { detailFields: LINE_DETAIL }),
   },
   {
     key: 'ar_aging_summary', title: 'A/R Aging Summary', tiesTo: 'ar-aging-summary',
-    definition: def('asOf', 'today', [openItems('ar_open', 'Accounts Receivable', by('contact'), 'summary', 'Total')], { agingBuckets: true }),
+    definition: def('asOf', 'today', [openItems('ar_open', 'Accounts Receivable', by('contact'), 'summary', 'Total')], { detailFields: AR_DETAIL, agingBuckets: true }),
   },
   {
     key: 'ar_aging_detail', title: 'A/R Aging Detail', tiesTo: 'ar-aging-detail',
@@ -131,7 +156,7 @@ export const BUILDER_STARTERS: BuilderStarter[] = [
   },
   {
     key: 'ap_aging_summary', title: 'A/P Aging Summary', tiesTo: 'ap-aging-summary',
-    definition: def('asOf', 'today', [openItems('ap_open', 'Accounts Payable', by('contact'), 'summary', 'Total')], { agingBuckets: true }),
+    definition: def('asOf', 'today', [openItems('ap_open', 'Accounts Payable', by('contact'), 'summary', 'Total')], { detailFields: AR_DETAIL, agingBuckets: true }),
   },
   {
     key: 'ap_aging_detail', title: 'A/P Aging Detail', tiesTo: 'ap-aging-detail',
@@ -139,31 +164,31 @@ export const BUILDER_STARTERS: BuilderStarter[] = [
   },
   {
     key: 'open_invoices', title: 'Open Invoices', tiesTo: 'invoice-list',
-    definition: def('asOf', 'today', [openItems('ar_open', 'Open Invoices', by('contact'), 'detail', 'Total')], { detailFields: AR_DETAIL }),
+    definition: def('asOf', 'today', [openItems('ar_open', 'Open Invoices', by('contact'), 'detail', 'Total', [docType('invoice')])], { detailFields: AR_DETAIL }),
   },
   {
     key: 'unpaid_bills', title: 'Unpaid Bills', tiesTo: 'unpaid-bills',
-    definition: def('asOf', 'today', [openItems('ap_open', 'Unpaid Bills', by('contact'), 'detail', 'Total')], { detailFields: AR_DETAIL }),
+    definition: def('asOf', 'today', [openItems('ap_open', 'Unpaid Bills', by('contact'), 'detail', 'Total', [docType('bill')])], { detailFields: AR_DETAIL }),
   },
   {
     key: 'customer_balance_summary', title: 'Customer Balance Summary', tiesTo: 'customer-balance-summary',
-    definition: def('asOf', 'today', [openItems('ar_open', 'Customer Balances', by('contact'), 'summary', 'Total')]),
+    definition: def('asOf', 'today', [openItems('ar_open', 'Customer Balances', by('contact'), 'summary', 'Total')], { detailFields: AR_DETAIL }),
   },
   {
     key: 'vendor_balance_summary', title: 'Vendor Balance Summary', tiesTo: 'vendor-balance-summary',
-    definition: def('asOf', 'today', [openItems('ap_open', 'Vendor Balances', by('contact'), 'summary', 'Total')]),
+    definition: def('asOf', 'today', [openItems('ap_open', 'Vendor Balances', by('contact'), 'summary', 'Total')], { detailFields: AR_DETAIL }),
   },
   {
     key: 'sales_by_client', title: 'Sales by Client', tiesTo: 'sales-by-customer',
     definition: def('range', 'this_year_to_date', [
       section('sales', 'Sales', 'sales', 'amount', { groupBy: by('contact'), totalCaption: 'Total' }),
-    ]),
+    ], { detailFields: LINE_DETAIL }),
   },
   {
     key: 'sales_by_item', title: 'Sales by Item', tiesTo: 'sales-by-item',
     definition: def('range', 'this_year_to_date', [
       section('sales', 'Sales', 'item_sales', 'amount', { groupBy: by('item'), totalCaption: 'Total' }),
-    ]),
+    ], { detailFields: [...LINE_DETAIL, 'item'] }),
   },
   {
     key: 'check_register', title: 'Check Register', tiesTo: 'check-register',
@@ -175,6 +200,6 @@ export const BUILDER_STARTERS: BuilderStarter[] = [
     key: 'bank_balances', title: 'Bank Account Balances', tiesTo: 'bank-balances',
     definition: def('asOf', 'today', [
       section('banks', 'Bank Accounts', 'bank', 'balance', { totalCaption: 'Total', hideZero: false }),
-    ]),
+    ], { detailFields: LINE_DETAIL }),
   },
 ];

@@ -10,6 +10,48 @@
   "response": {
     "columns": [
       {
+        "key": "f:date",
+        "caption": "Date",
+        "kind": "field",
+        "field": "date"
+      },
+      {
+        "key": "f:txn_type",
+        "caption": "Type",
+        "kind": "field",
+        "field": "txn_type"
+      },
+      {
+        "key": "f:number",
+        "caption": "Num",
+        "kind": "field",
+        "field": "number"
+      },
+      {
+        "key": "f:contact",
+        "caption": "Name",
+        "kind": "field",
+        "field": "contact"
+      },
+      {
+        "key": "f:memo",
+        "caption": "Memo",
+        "kind": "field",
+        "field": "memo"
+      },
+      {
+        "key": "f:description",
+        "caption": "Description",
+        "kind": "field",
+        "field": "description"
+      },
+      {
+        "key": "f:account",
+        "caption": "Account",
+        "kind": "field",
+        "field": "account"
+      },
+      {
         "key": "total",
         "caption": "Total",
         "kind": "total",
@@ -31,6 +73,13 @@
         ],
         "caption": "Sales",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -46,6 +95,13 @@
         ],
         "caption": "Rivera Remodel",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "200.0000"
         ],
         "drill": {
@@ -68,6 +124,13 @@
         ],
         "caption": "Total",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "200.0000"
         ],
         "drill": {
@@ -89,6 +152,13 @@
         ],
         "caption": "Your role can't see this part of the report",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -103,6 +173,13 @@
         ],
         "caption": "Net",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ],
         "drill": null
@@ -121,7 +198,7 @@
         "purch"
       ]
     },
-    "fingerprint": "2cd1c54f8376d7ae5e6730268abacfa65d692d4d60592c1445bb24610b9f3e86",
+    "fingerprint": "1e08db0ebdfd20f09d511f5676f90560ea8d6940436a80d4ff62030a0439044d",
     "stamp": 10
   }
 }

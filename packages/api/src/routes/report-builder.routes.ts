@@ -271,10 +271,12 @@ reportBuilderRouter.get('/fields', describe({
 });
 
 reportBuilderRouter.get('/starters', describe({
-  summary: 'Report Builder starters (report-builder-starters-v1)',
+  summary: 'Report Builder starters (report-builder-starters-v1, v2)',
   description: 'Response `{starters: [{key, title, tiesTo, definition}]}`: builder definitions (schema v1) that reproduce standard reports; '
     + 'tiesTo is the standard report route (/reports/<tiesTo>) a starter ties to, to the cent, when run with the same dates, ranges, fiscal year starts, basis and adjusting '
-    + '(packages/shared/src/report-builder/starters.ts; the same definitions as fixtures/starters/*.json).',
+    + '(packages/shared/src/report-builder/starters.ts; the same definitions as fixtures/starters/*.json). '
+    + 'report-builder-starters-v2: every starter has detail fields; Transaction Detail by Account is one natural-sign section per account type; '
+    + 'Open Invoices and Unpaid Bills list invoices and bills only.',
 }), (_req, res) => {
   res.json({ starters: BUILDER_STARTERS });
 });

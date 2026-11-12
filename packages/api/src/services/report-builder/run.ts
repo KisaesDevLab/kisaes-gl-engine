@@ -400,7 +400,8 @@ function linesSql(ctx: Ctx, s: RbSectionNode, from: string | null, to: string): 
   };
 }
 
-interface Fact { keys: Array<string | null>; slot: number; v: Dec }
+/** `keep`: the line shows even when zero (an account with only an opening balance, U-119f). */
+interface Fact { keys: Array<string | null>; slot: number; v: Dec; keep?: boolean }
 
 /**
  * Facts of every line section of a run in ONE statement (one cash-basis
@@ -463,6 +464,41 @@ function factsFromBuckets(ctx: Ctx, s: RbSectionNode, rows: BucketRow[]): Fact[]
       if (flow) { if (sl.from !== null && r.lo < sl.from) return; } else if (!r.bs && r.lo < sl.fy) return;
       out.push({ keys, slot: si, v: r.v });
     });
+  }
+  return out;
+}
+
+/**
+ * Whether a section lists accounts with an opening balance and no activity in
+ * the range, as the standard General Ledger does (U-119f): a range run whose
+ * detail rows carry a running balance (innermost group-by the account).
+ */
+function listsOpeningOnly(plan: Plan, s: RbSectionNode): boolean {
+  return plan.mode === 'range' && !RB_SOURCE_INFO[s.source].openItems && isFlow(s) && s.display !== 'summary'
+    && plan.def.columns.detailFields.includes('running_balance') && s.groupBy[s.groupBy.length - 1]?.key === 'account';
+}
+
+/**
+ * Zero facts (kept) for the innermost lines with an opening balance before the
+ * run's first date: the standard General Ledger's rule (balance-sheet accounts
+ * from the start, income-statement accounts from the fiscal year start; a
+ * balance under half a cent is left out, as there).
+ */
+async function openingOnlyFacts(ctx: Ctx, s: RbSectionNode): Promise<Fact[]> {
+  const { plan } = ctx;
+  const lowFrom = plan.base.reduce((m, i) => (plan.slots[i]!.from! < m ? plan.slots[i]!.from! : m), plan.slots[plan.base[0]!]!.from!);
+  const L = linesSql(ctx, s, null, addDays(lowFrom, -1));
+  const keys = s.groupBy.map((_, i) => keyExpr(ctx, s, i, L.k, L.cash));
+  const res = await ctx.exec.execute(sql`${L.with}
+    SELECT ${sql.join(keys.map((k, i) => sql`${k} AS ${raw(`k${i}`)}`), sql`, `)}
+    ${L.from} WHERE ${L.where}
+      AND (a.account_type IN ('asset', 'liability', 'equity') OR ${raw(L.k.date)} >= ${fiscalYearStartIn(lowFrom, ctx.fyStarts, 1) ?? lowFrom}::date)
+    GROUP BY ${sql.join(keys.map((_, i) => raw(String(i + 1))), sql`, `)}
+    HAVING abs(SUM(${valueExpr(s, L.k)})) >= 0.005`);
+  const out: Fact[] = [];
+  for (const r of res.rows as Array<Record<string, string | null>>) {
+    const k = s.groupBy.map((_, i) => r[`k${i}`] ?? null);
+    for (const slot of plan.base) out.push({ keys: k, slot, v: ZERO(), keep: true });
   }
   return out;
 }
@@ -610,7 +646,7 @@ function keyCaption(key: string, value: string | null, names: Map<string, { name
 
 // ── The run ────────────────────────────────────────────────────────
 
-interface Tree { key: string | null; vals: Vals; children: Map<string, Tree> }
+interface Tree { key: string | null; vals: Vals; children: Map<string, Tree>; keep?: boolean }
 
 function buildTree(facts: Fact[], depth: number, n: number): Tree {
   const root: Tree = { key: null, vals: zeros(n), children: new Map() };
@@ -623,6 +659,7 @@ function buildTree(facts: Fact[], depth: number, n: number): Tree {
       let c = node.children.get(id);
       if (!c) { c = { key: k, vals: zeros(n), children: new Map() }; node.children.set(id, c); }
       c.vals[f.slot] = c.vals[f.slot]!.plus(f.v);
+      if (f.keep) c.keep = true;
       node = c;
     }
   }
@@ -698,6 +735,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
           continue;
         }
         const facts = RB_SOURCE_INFO[node.source].openItems ? await openFacts(ctx, node) : factsFromBuckets(ctx, node, prefetched.get(node.id)!);
+        if (listsOpeningOnly(plan, node)) facts.push(...await openingOnlyFacts(ctx, node));
         const tree = buildTree(facts, node.groupBy.length, n);
         const earnings = node.earnings ? await earningsRows(ctx, node, prefetched.get(`${node.id}#earnings`) ?? []) : [];
         const vals = tree.vals.slice();
@@ -800,7 +838,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
         const kids = [...t.children.values()].map((c) => ({ c, ...keyCaption(key, c.key, names.get(key) ?? new Map()) }))
           .sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
         for (const { c, caption } of kids) {
-          if (s.hideZero && !anyNonZero(c)) continue;
+          if (s.hideZero && !anyNonZero(c) && !c.keep) continue;
           if (++lineRows > MAX_LINE_ROWS) throw tooLargeError();
           const p = [...path, pathSeg(key, c.key)];
           const inner = depth + 1 === s.groupBy.length;

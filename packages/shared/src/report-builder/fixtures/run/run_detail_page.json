@@ -1,6 +1,6 @@
 {
   "request": {
-    "nodeId": "ledger",
+    "nodeId": "expenses",
     "path": "<a line path>",
     "fingerprint": "<run fingerprint>",
     "stamp": "<run stamp>"
@@ -9,10 +9,10 @@
     "rows": [
       {
         "kind": "opening",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 0,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "Opening balance",
@@ -33,10 +33,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 0,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -46,9 +46,9 @@
           null,
           "Cosmos Granite",
           "bill",
-          "45.0000",
           null,
           "45.0000",
+          null,
           "45.0000",
           "45.0000"
         ],

@@ -25,7 +25,15 @@
       "caption": "Open Invoices",
       "source": "ar_open",
       "measure": "open_balance",
-      "filters": [],
+      "filters": [
+        {
+          "field": "txn_type",
+          "op": "in",
+          "values": [
+            "invoice"
+          ]
+        }
+      ],
       "groupBy": [
         {
           "key": "contact"

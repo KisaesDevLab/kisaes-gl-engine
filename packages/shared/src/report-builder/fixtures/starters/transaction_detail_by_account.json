@@ -12,9 +12,9 @@
       "number",
       "contact",
       "memo",
+      "description",
       "debit",
       "credit",
-      "amount",
       "running_balance"
     ],
     "compare": [],
@@ -23,12 +23,194 @@
   "nodes": [
     {
       "type": "section",
-      "id": "ledger",
-      "caption": "Transaction Detail by Account",
+      "id": "assets",
+      "caption": "Assets",
       "source": "gl",
       "measure": "amount",
-      "polarity": "debit",
-      "filters": [],
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "asset"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "liabilities",
+      "caption": "Liabilities",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "liability"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "equity",
+      "caption": "Equity",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "equity"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "income",
+      "caption": "Income",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "revenue"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "cogs",
+      "caption": "Cost of Goods Sold",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "cogs"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "expenses",
+      "caption": "Expenses",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "expense"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "other_income",
+      "caption": "Other Income",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "other_revenue"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "other_expenses",
+      "caption": "Other Expenses",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "other_expense"
+          ]
+        }
+      ],
       "groupBy": [
         {
           "key": "account"

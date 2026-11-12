@@ -43,6 +43,12 @@
         "field": "memo"
       },
       {
+        "key": "f:description",
+        "caption": "Description",
+        "kind": "field",
+        "field": "description"
+      },
+      {
         "key": "f:debit",
         "caption": "Debit",
         "kind": "field",
@@ -53,12 +59,6 @@
         "caption": "Credit",
         "kind": "field",
         "field": "credit"
-      },
-      {
-        "key": "f:amount",
-        "caption": "Amount",
-        "kind": "field",
-        "field": "amount"
       },
       {
         "key": "f:running_balance",
@@ -81,12 +81,12 @@
         "expandable": false,
         "expanded": false,
         "kind": "header",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 0,
         "path": [
-          "n:ledger"
+          "n:assets"
         ],
-        "caption": "Transaction Detail by Account",
+        "caption": "Assets",
         "cells": [
           null,
           null,
@@ -104,10 +104,10 @@
         "expandable": false,
         "expanded": true,
         "kind": "line",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 1,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "10100 Cash",
@@ -125,19 +125,19 @@
         ],
         "drill": {
           "type": "detail",
-          "nodeId": "ledger",
+          "nodeId": "assets",
           "path": [
-            "n:ledger",
+            "n:assets",
             "account:00000000-0000-4000-8000-000000000000"
           ]
         }
       },
       {
         "kind": "opening",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "Opening balance",
@@ -158,10 +158,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -171,9 +171,9 @@
           null,
           "Rivera Remodel",
           "cash_sale",
-          "20.0000",
           null,
           "20.0000",
+          null,
           "520.0000",
           "20.0000"
         ],
@@ -192,10 +192,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -205,9 +205,9 @@
           null,
           "Rivera Remodel",
           "cash_sale",
-          "20.0000",
           null,
           "20.0000",
+          null,
           "540.0000",
           "20.0000"
         ],
@@ -226,10 +226,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -239,9 +239,9 @@
           null,
           "Rivera Remodel",
           "cash_sale",
-          "20.0000",
           null,
           "20.0000",
+          null,
           "560.0000",
           "20.0000"
         ],
@@ -260,10 +260,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -273,9 +273,9 @@
           null,
           "Rivera Remodel",
           "cash_sale",
-          "20.0000",
           null,
           "20.0000",
+          null,
           "580.0000",
           "20.0000"
         ],
@@ -294,10 +294,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -307,9 +307,9 @@
           null,
           "Rivera Remodel",
           "cash_sale",
-          "20.0000",
           null,
           "20.0000",
+          null,
           "600.0000",
           "20.0000"
         ],
@@ -328,10 +328,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -342,8 +342,8 @@
           "Cosmos Granite",
           "expense",
           null,
+          null,
           "33.3300",
-          "-33.3300",
           "566.6700",
           "-33.3300"
         ],
@@ -364,10 +364,10 @@
         "expandable": false,
         "expanded": true,
         "kind": "line",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 1,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "10200 Accounts Receivable",
@@ -385,19 +385,19 @@
         ],
         "drill": {
           "type": "detail",
-          "nodeId": "ledger",
+          "nodeId": "assets",
           "path": [
-            "n:ledger",
+            "n:assets",
             "account:00000000-0000-4000-8000-000000000000"
           ]
         }
       },
       {
         "kind": "opening",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "Opening balance",
@@ -418,10 +418,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "assets",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:assets",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -431,9 +431,9 @@
           null,
           "Rivera Remodel",
           "invoice",
-          "90.0000",
           null,
           "90.0000",
+          null,
           "90.0000",
           "90.0000"
         ],
@@ -452,12 +452,35 @@
       },
       {
         "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "liabilities",
+        "level": 0,
+        "path": [
+          "n:liabilities"
+        ],
+        "caption": "Liabilities",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
         "expanded": true,
         "kind": "line",
-        "nodeId": "ledger",
+        "nodeId": "liabilities",
         "level": 1,
         "path": [
-          "n:ledger",
+          "n:liabilities",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "20100 Accounts Payable",
@@ -471,23 +494,23 @@
           null,
           null,
           null,
-          "-45.0000"
+          "45.0000"
         ],
         "drill": {
           "type": "detail",
-          "nodeId": "ledger",
+          "nodeId": "liabilities",
           "path": [
-            "n:ledger",
+            "n:liabilities",
             "account:00000000-0000-4000-8000-000000000000"
           ]
         }
       },
       {
         "kind": "opening",
-        "nodeId": "ledger",
+        "nodeId": "liabilities",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:liabilities",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "Opening balance",
@@ -508,10 +531,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "liabilities",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:liabilities",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -522,10 +545,10 @@
           "Cosmos Granite",
           "bill",
           null,
+          null,
           "45.0000",
-          "-45.0000",
-          "-45.0000",
-          "-45.0000"
+          "45.0000",
+          "45.0000"
         ],
         "fields": {
           "txnId": "00000000-0000-4000-8000-000000000000",
@@ -542,12 +565,58 @@
       },
       {
         "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "equity",
+        "level": 0,
+        "path": [
+          "n:equity"
+        ],
+        "caption": "Equity",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "income",
+        "level": 0,
+        "path": [
+          "n:income"
+        ],
+        "caption": "Income",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
         "expanded": true,
         "kind": "line",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 1,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "40100 Sales Revenue",
@@ -561,23 +630,23 @@
           null,
           null,
           null,
-          "-200.0000"
+          "200.0000"
         ],
         "drill": {
           "type": "detail",
-          "nodeId": "ledger",
+          "nodeId": "income",
           "path": [
-            "n:ledger",
+            "n:income",
             "account:00000000-0000-4000-8000-000000000000"
           ]
         }
       },
       {
         "kind": "opening",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "Opening balance",
@@ -598,10 +667,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -612,10 +681,10 @@
           "Rivera Remodel",
           "invoice",
           null,
+          null,
           "100.0000",
-          "-100.0000",
-          "-100.0000",
-          "-100.0000"
+          "100.0000",
+          "100.0000"
         ],
         "fields": {
           "txnId": "00000000-0000-4000-8000-000000000000",
@@ -632,10 +701,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -646,10 +715,10 @@
           "Rivera Remodel",
           "cash_sale",
           null,
+          null,
           "20.0000",
-          "-20.0000",
-          "-120.0000",
-          "-20.0000"
+          "120.0000",
+          "20.0000"
         ],
         "fields": {
           "txnId": "00000000-0000-4000-8000-000000000000",
@@ -666,10 +735,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -680,10 +749,10 @@
           "Rivera Remodel",
           "cash_sale",
           null,
+          null,
           "20.0000",
-          "-20.0000",
-          "-140.0000",
-          "-20.0000"
+          "140.0000",
+          "20.0000"
         ],
         "fields": {
           "txnId": "00000000-0000-4000-8000-000000000000",
@@ -700,10 +769,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -714,10 +783,10 @@
           "Rivera Remodel",
           "cash_sale",
           null,
+          null,
           "20.0000",
-          "-20.0000",
-          "-160.0000",
-          "-20.0000"
+          "160.0000",
+          "20.0000"
         ],
         "fields": {
           "txnId": "00000000-0000-4000-8000-000000000000",
@@ -734,10 +803,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -748,10 +817,10 @@
           "Rivera Remodel",
           "cash_sale",
           null,
+          null,
           "20.0000",
-          "-20.0000",
-          "-180.0000",
-          "-20.0000"
+          "180.0000",
+          "20.0000"
         ],
         "fields": {
           "txnId": "00000000-0000-4000-8000-000000000000",
@@ -768,10 +837,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "income",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:income",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -782,10 +851,10 @@
           "Rivera Remodel",
           "cash_sale",
           null,
+          null,
           "20.0000",
-          "-20.0000",
-          "-200.0000",
-          "-20.0000"
+          "200.0000",
+          "20.0000"
         ],
         "fields": {
           "txnId": "00000000-0000-4000-8000-000000000000",
@@ -802,12 +871,58 @@
       },
       {
         "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "cogs",
+        "level": 0,
+        "path": [
+          "n:cogs"
+        ],
+        "caption": "Cost of Goods Sold",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "expenses",
+        "level": 0,
+        "path": [
+          "n:expenses"
+        ],
+        "caption": "Expenses",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
         "expanded": true,
         "kind": "line",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 1,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "60100 Advertising",
@@ -825,19 +940,19 @@
         ],
         "drill": {
           "type": "detail",
-          "nodeId": "ledger",
+          "nodeId": "expenses",
           "path": [
-            "n:ledger",
+            "n:expenses",
             "account:00000000-0000-4000-8000-000000000000"
           ]
         }
       },
       {
         "kind": "opening",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "Opening balance",
@@ -858,10 +973,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -871,9 +986,9 @@
           null,
           "Rivera Remodel",
           "invoice",
-          "10.0000",
           null,
           "10.0000",
+          null,
           "10.0000",
           "10.0000"
         ],
@@ -892,10 +1007,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -905,9 +1020,9 @@
           null,
           "Cosmos Granite",
           "expense",
-          "33.3300",
           null,
           "33.3300",
+          null,
           "43.3300",
           "33.3300"
         ],
@@ -928,10 +1043,10 @@
         "expandable": false,
         "expanded": true,
         "kind": "line",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 1,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "60200 Bad Debt",
@@ -949,19 +1064,19 @@
         ],
         "drill": {
           "type": "detail",
-          "nodeId": "ledger",
+          "nodeId": "expenses",
           "path": [
-            "n:ledger",
+            "n:expenses",
             "account:00000000-0000-4000-8000-000000000000"
           ]
         }
       },
       {
         "kind": "opening",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "Opening balance",
@@ -982,10 +1097,10 @@
       },
       {
         "kind": "detail",
-        "nodeId": "ledger",
+        "nodeId": "expenses",
         "level": 2,
         "path": [
-          "n:ledger",
+          "n:expenses",
           "account:00000000-0000-4000-8000-000000000000"
         ],
         "caption": "",
@@ -995,9 +1110,9 @@
           null,
           "Cosmos Granite",
           "bill",
-          "45.0000",
           null,
           "45.0000",
+          null,
           "45.0000",
           "45.0000"
         ],
@@ -1013,6 +1128,52 @@
         },
         "expandable": false,
         "expanded": false
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "other_income",
+        "level": 0,
+        "path": [
+          "n:other_income"
+        ],
+        "caption": "Other Income",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "other_expenses",
+        "level": 0,
+        "path": [
+          "n:other_expenses"
+        ],
+        "caption": "Other Expenses",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
       }
     ],
     "meta": {
@@ -1026,7 +1187,7 @@
       "hiddenNotice": null,
       "denied": []
     },
-    "fingerprint": "dc01d10509c18894435e73a21a8d6dd03f0382d6056040f9e6b35f5caeaaab9a",
+    "fingerprint": "e733369c14de7dbe004436d8ee822507524cfa9cc0848b967f7854a5daf88033",
     "stamp": 9
   }
 }

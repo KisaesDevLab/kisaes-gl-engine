@@ -14,6 +14,48 @@
   "response": {
     "columns": [
       {
+        "key": "f:date",
+        "caption": "Date",
+        "kind": "field",
+        "field": "date"
+      },
+      {
+        "key": "f:txn_type",
+        "caption": "Type",
+        "kind": "field",
+        "field": "txn_type"
+      },
+      {
+        "key": "f:number",
+        "caption": "Num",
+        "kind": "field",
+        "field": "number"
+      },
+      {
+        "key": "f:contact",
+        "caption": "Name",
+        "kind": "field",
+        "field": "contact"
+      },
+      {
+        "key": "f:memo",
+        "caption": "Memo",
+        "kind": "field",
+        "field": "memo"
+      },
+      {
+        "key": "f:description",
+        "caption": "Description",
+        "kind": "field",
+        "field": "description"
+      },
+      {
+        "key": "f:account",
+        "caption": "Account",
+        "kind": "field",
+        "field": "account"
+      },
+      {
         "key": "total",
         "caption": "Total",
         "kind": "total",
@@ -35,6 +77,13 @@
         ],
         "caption": "Income",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -50,6 +99,13 @@
         ],
         "caption": "40100 Sales Revenue",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "200.0000"
         ],
         "drill": {
@@ -72,6 +128,13 @@
         ],
         "caption": "Total Income",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "200.0000"
         ],
         "drill": {
@@ -93,6 +156,13 @@
         ],
         "caption": "Cost of Goods Sold",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -107,6 +177,13 @@
         ],
         "caption": "Total Cost of Goods Sold",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "0.0000"
         ],
         "drill": {
@@ -128,6 +205,13 @@
         ],
         "caption": "Gross Profit",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "200.0000"
         ],
         "drill": null
@@ -143,6 +227,13 @@
         ],
         "caption": "Expenses",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -158,6 +249,13 @@
         ],
         "caption": "60100 Advertising",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "43.3300"
         ],
         "drill": {
@@ -181,6 +279,13 @@
         ],
         "caption": "60200 Bad Debt",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "45.0000"
         ],
         "drill": {
@@ -203,6 +308,13 @@
         ],
         "caption": "Total Expenses",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "88.3300"
         ],
         "drill": {
@@ -224,6 +336,13 @@
         ],
         "caption": "Net Operating Income",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "111.6700"
         ],
         "drill": null
@@ -239,6 +358,13 @@
         ],
         "caption": "Other Income",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -253,6 +379,13 @@
         ],
         "caption": "Total Other Income",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "0.0000"
         ],
         "drill": {
@@ -274,6 +407,13 @@
         ],
         "caption": "Other Expenses",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -288,6 +428,13 @@
         ],
         "caption": "Total Other Expenses",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "0.0000"
         ],
         "drill": {
@@ -309,6 +456,13 @@
         ],
         "caption": "Net Income",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "111.6700"
         ],
         "drill": null
@@ -325,7 +479,7 @@
       "hiddenNotice": null,
       "denied": []
     },
-    "fingerprint": "d02bfdff4710ffc6d011a58b4550d547652fbd24921afeb2d83aa01140a47c09",
+    "fingerprint": "3751b5d948fb984f6ed4e4c94829077c9df229a14dc8d311dcf0f7b2330b8cc6",
     "stamp": 9
   }
 }

@@ -6,7 +6,15 @@
     "preset": "today"
   },
   "columns": {
-    "detailFields": [],
+    "detailFields": [
+      "date",
+      "txn_type",
+      "number",
+      "contact",
+      "due_date",
+      "days_past_due",
+      "original_amount"
+    ],
     "compare": [],
     "headers": {}
   },

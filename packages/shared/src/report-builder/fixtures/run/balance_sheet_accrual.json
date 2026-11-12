@@ -13,6 +13,48 @@
   "response": {
     "columns": [
       {
+        "key": "f:date",
+        "caption": "Date",
+        "kind": "field",
+        "field": "date"
+      },
+      {
+        "key": "f:txn_type",
+        "caption": "Type",
+        "kind": "field",
+        "field": "txn_type"
+      },
+      {
+        "key": "f:number",
+        "caption": "Num",
+        "kind": "field",
+        "field": "number"
+      },
+      {
+        "key": "f:contact",
+        "caption": "Name",
+        "kind": "field",
+        "field": "contact"
+      },
+      {
+        "key": "f:memo",
+        "caption": "Memo",
+        "kind": "field",
+        "field": "memo"
+      },
+      {
+        "key": "f:description",
+        "caption": "Description",
+        "kind": "field",
+        "field": "description"
+      },
+      {
+        "key": "f:account",
+        "caption": "Account",
+        "kind": "field",
+        "field": "account"
+      },
+      {
         "key": "total",
         "caption": "Total",
         "kind": "total",
@@ -34,6 +76,13 @@
         ],
         "caption": "Assets",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -49,6 +98,13 @@
         ],
         "caption": "10100 Cash",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "566.6700"
         ],
         "drill": {
@@ -72,6 +128,13 @@
         ],
         "caption": "10200 Accounts Receivable",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "90.0000"
         ],
         "drill": {
@@ -94,6 +157,13 @@
         ],
         "caption": "Total Assets",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "656.6700"
         ],
         "drill": {
@@ -115,6 +185,13 @@
         ],
         "caption": "Liabilities",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -130,6 +207,13 @@
         ],
         "caption": "20100 Accounts Payable",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "45.0000"
         ],
         "drill": {
@@ -152,6 +236,13 @@
         ],
         "caption": "Total Liabilities",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "45.0000"
         ],
         "drill": {
@@ -173,6 +264,13 @@
         ],
         "caption": "Equity",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -188,6 +286,13 @@
         ],
         "caption": "Prior years' net income",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "500.0000"
         ],
         "drill": {
@@ -208,6 +313,13 @@
         ],
         "caption": "Net income this year",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "111.6700"
         ],
         "drill": {
@@ -227,6 +339,13 @@
         ],
         "caption": "Total Equity",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "611.6700"
         ],
         "drill": {
@@ -248,6 +367,13 @@
         ],
         "caption": "Total Liabilities and Equity",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "656.6700"
         ],
         "drill": null
@@ -263,7 +389,7 @@
       "hiddenNotice": null,
       "denied": []
     },
-    "fingerprint": "ac4b0c1f49664a44ca84d5707aad812a2425a2b85bffe09499331560be2e13f8",
+    "fingerprint": "15bda93b1ce3309db1731685bb9519b24721206fb2fca69fcd9ba4a0fa840356",
     "stamp": 9
   }
 }
