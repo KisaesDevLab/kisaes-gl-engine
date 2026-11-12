@@ -31,7 +31,7 @@ import {
 import { dec, exactStr, percent1, type Dec } from '../report-exact.js';
 import { adjustingCond, cashBasisLinesWith, docNumberSql, getFiscalYearStart, salesAccrualCond, salesCashCond } from '../report.service.js';
 import { tagInGroupKey } from '../report-lens.js';
-import { equityEarnings, earningsTotal, priorYearsIncomeByTransactionTag } from '../equity-earnings.js';
+import { priorYearsIncomeByTransactionTag } from '../equity-earnings.js';
 import { arOpenItemsAsOf, bucketFor, daysBetween } from '../ar-open-items.js';
 import { apOpenItemsAsOf } from '../ap-open-items.js';
 import { BANK_DETAIL_TYPES } from '../bank-account-types.js';
@@ -391,77 +391,76 @@ function linesSql(ctx: Ctx, s: RbSectionNode, from: string | null, to: string): 
   };
 }
 
-/** The window condition of a slot for a section's measure. */
-function windowCond(s: RbSectionNode, k: LineCols): SQL {
-  const date = raw(k.date);
-  if (isFlow(s)) return sql`${date} >= w.f AND ${date} <= w.t`;
-  return sql`${date} <= w.t AND (a.account_type IN ('asset', 'liability', 'equity') OR ${date} >= w.fy)`;
-}
-
 interface Fact { keys: Array<string | null>; slot: number; v: Dec }
 
 /**
- * Balances (balance, tb_net) at many dates without re-reading the ledger per
- * date: activity is summed once per date bucket — the buckets are cut at
- * every column end and every fiscal year start - 1 — and each column adds
- * the buckets through its date (income-statement accounts only from its
- * fiscal year start). Exact: the same lines and Decimal sums.
+ * Facts of every line section of a run in ONE statement (one cash-basis
+ * ledger per run, not one per section or column): each section's activity
+ * is summed per date bucket — buckets are cut at every column's end, the day
+ * before every column's start and the day before every fiscal year start —
+ * and each column then adds its buckets: a flow measure the buckets inside
+ * its range, a balance (balance, tb_net) every bucket through its date
+ * (income-statement accounts only from its fiscal year start). Exact: the
+ * same lines and Decimal sums. `earnings` adds the line-mode earnings
+ * (credit - debit over income-statement lines, the section's line-level tag).
  */
-async function balanceFacts(ctx: Ctx, s: RbSectionNode, pathKeys: Array<string | null>): Promise<Fact[]> {
+interface BatchItem { sid: string; s: RbSectionNode; pathKeys: Array<string | null>; earningsOf?: boolean }
+interface BucketRow { keys: Array<string | null>; lo: string; hi: string; bs: boolean; v: Dec }
+
+async function bucketFacts(ctx: Ctx, items: BatchItem[]): Promise<Map<string, BucketRow[]>> {
+  const out = new Map<string, BucketRow[]>(items.map((x) => [x.sid, []]));
+  if (items.length === 0) return out;
   const slots = ctx.plan.slots;
-  const cuts = [...new Set([...slots.map((x) => x.to), ...slots.map((x) => addDays(x.fy, -1))])].sort();
+  const cutSet = new Set<string>();
+  for (const sl of slots) { cutSet.add(sl.to); cutSet.add(addDays(sl.fy, -1)); if (sl.from) cutSet.add(addDays(sl.from, -1)); }
+  const cuts = [...cutSet].sort();
   const maxTo = cuts[cuts.length - 1]!;
-  const L = linesSql(ctx, s, null, maxTo);
-  const keys = s.groupBy.map((_, i) => keyExpr(ctx, s, i, L.k, L.cash));
-  const eq = pathKeys.map((pk, i) => (pk === null ? sql`${keys[i]!} IS NULL` : sql`${keys[i]!} = ${pk}`));
+  const allFlow = items.every((x) => !x.earningsOf && isFlow(x.s)) && ctx.plan.mode === 'range';
+  const minFrom = allFlow ? slots.reduce((m, x) => (x.from! < m ? x.from! : m), slots[0]!.from!) : null;
+  const L0 = linesSql(ctx, items[0]!.s, minFrom, maxTo);
   const buckets = sql`(VALUES ${sql.join(cuts.map((hi, i) => sql`(${i}::int, ${i === 0 ? '0001-01-01' : addDays(cuts[i - 1]!, 1)}::date, ${hi}::date)`), sql`, `)}) b(i, lo, hi)`;
-  const sel = keys.length ? sql.join(keys.map((e, i) => sql`${e} AS ${raw(`k${i}`)}`), sql`, `) : sql`NULL::text AS k_`;
-  const grp = [...keys.map((_, i) => raw(`k${i}`)), raw('b.i'), raw('bs')];
-  const res = await ctx.exec.execute(sql`
-    ${L.with}
-    SELECT ${sel}, b.i AS b, (a.account_type IN ('asset', 'liability', 'equity')) AS bs, SUM(${valueExpr(s, L.k)})::text AS v
-    ${L.from} JOIN ${buckets} ON ${raw(L.k.date)} >= b.lo AND ${raw(L.k.date)} <= b.hi
-    WHERE ${L.where} ${eq.length ? sql`AND ${sql.join(eq, sql` AND `)}` : sql``}
-    GROUP BY ${sql.join(grp, sql`, `)}`);
-  const out: Fact[] = [];
+  const parts = items.map((it) => {
+    const L = linesSql(ctx, it.s, minFrom, maxTo);
+    const keys = it.s.groupBy.map((_, i) => keyExpr(ctx, it.s, i, L.k, L.cash));
+    const eq = it.pathKeys.map((pk, i) => (pk === null ? sql`${keys[i]!} IS NULL` : sql`${keys[i]!} = ${pk}`));
+    const k3 = [0, 1, 2].map((i) => (keys[i] ? sql`${keys[i]!}` : sql`NULL::text`));
+    const val = it.earningsOf ? sql`(${raw(L.k.c)} - ${raw(L.k.d)})` : valueExpr(it.s, L.k);
+    const pl = it.earningsOf ? sql`AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')` : sql``;
+    return sql`SELECT ${it.sid}::text AS sid, ${k3[0]!} AS k0, ${k3[1]!} AS k1, ${k3[2]!} AS k2, b.i AS b,
+        (a.account_type IN ('asset', 'liability', 'equity')) AS bs, SUM(${val})::text AS v
+      ${L.from} JOIN ${buckets} ON ${raw(L.k.date)} >= b.lo AND ${raw(L.k.date)} <= b.hi
+      WHERE ${L.where} ${pl} ${eq.length ? sql`AND ${sql.join(eq, sql` AND `)}` : sql``}
+      GROUP BY 1, 2, 3, 4, 5, 6`;
+  });
+  const res = await ctx.exec.execute(sql`${L0.with} ${sql.join(parts, sql` UNION ALL `)}`);
   for (const r of res.rows as Array<Record<string, unknown>>) {
-    const bi = cuts.length > 0 ? (r['b'] as number) : 0;
-    const lo = bi === 0 ? '0001-01-01' : addDays(cuts[bi - 1]!, 1);
-    const hi = cuts[bi]!;
-    const v = dec(String(r['v'] ?? '0'));
-    const k = s.groupBy.map((_, i) => (r[`k${i}`] as string | null) ?? null);
-    slots.forEach((sl, si) => {
-      if (hi > sl.to) return;
-      if (r['bs'] !== true && lo < sl.fy) return;
-      out.push({ keys: k, slot: si, v });
+    const bi = Number(r['b']);
+    out.get(String(r['sid']))!.push({
+      keys: [r['k0'], r['k1'], r['k2']].map((x) => (x as string | null) ?? null),
+      lo: bi === 0 ? '0001-01-01' : addDays(cuts[bi - 1]!, 1), hi: cuts[bi]!, bs: r['bs'] === true, v: dec(String(r['v'] ?? '0')),
+    });
+  }
+  return out;
+}
+
+/** A section's facts per column from its bucket rows. */
+function factsFromBuckets(ctx: Ctx, s: RbSectionNode, rows: BucketRow[]): Fact[] {
+  const out: Fact[] = [];
+  const flow = isFlow(s);
+  for (const r of rows) {
+    const keys = r.keys.slice(0, s.groupBy.length);
+    ctx.plan.slots.forEach((sl, si) => {
+      if (r.hi > sl.to) return;
+      if (flow) { if (sl.from !== null && r.lo < sl.from) return; } else if (!r.bs && r.lo < sl.fy) return;
+      out.push({ keys, slot: si, v: r.v });
     });
   }
   return out;
 }
 
 async function lineFacts(ctx: Ctx, s: RbSectionNode, pathKeys: Array<string | null> = []): Promise<Fact[]> {
-  const slots = ctx.plan.slots;
-  const flow = isFlow(s);
-  if (!flow) return balanceFacts(ctx, s, pathKeys);
-  const minFrom = flow && ctx.plan.mode === 'range' ? slots.reduce((m, x) => (x.from! < m ? x.from! : m), slots[0]!.from!) : null;
-  const maxTo = slots.reduce((m, x) => (x.to > m ? x.to : m), slots[0]!.to);
-  const L = linesSql(ctx, s, minFrom, maxTo);
-  const keys = s.groupBy.map((_, i) => keyExpr(ctx, s, i, L.k, L.cash));
-  const eq = pathKeys.map((pk, i) => (pk === null ? sql`${keys[i]!} IS NULL` : sql`${keys[i]!} = ${pk}`));
-  const win = sql`(VALUES ${sql.join(slots.map((x, i) => sql`(${i}::int, ${x.from ?? '0001-01-01'}::date, ${x.to}::date, ${x.fy}::date)`), sql`, `)}) w(i, f, t, fy)`;
-  const sel = keys.length ? sql.join(keys.map((e, i) => sql`${e} AS ${raw(`k${i}`)}`), sql`, `) : sql`NULL::text AS k_`;
-  const grp = keys.map((_, i) => raw(`k${i}`));
-  const res = await ctx.exec.execute(sql`
-    ${L.with}
-    SELECT ${sel}, w.i AS w, SUM(${valueExpr(s, L.k)})::text AS v
-    ${L.from} JOIN ${win} ON ${windowCond(s, L.k)}
-    WHERE ${L.where} ${eq.length ? sql`AND ${sql.join(eq, sql` AND `)}` : sql``}
-    GROUP BY ${sql.join([...grp, raw('w.i')], sql`, `)}`);
-  return (res.rows as Array<Record<string, unknown>>).map((r) => ({
-    keys: s.groupBy.map((_, i) => (r[`k${i}`] as string | null) ?? null),
-    slot: Number(r['w']),
-    v: dec(String(r['v'] ?? '0')),
-  }));
+  const m = await bucketFacts(ctx, [{ sid: s.id, s, pathKeys }]);
+  return factsFromBuckets(ctx, s, m.get(s.id)!);
 }
 
 // ── Open-item sources ──────────────────────────────────────────────
@@ -666,20 +665,32 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
   const totals = new Map<string, NodeTotal>();
   const sectionData = new Map<string, { tree: Tree; earnings: Array<{ caption: string; vals: Vals; drill: RunDrill | null }> }>();
 
+  // Rights, then every line section's facts (and line-mode earnings) in one statement.
+  const allowed = sectionsOf(def.nodes).filter((x) => {
+    const ok = sectionRights(x, plan.basis).every((r) => can(ctx.v.permissions, r as never, 'read'));
+    if (!ok) denied.push(x.id);
+    return ok;
+  });
+  for (const x of allowed) await checkPolarity(ctx, x);
+  const batch: BatchItem[] = [];
+  for (const x of allowed) {
+    if (!RB_SOURCE_INFO[x.source].openItems) batch.push({ sid: x.id, s: x, pathKeys: [] });
+    const tbTagged = x.earnings === 'trial_balance' && x.filters.some((f) => f.field === 'tag' && f.op === 'in');
+    if (x.earnings && !tbTagged) batch.push({ sid: `${x.id}#earnings`, s: earningsSection(x), pathKeys: [], earningsOf: true });
+  }
+  const prefetched = await bucketFacts(ctx, batch);
+
   // Pass 1: facts and totals of every node, in pre-order.
   const visit = async (nodes: RbNode[]): Promise<void> => {
     for (const node of nodes) {
       if (node.type === 'section') {
-        const rights = sectionRights(node, plan.basis);
-        if (!rights.every((r) => can(ctx.v.permissions, r as never, 'read'))) {
-          denied.push(node.id);
+        if (denied.includes(node.id)) {
           totals.set(node.id, { vals: null, denied: true });
           continue;
         }
-        await checkPolarity(ctx, node);
-        const facts = RB_SOURCE_INFO[node.source].openItems ? await openFacts(ctx, node) : await lineFacts(ctx, node);
+        const facts = RB_SOURCE_INFO[node.source].openItems ? await openFacts(ctx, node) : factsFromBuckets(ctx, node, prefetched.get(node.id)!);
         const tree = buildTree(facts, node.groupBy.length, n);
-        const earnings = node.earnings ? await earningsRows(ctx, node) : [];
+        const earnings = node.earnings ? await earningsRows(ctx, node, prefetched.get(`${node.id}#earnings`) ?? []) : [];
         const vals = tree.vals.slice();
         for (const e of earnings) addInto(vals, e.vals);
         sectionData.set(node.id, { tree, earnings });
@@ -853,7 +864,15 @@ async function checkPolarity(ctx: Ctx, s: RbSectionNode): Promise<void> {
 const PRIOR_YEARS = 'Prior years\' net income';
 const CURRENT_YEAR = 'Net income this year';
 
-async function earningsRows(ctx: Ctx, s: RbSectionNode): Promise<Array<{ caption: string; vals: Vals; drill: RunDrill | null }>> {
+/** The lines line-mode earnings read: every account (income-statement ones are picked in SQL), the section's tag filter. */
+function earningsSection(s: RbSectionNode): RbSectionNode {
+  return {
+    type: 'section', id: s.id, caption: '', source: 'gl', measure: 'balance', polarity: 'credit',
+    filters: s.filters.filter((f) => f.field === 'tag' && f.op === 'in'), groupBy: [], display: 'summary', defaultExpanded: false, showTotal: false, hideZero: false,
+  };
+}
+
+async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): Promise<Array<{ caption: string; vals: Vals; drill: RunDrill | null }>> {
   const { plan } = ctx;
   const n = nVals(plan);
   const tagF = s.filters.find((f) => f.field === 'tag' && f.op === 'in');
@@ -863,9 +882,9 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode): Promise<Array<{ caption
     const prior = zeros(n);
     for (let i = 0; i < slots.length; i++) {
       const sl = slots[i]!;
-      const income = tagF
-        ? await priorYearsIncomeByTransactionTag(ctx.v.tenantId, { basis: plan.basis, companyId: ctx.v.companyId, adjusting: plan.adjusting, fiscalYearStart: sl.fy, tagId: tagF.ids!.join(','), endDate: sl.to, exec: ctx.exec.tx })
-        : earningsTotal((await equityEarnings(ctx.v.tenantId, { basis: plan.basis, companyId: ctx.v.companyId, adjusting: plan.adjusting, asOfs: [{ asOf: sl.to, fiscalYearStart: sl.fy }], exec: ctx.exec.tx }))[0]!.priorYears);
+      const income = !tagF
+        ? buckets.filter((r) => r.hi < sl.fy).reduce((acc, r) => acc.plus(r.v), dec(0))
+        : await priorYearsIncomeByTransactionTag(ctx.v.tenantId, { basis: plan.basis, companyId: ctx.v.companyId, adjusting: plan.adjusting, fiscalYearStart: sl.fy, tagId: tagF.ids!.join(','), endDate: sl.to, exec: ctx.exec.tx });
       prior[i] = income.neg();
     }
     if (prior.every((x) => x.isZero())) return [];
@@ -873,27 +892,12 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode): Promise<Array<{ caption
     const sl = slots[0]!;
     return [{ caption: 'Retained Earnings (Prior Years)', vals: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
   }
-  // Line mode (equity-earnings' rule: credit - debit over every income-statement line, line-level tag),
-  // bucketed like the balances so 36 columns read the ledger once.
-  const pl: RbSectionNode = {
-    type: 'section', id: s.id, caption: '', source: 'gl', measure: 'balance', polarity: 'credit',
-    filters: tagF ? [tagF] : [], groupBy: [], display: 'summary', defaultExpanded: false, showTotal: false, hideZero: false,
-  };
-  const cuts = [...new Set([...slots.map((x) => x.to), ...slots.map((x) => addDays(x.fy, -1))])].sort();
-  const L = linesSql(ctx, pl, null, cuts[cuts.length - 1]!);
-  const buckets = sql`(VALUES ${sql.join(cuts.map((hi, i) => sql`(${i}::int, ${i === 0 ? '0001-01-01' : addDays(cuts[i - 1]!, 1)}::date, ${hi}::date)`), sql`, `)}) b(i, lo, hi)`;
-  const res = await ctx.exec.execute(sql`
-    ${L.with}
-    SELECT b.i AS b, SUM(${raw(L.k.c)} - ${raw(L.k.d)})::text AS v
-    ${L.from} JOIN ${buckets} ON ${raw(L.k.date)} >= b.lo AND ${raw(L.k.date)} <= b.hi
-    WHERE ${L.where} AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
-    GROUP BY b.i`);
+  // Line mode (equity-earnings' rule: credit - debit over every income-statement line, line-level tag), from the run's batch.
   const sign = s.polarity === 'debit' ? -1 : 1;
   const prior = zeros(n), current = zeros(n);
-  for (const r of res.rows as Array<{ b: number; v: string }>) {
-    const lo = r.b === 0 ? '0001-01-01' : addDays(cuts[r.b - 1]!, 1);
-    const hi = cuts[r.b]!;
-    const v = sign === 1 ? dec(r.v) : dec(r.v).neg();
+  for (const r of buckets) {
+    const hi = r.hi;
+    const v = sign === 1 ? r.v : r.v.neg();
     slots.forEach((sl, i) => {
       if (hi > sl.to) return;
       if (hi < sl.fy) prior[i] = prior[i]!.plus(v);

@@ -31,25 +31,25 @@ beforeAll(async () => {
   // N_INVOICES slots → 1.2M lines at the default.
   await db.execute(sql`
     INSERT INTO transactions (id, tenant_id, company_id, txn_type, txn_date, status, total, contact_id, due_date)
-    SELECT md5('inv' || g)::uuid, ${c.tenantId}, ${c.companyId}, 'invoice', DATE '2024-01-01' + (g % 1090), 'posted', 100, ${c.customer}, DATE '2024-01-31' + (g % 1090)
+    SELECT md5(${c.tenantId} || 'inv' || g)::uuid, ${c.tenantId}, ${c.companyId}, 'invoice', DATE '2024-01-01' + (g % 1090), 'posted', 100, ${c.customer}, DATE '2024-01-31' + (g % 1090)
     FROM generate_series(1, ${N_INVOICES}) g`);
   await db.execute(sql`
     INSERT INTO transactions (id, tenant_id, company_id, txn_type, txn_date, status, total, contact_id)
-    SELECT md5('pay' || g)::uuid, ${c.tenantId}, ${c.companyId}, 'customer_payment', DATE '2024-01-01' + (g % 1090) + 10, 'posted', 100, ${c.customer}
+    SELECT md5(${c.tenantId} || 'pay' || g)::uuid, ${c.tenantId}, ${c.companyId}, 'customer_payment', DATE '2024-01-01' + (g % 1090) + 10, 'posted', 100, ${c.customer}
     FROM generate_series(1, ${N_INVOICES}) g`);
   await db.execute(sql`
     INSERT INTO transactions (id, tenant_id, company_id, txn_type, txn_date, status, total, contact_id)
-    SELECT md5('exp' || g)::uuid, ${c.tenantId}, ${c.companyId}, 'expense', DATE '2024-01-01' + (g % 1090), 'posted', 40, ${c.vendor}
+    SELECT md5(${c.tenantId} || 'exp' || g)::uuid, ${c.tenantId}, ${c.companyId}, 'expense', DATE '2024-01-01' + (g % 1090), 'posted', 40, ${c.vendor}
     FROM generate_series(1, ${N_INVOICES}) g`);
   await db.execute(sql`
     INSERT INTO journal_lines (tenant_id, company_id, transaction_id, account_id, debit, credit, line_order)
-    SELECT ${c.tenantId}, ${c.companyId}, md5(p || g)::uuid, a, d, cr, o FROM generate_series(1, ${N_INVOICES}) g,
+    SELECT ${c.tenantId}, ${c.companyId}, md5(${c.tenantId} || p || g)::uuid, a, d, cr, o FROM generate_series(1, ${N_INVOICES}) g,
       (VALUES ('inv', ${c.ar}::uuid, 100::numeric, 0::numeric, 0), ('inv', ${c.income}::uuid, 0, 100, 1),
               ('pay', ${c.bank}::uuid, 100, 0, 0), ('pay', ${c.ar}::uuid, 0, 100, 1),
               ('exp', ${c.expense}::uuid, 40, 0, 0), ('exp', ${c.bank}::uuid, 0, 40, 1)) v(p, a, d, cr, o)`);
   await db.execute(sql`
     INSERT INTO payment_applications (tenant_id, company_id, payment_id, invoice_id, amount)
-    SELECT ${c.tenantId}, ${c.companyId}, md5('pay' || g)::uuid, md5('inv' || g)::uuid, 100 FROM generate_series(1, ${N_INVOICES}) g`);
+    SELECT ${c.tenantId}, ${c.companyId}, md5(${c.tenantId} || 'pay' || g)::uuid, md5(${c.tenantId} || 'inv' || g)::uuid, 100 FROM generate_series(1, ${N_INVOICES}) g`);
   await db.execute(sql`ANALYZE transactions`);
   await db.execute(sql`ANALYZE journal_lines`);
   await db.execute(sql`ANALYZE payment_applications`);
@@ -57,6 +57,12 @@ beforeAll(async () => {
 }, 1_800_000);
 
 afterAll(async () => {
+  // Bulk-delete the generated rows first (the generic cleanup walks rows one by one).
+  for (const id of tenantIds) {
+    await db.execute(sql`DELETE FROM payment_applications WHERE tenant_id = ${id}`);
+    await db.execute(sql`DELETE FROM journal_lines WHERE tenant_id = ${id}`);
+    await db.execute(sql`DELETE FROM transactions WHERE tenant_id = ${id}`);
+  }
   while (tenantIds.length) await cleanTenant(tenantIds.pop()!);
 }, 1_800_000);
 
