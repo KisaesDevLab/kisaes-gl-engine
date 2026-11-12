@@ -35,6 +35,7 @@ import {
 import {
   ACCRUAL_COLS, CASH_COLS, lensIsEmpty, lensSql, loadGroupTags, type LineLens,
 } from './report-lens.js';
+import { equityEarnings, earningsTotal } from './equity-earnings.js';
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -288,7 +289,10 @@ function centAllocated(src: SQL) {
       a.txn_contact_id, a.line_contact_id, a.description, a.item_id, a.line_order,
       CASE WHEN a.side_debit THEN a.amt ELSE 0::numeric END AS debit,
       CASE WHEN a.side_debit THEN 0::numeric ELSE -a.amt END AS credit,
-      NULL::uuid AS line_id
+      NULL::uuid AS line_id,
+      -- U-119: the virtual line's key, unique within its transaction (the
+      -- Report Builder's keyset): one settlement, one document line, one group.
+      a.alloc_key || ':' || a.src_line_id::text || ':' || a.grp::text AS vkey
     FROM (
       SELECT s.*, s.x + CASE WHEN s.plug_rank = 1 THEN s.target - SUM(s.x) OVER (PARTITION BY s.alloc_key, s.grp) ELSE 0::numeric END AS amt
       FROM (
@@ -500,7 +504,9 @@ export function cashBasisLinesWith(
              ELSE r.credit END AS credit,
         -- U-202: the journal line a pass-through line is (NULL on the scaled
         -- and virtual lines below), for the cleared lens and drill ids.
-        r.line_id
+        r.line_id,
+        -- U-119: every branch carries vkey, unique within its transaction.
+        r.line_id::text AS vkey
       FROM cb_r2 r CROSS JOIN cb_ur ur
 
       UNION ALL
@@ -569,7 +575,7 @@ export function cashBasisLinesWith(
         pay.id, app.rec_date, pay.txn_type, ${docNumberSql('pay')} AS txn_number, pay.memo,
         pay.contact_id, pay.contact_id,
         NULL::text, NULL::uuid, 0,
-        app.amount, 0::numeric, NULL::uuid
+        app.amount, 0::numeric, NULL::uuid, '2b:' || app.app_id::text
       FROM ar_apps app
       JOIN transactions pay ON pay.id = app.payment_id AND pay.tenant_id = ${tenantId}
         AND pay.status = 'posted' AND ${dateCondApp} AND ${companyPay} AND ${adjustingCond(adjusting, 'pay.is_adjusting')}
@@ -648,7 +654,7 @@ export function cashBasisLinesWith(
         t.id AS transaction_id, t.txn_date, t.txn_type, ${docNumberSql('t')} AS txn_number, t.memo,
         t.contact_id AS txn_contact_id, zl.contact_id AS line_contact_id,
         zl.description, zl.item_id, zl.line_order,
-        zl.debit::numeric AS debit, zl.credit::numeric AS credit, zl.id AS line_id
+        zl.debit::numeric AS debit, zl.credit::numeric AS credit, zl.id AS line_id, zl.id::text AS vkey
       FROM transactions t
       JOIN journal_lines zl ON zl.transaction_id = t.id AND zl.tenant_id = ${tenantId}
         AND zl.is_void_reversal = false AND zl.line_role IN (${CASH_DERIVED_ROLES})
@@ -707,6 +713,23 @@ export async function executeCashBasis(query: SQL) {
     await tx.execute(sql`SELECT set_config('enable_nestloop', 'off', true), set_config('jit', 'off', true)`);
     return tx.execute(query);
   });
+}
+
+/**
+ * executeCashBasis on a caller's executor (U-119): on the pool, as above; in
+ * a caller's transaction (the Report Builder's snapshot), the two settings
+ * are switched off for this one statement and put back after it, so the
+ * transaction's other statements plan as usual.
+ */
+export async function executeCashBasisIn(exec: Pick<typeof db, 'execute'>, query: SQL) {
+  if (exec === db) return executeCashBasis(query);
+  const prev = await exec.execute(sql`SELECT current_setting('enable_nestloop') AS n, current_setting('jit') AS j`);
+  const { n, j } = prev.rows[0] as { n: string; j: string };
+  await exec.execute(sql`SELECT set_config('enable_nestloop', 'off', true), set_config('jit', 'off', true)`);
+  // A failed statement aborts the caller's transaction: nothing to put back then.
+  const res = await exec.execute(query);
+  await exec.execute(sql`SELECT set_config('enable_nestloop', ${n}, true), set_config('jit', ${j}, true)`);
+  return res;
 }
 
 // Exact reports: the tenant's accounts with their parents, for the
@@ -1219,14 +1242,14 @@ export async function buildBalanceSheet(
   const currentFYStart = bsOpts.fiscalYearStart || `${currentFYStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
 
   // Retained Earnings = net income for all completed fiscal years (before
-  // current FY start). The P&L hands back its Decimal net income
-  // (netIncomeExact) so the equity rows never round-trip through a float.
-  const retainedPL = await buildProfitAndLoss(tenantId, '1900-01-01', (() => {
-    const d = new Date(currentFYStart + 'T00:00:00Z');
-    d.setUTCDate(d.getUTCDate() - 1);
-    return d.toISOString().split('T')[0]!;
-  })(), basis, companyId, tagId, null, { adjusting, exactAmounts: true });
-  const retainedD = dec(retainedPL.netIncomeExact);
+  // current FY start); Net Income (Current Year) = the fiscal year through
+  // asOfDate. U-119: both from one equity-earnings pass (the lines and sums
+  // the two Profit and Loss runs used), in Decimal.
+  const [earnings] = await equityEarnings(tenantId, {
+    basis, companyId, adjusting, asOfs: [{ asOf: asOfDate, fiscalYearStart: currentFYStart }],
+    lens: tagId ? { tag: { kind: 'ids', ids: tagId.split(',').map((x) => x.trim()).filter(Boolean) } } : null,
+  });
+  const retainedD = earningsTotal(earnings!.priorYears);
   // Prior-years retained earnings. When a system Retained Earnings account is
   // designated (systemTag='retained_earnings'), FOLD the accumulated prior-year
   // net income into that account's line — one "Retained Earnings" line = posted
@@ -1256,8 +1279,7 @@ export async function buildBalanceSheet(
   }
 
   // Current year net income
-  const currentPL = await buildProfitAndLoss(tenantId, currentFYStart, asOfDate, basis, companyId, tagId, null, { adjusting, exactAmounts: true });
-  const currentD = dec(currentPL.netIncomeExact);
+  const currentD = earningsTotal(earnings!.currentYear);
   if (!currentD.isZero()) {
     const row: BSEntry = { accountId: null, name: 'Net Income (Current Year)', accountNumber: null, balance: 0, ...(exactMode ? { calculated: true as const } : {}) };
     setBal(row, currentD);
@@ -1453,11 +1475,18 @@ export async function buildARAgingSummary(
   tagId: string | null = null,
 ) {
   const { arOpenItemsAsOf, ageOpenItems } = await import('./ar-open-items.js');
+  const { ageExact } = await import('./ap-open-items.js');
   const items = await arOpenItemsAsOf(db, {
     tenantId, companyId, asOf: asOfDate,
     tagIds: tagId ? tagId.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
   });
   const aging = ageOpenItems(items, asOfDate);
+  // U-119 (Q-A07c): the summary ages each item's exact open, as the A/P
+  // aging does, so A/R and A/P agree and a sub-cent item counts once. The
+  // legacy number fields, the per-item cents (balance) and customers[]
+  // buckets / total are unchanged; bucketsExact (was the cents sums) is now
+  // the exact sums, and customers[] add bucketsExact / totalExact.
+  const exact = ageExact(items, asOfDate);
 
   const contactIds = [...new Set(items.map((i) => i.contactId).filter((x): x is string => x !== null))];
   const names = new Map<string, string>();
@@ -1506,11 +1535,15 @@ export async function buildARAgingSummary(
   for (const it of aging.items) perContact.set(it.contactId, [...(perContact.get(it.contactId) ?? []), it]);
   const customers = [...perContact.entries()].map(([contactId, rows]) => {
     const a = ageOpenItems(rows, asOfDate);
+    const x = ageExact(rows, asOfDate);
     return {
       contactId,
       name: contactId ? (names.get(contactId) ?? '') : '(no client)',
       buckets: a.buckets,
       total: a.total,
+      // U-119 (Q-A07c): the client's exact aging (each item's exact open).
+      bucketsExact: x.buckets,
+      totalExact: x.totalExact,
     };
   }).sort((x, y) => (x.contactId === null ? 1 : y.contactId === null ? -1 : x.name.localeCompare(y.name)));
 
@@ -1523,8 +1556,8 @@ export async function buildARAgingSummary(
     },
     total: n(aging.total),
     details,
-    bucketsExact: aging.buckets,
-    totalExact: aging.totalExact,
+    bucketsExact: exact.buckets,
+    totalExact: exact.totalExact,
     difference: aging.difference,
     customers,
   };
@@ -2256,6 +2289,36 @@ export async function buildAccountDetailReport(
 // when tagId is supplied we narrow the aggregation to lines that
 // carry the tag (project-accounting semantic, same as P&L and
 // Expenses by Vendor).
+// ─── Sales rule (U-119, Q-A07b) ──────────────────────────────────
+//
+// One rule for Sales by Client, Sales by Item and the Report Builder's
+// sales / item_sales sources: income lines (revenue, other revenue) of sale
+// documents, natural net (credit - debit, so a discount line reduces sales
+// and a credit memo counts negative), the line's client, else its document's.
+// Accrual: invoices, sales receipts, credit memos and daily sales posted on
+// accrual (t.basis <> 'cash'). Cash: the cash-basis lines of those documents
+// as the payments re-emit them (rule-3 types), less money not yet applied
+// (Unapplied receipts). A bounce's own income credits now count: under the
+// natural net a payment's discount debit reduces sales, and the bounce that
+// reverses the payment gives it back (U-146 S4: a bounced payment nets to 0).
+
+export const SALES_ACCRUAL_TYPES = ['invoice', 'cash_sale', 'credit_memo', 'daily_sales'] as const;
+export const SALES_CASH_TYPES = ['invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund'] as const;
+
+/** Accrual sale lines: conditions over journal_lines `jl`, transactions `t`, accounts `a`. */
+export function salesAccrualCond() {
+  return sql`a.account_type IN ('revenue', 'other_revenue') AND t.basis <> 'cash'
+    AND t.txn_type IN (${sql.join(SALES_ACCRUAL_TYPES.map((x) => sql`${x}`), sql`, `)})`;
+}
+
+/** Cash sale lines: conditions over cb_lines `cb` and accounts `a`. */
+export function salesCashCond() {
+  return sql`a.account_type IN ('revenue', 'other_revenue')
+    -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
+    AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
+    AND cb.txn_type IN (${sql.join(SALES_CASH_TYPES.map((x) => sql`${x}`), sql`, `)})`;
+}
+
 export async function buildSalesByCustomer(
   tenantId: string,
   startDate: string,
@@ -2268,46 +2331,30 @@ export async function buildSalesByCustomer(
 ) {
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
-  // Cash basis recognizes revenue when the customer pays (cb_lines Rule 3 for
-  // invoices at payment; cash sales pass through) grouped by the payment's
-  // contact. Accrual counts sale-document revenue by the document's contact.
+  // The sales rule (U-119, Q-A07b, above): natural net of sale lines by the
+  // line's client, else the document's; cash basis recognizes revenue when
+  // the customer pays (cb_lines rule 3; cash sales pass through).
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}
         SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
-          SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total
+          SUM(cb.credit - cb.debit) as total
         FROM cb_lines cb
-        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
-        LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
-          -- U-146 S4: a bounce counts only its rule-3 mirror rows (credit <= 0); its own
-          -- credit to a discount or write-off account is not a sale (the payment's own
-          -- discount debit was never counted).
-          AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
-          -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
-          AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
-          -- Sale documents + the payments their revenue re-emits at
-          -- (cb_lines rule 3 stamps the PAYMENT's txn_type). Without this,
-          -- cash-basis "Sales" would count revenue credits from deposits and
-          -- journal entries — semantically broader than the accrual report.
-          -- A refund of a credit memo re-emits the memo's income debits at the
-          -- refund date (cb_lines rule 3b): returns, counted negative.
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund')
+        JOIN accounts a ON a.id = cb.account_id
+        LEFT JOIN contacts c ON c.id = COALESCE(cb.line_contact_id, cb.txn_contact_id) AND c.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId} AND ${salesCashCond()} ${cbTag}
         GROUP BY c.id, c.display_name ORDER BY total DESC
       `)
     : await db.execute(sql`
     SELECT c.id as contact_id, COALESCE(c.display_name, 'Uncategorized') as customer_name,
-      SUM(CASE WHEN t.txn_type = 'credit_memo' THEN jl.credit - jl.debit ELSE jl.credit END) as total
+      SUM(jl.credit - jl.debit) as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('revenue', 'other_revenue')
-    LEFT JOIN contacts c ON c.id = t.contact_id AND c.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = jl.account_id
+    LEFT JOIN contacts c ON c.id = COALESCE(jl.contact_id, t.contact_id) AND c.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      -- Credit memos debit income (returns): counted negative, net of any
-      -- negative memo line.
-      AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
-      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
+      AND ${salesAccrualCond()}
       AND ${companyFilter(companyId)}
       AND ${adjustingCond(adjusting, 't.is_adjusting')}
       ${tagClause}
@@ -2341,22 +2388,12 @@ export async function buildSalesByItem(
           cb.item_id,
           COALESCE(i.name, 'Uncategorized') as item_name,
           '' as item_sku, -- items has no sku column; kept for the response shape
-          SUM(CASE WHEN cb.txn_type = 'customer_refund' THEN cb.credit - cb.debit ELSE cb.credit END) as total,
+          SUM(cb.credit - cb.debit) as total,
           COUNT(DISTINCT cb.transaction_id)::int as txn_count
         FROM cb_lines cb
-        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN ('revenue', 'other_revenue')
+        JOIN accounts a ON a.id = cb.account_id
         LEFT JOIN items i ON i.id = cb.item_id AND i.tenant_id = ${tenantId}
-        WHERE a.tenant_id = ${tenantId} AND (cb.credit > 0 OR cb.txn_type IN ('returned_payment', 'customer_refund')) ${cbTag}
-          -- U-146 S4: a bounce counts only its rule-3 mirror rows (credit <= 0); its own
-          -- credit to a discount or write-off account is not a sale (the payment's own
-          -- discount debit was never counted).
-          AND NOT (cb.txn_type = 'returned_payment' AND cb.credit > 0)
-          -- U-152: money not yet applied to an invoice (Unapplied receipts) is not a sale.
-          AND a.system_tag IS DISTINCT FROM 'unapplied_receipts'
-          -- Same sale-document restriction as Sales by Customer (see note there).
-          -- A refund of a credit memo re-emits the memo's income debits at the
-          -- refund date (cb_lines rule 3b): returns, counted negative.
-          AND cb.txn_type IN ('invoice', 'cash_sale', 'credit_memo', 'customer_payment', 'returned_payment', 'customer_refund')
+        WHERE a.tenant_id = ${tenantId} AND ${salesCashCond()} ${cbTag}
         GROUP BY cb.item_id, i.name
         ORDER BY total DESC
       `)
@@ -2365,18 +2402,15 @@ export async function buildSalesByItem(
       jl.item_id,
       COALESCE(i.name, 'Uncategorized') as item_name,
       '' as item_sku, -- items has no sku column; kept for the response shape
-      SUM(CASE WHEN t.txn_type = 'credit_memo' THEN jl.credit - jl.debit ELSE jl.credit END) as total,
+      SUM(jl.credit - jl.debit) as total,
       COUNT(DISTINCT jl.transaction_id)::int as txn_count
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
-    JOIN accounts a ON a.id = jl.account_id AND a.account_type IN ('revenue', 'other_revenue')
+    JOIN accounts a ON a.id = jl.account_id
     LEFT JOIN items i ON i.id = jl.item_id AND i.tenant_id = ${tenantId}
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      -- Credit memos debit income (returns): counted negative, net of any
-      -- negative memo line.
-      AND (jl.credit > 0 OR t.txn_type = 'credit_memo')
-      AND t.txn_type IN ('invoice', 'cash_sale', 'credit_memo')
+      AND ${salesAccrualCond()}
       AND ${companyFilter(companyId)}
       AND ${adjustingCond(adjusting, 't.is_adjusting')}
       ${tagClause}
@@ -3586,12 +3620,14 @@ export async function buildTrialBalance(
   if (fyStart > '1900-01-02') {
     // UTC arithmetic so the day-before subtraction can't drift across a
     // month boundary in a non-UTC container.
-    const priorEndDate = new Date(fyStart + 'T00:00:00Z');
-    priorEndDate.setUTCDate(priorEndDate.getUTCDate() - 1);
-    const priorEnd = priorEndDate.toISOString().split('T')[0]!;
+    // U-119: the untagged figure comes from equity-earnings (line mode); the
+    // tagged one is its transaction mode, summed here from the same rows
+    // (equity-earnings' priorYearsIncomeByTransactionTag is that sum).
     const reD = tagId
       ? dsum((rows.rows as Array<{ pre_net?: string | number | null }>).map((r) => r.pre_net ?? 0))
-      : dec((await buildProfitAndLoss(tenantId, '1900-01-01', priorEnd, basis, companyId, null, null, { adjusting, exactAmounts: true })).netIncomeExact);
+      : earningsTotal((await equityEarnings(tenantId, {
+        basis, companyId, adjusting, asOfs: [{ asOf: endDate, fiscalYearStart: fyStart }],
+      }))[0]!.priorYears);
     if (!reD.isZero()) {
       // Retained earnings is a credit-balance equity account. Numbered
       // 30120 to sort beside the posted Retained Earnings account (the

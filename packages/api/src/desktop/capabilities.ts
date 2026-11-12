@@ -1219,5 +1219,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * 1000 ids, {path}). Tenant archives remap builder ids as standard ones; an engine older than 0276 can't import builder rows.
    */
   'report-defs-builder-v1',
+  /**
+   * Report foundations (U-119, ClientLedger A07 PR-B; migration 0277). Output changes for MyBooks Online: Sales by Client and
+   * Sales by Item use one sales rule (Q-A07b): income lines of sale documents at their natural net (a discount line reduces sales,
+   * a credit memo counts negative), the line's client, else the document's, daily sales included, accrual leaves cash-only entries
+   * out; cash basis keeps the rule-3 types and leaves Unapplied receipts out (a bounce's own income credits now count, so a bounced
+   * payment still nets to 0). A/R Aging Summary (Q-A07c): bucketsExact are the exact sums of each item's open (were the cent
+   * sums), customers[] add bucketsExact / totalExact; cent fields unchanged. The ledger stamp (GET /ledger-version) also moves when
+   * a payment, credit memo, bill payment or vendor credit application is added, changed or removed (migration 0277). No change
+   * to other responses: the Balance Sheet, its columns and the Trial Balance share one equity-earnings computation; cash-basis
+   * lines carry a vkey (internal).
+   */
+  'report-foundations-v1',
 ];
 

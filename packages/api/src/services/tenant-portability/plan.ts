@@ -1001,6 +1001,16 @@ export const TRIGGERS: Record<string, TriggerClass> = {
   'journal_lines.trg_tb_stamp_lines_upd': 'fires-ok',
   'journal_lines.trg_tb_stamp_lines_del': 'delete-side-effect:gl_version_stamps',
   'transactions.trg_tb_stamp_txn_upd': 'fires-ok',
+  // U-119 (migration 0277): applications move the ledger stamp; same rules as the journal-line triggers.
+  'payment_applications.trg_rb_stamp_payment_applications_ins': 'fires-ok',
+  'payment_applications.trg_rb_stamp_payment_applications_upd': 'fires-ok',
+  'payment_applications.trg_rb_stamp_payment_applications_del': 'delete-side-effect:gl_version_stamps',
+  'bill_payment_applications.trg_rb_stamp_bill_payment_applications_ins': 'fires-ok',
+  'bill_payment_applications.trg_rb_stamp_bill_payment_applications_upd': 'fires-ok',
+  'bill_payment_applications.trg_rb_stamp_bill_payment_applications_del': 'delete-side-effect:gl_version_stamps',
+  'vendor_credit_applications.trg_rb_stamp_vendor_credit_applications_ins': 'fires-ok',
+  'vendor_credit_applications.trg_rb_stamp_vendor_credit_applications_upd': 'fires-ok',
+  'vendor_credit_applications.trg_rb_stamp_vendor_credit_applications_del': 'delete-side-effect:gl_version_stamps',
   'share_session_audit.share_session_audit_append_only': 'delete-guard:mybooks.share_audit_retention',
   'tax_est_snapshots.trg_tax_est_snapshots_immutable': 'insert-safe',
 };
