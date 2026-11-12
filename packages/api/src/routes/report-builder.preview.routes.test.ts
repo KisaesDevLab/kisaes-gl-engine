@@ -5,7 +5,8 @@
 // Report Builder preview runs (U-217, report-builder-preview-v1; ClientLedger
 // A08): purpose 'preview' is the screen run cut at 50 detail rows per line.
 //   - every line's preview detail rows equal the full run's first 50 rows
-//     (same cells, order, running balance and drill paths);
+//     (same cells, order, running balance and drill paths; a running-balance
+//     line's opening row comes first and is not one of the 50);
 //   - a line with more ends in a more row whose cursor pages /run/detail to
 //     exactly the full run's remaining rows; shorter lines are not cut;
 //   - meta.truncated / meta.preview mark the cut; line, total and earnings
@@ -89,7 +90,8 @@ function byLine(rows: Row[]) {
   for (const r of rows) {
     if (r.kind === 'line') { cur = key(r.path); out.set(cur, { detail: [], more: null }); continue; }
     if (cur === null) continue;
-    if (r.kind === 'detail') out.get(cur)!.detail.push(r);
+    // A running-balance line's page starts with its opening row (not one of the 50 detail rows).
+    if (r.kind === 'detail' || r.kind === 'opening') out.get(cur)!.detail.push(r);
     else if (r.kind === 'more') out.get(cur)!.more = r;
     else cur = null;
   }
@@ -127,8 +129,11 @@ describe('report-builder-preview-v1 (U-217)', () => {
       for (const [k, want] of f) {
         const got = p.get(k)!;
         expect(want.more, k).toBeNull();
-        expect(got.detail, k).toEqual(want.detail.slice(0, 50));
-        if (want.detail.length <= 50) { expect(got.more, k).toBeNull(); continue; }
+        const shown = got.detail.length;
+        const details = got.detail.filter((r) => r.kind === 'detail').length;
+        expect(got.detail, k).toEqual(want.detail.slice(0, shown));
+        if (want.detail.length === shown) { expect(got.more, k).toBeNull(); expect(details).toBeLessThanOrEqual(50); continue; }
+        expect(details, k).toBe(50);
         cut++;
         expect(got.more?.cursor, k).toBeTruthy();
         // The cursor pages exactly the full run's remaining rows.
@@ -143,7 +148,8 @@ describe('report-builder-preview-v1 (U-217)', () => {
           cursor = page.json.cursor;
         }
         const strip = (r: Row) => ({ ...r, level: undefined });
-        expect(rest.map(strip), k).toEqual(want.detail.slice(50).map(strip));
+        expect(rest.length, k).toBeGreaterThan(0);
+        expect(rest.map(strip), k).toEqual(want.detail.slice(shown).map(strip));
       }
       // Bank and income have 73+ rows: both cut; the expense line (7 rows) is not.
       expect(cut).toBeGreaterThanOrEqual(2);
