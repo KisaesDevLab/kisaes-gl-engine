@@ -975,7 +975,8 @@ export function registerExactReportRoutes(router: Router, h: ExactRouteHelpers):
     return { ...exactList(data as { data: unknown[] }, ['total']), meta: meta(req, { basis: b, from, to }) };
   }));
   router.get('/revenue-by-category', doc('Revenue by Category',
-    'data[] {totalExact}, totalsExact {total}; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] '
+    'data[] {totalExact}, totalsExact {total}: totalExact is the account\'s net (credits - debits, reports-revenue-net-v1; '
+    + 'credit memos and refunds reduce it; zero-net accounts left out), equal to the P&L income per account; display=detail adds groups[] {totalDebitsExact, totalCreditsExact, subtotalExact, lines[] '
     + '{lineId, debitExact, creditExact, balanceExact}} and grandTotalExact.',
     { ...RANGE_Q, ...BASIS_Q, account_ids: z.string().optional(), display: z.enum(['detail']).optional() }),
   exactOnly(async (req) => {
