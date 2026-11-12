@@ -1,0 +1,127 @@
+{
+  "request": {
+    "definition": "<sales_by_client + purchases + formula>",
+    "dates": {
+      "from": "2026-01-01",
+      "to": "2026-12-31"
+    },
+    "role": "no bills"
+  },
+  "response": {
+    "columns": [
+      {
+        "key": "total",
+        "caption": "Total",
+        "kind": "total",
+        "range": {
+          "from": "2026-01-01",
+          "to": "2026-12-31"
+        }
+      }
+    ],
+    "rows": [
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "sales",
+        "level": 0,
+        "path": [
+          "n:sales"
+        ],
+        "caption": "Sales",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "sales",
+        "level": 1,
+        "path": [
+          "n:sales",
+          "contact:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "Rivera Remodel",
+        "cells": [
+          "200.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "sales",
+          "path": [
+            "n:sales",
+            "contact:00000000-0000-4000-8000-000000000000"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "sales",
+        "level": 0,
+        "path": [
+          "n:sales"
+        ],
+        "caption": "Total",
+        "cells": [
+          "200.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "sales",
+          "path": [
+            "n:sales"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "denied",
+        "nodeId": "purch",
+        "level": 0,
+        "path": [
+          "n:purch"
+        ],
+        "caption": "Your role can't see this part of the report",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "formula",
+        "nodeId": "net",
+        "level": 0,
+        "path": [
+          "n:net"
+        ],
+        "caption": "Net",
+        "cells": [
+          null
+        ],
+        "drill": null
+      }
+    ],
+    "meta": {
+      "basis": "accrual",
+      "dates": {
+        "from": "2026-01-01",
+        "to": "2026-12-31"
+      },
+      "notes": [],
+      "truncated": false,
+      "hiddenNotice": null,
+      "denied": [
+        "purch"
+      ]
+    },
+    "fingerprint": "2cd1c54f8376d7ae5e6730268abacfa65d692d4d60592c1445bb24610b9f3e86",
+    "stamp": 10
+  }
+}

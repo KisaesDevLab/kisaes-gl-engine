@@ -59135,6 +59135,456 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/report-builder/fields": {
+      "get": {
+        "description": "Response `{sources: {<source>: {key, caption, lines, sign, openItems, measures, accrualOnly, filters, groupBy, detailFields, rights, tiesTo}}, unavailable: [{key, reason}], measureUnits, filterValues, detailFields}` (packages/shared/src/report-builder/fields.ts).",
+        "operationId": "get_api_v1_report_builder_fields",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Report Builder field catalogue (report-builder-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      }
+    },
+    "/api/v1/report-builder/run": {
+      "post": {
+        "description": "Runs a builder definition (inline, or saved: definitionId + version) for the dates, one snapshot, 30 s. Display rules: summary returns every group level and no detail; expandable returns level-1 lines and, under expanded paths, deeper lines and detail; detail returns everything. A path is expanded when listed in open (≤ 1,000), or under a defaultExpanded section unless listed in collapsed (≤ 1,000), or with expandAll. Detail rows count toward 5,000 per run (100,000 with purpose export); a cut path ends in a more row whose cursor pages /run/detail. fingerprint hashes every parameter except open, collapsed, expandAll and purpose; stamp is the ledger stamp read in the run snapshot. Response `{columns: [{key, caption, kind, field?, range?}], rows: [{kind, nodeId, level, path, caption, cells: (string|null)[], fields?: {txnId, txnType, lineId}, drill?, expandable, expanded, cursor?}], meta: {basis, dates, notes[], truncated, hiddenNotice, denied[]}, fingerprint, stamp}`. Row kinds: header, group, line (a group-by line), detail, subtotal, total, formula, text, blank, page_break, more, denied, earnings, opening. Column kinds: field, total, period, prior, change, pct_change, percent, bucket, and for tb_net the *_debit / *_credit pairs; kind hidden marks a compare amount that only feeds a change (its cells are null). Paths are [\"n:<nodeId>\", \"<key>:<id|value|none>\", …]. Amounts are exact strings (never -0); percents 1 place, null on a zero base. Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter), 404 (deleted saved report), 409 STALE_VERSION {current}, 422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). A section the role cannot see is one denied row, and anything built on it shows null cells.",
+        "operationId": "post_api_v1_report_builder_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "adjusting": {
+                    "enum": [
+                      "include",
+                      "exclude",
+                      "only"
+                    ],
+                    "type": "string"
+                  },
+                  "basis": {
+                    "description": "overrides the definition; default the definition's, else accrual",
+                    "enum": [
+                      "accrual",
+                      "cash"
+                    ],
+                    "type": "string"
+                  },
+                  "collapsed": {
+                    "default": [],
+                    "description": "paths closed under a defaultExpanded section (≤ 1,000)",
+                    "items": {
+                      "items": {
+                        "maxLength": 80,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "maxItems": 4,
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "maxItems": 1000,
+                    "type": "array"
+                  },
+                  "compareRanges": {
+                    "description": "one array per columns.compare entry, parallel to periodRanges (or one range without periods)",
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "from": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          "to": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 36,
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "maxItems": 2,
+                    "type": "array"
+                  },
+                  "dates": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "from": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          "to": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "asOf": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "asOf"
+                        ],
+                        "type": "object"
+                      }
+                    ],
+                    "description": "{from, to} for a range report, {asOf} for an as-of report (the definition's dates.mode)"
+                  },
+                  "definition": {
+                    "description": "an inline builder definition (schema v1); or definitionId + version"
+                  },
+                  "definitionId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "expandAll": {
+                    "default": false,
+                    "description": "every expandable row expanded (bounded by the row caps)",
+                    "type": "boolean"
+                  },
+                  "fiscalYearStarts": {
+                    "description": "the starts of the fiscal years the report touches, ascending; each date uses the latest start on or before it (≤ 371 days)",
+                    "items": {
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                      "type": "string"
+                    },
+                    "maxItems": 60,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "open": {
+                    "default": [],
+                    "description": "expanded paths (≤ 1,000); sections with defaultExpanded need no entry",
+                    "items": {
+                      "items": {
+                        "maxLength": 80,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "maxItems": 4,
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "maxItems": 1000,
+                    "type": "array"
+                  },
+                  "periodRanges": {
+                    "description": "the period columns (columns.periods), resolved by the client from its fiscal calendar; ascending, not overlapping; ≤ 36",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "from": {
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                          "type": "string"
+                        },
+                        "to": {
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from",
+                        "to"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 36,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "purpose": {
+                    "default": "screen",
+                    "description": "export allows 100,000 detail rows instead of 5,000",
+                    "enum": [
+                      "screen",
+                      "export"
+                    ],
+                    "type": "string"
+                  },
+                  "version": {
+                    "description": "the saved version the caller has; another is 409 STALE_VERSION {current}",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dates",
+                  "fiscalYearStarts"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Run a Report Builder report (report-builder-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      }
+    },
+    "/api/v1/report-builder/run/detail": {
+      "post": {
+        "description": "The same definition, dates and ranges as the run, the nodeId and path of the row (innermost grouping, or the section without group-bys), range? (a period column), cursor? (from a more row or a previous page), fingerprint and stamp of the run. Response `{rows (≤ 500, kind detail; a range balance starts with an opening row), cursor: string|null, subtotal: cells}`; subtotal is the own cells of the row, for an equality check. 409 RUN_CHANGED {reason: params} when the fingerprint differs, {reason: books} when the ledger stamp moved; 403 PERMISSION_DENIED for a denied section; 400 CURSOR_INVALID.",
+        "operationId": "post_api_v1_report_builder_run_detail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "adjusting": {
+                    "enum": [
+                      "include",
+                      "exclude",
+                      "only"
+                    ],
+                    "type": "string"
+                  },
+                  "basis": {
+                    "description": "overrides the definition; default the definition's, else accrual",
+                    "enum": [
+                      "accrual",
+                      "cash"
+                    ],
+                    "type": "string"
+                  },
+                  "compareRanges": {
+                    "description": "one array per columns.compare entry, parallel to periodRanges (or one range without periods)",
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "from": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          "to": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 36,
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "maxItems": 2,
+                    "type": "array"
+                  },
+                  "cursor": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "dates": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "from": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          },
+                          "to": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "asOf": {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "asOf"
+                        ],
+                        "type": "object"
+                      }
+                    ],
+                    "description": "{from, to} for a range report, {asOf} for an as-of report (the definition's dates.mode)"
+                  },
+                  "definition": {
+                    "description": "an inline builder definition (schema v1); or definitionId + version"
+                  },
+                  "definitionId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "fingerprint": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "fiscalYearStarts": {
+                    "description": "the starts of the fiscal years the report touches, ascending; each date uses the latest start on or before it (≤ 371 days)",
+                    "items": {
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                      "type": "string"
+                    },
+                    "maxItems": 60,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "nodeId": {
+                    "pattern": "^[a-z0-9_-]{1,32}$",
+                    "type": "string"
+                  },
+                  "path": {
+                    "items": {
+                      "maxLength": 80,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 4,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "periodRanges": {
+                    "description": "the period columns (columns.periods), resolved by the client from its fiscal calendar; ascending, not overlapping; ≤ 36",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "from": {
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                          "type": "string"
+                        },
+                        "to": {
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from",
+                        "to"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 36,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "range": {
+                    "additionalProperties": false,
+                    "description": "a period column's range: only lines in it",
+                    "properties": {
+                      "from": {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      },
+                      "to": {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
+                  "stamp": {
+                    "description": "the stamp of the run the rows were shown in",
+                    "type": "integer"
+                  },
+                  "version": {
+                    "description": "the saved version the caller has; another is 409 STALE_VERSION {current}",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dates",
+                  "fiscalYearStarts",
+                  "nodeId",
+                  "path",
+                  "fingerprint",
+                  "stamp"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Page the detail rows of one Report Builder row (report-builder-v1)",
+        "tags": [
+          "report-builder"
+        ]
+      }
+    },
     "/api/v1/reports/account-activity-summary": {
       "get": {
         "description": "data[] {total_debitExact, total_creditExact, netExact}, totalDebitsExact, totalCreditsExact, totalNetExact. meta {exact: true, basis, cashBasisRules (plain-language Q-P23z note on cash basis, else null), from, to | asOf, reportSchemaVersion}. Every *Exact is the unrounded decimal string, same sign as its number field: 4 places from the journal; a cash-basis allocation share is whole cents (sub-cent places only when the document or settlement has them), the lines of one settlement footing to it (U-209). Totals are Decimal sums of the rows. Standard P&L, Balance Sheet and Trial Balance account rows carry parentAccountId, depth and (parents) rollupExact, in report order with zero-amount ancestors added so the tree is complete.",

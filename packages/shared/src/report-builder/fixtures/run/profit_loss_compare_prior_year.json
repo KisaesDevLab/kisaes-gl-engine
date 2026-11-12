@@ -1,0 +1,393 @@
+{
+  "request": {
+    "definition": "<profit_loss + compare prior_year>",
+    "dates": {
+      "from": "2026-01-01",
+      "to": "2026-12-31"
+    }
+  },
+  "response": {
+    "columns": [
+      {
+        "key": "total",
+        "caption": "Total",
+        "kind": "total",
+        "range": {
+          "from": "2026-01-01",
+          "to": "2026-12-31"
+        }
+      },
+      {
+        "key": "total:c0",
+        "caption": "Prior Year",
+        "kind": "prior",
+        "range": {
+          "from": "2025-01-01",
+          "to": "2025-12-31"
+        }
+      },
+      {
+        "key": "total:c0:change",
+        "caption": "$ Change",
+        "kind": "change"
+      },
+      {
+        "key": "total:c0:pct_change",
+        "caption": "% Change",
+        "kind": "pct_change"
+      }
+    ],
+    "rows": [
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "income",
+        "level": 0,
+        "path": [
+          "n:income"
+        ],
+        "caption": "Income",
+        "cells": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "income",
+        "level": 1,
+        "path": [
+          "n:income",
+          "account:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "40100 Sales Revenue",
+        "cells": [
+          "200.0000",
+          "500.0000",
+          "-300.0000",
+          "-60.0"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "income",
+          "path": [
+            "n:income",
+            "account:00000000-0000-4000-8000-000000000000"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "income",
+        "level": 0,
+        "path": [
+          "n:income"
+        ],
+        "caption": "Total Income",
+        "cells": [
+          "200.0000",
+          "500.0000",
+          "-300.0000",
+          "-60.0"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "income",
+          "path": [
+            "n:income"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "cogs",
+        "level": 0,
+        "path": [
+          "n:cogs"
+        ],
+        "caption": "Cost of Goods Sold",
+        "cells": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "cogs",
+        "level": 0,
+        "path": [
+          "n:cogs"
+        ],
+        "caption": "Total Cost of Goods Sold",
+        "cells": [
+          "0.0000",
+          "0.0000",
+          "0.0000",
+          null
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "cogs",
+          "path": [
+            "n:cogs"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "formula",
+        "nodeId": "gross_profit",
+        "level": 0,
+        "path": [
+          "n:gross_profit"
+        ],
+        "caption": "Gross Profit",
+        "cells": [
+          "200.0000",
+          "500.0000",
+          "-300.0000",
+          "-60.0"
+        ],
+        "drill": null
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "expenses",
+        "level": 0,
+        "path": [
+          "n:expenses"
+        ],
+        "caption": "Expenses",
+        "cells": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "expenses",
+        "level": 1,
+        "path": [
+          "n:expenses",
+          "account:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "60100 Advertising",
+        "cells": [
+          "43.3300",
+          "0.0000",
+          "43.3300",
+          null
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "expenses",
+          "path": [
+            "n:expenses",
+            "account:00000000-0000-4000-8000-000000000000"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "expenses",
+        "level": 1,
+        "path": [
+          "n:expenses",
+          "account:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "60200 Bad Debt",
+        "cells": [
+          "45.0000",
+          "0.0000",
+          "45.0000",
+          null
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "expenses",
+          "path": [
+            "n:expenses",
+            "account:00000000-0000-4000-8000-000000000000"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "expenses",
+        "level": 0,
+        "path": [
+          "n:expenses"
+        ],
+        "caption": "Total Expenses",
+        "cells": [
+          "88.3300",
+          "0.0000",
+          "88.3300",
+          null
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "expenses",
+          "path": [
+            "n:expenses"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "formula",
+        "nodeId": "net_operating_income",
+        "level": 0,
+        "path": [
+          "n:net_operating_income"
+        ],
+        "caption": "Net Operating Income",
+        "cells": [
+          "111.6700",
+          "500.0000",
+          "-388.3300",
+          "-77.7"
+        ],
+        "drill": null
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "other_income",
+        "level": 0,
+        "path": [
+          "n:other_income"
+        ],
+        "caption": "Other Income",
+        "cells": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "other_income",
+        "level": 0,
+        "path": [
+          "n:other_income"
+        ],
+        "caption": "Total Other Income",
+        "cells": [
+          "0.0000",
+          "0.0000",
+          "0.0000",
+          null
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "other_income",
+          "path": [
+            "n:other_income"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "other_expenses",
+        "level": 0,
+        "path": [
+          "n:other_expenses"
+        ],
+        "caption": "Other Expenses",
+        "cells": [
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "other_expenses",
+        "level": 0,
+        "path": [
+          "n:other_expenses"
+        ],
+        "caption": "Total Other Expenses",
+        "cells": [
+          "0.0000",
+          "0.0000",
+          "0.0000",
+          null
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "other_expenses",
+          "path": [
+            "n:other_expenses"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "formula",
+        "nodeId": "net_income",
+        "level": 0,
+        "path": [
+          "n:net_income"
+        ],
+        "caption": "Net Income",
+        "cells": [
+          "111.6700",
+          "500.0000",
+          "-388.3300",
+          "-77.7"
+        ],
+        "drill": null
+      }
+    ],
+    "meta": {
+      "basis": "accrual",
+      "dates": {
+        "from": "2026-01-01",
+        "to": "2026-12-31"
+      },
+      "notes": [],
+      "truncated": false,
+      "hiddenNotice": null,
+      "denied": []
+    },
+    "fingerprint": "c8ef4f9c8afa6ec0fdafff42734a2954f4c50da2b15312a6b72a7a54f98e0178",
+    "stamp": 9
+  }
+}
