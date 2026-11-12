@@ -1261,5 +1261,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * aging columns refuse periodRanges/compareRanges (400 INVALID_PARAM). No migration.
    */
   'report-builder-drill-v1',
+  /**
+   * Report Builder starters, second edition (U-119f, ClientLedger A07 PR-F). Same 20 keys; definitions changed: every
+   * starter has detail fields (its drill shows date, type, number, name, memo and, for line drills, description and account;
+   * open-item starters their document fields), so a summary run sends field columns whose cells are all null. Transaction
+   * Detail by Account is one natural-sign section per account type (node ids assets ... other_expenses, was one debit-sign
+   * "ledger" section) and drops the `amount` field; Open Invoices / Unpaid Bills filter txn_type invoice / bill (they tie
+   * row by row to /reports/invoice-list?open=1 and /reports/unpaid-bills). /run: a range section with a running balance
+   * (innermost group-by account) also lists accounts with an opening balance and no activity (a zero line, its detail
+   * the opening row), as the standard General Ledger does. No migration.
+   */
+  'report-builder-starters-v2',
 ];
 

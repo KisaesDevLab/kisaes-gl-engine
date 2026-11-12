@@ -6,7 +6,15 @@
     "preset": "this_year_to_date"
   },
   "columns": {
-    "detailFields": [],
+    "detailFields": [
+      "date",
+      "txn_type",
+      "number",
+      "contact",
+      "memo",
+      "description",
+      "account"
+    ],
     "compare": [],
     "headers": {}
   },

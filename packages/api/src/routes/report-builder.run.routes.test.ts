@@ -106,6 +106,8 @@ afterAll(async () => {
 });
 
 const cell = (r: { cells: Array<string | null> }, i: number) => new Decimal(r.cells[i] ?? '0');
+/** The first value column (detail-field columns come first). */
+const fv = (j: { columns: Array<{ kind: string }> }) => j.columns.findIndex((col) => col.kind !== 'field');
 type Row = { kind: string; nodeId: string; cells: Array<string | null> };
 const totalRow = (rows: Row[], nodeId: string) => rows.find((r) => r.kind === 'total' && r.nodeId === nodeId)!;
 
@@ -118,17 +120,17 @@ describe('report-builder-v1 runs (U-119)', () => {
       sample(`profit_loss_${basis}`, { definition: '<starters/profit_loss.json>', dates, basis, fiscalYearStarts: FY }, scrub(pl.json));
       const std = await reportService.buildProfitAndLoss(c.tenantId, dates.from, dates.to, basis, c.companyId, null, null, { exactAmounts: true });
       // Every amount cell is an exact string (no float formatting, never -0).
-      for (const row of [...pl.json.rows]) for (const x of row.cells) if (x !== null) { expect(x).toMatch(/^-?\d+\.\d{2,4}$/); expect(x).not.toMatch(/^-0(\.0+)?$/); }
+      for (const row of [...pl.json.rows]) for (const x of row.cells.slice(fv(pl.json))) if (x !== null) { expect(x).toMatch(/^-?\d+\.\d{2,4}$/); expect(x).not.toMatch(/^-0(\.0+)?$/); }
       const ni = pl.json.rows.find((r: { kind: string; nodeId: string }) => r.kind === 'formula' && r.nodeId === 'net_income');
-      expect(cell(ni, 0).toFixed(4)).toBe(new Decimal(std.netIncomeExact!).toFixed(4));
+      expect(cell(ni, fv(pl.json)).toFixed(4)).toBe(new Decimal(std.netIncomeExact!).toFixed(4));
 
       const asOf = '2026-12-31';
       const bs = await run(starter('balance_sheet'), { dates: { asOf }, basis });
       expect(bs.status, JSON.stringify(bs.json).slice(0, 400)).toBe(200);
       sample(`balance_sheet_${basis}`, { definition: '<starters/balance_sheet.json>', dates: { asOf }, basis, fiscalYearStarts: FY }, scrub(bs.json));
       const sbs = await reportService.buildBalanceSheet(c.tenantId, asOf, basis, c.companyId, null, null, { exactAmounts: true }) as Record<string, unknown>;
-      expect(cell(totalRow(bs.json.rows, 'assets'), 0).toFixed(4)).toBe(new Decimal(sbs['totalAssetsExact'] as string).toFixed(4));
-      expect(cell(totalRow(bs.json.rows, 'equity'), 0).toFixed(4)).toBe(new Decimal(sbs['totalEquityExact'] as string).toFixed(4));
+      expect(cell(totalRow(bs.json.rows, 'assets'), fv(bs.json)).toFixed(4)).toBe(new Decimal(sbs['totalAssetsExact'] as string).toFixed(4));
+      expect(cell(totalRow(bs.json.rows, 'equity'), fv(bs.json)).toFixed(4)).toBe(new Decimal(sbs['totalEquityExact'] as string).toFixed(4));
       const earnings = bs.json.rows.filter((r: { kind: string }) => r.kind === 'earnings');
       expect(earnings.map((r: { caption: string }) => r.caption)).toEqual(['Prior years\' net income', 'Net income this year']);
 
@@ -136,14 +138,15 @@ describe('report-builder-v1 runs (U-119)', () => {
       expect(tb.status, JSON.stringify(tb.json).slice(0, 400)).toBe(200);
       const stb = await reportService.buildTrialBalance(c.tenantId, '2026-01-01', asOf, c.companyId, null, basis, { exactAmounts: true }) as Record<string, unknown>;
       const t = totalRow(tb.json.rows, 'accounts');
-      expect(cell(t, 0).toFixed(4)).toBe(new Decimal(stb['totalDebitsExact'] as string).toFixed(4));
-      expect(cell(t, 1).toFixed(4)).toBe(new Decimal(stb['totalCreditsExact'] as string).toFixed(4));
-      expect(cell(t, 0).toFixed(4)).toBe(cell(t, 1).toFixed(4));
+      const t0 = fv(tb.json);
+      expect(cell(t, t0).toFixed(4)).toBe(new Decimal(stb['totalDebitsExact'] as string).toFixed(4));
+      expect(cell(t, t0 + 1).toFixed(4)).toBe(new Decimal(stb['totalCreditsExact'] as string).toFixed(4));
+      expect(cell(t, t0).toFixed(4)).toBe(cell(t, t0 + 1).toFixed(4));
 
       const sc = await run(starter('sales_by_client'), { dates, basis });
       const ssc = await reportService.buildSalesByCustomer(c.tenantId, dates.from, dates.to, c.companyId, null, basis);
       const stdTotal = (ssc.data as Array<{ total: string }>).reduce((s, r) => s.plus(r.total), new Decimal(0));
-      expect(cell(totalRow(sc.json.rows, 'sales'), 0).toFixed(4)).toBe(stdTotal.toFixed(4));
+      expect(cell(totalRow(sc.json.rows, 'sales'), fv(sc.json)).toFixed(4)).toBe(stdTotal.toFixed(4));
     });
   }
 
@@ -177,9 +180,10 @@ describe('report-builder-v1 runs (U-119)', () => {
     (count.nodes[0] as { groupBy: Array<{ key: string }> }).groupBy = [{ key: 'contact' }, { key: 'txn_type' }];
     const rc = await run(count, { dates, expandAll: true });
     const lvl1 = rc.json.rows.filter((x: { kind: string; path: string[] }) => x.kind === 'line' && x.path.length === 2);
+    const c0 = fv(rc.json);
     for (const l of lvl1) {
       const kids = rc.json.rows.filter((x: { kind: string; path: string[] }) => x.kind === 'line' && x.path.length === 3 && x.path[1] === l.path[1]);
-      expect(kids.reduce((s: InstanceType<typeof Decimal>, k: { cells: string[] }) => s.plus(k.cells[0]!), new Decimal(0)).toFixed(4)).toBe(new Decimal(l.cells[0]).toFixed(4));
+      expect(kids.reduce((s: InstanceType<typeof Decimal>, k: { cells: string[] }) => s.plus(k.cells[c0]!), new Decimal(0)).toFixed(4)).toBe(new Decimal(l.cells[c0]).toFixed(4));
     }
   });
 
@@ -225,9 +229,10 @@ describe('report-builder-v1 runs (U-119)', () => {
     const r = await run(cmp, { dates: { from: '2026-01-01', to: '2026-12-31' } });
     expect(r.status, JSON.stringify(r.json).slice(0, 300)).toBe(200);
     sample('profit_loss_compare_prior_year', { definition: '<profit_loss + compare prior_year>', dates: { from: '2026-01-01', to: '2026-12-31' } }, scrub(r.json));
-    expect(r.json.columns.map((col: { kind: string }) => col.kind)).toEqual(['total', 'prior', 'change', 'pct_change']);
+    const v0 = fv(r.json);
+    expect(r.json.columns.slice(v0).map((col: { kind: string }) => col.kind)).toEqual(['total', 'prior', 'change', 'pct_change']);
     const inc = totalRow(r.json.rows, 'income');
-    expect(new Decimal(inc.cells[2]!).toFixed(4)).toBe(new Decimal(inc.cells[0]!).minus(inc.cells[1]!).toFixed(4));
+    expect(new Decimal(inc.cells[v0 + 2]!).toFixed(4)).toBe(new Decimal(inc.cells[v0]!).minus(inc.cells[v0 + 1]!).toFixed(4));
   });
 
   it('409 RUN_CHANGED: params, then books after a posting', async () => {

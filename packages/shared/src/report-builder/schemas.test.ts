@@ -25,12 +25,14 @@ const U2 = '22222222-2222-4222-8222-222222222222';
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const starter = (key: string): BuilderDefinition => clone(BUILDER_STARTERS.find((s) => s.key === key)!.definition);
+/** The base of the generated cases: the P&L starter as first shipped (no detail fields), so the case fixtures stay put when a starter changes. */
+const caseBase = (): BuilderDefinition => { const d = starter('profit_loss'); d.columns.detailFields = []; return d; };
 
 type Expect = { ok: true } | { code: string; path: string };
 interface Case { file: string; note: string; engine: Expect; desktop?: string; handWritten?: boolean }
 
 function withNodes(nodes: RbNode[]): BuilderDefinition {
-  const d = starter('profit_loss');
+  const d = caseBase();
   d.nodes = nodes;
   return d;
 }
@@ -43,7 +45,7 @@ function nested(depth: number): RbNode {
 
 /** Generated cases: [file, note, definition, engine result, desktop note]. */
 function generated(): Array<[string, string, unknown, Expect, string?]> {
-  const pl = starter('profit_loss');
+  const pl = caseBase();
   const out: Array<[string, string, unknown, Expect, string?]> = [];
   const mut = (f: (d: BuilderDefinition & Record<string, unknown>) => void) => { const d = clone(pl) as BuilderDefinition & Record<string, unknown>; f(d); return d; };
   const sec = (d: BuilderDefinition, i = 0) => d.nodes[i] as Extract<RbNode, { type: 'section' }>;

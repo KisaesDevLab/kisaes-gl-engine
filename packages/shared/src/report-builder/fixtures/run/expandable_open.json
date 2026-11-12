@@ -12,6 +12,48 @@
   "response": {
     "columns": [
       {
+        "key": "f:date",
+        "caption": "Date",
+        "kind": "field",
+        "field": "date"
+      },
+      {
+        "key": "f:txn_type",
+        "caption": "Type",
+        "kind": "field",
+        "field": "txn_type"
+      },
+      {
+        "key": "f:number",
+        "caption": "Num",
+        "kind": "field",
+        "field": "number"
+      },
+      {
+        "key": "f:contact",
+        "caption": "Name",
+        "kind": "field",
+        "field": "contact"
+      },
+      {
+        "key": "f:memo",
+        "caption": "Memo",
+        "kind": "field",
+        "field": "memo"
+      },
+      {
+        "key": "f:description",
+        "caption": "Description",
+        "kind": "field",
+        "field": "description"
+      },
+      {
+        "key": "f:account",
+        "caption": "Account",
+        "kind": "field",
+        "field": "account"
+      },
+      {
         "key": "total",
         "caption": "Total",
         "kind": "total",
@@ -33,6 +75,13 @@
         ],
         "caption": "Sales",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null
         ]
       },
@@ -48,6 +97,13 @@
         ],
         "caption": "Rivera Remodel",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "200.0000"
         ],
         "drill": {
@@ -72,6 +128,13 @@
         ],
         "caption": "Cash Sale",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "100.0000"
         ],
         "drill": {
@@ -97,6 +160,13 @@
         ],
         "caption": "Invoice",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "100.0000"
         ],
         "drill": {
@@ -120,6 +190,13 @@
         ],
         "caption": "Total",
         "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           "200.0000"
         ],
         "drill": {
@@ -142,7 +219,7 @@
       "hiddenNotice": null,
       "denied": []
     },
-    "fingerprint": "107180ee641d5c59c7a1df4585ced535f85a8fb5ebaca959079233245965d8a7",
+    "fingerprint": "0017f696f5ea781c83f8609d92e9d0817000233bd2ec009902edeea29da20285",
     "stamp": 9
   }
 }
