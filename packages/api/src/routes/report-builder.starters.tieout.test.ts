@@ -25,7 +25,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { BUILDER_STARTERS, type BuilderDefinition } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { accounts, contacts, items, paymentApplications, billPaymentApplications } from '../db/schema/index.js';
+import { accounts, contacts, items, paymentApplications, billPaymentApplications, tags } from '../db/schema/index.js';
 import { reportBuilderRouter } from './report-builder.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as ledger from '../services/ledger.service.js';
@@ -250,5 +250,212 @@ describe('starters tie to the standard reports (report-builder-starters-v1)', ()
     // Two items open 10.005: 20.0100 exact on the builder, the aging and the balance summary.
     const ar = await run('customer_balance_summary', { dates: { asOf: AS_OF } });
     expect(byKey(ar.rows, 'receivables')[customer3]).toBe('20.0100');
+  });
+});
+
+// ── Drills (A07 PR-E) ──────────────────────────────────────────────
+// /run/detail drills every row it gives a drill: a section Total (every line of
+// the section plus its earnings lines), an outer group-by line, an earnings
+// row; `range` limits rows and subtotal to one column. Aging columns take no
+// other dates; open-item detail rows keep their line's path.
+
+type Col = { key: string; kind: string; range?: { from: string | null; to: string } };
+type DRow = Row & { drill?: { type: string; nodeId?: string; path?: string[]; tagIds?: string[] } | null };
+type RunJson = { rows: DRow[]; columns: Col[]; fingerprint: string; stamp: number };
+const MONTHS_H1 = ['01', '02', '03', '04', '05', '06'].map((m) => ({ from: `2026-${m}-01`, to: `2026-${m}-${new Date(Date.UTC(2026, Number(m), 0)).getUTCDate()}` }));
+/** Value columns a subtotal echoes (percent cells need the report's base, so they are null there). */
+const valueCols = (cols: Col[]) => cols.map((x, i) => (['field', 'percent', 'hidden'].includes(x.kind) ? -1 : i)).filter((i) => i >= 0);
+
+async function runDef(definition: unknown, ref: Record<string, unknown>): Promise<RunJson> {
+  const r = await call('POST', '/run', { definition, fiscalYearStarts: FY, expandAll: true, ...ref });
+  expect(r.status, JSON.stringify(r.json).slice(0, 300)).toBe(200);
+  return r.json;
+}
+/** Every page of a drill (page size 500): the subtotal and each column's sum of the detail rows. */
+async function drill(definition: unknown, ref: Record<string, unknown>, run: RunJson, nodeId: string, path: string[], range?: unknown) {
+  const sums = run.columns.map(() => new Decimal(0));
+  const rows: DRow[] = [];
+  let subtotal: Array<string | null> = [];
+  let cursor: string | null = null;
+  do {
+    const r = await call('POST', '/run/detail', { definition, fiscalYearStarts: FY, ...ref, nodeId, path, fingerprint: run.fingerprint, stamp: run.stamp, ...(range ? { range } : {}), ...(cursor ? { cursor } : {}) });
+    expect(r.status, `${nodeId} ${path.join('/')} ${JSON.stringify(r.json).slice(0, 300)}`).toBe(200);
+    subtotal = r.json.subtotal;
+    for (const row of r.json.rows as DRow[]) {
+      if (row.kind !== 'detail') continue;
+      rows.push(row);
+      for (const i of valueCols(run.columns)) { const x = row.cells[i]; if (x !== null && x !== undefined) sums[i] = sums[i]!.plus(x); }
+    }
+    cursor = r.json.cursor;
+  } while (cursor);
+  return { subtotal, sums, rows };
+}
+const refFor = (key: string, basis: 'accrual' | 'cash') => {
+  const d = starter(key);
+  return { ...(d.dates.mode === 'range' ? { dates: RANGE } : { dates: { asOf: AS_OF } }), basis, ...(key === 'profit_loss_by_month' ? { periodRanges: MONTHS_H1 } : {}) };
+};
+
+describe('drills (A07 PR-E)', () => {
+  for (const basis of ['accrual', 'cash'] as const) {
+    it(`every starter's section Total drills: the detail subtotal = the Total cells = the sum of the rows (${basis})`, async () => {
+      const drilled: string[] = [];
+      const noDrill: string[] = [];
+      const noTotal: string[] = [];
+      let nonZero = 0;
+      for (const { key } of BUILDER_STARTERS) {
+        const def = starter(key);
+        const ref = refFor(key, basis);
+        const run = await runDef(def, ref);
+        const totals = run.rows.filter((r) => r.kind === 'total');
+        if (totals.length === 0) { noTotal.push(key); continue; }
+        if (totals.every((t) => !t.drill)) { noDrill.push(key); continue; }
+        drilled.push(key);
+        for (const t of totals) {
+          expect(t.drill).toMatchObject({ type: 'detail', nodeId: t.nodeId, path: [`n:${t.nodeId}`] });
+          const d = await drill(def, ref, run, t.nodeId, t.drill!.path!);
+          for (const i of valueCols(run.columns)) {
+            expect(D(d.subtotal[i]), `${key} ${t.nodeId} ${run.columns[i]!.key} subtotal`).toBe(D(t.cells[i]));
+            expect(d.sums[i]!.toFixed(4), `${key} ${t.nodeId} ${run.columns[i]!.key} rows`).toBe(D(t.cells[i]));
+          }
+          if (t.cells.some((x) => x !== null && !new Decimal(x).isZero())) nonZero++;
+        }
+      }
+      expect(noTotal.sort()).toEqual(['check_register', 'transaction_detail_by_account']);
+      expect(noDrill).toEqual(['trial_balance']);
+      expect(drilled).toHaveLength(BUILDER_STARTERS.length - 3);
+      expect(nonZero).toBeGreaterThan(20);
+    });
+
+    it(`earnings rows drill to their lines; the current-year row = the P&L net income (${basis})`, async () => {
+      for (const key of ['balance_sheet', 'trial_balance']) {
+        const def = starter(key);
+        const ref = refFor(key, basis);
+        const run = await runDef(def, ref);
+        const earnings = run.rows.filter((r) => r.kind === 'earnings');
+        expect(earnings.length).toBeGreaterThan(0);
+        for (const e of earnings) {
+          const d = await drill(def, ref, run, e.nodeId, e.path);
+          for (const i of valueCols(run.columns)) {
+            expect(D(d.subtotal[i]), `${key} ${e.path[1]} subtotal`).toBe(D(e.cells[i]));
+            if (key === 'balance_sheet') expect(d.sums[i]!.toFixed(4), `${key} ${e.path[1]} rows`).toBe(D(e.cells[i]));
+          }
+          expect(d.rows.length).toBeGreaterThan(0);
+          if (e.path[1] === 'earnings:current') {
+            const pl = await reportService.buildProfitAndLoss(c.tenantId, '2026-01-01', AS_OF, basis, c.companyId, null, null, { exactAmounts: true });
+            expect(D(e.cells[0])).toBe(D(pl.netIncomeExact));
+          }
+        }
+      }
+    });
+
+    it(`outer group-by lines drill (two levels, a "none" key, lines and open items) (${basis})`, async () => {
+      const lineDef = starter('profit_loss');
+      for (const n of lineDef.nodes) if (n.type === 'section') n.groupBy = [{ key: 'contact' }, { key: 'account' }];
+      const openDef = starter('ar_aging_detail');
+      for (const n of openDef.nodes) if (n.type === 'section') n.groupBy = [{ key: 'contact' }, { key: 'due_status' }];
+      let sawNone = false;
+      const cases: Array<[BuilderDefinition, Record<string, unknown>]> = [[lineDef, { dates: RANGE, basis }], [openDef, { dates: { asOf: AS_OF }, basis }]];
+      for (const [def, ref] of cases) {
+        const run = await runDef(def, ref);
+        const outer = run.rows.filter((r) => r.kind === 'line' && r.path.length === 2);
+        expect(outer.length).toBeGreaterThan(1);
+        for (const l of outer) {
+          if (l.path[1]!.endsWith(':none')) sawNone = true;
+          const d = await drill(def, ref, run, l.nodeId, l.path);
+          const inner = run.rows.filter((r) => r.kind === 'line' && r.path.length === 3 && r.path[0] === l.path[0] && r.path[1] === l.path[1]);
+          for (const i of valueCols(run.columns)) {
+            expect(D(d.subtotal[i])).toBe(D(l.cells[i]));
+            expect(d.sums[i]!.toFixed(4)).toBe(D(l.cells[i]));
+            expect(inner.reduce((acc, r) => acc.plus(r.cells[i] ?? 0), new Decimal(0)).toFixed(4)).toBe(D(l.cells[i]));
+          }
+        }
+      }
+      expect(sawNone).toBe(true);
+      // A path that is not a prefix of the group-bys, or an earnings path on a section without earnings, is refused.
+      const run = await runDef(lineDef, { dates: RANGE, basis });
+      const bad = await call('POST', '/run/detail', { definition: lineDef, fiscalYearStarts: FY, dates: RANGE, basis, nodeId: 'income', path: ['n:income', `account:${c.income}`], fingerprint: run.fingerprint, stamp: run.stamp });
+      expect(bad.status).toBe(400);
+      const bad2 = await call('POST', '/run/detail', { definition: lineDef, fiscalYearStarts: FY, dates: RANGE, basis, nodeId: 'income', path: ['n:income', 'earnings:prior'], fingerprint: run.fingerprint, stamp: run.stamp });
+      expect(bad2.status).toBe(400);
+    });
+
+    it(`a period column drills to its own dates only (P&L by month, Balance Sheet as of two dates) (${basis})`, async () => {
+      const def = starter('profit_loss_by_month');
+      const ref = refFor('profit_loss_by_month', basis);
+      const run = await runDef(def, ref);
+      const marchCol = run.columns.findIndex((x) => x.kind === 'period' && x.range?.from === '2026-03-01');
+      const totalCol = run.columns.findIndex((x) => x.key === 'total');
+      expect(marchCol).toBeGreaterThan(-1);
+      const inc = run.rows.find((r) => r.kind === 'total' && r.nodeId === 'income')!;
+      expect(D(inc.cells[marchCol])).not.toBe(D(inc.cells[totalCol]));
+      for (const row of [inc, ...run.rows.filter((r) => r.kind === 'line' && r.nodeId === 'income')]) {
+        const d = await drill(def, ref, run, row.nodeId, row.kind === 'total' ? [`n:${row.nodeId}`] : row.path, run.columns[marchCol]!.range);
+        expect(D(d.subtotal[marchCol])).toBe(D(row.cells[marchCol]));
+        expect(D(d.subtotal[totalCol])).toBe(D(row.cells[marchCol]));
+        expect(d.sums[marchCol]!.toFixed(4)).toBe(D(row.cells[marchCol]));
+        run.columns.forEach((x, i) => { if (x.kind === 'period' && i !== marchCol) expect(d.subtotal[i]).toBeNull(); });
+        for (const r of d.rows) expect(r.cells.filter((x, i) => x !== null && run.columns[i]!.kind === 'period' && i !== marchCol)).toEqual([]);
+      }
+      const notACol = await call('POST', '/run/detail', { definition: def, fiscalYearStarts: FY, ...ref, nodeId: 'income', path: ['n:income'], range: { from: '2026-03-01', to: '2026-03-15' }, fingerprint: run.fingerprint, stamp: run.stamp });
+      expect(notACol.status).toBe(400);
+
+      // As-of columns ({from: null, to}): each date's balances, including the equity section's earnings, across a fiscal year start.
+      const bs = starter('balance_sheet');
+      const bref = { dates: { asOf: AS_OF }, basis, periodRanges: [{ from: '2025-12-31', to: '2025-12-31' }, { from: AS_OF, to: AS_OF }] };
+      const brun = await runDef(bs, bref);
+      const cols = brun.columns.map((x, i) => (x.kind === 'period' ? i : -1)).filter((i) => i >= 0);
+      expect(cols).toHaveLength(2);
+      for (const t of brun.rows.filter((r) => r.kind === 'total' || r.kind === 'earnings')) {
+        for (const ci of cols) {
+          expect(brun.columns[ci]!.range!.from).toBeNull();
+          const d = await drill(bs, bref, brun, t.nodeId, t.kind === 'total' ? [`n:${t.nodeId}`] : t.path, brun.columns[ci]!.range);
+          expect(D(d.subtotal[ci]), `${t.nodeId} ${t.path.join('/')} ${brun.columns[ci]!.key}`).toBe(D(t.cells[ci]));
+          expect(d.sums[ci]!.toFixed(4)).toBe(D(t.cells[ci]));
+        }
+      }
+    });
+  }
+
+  it('aging columns refuse other dates; open-item detail rows keep their line path', async () => {
+    const def = starter('ar_aging_summary');
+    const two = await call('POST', '/run', { definition: def, fiscalYearStarts: FY, dates: { asOf: AS_OF }, periodRanges: [{ from: '2026-04-30', to: '2026-04-30' }, { from: AS_OF, to: AS_OF }] });
+    expect(two.status).toBe(400);
+    expect(two.json.error).toMatchObject({ code: 'INVALID_PARAM', details: { field: 'periodRanges' } });
+    const other = await call('POST', '/run', { definition: def, fiscalYearStarts: FY, dates: { asOf: AS_OF }, periodRanges: [{ from: '2026-04-30', to: '2026-04-30' }] });
+    expect(other.status).toBe(400);
+    const cmp = await call('POST', '/run', { definition: def, fiscalYearStarts: FY, dates: { asOf: AS_OF }, compareRanges: [[{ from: '2025-06-30', to: '2025-06-30' }]] });
+    expect(cmp.status).toBe(400);
+    expect(cmp.json.error).toMatchObject({ code: 'INVALID_PARAM', details: { field: 'compareRanges' } });
+    const same = await call('POST', '/run', { definition: def, fiscalYearStarts: FY, dates: { asOf: AS_OF }, periodRanges: [{ from: AS_OF, to: AS_OF }] });
+    expect(same.status).toBe(200);
+
+    for (const key of ['ar_aging_detail', 'open_invoices', 'unpaid_bills']) {
+      const run = await runDef(starter(key), { dates: { asOf: AS_OF } });
+      const details = run.rows.filter((r) => r.kind === 'detail');
+      expect(details.length, key).toBeGreaterThan(0);
+      for (const r of details) {
+        const parent = [...run.rows.slice(0, run.rows.indexOf(r))].reverse().find((x) => x.kind === 'line')!;
+        expect(r.path).toEqual(parent.path);
+        expect(r.path.length).toBe(2);
+      }
+    }
+  });
+
+  it('a tag-filtered Balance Sheet drills its earnings to a P&L of the same tag (tagIds)', async () => {
+    const [tag] = await db.insert(tags).values({ tenantId: c.tenantId, companyId: c.companyId, name: `Job ${suffix()}` }).returning();
+    await post('journal_entry', '2026-05-20', [{ accountId: c.bank, debit: '12.00', credit: '0', tagId: tag!.id } as L, { accountId: c.income, debit: '0', credit: '12.00', tagId: tag!.id } as L]);
+    const def = starter('balance_sheet');
+    for (const n of def.nodes) if (n.type === 'section') n.filters.push({ field: 'tag', op: 'in', ids: [tag!.id] });
+    const ref = { dates: { asOf: AS_OF } };
+    const run = await runDef(def, ref);
+    const cur = run.rows.find((r) => r.kind === 'earnings' && r.path[1] === 'earnings:current')!;
+    expect(cur.drill).toMatchObject({ type: 'profit_loss', from: '2026-01-01', to: AS_OF, tagIds: [tag!.id] });
+    expect(D(cur.cells[0])).toBe('12.0000');
+    const d = await drill(def, ref, run, cur.nodeId, cur.path);
+    expect(D(d.subtotal[0])).toBe('12.0000');
+    expect(d.rows).toHaveLength(1);
+    // Untagged sections keep their drills without tagIds.
+    const plain = await runDef(starter('balance_sheet'), ref);
+    expect(plain.rows.find((r) => r.kind === 'earnings')!.drill).not.toHaveProperty('tagIds');
   });
 });

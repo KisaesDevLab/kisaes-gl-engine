@@ -57,6 +57,8 @@ export interface RunDrill {
   type: 'detail' | 'transaction' | 'profit_loss';
   nodeId?: string; path?: string[]; range?: { from: string; to: string };
   txnId?: string; txnType?: string; from?: string; to?: string;
+  /** profit_loss drills of a tag-filtered section: the lines carry one of these tags. */
+  tagIds?: string[];
 }
 
 export interface RunRow {
@@ -156,6 +158,13 @@ async function makePlan(v: Viewer, def: BuilderDefinition, req: RunRequest | Det
     if (s === null) throw AppError.badRequest(`fiscalYearStarts has no fiscal year start for ${d}`, 'INVALID_PARAM', { field: 'fiscalYearStarts' });
     return s;
   };
+  if (def.columns.agingBuckets) {
+    // Aging columns age every item as of the report date: no period or compare columns (BUCKETS_PERIODS), and no other date.
+    const pr = req.periodRanges;
+    if (req.compareRanges !== undefined || (pr && (pr.length !== 1 || pr[0]!.to !== (dates.asOf ?? dates.to)))) {
+      throw AppError.badRequest('Aging columns age everything as of the report date; send no periodRanges or compareRanges.', 'INVALID_PARAM', { field: req.compareRanges !== undefined ? 'compareRanges' : 'periodRanges' });
+    }
+  }
   const baseRanges = req.periodRanges ?? (mode === 'range' ? [{ from: dates.from!, to: dates.to! }] : [{ from: dates.asOf!, to: dates.asOf! }]);
   for (let i = 1; i < baseRanges.length; i++) {
     if (baseRanges[i]!.from <= baseRanges[i - 1]!.to) throw AppError.badRequest('periodRanges must be ascending and not overlap.', 'INVALID_PARAM', { field: 'periodRanges' });
@@ -663,7 +672,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
   let truncated = false;
   const denied: string[] = [];
   const totals = new Map<string, NodeTotal>();
-  const sectionData = new Map<string, { tree: Tree; earnings: Array<{ caption: string; vals: Vals; drill: RunDrill | null }> }>();
+  const sectionData = new Map<string, { tree: Tree; earnings: EarningsRow[] }>();
 
   // Rights, then every line section's facts (and line-mode earnings) in one statement.
   const allowed = sectionsOf(def.nodes).filter((x) => {
@@ -830,7 +839,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
       for (const e of data.earnings) {
         const cells = cellsOf(plan, e.vals, base);
         emitLine(cells);
-        row({ kind: 'earnings', nodeId: s.id, level: level + 1, path: [...np, `earnings:${e.caption === PRIOR_YEARS ? 'prior' : 'current'}`], caption: e.caption, cells, drill: e.drill });
+        row({ kind: 'earnings', nodeId: s.id, level: level + 1, path: [...np, `earnings:${e.part}`], caption: e.caption, cells, drill: e.drill });
       }
       if (s.showTotal) {
         const cells = tb
@@ -861,6 +870,9 @@ async function checkPolarity(ctx: Ctx, s: RbSectionNode): Promise<void> {
   if (sides.size > 1) throw invalidAt(`node:${s.id}.polarity`, 'MIXED_POLARITY', 'Natural signs need accounts of one kind (all debit or all credit); choose Debit or Credit.');
 }
 
+/** An earnings row: 'prior' (prior years, also the TB's one row) or 'current' (this year); its path ends in earnings:<part>. */
+interface EarningsRow { part: 'prior' | 'current'; caption: string; vals: Vals; drill: RunDrill | null }
+
 const PRIOR_YEARS = 'Prior years\' net income';
 const CURRENT_YEAR = 'Net income this year';
 
@@ -872,7 +884,7 @@ function earningsSection(s: RbSectionNode): RbSectionNode {
   };
 }
 
-async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): Promise<Array<{ caption: string; vals: Vals; drill: RunDrill | null }>> {
+async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): Promise<EarningsRow[]> {
   const { plan } = ctx;
   const n = nVals(plan);
   const tagF = s.filters.find((f) => f.field === 'tag' && f.op === 'in');
@@ -890,7 +902,7 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
     if (prior.every((x) => x.isZero())) return [];
     // In tag mode the transaction-level figure has no line-level drill (the one exemption).
     const sl = slots[0]!;
-    return [{ caption: 'Retained Earnings (Prior Years)', vals: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
+    return [{ part: 'prior', caption: 'Retained Earnings (Prior Years)', vals: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
   }
   // Line mode (equity-earnings' rule: credit - debit over every income-statement line, line-level tag), from the run's batch.
   const sign = s.polarity === 'debit' ? -1 : 1;
@@ -905,97 +917,163 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
     });
   }
   const sl = slots[0]!;
-  const out: Array<{ caption: string; vals: Vals; drill: RunDrill | null }> = [];
-  if (prior.some((x) => !x.isZero())) out.push({ caption: PRIOR_YEARS, vals: prior, drill: { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } });
-  if (current.some((x) => !x.isZero())) out.push({ caption: CURRENT_YEAR, vals: current, drill: { type: 'profit_loss', from: sl.fy, to: sl.to } });
+  // A tag-filtered section drills to a P&L of the same lines: tagIds = the tags a line may carry (every tag filter holds).
+  const tagFs = s.filters.filter((f) => f.field === 'tag' && f.op === 'in');
+  const tags = tagFs.length ? { tagIds: tagFs.slice(1).reduce((acc, f) => acc.filter((x) => f.ids!.includes(x)), [...tagFs[0]!.ids!]) } : {};
+  const out: EarningsRow[] = [];
+  if (prior.some((x) => !x.isZero())) out.push({ part: 'prior', caption: PRIOR_YEARS, vals: prior, drill: { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1), ...tags } });
+  if (current.some((x) => !x.isZero())) out.push({ part: 'current', caption: CURRENT_YEAR, vals: current, drill: { type: 'profit_loss', from: sl.fy, to: sl.to, ...tags } });
   return out;
 }
 
 // ── Detail rows ────────────────────────────────────────────────────
 
+/** Which earnings lines a detail read adds: none, both rows of a section (its Total), or one earnings row. */
+type EarningsPart = 'none' | 'all' | 'prior' | 'current';
+
+const badPath = () => AppError.badRequest('The row path does not belong to this part of the report.', 'INVALID_PARAM', { field: 'path' });
+
+/** The group-by keys of a row path: "n:<id>" then a prefix of the section's group-bys (a section or an outer line drills too). */
 function pathKeys(s: RbSectionNode, path: string[]): Array<string | null> {
-  if (path[0] !== `n:${s.id}` || path.length - 1 > s.groupBy.length) throw AppError.badRequest('The row path does not belong to this part of the report.', 'INVALID_PARAM', { field: 'path' });
+  if (path[0] !== `n:${s.id}` || path.length - 1 > s.groupBy.length) throw badPath();
   return path.slice(1).map((seg, i) => {
     const key = s.groupBy[i]!.key;
-    if (!seg.startsWith(`${key}:`)) throw AppError.badRequest('The row path does not belong to this part of the report.', 'INVALID_PARAM', { field: 'path' });
+    if (!seg.startsWith(`${key}:`)) throw badPath();
     const v = seg.slice(key.length + 1);
     return v === 'none' ? null : v;
   });
 }
 
-/** The detail window: the base columns' dates (flow) or through the last as-of (balances). */
-function detailWindow(plan: Plan, s: RbSectionNode, range?: { from: string; to: string }): { from: string | null; to: string } {
-  if (range) return { from: isFlow(s) || plan.mode === 'range' ? range.from : null, to: range.to };
-  const base = plan.base.map((i) => plan.slots[i]!);
-  const to = base.reduce((m, x) => (x.to > m ? x.to : m), base[0]!.to);
-  const from = plan.mode === 'range' ? base.reduce((m, x) => (x.from! < m ? x.from! : m), base[0]!.from!) : null;
-  return { from, to };
+/** A /run/detail path: group-by keys, or an earnings row ["n:<id>", "earnings:prior" | "earnings:current"]; a section path adds its earnings. */
+function parseDetailPath(s: RbSectionNode, path: string[]): { keys: Array<string | null>; earnings: EarningsPart } {
+  const e = path.length === 2 && path[0] === `n:${s.id}` && /^earnings:(prior|current)$/.test(path[1]!) ? (path[1]!.slice(9) as 'prior' | 'current') : null;
+  if (e && !s.earnings) throw badPath();
+  const keys = e ? [] : pathKeys(s, path);
+  const earnings: EarningsPart = e ?? (s.earnings && keys.length === 0 ? 'all' : 'none');
+  if (earnings !== 'none' && s.earnings === 'trial_balance') {
+    if (s.filters.some((f) => f.field === 'tag' && f.op === 'in')) {
+      throw AppError.badRequest('In tag mode the prior years\' figure of a Trial Balance has no line detail.', 'INVALID_PARAM', { field: 'path' });
+    }
+    if (earnings === 'current') throw badPath();
+  }
+  return { keys, earnings };
 }
 
-async function detailPage(ctx: Ctx, s: RbSectionNode, path: string[], cursor: Cursor | null, limit: number, range?: { from: string; to: string }): Promise<{ rows: RunRow[]; cursor: string | null }> {
-  const keys = pathKeys(s, path);
-  if (keys.length !== s.groupBy.length) throw AppError.badRequest('Detail rows are under the innermost grouping.', 'INVALID_PARAM', { field: 'path' });
-  if (RB_SOURCE_INFO[s.source].openItems) return openDetailPage(ctx, s, keys, cursor, limit);
-  const { plan } = ctx;
-  const fields = plan.def.columns.detailFields;
-  const win = detailWindow(plan, s, range);
-  const L = linesSql(ctx, s, win.from, win.to);
-  const k = L.k;
-  const keyEq = s.groupBy.map((_, i) => {
-    const e = keyExpr(ctx, s, i, k, L.cash);
-    return keys[i] === null ? sql`${e} IS NULL` : sql`${e} = ${keys[i]}`;
+/** The slots a detail read covers: the column whose range is `range` (as-of columns match on `to`), else every base column. */
+function drillSlots(plan: Plan, range?: { from?: string | null; to: string }): number[] {
+  if (!range) return plan.base;
+  if (plan.buckets) throw AppError.badRequest('Aging columns have no date range: drill without range.', 'INVALID_PARAM', { field: 'range' });
+  const sel = plan.slots.map((_, i) => i).filter((i) => {
+    const sl = plan.slots[i]!;
+    return sl.to === range.to && (plan.mode === 'asOf' || sl.from === (range.from ?? null));
   });
-  // Balances (and the P&L accounts of a tb) read income accounts from the fiscal year start.
-  const fyCond = isFlow(s) ? sql`TRUE` : sql`(a.account_type IN ('asset', 'liability', 'equity') OR ${raw(k.date)} >= ${plan.slots[0]!.fy}::date)`;
-  const running = fields.includes('running_balance');
+  if (sel.length === 0) throw AppError.badRequest('range is not the date range of a column of this report.', 'INVALID_PARAM', { field: 'range' });
+  return sel;
+}
+
+/** A line is in a column: a flow inside its dates; a balance through its date (income-statement accounts from its fiscal year start). */
+const inSlot = (flow: boolean, sl: Slot, date: string, bs: boolean) =>
+  (flow ? (sl.from === null || date >= sl.from) && date <= sl.to : date <= sl.to && (bs || date >= sl.fy));
+/** An earnings line is in a column's prior-years or this-year row (either, for the section Total). */
+const inEarnings = (part: EarningsPart, sl: Slot, date: string) =>
+  date <= sl.to && (part === 'prior' ? date < sl.fy : part === 'current' ? date >= sl.fy : true);
+
+async function detailPage(
+  ctx: Ctx, s: RbSectionNode, path: string[], cursor: Cursor | null, limit: number,
+  opts: { keys?: Array<string | null>; earnings?: EarningsPart; sel?: number[] } = {},
+): Promise<{ rows: RunRow[]; cursor: string | null }> {
+  const keys = opts.keys ?? pathKeys(s, path);
+  const earnings = opts.earnings ?? 'none';
+  const { plan } = ctx;
+  const sel = opts.sel ?? plan.base;
+  if (RB_SOURCE_INFO[s.source].openItems) return openDetailPage(ctx, s, keys, path, cursor, limit, sel);
+  const fields = plan.def.columns.detailFields;
+  const flow = isFlow(s);
+  const slots = sel.map((i) => plan.slots[i]!);
+  const maxTo = slots.reduce((m, x) => (x.to > m ? x.to : m), slots[0]!.to);
+  // A range report's lines start at its first date (a running balance then starts with an opening row).
+  const lowFrom = plan.mode === 'range' ? slots.reduce((m, x) => (x.from! < m ? x.from! : m), slots[0]!.from!) : null;
+  const withLines = earnings === 'none' || earnings === 'all';
+  const L = linesSql(ctx, s, earnings === 'none' ? lowFrom : null, maxTo);
+  const k = L.k;
+  const date = raw(k.date);
+  const keyEq = keys.map((kv, i) => {
+    const e = keyExpr(ctx, s, i, k, L.cash);
+    return kv === null ? sql`${e} IS NULL` : sql`${e} = ${kv}`;
+  });
+  // A running balance runs within one innermost line, over its own lines.
+  const running = fields.includes('running_balance') && keys.length === s.groupBy.length && earnings === 'none';
   let opening = ZERO();
-  if (running && win.from) {
-    const ob = await ctx.exec.execute(sql`${linesSql(ctx, s, null, addDays(win.from, -1)).with}
-      SELECT COALESCE(SUM(${valueExpr(s, k)}), 0)::text AS v, MIN(a.account_type) AS at
-      ${L.from} WHERE ${linesSql(ctx, s, null, addDays(win.from, -1)).where} AND ${keyEq.length ? sql.join(keyEq, sql` AND `) : sql`TRUE`}
-        AND (a.account_type IN ('asset', 'liability', 'equity') OR ${raw(k.date)} >= ${fiscalYearStartIn(win.from, ctx.fyStarts, 1) ?? win.from}::date)`);
+  if (running && lowFrom) {
+    const OL = linesSql(ctx, s, null, addDays(lowFrom, -1));
+    const ob = await ctx.exec.execute(sql`${OL.with}
+      SELECT COALESCE(SUM(${valueExpr(s, k)}), 0)::text AS v
+      ${OL.from} WHERE ${OL.where} AND ${keyEq.length ? sql.join(keyEq, sql` AND `) : sql`TRUE`}
+        AND (a.account_type IN ('asset', 'liability', 'equity') OR ${date} >= ${fiscalYearStartIn(lowFrom, ctx.fyStarts, 1) ?? lowFrom}::date)`);
     opening = dec(String((ob.rows[0] as { v: string }).v));
+  }
+  const select = (part: 'l' | 'e', where: SQL, value: SQL, src: RbSectionNode) => sql`
+      SELECT ${part}::text AS part, ${date}::date AS d, ${raw(k.created)} AS created, to_char(${raw(k.created)} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_text,
+        ${raw(k.txnId)} AS txn_id, ${part === 'e' ? sql`'earnings:' || ${raw(k.vkey)}` : raw(k.vkey)} AS vkey, ${raw(k.lineId)}::text AS line_id,
+        ${raw(k.txnType)} AS txn_type, ${k.number} AS num, ct.display_name AS contact, ${raw(k.memo)} AS memo, ${raw(k.desc)} AS description,
+        CASE WHEN a.account_number IS NULL OR a.account_number = '' THEN a.name ELSE a.account_number || ' ' || a.name END AS account,
+        it.name AS item, ${raw(k.qty)}::text AS qty, ${raw(k.price)}::text AS price, tg.name AS tag, ${clearedExpr(ctx.v.tenantId, k.lineId)} AS cleared,
+        ${raw(k.d)}::text AS debit, ${raw(k.c)}::text AS credit, (${value})::numeric AS v, ${raw(k.svc)}::text AS svc, ${raw(k.due)}::text AS due,
+        (a.account_type IN ('asset', 'liability', 'equity')) AS bs
+      ${L.from}
+      LEFT JOIN contacts ct ON ct.id = ${raw(src.source === 'tax' ? k.docContact : k.contact)} AND ct.tenant_id = ${ctx.v.tenantId}
+      LEFT JOIN items it ON it.id = ${raw(k.item)} AND it.tenant_id = ${ctx.v.tenantId}
+      LEFT JOIN tags tg ON tg.id = ${raw(k.tag)} AND tg.tenant_id = ${ctx.v.tenantId}
+      WHERE ${where}`;
+  const parts: SQL[] = [];
+  if (withLines) {
+    const slotCond = sql.join(slots.map((sl) => (flow
+      ? sql`(${sl.from ? sql`${date} >= ${sl.from}::date AND ` : sql``}${date} <= ${sl.to}::date)`
+      : sql`(${date} <= ${sl.to}::date AND (a.account_type IN ('asset', 'liability', 'equity') OR ${date} >= ${sl.fy}::date))`)), sql` OR `);
+    parts.push(select('l', sql`${L.where} AND (${slotCond}) ${lowFrom ? sql`AND ${date} >= ${lowFrom}::date` : sql``}
+        ${keyEq.length ? sql`AND ${sql.join(keyEq, sql` AND `)}` : sql``}`, valueExpr(s, k), s));
+  }
+  if (earnings !== 'none') {
+    // Earnings lines (equity-earnings' rule): income-statement lines, credit - debit (debit - credit for a debit or tb section).
+    const es = earningsSection(s);
+    const E = linesSql(ctx, es, null, maxTo);
+    const partCond = sql.join(slots.map((sl) => sql`(${date} <= ${sl.to}::date${earnings === 'prior' ? sql` AND ${date} < ${sl.fy}::date` : earnings === 'current' ? sql` AND ${date} >= ${sl.fy}::date` : sql``})`), sql` OR `);
+    const value = s.earnings === 'trial_balance' || s.polarity === 'debit' ? sql`(${raw(k.d)} - ${raw(k.c)})` : sql`(${raw(k.c)} - ${raw(k.d)})`;
+    parts.push(select('e', sql`${E.where} AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense') AND (${partCond})`, value, es));
   }
   const after = cursor && cursor.k === 'line'
     ? sql`AND (x.d, x.created, x.txn_id, x.vkey COLLATE "C") > (${cursor.d}::date, ${cursor.c}::timestamptz, ${cursor.t}::uuid, ${cursor.v} COLLATE "C")`
     : sql``;
   const res = await ctx.exec.execute(sql`
     ${L.with}
-    SELECT x.* FROM (
-      SELECT ${raw(k.date)}::date AS d, ${raw(k.created)} AS created, to_char(${raw(k.created)} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_text,
-        ${raw(k.txnId)} AS txn_id, ${raw(k.vkey)} AS vkey, ${raw(k.lineId)}::text AS line_id,
-        ${raw(k.txnType)} AS txn_type, ${k.number} AS num, ct.display_name AS contact, ${raw(k.memo)} AS memo, ${raw(k.desc)} AS description,
-        CASE WHEN a.account_number IS NULL OR a.account_number = '' THEN a.name ELSE a.account_number || ' ' || a.name END AS account,
-        it.name AS item, ${raw(k.qty)}::text AS qty, ${raw(k.price)}::text AS price, tg.name AS tag, ${clearedExpr(ctx.v.tenantId, k.lineId)} AS cleared,
-        ${raw(k.d)}::text AS debit, ${raw(k.c)}::text AS credit, (${valueExpr(s, k)})::text AS v, ${raw(k.svc)}::text AS svc, ${raw(k.due)}::text AS due,
-        (SUM(${valueExpr(s, k)}) OVER (ORDER BY ${raw(k.date)}, ${raw(k.created)}, ${raw(k.txnId)}, ${raw(k.vkey)} COLLATE "C" ROWS UNBOUNDED PRECEDING))::text AS run
-      ${L.from}
-      LEFT JOIN contacts ct ON ct.id = ${raw(s.source === 'tax' ? k.docContact : k.contact)} AND ct.tenant_id = ${ctx.v.tenantId}
-      LEFT JOIN items it ON it.id = ${raw(k.item)} AND it.tenant_id = ${ctx.v.tenantId}
-      LEFT JOIN tags tg ON tg.id = ${raw(k.tag)} AND tg.tenant_id = ${ctx.v.tenantId}
-      WHERE ${L.where} AND ${fyCond} ${win.from ? sql`AND ${raw(k.date)} >= ${win.from}::date` : sql``} AND ${raw(k.date)} <= ${win.to}::date
-        ${keyEq.length ? sql`AND ${sql.join(keyEq, sql` AND `)}` : sql``}
+    SELECT x.*, x.v::text AS v_text, x.run::text AS run_text FROM (
+      SELECT u.*, SUM(u.v) OVER (ORDER BY u.d, u.created, u.txn_id, u.vkey COLLATE "C" ROWS UNBOUNDED PRECEDING) AS run
+      FROM (${sql.join(parts, sql` UNION ALL `)}) u
     ) x
     WHERE TRUE ${after}
     ORDER BY x.d, x.created, x.txn_id, x.vkey COLLATE "C"
     LIMIT ${limit + 1}`);
-  const all = res.rows as Array<Record<string, string | null>>;
+  const all = res.rows as Array<Record<string, unknown>>;
   const more = all.length > limit;
   const page = all.slice(0, limit);
   const out: RunRow[] = [];
-  if (!cursor && running && win.from && plan.mode === 'range') {
+  if (!cursor && running && lowFrom) {
     out.push({ kind: 'opening', nodeId: s.id, level: 0, path, caption: 'Opening balance', cells: plan.specs.map((sp) => (sp.t === 'field' && sp.field === 'running_balance' ? exactStr(opening) : null)), expandable: false, expanded: false });
   }
-  for (const r of page) {
-    const date = String(r['d']).slice(0, 10);
-    const val = dec(r['v'] ?? '0');
+  for (const r0 of page) {
+    const r = r0 as Record<string, string | null>;
+    const day = String(r0['d']).slice(0, 10);
+    const val = dec(r['v_text'] ?? '0');
+    const bs = r0['bs'] === true;
+    const member = (si: number) => sel.includes(si)
+      && (r['part'] === 'e' ? inEarnings(earnings, plan.slots[si]!, day) : inSlot(flow, plan.slots[si]!, day, bs));
     const cells = plan.specs.map((sp, i): string | null => {
       if (plan.cols[i]!.kind === 'hidden') return null;
-      if (sp.t === 'field') return detailField(sp.field, r, date, opening);
-      if (sp.t === 'amount') { const sl = plan.slots[sp.slot]!; return sp.base && inSlot(s, sl, date) ? exactStr(val) : null; }
-      if (sp.t === 'debit') { const x = dec(r['debit'] ?? '0').minus(dec(r['credit'] ?? '0')); return sp.base && x.gt(0) ? exactStr(x) : null; }
-      if (sp.t === 'credit') { const x = dec(r['debit'] ?? '0').minus(dec(r['credit'] ?? '0')); return sp.base && x.lt(0) ? exactStr(x.neg()) : null; }
-      if (sp.t === 'sum') return sp.slots.some((x) => inSlot(s, plan.slots[x]!, date)) ? exactStr(val) : null;
+      if (sp.t === 'field') return detailField(sp.field, r, day, opening, running);
+      if (sp.t === 'amount') return member(sp.slot) ? exactStr(val) : null;
+      if (sp.t === 'debit') return member(sp.slot) && val.gt(0) ? exactStr(val) : null;
+      if (sp.t === 'credit') return member(sp.slot) && val.lt(0) ? exactStr(val.neg()) : null;
+      if (sp.t === 'sum') return sp.slots.some(member) ? exactStr(val) : null;
       return null;
     });
     out.push({
@@ -1012,9 +1090,7 @@ async function detailPage(ctx: Ctx, s: RbSectionNode, path: string[], cursor: Cu
   };
 }
 
-const inSlot = (s: RbSectionNode, sl: Slot, date: string) => (isFlow(s) ? (sl.from === null || date >= sl.from) && date <= sl.to : date <= sl.to);
-
-function detailField(f: RbDetailField, r: Record<string, string | null>, date: string, opening: Dec): string | null {
+function detailField(f: RbDetailField, r: Record<string, string | null>, date: string, opening: Dec, running: boolean): string | null {
   switch (f) {
     case 'date': return date;
     case 'txn_type': return r['txn_type'] ? TYPE_LABEL(r['txn_type']) : null;
@@ -1030,19 +1106,20 @@ function detailField(f: RbDetailField, r: Record<string, string | null>, date: s
     case 'cleared': return r['cleared'] ?? null;
     case 'debit': return r['debit'] && !dec(r['debit']).isZero() ? exactStr(r['debit']) : null;
     case 'credit': return r['credit'] && !dec(r['credit']).isZero() ? exactStr(r['credit']) : null;
-    case 'amount': return exactStr(r['v'] ?? '0');
-    case 'running_balance': return exactStr(opening.plus(dec(r['run'] ?? '0')));
+    case 'amount': return exactStr(r['v_text'] ?? '0');
+    case 'running_balance': return running ? exactStr(opening.plus(dec(r['run_text'] ?? '0'))) : null;
     case 'service_date': return r['svc'] ? r['svc'].slice(0, 10) : null;
     case 'due_date': return r['due'] ? r['due'].slice(0, 10) : null;
     default: return null;
   }
 }
 
-async function openDetailPage(ctx: Ctx, s: RbSectionNode, keys: Array<string | null>, cursor: Cursor | null, limit: number): Promise<{ rows: RunRow[]; cursor: string | null }> {
+async function openDetailPage(ctx: Ctx, s: RbSectionNode, keys: Array<string | null>, path: string[], cursor: Cursor | null, limit: number, sel: number[]): Promise<{ rows: RunRow[]; cursor: string | null }> {
   const { plan } = ctx;
-  const asOf = plan.slots[plan.base[plan.base.length - 1]!]!.to;
+  const asOfSlot = sel[sel.length - 1]!;
+  const asOf = plan.slots[asOfSlot]!.to;
   const items = (await openItems(ctx, s, asOf))
-    .filter((i) => s.groupBy.every((g, j) => openKey(g.key, i, asOf) === keys[j]))
+    .filter((i) => keys.every((kv, j) => openKey(s.groupBy[j]!.key, i, asOf) === kv))
     .sort(compareOpen);
   const start = cursor && cursor.k === 'open'
     ? items.findIndex((i) => compareOpen(i, { contactId: cursor.p === '' ? null : cursor.p, date: cursor.d, number: cursor.n === '' ? null : cursor.n, txnId: cursor.t }) > 0)
@@ -1071,12 +1148,12 @@ async function openDetailPage(ctx: Ctx, s: RbSectionNode, keys: Array<string | n
           default: return null;
         }
       }
-      if (sp.t === 'amount') return plan.buckets ? (RB_BUCKETS[sp.slot] === bucket ? exactStr(val) : null) : sp.base && sp.slot === plan.base[plan.base.length - 1] ? exactStr(val) : null;
-      if (sp.t === 'sum') return exactStr(val);
+      if (sp.t === 'amount') return plan.buckets ? (RB_BUCKETS[sp.slot] === bucket ? exactStr(val) : null) : sp.slot === asOfSlot ? exactStr(val) : null;
+      if (sp.t === 'sum') return plan.buckets || sp.slots.includes(asOfSlot) ? exactStr(val) : null;
       return null;
     });
     return {
-      kind: 'detail', nodeId: s.id, level: 0, path: [], caption: '', cells,
+      kind: 'detail', nodeId: s.id, level: 0, path, caption: '', cells,
       fields: { txnId: i.txnId, txnType: i.txnType, lineId: null },
       drill: { type: 'transaction', txnId: i.txnId, txnType: i.txnType }, expandable: false, expanded: false,
     };
@@ -1089,6 +1166,11 @@ async function openDetailPage(ctx: Ctx, s: RbSectionNode, keys: Array<string | n
 
 export interface DetailResult { rows: RunRow[]; cursor: string | null; subtotal: Array<string | null> }
 
+/**
+ * The detail of one row: an innermost line, an outer group-by line, a section (its Total: every line of the section plus
+ * its earnings lines) or an earnings row. `range` picks one column: rows and subtotal hold only that column's lines and the
+ * subtotal's other value columns are null. Without `range`, every base column.
+ */
 export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSignal): Promise<DetailResult> {
   return inSnapshot(async (exec) => {
     if (fingerprintOf(req) !== req.fingerprint) throw runChanged('params');
@@ -1101,12 +1183,36 @@ export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSig
     if (!sectionRights(s, plan.basis).every((r) => can(v.permissions, r as never, 'read'))) {
       throw AppError.forbidden('Your role can\'t see this part of the report.', 'PERMISSION_DENIED');
     }
-    const keys = pathKeys(s, req.path);
+    const { keys, earnings } = parseDetailPath(s, req.path);
+    const sel = drillSlots(plan, req.range);
     const cursor = req.cursor ? decodeCursor(req.cursor) : null;
-    const page = await detailPage(ctx, s, req.path, cursor, DETAIL_PAGE_ROWS, req.range);
-    const facts = RB_SOURCE_INFO[s.source].openItems ? await openFacts(ctx, s, keys) : await lineFacts(ctx, s, keys);
-    const tree = buildTree(facts, keys.length, nVals(plan));
-    return { rows: page.rows.map((r) => ({ ...r, path: req.path })), cursor: page.cursor, subtotal: cellsOf(plan, tree.vals, null) };
+    const page = await detailPage(ctx, s, req.path, cursor, DETAIL_PAGE_ROWS, { keys, earnings, sel });
+    const n = nVals(plan);
+    const vals = zeros(n);
+    if (earnings === 'none' || earnings === 'all') {
+      const facts = RB_SOURCE_INFO[s.source].openItems ? await openFacts(ctx, s, keys) : await lineFacts(ctx, s, keys);
+      addInto(vals, buildTree(facts, keys.length, n).vals);
+    }
+    if (earnings !== 'none') {
+      const pre = await bucketFacts(ctx, [{ sid: 'e', s: earningsSection(s), pathKeys: [], earningsOf: true }]);
+      for (const e of await earningsRows(ctx, s, pre.get('e') ?? [])) {
+        if (earnings === 'all' || earnings === e.part) addInto(vals, e.vals);
+      }
+    }
+    let subtotal: Array<string | null>;
+    if (req.range) {
+      // One column: the other columns' values are not part of this drill.
+      for (let i = 0; i < n; i++) if (!sel.includes(i)) vals[i] = ZERO();
+      const cells = cellsOf(plan, vals, null);
+      subtotal = plan.specs.map((sp, i) => {
+        if (sp.t === 'amount' || sp.t === 'debit' || sp.t === 'credit') return sel.includes(sp.slot) ? cells[i]! : null;
+        if (sp.t === 'sum') return sp.slots.some((x) => sel.includes(x)) ? cells[i]! : null;
+        return null;
+      });
+    } else {
+      subtotal = cellsOf(plan, vals, null);
+    }
+    return { rows: page.rows.map((r) => ({ ...r, path: req.path })), cursor: page.cursor, subtotal };
   }, { signal });
 }
 
