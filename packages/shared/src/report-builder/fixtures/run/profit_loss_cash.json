@@ -1,0 +1,308 @@
+{
+  "request": {
+    "definition": "<starters/profit_loss.json>",
+    "dates": {
+      "from": "2026-01-01",
+      "to": "2026-12-31"
+    },
+    "basis": "cash",
+    "fiscalYearStarts": [
+      "2025-01-01",
+      "2026-01-01"
+    ]
+  },
+  "response": {
+    "columns": [
+      {
+        "key": "total",
+        "caption": "Total",
+        "kind": "total",
+        "range": {
+          "from": "2026-01-01",
+          "to": "2026-12-31"
+        }
+      }
+    ],
+    "rows": [
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "income",
+        "level": 0,
+        "path": [
+          "n:income"
+        ],
+        "caption": "Income",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "income",
+        "level": 1,
+        "path": [
+          "n:income",
+          "account:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "40100 Sales Revenue",
+        "cells": [
+          "100.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "income",
+          "path": [
+            "n:income",
+            "account:00000000-0000-4000-8000-000000000000"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "income",
+        "level": 0,
+        "path": [
+          "n:income"
+        ],
+        "caption": "Total Income",
+        "cells": [
+          "100.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "income",
+          "path": [
+            "n:income"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "cogs",
+        "level": 0,
+        "path": [
+          "n:cogs"
+        ],
+        "caption": "Cost of Goods Sold",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "cogs",
+        "level": 0,
+        "path": [
+          "n:cogs"
+        ],
+        "caption": "Total Cost of Goods Sold",
+        "cells": [
+          "0.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "cogs",
+          "path": [
+            "n:cogs"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "formula",
+        "nodeId": "gross_profit",
+        "level": 0,
+        "path": [
+          "n:gross_profit"
+        ],
+        "caption": "Gross Profit",
+        "cells": [
+          "100.0000"
+        ],
+        "drill": null
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "expenses",
+        "level": 0,
+        "path": [
+          "n:expenses"
+        ],
+        "caption": "Expenses",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "expenses",
+        "level": 1,
+        "path": [
+          "n:expenses",
+          "account:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "60100 Advertising",
+        "cells": [
+          "33.3300"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "expenses",
+          "path": [
+            "n:expenses",
+            "account:00000000-0000-4000-8000-000000000000"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "expenses",
+        "level": 0,
+        "path": [
+          "n:expenses"
+        ],
+        "caption": "Total Expenses",
+        "cells": [
+          "33.3300"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "expenses",
+          "path": [
+            "n:expenses"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "formula",
+        "nodeId": "net_operating_income",
+        "level": 0,
+        "path": [
+          "n:net_operating_income"
+        ],
+        "caption": "Net Operating Income",
+        "cells": [
+          "66.6700"
+        ],
+        "drill": null
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "other_income",
+        "level": 0,
+        "path": [
+          "n:other_income"
+        ],
+        "caption": "Other Income",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "other_income",
+        "level": 0,
+        "path": [
+          "n:other_income"
+        ],
+        "caption": "Total Other Income",
+        "cells": [
+          "0.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "other_income",
+          "path": [
+            "n:other_income"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "other_expenses",
+        "level": 0,
+        "path": [
+          "n:other_expenses"
+        ],
+        "caption": "Other Expenses",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "other_expenses",
+        "level": 0,
+        "path": [
+          "n:other_expenses"
+        ],
+        "caption": "Total Other Expenses",
+        "cells": [
+          "0.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "other_expenses",
+          "path": [
+            "n:other_expenses"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "formula",
+        "nodeId": "net_income",
+        "level": 0,
+        "path": [
+          "n:net_income"
+        ],
+        "caption": "Net Income",
+        "cells": [
+          "66.6700"
+        ],
+        "drill": null
+      }
+    ],
+    "meta": {
+      "basis": "cash",
+      "dates": {
+        "from": "2026-01-01",
+        "to": "2026-12-31"
+      },
+      "notes": [],
+      "truncated": false,
+      "hiddenNotice": null,
+      "denied": []
+    },
+    "fingerprint": "fc11f2fd8cc0c0d7cca803611bc68f9d85255ba55728a19aa1a6eacd9f52c32b",
+    "stamp": 9
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "request": {
+    "definition": "<sales_by_client, expandable, contact > txn_type>",
+    "dates": {
+      "from": "2026-01-01",
+      "to": "2026-12-31"
+    },
+    "open": [
+      "<a level-1 path>"
+    ]
+  },
+  "response": {
+    "columns": [
+      {
+        "key": "total",
+        "caption": "Total",
+        "kind": "total",
+        "range": {
+          "from": "2026-01-01",
+          "to": "2026-12-31"
+        }
+      }
+    ],
+    "rows": [
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "header",
+        "nodeId": "sales",
+        "level": 0,
+        "path": [
+          "n:sales"
+        ],
+        "caption": "Sales",
+        "cells": [
+          null
+        ]
+      },
+      {
+        "expandable": true,
+        "expanded": true,
+        "kind": "line",
+        "nodeId": "sales",
+        "level": 1,
+        "path": [
+          "n:sales",
+          "contact:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "Rivera Remodel",
+        "cells": [
+          "200.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "sales",
+          "path": [
+            "n:sales",
+            "contact:00000000-0000-4000-8000-000000000000"
+          ]
+        }
+      },
+      {
+        "expandable": true,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "sales",
+        "level": 2,
+        "path": [
+          "n:sales",
+          "contact:00000000-0000-4000-8000-000000000000",
+          "txn_type:cash_sale"
+        ],
+        "caption": "Cash Sale",
+        "cells": [
+          "100.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "sales",
+          "path": [
+            "n:sales",
+            "contact:00000000-0000-4000-8000-000000000000",
+            "txn_type:cash_sale"
+          ]
+        }
+      },
+      {
+        "expandable": true,
+        "expanded": false,
+        "kind": "line",
+        "nodeId": "sales",
+        "level": 2,
+        "path": [
+          "n:sales",
+          "contact:00000000-0000-4000-8000-000000000000",
+          "txn_type:invoice"
+        ],
+        "caption": "Invoice",
+        "cells": [
+          "100.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "sales",
+          "path": [
+            "n:sales",
+            "contact:00000000-0000-4000-8000-000000000000",
+            "txn_type:invoice"
+          ]
+        }
+      },
+      {
+        "expandable": false,
+        "expanded": false,
+        "kind": "total",
+        "nodeId": "sales",
+        "level": 0,
+        "path": [
+          "n:sales"
+        ],
+        "caption": "Total",
+        "cells": [
+          "200.0000"
+        ],
+        "drill": {
+          "type": "detail",
+          "nodeId": "sales",
+          "path": [
+            "n:sales"
+          ]
+        }
+      }
+    ],
+    "meta": {
+      "basis": "accrual",
+      "dates": {
+        "from": "2026-01-01",
+        "to": "2026-12-31"
+      },
+      "notes": [],
+      "truncated": false,
+      "hiddenNotice": null,
+      "denied": []
+    },
+    "fingerprint": "107180ee641d5c59c7a1df4585ced535f85a8fb5ebaca959079233245965d8a7",
+    "stamp": 9
+  }
+}

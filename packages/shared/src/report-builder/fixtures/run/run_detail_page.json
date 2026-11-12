@@ -1,0 +1,83 @@
+{
+  "request": {
+    "nodeId": "ledger",
+    "path": "<a line path>",
+    "fingerprint": "<run fingerprint>",
+    "stamp": "<run stamp>"
+  },
+  "response": {
+    "rows": [
+      {
+        "kind": "opening",
+        "nodeId": "ledger",
+        "level": 0,
+        "path": [
+          "n:ledger",
+          "account:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "Opening balance",
+        "cells": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "0.0000",
+          null
+        ],
+        "expandable": false,
+        "expanded": false
+      },
+      {
+        "kind": "detail",
+        "nodeId": "ledger",
+        "level": 0,
+        "path": [
+          "n:ledger",
+          "account:00000000-0000-4000-8000-000000000000"
+        ],
+        "caption": "",
+        "cells": [
+          "2026-03-12",
+          "Bill",
+          null,
+          "Cosmos Granite",
+          "bill",
+          "45.0000",
+          null,
+          "45.0000",
+          "45.0000",
+          "45.0000"
+        ],
+        "fields": {
+          "txnId": "00000000-0000-4000-8000-000000000000",
+          "txnType": "bill",
+          "lineId": "00000000-0000-4000-8000-000000000000"
+        },
+        "drill": {
+          "type": "transaction",
+          "txnId": "00000000-0000-4000-8000-000000000000",
+          "txnType": "bill"
+        },
+        "expandable": false,
+        "expanded": false
+      }
+    ],
+    "cursor": null,
+    "subtotal": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "45.0000"
+    ]
+  }
+}
