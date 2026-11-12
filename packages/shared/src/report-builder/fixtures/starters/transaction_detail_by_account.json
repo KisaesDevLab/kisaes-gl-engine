@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_month"
+  },
+  "columns": {
+    "detailFields": [
+      "date",
+      "txn_type",
+      "number",
+      "contact",
+      "memo",
+      "debit",
+      "credit",
+      "amount",
+      "running_balance"
+    ],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "ledger",
+      "caption": "Transaction Detail by Account",
+      "source": "gl",
+      "measure": "amount",
+      "polarity": "debit",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": true,
+      "showTotal": false,
+      "hideZero": true
+    }
+  ]
+}

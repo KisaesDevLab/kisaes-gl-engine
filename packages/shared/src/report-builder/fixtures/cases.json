@@ -1,0 +1,317 @@
+[
+  {
+    "file": "valid/ids_and_values.json",
+    "note": "ids at every id path (account, contact, item, tag filters; tag group), value filters",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/nodes_200.json",
+    "note": "200 nodes (nested)",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/detail_fields_all.json",
+    "note": "every detail field (22; the cap is 24)",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/depth_8.json",
+    "note": "groups nested 8 deep",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/multibyte_text.json",
+    "note": "multibyte text (each character 3–4 bytes in UTF-8)",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/nodes_200_flat.json",
+    "note": "200 nodes in one list",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/caption_astral_200_units.json",
+    "note": "a caption of 100 emoji: 200 UTF-16 units (the cap; lengths count UTF-16 units)",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "valid/check_type.json",
+    "note": "the check transaction type (an expense with is_check)",
+    "engine": {
+      "ok": true
+    }
+  },
+  {
+    "file": "invalid/caption_astral_202_units.json",
+    "note": "a caption of 101 emoji: 101 characters but 202 UTF-16 units",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.0.caption"
+    },
+    "desktop": "count String::encode_utf16().count(), not chars or bytes"
+  },
+  {
+    "file": "invalid/caption_edge_space.json",
+    "note": "a caption ending in a space (text is stored as sent, never trimmed)",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.0.caption"
+    }
+  },
+  {
+    "file": "invalid/nodes_201_flat.json",
+    "note": "201 nodes in one list (same rule as nested)",
+    "engine": {
+      "code": "TOO_MANY_NODES",
+      "path": "definition.nodes"
+    }
+  },
+  {
+    "file": "invalid/unknown_field.json",
+    "note": "an unknown key on a section",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.0"
+    }
+  },
+  {
+    "file": "invalid/unknown_top_field.json",
+    "note": "an unknown top-level key",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition"
+    }
+  },
+  {
+    "file": "invalid/newer_version.json",
+    "note": "schemaVersion 2",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.schemaVersion"
+    },
+    "desktop": "DefinitionError::Newer (\"update ClientLedger\"), checked before anything else"
+  },
+  {
+    "file": "invalid/nodes_201.json",
+    "note": "201 nodes (nested)",
+    "engine": {
+      "code": "TOO_MANY_NODES",
+      "path": "definition.nodes"
+    }
+  },
+  {
+    "file": "invalid/depth_9.json",
+    "note": "groups nested 9 deep",
+    "engine": {
+      "code": "TOO_DEEP",
+      "path": "definition.nodes.0.children.0.children.0.children.0.children.0.children.0.children.0.children.0.children.0"
+    }
+  },
+  {
+    "file": "invalid/detail_fields_25.json",
+    "note": "25 detail fields (repeats)",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.columns.detailFields"
+    }
+  },
+  {
+    "file": "invalid/detail_field_repeated.json",
+    "note": "a detail field twice",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.columns.detailFields"
+    }
+  },
+  {
+    "file": "invalid/uuid_in_caption.json",
+    "note": "an id inside a caption",
+    "engine": {
+      "code": "UUID_IN_TEXT",
+      "path": "definition.nodes.0.caption"
+    }
+  },
+  {
+    "file": "invalid/uuid_in_text.json",
+    "note": "an id inside a text node",
+    "engine": {
+      "code": "UUID_IN_TEXT",
+      "path": "definition.nodes.8.text"
+    }
+  },
+  {
+    "file": "invalid/uuid_as_node_id.json",
+    "note": "a uuid as a node id",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.8.id"
+    }
+  },
+  {
+    "file": "invalid/duplicate_node_id.json",
+    "note": "two nodes with one id",
+    "engine": {
+      "code": "DUPLICATE_ID",
+      "path": "definition.nodes.8.id"
+    }
+  },
+  {
+    "file": "invalid/value_not_in_enum.json",
+    "note": "an unknown account type",
+    "engine": {
+      "code": "FILTER_OP",
+      "path": "definition.nodes.0.filters.0.values.1"
+    }
+  },
+  {
+    "file": "invalid/ids_on_value_field.json",
+    "note": "ids on a value filter",
+    "engine": {
+      "code": "FILTER_OP",
+      "path": "definition.nodes.0.filters.1.op"
+    }
+  },
+  {
+    "file": "invalid/ids_501.json",
+    "note": "501 ids in one filter",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.0.filters.1.ids"
+    }
+  },
+  {
+    "file": "invalid/not_in_source.json",
+    "note": "quantity on a gl section",
+    "engine": {
+      "code": "NOT_IN_SOURCE",
+      "path": "definition.nodes.0.measure"
+    }
+  },
+  {
+    "file": "invalid/tag_group_without_tag.json",
+    "note": "a tag group on a non-tag grouping",
+    "engine": {
+      "code": "SCHEMA",
+      "path": "definition.nodes.0.groupBy.0.tagGroupId"
+    }
+  },
+  {
+    "file": "invalid/formula_forward_ref.json",
+    "note": "a formula using a later node",
+    "engine": {
+      "code": "FORMULA_FORWARD_REF",
+      "path": "definition.nodes.2.terms.1.nodeId"
+    }
+  },
+  {
+    "file": "invalid/formula_ancestor.json",
+    "note": "a formula using its own group",
+    "engine": {
+      "code": "FORMULA_FORWARD_REF",
+      "path": "definition.nodes.8.children.0.terms.0.nodeId"
+    }
+  },
+  {
+    "file": "invalid/formula_text_term.json",
+    "note": "a formula using a text node",
+    "engine": {
+      "code": "FORMULA_FORWARD_REF",
+      "path": "definition.nodes.9.terms.0.nodeId"
+    }
+  },
+  {
+    "file": "invalid/formula_units.json",
+    "note": "a formula mixing an amount and a count",
+    "engine": {
+      "code": "FORMULA_UNITS",
+      "path": "definition.nodes.9.terms"
+    }
+  },
+  {
+    "file": "invalid/percent_base.json",
+    "note": "percent of a count",
+    "engine": {
+      "code": "PERCENT_BASE",
+      "path": "definition.columns.percentOf"
+    }
+  },
+  {
+    "file": "invalid/earnings_filter.json",
+    "note": "earnings with a name filter",
+    "engine": {
+      "code": "EARNINGS_FILTER",
+      "path": "definition.nodes.0.filters.1.field"
+    }
+  },
+  {
+    "file": "invalid/earnings_measure.json",
+    "note": "earnings on an amount section",
+    "engine": {
+      "code": "EARNINGS_FILTER",
+      "path": "definition.nodes.0.earnings"
+    }
+  },
+  {
+    "file": "invalid/buckets_periods.json",
+    "note": "aging columns with periods",
+    "engine": {
+      "code": "BUCKETS_PERIODS",
+      "path": "definition.columns.agingBuckets"
+    }
+  },
+  {
+    "file": "invalid/buckets_on_gl.json",
+    "note": "aging columns on a gl section",
+    "engine": {
+      "code": "BUCKETS_PERIODS",
+      "path": "definition.nodes.0.source"
+    }
+  },
+  {
+    "file": "invalid/running_balance.json",
+    "note": "a running balance grouped by name",
+    "engine": {
+      "code": "RUNNING_BALANCE",
+      "path": "definition.nodes.0.groupBy"
+    }
+  },
+  {
+    "file": "invalid/mixed_polarity.json",
+    "note": "natural signs over every account",
+    "engine": {
+      "code": "MIXED_POLARITY",
+      "path": "definition.nodes.0.polarity"
+    }
+  },
+  {
+    "file": "invalid/mixed_polarity_types.json",
+    "note": "natural signs over income and expense types",
+    "engine": {
+      "code": "MIXED_POLARITY",
+      "path": "definition.nodes.0.polarity"
+    }
+  },
+  {
+    "file": "invalid/duplicate_key.json",
+    "handWritten": true,
+    "note": "the key \"caption\" twice in one section. JSON.parse keeps the last one, so the engine accepts it (and stores JSON.stringify of the parsed value, so stored definitions never repeat a key); serde refuses it.",
+    "engine": {
+      "ok": true
+    },
+    "desktop": "refused: duplicate field"
+  }
+]

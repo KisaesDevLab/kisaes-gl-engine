@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "sales",
+      "caption": "Sales",
+      "source": "item_sales",
+      "measure": "amount",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "item"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total",
+      "hideZero": true
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [
+      "date",
+      "txn_type",
+      "number",
+      "contact",
+      "memo",
+      "description",
+      "account",
+      "item",
+      "quantity",
+      "unit_price",
+      "tag",
+      "cleared",
+      "debit",
+      "credit",
+      "amount",
+      "running_balance",
+      "due_date",
+      "days_past_due",
+      "aging_bucket",
+      "open_balance",
+      "original_amount",
+      "service_date"
+    ],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "income",
+      "caption": "Income",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Income",
+      "hideZero": true,
+      "polarity": "debit"
+    }
+  ]
+}

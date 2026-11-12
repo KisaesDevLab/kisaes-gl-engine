@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "group",
+      "id": "g1",
+      "caption": "Group",
+      "children": [
+        {
+          "type": "group",
+          "id": "g2",
+          "caption": "Group",
+          "children": [
+            {
+              "type": "group",
+              "id": "g3",
+              "caption": "Group",
+              "children": [
+                {
+                  "type": "group",
+                  "id": "g4",
+                  "caption": "Group",
+                  "children": [
+                    {
+                      "type": "group",
+                      "id": "g5",
+                      "caption": "Group",
+                      "children": [
+                        {
+                          "type": "group",
+                          "id": "g6",
+                          "caption": "Group",
+                          "children": [
+                            {
+                              "type": "group",
+                              "id": "g7",
+                              "caption": "Group",
+                              "children": [
+                                {
+                                  "type": "group",
+                                  "id": "g8",
+                                  "caption": "Group",
+                                  "children": [
+                                    {
+                                      "type": "blank",
+                                      "id": "leaf"
+                                    }
+                                  ],
+                                  "showTotal": false
+                                }
+                              ],
+                              "showTotal": false
+                            }
+                          ],
+                          "showTotal": false
+                        }
+                      ],
+                      "showTotal": false
+                    }
+                  ],
+                  "showTotal": false
+                }
+              ],
+              "showTotal": false
+            }
+          ],
+          "showTotal": false
+        }
+      ],
+      "showTotal": false
+    }
+  ]
+}

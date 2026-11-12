@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "asOf",
+    "preset": "today"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {},
+    "agingBuckets": true
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "receivables",
+      "caption": "Accounts Receivable",
+      "source": "ar_open",
+      "measure": "open_balance",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "contact"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total",
+      "hideZero": true
+    }
+  ]
+}

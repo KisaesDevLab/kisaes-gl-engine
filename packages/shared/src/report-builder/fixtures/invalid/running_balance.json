@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [
+      "date",
+      "amount",
+      "running_balance"
+    ],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "income",
+      "caption": "Income",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "revenue"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "contact"
+        }
+      ],
+      "display": "detail",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Income",
+      "hideZero": true
+    }
+  ]
+}

@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "income",
+      "caption": "Income",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "revenue"
+          ]
+        },
+        {
+          "field": "contact",
+          "op": "in",
+          "ids": [
+            "11111111-1111-4111-8111-111111111111"
+          ]
+        },
+        {
+          "field": "tag",
+          "op": "not_in",
+          "ids": [
+            "22222222-2222-4222-8222-222222222222"
+          ]
+        },
+        {
+          "field": "txn_type",
+          "op": "in",
+          "values": [
+            "invoice",
+            "journal_entry"
+          ]
+        },
+        {
+          "field": "item",
+          "op": "is_none"
+        },
+        {
+          "field": "amount",
+          "op": "gte",
+          "value": "10.005"
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "tag",
+          "tagGroupId": "22222222-2222-4222-8222-222222222222"
+        },
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Income",
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "cogs",
+      "caption": "Cost of Goods Sold",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "cogs"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Cost of Goods Sold",
+      "hideZero": true
+    },
+    {
+      "type": "formula",
+      "id": "gross_profit",
+      "caption": "Gross Profit",
+      "terms": [
+        {
+          "nodeId": "income",
+          "sign": 1
+        },
+        {
+          "nodeId": "cogs",
+          "sign": -1
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "id": "expenses",
+      "caption": "Expenses",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "expense"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Expenses",
+      "hideZero": true
+    },
+    {
+      "type": "formula",
+      "id": "net_operating_income",
+      "caption": "Net Operating Income",
+      "terms": [
+        {
+          "nodeId": "gross_profit",
+          "sign": 1
+        },
+        {
+          "nodeId": "expenses",
+          "sign": -1
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "id": "other_income",
+      "caption": "Other Income",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "other_revenue"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Other Income",
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "other_expenses",
+      "caption": "Other Expenses",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "other_expense"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Other Expenses",
+      "hideZero": true
+    },
+    {
+      "type": "formula",
+      "id": "net_income",
+      "caption": "Net Income",
+      "terms": [
+        {
+          "nodeId": "net_operating_income",
+          "sign": 1
+        },
+        {
+          "nodeId": "other_income",
+          "sign": 1
+        },
+        {
+          "nodeId": "other_expenses",
+          "sign": -1
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "grp",
+      "caption": "Nested",
+      "showTotal": true,
+      "children": [
+        {
+          "type": "section",
+          "id": "deep",
+          "caption": "Income",
+          "source": "gl",
+          "measure": "amount",
+          "filters": [
+            {
+              "field": "account",
+              "op": "in",
+              "ids": [
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222"
+              ]
+            }
+          ],
+          "groupBy": [
+            {
+              "key": "account"
+            }
+          ],
+          "display": "summary",
+          "defaultExpanded": false,
+          "showTotal": true,
+          "totalCaption": "Total Income",
+          "hideZero": true,
+          "polarity": "credit"
+        }
+      ]
+    }
+  ]
+}

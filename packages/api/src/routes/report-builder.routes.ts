@@ -4,8 +4,10 @@
 
 // Saved report definitions (memorized reports) and their groups — U-118,
 // capability report-defs-v1 (ClientLedger P28 PR-F; ADD-03 Q-310 / Q-312).
-// Mounted at /api/v1/report-builder; the Report Builder (A07) adds its run
-// routes here and widens `kind` to 'builder'.
+// Mounted at /api/v1/report-builder. Since report-defs-builder-v1 (U-119,
+// migration 0276) a saved report's kind is 'standard' or 'builder' (Report
+// Builder schema v1 from @kis-books/shared); the Report Builder (A07) adds
+// its run routes here.
 //
 // Permissions (Q-310): every route needs report access ('reports' read,
 // like the report packs); saved reports are visible to everyone with it.
@@ -29,6 +31,7 @@ import { idempotent } from '../middleware/idempotent.js';
 import { AppError } from '../utils/errors.js';
 import * as defs from '../services/report-definitions.service.js';
 import { REPORT_DEFINITION_KINDS } from '../db/schema/index.js';
+import { builderDefinitionSchema, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES } from '@kis-books/shared';
 
 export const reportBuilderRouter = Router();
 reportBuilderRouter.use(authenticate);
@@ -46,12 +49,21 @@ const viewer = (req: Request): defs.Viewer => ({ userId: req.userId, userRole: r
 
 const name = (max: number) => z.string().trim().min(1).max(max);
 
-const definitionDoc = z.object({
+const standardDefinitionDoc = z.object({
   schemaVersion: z.literal(1),
-  kind: z.enum(REPORT_DEFINITION_KINDS),
+  kind: z.literal('standard'),
   reportKey: z.string().regex(defs.REPORT_KEY_RE).describe('the report, /^[a-z0-9_]{1,64}$/'),
   options: z.record(z.unknown()).describe('report options; ids only at options.filters.{accountIds,contactIds,tagIds,itemIds}, options.tagSplit.tagGroupId, options.columnTagGroupId and options.budgetId'),
-}).strict().describe('at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})');
+}).strict().describe('kind standard: at most 64 KB as JSON (413 DEFINITION_TOO_LARGE); checked by the engine (400 DEFINITION_INVALID {details.path})');
+
+const builderDefinitionDoc = (builderDefinitionSchema as unknown as z.ZodTypeAny).describe(
+  'kind builder (report-defs-builder-v1): Report Builder schema v1, strict (unknown keys refused). At most 256 KB as JSON (413 '
+  + 'DEFINITION_TOO_LARGE), 200 nodes at any depth, groups nested at most 8 deep, 500 ids or values per filter. Ids only at '
+  + 'nodes.**.filters.N.ids and nodes.**.groupBy.N.tagGroupId. 400 DEFINITION_INVALID {details.path, details.code}, code one of '
+  + `${[...RB_ERROR_CODES, ...RB_ENGINE_ERROR_CODES].join(', ')}. Text is stored as sent (no trimming; captions may not start or end with a space); lengths count UTF-16 units.`,
+);
+
+const definitionDoc = z.union([standardDefinitionDoc, builderDefinitionDoc]);
 
 const createDefinitionSchema = z.object({
   name: name(200),

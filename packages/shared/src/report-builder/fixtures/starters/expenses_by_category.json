@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "range",
+    "preset": "this_year_to_date"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "expenses",
+      "caption": "Expenses",
+      "source": "gl",
+      "measure": "amount",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "cogs",
+            "expense",
+            "other_expense"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Expenses",
+      "hideZero": true
+    }
+  ]
+}

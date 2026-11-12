@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "asOf",
+    "preset": "today"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "assets",
+      "caption": "Assets",
+      "source": "gl",
+      "measure": "balance",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "asset"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Assets",
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "liabilities",
+      "caption": "Liabilities",
+      "source": "gl",
+      "measure": "balance",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "liability"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Liabilities",
+      "hideZero": true
+    },
+    {
+      "type": "section",
+      "id": "equity",
+      "caption": "Equity",
+      "source": "gl",
+      "measure": "balance",
+      "filters": [
+        {
+          "field": "account_type",
+          "op": "in",
+          "values": [
+            "equity"
+          ]
+        }
+      ],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total Equity",
+      "hideZero": true,
+      "earnings": "balance_sheet"
+    },
+    {
+      "type": "formula",
+      "id": "liabilities_equity",
+      "caption": "Total Liabilities and Equity",
+      "terms": [
+        {
+          "nodeId": "liabilities",
+          "sign": 1
+        },
+        {
+          "nodeId": "equity",
+          "sign": 1
+        }
+      ]
+    }
+  ]
+}

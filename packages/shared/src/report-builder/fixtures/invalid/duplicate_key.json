@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": { "mode": "range" },
+  "columns": { "detailFields": [], "compare": [], "headers": {} },
+  "nodes": [
+    {
+      "type": "section", "id": "sales", "caption": "Sales", "caption": "Sales again",
+      "source": "sales", "measure": "amount", "filters": [], "groupBy": [{ "key": "contact" }],
+      "display": "summary", "defaultExpanded": false, "showTotal": true, "hideZero": true
+    }
+  ]
+}

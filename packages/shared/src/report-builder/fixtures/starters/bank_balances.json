@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "builder",
+  "dates": {
+    "mode": "asOf",
+    "preset": "today"
+  },
+  "columns": {
+    "detailFields": [],
+    "compare": [],
+    "headers": {}
+  },
+  "nodes": [
+    {
+      "type": "section",
+      "id": "banks",
+      "caption": "Bank Accounts",
+      "source": "bank",
+      "measure": "balance",
+      "filters": [],
+      "groupBy": [
+        {
+          "key": "account"
+        }
+      ],
+      "display": "summary",
+      "defaultExpanded": false,
+      "showTotal": true,
+      "totalCaption": "Total",
+      "hideZero": false
+    }
+  ]
+}
