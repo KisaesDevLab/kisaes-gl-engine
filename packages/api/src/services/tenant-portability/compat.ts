@@ -70,6 +70,8 @@ export const WIDENED_CHECKS: Record<string, { widenedIn: number }> = {
   'document_drafts.document_drafts_kind_ck': { widenedIn: 236 },
   'bill_payment_applications.chk_bpa_amount_positive': { widenedIn: 239 },
   'items.items_item_type_ck': { widenedIn: 259 },
+  // U-118 / U-119 (0276): report_definitions.kind adds 'builder'.
+  'report_definitions.report_definitions_kind_check': { widenedIn: 277 },
 };
 
 export interface TableCompat {
