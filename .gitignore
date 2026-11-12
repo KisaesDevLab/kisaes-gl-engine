@@ -89,3 +89,4 @@ scripts/host-backup.sh
 .tmp-auto-ocr-test-*
 .tmp-att-company-test-*
 .tmp-att-review-test-*
+.tmp-bulk-download-test-*
