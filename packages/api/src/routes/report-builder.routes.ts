@@ -23,7 +23,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permission.js';
+import { requirePermission, resolvePermissionsForRequest } from '../middleware/permission.js';
 import { companyContext } from '../middleware/company.js';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
@@ -31,7 +31,12 @@ import { idempotent } from '../middleware/idempotent.js';
 import { AppError } from '../utils/errors.js';
 import * as defs from '../services/report-definitions.service.js';
 import { REPORT_DEFINITION_KINDS } from '../db/schema/index.js';
-import { builderDefinitionSchema, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES } from '@kis-books/shared';
+import {
+  builderDefinitionSchema, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES, RB_SOURCE_INFO, RB_UNAVAILABLE_SOURCES, RB_MEASURE_UNIT,
+  RB_FILTER_VALUES, RB_DETAIL_FIELDS,
+} from '@kis-books/shared';
+import { runRequestSchema, detailRequestSchema } from '../services/report-builder/request.js';
+import { runReport, runDetail, type Viewer as RunViewer } from '../services/report-builder/run.js';
 
 export const reportBuilderRouter = Router();
 reportBuilderRouter.use(authenticate);
@@ -205,4 +210,58 @@ reportBuilderRouter.delete('/definition-groups/:id', describe({
   const { version } = versionQuery.parse(req.query);
   await defs.deleteGroup(req.tenantId, req.companyId, req.userId, uuidParam(req.params['id'], defs.groupNotFound), version);
   res.status(204).end();
+});
+
+// ── Report Builder runs (U-119, report-builder-v1) ─────────────────
+
+/** Aborts when the client goes away, so the run's query is cancelled (Q-A07l). */
+function abortOnClose(req: Request, res: Response): AbortSignal {
+  const ac = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+  return ac.signal;
+}
+
+async function runViewer(req: Request): Promise<RunViewer> {
+  return {
+    tenantId: req.tenantId, companyId: req.companyId, permissions: await resolvePermissionsForRequest(req),
+    userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin,
+  };
+}
+
+const RUN_DOC = 'Response `{columns: [{key, caption, kind, field?, range?}], rows: [{kind, nodeId, level, path, caption, cells: (string|null)[], fields?: {txnId, txnType, lineId}, drill?, expandable, expanded, cursor?}], meta: {basis, dates, notes[], truncated, hiddenNotice, denied[]}, fingerprint, stamp}`. '
+  + 'Row kinds: header, group, line (a group-by line), detail, subtotal, total, formula, text, blank, page_break, more, denied, earnings, opening. '
+  + 'Column kinds: field, total, period, prior, change, pct_change, percent, bucket, and for tb_net the *_debit / *_credit pairs; kind hidden marks a compare amount that only feeds a change (its cells are null). '
+  + 'Paths are ["n:<nodeId>", "<key>:<id|value|none>", …]. Amounts are exact strings (never -0); percents 1 place, null on a zero base. '
+  + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter), 404 (deleted saved report), 409 STALE_VERSION {current}, 422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
+  + 'A section the role cannot see is one denied row, and anything built on it shows null cells.';
+
+reportBuilderRouter.post('/run', describe({
+  summary: 'Run a Report Builder report (report-builder-v1)',
+  description: 'Runs a builder definition (inline, or saved: definitionId + version) for the dates, one snapshot, 30 s. '
+    + 'Display rules: summary returns every group level and no detail; expandable returns level-1 lines and, under expanded paths, deeper lines and detail; detail returns everything. '
+    + 'A path is expanded when listed in open (≤ 1,000), or under a defaultExpanded section unless listed in collapsed (≤ 1,000), or with expandAll. '
+    + 'Detail rows count toward 5,000 per run (100,000 with purpose export); a cut path ends in a more row whose cursor pages /run/detail. '
+    + 'fingerprint hashes every parameter except open, collapsed, expandAll and purpose; stamp is the ledger stamp read in the run snapshot. ' + RUN_DOC,
+  body: runRequestSchema,
+}), validate(runRequestSchema), async (req, res) => {
+  const body = runRequestSchema.parse(req.body);
+  res.json(await runReport(await runViewer(req), body, abortOnClose(req, res)));
+});
+
+reportBuilderRouter.post('/run/detail', describe({
+  summary: 'Page the detail rows of one Report Builder row (report-builder-v1)',
+  description: 'The same definition, dates and ranges as the run, the nodeId and path of the row (innermost grouping, or the section without group-bys), range? (a period column), cursor? (from a more row or a previous page), fingerprint and stamp of the run. '
+    + 'Response `{rows (≤ 500, kind detail; a range balance starts with an opening row), cursor: string|null, subtotal: cells}`; subtotal is the own cells of the row, for an equality check. '
+    + '409 RUN_CHANGED {reason: params} when the fingerprint differs, {reason: books} when the ledger stamp moved; 403 PERMISSION_DENIED for a denied section; 400 CURSOR_INVALID.',
+  body: detailRequestSchema,
+}), validate(detailRequestSchema), async (req, res) => {
+  const body = detailRequestSchema.parse(req.body);
+  res.json(await runDetail(await runViewer(req), body, abortOnClose(req, res)));
+});
+
+reportBuilderRouter.get('/fields', describe({
+  summary: 'Report Builder field catalogue (report-builder-v1)',
+  description: 'Response `{sources: {<source>: {key, caption, lines, sign, openItems, measures, accrualOnly, filters, groupBy, detailFields, rights, tiesTo}}, unavailable: [{key, reason}], measureUnits, filterValues, detailFields}` (packages/shared/src/report-builder/fields.ts).',
+}), (_req, res) => {
+  res.json({ sources: RB_SOURCE_INFO, unavailable: RB_UNAVAILABLE_SOURCES, measureUnits: RB_MEASURE_UNIT, filterValues: RB_FILTER_VALUES, detailFields: RB_DETAIL_FIELDS });
 });

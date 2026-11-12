@@ -1231,5 +1231,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * lines carry a vkey (internal).
    */
   'report-foundations-v1',
+  /**
+   * Report Builder runs (U-119, ClientLedger A07 PR-C). POST /report-builder/run {definition | definitionId + version, dates
+   * ({from,to} | {asOf}), periodRanges? (≤ 36), compareRanges? (one array per compare entry, parallel to periodRanges),
+   * fiscalYearStarts[], basis?, adjusting?, open[] (≤ 1,000 paths), collapsed[] (≤ 1,000, exceptions under defaultExpanded
+   * sections), expandAll?, purpose: screen | export} -> {columns, rows, meta {basis, dates, notes, truncated, hiddenNotice,
+   * denied}, fingerprint, stamp}: one READ ONLY REPEATABLE READ snapshot, 30 s (503 REPORT_TIMEOUT), group-by lines ≤ 100,000
+   * (422 REPORT_TOO_LARGE), detail rows 5,000 per run (100,000 for export) with more rows and cursors; denied sections per role
+   * (rights from the transaction types a section admits); a client that goes away cancels the query. POST /run/detail {…, nodeId,
+   * path, range?, cursor?, fingerprint, stamp} -> {rows ≤ 500, cursor, subtotal}; 409 RUN_CHANGED {reason: params | books}.
+   * GET /report-builder/fields: the field catalogue. Exact strings, percents 1 place.
+   */
+  'report-builder-v1',
 ];
 
