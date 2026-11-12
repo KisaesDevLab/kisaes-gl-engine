@@ -40,8 +40,12 @@ async function mk(key: string, accountType: string, accountNumber: string, detai
   acct[key] = a!.id;
 }
 
+// The document total (rule 3 scales by it): the sum of the debits.
 const post = (txnType: string, date: string, lines: Array<{ accountId: string; debit: string; credit: string }>) =>
-  ledger.postTransaction(tenantId, { txnType: txnType as never, txnDate: date, memo: txnType, lines } as never);
+  ledger.postTransaction(tenantId, {
+    txnType: txnType as never, txnDate: date, memo: txnType, lines,
+    total: lines.reduce((s, l) => s + Number(l.debit), 0).toFixed(2),
+  } as never);
 const L = (accountId: string, debit: string, credit: string) => ({ accountId, debit, credit });
 
 beforeEach(async () => {

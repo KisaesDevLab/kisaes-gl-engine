@@ -388,7 +388,13 @@ describe('rule 8: triggers', () => {
   });
 
   it('records the gl_version_stamps side effect (N5)', () => {
-    expect(plan.sideEffectEdges).toEqual([{ source: 'journal_lines', target: 'gl_version_stamps' }]);
+    // U-119 (migration 0277): the application tables bump the stamp too.
+    expect([...plan.sideEffectEdges].sort((x, y) => x.source.localeCompare(y.source))).toEqual([
+      { source: 'bill_payment_applications', target: 'gl_version_stamps' },
+      { source: 'journal_lines', target: 'gl_version_stamps' },
+      { source: 'payment_applications', target: 'gl_version_stamps' },
+      { source: 'vendor_credit_applications', target: 'gl_version_stamps' },
+    ]);
   });
 });
 
