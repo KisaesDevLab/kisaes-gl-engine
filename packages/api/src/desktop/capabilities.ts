@@ -1272,5 +1272,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * the opening row), as the standard General Ledger does. No migration.
    */
   'report-builder-starters-v2',
+  /**
+   * Net summary totals in the "<Group> by Account" reports (U-216, ClientLedger A08 Q-A08h). GET
+   * /reports/revenue-by-category, /assets-by-account, /liabilities-by-account and /equity-by-account (and ?exact=1
+   * revenue-by-category): summary data[].total / totalExact is the account's natural net for the period (normal side minus
+   * the other side; equals the detail subtotal), was the normal side only. A credit memo's or refund's debit to an income
+   * account now reduces Revenue by Category, which ties to the P&L income sections per account on both bases; accounts that
+   * net to zero are left out (as in Expenses by Category); a net can be negative. Detail mode unchanged. No migration.
+   */
+  'reports-revenue-net-v1',
 ];
 

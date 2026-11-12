@@ -113,7 +113,9 @@ export async function reconciliationStatus(
     for (const side of ['debit', 'credit'] as const) {
       const r = await buildAccountDetailReport(tenantId, '1900-01-01', dayBefore(window.start), {
         title: 'tax-estimator-readiness-prior', accountTypes: ['asset', 'liability'], normalSide: side,
-        companyId, accountIds: neverReconciled,
+        // 'gross': any activity on this side counts, even when the prior
+        // activity nets to zero (a card opened and paid off before the year).
+        companyId, accountIds: neverReconciled, summaryTotal: 'gross',
       });
       for (const row of r.data as unknown as Array<{ account_id: string }>) activeBefore.add(row.account_id);
     }

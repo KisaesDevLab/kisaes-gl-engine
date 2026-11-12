@@ -36,7 +36,7 @@ const taxpayerIds: string[] = [];
 let personA = '';
 let personB = '';
 let personM = '';
-type IdKey = 'C'|'cChk'|'cHealth'|'cInterest'|'cRev'|'F'|'fChk'|'fRev'|'P'|'pChk'|'pFirm'|'pGain'|'pGp'|'pHealth'|'pRev'|'pSup'|'Q'|'qAp'|'qChk'|'qEst'|'R'|'R2'|'r2Ama'|'rCard'|'rChk'|'rExp'|'rRev'|'S'|'sChk'|'sHealth'|'sRev'|'sSep'|'sWages'|'X'|'xAr'|'xChk'|'xRevA'|'xRevB'|'Y'|'yChk'|'yExp'|'yOther';
+type IdKey = 'C'|'cChk'|'cHealth'|'cInterest'|'cRev'|'F'|'fChk'|'fRev'|'P'|'pChk'|'pFirm'|'pGain'|'pGp'|'pHealth'|'pRev'|'pSup'|'Q'|'qAp'|'qChk'|'qEst'|'R'|'R2'|'R3'|'r2Ama'|'r3Card'|'rCard'|'rChk'|'rExp'|'rRev'|'S'|'sChk'|'sHealth'|'sRev'|'sSep'|'sWages'|'X'|'xAr'|'xChk'|'xRevA'|'xRevB'|'Y'|'yChk'|'yExp'|'yOther';
 const ids = {} as Record<IdKey, string>;
 let firmCodeId = '';
 
@@ -150,6 +150,15 @@ beforeAll(async () => {
   ids.R2 = R2;
   ids.r2Ama = await mkAccount(t, R2, 'R26999', 'Ask My Accountant', 'expense', { balance: '75' });
 
+  // ── U-216: a card used and paid off before the tax year (prior activity nets to zero) is still active before ──
+  const R3 = await mkCompany(t, 'Paid Off Card Co', { accountingMethod: 'cash', entityType: 'sole_prop' });
+  ids.R3 = R3;
+  const r3Chk = await mkAccount(t, R3, 'R31010', 'Checking', 'asset', { detailType: 'checking' });
+  ids.r3Card = await mkAccount(t, R3, 'R32100', 'Old Card', 'liability', { detailType: 'credit_card' });
+  const r3Exp = await mkAccount(t, R3, 'R36000', 'Expenses', 'expense');
+  await post(t, R3, '2025-03-10', [[r3Exp, 80, 0], [ids.r3Card, 0, 80]]);
+  await post(t, R3, '2025-04-10', [[ids.r3Card, 80, 0], [r3Chk, 0, 80]]);
+  await post(t, R3, '2026-09-25', [[r3Exp, 30, 0], [ids.r3Card, 0, 30]]);
   // ── Farm via estimator setting, no TB profile, all revenue unassigned (F8) ──
   const F = await mkCompany(t, 'Prairie Farm', { accountingMethod: 'cash', entityType: 'sole_prop' });
   ids.F = F;
@@ -459,6 +468,13 @@ describe('F11 / F12 — readiness', () => {
   });
 });
 
+describe('U-216 — readiness counts prior activity on either side, even when it nets to zero', () => {
+  it('a never-reconciled card used and paid off before the tax year is not closed', async () => {
+    const r = await getReadiness(scope, { tenantId: tenant, companyId: ids.R3!, throughMonth: '2026-09' }, { today: OCT_11 });
+    expect(r.reconcilableAccounts.find((a) => a.accountId === ids.r3Card)).toMatchObject({ closedThroughMonth: null, closedThroughSource: null });
+    expect(r.lastClosedMonth).toBeNull();
+  });
+});
 describe('F13 — cache config hash covers firm code edits', () => {
   it('editing a firm code description changes the config version', async () => {
     const before = await loadConfigVersion(tenant, ids.P!, 2026);

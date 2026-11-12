@@ -2077,10 +2077,11 @@ function buildDetailGroups(
 // ─── Generic "<Group> by Account" detail report ──────────────────
 // Same shape and GL-style detail as Expenses by Category, but for any
 // account-type group (Revenues, Assets, Liabilities, Equity). `normalSide`
-// controls the summary total column and the sign of the running balance /
-// subtotal: debit-normal groups (assets) accumulate debit − credit;
-// credit-normal groups (revenue, liabilities, equity) accumulate
-// credit − debit so their natural balance reads positive.
+// sets the natural sign of the summary total and of the running balance /
+// subtotal: debit-normal groups (assets) net debit − credit; credit-normal
+// groups (revenue, liabilities, equity) net credit − debit so their natural
+// balance reads positive. The summary total equals the detail `subtotal`
+// (period net; U-216 — it was the normal side only before).
 export interface AccountDetailReportOpts {
   title: string;
   accountTypes: string[];
@@ -2099,6 +2100,10 @@ export interface AccountDetailReportOpts {
   basis?: Basis;
   // Additive: detail lines also carry debitExact / creditExact (decimal strings).
   exactAmounts?: boolean;
+  // Summary `data[].total`: 'net' (default, U-216) = natural net per account,
+  // zero-net accounts left out; 'gross' = normal-side sum over accounts with
+  // any normal-side activity (the pre-U-216 shape, kept for activity checks).
+  summaryTotal?: 'net' | 'gross';
 }
 
 export async function buildAccountDetailReport(
@@ -2137,8 +2142,20 @@ export async function buildAccountDetailReport(
     ? sql`AND cb.account_id IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
     : sql``;
 
+  // Summary total per account (U-216, reports-revenue-net-v1): the natural
+  // net — normal side minus the other side — like the P&L, Expenses by
+  // Category and this function's own detail `subtotal`. A credit memo's
+  // debit to an income account (or a refund) reduces Revenue by Category.
+  // Accounts that net to zero (wash / clearing) are left out, as in
+  // Expenses by Category. `summaryTotal: 'gross'` keeps the pre-U-216
+  // normal-side-only sum (rows with any normal-side activity) for internal
+  // callers that test for activity rather than report a total.
+  const gross = opts.summaryTotal === 'gross';
+  const otherCol = sql.raw(creditNormal ? 'jl.debit' : 'jl.credit');
+  const cbOtherCol = sql.raw(creditNormal ? 'cb.debit' : 'cb.credit');
   const rows = basis === 'cash'
-    ? await executeCashBasis(sql`
+    ? await executeCashBasis(gross
+      ? sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
         SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
           SUM(${cbSideCol}) as total
@@ -2146,21 +2163,34 @@ export async function buildAccountDetailReport(
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN (${typeList})
         WHERE a.tenant_id = ${tenantId} AND ${cbSideCol} > 0 ${cbTag} ${cbId}
         GROUP BY a.id ORDER BY total DESC
+      `
+      : sql`
+        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
+          SUM(${cbSideCol}) - SUM(${cbOtherCol}) as total
+        FROM cb_lines cb
+        JOIN accounts a ON a.id = cb.account_id AND a.account_type IN (${typeList})
+        WHERE a.tenant_id = ${tenantId} ${cbTag} ${cbId}
+        GROUP BY a.id
+        HAVING ROUND(SUM(${cbSideCol}) - SUM(${cbOtherCol}), 2) <> 0
+        ORDER BY total DESC
       `)
     : await db.execute(sql`
     SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
-      SUM(${sideCol}) as total
+      ${gross ? sql`SUM(${sideCol})` : sql`SUM(${sideCol}) - SUM(${otherCol})`} as total
     FROM journal_lines jl
     JOIN transactions t ON t.id = jl.transaction_id AND t.tenant_id = ${tenantId}
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN (${typeList})
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.basis <> 'cash'
       AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
-      AND ${sideCol} > 0
+      ${gross ? sql`AND ${sideCol} > 0` : sql``}
       AND ${companyFilter(companyId)}
       ${tagClause}
       ${idFilter('a.id')}
-    GROUP BY a.id ORDER BY total DESC
+    GROUP BY a.id
+    ${gross ? sql`` : sql`HAVING ROUND(SUM(${sideCol}) - SUM(${otherCol}), 2) <> 0`}
+    ORDER BY total DESC
   `);
 
   const summary = { title, startDate, endDate, data: rows.rows };
