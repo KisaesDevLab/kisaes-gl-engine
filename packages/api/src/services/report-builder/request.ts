@@ -51,7 +51,8 @@ export const detailRequestSchema = z.object({
   ...refShape,
   nodeId: z.string().regex(/^[a-z0-9_-]{1,32}$/),
   path,
-  range: range.optional().describe('a period column\'s range: only lines in it'),
+  range: z.object({ from: day.nullable(), to: day }).strict().refine((r) => r.from === null || r.from <= r.to, { message: 'from must not be after to' }).optional()
+    .describe('one column\'s range as the run gave it ({from: null, to} for an as-of column, which matches on to): rows and subtotal of that column only; a range of no column is 400 INVALID_PARAM'),
   cursor: z.string().max(2000).optional(),
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   stamp: z.number().int().describe('the stamp of the run the rows were shown in'),
