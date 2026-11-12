@@ -400,9 +400,49 @@ function windowCond(s: RbSectionNode, k: LineCols): SQL {
 
 interface Fact { keys: Array<string | null>; slot: number; v: Dec }
 
+/**
+ * Balances (balance, tb_net) at many dates without re-reading the ledger per
+ * date: activity is summed once per date bucket — the buckets are cut at
+ * every column end and every fiscal year start - 1 — and each column adds
+ * the buckets through its date (income-statement accounts only from its
+ * fiscal year start). Exact: the same lines and Decimal sums.
+ */
+async function balanceFacts(ctx: Ctx, s: RbSectionNode, pathKeys: Array<string | null>): Promise<Fact[]> {
+  const slots = ctx.plan.slots;
+  const cuts = [...new Set([...slots.map((x) => x.to), ...slots.map((x) => addDays(x.fy, -1))])].sort();
+  const maxTo = cuts[cuts.length - 1]!;
+  const L = linesSql(ctx, s, null, maxTo);
+  const keys = s.groupBy.map((_, i) => keyExpr(ctx, s, i, L.k, L.cash));
+  const eq = pathKeys.map((pk, i) => (pk === null ? sql`${keys[i]!} IS NULL` : sql`${keys[i]!} = ${pk}`));
+  const buckets = sql`(VALUES ${sql.join(cuts.map((hi, i) => sql`(${i}::int, ${i === 0 ? '0001-01-01' : addDays(cuts[i - 1]!, 1)}::date, ${hi}::date)`), sql`, `)}) b(i, lo, hi)`;
+  const sel = keys.length ? sql.join(keys.map((e, i) => sql`${e} AS ${raw(`k${i}`)}`), sql`, `) : sql`NULL::text AS k_`;
+  const grp = [...keys.map((_, i) => raw(`k${i}`)), raw('b.i'), raw('bs')];
+  const res = await ctx.exec.execute(sql`
+    ${L.with}
+    SELECT ${sel}, b.i AS b, (a.account_type IN ('asset', 'liability', 'equity')) AS bs, SUM(${valueExpr(s, L.k)})::text AS v
+    ${L.from} JOIN ${buckets} ON ${raw(L.k.date)} >= b.lo AND ${raw(L.k.date)} <= b.hi
+    WHERE ${L.where} ${eq.length ? sql`AND ${sql.join(eq, sql` AND `)}` : sql``}
+    GROUP BY ${sql.join(grp, sql`, `)}`);
+  const out: Fact[] = [];
+  for (const r of res.rows as Array<Record<string, unknown>>) {
+    const bi = cuts.length > 0 ? (r['b'] as number) : 0;
+    const lo = bi === 0 ? '0001-01-01' : addDays(cuts[bi - 1]!, 1);
+    const hi = cuts[bi]!;
+    const v = dec(String(r['v'] ?? '0'));
+    const k = s.groupBy.map((_, i) => (r[`k${i}`] as string | null) ?? null);
+    slots.forEach((sl, si) => {
+      if (hi > sl.to) return;
+      if (r['bs'] !== true && lo < sl.fy) return;
+      out.push({ keys: k, slot: si, v });
+    });
+  }
+  return out;
+}
+
 async function lineFacts(ctx: Ctx, s: RbSectionNode, pathKeys: Array<string | null> = []): Promise<Fact[]> {
   const slots = ctx.plan.slots;
   const flow = isFlow(s);
+  if (!flow) return balanceFacts(ctx, s, pathKeys);
   const minFrom = flow && ctx.plan.mode === 'range' ? slots.reduce((m, x) => (x.from! < m ? x.from! : m), slots[0]!.from!) : null;
   const maxTo = slots.reduce((m, x) => (x.to > m ? x.to : m), slots[0]!.to);
   const L = linesSql(ctx, s, minFrom, maxTo);
@@ -833,18 +873,33 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode): Promise<Array<{ caption
     const sl = slots[0]!;
     return [{ caption: 'Retained Earnings (Prior Years)', vals: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
   }
-  const lens = tagF ? { tag: { kind: 'ids' as const, ids: tagF.ids! } } : null;
-  const splits = await equityEarnings(ctx.v.tenantId, {
-    basis: plan.basis, companyId: ctx.v.companyId, adjusting: plan.adjusting, lens, exec: ctx.exec.tx,
-    asOfs: slots.map((sl) => ({ asOf: sl.to, fiscalYearStart: sl.fy })),
-  });
+  // Line mode (equity-earnings' rule: credit - debit over every income-statement line, line-level tag),
+  // bucketed like the balances so 36 columns read the ledger once.
+  const pl: RbSectionNode = {
+    type: 'section', id: s.id, caption: '', source: 'gl', measure: 'balance', polarity: 'credit',
+    filters: tagF ? [tagF] : [], groupBy: [], display: 'summary', defaultExpanded: false, showTotal: false, hideZero: false,
+  };
+  const cuts = [...new Set([...slots.map((x) => x.to), ...slots.map((x) => addDays(x.fy, -1))])].sort();
+  const L = linesSql(ctx, pl, null, cuts[cuts.length - 1]!);
+  const buckets = sql`(VALUES ${sql.join(cuts.map((hi, i) => sql`(${i}::int, ${i === 0 ? '0001-01-01' : addDays(cuts[i - 1]!, 1)}::date, ${hi}::date)`), sql`, `)}) b(i, lo, hi)`;
+  const res = await ctx.exec.execute(sql`
+    ${L.with}
+    SELECT b.i AS b, SUM(${raw(L.k.c)} - ${raw(L.k.d)})::text AS v
+    ${L.from} JOIN ${buckets} ON ${raw(L.k.date)} >= b.lo AND ${raw(L.k.date)} <= b.hi
+    WHERE ${L.where} AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+    GROUP BY b.i`);
   const sign = s.polarity === 'debit' ? -1 : 1;
   const prior = zeros(n), current = zeros(n);
-  splits.forEach((sp, i) => {
-    const p = earningsTotal(sp.priorYears), c = earningsTotal(sp.currentYear);
-    prior[i] = sign === 1 ? p : p.neg();
-    current[i] = sign === 1 ? c : c.neg();
-  });
+  for (const r of res.rows as Array<{ b: number; v: string }>) {
+    const lo = r.b === 0 ? '0001-01-01' : addDays(cuts[r.b - 1]!, 1);
+    const hi = cuts[r.b]!;
+    const v = sign === 1 ? dec(r.v) : dec(r.v).neg();
+    slots.forEach((sl, i) => {
+      if (hi > sl.to) return;
+      if (hi < sl.fy) prior[i] = prior[i]!.plus(v);
+      else current[i] = current[i]!.plus(v);
+    });
+  }
   const sl = slots[0]!;
   const out: Array<{ caption: string; vals: Vals; drill: RunDrill | null }> = [];
   if (prior.some((x) => !x.isZero())) out.push({ caption: PRIOR_YEARS, vals: prior, drill: { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } });
