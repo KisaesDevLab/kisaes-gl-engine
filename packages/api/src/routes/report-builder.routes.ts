@@ -243,7 +243,7 @@ reportBuilderRouter.post('/run', describe({
     + 'Display rules: summary returns every group level and no detail; expandable returns level-1 lines and, under expanded paths, deeper lines and detail; detail returns everything. '
     + 'A path is expanded when listed in open (≤ 1,000), or under a defaultExpanded section unless listed in collapsed (≤ 1,000), or with expandAll. '
     + 'Detail rows count toward 5,000 per run (100,000 with purpose export); a cut path ends in a more row whose cursor pages /run/detail. '
-    + 'purpose preview (report-builder-preview-v1): at most 50 detail rows per line, after a running-balance line's opening row (same query and order as a screen run, so the rows up to the cut are identical); '
+    + 'purpose preview (report-builder-preview-v1): at most 50 detail rows per line, after a running-balance line\'s opening row (same query and order as a screen run, so the rows up to the cut are identical); '
     + 'a longer line ends in a more row with its cursor; meta.truncated is true and meta.preview = {detailRowsPerLine: 50}. '
     + 'fingerprint hashes every parameter except open, collapsed, expandAll and purpose; stamp is the ledger stamp read in the run snapshot. ' + RUN_DOC,
   body: runRequestSchema,
