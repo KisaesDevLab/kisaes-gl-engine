@@ -9,7 +9,9 @@
 //     credits − debits and their detail subtotal reads positive
 //   - debit-normal groups (assets) total on the net debits − credits
 //   - the summary total equals the detail subtotal (U-216,
-//     reports-revenue-net-v1; it was the normal side only before)
+//     reports-revenue-net-v1; it was the normal side only before) for
+//     revenue, and the detail endingBalance for the balance-sheet groups
+//     (U-219, reports-by-account-balance-v1)
 //   - the detail groups reuse the GL-style shape (lines + subtotal +
 //     grandTotal) so the existing detail CSV export applies
 //   - Expenses by Vendor ?display=detail returns per-vendor per-account
@@ -151,18 +153,22 @@ describe('GET /reports/assets-by-account & liabilities & equity', () => {
     expect(data.groups.some((g: { name: string }) => g.name === 'Cash')).toBe(true);
   });
 
-  it('summary total is the period net (= detail subtotal) on every group (U-216)', async () => {
+  it('summary total: revenue the period net (= detail subtotal, U-216); balance-sheet groups the ending balance (= detail endingBalance, U-219)', async () => {
     const assets = JSON.parse((await get(`/assets-by-account?${RANGE}`)).body);
     const byName = Object.fromEntries(assets.data.map((r: { category: string; total: string }) => [r.category, r]));
-    // Cash 2026: debits 3,750 − credits 1,800 = 1,950 (gross debits were 3,750).
-    expect(parseFloat(byName['Cash'].total)).toBeCloseTo(1950, 4);
+    // Cash at 2026-12-31: the 2025 contribution 1,000 + 2026 debits 3,750 − credits 1,800 = 2,950
+    // (the 2026 net alone, 1,950, was the total before U-219).
+    expect(parseFloat(byName['Cash'].total)).toBeCloseTo(2950, 4);
     expect(parseFloat(byName['Equipment'].total)).toBeCloseTo(800, 4);
+    const equity = JSON.parse((await get(`/equity-by-account?${RANGE}`)).body);
+    expect(parseFloat(equity.data.find((r: { category: string }) => r.category === "Owner's Capital").total)).toBeCloseTo(1500, 4);
     for (const path of ['/revenue-by-category', '/assets-by-account', '/liabilities-by-account', '/equity-by-account']) {
       const sum = JSON.parse((await get(`${path}?${RANGE}`)).body);
       const det = JSON.parse((await get(`${path}?${RANGE}&display=detail`)).body);
+      const key = path === '/revenue-by-category' ? 'subtotal' : 'endingBalance';
       const want = Object.fromEntries(det.groups
-        .filter((g: { subtotal: number }) => Math.abs(g.subtotal) >= 0.005)
-        .map((g: { accountId: string; subtotal: number }) => [g.accountId, g.subtotal.toFixed(2)]));
+        .filter((g: Record<string, number>) => Math.abs(g[key]!) >= 0.005)
+        .map((g: Record<string, number> & { accountId: string }) => [g.accountId, g[key]!.toFixed(2)]));
       const got = Object.fromEntries(sum.data.map((r: { account_id: string; total: string }) => [r.account_id, parseFloat(r.total).toFixed(2)]));
       expect(got, path).toEqual(want);
     }

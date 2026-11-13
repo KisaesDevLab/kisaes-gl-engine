@@ -1390,7 +1390,9 @@ function accountDetailReportRoute(
   });
 }
 // Revenues reset each period (P&L); the balance-sheet groups carry a
-// beginning balance forward so the running balance ties to the Balance Sheet.
+// beginning balance forward so the running balance ties to the Balance Sheet,
+// and their summary total is each account's balance at end_date (U-219,
+// reports-by-account-balance-v1; Revenue by Category stays the range's net).
 accountDetailReportRoute('/revenue-by-category', { title: 'Revenues by Category', accountTypes: ['revenue', 'other_revenue'], normalSide: 'credit', summaryLabel: 'Category' });
 accountDetailReportRoute('/assets-by-account', { title: 'Assets by Account', accountTypes: ['asset'], normalSide: 'debit', summaryLabel: 'Account', carryForward: true });
 accountDetailReportRoute('/liabilities-by-account', { title: 'Liabilities by Account', accountTypes: ['liability'], normalSide: 'credit', summaryLabel: 'Account', carryForward: true });
