@@ -201,11 +201,21 @@ describe('report-defs-transfer-v1 (U-220)', () => {
     const [ps, pb] = p.json.reports;
     expect(ps.unresolved).toEqual([]);
     expect(ps.ready, JSON.stringify(ps.problem)).toBe(true);
-    expect(ps.definition.options.filters).toEqual({ accountIds: [b.bank, b.expense], contactIds: [b.vendor, b.customer], tagIds: [b.tag] });
+    // Tenant b's account with the same number (the helper's "first expense accounts" are not ordered).
+    const twin = async (id: string) => {
+      const [x] = await db.select().from(accounts).where(eq(accounts.id, id));
+      const [y] = await db.select().from(accounts).where(and(eq(accounts.tenantId, b.tenantId), eq(accounts.accountNumber, x!.accountNumber!)));
+      return y!.id;
+    };
+    expect(ps.definition.options.filters).toEqual({ accountIds: [await twin(a.bank), await twin(a.expense)], contactIds: [b.vendor, b.customer], tagIds: [b.tag] });
     expect(ps.definition.options.columnTagGroupId).toBe(tgB);
     expect(ps.definition.options.budgetId).toBe(budgetB);
     expect(pb.ready).toBe(true);
-    expect(JSON.stringify(pb.definition)).toBe(JSON.stringify(builderDef(b, tgB)));
+    const want = builderDef(b, tgB);
+    const wantExp = want.nodes.find((n) => n.type === 'section' && n.id === 'expenses');
+    if (!wantExp || wantExp.type !== 'section') throw new Error('starter');
+    wantExp.filters[1] = { field: 'account', op: 'in', ids: [await twin(a.expense), await twin(a.expense2)] };
+    expect(JSON.stringify(pb.definition)).toBe(JSON.stringify(want));
     // Nothing of tenant a crosses over.
     for (const id of [a.bank, a.expense, a.vendor, a.tag, tgA, budgetA]) expect(JSON.stringify(p.json)).not.toContain(id);
   });
