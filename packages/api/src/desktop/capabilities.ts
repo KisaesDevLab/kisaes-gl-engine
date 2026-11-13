@@ -1289,5 +1289,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * detail rows per run cap still applies. fingerprint ignores purpose (a preview's cursors page the same run). No migration.
    */
   'report-builder-preview-v1',
+  /**
+   * Report Builder formulas in the normal sign (U-218, ClientLedger A09, Q-A08ai). POST /report-builder/run: a section's
+   * polarity ("Show as positive") signs only the cells of its own rows (lines, earnings, Total, and their $ / % change
+   * and % of, computed from those shown amounts) and a group's shown subtotal. Formulas add their terms in each section's
+   * normal sign (as if its polarity were natural: gl lines by their account's normal side, so a mixed section nets each
+   * account on its own side; other sources their default sign; Balance Sheet earnings credit - debit), so a formula row's
+   * amounts, $ / % change and % of never change with a polarity; a percentOf node's base is that node's normal-sign total.
+   * Output change: a saved report whose formula compensated for a flipped section with its term signs now gives a
+   * different result. Starters (no polarity set) are unchanged. /run/detail unchanged. No migration.
+   */
+  'report-builder-formula-sign-v1',
 ];
 
