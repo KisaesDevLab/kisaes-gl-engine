@@ -305,10 +305,13 @@ const auditShape = (r: Pick<DefinitionRow, 'kind' | 'version' | 'groupId' | 'def
   kind: r.kind, reportKey: (r.definitionJson as { reportKey?: unknown }).reportKey ?? null, groupId: r.groupId, version: r.version,
 });
 
+/** report-defs-transfer-v1 (U-220): a save from a report file says so in its audit row. */
+const withOrigin = <T extends Record<string, unknown>>(after: T, origin?: 'import') => (origin ? { ...after, origin } : after);
+
 // ── Writes ─────────────────────────────────────────────────────────
 
 export async function createDefinition(tenantId: string, companyId: string, viewer: Viewer, input: {
-  name: string; groupId?: string | null; kind?: ReportDefinitionKind; definition: unknown;
+  name: string; groupId?: string | null; kind?: ReportDefinitionKind; definition: unknown; origin?: 'import';
 }) {
   const { definition, refs } = parseDefinition(input.definition);
   if (input.kind !== undefined && input.kind !== definition.kind) throw invalid('kind must match definition.kind.', 'kind');
@@ -322,7 +325,7 @@ export async function createDefinition(tenantId: string, companyId: string, view
         createdBy: viewer.userId ?? null, updatedBy: viewer.userId ?? null,
       }).returning();
       await claimAndRecord(tx, 'report_definition', row!.id);
-      await auditLog(tenantId, 'create', 'report_definition', row!.id, null, auditShape(row!), viewer.userId, tx);
+      await auditLog(tenantId, 'create', 'report_definition', row!.id, null, withOrigin(auditShape(row!), input.origin), viewer.userId, tx);
       return row!.id;
     });
     return getDefinition(tenantId, companyId, id, viewer);
@@ -333,7 +336,7 @@ export async function createDefinition(tenantId: string, companyId: string, view
 }
 
 export async function updateDefinition(tenantId: string, companyId: string, viewer: Viewer, id: string, input: {
-  version: number; name?: string; groupId?: string | null; kind?: ReportDefinitionKind; definition?: unknown;
+  version: number; name?: string; groupId?: string | null; kind?: ReportDefinitionKind; definition?: unknown; origin?: 'import';
 }) {
   const parsed = input.definition !== undefined ? parseDefinition(input.definition) : null;
   try {
@@ -352,7 +355,7 @@ export async function updateDefinition(tenantId: string, companyId: string, view
         version: row.version + 1, updatedBy: viewer.userId ?? null, updatedAt: new Date(),
       }).where(and(eq(reportDefinitions.tenantId, tenantId), eq(reportDefinitions.id, id))).returning();
       await claimAndRecord(tx, 'report_definition', id);
-      await auditLog(tenantId, 'update', 'report_definition', id, auditShape(row), auditShape(next!), viewer.userId, tx);
+      await auditLog(tenantId, 'update', 'report_definition', id, auditShape(row), withOrigin(auditShape(next!), input.origin), viewer.userId, tx);
     });
     return getDefinition(tenantId, companyId, id, viewer);
   } catch (err) {

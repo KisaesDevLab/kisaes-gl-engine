@@ -30,6 +30,7 @@ import { describe } from '../middleware/describe.js';
 import { idempotent } from '../middleware/idempotent.js';
 import { AppError } from '../utils/errors.js';
 import * as defs from '../services/report-definitions.service.js';
+import * as transfer from '../services/report-transfer.service.js';
 import { REPORT_DEFINITION_KINDS } from '../db/schema/index.js';
 import {
   builderDefinitionSchema, BUILDER_STARTERS, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES, RB_SOURCE_INFO, RB_UNAVAILABLE_SOURCES, RB_MEASURE_UNIT,
@@ -76,6 +77,7 @@ const createDefinitionSchema = z.object({
   kind: z.enum(REPORT_DEFINITION_KINDS).optional().describe('optional; must equal definition.kind'),
   // Checked by the service so its errors carry DEFINITION_INVALID / DEFINITION_TOO_LARGE.
   definition: z.unknown(),
+  origin: z.literal('import').optional().describe('report-defs-transfer-v1: import marks a report saved from a report file (audit row after.origin); not stored on the row'),
 }).strict();
 
 const updateDefinitionSchema = z.object({
@@ -84,6 +86,7 @@ const updateDefinitionSchema = z.object({
   kind: z.enum(REPORT_DEFINITION_KINDS).optional().describe('optional; must equal the saved kind'),
   groupId: z.string().uuid().nullable().optional(),
   definition: z.unknown().optional(),
+  origin: z.literal('import').optional().describe('report-defs-transfer-v1: import marks a Replace from a report file (audit row after.origin); not stored on the row'),
 }).strict();
 
 const groupCreateSchema = z.object({ name: name(100), sort: z.number().int().min(0).max(100_000).optional() }).strict();
@@ -169,6 +172,69 @@ reportBuilderRouter.delete('/definitions/:id', describe({
   const { version } = versionQuery.parse(req.query);
   await defs.deleteDefinition(req.tenantId, req.companyId, viewer(req), uuidParam(req.params['id'], defs.definitionNotFound), version);
   res.status(204).end();
+});
+
+// ── Transfer (report files) ────────────────────────────────────────
+
+const transferReference = z.object({
+  kind: z.enum(['account', 'contact', 'item', 'tag', 'tagGroup', 'budget']),
+  name: z.string().max(255).optional(),
+  number: z.string().max(20).optional(),
+  accountType: z.string().max(40).optional(),
+  contactType: z.enum(['customer', 'vendor', 'both']).optional(),
+  tagGroupName: z.string().max(100).nullable().optional(),
+  fiscalYear: z.number().int().min(1900).max(9999).optional(),
+  missing: z.literal(true).optional(),
+}).strict();
+
+const exportSchema = z.union([
+  z.object({ ids: z.array(z.string().uuid()).min(1).max(transfer.MAX_TRANSFER_REPORTS) }).strict(),
+  z.object({ groupId: z.string().uuid() }).strict(),
+]);
+
+const previewSchema = z.object({
+  reports: z.array(z.object({
+    name: name(200),
+    groupName: z.string().trim().min(1).max(100).nullable().optional(),
+    kind: z.enum(REPORT_DEFINITION_KINDS),
+    // Checked by the service (newer schema, tokens) and, once resolved, as a save checks it.
+    definition: z.unknown(),
+    references: z.array(transferReference).max(5000),
+  }).strict()).min(1).max(transfer.MAX_TRANSFER_REPORTS),
+  choices: z.record(z.string().regex(/^\d{1,3}:\$ref:\d{1,6}$/), z.string().uuid().nullable()).optional()
+    .describe('"<report index>:$ref:N" -> an id of this company (of the reference\'s kind), or null to leave it out'),
+}).strict();
+
+const REF_DOC = 'reference `{kind: account|contact|item|tag|tagGroup|budget, name?, number?, accountType?, contactType?: customer|vendor|both, tagGroupName?, fiscalYear?, missing?: true}`';
+
+reportBuilderRouter.post('/definitions/export', describe({
+  summary: 'Export saved reports as an id-free report file (report-defs-transfer-v1)',
+  description: 'Body `{ids: uuid[1..200]}` or `{groupId}` (every report of the group, by name; more than 200 is 400 VALIDATION_ERROR). '
+    + 'Response `{reports: [{name, groupName|null, kind, definition, references}]}` in the order asked: each id at an id path of the definition is replaced by the token "$ref:N" '
+    + `(one per distinct id per report), references[N] a ${REF_DOC}; an id that is no longer a row of this company is {kind, missing: true}. `
+    + 'The response holds no ids, no author and no figures. One audit row per report: action download, entity report_definition, after {kind, reportKey, format: clreport}. '
+    + 'A report or group not in this company: 404. Reports read access.',
+  body: exportSchema,
+}), validate(exportSchema), async (req, res) => {
+  res.json(await transfer.exportDefinitions(req.tenantId, req.companyId, req.userId, req.body));
+});
+
+reportBuilderRouter.post('/definitions/import/preview', describe({
+  summary: 'Match a report file to this company (report-defs-transfer-v1)',
+  description: 'Body `{reports: [{name, groupName?, kind, definition, references}] (1..200), choices?}` (the export shape). Writes nothing. '
+    + 'Matches references in this company (shared rows or this company\'s, inactive included): account by number when given (else by name), contact by name and type '
+    + '(customer: customer|both, vendor: vendor|both), item by name, tag by name and group name, tag group by name, budget by name and fiscal year; names case-insensitive, trimmed. '
+    + 'Response `{reports: [{name, kind, ready, definition, unresolved: [{ref, reference, candidates: [{id, label}] (≤20)}], dropped: [{ref, effect}], groupId|null, '
+    + 'nameTaken: {id, version, kind, canEdit}|null, problem?: {path, code}}]}`: definition has the matched and chosen ids in place (tokens left for unresolved references); '
+    + 'ready when every reference is resolved or left out and the result passes the save check (else problem {path, code}). '
+    + 'Leaving out (choice null), effect: removed_from_list (an id leaves its list; a standard list may end empty), filter_removed (a builder filter whose list empties), '
+    + 'group_by_removed (a builder group-by on the tag group), tag_split_removed (standard tagSplit becomes null), columns_total (standard columnTagGroupId removed, columns total); '
+    + 'a budget cannot be left out (stays unresolved). groupId: this company\'s group of that name. '
+    + 'Errors: 400 DEFINITION_INVALID {path: reports.N.definition…, code: SCHEMA_NEWER} for a newer schemaVersion, {path} for an id path not holding a "$ref:N" token; '
+    + '400 VALIDATION_ERROR {field: choices} for a choice of a reference not in the file or a row not in this company.',
+  body: previewSchema,
+}), validate(previewSchema), async (req, res) => {
+  res.json(await transfer.previewImport(req.tenantId, req.companyId, viewer(req), req.body));
 });
 
 // ── Groups ─────────────────────────────────────────────────────────
