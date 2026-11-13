@@ -12,7 +12,9 @@
  *
  * Signs: every amount a source reports is signed by the section's polarity
  * ("natural" = the source's default below). Open-item sources are
- * owed-positive and take no polarity.
+ * owed-positive and take no polarity. The polarity only signs the cells a
+ * section shows: formulas and percent-of bases read each section in its
+ * normal sign, as if its polarity were natural (U-218).
  */
 
 export const RB_SOURCES = [

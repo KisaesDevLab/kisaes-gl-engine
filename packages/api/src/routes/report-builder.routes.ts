@@ -245,6 +245,7 @@ reportBuilderRouter.post('/run', describe({
     + 'Detail rows count toward 5,000 per run (100,000 with purpose export); a cut path ends in a more row whose cursor pages /run/detail. '
     + 'purpose preview (report-builder-preview-v1): at most 50 detail rows per line, after a running-balance line\'s opening row (same query and order as a screen run, so the rows up to the cut are identical); '
     + 'a longer line ends in a more row with its cursor; meta.truncated is true and meta.preview = {detailRowsPerLine: 50}. '
+    + 'Signs (report-builder-formula-sign-v1): a section\'s polarity signs only its own rows\' cells and a group\'s shown subtotal; formulas and percentOf node bases use each section\'s normal sign (as if its polarity were natural), so a polarity never changes a formula row. '
     + 'fingerprint hashes every parameter except open, collapsed, expandAll and purpose; stamp is the ledger stamp read in the run snapshot. ' + RUN_DOC,
   body: runRequestSchema,
 }), validate(runRequestSchema), async (req, res) => {

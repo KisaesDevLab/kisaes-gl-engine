@@ -17,6 +17,15 @@
  *   - Earnings rows (balance_sheet / trial_balance): equity-earnings.
  *   - Formulas, $ change, % change and percent-of in Decimal; percents 1
  *     place, half away from zero, null on a zero base.
+ *   - Signs (U-218, report-builder-formula-sign-v1): a section's polarity
+ *     ("Show as positive") signs only the cells of its own rows (lines,
+ *     earnings, Total, and their $ / % change and % of, computed from those
+ *     shown amounts) and a group's shown subtotal. Every node total also has
+ *     a normal-sign value (each section as if its polarity were natural: gl
+ *     lines by their account's normal side, other sources their default
+ *     sign, earnings credit - debit); formulas add terms in that sign and a
+ *     percent-of node base is in it, so flipping a section's polarity never
+ *     changes a formula row or another section's percents.
  *
  * Everything runs in one READ ONLY REPEATABLE READ snapshot with a 30 s
  * deadline (limits.ts); the stamp is read in it. Amounts are exact strings
@@ -352,7 +361,16 @@ function keyExpr(ctx: Ctx, s: RbSectionNode, level: number, k: LineCols, cash: b
   }
 }
 
-function valueExpr(s: RbSectionNode, k: LineCols): SQL {
+/**
+ * A line's value as the section shows it. `normal` (U-218): the value in the
+ * section's normal accounting sign instead, as if its polarity were
+ * `natural` — a gl line by its account's normal side (asset, cogs, expense
+ * and other expense debit - credit; revenue, other revenue, liability and
+ * equity credit - debit), any other source by its default sign. Formulas,
+ * group and percent-of bases read normal-sign totals, so "Show as positive"
+ * changes only the section's own shown cells.
+ */
+function valueExpr(s: RbSectionNode, k: LineCols, normal = false): SQL {
   const d = raw(k.d), c = raw(k.c);
   switch (s.measure) {
     case 'debit': return sql`${d}`;
@@ -361,7 +379,7 @@ function valueExpr(s: RbSectionNode, k: LineCols): SQL {
     case 'quantity': return sql`COALESCE(${raw(k.qty)}, 0)::numeric`;
     case 'tb_net': return sql`(${d} - ${c})`;
     default: {
-      const pol = s.polarity && s.polarity !== 'natural' ? s.polarity
+      const pol = !normal && s.polarity && s.polarity !== 'natural' ? s.polarity
         : RB_SOURCE_INFO[s.source].sign === 'natural' ? 'natural'
           : RB_SOURCE_INFO[s.source].sign === 'debit_minus_credit' ? 'debit' : 'credit';
       if (pol === 'debit') return sql`(${d} - ${c})`;
@@ -370,6 +388,10 @@ function valueExpr(s: RbSectionNode, k: LineCols): SQL {
     }
   }
 }
+
+/** Whether a section's shown sign may differ from its normal sign (U-218): an amount or balance with an explicit polarity. */
+const signSet = (s: RbSectionNode) => !RB_SOURCE_INFO[s.source].openItems && (s.measure === 'amount' || s.measure === 'balance')
+  && s.polarity !== undefined && s.polarity !== 'natural';
 
 const isFlow = (s: RbSectionNode) => s.measure !== 'balance' && s.measure !== 'tb_net';
 
@@ -400,8 +422,11 @@ function linesSql(ctx: Ctx, s: RbSectionNode, from: string | null, to: string): 
   };
 }
 
-/** `keep`: the line shows even when zero (an account with only an opening balance, U-119f). */
-interface Fact { keys: Array<string | null>; slot: number; v: Dec; keep?: boolean }
+/**
+ * `keep`: the line shows even when zero (an account with only an opening balance, U-119f).
+ * `nv`: the value in the section's normal sign when it differs from `v` (U-218).
+ */
+interface Fact { keys: Array<string | null>; slot: number; v: Dec; nv?: Dec; keep?: boolean }
 
 /**
  * Facts of every line section of a run in ONE statement (one cash-basis
@@ -415,7 +440,7 @@ interface Fact { keys: Array<string | null>; slot: number; v: Dec; keep?: boolea
  * (credit - debit over income-statement lines, the section's line-level tag).
  */
 interface BatchItem { sid: string; s: RbSectionNode; pathKeys: Array<string | null>; earningsOf?: boolean }
-interface BucketRow { keys: Array<string | null>; lo: string; hi: string; bs: boolean; v: Dec }
+interface BucketRow { keys: Array<string | null>; lo: string; hi: string; bs: boolean; v: Dec; nv?: Dec }
 
 async function bucketFacts(ctx: Ctx, items: BatchItem[]): Promise<Map<string, BucketRow[]>> {
   const out = new Map<string, BucketRow[]>(items.map((x) => [x.sid, []]));
@@ -435,9 +460,11 @@ async function bucketFacts(ctx: Ctx, items: BatchItem[]): Promise<Map<string, Bu
     const eq = it.pathKeys.map((pk, i) => (pk === null ? sql`${keys[i]!} IS NULL` : sql`${keys[i]!} = ${pk}`));
     const k3 = [0, 1, 2].map((i) => (keys[i] ? sql`${keys[i]!}` : sql`NULL::text`));
     const val = it.earningsOf ? sql`(${raw(L.k.c)} - ${raw(L.k.d)})` : valueExpr(it.s, L.k);
+    // The normal-sign sum (U-218), only where it can differ from the shown one.
+    const nval = !it.earningsOf && signSet(it.s) ? sql`SUM(${valueExpr(it.s, L.k, true)})::text` : sql`NULL::text`;
     const pl = it.earningsOf ? sql`AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')` : sql``;
     return sql`SELECT ${it.sid}::text AS sid, ${k3[0]!} AS k0, ${k3[1]!} AS k1, ${k3[2]!} AS k2, b.i AS b,
-        (a.account_type IN ('asset', 'liability', 'equity')) AS bs, SUM(${val})::text AS v
+        (a.account_type IN ('asset', 'liability', 'equity')) AS bs, SUM(${val})::text AS v, ${nval} AS nv
       ${L.from} JOIN ${buckets} ON ${raw(L.k.date)} >= b.lo AND ${raw(L.k.date)} <= b.hi
       WHERE ${L.where} ${pl} ${eq.length ? sql`AND ${sql.join(eq, sql` AND `)}` : sql``}
       GROUP BY 1, 2, 3, 4, 5, 6`;
@@ -448,6 +475,7 @@ async function bucketFacts(ctx: Ctx, items: BatchItem[]): Promise<Map<string, Bu
     out.get(String(r['sid']))!.push({
       keys: [r['k0'], r['k1'], r['k2']].map((x) => (x as string | null) ?? null),
       lo: bi === 0 ? '0001-01-01' : addDays(cuts[bi - 1]!, 1), hi: cuts[bi]!, bs: r['bs'] === true, v: dec(String(r['v'] ?? '0')),
+      ...(r['nv'] === null || r['nv'] === undefined ? {} : { nv: dec(String(r['nv'])) }),
     });
   }
   return out;
@@ -462,7 +490,7 @@ function factsFromBuckets(ctx: Ctx, s: RbSectionNode, rows: BucketRow[]): Fact[]
     ctx.plan.slots.forEach((sl, si) => {
       if (r.hi > sl.to) return;
       if (flow) { if (sl.from !== null && r.lo < sl.from) return; } else if (!r.bs && r.lo < sl.fy) return;
-      out.push({ keys, slot: si, v: r.v });
+      out.push({ keys, slot: si, v: r.v, ...(r.nv ? { nv: r.nv } : {}) });
     });
   }
   return out;
@@ -699,7 +727,11 @@ export async function runReport(v: Viewer, req: RunRequest, signal?: AbortSignal
   }, { signal });
 }
 
-interface NodeTotal { vals: Vals | null; denied: boolean; pairs?: Array<Dec | null> }
+/**
+ * `vals`: the totals as shown (a section's polarity applied; a group sums its children as shown).
+ * `nat`: the totals in each section's normal sign (U-218), which formulas and percent-of bases read.
+ */
+interface NodeTotal { vals: Vals | null; nat: Vals | null; denied: boolean; pairs?: Array<Dec | null> }
 
 async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn[]; rows: RunRow[]; meta: RunResult['meta'] }> {
   const { plan } = ctx;
@@ -740,7 +772,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
     for (const node of nodes) {
       if (node.type === 'section') {
         if (denied.includes(node.id)) {
-          totals.set(node.id, { vals: null, denied: true });
+          totals.set(node.id, { vals: null, nat: null, denied: true });
           continue;
         }
         const facts = RB_SOURCE_INFO[node.source].openItems ? await openFacts(ctx, node) : factsFromBuckets(ctx, node, prefetched.get(node.id)!);
@@ -748,27 +780,32 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
         const tree = buildTree(facts, node.groupBy.length, n);
         const earnings = node.earnings ? await earningsRows(ctx, node, prefetched.get(`${node.id}#earnings`) ?? []) : [];
         const vals = tree.vals.slice();
-        for (const e of earnings) addInto(vals, e.vals);
+        const nat = zeros(n);
+        for (const f of facts) nat[f.slot] = nat[f.slot]!.plus(f.nv ?? f.v);
+        for (const e of earnings) { addInto(vals, e.vals); addInto(nat, e.nat); }
         sectionData.set(node.id, { tree, earnings });
-        totals.set(node.id, { vals, denied: false });
+        totals.set(node.id, { vals, nat, denied: false });
       } else if (node.type === 'group') {
         await visit(node.children);
         let acc: Vals | null = zeros(n);
+        let nat: Vals | null = zeros(n);
         for (const c of node.children) {
           if (c.type !== 'section' && c.type !== 'group') continue;
           const t = totals.get(c.id)!;
-          if (t.vals === null) { acc = null; break; }
+          if (t.vals === null || t.nat === null) { acc = null; nat = null; break; }
           addInto(acc, t.vals);
+          addInto(nat!, t.nat);
         }
-        totals.set(node.id, { vals: acc, denied: acc === null });
+        totals.set(node.id, { vals: acc, nat, denied: acc === null });
       } else if (node.type === 'formula') {
+        // Terms in their normal sign (U-218, Q-A08ai): a section's polarity never changes a formula.
         let acc: Vals | null = zeros(n);
         for (const term of node.terms) {
           const t = totals.get(term.nodeId);
-          if (!t || t.vals === null) { acc = null; break; }
-          for (let i = 0; i < n; i++) acc[i] = acc[i]!.plus(term.sign === 1 ? t.vals[i]! : t.vals[i]!.neg());
+          if (!t || t.nat === null) { acc = null; break; }
+          for (let i = 0; i < n; i++) acc[i] = acc[i]!.plus(term.sign === 1 ? t.nat[i]! : t.nat[i]!.neg());
         }
-        totals.set(node.id, { vals: acc, denied: acc === null });
+        totals.set(node.id, { vals: acc, nat: acc, denied: acc === null });
       }
     }
   };
@@ -777,7 +814,8 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
   const percentBase = (sectionVals: Vals | null): Array<Dec | null> | null => {
     const p = def.columns.percentOf;
     if (!p) return null;
-    const vals = p === 'section' ? sectionVals : totals.get(p)?.vals ?? null;
+    // A node base in its normal sign (U-218); 'section' divides a section's shown cells by its shown total.
+    const vals = p === 'section' ? sectionVals : totals.get(p)?.nat ?? null;
     return decCells(plan, vals).map((x) => (x === null ? null : x));
   };
 
@@ -921,7 +959,11 @@ async function checkPolarity(ctx: Ctx, s: RbSectionNode): Promise<void> {
 }
 
 /** An earnings row: 'prior' (prior years, also the TB's one row) or 'current' (this year); its path ends in earnings:<part>. */
-interface EarningsRow { part: 'prior' | 'current'; caption: string; vals: Vals; drill: RunDrill | null }
+interface EarningsRow {
+  part: 'prior' | 'current'; caption: string; vals: Vals; drill: RunDrill | null;
+  /** The values in the normal sign (credit - debit, as equity; U-218); tb rows: the same as vals. */
+  nat: Vals;
+}
 
 const PRIOR_YEARS = 'Prior years\' net income';
 const CURRENT_YEAR = 'Net income this year';
@@ -952,7 +994,7 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
     if (prior.every((x) => x.isZero())) return [];
     // In tag mode the transaction-level figure has no line-level drill (the one exemption).
     const sl = slots[0]!;
-    return [{ part: 'prior', caption: 'Retained Earnings (Prior Years)', vals: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
+    return [{ part: 'prior', caption: 'Retained Earnings (Prior Years)', vals: prior, nat: prior, drill: tagF ? null : { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1) } }];
   }
   // Line mode (equity-earnings' rule: credit - debit over every income-statement line, line-level tag), from the run's batch.
   const sign = s.polarity === 'debit' ? -1 : 1;
@@ -971,8 +1013,10 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
   const tagFs = s.filters.filter((f) => f.field === 'tag' && f.op === 'in');
   const tags = tagFs.length ? { tagIds: tagFs.slice(1).reduce((acc, f) => acc.filter((x) => f.ids!.includes(x)), [...tagFs[0]!.ids!]) } : {};
   const out: EarningsRow[] = [];
-  if (prior.some((x) => !x.isZero())) out.push({ part: 'prior', caption: PRIOR_YEARS, vals: prior, drill: { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1), ...tags } });
-  if (current.some((x) => !x.isZero())) out.push({ part: 'current', caption: CURRENT_YEAR, vals: current, drill: { type: 'profit_loss', from: sl.fy, to: sl.to, ...tags } });
+  // Normal sign: credit - debit, as the equity the earnings are (U-218).
+  const nat = (v: Vals) => (sign === 1 ? v : v.map((x) => x.neg()));
+  if (prior.some((x) => !x.isZero())) out.push({ part: 'prior', caption: PRIOR_YEARS, vals: prior, nat: nat(prior), drill: { type: 'profit_loss', from: '0001-01-01', to: addDays(sl.fy, -1), ...tags } });
+  if (current.some((x) => !x.isZero())) out.push({ part: 'current', caption: CURRENT_YEAR, vals: current, nat: nat(current), drill: { type: 'profit_loss', from: sl.fy, to: sl.to, ...tags } });
   return out;
 }
 
