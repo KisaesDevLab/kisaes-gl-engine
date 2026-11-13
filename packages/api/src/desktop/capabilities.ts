@@ -1312,5 +1312,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Revenue by Category is unchanged (the range's net). Detail mode unchanged. No migration.
    */
   'reports-by-account-balance-v1',
+  /**
+   * Saved report transfer (U-220, ClientLedger A09 `.clreport`). POST /report-builder/definitions/export {ids | groupId}:
+   * id-free definitions (ids at id paths become "$ref:N", references[N] describe them; missing rows {kind, missing}), one
+   * download audit row per report. POST /report-builder/definitions/import/preview {reports, choices?}: matches the
+   * references in this company (account number then name, contact name+type, item name, tag name+group, tag group name,
+   * budget name+year), candidates for none or several, choices pick or leave out (drop rules; a budget can't be left out),
+   * the save check on the result (ready / problem), groupId and nameTaken; writes nothing; a newer schemaVersion is 400
+   * DEFINITION_INVALID code SCHEMA_NEWER. POST and PUT /definitions take origin: 'import' (audit after.origin). No migration.
+   */
+  'report-defs-transfer-v1',
 ];
 
