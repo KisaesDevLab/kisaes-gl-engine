@@ -1279,6 +1279,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * the other side; equals the detail subtotal), was the normal side only. A credit memo's or refund's debit to an income
    * account now reduces Revenue by Category, which ties to the P&L income sections per account on both bases; accounts that
    * net to zero are left out (as in Expenses by Category); a net can be negative. Detail mode unchanged. No migration.
+   * Since reports-by-account-balance-v1 (U-219) the assets / liabilities / equity summaries total the balance at end_date.
    */
   'reports-revenue-net-v1',
   /**
@@ -1300,5 +1301,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * different result. Starters (no polarity set) are unchanged. /run/detail unchanged. No migration.
    */
   'report-builder-formula-sign-v1',
+  /**
+   * Ending balances in the balance-sheet "<Group> by Account" summaries (U-219, ClientLedger A09 Q-A09b). GET
+   * /reports/assets-by-account, /liabilities-by-account and /equity-by-account: summary data[].total is each account's
+   * natural balance at end_date (all activity through it, on the report's basis; start_date no longer bounds it), equal to
+   * the Balance Sheet's balance of the account and to the detail group's endingBalance (= beginningBalance + subtotal);
+   * accounts with a balance and no activity in the range are listed, zero-balance accounts are left out. Was the range's
+   * net change (U-216). Equity by Account shows posted balances only: the Balance Sheet's computed earnings (prior years'
+   * income folded into a designated Retained Earnings account or its own row, and current-year net income) are not in it.
+   * Revenue by Category is unchanged (the range's net). Detail mode unchanged. No migration.
+   */
+  'reports-by-account-balance-v1',
 ];
 

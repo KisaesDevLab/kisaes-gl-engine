@@ -2081,7 +2081,9 @@ function buildDetailGroups(
 // subtotal: debit-normal groups (assets) net debit − credit; credit-normal
 // groups (revenue, liabilities, equity) net credit − debit so their natural
 // balance reads positive. The summary total equals the detail `subtotal`
-// (period net; U-216 — it was the normal side only before).
+// (period net; U-216 — it was the normal side only before); with
+// carryForward it equals the detail `endingBalance` (U-219: the balance at the
+// end date = beginningBalance + subtotal).
 export interface AccountDetailReportOpts {
   title: string;
   accountTypes: string[];
@@ -2100,10 +2102,14 @@ export interface AccountDetailReportOpts {
   basis?: Basis;
   // Additive: detail lines also carry debitExact / creditExact (decimal strings).
   exactAmounts?: boolean;
-  // Summary `data[].total`: 'net' (default, U-216) = natural net per account,
-  // zero-net accounts left out; 'gross' = normal-side sum over accounts with
-  // any normal-side activity (the pre-U-216 shape, kept for activity checks).
-  summaryTotal?: 'net' | 'gross';
+  // Summary `data[].total`: 'net' (U-216) = natural net per account for the
+  // range, zero-net accounts left out; 'gross' = normal-side sum over accounts
+  // with any normal-side activity (the pre-U-216 shape, kept for activity
+  // checks); 'ending' (U-219, reports-by-account-balance-v1) = the account's
+  // natural balance at endDate (all activity through it, as the Balance Sheet;
+  // startDate does not bound it), zero-balance accounts left out. Default:
+  // 'ending' with carryForward (the balance-sheet groups), else 'net'.
+  summaryTotal?: 'net' | 'gross' | 'ending';
 }
 
 export async function buildAccountDetailReport(
@@ -2149,8 +2155,18 @@ export async function buildAccountDetailReport(
   // Accounts that net to zero (wash / clearing) are left out, as in
   // Expenses by Category. `summaryTotal: 'gross'` keeps the pre-U-216
   // normal-side-only sum (rows with any normal-side activity) for internal
-  // callers that test for activity rather than report a total.
-  const gross = opts.summaryTotal === 'gross';
+  // callers that test for activity rather than report a total. The
+  // balance-sheet groups (carryForward) total each account's balance at the
+  // end date instead (U-219), equal to the detail group's endingBalance and
+  // the Balance Sheet's posted balance of the account. Equity shows posted
+  // balances only: the Balance Sheet's computed earnings (prior years' and
+  // current-year net income, folded into a designated Retained Earnings
+  // account or shown as their own rows) have no lines and are not included.
+  const mode = opts.summaryTotal ?? (carryForward ? 'ending' : 'net');
+  const gross = mode === 'gross';
+  // 'ending' (U-219): no start bound, so the total is the balance at endDate.
+  const ending = mode === 'ending';
+  const sumFrom = ending ? null : startDate;
   const otherCol = sql.raw(creditNormal ? 'jl.debit' : 'jl.credit');
   const cbOtherCol = sql.raw(creditNormal ? 'cb.debit' : 'cb.credit');
   const rows = basis === 'cash'
@@ -2165,14 +2181,14 @@ export async function buildAccountDetailReport(
         GROUP BY a.id ORDER BY total DESC
       `
       : sql`
-        WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId)}
+        WITH ${cashBasisLinesWith(tenantId, sumFrom, endDate, companyId)}
         SELECT a.id as account_id, a.name as category, a.account_number, a.account_type,
           SUM(${cbSideCol}) - SUM(${cbOtherCol}) as total
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.account_type IN (${typeList})
         WHERE a.tenant_id = ${tenantId} ${cbTag} ${cbId}
         GROUP BY a.id
-        HAVING ROUND(SUM(${cbSideCol}) - SUM(${cbOtherCol}), 2) <> 0
+        HAVING ${ending ? sql`SUM(${cbSideCol}) - SUM(${cbOtherCol}) <> 0` : sql`ROUND(SUM(${cbSideCol}) - SUM(${cbOtherCol}), 2) <> 0`}
         ORDER BY total DESC
       `)
     : await db.execute(sql`
@@ -2183,13 +2199,15 @@ export async function buildAccountDetailReport(
     JOIN accounts a ON a.id = jl.account_id AND a.account_type IN (${typeList})
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.basis <> 'cash'
-      AND t.txn_date >= ${startDate} AND t.txn_date <= ${endDate}
+      ${sumFrom ? sql`AND t.txn_date >= ${sumFrom}` : sql``} AND t.txn_date <= ${endDate}
       ${gross ? sql`AND ${sideCol} > 0` : sql``}
       AND ${companyFilter(companyId)}
       ${tagClause}
       ${idFilter('a.id')}
     GROUP BY a.id
-    ${gross ? sql`` : sql`HAVING ROUND(SUM(${sideCol}) - SUM(${otherCol}), 2) <> 0`}
+    ${gross ? sql`` : ending
+      ? sql`HAVING SUM(${sideCol}) - SUM(${otherCol}) <> 0`
+      : sql`HAVING ROUND(SUM(${sideCol}) - SUM(${otherCol}), 2) <> 0`}
     ORDER BY total DESC
   `);
 
