@@ -437,6 +437,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     ['Bills > five hundred dollars', 'amount'],
     ['Bills over five hundred dollars', 'amount'],
     ['Bills over a thousand', 'amount'],
+    ['Bills over a grand', 'amount'],
     ['Vendors paid fifty bucks or more', 'amount'],
     ['Projects over half a million', 'amount'],
     ['Our two dozen top customers', 'number'],
@@ -743,8 +744,8 @@ describe('report draft helpers (no database)', () => {
   it('the number word list is explicit; period words, "grand" and Roman numerals are not on it', () => {
     expect(NUMBER_WORDS).toEqual(expect.arrayContaining(['zero', 'one', 'five', 'twelve', 'fifty', 'ninety', 'hundred', 'thousand', 'million', 'dozen']));
     for (const w of ['quarter', 'second', 'first', 'half', 'grand', 'gross', 'score', 'xii']) expect(NUMBER_WORDS).not.toContain(w);
-    for (const s of ['Five hundred', 'Twenty-five vendors', 'One-time customers', 'Fi\u200Bve', 'THOUSANDS']) expect(hasNumberWord(s), s).toBe(true);
-    for (const s of ['Grand total', 'Second quarter', 'Someone often', 'Phase XII', 'Gross profit', 'Tenant fees']) expect(hasNumberWord(s), s).toBe(false);
+    for (const s of ['Five hundred', 'Twenty-five vendors', 'One-time customers', 'Fi\u200Bve', 'THOUSANDS', 'Over a grand']) expect(hasNumberWord(s), s).toBe(true);
+    for (const s of ['Grand total', 'A grand total', 'Second quarter', 'Someone often', 'Phase XII', 'Gross profit', 'Tenant fees']) expect(hasNumberWord(s), s).toBe(false);
   });
 
   it('ambiguous names are labelled with one lookup per kind', async () => {

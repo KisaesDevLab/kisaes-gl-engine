@@ -13,7 +13,7 @@
  * on either side ($500, 500€, USD 500), ranges (100-500), split by invisible
  * characters (5<ZWSP>00: format characters are removed first), and English
  * number words used as quantities ("five hundred", "a thousand", "two dozen",
- * "half a million", "fifty bucks"). A number that reads as an amount or a
+ * "half a million", "fifty bucks", "a grand"). A number that reads as an amount or a
  * limit (a currency, an amount unit, a comparison word before it, "or more"
  * after it, or the far end of such a range) becomes `[AMOUNT]`; any other
  * number becomes `[NUMBER]`. As a last guard every numeric character left is
@@ -24,7 +24,9 @@
  * number word (NUMBER_WORDS). "one" counts (over-refusal is the safe side:
  * "One-time customers" is refused). Roman numerals are allowed: they are
  * letters (XII), and the compatibility forms (Ⅻ) fold to letters under
- * NFKC. Ordinals (first, second) and "quarter" are period words and allowed.
+ * NFKC. Ordinals (first, second) and "quarter" are period words and allowed;
+ * "grand" is a number only as "a grand" / "half a grand" or after a number
+ * ("Grand total" is allowed). English only.
  */
 
 /** English number words used as quantities; refused in kept model text and masked in the description. */
@@ -61,7 +63,10 @@ const WORD_RUN = String.raw`${B0}(?:half\s+(?:a\s+)?|a\s+)?${WORD}(?:${JOIN}${WO
 const DIGIT_RUN = String.raw`(?:\p{N}|[.,](?=\p{N}))(?:\p{N}|[.,'’_](?=\p{N})|\s(?=\p{N}{3}(?!\p{N}))|e[+-]?(?=\p{N}))*`;
 const PREFIX = String.raw`(?:\p{Sc}\s*|${B0}(?:${alt(CURRENCY_CODES)})\s*)?`;
 const SUFFIX = String.raw`(?:\s*(?:${alt([...AMOUNT_UNITS, ...OTHER_UNITS.slice(1)])})${B1}|\s*%|\s*\p{Sc})?`;
-const TOKEN_RE = new RegExp(`${PREFIX}(?:${DIGIT_RUN}|${WORD_RUN})${SUFFIX}`, 'giu');
+/** "a grand", "half a grand": slang for a thousand dollars ("grand" alone is not a number: "Grand total"). */
+const A_GRAND = String.raw`${B0}(?:half\s+)?a\s+grand${B1}(?!\s+total)`;
+const TOKEN_RE = new RegExp(`${PREFIX}(?:${DIGIT_RUN}|${A_GRAND}|${WORD_RUN})${SUFFIX}`, 'giu');
+const A_GRAND_RE = new RegExp(A_GRAND, 'iu');
 
 /** The token itself says amount: a currency sign or code, or an amount unit. */
 const AMOUNT_IN_TOKEN = new RegExp(String.raw`\p{Sc}|(?<!\p{L})(?:${alt([...CURRENCY_CODES, ...AMOUNT_UNITS])})(?!\p{L})`, 'iu');
@@ -126,7 +131,7 @@ const wordsOf = (s: string) => prepare(s).toLowerCase().split(/[^\p{L}]+/u).filt
 
 /** `s` holds an English number word (NUMBER_WORDS), hyphenated or not. */
 export function hasNumberWord(s: string): boolean {
-  return wordsOf(s).some((w) => WORD_SET.has(w));
+  return wordsOf(s).some((w) => WORD_SET.has(w)) || A_GRAND_RE.test(prepare(s));
 }
 
 /** `s` holds a mask marker ([AMOUNT], [NUMBER]) the model copied from the prompt. */
