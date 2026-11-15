@@ -1330,8 +1330,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * names (never an amount) and returns a closed shape that names things; the engine resolves names to ids (model ids refused) and
    * leaves "$ref:N" at the id paths of an unresolved name, which a save refuses until the client replaces it. No amount filter:
    * an amount condition (description or model) is left out and noted (amount_filter_left_out, nodeId when known), never drafted
-   * or echoed; no model digit except aging bucket keys. One-shot (description only). One audit row per draft (create
-   * report_builder_draft: companyId, provider, model, reader, counts; never the description, prompt or definition). Reports read
+   * or echoed; every description number (digits, words) is masked before the prompt and noted; no model digit except aging
+   * bucket keys, no number word in kept text unless it is exactly a books name. One-shot (description only). One audit row
+   * whenever the provider answered (create report_builder_draft: companyId, provider, model, reader, outcome drafted with
+   * counts or refused with the reason code; never the description, prompt or definition). Reports read
    * access. 403 AI_CONSENT_REQUIRED (report_summary task; no provider call), 422 DRAFT_UNMAPPED {field, reason}, 503
    * AI_UNAVAILABLE {provider, reason}. No migration.
    */
