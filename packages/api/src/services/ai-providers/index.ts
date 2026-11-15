@@ -22,7 +22,9 @@ import {
   classifyNetworkError,
   ensureOnline,
   isOfflineUnavailable,
+  markNotSent,
   targetFromUrl,
+  wasNotSent,
   type NetTarget,
 } from '../../utils/offline.js';
 
@@ -306,7 +308,12 @@ class OfflineAwareProvider implements AiProvider {
     }
   }
   private async guard<T>(fn: () => Promise<T>): Promise<T> {
-    await ensureOnline(this.feature, this.target);
+    try {
+      await ensureOnline(this.feature, this.target);
+    } catch (err) {
+      // Refused before connecting: nothing of the request left (attempt()'s onSent).
+      throw markNotSent(err);
+    }
     try {
       return await fn();
     } catch (err) {
@@ -417,21 +424,35 @@ const DEFAULT_PROVIDER_TIMEOUT_MS = 60_000;
 //      promise keeps running in the background; we attach a no-op catch
 //      so a post-timeout rejection from it isn't logged as an unhandled
 //      rejection.
+//
+// `sent` (executeWithFallback's `onSent`) is told once, at the end of the
+// attempt, when the request may have left: some try of it was not refused
+// before connecting (wasNotSent). A try still running at the timeout
+// counts as sent.
 async function attempt(
   provider: AiProvider,
   params: CompletionParams,
   timeoutMs: number,
+  sent?: { model: string | null; onSent?: SentListener },
 ): Promise<CompletionResult> {
   // One AbortController per attempt so a timeout in attempt N+1 doesn't
   // cascade-cancel attempt N's still-running fetch (which never happens
   // — attempts are serial — but the contract is clearer this way).
   const { signal, cancel } = abortableTimeout(timeoutMs);
+  let tries = 0;
+  let refusedBeforeSend = 0;
   // Desktop cloud providers are wrapped (buildDirect -> OfflineAwareProvider),
   // which applies the strict sanitizer backstop to the prompts of this call
   // and scrubs secrets from any error it raises.
   try {
     const inner = retryWithBackoff(
-      () => provider.complete({ ...params, signal }),
+      () => {
+        tries++;
+        return provider.complete({ ...params, signal }).catch((err: unknown) => {
+          if (wasNotSent(err)) refusedBeforeSend++;
+          throw err;
+        });
+      },
       { maxRetries: 2, baseDelayMs: 1000 },
     );
     // Defensive catch attached BEFORE the race so a late rejection from
@@ -447,8 +468,22 @@ async function attempt(
     return await withTimeout(inner, timeoutMs, `provider.complete(${provider.name})`);
   } finally {
     cancel();
+    if (sent?.onSent && tries > refusedBeforeSend) {
+      try { sent.onSent({ provider: provider.name, model: sent.model }); } catch { /* a listener never changes the call's outcome */ }
+    }
   }
 }
+
+/**
+ * Told about each provider attempt that may have sent the request (names
+ * and prompt may have left the machine), also when that attempt then
+ * failed or timed out. Not told about a provider that was never tried (no
+ * credentials, not allowlisted, skipped as offline, the usage caps) or
+ * whose every try was refused before connecting (CL_OFFLINE=on, a failed
+ * probe, an egress block). `model` is the model asked for, or null when the
+ * provider's default was used.
+ */
+export type SentListener = (sent: { provider: string; model: string | null }) => void;
 
 export async function executeWithFallback(
   params: CompletionParams,
@@ -456,10 +491,11 @@ export async function executeWithFallback(
   fallbackChain: string[],
   preferredProvider?: string,
   preferredModel?: string,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; onSent?: SentListener },
 ): Promise<CompletionResult> {
   const errors: string[] = [];
   const timeoutMs = options?.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+  const onSent = options?.onSent;
   // Desktop: the monthly caps are checked here too, so a caller that does
   // not go through createJob cannot bypass them (review M3).
   if (isDesktop()) await (await import('../ai-usage-caps.js')).assertWithinUsageCaps(params.tenantId ?? null);
@@ -476,7 +512,7 @@ export async function executeWithFallback(
   // and a router outage must surface as an error, not silently retry a
   // direct provider around the scrubber and ledger.
   if (routeFor(params.taskClass, config)) {
-    return attempt(routerProvider(), params, timeoutMs);
+    return attempt(routerProvider(), params, timeoutMs, { model: null, onSent });
   }
 
   // Desktop offline handling (utils/offline.ts). Once one cloud provider
@@ -522,7 +558,7 @@ export async function executeWithFallback(
     } else {
       try {
         const provider = getProvider(preferredProvider, config, preferredModel);
-        return await attempt(provider, params, timeoutMs);
+        return await attempt(provider, params, timeoutMs, { model: preferredModel ?? null, onSent });
       } catch (err: any) {
         // Name the model in the error so the aggregate distinguishes "the
         // provider is down" from "this specific model id failed".
@@ -538,7 +574,7 @@ export async function executeWithFallback(
       if (preferredModel && !skipOffline(preferredProvider)) {
         try {
           const provider = getProvider(preferredProvider, config);
-          return await attempt(provider, params, timeoutMs);
+          return await attempt(provider, params, timeoutMs, { model: null, onSent });
         } catch (err) {
           recordError(`${preferredProvider} (default model)`, err);
         }
@@ -556,7 +592,7 @@ export async function executeWithFallback(
     if (skipOffline(providerName)) continue;
     try {
       const provider = getProvider(providerName, config);
-      return await attempt(provider, params, timeoutMs);
+      return await attempt(provider, params, timeoutMs, { model: null, onSent });
     } catch (err: any) {
       recordError(providerName, err);
       continue;

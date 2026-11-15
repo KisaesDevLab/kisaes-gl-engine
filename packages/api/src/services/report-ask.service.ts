@@ -181,7 +181,8 @@ export type NameKind = 'account' | 'contact' | 'tag' | 'item' | 'tagGroup';
 
 export interface NameResolver {
   /** Ids of the company's names equal (case-insensitive) to each text, keyed by the normalized text. */
-  resolve(kind: NameKind, texts: string[]): Promise<Map<string, string[]>>;
+  /** `nameOnly`: accounts match by name only, never by the "number name" form (Report Builder draft kept text, Q-A10j). */
+  resolve(kind: NameKind, texts: string[], opts?: { nameOnly?: boolean }): Promise<Map<string, string[]>>;
 }
 
 /** Company scope: this company's rows plus tenant-wide rows (company_id NULL). */
@@ -191,19 +192,22 @@ function inCompany(col: typeof accounts.companyId | typeof contacts.companyId | 
 
 export function dbNameResolver(tenantId: string, companyId: string): NameResolver {
   return {
-    async resolve(kind, texts) {
+    async resolve(kind, texts, opts) {
       const out = new Map<string, string[]>();
       const keys = [...new Set(texts.map(norm))].filter(Boolean);
       if (keys.length === 0) return out;
       const add = (k: string, id: string) => { const l = out.get(k) ?? []; if (!l.includes(id)) l.push(id); out.set(k, l); };
       if (kind === 'account') {
-        // Matches the name, or "number name" as the account lists show it.
+        // Matches the name, or "number name" as the account lists show it (not with nameOnly).
+        const numbered = !opts?.nameOnly;
         const rows = await db.select({ id: accounts.id, name: accounts.name, number: accounts.accountNumber }).from(accounts)
           .where(and(eq(accounts.tenantId, tenantId), inCompany(accounts.companyId, companyId), eq(accounts.isActive, true),
-            or(inArray(sql`lower(${accounts.name})`, keys),
-              inArray(sql`lower(coalesce(${accounts.accountNumber}, '') || ' ' || ${accounts.name})`, keys))));
+            numbered
+              ? or(inArray(sql`lower(${accounts.name})`, keys),
+                inArray(sql`lower(coalesce(${accounts.accountNumber}, '') || ' ' || ${accounts.name})`, keys))
+              : inArray(sql`lower(${accounts.name})`, keys)));
         for (const r of rows) {
-          for (const k of [norm(r.name), r.number ? norm(`${r.number} ${r.name}`) : '']) if (k && keys.includes(k)) add(k, r.id);
+          for (const k of [norm(r.name), numbered && r.number ? norm(`${r.number} ${r.name}`) : '']) if (k && keys.includes(k)) add(k, r.id);
         }
       } else if (kind === 'contact') {
         const rows = await db.select({ id: contacts.id, name: contacts.displayName }).from(contacts)
