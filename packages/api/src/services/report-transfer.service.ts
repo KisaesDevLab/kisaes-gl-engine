@@ -208,10 +208,10 @@ function idSites(def: Record<string, unknown>): Sites {
 const inCompany = (t: { tenantId: PgColumn; companyId: PgColumn }, tenantId: string, companyId: string) =>
   and(eq(t.tenantId, tenantId), or(isNull(t.companyId), eq(t.companyId, companyId)));
 
-interface Described { id: string; ref: TransferReference; label: string }
+export interface Described { id: string; ref: TransferReference; label: string }
 
-/** The references (and candidate labels) of rows of this company, by kind and id. */
-async function describeRows(tenantId: string, companyId: string, kind: RefKind, ids: string[]): Promise<Map<string, Described>> {
+/** The references (and candidate labels) of rows of this company, by kind and id. Also used by Report Builder drafts (U-120). */
+export async function describeRows(tenantId: string, companyId: string, kind: RefKind, ids: string[]): Promise<Map<string, Described>> {
   const out = new Map<string, Described>();
   if (ids.length === 0) return out;
   switch (kind) {

@@ -1322,5 +1322,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * DEFINITION_INVALID code SCHEMA_NEWER. POST and PUT /definitions take origin: 'import' (audit after.origin). No migration.
    */
   'report-defs-transfer-v1',
+  /**
+   * AI draft of a Report Builder definition (U-120, ClientLedger A10; ADD-03 Q-315). POST /report-builder/draft {description
+   * (≤ 1,000 chars), datePresets?[]} -> {definition (schema v1, engine-made node ids row_a…), savable, unresolved: [{ref "$ref:N",
+   * kind, name|null, reason not_found|ambiguous, sites [{nodeId, path}], candidates [{id, label}]}], notes [{code, message}], reader,
+   * provider, model}. Nothing is saved. The model (the chat function, Ollama included) sees the description, the field catalogue and
+   * names (never an amount) and returns a closed shape that names things; the engine resolves names to ids (model ids refused) and
+   * leaves "$ref:N" at the id paths of an unresolved name, which a save refuses until the client replaces it. No amount filter, no
+   * model digit except aging bucket keys. Reports read access. 403 AI_CONSENT_REQUIRED (report_summary task; no provider call),
+   * 422 DRAFT_UNMAPPED {field, reason}, 503 AI_UNAVAILABLE {provider, reason}. No migration.
+   */
+  'report-builder-ai-v1',
 ];
 
