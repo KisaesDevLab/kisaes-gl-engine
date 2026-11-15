@@ -34,9 +34,11 @@ import * as transfer from '../services/report-transfer.service.js';
 import { REPORT_DEFINITION_KINDS } from '../db/schema/index.js';
 import {
   builderDefinitionSchema, BUILDER_STARTERS, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES, RB_SOURCE_INFO, RB_UNAVAILABLE_SOURCES, RB_MEASURE_UNIT,
-  RB_FILTER_VALUES, RB_DETAIL_FIELDS,
+  RB_FILTER_VALUES, RB_DETAIL_FIELDS, RB_PRESET_RE,
 } from '@kis-books/shared';
 import { runRequestSchema, detailRequestSchema } from '../services/report-builder/request.js';
+import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
+import * as reportDraft from '../services/report-builder/draft.js';
 import { runReport, runDetail, type Viewer as RunViewer } from '../services/report-builder/run.js';
 
 export const reportBuilderRouter = Router();
@@ -330,6 +332,50 @@ reportBuilderRouter.post('/run/detail', describe({
 }), validate(detailRequestSchema), async (req, res) => {
   const body = detailRequestSchema.parse(req.body);
   res.json(await runDetail(await runViewer(req), body, abortOnClose(req, res)));
+});
+
+// ── AI draft (U-120, report-builder-ai-v1) ─────────────────────────
+
+export const draftRequestSchema = z.object({
+  description: z.string().trim().min(1).max(reportDraft.DRAFT_LIMITS.descriptionChars)
+    .describe('the report in plain words, ≤ 1,000 characters'),
+  datePresets: z.array(z.string().regex(RB_PRESET_RE)).max(reportDraft.DRAFT_LIMITS.presets).default([])
+    .describe('the client\'s date preset keys (/^[a-z0-9_]{1,40}$/, as dates.preset); the draft\'s dates.preset is one of them or left out'),
+}).strict();
+
+const DRAFT_DOC = '`{definition, savable, unresolved: [{ref: "$ref:N", kind: account | contact | item | tag | tagGroup, name: string | null, '
+  + 'reason: not_found | ambiguous, sites: [{nodeId, path}], candidates: [{id, label}] (≤ 20)}], notes: [{code: pick_unresolved | amount_filter_left_out | '
+  + 'preset_left_out | numbers_not_used, message, nodeId?}], reader: self_hosted | cloud, provider, model}`';
+
+reportBuilderRouter.post('/draft', expensiveOpLimiter, describe({
+  summary: 'Draft a Report Builder definition with AI (report-builder-ai-v1)',
+  description: 'The company\'s AI provider (the chat function, Ollama included) drafts a builder definition (sections, sources, filters, group-bys, '
+    + 'columns) from a plain-language description, for the owner to review. Nothing is saved. The model sees the description (PII-redacted), the '
+    + 'field catalogue, the sent date presets and names from the books (active accounts, items and tags, tag groups, contacts the description '
+    + `names); never an amount. Response ${DRAFT_DOC}. The definition is Report Builder schema v1 with engine-made node ids; names are resolved `
+    + 'to ids by the engine (the model never gives an id). An unresolved name (none or several matches) leaves the token "$ref:N" at each of its '
+    + 'id paths (sites[].path): the token is not an id, so a save or run refuses the definition (400 DEFINITION_INVALID) until the client puts '
+    + 'an id there (a candidate, or any row the owner picks) or removes it (an emptied filter, or the tag group-by, must then be removed). savable is '
+    + 'true when unresolved is empty: the definition then passes the save check as is. name is null when the model named something that is not '
+    + 'in the books and the owner did not type it. One-shot: the body takes a description only, never a definition to redraft. '
+    + 'There is no amount filter: an amount condition (in the description, or an amount filter or amount-like key the model gives) is left out '
+    + 'and noted as amount_filter_left_out (nodeId when the row is known); the amount itself never reaches the definition or the response. '
+    + 'Every number in the description, in any form (digits of any script and format, currencies, ranges, number words such as "five hundred"), '
+    + 'is masked before the prompt ([AMOUNT] when it reads as an amount or a limit, else [NUMBER]) and noted: amount_filter_left_out, else '
+    + 'numbers_not_used. No digit from the model is kept except the aging bucket keys; a title, caption, text row or not-found name with a digit, '
+    + 'a mask marker or a number word is refused (422 number), except number words in a text that is exactly a name in the books. '
+    + 'One audit row whenever the provider answered: create report_builder_draft (entity the ai_jobs id), after {companyId, provider, model, '
+    + 'reader, outcome: drafted, nodes, unresolved} or {…, outcome: refused, reason} (the 422 reason code); none for 400, 403 or 503; never the '
+    + 'description, prompt, reply or definition. '
+    + 'Errors: 400 VALIDATION_ERROR (empty or > 1,000 character description, an unknown key); 403 AI_CONSENT_REQUIRED {reason, task: report_summary} '
+    + '(AI off, the company not opted in, a stale disclosure, or the report_summary task off; no provider call); 422 DRAFT_UNMAPPED {field, reason} '
+    + '(reason no_report, not_json, shape, number, amount_filter (an amount-like key outside a row or filter), id, unknown, missing, duplicate, too_deep, too_many_names, or a shared validator '
+    + 'code at a definition path such as MIXED_POLARITY or FORMULA_FORWARD_REF); 503 AI_UNAVAILABLE {provider, reason: no_provider | '
+    + 'function_disabled | offline | provider_error}. Reports read access. Not keyed: it changes nothing.',
+  body: draftRequestSchema,
+}), validate(draftRequestSchema), async (req, res) => {
+  const body = draftRequestSchema.parse(req.body);
+  res.json(await reportDraft.draft(req.tenantId, req.companyId, body, req.userId));
 });
 
 reportBuilderRouter.get('/fields', describe({

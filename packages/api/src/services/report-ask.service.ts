@@ -48,7 +48,7 @@
 import crypto from 'node:crypto';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, contacts, tags } from '../db/schema/index.js';
+import { accounts, contacts, items, tagGroups, tags } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as aiConfigService from './ai-config.service.js';
 import * as orchestrator from './ai-orchestrator.service.js';
@@ -133,11 +133,11 @@ export function unmapped(field: string, reason: string): AppError {
   );
 }
 
-function consentRequired(reason: string | undefined): AppError {
+export function consentRequired(reason: string | undefined): AppError {
   return new AppError(403, orchestrator.consentReasonMessage(reason), 'AI_CONSENT_REQUIRED', { reason: reason ?? null, task: 'report_summary' });
 }
 
-function unavailable(message: string, provider: string | null, reason: string): AppError {
+export function unavailable(message: string, provider: string | null, reason: string): AppError {
   return new AppError(503, message, 'AI_UNAVAILABLE', { provider, reason });
 }
 
@@ -158,10 +158,10 @@ export function isIsoDate(s: unknown): s is string {
 
 // ── Names ──────────────────────────────────────────────────────────
 
-const norm = (s: string) => s.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+export const norm = (s: string) => s.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
 /** Any digit, fullwidth and other scripts included (after NFKC). */
-const hasDigit = (s: string) => /\p{N}/u.test(s.normalize('NFKC'));
-const UUIDISH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+export const hasDigit = (s: string) => /\p{N}/u.test(s.normalize('NFKC'));
+export const UUIDISH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 /** Words of the question used to pick the contacts the model may see. */
 const STOP = new Set(['the', 'and', 'for', 'from', 'with', 'what', 'how', 'much', 'did', 'does', 'our', 'we', 'last', 'this',
@@ -176,13 +176,16 @@ export function questionWords(question: string): string[] {
   return [...new Set(words)].slice(0, 20);
 }
 
+/** The kinds of names the engine resolves (item and tagGroup since U-120, for Report Builder drafts). */
+export type NameKind = 'account' | 'contact' | 'tag' | 'item' | 'tagGroup';
+
 export interface NameResolver {
-  /** Ids of the company's names equal (case-insensitive) to each text. */
-  resolve(kind: 'account' | 'contact' | 'tag', texts: string[]): Promise<Map<string, string[]>>;
+  /** Ids of the company's names equal (case-insensitive) to each text, keyed by the normalized text. */
+  resolve(kind: NameKind, texts: string[]): Promise<Map<string, string[]>>;
 }
 
 /** Company scope: this company's rows plus tenant-wide rows (company_id NULL). */
-function inCompany(col: typeof accounts.companyId | typeof contacts.companyId | typeof tags.companyId, companyId: string) {
+function inCompany(col: typeof accounts.companyId | typeof contacts.companyId | typeof tags.companyId | typeof items.companyId | typeof tagGroups.companyId, companyId: string) {
   return or(isNull(col), eq(col, companyId));
 }
 
@@ -206,6 +209,17 @@ export function dbNameResolver(tenantId: string, companyId: string): NameResolve
         const rows = await db.select({ id: contacts.id, name: contacts.displayName }).from(contacts)
           .where(and(eq(contacts.tenantId, tenantId), inCompany(contacts.companyId, companyId), eq(contacts.isActive, true),
             inArray(sql`lower(${contacts.displayName})`, keys)));
+        for (const r of rows) add(norm(r.name), r.id);
+      } else if (kind === 'item') {
+        const rows = await db.select({ id: items.id, name: items.name }).from(items)
+          .where(and(eq(items.tenantId, tenantId), inCompany(items.companyId, companyId), eq(items.isActive, true),
+            inArray(sql`lower(${items.name})`, keys)));
+        for (const r of rows) add(norm(r.name), r.id);
+      } else if (kind === 'tagGroup') {
+        // Tag groups have no active flag.
+        const rows = await db.select({ id: tagGroups.id, name: tagGroups.name }).from(tagGroups)
+          .where(and(eq(tagGroups.tenantId, tenantId), inCompany(tagGroups.companyId, companyId),
+            inArray(sql`lower(${tagGroups.name})`, keys)));
         for (const r of rows) add(norm(r.name), r.id);
       } else {
         const rows = await db.select({ id: tags.id, name: tags.name }).from(tags)
