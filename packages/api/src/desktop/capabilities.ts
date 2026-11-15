@@ -1331,9 +1331,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * leaves "$ref:N" at the id paths of an unresolved name, which a save refuses until the client replaces it. No amount filter:
    * an amount condition (description or model) is left out and noted (amount_filter_left_out, nodeId when known), never drafted
    * or echoed; every description number (digits, words) is masked before the prompt and noted; no model digit except aging
-   * bucket keys, no number word in kept text unless it is exactly a books name. One-shot (description only). One audit row
-   * whenever the provider answered (create report_builder_draft: companyId, provider, model, reader, outcome drafted with
-   * counts or refused with the reason code; never the description, prompt or definition). Reports read
+   * bucket keys, no digit or number word in kept text unless it is exactly a books name of this company (U-224, Q-A10j).
+   * One-shot (description only). One audit row for every send (create report_builder_draft: companyId, provider, model,
+   * reader, outcome drafted with counts, refused with the reason code, or failed (provider_error | offline) after a sent call
+   * failed (U-224, Q-A10k); never the description, prompt or definition). Reports read
    * access. 403 AI_CONSENT_REQUIRED (report_summary task; no provider call), 422 DRAFT_UNMAPPED {field, reason}, 503
    * AI_UNAVAILABLE {provider, reason}. No migration.
    */
