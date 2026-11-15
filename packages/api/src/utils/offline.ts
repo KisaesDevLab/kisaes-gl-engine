@@ -71,6 +71,27 @@ export class OfflineUnavailableError extends AppError {
   }
 }
 
+/**
+ * Marks an error raised BEFORE a request left this process: the pre-call
+ * check (`ensureOnline`: CL_OFFLINE=on, a failed probe, an egress block)
+ * refused it, so no byte of the request was sent. Any other error of a call
+ * (classifyNetworkError included) may have come after bytes left. A caller
+ * that audits what left the machine (e.g. AI report drafts) reads it with
+ * `wasNotSent`. Non-enumerable: it never reaches a response or a log.
+ */
+const NOT_SENT = Symbol.for('kisaes.requestNotSent');
+
+export function markNotSent<T>(err: T): T {
+  if (err && typeof err === 'object' && Object.isExtensible(err)) {
+    Object.defineProperty(err, NOT_SENT, { value: true, enumerable: false });
+  }
+  return err;
+}
+
+export function wasNotSent(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as Record<symbol, unknown>)[NOT_SENT] === true;
+}
+
 export function isOfflineUnavailable(err: unknown): err is OfflineUnavailableError {
   return err instanceof OfflineUnavailableError
     || (!!err && typeof err === 'object' && (err as { code?: unknown }).code === 'OFFLINE_UNAVAILABLE');

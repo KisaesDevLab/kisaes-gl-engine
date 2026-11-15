@@ -40,10 +40,12 @@
  *   - every number in the description, in digits or in words, is masked
  *     before the prompt ([AMOUNT] / [NUMBER]; draft-numbers.ts, Q-A10l) and
  *     noted (amount_filter_left_out or numbers_not_used);
- *   - a digit or a mask marker in any text the draft keeps (title, captions,
- *     text rows) or in a name that did not resolve is refused; so is a number
- *     word ("five hundred"), unless the kept text is exactly a name in the
- *     books. The only digits a draft can hold are DRAFT_STRUCTURAL_DIGITS;
+ *   - a mask marker in any text the draft keeps (title, captions, text rows)
+ *     is refused; so is a digit or a number word ("five hundred") in kept
+ *     text, unless the whole text is exactly a name in this company's books
+ *     (Q-A10j, Q-A10l: "401(k) Match", "Five Star Supply"), and in a name
+ *     that did not resolve. The only digits a draft can hold are
+ *     DRAFT_STRUCTURAL_DIGITS;
  *   - the result passes the same shared validator as a save (parseBuilder,
  *     tokens stood in for by a placeholder id) and every resolved id is a row
  *     of this company (assertRefsInScope).
@@ -55,11 +57,15 @@
  * missing, the chat function off, an error, a timeout or offline: 503
  * AI_UNAVAILABLE. Privacy: the description, names and reply are never logged
  * or stored; the ai_jobs row (job type report_draft) keeps counts only.
- * Whenever the provider answered (names were sent) one audit row is written
- * (create report_builder_draft, entity the ai_jobs id, after {companyId,
- * provider, model, reader, outcome: drafted | refused, and counts or the
- * refusal's code}; Q-A10i, Q-A10k), as the AI report summary does;
- * /reports/ask writes none. One-shot: the request
+ * Whenever the request may have left for a provider (names were sent) one
+ * audit row is written (create report_builder_draft, entity the ai_jobs id,
+ * after {companyId, provider, model, reader, outcome: drafted | refused |
+ * failed, and counts or a reason code}; Q-A10i, Q-A10k): drafted and refused
+ * when the provider answered, failed (reason provider_error | offline) when
+ * the call erred or timed out after it was sent. If the engine cannot tell
+ * whether bytes left, an attempted send counts as sent. No row when nothing
+ * was sent (400, 403, a 503 decided before the call, a call no provider
+ * took). As the AI report summary does; /reports/ask writes none. One-shot: the request
  * takes a description only, never a definition to redraft.
  */
 
@@ -111,15 +117,23 @@ export const REPORT_DRAFT_DEFAULT_TIMEOUT_MS = 60_000;
 export const REPORT_DRAFT_MAX_TOKENS = 2500;
 
 /**
- * The only digits a draft's definition can hold (Q-315), none of them from
- * model text:
+ * The only digits a draft's definition can hold (Q-315):
  *   - schemaVersion: 1 (engine-set);
  *   - formula terms' sign: 1 | -1 (engine-set from the model's add / subtract);
  *   - aging bucket keys of an aging_bucket filter (d1_30, d31_60, d61_90,
  *     over_90): catalogue enum members, taken only as exact keys;
  *   - a date preset the client sent in datePresets (e.g. last_12_months);
  *   - ids the engine looked up, at the id paths;
- *   - "$ref:N" tokens (engine-made) at the id paths of unresolved names.
+ *   - "$ref:N" tokens (engine-made) at the id paths of unresolved names;
+ *   - books names (Q-A10j, owner 2026-11-15): a title, caption, total
+ *     caption or text row whose WHOLE text equals, after the resolver's
+ *     normalisation (NFKC, spaces folded, trimmed, case-insensitive), the
+ *     name of an account, contact, item, tag or tag group of THIS company
+ *     that the resolver finds (active rows; tag groups all), proven by a
+ *     lookup, never by the model's say-so. The name only: an account's
+ *     "number name" form ("6100 Rent") is not a name and stays refused, as
+ *     does any other text with a digit ("401(k) Match over" anything) or a
+ *     name of another company.
  * Node ids are engine-made letters (row_a, …) and hold no digit.
  */
 export const DRAFT_STRUCTURAL_DIGITS = {
@@ -128,6 +142,7 @@ export const DRAFT_STRUCTURAL_DIGITS = {
   enumKeys: [...RB_AGING_BUCKETS].filter((k) => /\d/.test(k)),
   clientTokens: ['dates.preset (a sent datePresets token)'],
   engineTokens: ['ids at id paths', '$ref:N at id paths'],
+  booksNames: ['kept text (title, caption, totalCaption, text) exactly equal to a name in this company\'s books'],
 } as const;
 
 /** Stands in for a "$ref:N" token while the draft is validated; never returned. */
@@ -379,20 +394,20 @@ export function nodeIdFor(i: number): string {
   return `row_${s}`;
 }
 
-/** Kept text holding a number word: allowed only when it is exactly a name in the books (checked after the build). */
+/** Kept text holding a digit or a number word: allowed only when it is exactly a name in the books (checked after the build). */
 export interface WordText { field: string; text: string }
 
 /**
- * Text the draft keeps: trimmed, one line. An id, a digit (Q-A10j: even one
- * copied from a books name) or a mask marker ([AMOUNT], [NUMBER]) is refused
- * here; text with a number word (Q-A10l) is put on `words`, refused after the
- * build unless the whole text is exactly a name in the books.
+ * Text the draft keeps: trimmed, one line. An id or a mask marker ([AMOUNT],
+ * [NUMBER]) is refused here; text with a digit (Q-A10j) or a number word
+ * (Q-A10l) is put on `words`, refused after the build unless the whole text
+ * is exactly a name in this company's books (checkKeptNumbers).
  */
 function keptText(v: string, field: string, words: WordText[]): string {
   const s = v.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
   if (UUIDISH.test(s)) throw draftUnmapped(field, 'id');
-  if (hasDigit(s) || hasMaskToken(s)) throw draftUnmapped(field, 'number');
-  if (hasNumberWord(s)) words.push({ field, text: s });
+  if (hasMaskToken(s)) throw draftUnmapped(field, 'number');
+  if (hasDigit(s) || hasNumberWord(s)) words.push({ field, text: s });
   return s;
 }
 
@@ -639,15 +654,18 @@ export async function resolveNames(
 }
 
 /**
- * Kept text with a number word (Q-A10l) is refused (422 number) unless the
- * whole text is exactly a name in this company's books, of any kind ("Five
- * Star Supply" as a caption). A digit was refused before (Q-A10j).
+ * Kept text with a digit (Q-A10j) or a number word (Q-A10l) is refused (422
+ * number) unless the whole text is exactly a name in this company's books,
+ * of any kind ("401(k) Match", "Five Star Supply" as a caption). Proven by
+ * the resolver's lookup in this company (name only: an account's "number
+ * name" form does not count), never by the model. Fields are checked in
+ * build order, so the first refused one is reported.
  */
-export async function checkNumberWords(texts: WordText[], resolver: NameResolver): Promise<void> {
+export async function checkKeptNumbers(texts: WordText[], resolver: NameResolver): Promise<void> {
   if (texts.length === 0) return;
   const names = new Set<string>();
   for (const kind of Object.values(RESOLVER_KIND)) {
-    for (const [k, ids] of await resolver.resolve(kind, texts.map((t) => t.text))) if (ids.length > 0) names.add(k);
+    for (const [k, ids] of await resolver.resolve(kind, texts.map((t) => t.text), { nameOnly: true })) if (ids.length > 0) names.add(k);
   }
   for (const t of texts) if (!names.has(norm(t.text))) throw draftUnmapped(t.field, 'number');
 }
@@ -695,7 +713,7 @@ export async function draftFromReply(
   }
   const { definition, sites, notes: built, amountNodes, words } = buildDefinition(shaped.data, input, amountRows);
   const unresolved = await resolveNames(sites, input.description, resolver, labeler);
-  await checkNumberWords(words, resolver);
+  await checkKeptNumbers(words, resolver);
   await checkDraft(definition, tenantId, companyId);
   return { definition, unresolved, notes: draftNotes(input.description, unresolved.length > 0, built, amountNodes, amountTop) };
 }
@@ -748,6 +766,7 @@ export const REPORT_DRAFT_SYSTEM_PROMPT = [
   'or {"field": ..., "op": "in" | "not_in", "values": ["<listed values>"]} for account_type, txn_type, cleared, due_status and aging_bucket.',
   `Rules: use only sources, measures, filters, group keys and detail fields the catalogue lists for that source; at most ${GROUP_KEYS_WORD} group keys per section.`,
   'Labels are lowercase letters and underscores. Captions and text hold words only: no digits, no numbers written as words, no amounts, no ids, never [AMOUNT] or [NUMBER].',
+  'The one exception: a caption or text that is exactly a name copied from NAMES, and nothing more, may keep that name as written.',
   'An "All accounts" section with measure amount or balance needs an account_type filter of one side (debit side: asset, cogs, expense, other_expense;',
   'credit side: liability, equity, revenue, other_revenue) or a polarity. A running balance needs the innermost group key account. Aging columns',
   '(agingBuckets true) need open-item sources only and no periods or compare. Earnings rows need source gl with measure balance (balance_sheet) or tb_net (trial_balance).',
@@ -788,7 +807,12 @@ export function buildDraftPrompt(
   ].join('\n');
 }
 
-/** Names the model may see: those of /reports/ask plus active items and tag groups. Names only. */
+/**
+ * Names the model may see: those of /reports/ask plus active items and tag
+ * groups. Names only. Contacts come from the description's words without a
+ * digit (as /reports/ask), so a contact named only by digits ("3M") is not
+ * picked: the digits the owner typed never choose what the model sees.
+ */
 export async function draftPromptNames(tenantId: string, companyId: string, description: string) {
   const base = await promptNames(tenantId, companyId, description);
   const it = await db.select({ name: items.name }).from(items)
@@ -841,6 +865,15 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
   );
 
   const params = aiConfigService.resolveTaskParams(config, 'chat', { maxTokens: REPORT_DRAFT_MAX_TOKENS, temperature: 0 });
+  // Audit trail (owner Q&A 2026-11-15, Q-A10i, Q-A10k): one row for every send — whenever the request may have left
+  // for a provider: drafted, refused, or failed (the provider erred or timed out after it was sent). Who, when (the
+  // row's time), which provider, the outcome, and counts or a fixed reason code. Never the description, the prompt,
+  // the reply or the definition. None when nothing was sent: consent off (403), an invalid request (400), no provider
+  // or the function off (503 before the call), or a call no provider took (no credentials, every try refused
+  // before connecting: executeWithFallback's onSent).
+  const audit = (who: { provider: string; model: string | null; reader: 'self_hosted' | 'cloud' }, after: Record<string, unknown>) =>
+    auditLog(tenantId, 'create', 'report_builder_draft', job.id, null, { companyId, ...who, ...after }, userId);
+  const sentTo: Array<{ provider: string; model: string | null }> = [];
   let result: CompletionResult | null = null;
   try {
     result = await executeWithFallback(
@@ -859,12 +892,21 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
       exec.fallbackChain,
       provider,
       model,
-      { timeoutMs: exec.timeoutMs && exec.timeoutMs > 0 ? exec.timeoutMs : REPORT_DRAFT_DEFAULT_TIMEOUT_MS },
+      {
+        timeoutMs: exec.timeoutMs && exec.timeoutMs > 0 ? exec.timeoutMs : REPORT_DRAFT_DEFAULT_TIMEOUT_MS,
+        onSent: (s) => { sentTo.push(s); },
+      },
     );
   } catch (err) {
     // The error class only: a provider message may quote the request.
     const offline = isOfflineUnavailable(err);
     await orchestrator.failJob(job.id, offline ? 'offline' : 'provider_error');
+    if (sentTo.length > 0) {
+      // Sent, then failed: the last provider tried; cloud if any provider tried is not local.
+      const last = sentTo[sentTo.length - 1]!;
+      const reader = sentTo.some((s) => !isLocal(s.provider, s.model ?? undefined)) ? 'cloud' : 'self_hosted';
+      await audit({ provider: last.provider, model: last.model, reader }, { outcome: 'failed', reason: offline ? 'offline' : 'provider_error' });
+    }
     throw unavailable(
       offline
         ? `Couldn't reach ${provider}; the Report Builder still works.`
@@ -876,13 +918,7 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
 
   const usage = { provider: result.provider, model: result.model, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
   const reader = isLocal(result.provider, result.model) ? 'self_hosted' : 'cloud';
-  // Audit trail (owner Q&A 2026-11-15, Q-A10i, Q-A10k): one row whenever the provider answered (names were sent),
-  // drafted or refused: who, when (the row's time), which provider, the outcome, and counts or the refusal's code.
-  // Never the description, the prompt, the reply or the definition. None when consent is off, the request is
-  // invalid or the provider was not reached (403, 400, 503).
-  const audit = (after: Record<string, unknown>) => auditLog(tenantId, 'create', 'report_builder_draft', job.id, null, {
-    companyId, provider: result.provider, model: result.model, reader, ...after,
-  }, userId);
+  const answered = { provider: result.provider, model: result.model, reader } as const;
 
   let out: Awaited<ReturnType<typeof draftFromReply>>;
   try {
@@ -894,7 +930,7 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
     const reason = err instanceof AppError ? String((err.details as { reason?: string } | undefined)?.reason ?? err.code ?? 'error') : 'error';
     await orchestrator.failJob(job.id, `unmapped:${reason}`, usage);
     // A fixed code only (no_report, number, MIXED_POLARITY …); anything else is 'error'.
-    await audit({ outcome: 'refused', reason: /^[A-Za-z_]{1,40}$/.test(reason) ? reason : 'error' });
+    await audit(answered, { outcome: 'refused', reason: /^[A-Za-z_]{1,40}$/.test(reason) ? reason : 'error' });
     throw err;
   }
 
@@ -904,7 +940,7 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
     unresolved: out.unresolved.length,
   }, 1);
 
-  await audit({ outcome: 'drafted', nodes: countNodes(out.definition.nodes), unresolved: out.unresolved.length });
+  await audit(answered, { outcome: 'drafted', nodes: countNodes(out.definition.nodes), unresolved: out.unresolved.length });
   return { ...out, savable: out.unresolved.length === 0, reader, provider: result.provider, model: result.model };
 }
 

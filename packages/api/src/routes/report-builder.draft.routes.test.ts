@@ -9,12 +9,15 @@
 //     the engine looked up, and no digit outside DRAFT_STRUCTURAL_DIGITS;
 //   - the prompt holds names, never a balance, an amount, a memo, a contact
 //     the description does not name, or a phone number;
-//   - an amount filter, a JSON number, a digit in kept text, an id or an
+//   - an amount filter, a JSON number, a digit in kept text (unless the
+//     text is exactly a name in this company's books, Q-A10j), an id or an
 //     id-like key from the model is 422 DRAFT_UNMAPPED, never echoed;
 //   - unresolved and ambiguous names leave "$ref:N" (a save refuses it) and
 //     an entry in unresolved; replacing the tokens makes it savable;
 //   - consent off is 403 with no provider call and no ai_jobs row; a
-//     provider error or none is 503; Ollama answers as self_hosted.
+//     provider error or none is 503; Ollama answers as self_hosted;
+//   - every send is audited: drafted, refused, or failed after the send
+//     (Q-A10k); nothing sent, no row.
 
 import 'express-async-errors';
 import express from 'express';
@@ -521,6 +524,86 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(bad.json.error.details).toEqual({ field: 'rows.0.caption', reason: 'number' });
   });
 
+  // Q-A10j (owner 2026-11-15): kept text exactly equal to a name in this company's books may hold a digit.
+  it('"401(k) Match by month": the description stays masked, the name comes from NAMES, a caption equal to it is kept (Q-A10j)', async () => {
+    await enableAi();
+    const [match] = await db.insert(accounts).values({
+      tenantId: c.tenantId, companyId: c.companyId, name: '401(k) Match', accountNumber: '6450', accountType: 'expense',
+    }).returning();
+    m.execute.mockResolvedValueOnce(reply({ title: '401(K) match', dates: 'range', periods: 'month', rows: [
+      { type: 'section', caption: '401(k) Match', source: 'gl', measure: 'amount', filters: [{ field: 'account', op: 'in', names: ['401(k) Match'] }],
+        groupBy: [{ key: 'account' }], totalCaption: '401(k)  match' },
+      { type: 'text', text: '401(k) Match' },
+    ] }));
+    const res = await post(request({ description: '401(k) Match by month' }));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    const def = res.json.definition;
+    expect(def.title).toBe('401(K) match');
+    expect(def.nodes[0]).toMatchObject({ caption: '401(k) Match', totalCaption: '401(k) match', filters: [{ field: 'account', op: 'in', ids: [match!.id] }] });
+    expect(def.nodes[1]).toMatchObject({ type: 'text', text: '401(k) Match' });
+    expect(res.json.savable).toBe(true);
+    expect(parseBuilderDefinition(def).ok).toBe(true);
+    // The description the model saw: the digits masked as a number, not an amount; the name itself only under NAMES.
+    expect(sentDescription()).toContain('[NUMBER](k) Match by month');
+    expect(sentDescription()).not.toMatch(/\p{N}|\[AMOUNT\]/u);
+    expect(sent()).toContain('Accounts: 401(k) Match; ');
+    expect(promptDigits(sent().split('401(k) Match').join(''))).toEqual([]);
+    expect(res.json.notes.map((n: { code: string }) => n.code)).toEqual(['numbers_not_used']);
+  });
+
+  it('a digit is kept only for a whole books name of this company: more text, the account number form or another company is refused (Q-A10j)', async () => {
+    await enableAi();
+    await db.insert(accounts).values({ tenantId: c.tenantId, companyId: c.companyId, name: '401(k) Match', accountType: 'expense' });
+    await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyB, contactType: 'vendor', displayName: 'Studio 54' });
+    await db.insert(items).values({ tenantId: c.tenantId, companyId: c.companyId, name: 'Retired 99', isActive: false, incomeAccountId: c.income });
+    const one = (caption: string) => reply({ dates: 'range', rows: [
+      { type: 'section', caption, source: 'gl', measure: 'amount', filters: [{ field: 'account', op: 'in', names: ['401(k) Match'] }] },
+    ] });
+    for (const caption of ['401(k) Match over 500', '401(k) Match 2026', '6100 Rent Kumquat Hall', 'Studio 54', 'Retired 99', 'Match 401(k)']) {
+      m.execute.mockResolvedValueOnce(one(caption));
+      const res = await post(request({ description: 'Retirement match' }));
+      expect(res.status, caption).toBe(422);
+      expect(res.json.error.details, caption).toEqual({ field: 'rows.0.caption', reason: 'number' });
+      expect(JSON.stringify(res.json), caption).not.toMatch(/401|500|2026|6100|54|99/);
+    }
+    // The same text in a title or a text row is refused the same way.
+    m.execute.mockResolvedValueOnce(reply({ title: 'Studio 54', dates: 'range', rows: [{ type: 'text', text: 'Notes' }] }));
+    expect((await post(request({ description: 'Retirement match' }))).json.error.details).toEqual({ field: 'title', reason: 'number' });
+    // The model's say-so is not proof: a caption equal to a name it put in a filter that did not resolve is refused.
+    m.execute.mockResolvedValueOnce(reply({ dates: 'range', rows: [
+      { type: 'section', caption: 'Studio 54', source: 'purchases', measure: 'amount', filters: [{ field: 'contact', op: 'in', names: ['Studio 54'] }] },
+    ] }));
+    const r = await post(request({ description: 'Purchases from Studio 54' }));
+    expect(r.status).toBe(422);
+    expect(r.json.error.details.reason).toBe('number');
+  });
+
+  it('a contact with a digit named by a word of the description ("Studio 54") is in NAMES and resolves; one named only by digits ("3M") is not (Q-A10j)', async () => {
+    await enableAi();
+    const [studio] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Studio 54' }).returning();
+    await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: '3M' });
+    const buys = (name: string) => reply({ dates: 'range', rows: [
+      { type: 'section', caption: name, source: 'purchases', measure: 'amount', filters: [{ field: 'contact', op: 'in', names: [name] }] },
+    ] });
+    m.execute.mockResolvedValueOnce(buys('Studio 54'));
+    const r1 = await post(request({ description: 'Purchases from Studio 54' }));
+    expect(r1.status, JSON.stringify(r1.json)).toBe(200);
+    expect(r1.json.definition.nodes[0]).toMatchObject({ caption: 'Studio 54', filters: [{ field: 'contact', op: 'in', ids: [studio!.id] }] });
+    expect(sent(0)).toContain('Contacts: Studio 54');
+    expect(sentDescription(0)).toContain('Purchases from Studio [NUMBER]');
+    expect(sentDescription(0)).not.toMatch(/\p{N}/u);
+    expect(r1.json.notes.map((n: { code: string }) => n.code)).toEqual(['numbers_not_used']);
+
+    // The digits the owner typed never pick a name for the model: "3M" is masked (as an amount: "M" is a unit) and not in NAMES.
+    m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+    const r2 = await post(request({ description: 'Vendor bills over 3M' }));
+    expect(r2.status, JSON.stringify(r2.json)).toBe(200);
+    expect(sentDescription(1)).toContain('Vendor bills over [AMOUNT]');
+    expect(sent(1)).toContain('Contacts: (none)');
+    expect(promptDigits(sent(1))).toEqual([]);
+    expect(r2.json.notes.map((n: { code: string }) => n.code)).toEqual(['amount_filter_left_out']);
+  });
+
   it('a name not found is shown back only when it is a whole word or phrase of the description', async () => {
     await enableAi();
     m.execute.mockResolvedValueOnce(reply({ dates: 'range', rows: [
@@ -632,7 +715,14 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(await draftAudits()).toEqual([]);
   });
 
-  it('a provider error or offline is 503 AI_UNAVAILABLE', async () => {
+  /** A provider call that was sent (executeWithFallback told onSent) and then failed with `err`. */
+  const sentThenFails = (err: Error, ...sentTo: Array<{ provider: string; model: string | null }>) =>
+    (_p: unknown, _cfg: unknown, _chain: unknown, _prov: unknown, _model: unknown, opts: { onSent?: (s: { provider: string; model: string | null }) => void }) => {
+      for (const s of sentTo) opts.onSent?.(s);
+      return Promise.reject(err);
+    };
+
+  it('a call no provider took (no credentials, refused before connecting) is 503 AI_UNAVAILABLE with no audit row', async () => {
     await enableAi();
     m.execute.mockRejectedValueOnce(new Error('upstream said: rent from Kumquat Hall'));
     const r1 = await post(request());
@@ -644,8 +734,54 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(r2.status).toBe(503);
     expect(r2.json.error.details.reason).toBe('offline');
     expect((await jobs()).map((r) => r.status)).toEqual(['failed', 'failed']);
-    // The provider was not reached: no audit row (Q-A10k).
+    // Nothing was sent (onSent never told): no audit row (Q-A10k).
     expect(await draftAudits()).toEqual([]);
+    // The listener is passed on every call.
+    expect(typeof (m.execute.mock.calls[0]![5] as { onSent?: unknown }).onSent).toBe('function');
+  });
+
+  it('a call sent and then failed or timed out is 503 and audited as failed, never with the request (Q-A10k)', async () => {
+    await enableAi();
+    m.execute.mockImplementationOnce(sentThenFails(new Error('upstream said: rent from Kumquat Hall'), { provider: 'anthropic', model: 'claude-test' }));
+    const r1 = await post(request());
+    expect(r1.status).toBe(503);
+    expect(r1.json.error).toMatchObject({ code: 'AI_UNAVAILABLE', details: { provider: 'anthropic', reason: 'provider_error' } });
+    // Sent, then the network dropped (classified offline after the send): still audited.
+    m.execute.mockImplementationOnce(sentThenFails(new OfflineUnavailableError('ai:anthropic'), { provider: 'anthropic', model: 'claude-test' }));
+    const r2 = await post(request());
+    expect(r2.status).toBe(503);
+    expect(r2.json.error.details.reason).toBe('offline');
+    // A fallback chain: a local attempt, then a cloud one on its default model: the last provider, read as cloud.
+    m.execute.mockImplementationOnce(sentThenFails(Object.assign(new Error('All AI providers failed. openai: timeout after 60000ms'), { code: 'ai_all_providers_failed' }),
+      { provider: 'ollama', model: 'llama3' }, { provider: 'openai', model: null }));
+    const r3 = await post(request());
+    expect(r3.status).toBe(503);
+
+    const jobRows = await jobs();
+    expect(jobRows.map((r) => r.status)).toEqual(['failed', 'failed', 'failed']);
+    const audits = (await db.select().from(auditLog).where(eq(auditLog.tenantId, c.tenantId))).filter((a) => a.entityType === 'report_builder_draft');
+    expect(audits).toHaveLength(3);
+    const base = { companyId: c.companyId, outcome: 'failed' };
+    const after = (a: typeof audits[number]) => (typeof a.afterData === 'string' ? JSON.parse(a.afterData) : a.afterData) as Record<string, unknown>;
+    expect(audits.map(after).sort((x, y) => String(x['reason']).localeCompare(String(y['reason'])) || String(x['provider']).localeCompare(String(y['provider'])))).toEqual([
+      { ...base, provider: 'anthropic', model: 'claude-test', reader: 'cloud', reason: 'offline' },
+      { ...base, provider: 'anthropic', model: 'claude-test', reader: 'cloud', reason: 'provider_error' },
+      { ...base, provider: 'openai', model: null, reader: 'cloud', reason: 'provider_error' },
+    ]);
+    expect(audits.map((a) => [a.action, a.userId, a.beforeData])).toEqual(Array(3).fill(['create', c.userId, null]));
+    expect(new Set(audits.map((a) => a.entityId))).toEqual(new Set(jobRows.map((j) => j.id)));
+    expect(JSON.stringify(audits.map((a) => a.afterData))).not.toMatch(/Kumquat|Rivera|Granite|timeout|upstream|500|rows|DESCRIPTION/i);
+  });
+
+  it('a self-hosted call sent and then failed is audited as self_hosted (Q-A10k)', async () => {
+    await enableAi();
+    await db.update(aiConfig).set({ chatProvider: 'ollama', chatModel: 'llama3' });
+    m.execute.mockImplementationOnce(sentThenFails(new Error('connect ECONNREFUSED 127.0.0.1:11434'), { provider: 'ollama', model: 'llama3' }));
+    const res = await post(request());
+    expect(res.status).toBe(503);
+    expect((await draftAudits()).map((a) => a.after)).toEqual([{
+      companyId: c.companyId, provider: 'ollama', model: 'llama3', reader: 'self_hosted', outcome: 'failed', reason: 'provider_error',
+    }]);
   });
 
   it('no provider, or the chat function off, is 503 without a call or a job', async () => {
@@ -699,6 +835,8 @@ describe('report draft helpers (no database)', () => {
     expect(DRAFT_STRUCTURAL_DIGITS.enumKeys).toEqual(['d1_30', 'd31_60', 'd61_90', 'over_90']);
     expect(DRAFT_STRUCTURAL_DIGITS.schemaVersion).toEqual([1]);
     expect(DRAFT_STRUCTURAL_DIGITS.termSign).toEqual([1, -1]);
+    // Q-A10j: kept text that is exactly a books name of this company (proven by lookup in the route tests above).
+    expect(DRAFT_STRUCTURAL_DIGITS.booksNames).toHaveLength(1);
   });
 
   it('prescreen drops free text at the top level and does not mistake ordinary words for ids', () => {
