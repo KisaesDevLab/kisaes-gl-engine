@@ -182,6 +182,52 @@ describe('executeWithFallback', () => {
     expect(mocks.anthropic).not.toHaveBeenCalled();
   });
 
+  describe('onSent: every attempt that may have sent the request (U-224, report draft audit)', () => {
+    it('tells about a failed attempt, the default-model retry and the chain, with the model asked for', async () => {
+      mocks.anthropic.mockRejectedValue(err404('boom-anthropic'));
+      mocks.openai.mockImplementation((model) => ok('openai', model));
+      const sent: Array<{ provider: string; model: string | null }> = [];
+      const result = await executeWithFallback(PARAMS, CONFIG, ['anthropic', 'openai', 'gemini'], 'anthropic', 'stale-model', {
+        onSent: (s) => { sent.push(s); },
+      });
+      expect(result.provider).toBe('openai');
+      expect(sent).toEqual([
+        { provider: 'anthropic', model: 'stale-model' },
+        { provider: 'anthropic', model: null },
+        { provider: 'openai', model: null },
+      ]);
+    });
+
+    it('is not told about a provider never tried (no credentials) or a try refused before connecting', async () => {
+      const { markNotSent, OfflineUnavailableError } = await import('../../utils/offline.js');
+      mocks.anthropic.mockImplementation(() => Promise.reject(markNotSent(Object.assign(new OfflineUnavailableError('ai:anthropic'), { status: 404 }))));
+      const sent: unknown[] = [];
+      const err = await settle(executeWithFallback(PARAMS, CONFIG, ['anthropic', 'gemini'], 'anthropic', undefined, {
+        onSent: (s) => { sent.push(s); },
+      }));
+      expect(mocks.anthropic).toHaveBeenCalled();
+      expect(mocks.gemini).not.toHaveBeenCalled();
+      expect(err).toBeInstanceOf(Error);
+      expect(sent).toEqual([]);
+    });
+
+    it('an offline error raised during the call (not marked) counts as sent', async () => {
+      const { OfflineUnavailableError } = await import('../../utils/offline.js');
+      mocks.anthropic.mockImplementation(() => Promise.reject(Object.assign(new OfflineUnavailableError('ai:anthropic'), { status: 404 })));
+      const sent: unknown[] = [];
+      await settle(executeWithFallback(PARAMS, CONFIG, ['anthropic'], 'anthropic', undefined, { onSent: (s) => { sent.push(s); } }));
+      expect(sent).toEqual([{ provider: 'anthropic', model: null }]);
+    });
+
+    it('a listener that throws never changes the outcome', async () => {
+      mocks.anthropic.mockImplementation((model) => ok('anthropic', model));
+      const result = await executeWithFallback(PARAMS, CONFIG, ['anthropic'], 'anthropic', undefined, {
+        onSent: () => { throw new Error('listener'); },
+      });
+      expect(result.provider).toBe('anthropic');
+    });
+  });
+
   it('propagates the message aggregate on the thrown error', async () => {
     mocks.anthropic.mockRejectedValue(err404('boom'));
 

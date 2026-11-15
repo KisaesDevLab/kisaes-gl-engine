@@ -119,6 +119,24 @@ describe('desktop, CL_OFFLINE=on', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it('a call refused before connecting is not reported as sent (onSent, U-224); the local one that answers is', async () => {
+    desktop('on');
+    const sent: Array<{ provider: string; model: string | null }> = [];
+    const onSent = (s: { provider: string; model: string | null }) => { sent.push(s); };
+    const { err } = await timed(() => executeWithFallback(PARAMS, config(), ['anthropic', 'openai'], 'anthropic', 'claude-x', { onSent }));
+    expect(err).toBeInstanceOf(OfflineUnavailableError);
+    expect(sent).toEqual([]);
+    const stub = await ollamaStub();
+    await secrets.setOllamaBaseUrl(stub.url);
+    try {
+      const r = await executeWithFallback(PARAMS, config(), ['anthropic', 'ollama'], 'anthropic', undefined, { onSent });
+      expect(r.provider).toBe('ollama');
+      expect(sent).toEqual([{ provider: 'ollama', model: null }]);
+    } finally {
+      await stub.close();
+    }
+  });
+
   it('Ollama (local) still answers', async () => {
     desktop('on');
     const stub = await ollamaStub();
