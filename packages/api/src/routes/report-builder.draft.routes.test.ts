@@ -38,7 +38,9 @@ import { reportBuilderRouter } from './report-builder.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiConsent from '../services/ai-consent.service.js';
-import { AMOUNT_TEXT_RE, DRAFT_STRUCTURAL_DIGITS, draftNotes, maskAmounts, nodeIdFor, prescreen } from '../services/report-builder/draft.js';
+import {
+  DRAFT_STRUCTURAL_DIGITS, NUMBER_WORDS, REPORT_DRAFT_SYSTEM_PROMPT, draftNotes, hasNumberWord, maskNumbers, nodeIdFor, prescreen, resolveNames,
+} from '../services/report-builder/draft.js';
 import { OfflineUnavailableError } from '../utils/offline.js';
 import { makeCompany, cleanTenant, type Co } from '../services/templates/templates.test-helpers.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -126,6 +128,35 @@ async function enableAi(tasks: Record<string, boolean> = { report_summary: true 
 }
 
 const jobs = () => db.select().from(aiJobs).where(eq(aiJobs.tenantId, c.tenantId));
+
+/** This tenant's report_builder_draft audit rows, `after` parsed, drafted before refused. */
+async function draftAudits() {
+  const rows = (await db.select().from(auditLog).where(eq(auditLog.tenantId, c.tenantId))).filter((a) => a.entityType === 'report_builder_draft');
+  return rows
+    .map((a) => ({ ...a, after: (typeof a.afterData === 'string' ? JSON.parse(a.afterData) : a.afterData) as Record<string, unknown> }))
+    .sort((x, y) => String(x.after['outcome']).localeCompare(String(y.after['outcome'])));
+}
+
+/** Everything sent to the provider in call i: the system prompt and the user prompt. */
+function sent(i = 0): string {
+  const p = m.execute.mock.calls[i]![0] as { systemPrompt: string; userPrompt: string };
+  return `${p.systemPrompt}\n${p.userPrompt}`;
+}
+/** The description as the model saw it. */
+function sentDescription(i = 0): string {
+  const u = (m.execute.mock.calls[i]![0] as { userPrompt: string }).userPrompt;
+  return u.slice(u.indexOf('DESCRIPTION'), u.indexOf('CATALOGUE'));
+}
+/** Digits in a prompt outside the structural tokens the engine must send: the catalogue's aging bucket keys and the sent presets. */
+const SENT_PRESETS = ['this_month', 'this_year', 'last_12_months'];
+function promptDigits(text: string): string[] {
+  let t = text;
+  for (const k of [...DRAFT_STRUCTURAL_DIGITS.enumKeys, ...SENT_PRESETS]) t = t.split(k).join('');
+  return t.match(/\p{Nd}/gu) ?? [];
+}
+const OPEN_INVOICES = { dates: 'range', rows: [
+  { type: 'section', caption: 'Open invoices', source: 'ar_open', measure: 'open_balance', groupBy: [{ key: 'contact' }] },
+] };
 
 beforeAll(async () => {
   const app = express();
@@ -249,7 +280,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(draftRows[0]!).toMatchObject({ action: 'create', userId: c.userId, entityId: rows[0]!.id, beforeData: null });
     const raw = draftRows[0]!.afterData;
     const after = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
-    expect(after).toEqual({ companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud', nodes: 6, unresolved: 0 });
+    expect(after).toEqual({ companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'drafted', nodes: 6, unresolved: 0 });
     for (const s of ['Rent', 'Rivera', 'Kumquat', 'Granite', 'Crews', '500', 'row_a', 'section', 'onthly']) expect(JSON.stringify(raw).replace(UUID_G, '')).not.toContain(s);
 
     // Savable as is: the real save route takes it, and nothing was saved before.
@@ -385,12 +416,133 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(JSON.stringify(res.json).replace(UUID_G, '')).not.toMatch(/1,?250/);
   });
 
+  // Q-A10l (review B1): every number in the description, in any format, is masked before the prompt and noted.
+  it.each([
+    ['Bills over $500', 'amount'],
+    ['Invoices of 500', 'amount'],
+    ['Bills totalling 1,250.75', 'amount'],
+    ['Bills 500€ and up', 'amount'],
+    ['Bills over USD 500', 'amount'],
+    ['Amount = 500', 'amount'],
+    ['Bills between 100 and 500', 'amount'],
+    ['Bills 100-500', 'number'],
+    ['Bills of 5e3', 'amount'],
+    ['Bills over 1.5k', 'amount'],
+    ['Margin under 20%', 'amount'],
+    ['Sales that grew 20 percent', 'number'],
+    ['Bills over ５００ (fullwidth)', 'amount'],
+    ['Bills over ٥٠٠ (Arabic-Indic)', 'amount'],
+    ['Bills over १२३ (Devanagari)', 'amount'],
+    ['Bills over 5\u200B00 (a zero-width space)', 'amount'],
+    ['Bills > five hundred dollars', 'amount'],
+    ['Bills over five hundred dollars', 'amount'],
+    ['Bills over a thousand', 'amount'],
+    ['Vendors paid fifty bucks or more', 'amount'],
+    ['Projects over half a million', 'amount'],
+    ['Our two dozen top customers', 'number'],
+    ['Income for 2026', 'number'],
+    ['Sales in the last twelve months', 'number'],
+  ])('masks "%s" before the prompt and notes it (%s)', async (description, kind) => {
+    await enableAi();
+    m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+    const res = await post(request({ description }));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    // The prompt: no digit outside the structural tokens; no number word in the description the model saw.
+    expect(promptDigits(sent())).toEqual([]);
+    const seen = sentDescription();
+    expect(seen).toMatch(/\[(AMOUNT|NUMBER)\]/);
+    expect(hasNumberWord(seen), seen).toBe(false);
+    expect(seen).not.toMatch(/\p{N}/u);
+    // The response: the note, and the number in no form.
+    expect(res.json.notes.map((n: { code: string }) => n.code)).toEqual([kind === 'amount' ? 'amount_filter_left_out' : 'numbers_not_used']);
+    const text = JSON.stringify(res.json).replace(UUID_G, '').replace(/"schemaVersion":1/, '');
+    expect(text).not.toMatch(/\p{N}/u);
+    expect(hasNumberWord(text)).toBe(false);
+  });
+
+  it('"Bills over five hundred dollars": masked and noted; a caption that repeats it is refused; both calls audited (B1, Q-A10k)', async () => {
+    await enableAi();
+    const description = 'Bills over five hundred dollars';
+    const bills = (caption: string) => reply({ dates: 'range', rows: [
+      { type: 'section', caption, source: 'ar_open', measure: 'open_balance', groupBy: [{ key: 'contact' }], amountCondition: true },
+    ] });
+    m.execute.mockResolvedValueOnce(bills('Bills over five hundred dollars'));
+    const r1 = await post(request({ description }));
+    expect(r1.status).toBe(422);
+    expect(r1.json.error.details).toEqual({ field: 'rows.0.caption', reason: 'number' });
+    expect(JSON.stringify(r1.json)).not.toMatch(/five|hundred/i);
+    expect(sentDescription()).toContain('Bills over [AMOUNT]');
+    expect(sentDescription()).not.toMatch(/five|hundred|dollars/i);
+
+    m.execute.mockResolvedValueOnce(bills('Unpaid bills'));
+    const r2 = await post(request({ description }));
+    expect(r2.status, JSON.stringify(r2.json)).toBe(200);
+    expect(r2.json.notes).toEqual([{ code: 'amount_filter_left_out', message: expect.any(String), nodeId: 'row_a' }]);
+    expect(JSON.stringify(r2.json)).not.toMatch(/five|hundred|500/i);
+
+    // One audit row per answered call, the refused one too; never the description, the reply or the definition.
+    const audits = await draftAudits();
+    const base = { companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud' };
+    expect(audits.map((a) => a.after)).toEqual([
+      { ...base, outcome: 'drafted', nodes: 1, unresolved: 0 },
+      { ...base, outcome: 'refused', reason: 'number' },
+    ]);
+    expect(audits.map((a) => [a.action, a.userId, a.beforeData])).toEqual([['create', c.userId, null], ['create', c.userId, null]]);
+    expect(JSON.stringify(audits.map((a) => a.afterData))).not.toMatch(/five|hundred|bills|caption|rows|AMOUNT/i);
+  });
+
+  it('the prompt holds no digit and no amount of its own (S4): only the structural tokens it must send', async () => {
+    expect(REPORT_DRAFT_SYSTEM_PROMPT).not.toMatch(/\p{N}/u);
+    expect(REPORT_DRAFT_SYSTEM_PROMPT).not.toMatch(/\p{Sc}/u);
+    await enableAi();
+    const res = await post(request({ description: 'Monthly income and rent by crew for Rivera Remodel' }));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(promptDigits(sent())).toEqual([]);
+    expect(res.json.notes).toEqual([]);
+    // The allowlist hides something real: the structural tokens are sent.
+    for (const k of ['d1_30', 'over_90', 'last_12_months']) expect(sent()).toContain(k);
+  });
+
+  it('a caption that is exactly a name in the books may hold number words; anything more is refused (Q-A10l)', async () => {
+    await enableAi();
+    await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Five Star Supply' });
+    const purchases = (caption: string) => reply({ dates: 'range', rows: [
+      { type: 'section', caption, source: 'purchases', measure: 'amount', filters: [{ field: 'contact', op: 'in', names: ['Five Star Supply'] }] },
+    ] });
+    m.execute.mockResolvedValueOnce(purchases('five star supply'));
+    const ok = await post(request({ description: 'Purchases from Five Star Supply' }));
+    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    expect(ok.json.definition.nodes[0].caption).toBe('five star supply');
+    expect(ok.json.unresolved).toEqual([]);
+    m.execute.mockResolvedValueOnce(purchases('Five Star Supply over five hundred'));
+    const bad = await post(request({ description: 'Purchases from Five Star Supply' }));
+    expect(bad.status).toBe(422);
+    expect(bad.json.error.details).toEqual({ field: 'rows.0.caption', reason: 'number' });
+  });
+
+  it('a name not found is shown back only when it is a whole word or phrase of the description', async () => {
+    await enableAi();
+    m.execute.mockResolvedValueOnce(reply({ dates: 'range', rows: [
+      { type: 'section', caption: 'Spending', source: 'gl', measure: 'amount', filters: [{ field: 'account', op: 'in', names: ['Cash J', 'Petty Cash Jar', 'P'] }] },
+    ] }));
+    const res = await post(request({ description: 'Spending from Petty Cash Jar' }));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json.unresolved.map((u: { name: string | null }) => u.name)).toEqual([null, 'Petty Cash Jar', null]);
+  });
+
   const UUID = '00000000-0000-4000-8000-000000000000';
   it.each([
     ['an amount-like key in a group-by', good((g) => { g['rows'][1].groupBy = [{ key: 'account', minAmount: 'x' }]; }), 'rows.1.groupBy.0', 'amount_filter'],
     ['digits in a caption', good((g) => { g['rows'][1].caption = 'Rent over 500'; }), 'rows.1.caption', 'number'],
     ['digits in a total caption', good((g) => { g['rows'][0].totalCaption = 'Total 2026'; }), 'rows.0.totalCaption', 'number'],
     ['fullwidth digits in a text row', good((g) => { g['rows'][5].text = 'Budget ５００'; }), 'rows.5.text', 'number'],
+    ['Arabic-Indic digits in a caption', good((g) => { g['rows'][1].caption = 'Rent ٥٠٠'; }), 'rows.1.caption', 'number'],
+    ['number words in a caption', good((g) => { g['rows'][1].caption = 'Rent over five hundred'; }), 'rows.1.caption', 'number'],
+    ['a hyphenated number word in the title', good((g) => { g['title'] = 'Top twenty-five customers'; }), 'title', 'number'],
+    ['a number word split by a zero-width space', good((g) => { g['rows'][5].text = 'Fi\u200Bfty'; }), 'rows.5.text', 'number'],
+    ['"one" in a total caption', good((g) => { g['rows'][0].totalCaption = 'One-time income'; }), 'rows.0.totalCaption', 'number'],
+    ['a mask marker in a caption', good((g) => { g['rows'][1].caption = 'Rent over [AMOUNT]'; }), 'rows.1.caption', 'number'],
+    ['an unresolved name with number words', good((g) => { g['rows'][2].filters[0].names = ['Five Hundred Club']; }), 'definition.nodes.2.filters.0.ids.0', 'number'],
     ['digits in the title', good((g) => { g['title'] = 'Top 10 customers'; }), 'title', 'number'],
     ['a JSON number in a row', good((g) => { g['rows'][0].hideZero = 0; }), 'rows.0.hideZero', 'number'],
     ['a JSON number in free text at the top', good((g) => { g['confidence'] = 0.9; }), 'reply', 'number'],
@@ -420,9 +572,14 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(res.json.error.details).toEqual({ field, reason });
     // The refusal echoes no model text.
     expect(JSON.stringify(res.json)).not.toMatch(/500|1234|0\.9|00000000|payroll|blue|colour|minTotal|accountId|reportId|Club/);
+    expect(JSON.stringify(res.json)).not.toMatch(/five|hundred|twenty|fifty|one-time|\[AMOUNT\]|٥/i);
     const rows = await jobs();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe('failed');
+    // Q-A10k: names were sent, so the refusal is audited: its code only.
+    expect((await draftAudits()).map((a) => a.after)).toEqual([{
+      companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'refused', reason,
+    }]);
   });
 
   it('a reply that did not parse as JSON is 422 not_json', async () => {
@@ -432,6 +589,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(res.status).toBe(422);
     expect(res.json.error.details).toEqual({ field: 'reply', reason: 'not_json' });
     expect(JSON.stringify(res.json)).not.toContain('900');
+    expect((await draftAudits()).map((a) => [a.after['outcome'], a.after['reason']])).toEqual([['refused', 'not_json']]);
   });
 
   // ── Consent and availability ─────────────────────────────────────
@@ -442,6 +600,18 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(res.json.error).toMatchObject({ code: 'AI_CONSENT_REQUIRED', details: { reason: 'system_disabled', task: 'report_summary' } });
     expect(m.execute).not.toHaveBeenCalled();
     expect(await jobs()).toHaveLength(0);
+    expect(await draftAudits()).toEqual([]);
+  });
+
+  it('consent off with an Ollama provider: 403, no call (the local model is gated too)', async () => {
+    await enableAi({ categorization: true });
+    await db.update(aiConfig).set({ chatProvider: 'ollama', chatModel: 'llama3' });
+    const res = await post(request());
+    expect(res.status).toBe(403);
+    expect(res.json.error).toMatchObject({ code: 'AI_CONSENT_REQUIRED', details: { reason: 'task_disabled', task: 'report_summary' } });
+    expect(m.execute).not.toHaveBeenCalled();
+    expect(await jobs()).toHaveLength(0);
+    expect(await draftAudits()).toEqual([]);
   });
 
   it('the report_summary task off, the company not opted in, or another company: 403, no call', async () => {
@@ -458,6 +628,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(r3.status).toBe(403);
     expect(m.execute).not.toHaveBeenCalled();
     expect(await jobs()).toHaveLength(0);
+    expect(await draftAudits()).toEqual([]);
   });
 
   it('a provider error or offline is 503 AI_UNAVAILABLE', async () => {
@@ -472,6 +643,8 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(r2.status).toBe(503);
     expect(r2.json.error.details.reason).toBe('offline');
     expect((await jobs()).map((r) => r.status)).toEqual(['failed', 'failed']);
+    // The provider was not reached: no audit row (Q-A10k).
+    expect(await draftAudits()).toEqual([]);
   });
 
   it('no provider, or the chat function off, is 503 without a call or a job', async () => {
@@ -486,6 +659,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(r2.json.error.details.reason).toBe('function_disabled');
     expect(m.execute).not.toHaveBeenCalled();
     expect(await jobs()).toHaveLength(0);
+    expect(await draftAudits()).toEqual([]);
   });
 
   it('a self-hosted provider (Ollama) answers as self_hosted', async () => {
@@ -510,6 +684,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(redraft.status).toBe(400);
     expect(redraft.json.error.code).toBe('VALIDATION_ERROR');
     expect(m.execute).not.toHaveBeenCalled();
+    expect(await draftAudits()).toEqual([]);
   });
 });
 
@@ -531,14 +706,47 @@ describe('report draft helpers (no database)', () => {
     expect(() => prescreen({ dates: 'range', rows: [], tag_ids: 'x' })).toThrow();
   });
 
-  it('the description amount check catches amount conditions, not plain dates', () => {
-    for (const s of ['over $500', 'bills above 1,000', 'more than 250 dollars', 'at least ５００', '> 75', 'invoices of $12.50', '500 or more', 'between 100 and 500', 'minimum 500', '≥ 500', 'up to 250']) {
-      expect(AMOUNT_TEXT_RE.test(s.normalize('NFKC')), s).toBe(true);
+  it('maskNumbers: amounts become [AMOUNT], other numbers [NUMBER], and nothing numeric survives', () => {
+    expect(maskNumbers('Bills between 100 and 500 in 2026, or over $1,250.75').text).toBe('Bills between [AMOUNT] and [AMOUNT] in [NUMBER], or over [AMOUNT]');
+    expect(maskNumbers('Bills over five hundred dollars')).toEqual({ text: 'Bills over [AMOUNT]', masked: true, amountLike: true });
+    expect(maskNumbers('Bills 500€ and up').text).toBe('Bills [AMOUNT] and up');
+    expect(maskNumbers('Bills 100-500').text).toBe('Bills [NUMBER]-[NUMBER]');
+    expect(maskNumbers('one hundred and fifty, a thousand, half a million, two dozen').text).toBe('[NUMBER], [NUMBER], [NUMBER], [NUMBER]');
+    expect(maskNumbers('the last 12 months')).toEqual({ text: 'the last [NUMBER] months', masked: true, amountLike: false });
+    expect(maskNumbers('Grand total, second quarter, someone often')).toEqual({ text: 'Grand total, second quarter, someone often', masked: false, amountLike: false });
+    // Roman numerals are letters and stay (Ⅻ folds to XII under NFKC).
+    expect(maskNumbers('Phase Ⅻ and phase IV')).toEqual({ text: 'Phase XII and phase IV', masked: false, amountLike: false });
+    for (const s of ['٥٠٠', '５００', '१२३', '½', '²', '①', '𝟓', '5\u200B00', '1 000 000', "1'000", '.5', '0x1F']) {
+      expect(maskNumbers(s).text, s).not.toMatch(/\p{N}/u);
+      expect(maskNumbers(s).masked, s).toBe(true);
     }
-    for (const s of ['income for 2026', 'the last 12 months', 'quarter 3 sales']) expect(AMOUNT_TEXT_RE.test(s), s).toBe(false);
-    expect(maskAmounts('Bills between 100 and 500 in 2026, or over $1,250.75')).toBe('Bills between [AMOUNT] and [AMOUNT] in 2026, or over [AMOUNT]');
-    expect(draftNotes('income for 2026', false, [], [], false).map((n) => n.code)).toEqual(['numbers_not_used']);
+  });
+
+  it('notes follow the description: an amount or limit in any form, else numbers_not_used', () => {
+    const codes = (d: string) => draftNotes(d, false, [], [], false).map((n) => n.code);
+    expect(codes('income for 2026')).toEqual(['numbers_not_used']);
+    expect(codes('Two dozen vendors')).toEqual(['numbers_not_used']);
+    expect(codes('Bills over five hundred dollars')).toEqual(['amount_filter_left_out']);
+    expect(codes('Bills of 5e3')).toEqual(['amount_filter_left_out']);
+    expect(codes('Bills by vendor')).toEqual([]);
     expect(draftNotes('sales over $500 in 2026', true, ['preset_left_out'], ['row_b'], false).map((n) => [n.code, n.nodeId]))
       .toEqual([['pick_unresolved', undefined], ['amount_filter_left_out', 'row_b'], ['preset_left_out', undefined]]);
+  });
+
+  it('the number word list is explicit; period words, "grand" and Roman numerals are not on it', () => {
+    expect(NUMBER_WORDS).toEqual(expect.arrayContaining(['zero', 'one', 'five', 'twelve', 'fifty', 'ninety', 'hundred', 'thousand', 'million', 'dozen']));
+    for (const w of ['quarter', 'second', 'first', 'half', 'grand', 'gross', 'score', 'xii']) expect(NUMBER_WORDS).not.toContain(w);
+    for (const s of ['Five hundred', 'Twenty-five vendors', 'One-time customers', 'Fi\u200Bve', 'THOUSANDS']) expect(hasNumberWord(s), s).toBe(true);
+    for (const s of ['Grand total', 'Second quarter', 'Someone often', 'Phase XII', 'Gross profit', 'Tenant fees']) expect(hasNumberWord(s), s).toBe(false);
+  });
+
+  it('ambiguous names are labelled with one lookup per kind', async () => {
+    const calls: Array<[string, string[]]> = [];
+    const resolver = { resolve: async (_k: string, texts: string[]) => new Map(texts.map((t) => [t.toLowerCase(), [`${t}-x`, `${t}-y`]])) };
+    const labeler = { labels: async (kind: string, ids: string[]) => { calls.push([kind, ids]); return new Map(ids.map((id) => [id, id.toUpperCase()])); } };
+    const site = (kind: 'contact' | 'item', name: string) => ({ kind, name, nodeId: 'row_a', path: `p.${name}`, set: () => {} });
+    const out = await resolveNames([site('contact', 'Alpha'), site('contact', 'Beta'), site('item', 'Gamma'), site('contact', 'Alpha')], '', resolver as never, labeler as never);
+    expect(calls.map(([k, ids]) => [k, ids.length])).toEqual([['contact', 4], ['item', 2]]);
+    expect(out.map((u) => [u.name, u.candidates.length, u.sites.length])).toEqual([['Alpha', 2, 2], ['Beta', 2, 1], ['Gamma', 2, 1]]);
   });
 });
