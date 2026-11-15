@@ -345,8 +345,8 @@ export const draftRequestSchema = z.object({
 }).strict();
 
 const DRAFT_DOC = '`{definition, savable, unresolved: [{ref: "$ref:N", kind: account | contact | item | tag | tagGroup, name: string | null, '
-  + 'reason: not_found | ambiguous, sites: [{nodeId, path}], candidates: [{id, label}] (≤ 20)}], notes: [{code: pick_unresolved | preset_left_out | '
-  + 'numbers_not_used, message}], reader: self_hosted | cloud, provider, model}`';
+  + 'reason: not_found | ambiguous, sites: [{nodeId, path}], candidates: [{id, label}] (≤ 20)}], notes: [{code: pick_unresolved | amount_filter_left_out | '
+  + 'preset_left_out | numbers_not_used, message, nodeId?}], reader: self_hosted | cloud, provider, model}`';
 
 reportBuilderRouter.post('/draft', expensiveOpLimiter, describe({
   summary: 'Draft a Report Builder definition with AI (report-builder-ai-v1)',
@@ -358,16 +358,20 @@ reportBuilderRouter.post('/draft', expensiveOpLimiter, describe({
     + 'id paths (sites[].path): the token is not an id, so a save or run refuses the definition (400 DEFINITION_INVALID) until the client puts '
     + 'an id there (a candidate, or any row the owner picks) or removes it (an emptied filter, or the tag group-by, must then be removed). savable is '
     + 'true when unresolved is empty: the definition then passes the save check as is. name is null when the model named something that is not '
-    + 'in the books and the owner did not type it. There is no amount filter, and no digit from the model except the aging bucket keys. '
+    + 'in the books and the owner did not type it. One-shot: the body takes a description only, never a definition to redraft. '
+    + 'There is no amount filter: an amount condition (in the description, or an amount filter or amount-like key the model gives) is left out '
+    + 'and noted as amount_filter_left_out (nodeId when the row is known); the amount itself never reaches the definition or the response. '
+    + 'No digit from the model is kept except the aging bucket keys. One audit row per draft: create report_builder_draft (entity the ai_jobs id), '
+    + 'after {companyId, provider, model, reader, nodes, unresolved}; never the description, prompt or definition. '
     + 'Errors: 400 VALIDATION_ERROR (empty or > 1,000 character description, an unknown key); 403 AI_CONSENT_REQUIRED {reason, task: report_summary} '
     + '(AI off, the company not opted in, a stale disclosure, or the report_summary task off; no provider call); 422 DRAFT_UNMAPPED {field, reason} '
-    + '(reason no_report, not_json, shape, number, amount_filter, id, unknown, missing, duplicate, too_deep, too_many_names, or a shared validator '
+    + '(reason no_report, not_json, shape, number, amount_filter (an amount-like key outside a row or filter), id, unknown, missing, duplicate, too_deep, too_many_names, or a shared validator '
     + 'code at a definition path such as MIXED_POLARITY or FORMULA_FORWARD_REF); 503 AI_UNAVAILABLE {provider, reason: no_provider | '
     + 'function_disabled | offline | provider_error}. Reports read access. Not keyed: it changes nothing.',
   body: draftRequestSchema,
 }), validate(draftRequestSchema), async (req, res) => {
   const body = draftRequestSchema.parse(req.body);
-  res.json(await reportDraft.draft(req.tenantId, req.companyId, body));
+  res.json(await reportDraft.draft(req.tenantId, req.companyId, body, req.userId));
 });
 
 reportBuilderRouter.get('/fields', describe({

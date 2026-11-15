@@ -1328,9 +1328,12 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * kind, name|null, reason not_found|ambiguous, sites [{nodeId, path}], candidates [{id, label}]}], notes [{code, message}], reader,
    * provider, model}. Nothing is saved. The model (the chat function, Ollama included) sees the description, the field catalogue and
    * names (never an amount) and returns a closed shape that names things; the engine resolves names to ids (model ids refused) and
-   * leaves "$ref:N" at the id paths of an unresolved name, which a save refuses until the client replaces it. No amount filter, no
-   * model digit except aging bucket keys. Reports read access. 403 AI_CONSENT_REQUIRED (report_summary task; no provider call),
-   * 422 DRAFT_UNMAPPED {field, reason}, 503 AI_UNAVAILABLE {provider, reason}. No migration.
+   * leaves "$ref:N" at the id paths of an unresolved name, which a save refuses until the client replaces it. No amount filter:
+   * an amount condition (description or model) is left out and noted (amount_filter_left_out, nodeId when known), never drafted
+   * or echoed; no model digit except aging bucket keys. One-shot (description only). One audit row per draft (create
+   * report_builder_draft: companyId, provider, model, reader, counts; never the description, prompt or definition). Reports read
+   * access. 403 AI_CONSENT_REQUIRED (report_summary task; no provider call), 422 DRAFT_UNMAPPED {field, reason}, 503
+   * AI_UNAVAILABLE {provider, reason}. No migration.
    */
   'report-builder-ai-v1',
 ];

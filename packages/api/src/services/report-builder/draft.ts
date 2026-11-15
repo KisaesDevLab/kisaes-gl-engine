@@ -28,8 +28,14 @@
  *     the definition until the client replaces every token with an id (or
  *     removes it): an unresolved reference can never be saved as a real one;
  *   - an id, a uuid, or an id-like key from the model is refused (422);
- *   - there is no amount filter (Q-315, non-negotiable 4): the field `amount`,
- *     the ops gte / lte, a `value`, an amount-like key or any JSON number is
+ *   - there is no amount filter (Q-315, non-negotiable 4; owner Q&A
+ *     2026-11-15): an amount condition is LEFT OUT and noted
+ *     (amount_filter_left_out, with the row's nodeId when known), never
+ *     drafted: a model filter on amounts (field `amount`, ops gte / lte, a
+ *     `value`) is removed whole, an amount-like key on a row or at the top
+ *     level is removed, a section marked amountCondition is noted, and a
+ *     description with an amount ("over $500") is drafted with the note;
+ *     a JSON number anywhere else, or an amount-like key elsewhere, is
  *     refused (422 DRAFT_UNMAPPED);
  *   - a digit in any text the draft keeps (title, captions, text rows) or in
  *     a name that did not resolve is refused. The only digits a draft can hold
@@ -44,7 +50,11 @@
  * 403 AI_CONSENT_REQUIRED before any provider call or ai_jobs row. Provider
  * missing, the chat function off, an error, a timeout or offline: 503
  * AI_UNAVAILABLE. Privacy: the description, names and reply are never logged
- * or stored; the ai_jobs row (job type report_draft) keeps counts only.
+ * or stored; the ai_jobs row (job type report_draft) keeps counts only. A
+ * successful draft writes one audit row (create report_builder_draft, entity
+ * the ai_jobs id, after {companyId, provider, model, reader, counts}), as the
+ * AI report summary does; /reports/ask writes none. One-shot: the request
+ * takes a description only, never a definition to redraft.
  */
 
 import crypto from 'node:crypto';
@@ -59,6 +69,7 @@ import {
 import { db } from '../../db/index.js';
 import { items, tagGroups } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
+import { auditLog } from '../../middleware/audit.js';
 import { isOfflineUnavailable } from '../../utils/offline.js';
 import * as aiConfigService from '../ai-config.service.js';
 import * as orchestrator from '../ai-orchestrator.service.js';
@@ -134,7 +145,10 @@ export interface DraftUnresolved {
   candidates: Array<{ id: string; label: string }>;
 }
 
-export interface DraftNote { code: 'pick_unresolved' | 'preset_left_out' | 'numbers_not_used'; message: string }
+export type DraftNoteCode = 'pick_unresolved' | 'amount_filter_left_out' | 'preset_left_out' | 'numbers_not_used';
+
+/** Engine-authored: a fixed code and message; nodeId (amount_filter_left_out only) names the row it concerns, when known. */
+export interface DraftNote { code: DraftNoteCode; message: string; nodeId?: string }
 
 export interface DraftResult {
   definition: BuilderDefinition;
@@ -147,10 +161,11 @@ export interface DraftResult {
   model: string;
 }
 
-const NOTE_TEXT: Record<DraftNote['code'], string> = {
+const NOTE_TEXT: Record<DraftNoteCode, string> = {
   pick_unresolved: 'Some names in the draft need you to pick a match before the report can be saved.',
+  amount_filter_left_out: 'The AI does not set amount limits. Add the amount filter yourself if you need one.',
   preset_left_out: 'The AI suggested a date range this app does not offer; choose the dates yourself.',
-  numbers_not_used: 'Numbers in your description (amounts, limits or dates) are not part of a draft; set amount filters and dates yourself.',
+  numbers_not_used: 'Numbers in your description (such as dates) are not part of a draft; set the dates yourself.',
 };
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -184,7 +199,7 @@ type DraftRow =
   | { type: 'section'; label?: string; caption: string; source: (typeof RB_SOURCES)[number]; measure: (typeof RB_MEASURES)[number];
     polarity?: 'natural' | 'debit' | 'credit'; display?: 'summary' | 'detail' | 'expandable'; filters?: z.infer<typeof draftFilter>[];
     groupBy?: z.infer<typeof draftGroupBy>[]; showTotal?: boolean; totalCaption?: string; hideZero?: boolean; defaultExpanded?: boolean;
-    earnings?: 'balance_sheet' | 'trial_balance' }
+    earnings?: 'balance_sheet' | 'trial_balance'; amountCondition?: boolean }
   | { type: 'group'; label?: string; caption: string; children: DraftRow[]; showTotal?: boolean; totalCaption?: string }
   | { type: 'formula'; label?: string; caption: string; terms: Array<{ row: string; op: 'add' | 'subtract' }> }
   | { type: 'text'; text: string }
@@ -198,6 +213,8 @@ const draftRow: z.ZodType<DraftRow> = z.lazy(() => z.discriminatedUnion('type', 
     filters: z.array(draftFilter).max(RB_MAX_FILTERS).optional(), groupBy: z.array(draftGroupBy).max(RB_MAX_GROUP_BY).optional(),
     showTotal: z.boolean().optional(), totalCaption: text(200).optional(), hideZero: z.boolean().optional(),
     defaultExpanded: z.boolean().optional(), earnings: z.enum(['balance_sheet', 'trial_balance']).optional(),
+    // The description limits this section by amount: noted, never drafted (the amount is not given).
+    amountCondition: z.boolean().optional(),
   }).strict(),
   z.object({
     type: z.literal('group'), label: label.optional(), caption: text(200), children: z.array(draftRow).max(RB_MAX_NODES),
@@ -234,7 +251,7 @@ const KNOWN_KEYS = new Set([
   'title', 'dates', 'datePreset', 'basis', 'periods', 'agingBuckets', 'compare', 'percentOf', 'detailFields', 'rows',
   'type', 'label', 'caption', 'source', 'measure', 'polarity', 'display', 'filters', 'groupBy', 'showTotal', 'totalCaption',
   'hideZero', 'defaultExpanded', 'earnings', 'children', 'terms', 'row', 'op', 'text', 'field', 'names', 'values', 'key',
-  'tagGroup', 'base', 'amount', 'dollarChange', 'percentChange',
+  'tagGroup', 'base', 'amount', 'dollarChange', 'percentChange', 'amountCondition',
 ]);
 const TOP_KEYS = new Set(['title', 'dates', 'datePreset', 'basis', 'periods', 'agingBuckets', 'compare', 'percentOf', 'detailFields', 'rows']);
 
@@ -248,44 +265,84 @@ const idKey = (key: string) => /(^|_)(u?u)?ids?$/i.test(key) || /[a-z](Id|Ids|ID
 
 const isObj = (v: unknown): v is Record<string, unknown> => Object.prototype.toString.call(v) === '[object Object]';
 
+/** A row of the reply: rows.N, rows.N.children.M, … */
+const ROW_PATH_RE = /^rows\.\d+(\.children\.\d+)*$/;
+const FILTER_PATH_RE = /^(rows\.\d+(?:\.children\.\d+)*)\.filters\.\d+$/;
+
+export interface Prescreened {
+  kept: Record<string, unknown>;
+  /** Rows (reply paths) whose amount condition was left out (owner Q&A 2026-11-15). */
+  amountRows: Set<string>;
+  /** An amount condition left out at the top level (no row). */
+  amountTop: boolean;
+}
+
 /**
- * Before the shape: no JSON number anywhere, no amount filter, no id. Unknown
- * keys are refused below the top level; at the top level free text is
- * dropped unread. Returns the reply with the dropped keys removed. Field
- * names in errors are fixed labels or paths of known keys and indices: a key
- * the model made up is never echoed.
+ * Before the shape: no JSON number, no id, no amount filter. An amount
+ * condition the model gives is LEFT OUT, never kept or echoed (owner Q&A
+ * 2026-11-15): a filter on amounts (field `amount`, op gte / lte, a `value`,
+ * or an amount-like key in it) is removed whole, an amount-like key on a row
+ * or at the top level is removed, and the row is remembered for the note
+ * `amount_filter_left_out`. Anything else is refused: a JSON number outside a
+ * removed condition, an id or id-like key, an amount-like key elsewhere
+ * (group-bys, terms, compare), an unknown key below the top level. Free text
+ * at the top level is dropped unread. Field names in errors are fixed labels
+ * or paths of known keys and indices: a key the model made up is never echoed.
  */
-export function prescreen(parsed: unknown): Record<string, unknown> {
+export function prescreen(parsed: unknown): Prescreened {
   if (!isObj(parsed)) throw draftUnmapped('reply', 'not_json');
-  const walk = (v: unknown, path: string, depth: number): void => {
+  const amountRows = new Set<string>();
+  let amountTop = false;
+  const isAmountFilter = (f: Record<string, unknown>) =>
+    f['field'] === 'amount' || f['op'] === 'gte' || f['op'] === 'lte' || 'value' in f
+    || Object.keys(f).some((k) => !KNOWN_KEYS.has(k) && !idKey(k) && amountKey(k));
+  const walk = (v: unknown, path: string, depth: number): unknown => {
     if (depth > 64) throw draftUnmapped(path, 'too_deep');
     if (typeof v === 'number' || typeof v === 'bigint') throw draftUnmapped(path, 'number');
-    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${path}.${i}`, depth + 1)); return; }
-    if (!isObj(v)) return;
-    // A filter on amounts, by field, op or a value: refused, never dropped.
-    if (/(^|\.)filters\.\d+$/.test(path)) {
-      if (v['field'] === 'amount' || v['op'] === 'gte' || v['op'] === 'lte' || 'value' in v) throw draftUnmapped(path, 'amount_filter');
+    if (Array.isArray(v)) {
+      const out: unknown[] = [];
+      v.forEach((x, i) => {
+        const p = `${path}.${i}`;
+        const fm = FILTER_PATH_RE.exec(p);
+        if (fm && isObj(x) && isAmountFilter(x)) { amountRows.add(fm[1]!); return; }
+        out.push(walk(x, p, depth + 1));
+      });
+      return out;
     }
+    if (!isObj(v)) return v;
+    const out: Record<string, unknown> = {};
     for (const [k, x] of Object.entries(v)) {
       if (!KNOWN_KEYS.has(k)) {
         if (idKey(k)) throw draftUnmapped(path, 'id');
-        if (amountKey(k)) throw draftUnmapped(path, 'amount_filter');
+        if (amountKey(k)) {
+          if (!ROW_PATH_RE.test(path)) throw draftUnmapped(path, 'amount_filter');
+          amountRows.add(path);
+          continue;
+        }
         throw draftUnmapped(path, 'unknown');
       }
-      walk(x, `${path}.${k}`, depth + 1);
+      out[k] = walk(x, `${path}.${k}`, depth + 1);
     }
+    return out;
   };
   const kept: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(parsed)) {
-    if (TOP_KEYS.has(k)) { kept[k] = v; continue; }
+    if (TOP_KEYS.has(k)) { kept[k] = walk(v, k, 1); continue; }
     if (idKey(k)) throw draftUnmapped('reply', 'id');
-    if (amountKey(k)) throw draftUnmapped('reply', 'amount_filter');
+    // An amount condition at the top level (amountMin …): left out, its value unread.
+    if (amountKey(k)) { amountTop = true; continue; }
     // Free text (an explanation, a note) is dropped unread — but never a number.
     if (typeof v === 'number' || typeof v === 'bigint') throw draftUnmapped('reply', 'number');
   }
-  for (const [k, v] of Object.entries(kept)) walk(v, k, 1);
-  return kept;
+  return { kept, amountRows, amountTop };
 }
+
+/**
+ * An amount condition in the owner's description ("over $500", "at least
+ * 1,000 dollars", "> 250"). Only decides whether to add the note; the
+ * description itself is never echoed and never reaches the definition.
+ */
+export const AMOUNT_TEXT_RE = /[$€£¥]\s*\p{N}|\p{N}[\p{N},.]*\s*(dollars?|usd|bucks|k\b)|\b(over|under|above|below|more than|less than|at least|at most|greater than|exceeding|bigger than|larger than|smaller than)\s*[$€£¥]?\s*\p{N}|[<>]=?\s*[$€£¥]?\s*\p{N}/iu;
 
 // ── Building the definition ────────────────────────────────────────
 
@@ -311,12 +368,17 @@ const ID_FIELD_KIND = RB_ID_FILTER_FIELDS as Record<string, string>;
 const FIELD_KIND: Record<string, DraftRefKind> = { account: 'account', contact: 'contact', item: 'item', tag: 'tag' };
 const isValueField = (f: string) => (RB_VALUE_FILTER_FIELDS as readonly string[]).includes(f);
 
-interface Built { definition: BuilderDefinition; sites: NameSite[]; notes: DraftNote['code'][] }
+interface Built { definition: BuilderDefinition; sites: NameSite[]; notes: DraftNoteCode[]; amountNodes: string[] }
 
-/** The definition from a prescreened, shape-checked reply; names still to resolve. */
-export function buildDefinition(reply: DraftReply, input: DraftRequest): Built {
+/**
+ * The definition from a prescreened, shape-checked reply; names still to
+ * resolve. `amountRows` (reply paths) and sections marked amountCondition
+ * give `amountNodes`: the node ids whose amount condition was left out.
+ */
+export function buildDefinition(reply: DraftReply, input: DraftRequest, amountRows: ReadonlySet<string> = new Set()): Built {
   const sites: NameSite[] = [];
-  const notes: DraftNote['code'][] = [];
+  const notes: DraftNoteCode[] = [];
+  const amountNodes: string[] = [];
   const labels = new Map<string, string>();
   const ids = new Map<DraftRow, string>();
   let next = 0;
@@ -325,6 +387,7 @@ export function buildDefinition(reply: DraftReply, input: DraftRequest): Built {
   const assign = (rows: DraftRow[], path: string) => rows.forEach((r, i) => {
     const id = nodeIdFor(next++);
     ids.set(r, id);
+    if (amountRows.has(`${path}.${i}`) || (r.type === 'section' && r.amountCondition === true)) amountNodes.push(id);
     if ('label' in r && r.label !== undefined) {
       if (UUIDISH.test(r.label)) throw draftUnmapped(`${path}.${i}.label`, 'id');
       if (labels.has(r.label)) throw draftUnmapped(`${path}.${i}.label`, 'duplicate');
@@ -468,7 +531,7 @@ export function buildDefinition(reply: DraftReply, input: DraftRequest): Built {
     },
     nodes,
   };
-  return { definition, sites, notes };
+  return { definition, sites, notes, amountNodes };
 }
 
 // ── Names ──────────────────────────────────────────────────────────
@@ -571,20 +634,37 @@ export async function draftFromReply(
   parsed: unknown, input: DraftRequest, tenantId: string, companyId: string,
   resolver: NameResolver = dbNameResolver(tenantId, companyId), labeler: CandidateLabeler = dbLabeler(tenantId, companyId),
 ): Promise<{ definition: BuilderDefinition; unresolved: DraftUnresolved[]; notes: DraftNote[] }> {
-  const kept = prescreen(parsed);
+  const { kept, amountRows, amountTop } = prescreen(parsed);
   const shaped = DRAFT_REPLY_SCHEMA.safeParse(kept);
   if (!shaped.success) {
     // The path holds known keys and indices only (prescreen refused the rest); the message is never returned.
     const issue = shaped.error.issues[0]!;
     throw draftUnmapped(issue.path.length > 0 ? issue.path.join('.') : 'reply', 'shape');
   }
-  const { definition, sites, notes } = buildDefinition(shaped.data, input);
+  const { definition, sites, notes: built, amountNodes } = buildDefinition(shaped.data, input, amountRows);
   const unresolved = await resolveNames(sites, input.description, resolver, labeler);
   await checkDraft(definition, tenantId, companyId);
-  const codes: DraftNote['code'][] = [...notes];
-  if (unresolved.length > 0) codes.unshift('pick_unresolved');
-  if (hasDigit(input.description)) codes.push('numbers_not_used');
-  return { definition, unresolved, notes: codes.map((code) => ({ code, message: NOTE_TEXT[code] })) };
+  return { definition, unresolved, notes: draftNotes(input.description, unresolved.length > 0, built, amountNodes, amountTop) };
+}
+
+/**
+ * Engine-authored notes. amount_filter_left_out: one per row whose amount
+ * condition was left out (nodeId), else one without a row when the model
+ * gave one at the top level or the description holds an amount (owner Q&A
+ * 2026-11-15: a description with an amount is drafted, never refused).
+ * numbers_not_used: the description has other digits (dates) and no amount.
+ */
+export function draftNotes(description: string, hasUnresolved: boolean, built: DraftNoteCode[], amountNodes: string[], amountTop: boolean): DraftNote[] {
+  const notes: DraftNote[] = [];
+  const add = (code: DraftNoteCode, nodeId?: string) => notes.push({ code, message: NOTE_TEXT[code], ...(nodeId ? { nodeId } : {}) });
+  if (hasUnresolved) add('pick_unresolved');
+  const nodes = [...new Set(amountNodes)];
+  for (const id of nodes) add('amount_filter_left_out', id);
+  const amountInText = AMOUNT_TEXT_RE.test(description.normalize('NFKC'));
+  if (nodes.length === 0 && (amountTop || amountInText)) add('amount_filter_left_out');
+  for (const code of built) add(code);
+  if (!amountInText && hasDigit(description)) add('numbers_not_used');
+  return notes;
 }
 
 // ── Prompt ─────────────────────────────────────────────────────────
@@ -600,7 +680,7 @@ export const REPORT_DRAFT_SYSTEM_PROMPT = [
   'A row is one of:',
   '{"type": "section", "label": "<lowercase handle>", "caption": "<text>", "source": "<source>", "measure": "<measure of that source>",',
   '"polarity": "debit" | "credit" (optional), "display": "summary" | "detail" | "expandable", "filters": [<filter>], "groupBy": [{"key": "<group key>", "tagGroup": "<tag group name, only for key tag>"}],',
-  '"showTotal": true, "totalCaption": "<text>" (optional), "earnings": "balance_sheet" | "trial_balance" (optional)}',
+  '"showTotal": true, "totalCaption": "<text>" (optional), "earnings": "balance_sheet" | "trial_balance" (optional), "amountCondition": true (optional)}',
   '{"type": "group", "label": "<handle>", "caption": "<text>", "children": [<row>], "showTotal": true}',
   '{"type": "formula", "label": "<handle>", "caption": "<text>", "terms": [{"row": "<label of a section, group or formula ABOVE>", "op": "add" | "subtract"}]}',
   '{"type": "text", "text": "<text>"}, {"type": "blank"}, {"type": "page_break"}',
@@ -611,7 +691,8 @@ export const REPORT_DRAFT_SYSTEM_PROMPT = [
   'An "All accounts" section with measure amount or balance needs an account_type filter of one side (debit side: asset, cogs, expense, other_expense;',
   'credit side: liability, equity, revenue, other_revenue) or a polarity. A running balance needs the innermost group key account. Aging columns',
   '(agingBuckets true) need open-item sources only and no periods or compare. Earnings rows need source gl with measure balance (balance_sheet) or tb_net (trial_balance).',
-  'There is no amount filter: ignore any amount condition in the description ("over $500"). If no report can be drafted, reply {"rows": []}.',
+  'There is no amount filter: when the description limits a section by amount ("over $500"), set "amountCondition": true on that section',
+  'and never write the amount anywhere. If no report can be drafted, reply {"rows": []}.',
 ].join(' ');
 
 export function buildDraftPrompt(
@@ -663,7 +744,7 @@ export async function draftPromptNames(tenantId: string, companyId: string, desc
 // ── The call ───────────────────────────────────────────────────────
 
 /** Drafts a Report Builder definition for the request's company. Gates run before any provider call or ai_jobs row. */
-export async function draft(tenantId: string, companyId: string, input: DraftRequest): Promise<DraftResult> {
+export async function draft(tenantId: string, companyId: string, input: DraftRequest, userId?: string): Promise<DraftResult> {
   // 1. Consent: AI on, company opted in with a current disclosure, report_summary on (as /reports/ask).
   const consent = await checkTenantTaskConsent(tenantId, 'report_summary', companyId);
   if (!consent.allowed) throw consentRequired(consent.reason);
@@ -752,6 +833,12 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
   }, 1);
 
   const reader = isLocal(result.provider, result.model) ? 'self_hosted' : 'cloud';
+  // Audit trail (owner Q&A 2026-11-15): who, when (the row's time) and which provider, as the AI report summary's
+  // 'report_ai_summary' row does. Never the description, the prompt or the definition: counts only.
+  await auditLog(tenantId, 'create', 'report_builder_draft', job.id, null, {
+    companyId, provider: result.provider, model: result.model, reader,
+    nodes: countNodes(out.definition.nodes), unresolved: out.unresolved.length,
+  }, userId);
   return { ...out, savable: out.unresolved.length === 0, reader, provider: result.provider, model: result.model };
 }
 

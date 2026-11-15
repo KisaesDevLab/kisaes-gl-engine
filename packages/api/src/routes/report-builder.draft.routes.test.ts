@@ -32,13 +32,13 @@ vi.mock('../services/ai-providers/index.js', async (importOriginal) => ({
 
 import { db } from '../db/index.js';
 import {
-  accounts, aiConfig, aiJobs, aiUsageLog, companies, contacts, items, journalLines, reportDefinitions, tagGroups, transactions,
+  accounts, aiConfig, aiJobs, aiUsageLog, auditLog, companies, contacts, items, journalLines, reportDefinitions, tagGroups, transactions,
 } from '../db/schema/index.js';
 import { reportBuilderRouter } from './report-builder.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiConsent from '../services/ai-consent.service.js';
-import { DRAFT_STRUCTURAL_DIGITS, nodeIdFor, prescreen } from '../services/report-builder/draft.js';
+import { AMOUNT_TEXT_RE, DRAFT_STRUCTURAL_DIGITS, draftNotes, nodeIdFor, prescreen } from '../services/report-builder/draft.js';
 import { OfflineUnavailableError } from '../utils/offline.js';
 import { makeCompany, cleanTenant, type Co } from '../services/templates/templates.test-helpers.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -211,7 +211,9 @@ describe('POST /report-builder/draft (U-120)', () => {
     const rest = JSON.stringify(definition).replace(UUID_G, '').replace(/"schemaVersion":1/, '').replace(/"sign":-?1/g, '');
     expect(rest).not.toMatch(/\d/);
     expect(JSON.stringify(notes)).not.toMatch(/\d/);
-    expect(notes.map((n: { code: string }) => n.code)).toEqual(['numbers_not_used']);
+    // The owner's amount ("over $500") is drafted without a filter and noted; it is nowhere in the response.
+    expect(notes).toEqual([{ code: 'amount_filter_left_out', message: expect.any(String) }]);
+    expect(text.replace(UUID_G, '')).not.toContain('500');
 
     // The prompt: names and the catalogue; never a balance, an amount, a memo, an unnamed contact or a phone.
     expect(m.execute).toHaveBeenCalledTimes(1);
@@ -236,6 +238,16 @@ describe('POST /report-builder/draft (U-120)', () => {
     for (const s of ['Rent', 'Rivera', 'Kumquat', 'Granite', 'Crews', '500']) expect(stored).not.toContain(s);
     const logged = JSON.stringify(consoleSpies.flatMap((s) => s.mock.calls));
     for (const s of ['Rivera', 'Kumquat', 'Granite', DESCRIPTION]) expect(logged).not.toContain(s);
+
+    // Audit trail: one row, who and which provider; never the description, prompt or definition.
+    const audits = await db.select().from(auditLog).where(eq(auditLog.tenantId, c.tenantId));
+    const draftRows = audits.filter((a) => a.entityType === 'report_builder_draft');
+    expect(draftRows).toHaveLength(1);
+    expect(draftRows[0]!).toMatchObject({ action: 'create', userId: c.userId, entityId: rows[0]!.id, beforeData: null });
+    const raw = draftRows[0]!.afterData;
+    const after = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
+    expect(after).toEqual({ companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud', nodes: 6, unresolved: 0 });
+    for (const s of ['Rent', 'Rivera', 'Kumquat', 'Granite', 'Crews', '500', 'row_a', 'section', 'onthly']) expect(JSON.stringify(raw).replace(UUID_G, '')).not.toContain(s);
 
     // Savable as is: the real save route takes it, and nothing was saved before.
     expect(await db.select().from(reportDefinitions).where(eq(reportDefinitions.tenantId, c.tenantId))).toHaveLength(0);
@@ -262,7 +274,7 @@ describe('POST /report-builder/draft (U-120)', () => {
 
   it('a preset the client did not send is left out with a note', async () => {
     await enableAi();
-    m.execute.mockResolvedValueOnce(reply(good((g) => { g.datePreset = 'this_week'; })));
+    m.execute.mockResolvedValueOnce(reply(good((g) => { g['datePreset'] = 'this_week'; })));
     const res = await post(request({ description: 'Income and rent' }));
     expect(res.status).toBe(200);
     expect(res.json.definition.dates).toEqual({ mode: 'range' });
@@ -327,34 +339,67 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(JSON.stringify(res.json).match(UUID_G)).toBeNull();
   });
 
+  // Owner Q&A 2026-11-15: an amount condition is left out and noted, never refused when that is clean.
+  it.each([
+    ['an amount filter by field', good((g) => { g['rows'][1].filters.push({ field: 'amount', op: 'gte', value: '500.00' }); }), 'row_b'],
+    ['an amount filter with a JSON number', good((g) => { g['rows'][1].filters.push({ field: 'amount', op: 'gte', value: 500 }); }), 'row_b'],
+    ['an amount comparison on another field', good((g) => { g['rows'][2].filters.push({ field: 'contact', op: 'lte', names: ['500'] }); }), 'row_c'],
+    ['a value on a filter', good((g) => { g['rows'][1].filters.push({ field: 'account', op: 'in', names: ['Rent Kumquat Hall'], value: '500' }); }), 'row_b'],
+    ['an amount-like key in a filter', good((g) => { g['rows'][1].filters.push({ field: 'account', op: 'in', names: ['Rent Kumquat Hall'], minAmount: 500 }); }), 'row_b'],
+    ['an amount key in a row', good((g) => { g['rows'][0].minTotal = '500'; }), 'row_a'],
+    ['an amount key in a grouped row', good((g) => { g['rows'] = [{ type: 'group', caption: 'Costs', children: [{ ...g['rows'][1], amountOver: 500 }] }]; g['percentOf'] = null; }), 'row_b'],
+    ['a section marked amountCondition', good((g) => { g['rows'][2].amountCondition = true; }), 'row_c'],
+    ['an amount key at the top', good((g) => { g['amountMin'] = 500; }), null],
+  ])('leaves out %s: 200, the note, no amount in the definition or response', async (_name, parsed, nodeId) => {
+    await enableAi();
+    m.execute.mockResolvedValueOnce(reply(parsed));
+    // The description holds no amount: the note comes from the model's condition.
+    const res = await post(request({ description: 'Income, rent by crew and job sales for Rivera Remodel' }));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json.notes).toEqual([{ code: 'amount_filter_left_out', message: expect.any(String), ...(nodeId ? { nodeId } : {}) }]);
+    const def = res.json.definition;
+    expect(JSON.stringify(def)).not.toMatch(/"amount","op"|"value"|"op":"(gte|lte)"|minAmount|minTotal|amountOver|amountMin|amountCondition/);
+    expect(JSON.stringify(res.json).replace(UUID_G, '')).not.toContain('500');
+    expect(parseBuilderDefinition(def).ok).toBe(true);
+    expect(res.json.savable).toBe(true);
+  });
+
+  it('an amount in the description is drafted without a filter, noted, and never echoed', async () => {
+    await enableAi();
+    m.execute.mockResolvedValueOnce(reply({ dates: 'range', rows: [
+      { type: 'section', caption: 'Open invoices', source: 'ar_open', measure: 'open_balance', groupBy: [{ key: 'contact' }] },
+    ] }));
+    const res = await post(request({ description: 'Invoices over $1,250 that are still open' }));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json.notes.map((n: { code: string }) => n.code)).toEqual(['amount_filter_left_out']);
+    expect(res.json.definition.nodes[0].filters).toEqual([]);
+    expect(JSON.stringify(res.json).replace(UUID_G, '')).not.toMatch(/1,?250/);
+  });
+
   const UUID = '00000000-0000-4000-8000-000000000000';
   it.each([
-    ['an amount filter by field', good((g) => { g.rows[1].filters = [{ field: 'amount', op: 'gte', value: '500' }]; }), 'rows.1.filters.0', 'amount_filter'],
-    ['an amount comparison on another field', good((g) => { g.rows[1].filters = [{ field: 'account', op: 'lte', names: ['Rent Kumquat Hall'] }]; }), 'rows.1.filters.0', 'amount_filter'],
-    ['a value on a filter', good((g) => { g.rows[1].filters[0].value = 'x'; }), 'rows.1.filters.0', 'amount_filter'],
-    ['an amount key at the top', good((g) => { g.amountMin = '500.00'; }), 'reply', 'amount_filter'],
-    ['an amount key in a row', good((g) => { g.rows[0].minTotal = 'x'; }), 'rows.0', 'amount_filter'],
-    ['digits in a caption', good((g) => { g.rows[1].caption = 'Rent over 500'; }), 'rows.1.caption', 'number'],
-    ['digits in a total caption', good((g) => { g.rows[0].totalCaption = 'Total 2026'; }), 'rows.0.totalCaption', 'number'],
-    ['fullwidth digits in a text row', good((g) => { g.rows[5].text = 'Budget ５００'; }), 'rows.5.text', 'number'],
-    ['digits in the title', good((g) => { g.title = 'Top 10 customers'; }), 'title', 'number'],
-    ['a JSON number in a row', good((g) => { g.rows[0].hideZero = 0; }), 'rows.0.hideZero', 'number'],
-    ['a JSON number in free text at the top', good((g) => { g.confidence = 0.9; }), 'reply', 'number'],
-    ['ids from the model', good((g) => { g.rows[1].filters = [{ field: 'account', op: 'in', ids: [UUID] }]; }), 'rows.1.filters.0', 'id'],
-    ['an id-like key in a row', good((g) => { g.rows[1].accountId = 'x'; }), 'rows.1', 'id'],
-    ['an id key at the top', good((g) => { g.reportId = 'x'; }), 'reply', 'id'],
-    ['a uuid as a name', good((g) => { g.rows[1].filters[0].names = [UUID]; }), 'rows.1.filters.0.names', 'id'],
-    ['a uuid in a caption', good((g) => { g.rows[1].caption = `Rent ${UUID}`; }), 'rows.1.caption', 'id'],
-    ['a uuid as a label', good((g) => { g.rows[1].label = UUID; }), 'rows.1.label', 'shape'],
-    ['an unresolved name with digits', good((g) => { g.rows[2].filters[0].names = ['Over 500 Club']; }), 'definition.nodes.2.filters.0.ids.0', 'number'],
-    ['a preset with digits not sent', good((g) => { g.datePreset = 'last_24_months'; }), 'datePreset', 'number'],
-    ['a value not in the catalogue', good((g) => { g.rows[0].filters[0].values = ['d1_45']; }), 'rows.0.filters.0.values', 'number'],
-    ['a formula on an unknown row', good((g) => { g.rows[3].terms[1].row = 'payroll'; }), 'rows.3.terms.1.row', 'unknown'],
-    ['a duplicate label', good((g) => { g.rows[2].label = 'rent'; }), 'rows.2.label', 'duplicate'],
-    ['an unknown key in a row', good((g) => { g.rows[0].colour = 'blue'; }), 'rows.0', 'unknown'],
-    ['a natural gl section over both sides', good((g) => { g.rows[0].filters = []; }), 'definition.nodes.0.polarity', 'MIXED_POLARITY'],
-    ['a group key the source lacks', good((g) => { g.rows[2].groupBy = [{ key: 'cleared' }]; }), 'definition.nodes.2.groupBy.0.key', 'NOT_IN_SOURCE'],
-    ['an unknown source', good((g) => { g.rows[2].source = 'payroll'; }), 'rows.2.source', 'shape'],
+    ['an amount-like key in a group-by', good((g) => { g['rows'][1].groupBy = [{ key: 'account', minAmount: 'x' }]; }), 'rows.1.groupBy.0', 'amount_filter'],
+    ['digits in a caption', good((g) => { g['rows'][1].caption = 'Rent over 500'; }), 'rows.1.caption', 'number'],
+    ['digits in a total caption', good((g) => { g['rows'][0].totalCaption = 'Total 2026'; }), 'rows.0.totalCaption', 'number'],
+    ['fullwidth digits in a text row', good((g) => { g['rows'][5].text = 'Budget ５００'; }), 'rows.5.text', 'number'],
+    ['digits in the title', good((g) => { g['title'] = 'Top 10 customers'; }), 'title', 'number'],
+    ['a JSON number in a row', good((g) => { g['rows'][0].hideZero = 0; }), 'rows.0.hideZero', 'number'],
+    ['a JSON number in free text at the top', good((g) => { g['confidence'] = 0.9; }), 'reply', 'number'],
+    ['ids from the model', good((g) => { g['rows'][1].filters = [{ field: 'account', op: 'in', ids: [UUID] }]; }), 'rows.1.filters.0', 'id'],
+    ['an id-like key in a row', good((g) => { g['rows'][1].accountId = 'x'; }), 'rows.1', 'id'],
+    ['an id key at the top', good((g) => { g['reportId'] = 'x'; }), 'reply', 'id'],
+    ['a uuid as a name', good((g) => { g['rows'][1].filters[0].names = [UUID]; }), 'rows.1.filters.0.names', 'id'],
+    ['a uuid in a caption', good((g) => { g['rows'][1].caption = `Rent ${UUID}`; }), 'rows.1.caption', 'id'],
+    ['a uuid as a label', good((g) => { g['rows'][1].label = UUID; }), 'rows.1.label', 'shape'],
+    ['an unresolved name with digits', good((g) => { g['rows'][2].filters[0].names = ['Over 500 Club']; }), 'definition.nodes.2.filters.0.ids.0', 'number'],
+    ['a preset with digits not sent', good((g) => { g['datePreset'] = 'last_24_months'; }), 'datePreset', 'number'],
+    ['a value not in the catalogue', good((g) => { g['rows'][0].filters[0].values = ['d1_45']; }), 'rows.0.filters.0.values', 'number'],
+    ['a formula on an unknown row', good((g) => { g['rows'][3].terms[1].row = 'payroll'; }), 'rows.3.terms.1.row', 'unknown'],
+    ['a duplicate label', good((g) => { g['rows'][2].label = 'rent'; }), 'rows.2.label', 'duplicate'],
+    ['an unknown key in a row', good((g) => { g['rows'][0].colour = 'blue'; }), 'rows.0', 'unknown'],
+    ['a natural gl section over both sides', good((g) => { g['rows'][0].filters = []; }), 'definition.nodes.0.polarity', 'MIXED_POLARITY'],
+    ['a group key the source lacks', good((g) => { g['rows'][2].groupBy = [{ key: 'cleared' }]; }), 'definition.nodes.2.groupBy.0.key', 'NOT_IN_SOURCE'],
+    ['an unknown source', good((g) => { g['rows'][2].source = 'payroll'; }), 'rows.2.source', 'shape'],
     ['no rows', { dates: 'range', rows: [] }, 'rows', 'no_report'],
     ['a reply that is not an object', ['income'], 'reply', 'not_json'],
   ])('refuses %s with 422 DRAFT_UNMAPPED', async (_name, parsed, field, reason) => {
@@ -451,6 +496,10 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect((await post(request({ description: 'x'.repeat(1001) }))).status).toBe(400);
     expect((await post({ ...request(), amountMin: '500' })).status).toBe(400);
     expect((await post(request({ datePresets: ['This Year'] }))).status).toBe(400);
+    // One-shot (owner 2026-11-15): no existing definition to redraft.
+    const redraft = await post(request({ definition: { schemaVersion: 1, kind: 'builder' } }));
+    expect(redraft.status).toBe(400);
+    expect(redraft.json.error.code).toBe('VALIDATION_ERROR');
     expect(m.execute).not.toHaveBeenCalled();
   });
 });
@@ -468,7 +517,18 @@ describe('report draft helpers (no database)', () => {
   });
 
   it('prescreen drops free text at the top level and does not mistake ordinary words for ids', () => {
-    expect(prescreen({ dates: 'range', rows: [], summary: 'Rent is high', paid: 'yes', valid: 'ok' })).toEqual({ dates: 'range', rows: [] });
+    expect(prescreen({ dates: 'range', rows: [], summary: 'Rent is high', paid: 'yes', valid: 'ok' }))
+      .toEqual({ kept: { dates: 'range', rows: [] }, amountRows: new Set(), amountTop: false });
     expect(() => prescreen({ dates: 'range', rows: [], tag_ids: 'x' })).toThrow();
+  });
+
+  it('the description amount check catches amount conditions, not plain dates', () => {
+    for (const s of ['over $500', 'bills above 1,000', 'more than 250 dollars', 'at least ５００', '> 75', 'invoices of $12.50']) {
+      expect(AMOUNT_TEXT_RE.test(s.normalize('NFKC')), s).toBe(true);
+    }
+    for (const s of ['income for 2026', 'the last 12 months', 'quarter 3 sales']) expect(AMOUNT_TEXT_RE.test(s), s).toBe(false);
+    expect(draftNotes('income for 2026', false, [], [], false).map((n) => n.code)).toEqual(['numbers_not_used']);
+    expect(draftNotes('sales over $500 in 2026', true, ['preset_left_out'], ['row_b'], false).map((n) => [n.code, n.nodeId]))
+      .toEqual([['pick_unresolved', undefined], ['amount_filter_left_out', 'row_b'], ['preset_left_out', undefined]]);
   });
 });
