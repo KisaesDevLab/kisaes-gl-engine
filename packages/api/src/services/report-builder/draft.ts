@@ -172,7 +172,7 @@ export interface DraftResult {
 
 const NOTE_TEXT: Record<DraftNoteCode, string> = {
   pick_unresolved: 'Some names in the draft need you to pick a match before the report can be saved.',
-  amount_filter_left_out: 'The AI does not set amount limits. Add the amount filter yourself if you need one.',
+  amount_filter_left_out: 'The AI does not set amount limits. Add the amount filter yourself if you need it.',
   preset_left_out: 'The AI suggested a date range this app does not offer; choose the dates yourself.',
   numbers_not_used: 'Numbers in your description are not part of a draft; set the dates, and any amount filter, yourself.',
 };

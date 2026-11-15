@@ -418,7 +418,7 @@ describe('POST /report-builder/draft (U-120)', () => {
 
   // Q-A10l (review B1): every number in the description, in any format, is masked before the prompt and noted.
   it.each([
-    ['Bills over $500', 'amount'],
+    ['Bills over £500', 'amount'],
     ['Invoices of 500', 'amount'],
     ['Bills totalling 1,250.75', 'amount'],
     ['Bills 500€ and up', 'amount'],
@@ -729,6 +729,13 @@ describe('report draft helpers (no database)', () => {
     expect(codes('Bills over five hundred dollars')).toEqual(['amount_filter_left_out']);
     expect(codes('Bills of 5e3')).toEqual(['amount_filter_left_out']);
     expect(codes('Bills by vendor')).toEqual([]);
+    // The engine's own note texts hold no number either.
+    const all = [...draftNotes('sales over $500', true, ['preset_left_out'], ['row_b'], false), ...draftNotes('in 2026', false, [], [], false)];
+    expect(all.map((n) => n.code).sort()).toEqual(['amount_filter_left_out', 'numbers_not_used', 'pick_unresolved', 'preset_left_out']);
+    for (const n of all) {
+      expect(n.message).not.toMatch(/\p{N}/u);
+      expect(hasNumberWord(n.message), n.message).toBe(false);
+    }
     expect(draftNotes('sales over $500 in 2026', true, ['preset_left_out'], ['row_b'], false).map((n) => [n.code, n.nodeId]))
       .toEqual([['pick_unresolved', undefined], ['amount_filter_left_out', 'row_b'], ['preset_left_out', undefined]]);
   });
