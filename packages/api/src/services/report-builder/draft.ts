@@ -79,7 +79,7 @@ import {
   type BuilderDefinition, type RbNode, type RbSectionNode, type RbFilter, type RbGroupBy, type RbDetailField, type RbCompare,
 } from '@kis-books/shared';
 import { db } from '../../db/index.js';
-import { contacts, items, tagGroups } from '../../db/schema/index.js';
+import { items, tagGroups } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
 import { isOfflineUnavailable } from '../../utils/offline.js';
@@ -809,20 +809,12 @@ export function buildDraftPrompt(
 
 /**
  * Names the model may see: those of /reports/ask plus active items and tag
- * groups, and the active contacts whose name holds a digit and is a whole
- * phrase of the description ("3M", "7-Eleven": /reports/ask picks contacts by
- * the description's words of three or more letters without a digit, which
- * misses them; Q-A10j). Names only.
+ * groups. Names only. Contacts come from the description's words without a
+ * digit (as /reports/ask), so a contact named only by digits ("3M") is not
+ * picked: the digits the owner typed never choose what the model sees.
  */
 export async function draftPromptNames(tenantId: string, companyId: string, description: string) {
   const base = await promptNames(tenantId, companyId, description);
-  const typed = norm(prepare(description));
-  const digitContacts = (await db.select({ name: contacts.displayName }).from(contacts)
-    .where(and(eq(contacts.tenantId, tenantId), or(isNull(contacts.companyId), eq(contacts.companyId, companyId)), eq(contacts.isActive, true),
-      sql`${contacts.displayName} ~ '[0-9]'`, sql`strpos(${typed}, lower(${contacts.displayName})) > 0`))
-    .orderBy(sql`lower(${contacts.displayName})`).limit(DRAFT_LIMITS.promptItems))
-    .filter((r) => containsPhrase(typed, norm(r.name)));
-  const contactNames = [...new Set([...base.contacts, ...digitContacts.map((r) => r.name.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).filter(Boolean)])];
   const it = await db.select({ name: items.name }).from(items)
     .where(and(eq(items.tenantId, tenantId), or(isNull(items.companyId), eq(items.companyId, companyId)), eq(items.isActive, true)))
     .orderBy(sql`lower(${items.name})`).limit(DRAFT_LIMITS.promptItems);
@@ -830,7 +822,7 @@ export async function draftPromptNames(tenantId: string, companyId: string, desc
     .where(and(eq(tagGroups.tenantId, tenantId), or(isNull(tagGroups.companyId), eq(tagGroups.companyId, companyId))))
     .orderBy(sql`lower(${tagGroups.name})`).limit(DRAFT_LIMITS.promptTagGroups);
   const uniq = (l: Array<{ name: string }>) => [...new Set(l.map((r) => r.name.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).filter(Boolean))];
-  return { ...base, contacts: contactNames, items: uniq(it), tagGroups: uniq(tg) };
+  return { ...base, items: uniq(it), tagGroups: uniq(tg) };
 }
 
 // ── The call ───────────────────────────────────────────────────────

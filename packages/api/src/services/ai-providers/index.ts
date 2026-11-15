@@ -446,12 +446,14 @@ async function attempt(
   // and scrubs secrets from any error it raises.
   try {
     const inner = retryWithBackoff(
-      () => {
+      async () => {
         tries++;
-        return provider.complete({ ...params, signal }).catch((err: unknown) => {
+        try {
+          return await provider.complete({ ...params, signal });
+        } catch (err) {
           if (wasNotSent(err)) refusedBeforeSend++;
           throw err;
-        });
+        }
       },
       { maxRetries: 2, baseDelayMs: 1000 },
     );

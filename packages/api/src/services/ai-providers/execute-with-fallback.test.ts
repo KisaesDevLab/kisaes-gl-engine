@@ -219,6 +219,23 @@ describe('executeWithFallback', () => {
       expect(sent).toEqual([{ provider: 'anthropic', model: null }]);
     });
 
+    it('a try still running at the timeout counts as sent', async () => {
+      mocks.anthropic.mockImplementation(() => new Promise(() => { /* never settles */ }));
+      const sent: unknown[] = [];
+      const err = await settle(executeWithFallback(PARAMS, CONFIG, ['anthropic'], 'anthropic', undefined, {
+        timeoutMs: 50, onSent: (s) => { sent.push(s); },
+      }));
+      expect(err.code).toBe('ai_all_providers_failed');
+      expect(err.providerErrors?.[0]).toMatch(/timeout/);
+      expect(sent).toEqual([{ provider: 'anthropic', model: null }]);
+    });
+
+    it('a provider whose complete() returns a plain value still works (no Promise required)', async () => {
+      mocks.anthropic.mockImplementation(((model: string) => ({ text: '{}', parsed: {}, inputTokens: 1, outputTokens: 1, model, provider: 'anthropic', durationMs: 1 })) as never);
+      const result = await executeWithFallback(PARAMS, CONFIG, ['anthropic'], 'anthropic');
+      expect(result.provider).toBe('anthropic');
+    });
+
     it('a listener that throws never changes the outcome', async () => {
       mocks.anthropic.mockImplementation((model) => ok('anthropic', model));
       const result = await executeWithFallback(PARAMS, CONFIG, ['anthropic'], 'anthropic', undefined, {

@@ -578,31 +578,30 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(r.json.error.details.reason).toBe('number');
   });
 
-  it('a contact whose name holds a digit and is named in the description joins NAMES and resolves; the masking note is pinned (Q-A10j)', async () => {
+  it('a contact with a digit named by a word of the description ("Studio 54") is in NAMES and resolves; one named only by digits ("3M") is not (Q-A10j)', async () => {
     await enableAi();
-    const [m3] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: '3M' }).returning();
     const [studio] = await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Studio 54' }).returning();
-    await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: '7-Eleven' });
+    await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: '3M' });
     const buys = (name: string) => reply({ dates: 'range', rows: [
       { type: 'section', caption: name, source: 'purchases', measure: 'amount', filters: [{ field: 'contact', op: 'in', names: [name] }] },
     ] });
-    m.execute.mockResolvedValueOnce(buys('3M'));
-    const r1 = await post(request({ description: 'Purchases from 3M by month' }));
-    expect(r1.status, JSON.stringify(r1.json)).toBe(200);
-    expect(r1.json.definition.nodes[0]).toMatchObject({ caption: '3M', filters: [{ field: 'contact', op: 'in', ids: [m3!.id] }] });
-    expect(sent(0)).toMatch(/Contacts: 3M\n?/);
-    expect(sent(0)).not.toContain('7-Eleven');
-    expect(sent(0)).not.toContain('Studio 54');
-    // "3M" reads as an amount unit to the masking (unchanged, Q-A10l): the model saw [AMOUNT], and the note says so.
-    expect(sentDescription(0)).toContain('Purchases from [AMOUNT] by month');
-    expect(r1.json.notes.map((n: { code: string }) => n.code)).toEqual(['amount_filter_left_out']);
-
     m.execute.mockResolvedValueOnce(buys('Studio 54'));
-    const r2 = await post(request({ description: 'Purchases from Studio 54' }));
+    const r1 = await post(request({ description: 'Purchases from Studio 54' }));
+    expect(r1.status, JSON.stringify(r1.json)).toBe(200);
+    expect(r1.json.definition.nodes[0]).toMatchObject({ caption: 'Studio 54', filters: [{ field: 'contact', op: 'in', ids: [studio!.id] }] });
+    expect(sent(0)).toContain('Contacts: Studio 54');
+    expect(sentDescription(0)).toContain('Purchases from Studio [NUMBER]');
+    expect(sentDescription(0)).not.toMatch(/\p{N}/u);
+    expect(r1.json.notes.map((n: { code: string }) => n.code)).toEqual(['numbers_not_used']);
+
+    // The digits the owner typed never pick a name for the model: "3M" is masked (as an amount: "M" is a unit) and not in NAMES.
+    m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+    const r2 = await post(request({ description: 'Vendor bills over 3M' }));
     expect(r2.status, JSON.stringify(r2.json)).toBe(200);
-    expect(r2.json.definition.nodes[0].filters).toEqual([{ field: 'contact', op: 'in', ids: [studio!.id] }]);
-    expect(sentDescription(1)).toContain('Purchases from Studio [NUMBER]');
-    expect(r2.json.notes.map((n: { code: string }) => n.code)).toEqual(['numbers_not_used']);
+    expect(sentDescription(1)).toContain('Vendor bills over [AMOUNT]');
+    expect(sent(1)).toContain('Contacts: (none)');
+    expect(promptDigits(sent(1))).toEqual([]);
+    expect(r2.json.notes.map((n: { code: string }) => n.code)).toEqual(['amount_filter_left_out']);
   });
 
   it('a name not found is shown back only when it is a whole word or phrase of the description', async () => {
