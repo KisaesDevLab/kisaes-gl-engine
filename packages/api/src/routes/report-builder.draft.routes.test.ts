@@ -38,7 +38,7 @@ import { reportBuilderRouter } from './report-builder.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import * as aiConfigService from '../services/ai-config.service.js';
 import * as aiConsent from '../services/ai-consent.service.js';
-import { AMOUNT_TEXT_RE, DRAFT_STRUCTURAL_DIGITS, draftNotes, nodeIdFor, prescreen } from '../services/report-builder/draft.js';
+import { AMOUNT_TEXT_RE, DRAFT_STRUCTURAL_DIGITS, draftNotes, maskAmounts, nodeIdFor, prescreen } from '../services/report-builder/draft.js';
 import { OfflineUnavailableError } from '../utils/offline.js';
 import { makeCompany, cleanTenant, type Co } from '../services/templates/templates.test-helpers.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
@@ -227,6 +227,9 @@ describe('POST /report-builder/draft (U-120)', () => {
       expect(params.systemPrompt).not.toContain(secret);
     }
     expect(params.userPrompt).toContain('[PHONE_REDACTED]');
+    // The owner's amount is masked before the prompt (Q-315).
+    expect(params.userPrompt).toContain('over [AMOUNT]');
+    expect(params.userPrompt).not.toContain('500');
     expect(params.systemPrompt).toMatch(/no amount filter/i);
 
     // ai_jobs: counts only; the console: nothing of the description.
@@ -344,8 +347,12 @@ describe('POST /report-builder/draft (U-120)', () => {
     ['an amount filter by field', good((g) => { g['rows'][1].filters.push({ field: 'amount', op: 'gte', value: '500.00' }); }), 'row_b'],
     ['an amount filter with a JSON number', good((g) => { g['rows'][1].filters.push({ field: 'amount', op: 'gte', value: 500 }); }), 'row_b'],
     ['an amount comparison on another field', good((g) => { g['rows'][2].filters.push({ field: 'contact', op: 'lte', names: ['500'] }); }), 'row_c'],
-    ['a value on a filter', good((g) => { g['rows'][1].filters.push({ field: 'account', op: 'in', names: ['Rent Kumquat Hall'], value: '500' }); }), 'row_b'],
-    ['an amount-like key in a filter', good((g) => { g['rows'][1].filters.push({ field: 'account', op: 'in', names: ['Rent Kumquat Hall'], minAmount: 500 }); }), 'row_b'],
+    ['a value on a list filter (key removed, filter kept)', good((g) => { g['rows'][1].filters[0].value = '500'; }), 'row_b'],
+    ['an amount-like key in a list filter (key removed, filter kept)', good((g) => { g['rows'][1].filters[0].minAmount = 500; }), 'row_b'],
+    ['a gt comparison', good((g) => { g['rows'][1].filters.push({ field: 'account', op: 'gt', names: ['500'] }); }), 'row_b'],
+    ['a between comparison', good((g) => { g['rows'][1].filters.push({ field: 'amount', op: 'between', values: ['100', '500'] }); }), 'row_b'],
+    ['a >= comparison', good((g) => { g['rows'][1].filters.push({ field: 'contact', op: '>=', value: 500 }); }), 'row_b'],
+    ['a total field', good((g) => { g['rows'][1].filters.push({ field: 'total', op: 'in', values: ['500'] }); }), 'row_b'],
     ['an amount key in a row', good((g) => { g['rows'][0].minTotal = '500'; }), 'row_a'],
     ['an amount key in a grouped row', good((g) => { g['rows'] = [{ type: 'group', caption: 'Costs', children: [{ ...g['rows'][1], amountOver: 500 }] }]; g['percentOf'] = null; }), 'row_b'],
     ['a section marked amountCondition', good((g) => { g['rows'][2].amountCondition = true; }), 'row_c'],
@@ -362,6 +369,8 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(JSON.stringify(res.json).replace(UUID_G, '')).not.toContain('500');
     expect(parseBuilderDefinition(def).ok).toBe(true);
     expect(res.json.savable).toBe(true);
+    // The section keeps its own (non-amount) filter: never broadened.
+    if (nodeId === 'row_b' && def.nodes[1]) expect(def.nodes[1].filters).toEqual([{ field: 'account', op: 'in', ids: [rentId] }]);
   });
 
   it('an amount in the description is drafted without a filter, noted, and never echoed', async () => {
@@ -523,10 +532,11 @@ describe('report draft helpers (no database)', () => {
   });
 
   it('the description amount check catches amount conditions, not plain dates', () => {
-    for (const s of ['over $500', 'bills above 1,000', 'more than 250 dollars', 'at least ５００', '> 75', 'invoices of $12.50']) {
+    for (const s of ['over $500', 'bills above 1,000', 'more than 250 dollars', 'at least ５００', '> 75', 'invoices of $12.50', '500 or more', 'between 100 and 500', 'minimum 500', '≥ 500', 'up to 250']) {
       expect(AMOUNT_TEXT_RE.test(s.normalize('NFKC')), s).toBe(true);
     }
     for (const s of ['income for 2026', 'the last 12 months', 'quarter 3 sales']) expect(AMOUNT_TEXT_RE.test(s), s).toBe(false);
+    expect(maskAmounts('Bills between 100 and 500 in 2026, or over $1,250.75')).toBe('Bills between [AMOUNT] and [AMOUNT] in 2026, or over [AMOUNT]');
     expect(draftNotes('income for 2026', false, [], [], false).map((n) => n.code)).toEqual(['numbers_not_used']);
     expect(draftNotes('sales over $500 in 2026', true, ['preset_left_out'], ['row_b'], false).map((n) => [n.code, n.nodeId]))
       .toEqual([['pick_unresolved', undefined], ['amount_filter_left_out', 'row_b'], ['preset_left_out', undefined]]);

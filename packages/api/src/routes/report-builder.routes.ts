@@ -34,12 +34,11 @@ import * as transfer from '../services/report-transfer.service.js';
 import { REPORT_DEFINITION_KINDS } from '../db/schema/index.js';
 import {
   builderDefinitionSchema, BUILDER_STARTERS, RB_ENGINE_ERROR_CODES, RB_ERROR_CODES, RB_SOURCE_INFO, RB_UNAVAILABLE_SOURCES, RB_MEASURE_UNIT,
-  RB_FILTER_VALUES, RB_DETAIL_FIELDS,
+  RB_FILTER_VALUES, RB_DETAIL_FIELDS, RB_PRESET_RE,
 } from '@kis-books/shared';
 import { runRequestSchema, detailRequestSchema } from '../services/report-builder/request.js';
 import { expensiveOpLimiter } from '../middleware/expensive-op-limiter.js';
 import * as reportDraft from '../services/report-builder/draft.js';
-import { ASK_TOKEN_RE } from '../services/report-ask.service.js';
 import { runReport, runDetail, type Viewer as RunViewer } from '../services/report-builder/run.js';
 
 export const reportBuilderRouter = Router();
@@ -340,8 +339,8 @@ reportBuilderRouter.post('/run/detail', describe({
 export const draftRequestSchema = z.object({
   description: z.string().trim().min(1).max(reportDraft.DRAFT_LIMITS.descriptionChars)
     .describe('the report in plain words, ≤ 1,000 characters'),
-  datePresets: z.array(z.string().regex(ASK_TOKEN_RE)).max(reportDraft.DRAFT_LIMITS.presets).default([])
-    .describe('the client\'s date preset keys (/^[a-z0-9_]{1,64}$/); the draft\'s dates.preset is one of them or left out'),
+  datePresets: z.array(z.string().regex(RB_PRESET_RE)).max(reportDraft.DRAFT_LIMITS.presets).default([])
+    .describe('the client\'s date preset keys (/^[a-z0-9_]{1,40}$/, as dates.preset); the draft\'s dates.preset is one of them or left out'),
 }).strict();
 
 const DRAFT_DOC = '`{definition, savable, unresolved: [{ref: "$ref:N", kind: account | contact | item | tag | tagGroup, name: string | null, '
@@ -360,7 +359,7 @@ reportBuilderRouter.post('/draft', expensiveOpLimiter, describe({
     + 'true when unresolved is empty: the definition then passes the save check as is. name is null when the model named something that is not '
     + 'in the books and the owner did not type it. One-shot: the body takes a description only, never a definition to redraft. '
     + 'There is no amount filter: an amount condition (in the description, or an amount filter or amount-like key the model gives) is left out '
-    + 'and noted as amount_filter_left_out (nodeId when the row is known); the amount itself never reaches the definition or the response. '
+    + 'and noted as amount_filter_left_out (nodeId when the row is known); description amounts are masked ([AMOUNT]) before the prompt; the amount itself never reaches the definition or the response. '
     + 'No digit from the model is kept except the aging bucket keys. One audit row per draft: create report_builder_draft (entity the ai_jobs id), '
     + 'after {companyId, provider, model, reader, nodes, unresolved}; never the description, prompt or definition. '
     + 'Errors: 400 VALIDATION_ERROR (empty or > 1,000 character description, an unknown key); 403 AI_CONSENT_REQUIRED {reason, task: report_summary} '

@@ -63,7 +63,7 @@ import { z } from 'zod';
 import {
   RB_SOURCES, RB_MEASURES, RB_GROUP_KEYS, RB_DETAIL_FIELDS, RB_SOURCE_INFO, RB_FILTER_VALUES, RB_ID_FILTER_FIELDS,
   RB_VALUE_FILTER_FIELDS, RB_AGING_BUCKETS, RB_MAX_NODES, RB_MAX_COMPARE, RB_MAX_TERMS, RB_MAX_FILTERS, RB_MAX_GROUP_BY,
-  RB_MAX_DETAIL_FIELDS,
+  RB_MAX_DETAIL_FIELDS, RB_PRESET_RE,
   type BuilderDefinition, type RbNode, type RbSectionNode, type RbFilter, type RbGroupBy, type RbDetailField, type RbCompare,
 } from '@kis-books/shared';
 import { db } from '../../db/index.js';
@@ -77,7 +77,7 @@ import { checkTenantTaskConsent } from '../ai-consent.service.js';
 import { sanitize } from '../pii-sanitizer.service.js';
 import { executeWithFallback, MYBOOKS_TASK_CLASSES, type CompletionResult } from '../ai-providers/index.js';
 import {
-  ASK_TOKEN_RE, consentRequired, unavailable, norm, hasDigit, UUIDISH, promptNames, dbNameResolver, type NameResolver, type NameKind,
+  consentRequired, unavailable, norm, hasDigit, UUIDISH, promptNames, dbNameResolver, type NameResolver, type NameKind,
 } from '../report-ask.service.js';
 import { describeRows } from '../report-transfer.service.js';
 import { parseBuilder, assertRefsInScope } from '../report-definitions.service.js';
@@ -165,7 +165,7 @@ const NOTE_TEXT: Record<DraftNoteCode, string> = {
   pick_unresolved: 'Some names in the draft need you to pick a match before the report can be saved.',
   amount_filter_left_out: 'The AI does not set amount limits. Add the amount filter yourself if you need one.',
   preset_left_out: 'The AI suggested a date range this app does not offer; choose the dates yourself.',
-  numbers_not_used: 'Numbers in your description (such as dates) are not part of a draft; set the dates yourself.',
+  numbers_not_used: 'Numbers in your description are not part of a draft; set the dates, and any amount filter, yourself.',
 };
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -265,6 +265,15 @@ const idKey = (key: string) => /(^|_)(u?u)?ids?$/i.test(key) || /[a-z](Id|Ids|ID
 
 const isObj = (v: unknown): v is Record<string, unknown> => Object.prototype.toString.call(v) === '[object Object]';
 
+const LIST_OPS: readonly string[] = ['in', 'not_in', 'is_none'];
+const AMOUNT_OP_WORDS = new Set(['between', 'eq', 'equals', 'ne', '>', '>=', '<', '<=', '=', '==', '!=', '≥', '≤', 'range']);
+/** A filter field that names an amount: `amount`, or an amount word that is not a filter field (total, balance, price …). */
+const isAmountField = (f: unknown) =>
+  typeof f === 'string' && (f === 'amount' || (!(DRAFT_FILTER_FIELDS as readonly string[]).includes(f) && amountKey(f)));
+/** A comparison op (gte, lt, between, >= …): every builder filter the model may give is a list op. */
+const isAmountOp = (op: unknown) =>
+  typeof op === 'string' && !LIST_OPS.includes(op) && (AMOUNT_OP_WORDS.has(op.toLowerCase()) || amountKey(op));
+
 /** A row of the reply: rows.N, rows.N.children.M, … */
 const ROW_PATH_RE = /^rows\.\d+(\.children\.\d+)*$/;
 const FILTER_PATH_RE = /^(rows\.\d+(?:\.children\.\d+)*)\.filters\.\d+$/;
@@ -293,9 +302,6 @@ export function prescreen(parsed: unknown): Prescreened {
   if (!isObj(parsed)) throw draftUnmapped('reply', 'not_json');
   const amountRows = new Set<string>();
   let amountTop = false;
-  const isAmountFilter = (f: Record<string, unknown>) =>
-    f['field'] === 'amount' || f['op'] === 'gte' || f['op'] === 'lte' || 'value' in f
-    || Object.keys(f).some((k) => !KNOWN_KEYS.has(k) && !idKey(k) && amountKey(k));
   const walk = (v: unknown, path: string, depth: number): unknown => {
     if (depth > 64) throw draftUnmapped(path, 'too_deep');
     if (typeof v === 'number' || typeof v === 'bigint') throw draftUnmapped(path, 'number');
@@ -304,7 +310,20 @@ export function prescreen(parsed: unknown): Prescreened {
       v.forEach((x, i) => {
         const p = `${path}.${i}`;
         const fm = FILTER_PATH_RE.exec(p);
-        if (fm && isObj(x) && isAmountFilter(x)) { amountRows.add(fm[1]!); return; }
+        if (fm && isObj(x)) {
+          // A filter on amounts (by field or comparison): removed whole.
+          if (isAmountField(x['field']) || isAmountOp(x['op'])) { amountRows.add(fm[1]!); return; }
+          // A list filter with a stray amount key (value, minAmount …): the key is removed, the filter kept,
+          // so the section is never broadened by losing its account / contact / … filter.
+          const stray = Object.keys(x).filter((k) => !KNOWN_KEYS.has(k) && !idKey(k) && amountKey(k));
+          if (stray.length > 0) {
+            amountRows.add(fm[1]!);
+            const rest = { ...x };
+            for (const k of stray) delete rest[k];
+            out.push(walk(rest, p, depth + 1));
+            return;
+          }
+        }
         out.push(walk(x, p, depth + 1));
       });
       return out;
@@ -337,12 +356,28 @@ export function prescreen(parsed: unknown): Prescreened {
   return { kept, amountRows, amountTop };
 }
 
+const NUM = String.raw`[$€£¥]?\s*\p{N}(?:[\p{N},.]*\p{N})?`;
+const AMOUNT_TEXT_SRC = [
+  String.raw`\bbetween\s*${NUM}\s*(?:and|to|-)\s*${NUM}`,
+  String.raw`[$€£¥]\s*\p{N}(?:[\p{N},.]*\p{N})?`,
+  String.raw`\p{N}(?:[\p{N},.]*\p{N})?\s*(?:dollars?|usd|bucks|k\b|or (?:more|less|above|below|over|under|higher|lower)|and (?:up|above|over|under|below)|plus\b|\+)`,
+  String.raw`\b(?:over|under|above|below|more than|less than|at least|at most|greater than|exceeding|bigger than|larger than|smaller than|minimum(?: of)?|maximum(?: of)?|min|max|up to|between)\s*${NUM}`,
+  String.raw`[<>≥≤]=?\s*${NUM}`,
+].join('|');
+
 /**
- * An amount condition in the owner's description ("over $500", "at least
- * 1,000 dollars", "> 250"). Only decides whether to add the note; the
- * description itself is never echoed and never reaches the definition.
+ * An amount condition in the owner's description ("over $500", "500 or
+ * more", "between 100 and 500", "≥ 250"). It decides the note, and its
+ * numbers are masked before the prompt (Q-315: no amount goes to the model).
+ * The description is never echoed and never reaches the definition.
  */
-export const AMOUNT_TEXT_RE = /[$€£¥]\s*\p{N}|\p{N}[\p{N},.]*\s*(dollars?|usd|bucks|k\b)|\b(over|under|above|below|more than|less than|at least|at most|greater than|exceeding|bigger than|larger than|smaller than)\s*[$€£¥]?\s*\p{N}|[<>]=?\s*[$€£¥]?\s*\p{N}/iu;
+export const AMOUNT_TEXT_RE = new RegExp(AMOUNT_TEXT_SRC, 'iu');
+const AMOUNT_TEXT_G = new RegExp(AMOUNT_TEXT_SRC, 'giu');
+
+/** The description with every amount condition's number replaced by [AMOUNT] (dates and other numbers kept). */
+export function maskAmounts(description: string): string {
+  return description.normalize('NFKC').replace(AMOUNT_TEXT_G, (m) => m.replace(new RegExp(NUM, 'gu'), (x) => (/^\s/.test(x) ? ' ' : '') + '[AMOUNT]'));
+}
 
 // ── Building the definition ────────────────────────────────────────
 
@@ -762,10 +797,11 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
     orchestrator.isSelfHostedProvider(name, { openaiCompatBaseUrl: rawConfig.openaiCompatBaseUrl }) && !orchestrator.isOllamaCloudModel(m);
   const selfHosted = isLocal(provider, model);
 
-  const presets = (input.datePresets ?? []).filter((p) => ASK_TOKEN_RE.test(p));
+  const presets = (input.datePresets ?? []).filter((p) => RB_PRESET_RE.test(p));
   const names = await draftPromptNames(tenantId, companyId, input.description);
   // Redacted for every provider: the fallback chain may reach a cloud one.
-  const description = sanitize(input.description, 'standard');
+  // Amounts the owner typed are masked first: the model never sees one (Q-315).
+  const description = sanitize(maskAmounts(input.description), 'standard');
   const userPrompt = buildDraftPrompt(description.text, presets, names);
 
   // 3. Budget caps and the usage row. Counts only — never the description or names.
