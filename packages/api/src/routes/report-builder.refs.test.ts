@@ -217,8 +217,8 @@ describe('a merge re-points saved reports (Q-PRA2b, 5-B1)', () => {
     expect((await get(a.id)).version).toBe(2);
     const gb = await get(b.id, c.companyB);
     expect(gb.version).toBe(1);
-    // The merged-away contact is deactivated, not deleted: B's report still names a row that exists.
-    expect(gb.missing).toEqual([]);
+    // The merged-away contact is deactivated and its merge is recorded: B's report reads it as merged, with no hint (the kept row is not B's).
+    expect(gb.missing).toEqual([{ path: 'definition.nodes.0.filters.1.ids', nodeId: 'revenue', field: 'contact', kind: 'contact', ids: [shared!.id], reason: 'merged' }]);
     const audit = await mergeAudit('contact', shared!.id);
     expect(audit.moved).toMatchObject({ reportDefinitions: 1, reportDefinitionsSkipped: 1 });
   });
@@ -237,13 +237,13 @@ describe('a deleted record under a saved report (Q-PRA2c, 5-B1)', () => {
     expect((await call('DELETE', `/tags/groups/${group!.id}`)).status).toBeLessThan(300);
     expect((await call('DELETE', `/tags/${unused!.id}`)).status).toBeLessThan(300);
 
-    const groupMissing = { path: 'definition.nodes.0.groupBy.0.tagGroupId', nodeId: 'revenue', field: 'groupBy.tagGroupId', kind: 'tagGroup', ids: [group!.id] };
+    const groupMissing = { path: 'definition.nodes.0.groupBy.0.tagGroupId', nodeId: 'revenue', field: 'groupBy.tagGroupId', kind: 'tagGroup', ids: [group!.id], reason: 'deleted' };
     const r = await runSaved(byGroup.id, 1);
     expect(r.status).toBe(422);
     expect(r.json.error).toMatchObject({ code: 'REPORT_REFERENCE_MISSING', details: { ...groupMissing, missing: [groupMissing] } });
     expect((await get(byGroup.id)).missing).toEqual([groupMissing]);
 
-    const tagMissing = { path: 'definition.nodes.0.filters.1.ids', nodeId: 'revenue', field: 'tag', kind: 'tag', ids: [unused!.id] };
+    const tagMissing = { path: 'definition.nodes.0.filters.1.ids', nodeId: 'revenue', field: 'tag', kind: 'tag', ids: [unused!.id], reason: 'deleted' };
     const rt = await call('POST', '/report-builder/run', { definitionId: byTag.id, version: 1, purpose: 'export', ...RANGE });
     expect(rt.status).toBe(422);
     expect(rt.json.error).toMatchObject({ code: 'REPORT_REFERENCE_MISSING', details: tagMissing });
@@ -260,16 +260,20 @@ describe('a deleted record under a saved report (Q-PRA2c, 5-B1)', () => {
     // Standard reports: the engine does not run them; GET marks the references and the list does too.
     const sm = (await get(standard.id)).missing;
     expect(sm).toEqual([
-      { path: 'definition.options.filters.tagIds', nodeId: null, field: 'filters.tagIds', kind: 'tag', ids: [unused!.id] },
-      { path: 'definition.options.columnTagGroupId', nodeId: null, field: 'columnTagGroupId', kind: 'tagGroup', ids: [group!.id] },
+      { path: 'definition.options.filters.tagIds', nodeId: null, field: 'filters.tagIds', kind: 'tag', ids: [unused!.id], reason: 'deleted' },
+      { path: 'definition.options.columnTagGroupId', nodeId: null, field: 'columnTagGroupId', kind: 'tagGroup', ids: [group!.id], reason: 'deleted' },
     ]);
     const list = (await call('GET', '/report-builder/definitions')).json.definitions as Array<{ id: string; missing: unknown[] }>;
     expect(list.find((d) => d.id === standard.id)!.missing).toEqual(sm);
 
-    // Inline (the desktop's editor run) is unchanged: 400 DEFINITION_INVALID NOT_IN_COMPANY at the path.
+    // Inline (the desktop's editor run): still 400 DEFINITION_INVALID NOT_IN_COMPANY at the path, with missing added.
     const inline = await runInline((await get(byGroup.id)).definition);
     expect(inline.status).toBe(400);
-    expect(inline.json.error).toMatchObject({ code: 'DEFINITION_INVALID', details: { path: groupMissing.path, code: 'NOT_IN_COMPANY' } });
+    expect(inline.json.error).toMatchObject({ code: 'DEFINITION_INVALID', details: { path: groupMissing.path, code: 'NOT_IN_COMPANY', missing: [groupMissing] } });
+    const inlineDrillRef = { definition: (await get(byTag.id)).definition, ...RANGE };
+    const inlineDrill = await call('POST', '/report-builder/run/detail', { ...inlineDrillRef, nodeId: 'revenue', path: ['n:revenue'], fingerprint: fingerprintOf(inlineDrillRef as never), stamp: 0 });
+    expect(inlineDrill.status).toBe(400);
+    expect(inlineDrill.json.error.details).toMatchObject({ path: tagMissing.path, code: 'NOT_IN_COMPANY', missing: [tagMissing] });
   });
 
   it('a deactivated contact still exists: the saved report runs and nothing is missing', async () => {
@@ -280,5 +284,52 @@ describe('a deleted record under a saved report (Q-PRA2c, 5-B1)', () => {
     expect((await get(d.id)).missing).toEqual([]);
     const [row] = await db.select().from(reportDefinitions).where(eq(reportDefinitions.id, d.id));
     expect(row!.version).toBe(1);
+  });
+});
+
+describe('merged before report-refs-v1 (coordinator decision 3)', () => {
+  /** What a merge before this change left: the source deactivated (contact) or deleted (tag), a merge audit row, reports untouched. */
+  async function oldContactMerge(from: string, to: string) {
+    await db.update(contacts).set({ isActive: false }).where(eq(contacts.id, from));
+    await db.insert(auditLog).values({ tenantId: c.tenantId, userId: c.userId, action: 'update', entityType: 'contact', entityId: from, beforeData: null, afterData: { merged_into: to } });
+  }
+
+  it('a report left on a merged-away contact is missing (reason merged) with the survivor as a hint: GET, saved 422, inline 400; chains followed', async () => {
+    const [x] = await db.insert(contacts).values({ tenantId: c.tenantId, contactType: 'customer', displayName: `Rivera old ${suffix()}` }).returning();
+    const [y] = await db.insert(contacts).values({ tenantId: c.tenantId, contactType: 'customer', displayName: `Rivera mid ${suffix()}` }).returning();
+    const d = await save('Left on X', revenue({ filters: [{ field: 'contact', op: 'in', ids: [x!.id, c.vendor] }] }));
+    // X went into Y, later Y went into the kept customer.
+    await oldContactMerge(x!.id, y!.id);
+    await oldContactMerge(y!.id, c.customer);
+    const entry = {
+      path: 'definition.nodes.0.filters.1.ids', nodeId: 'revenue', field: 'contact', kind: 'contact', ids: [x!.id], reason: 'merged',
+      mergedInto: { id: c.customer, label: 'Rivera Remodel (customer)' },
+    };
+    expect((await get(d.id)).missing).toEqual([entry]);
+    const saved = await runSaved(d.id, 1);
+    expect(saved.status).toBe(422);
+    expect(saved.json.error).toMatchObject({ code: 'REPORT_REFERENCE_MISSING', details: { ...entry, missing: [entry] } });
+    const inline = await runInline((await get(d.id)).definition);
+    expect(inline.status).toBe(400);
+    expect(inline.json.error).toMatchObject({ code: 'DEFINITION_INVALID', details: { path: entry.path, code: 'NOT_IN_COMPANY', missing: [entry] } });
+  });
+
+  it('a tag merged away before (deleted, with a merge row) is missing with its survivor; a reactivated contact is not missing', async () => {
+    const [old] = await db.insert(tags).values({ tenantId: c.tenantId, name: `Old crew ${suffix()}` }).returning();
+    const d = await save('Old crew', revenue({ filters: [{ field: 'tag', op: 'in', ids: [old!.id] }] }));
+    await db.delete(tags).where(eq(tags.id, old!.id));
+    await db.insert(auditLog).values({ tenantId: c.tenantId, userId: c.userId, action: 'delete', entityType: 'tag', entityId: old!.id, beforeData: null, afterData: { merged_into: c.tag } });
+    const [tagRow] = await db.select().from(tags).where(eq(tags.id, c.tag));
+    expect((await get(d.id)).missing).toEqual([{
+      path: 'definition.nodes.0.filters.1.ids', nodeId: 'revenue', field: 'tag', kind: 'tag', ids: [old!.id], reason: 'merged',
+      mergedInto: { id: c.tag, label: tagRow!.name },
+    }]);
+
+    const [z] = await db.insert(contacts).values({ tenantId: c.tenantId, contactType: 'customer', displayName: `Back ${suffix()}` }).returning();
+    const dz = await save('Back again', revenue({ filters: [{ field: 'contact', op: 'in', ids: [z!.id] }] }));
+    await oldContactMerge(z!.id, c.customer);
+    await db.update(contacts).set({ isActive: true }).where(eq(contacts.id, z!.id));
+    expect((await get(dz.id)).missing).toEqual([]);
+    expect((await runSaved(dz.id, 1)).status).toBe(200);
   });
 });

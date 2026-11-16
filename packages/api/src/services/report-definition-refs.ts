@@ -25,9 +25,9 @@
  * Pure apart from the two database helpers; names are never read or logged.
  */
 
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { DbOrTx, Tx } from '../db/index.js';
-import { accounts, budgets, contacts, items, reportDefinitions, tagGroups, tags } from '../db/schema/index.js';
+import { accounts, auditLog, budgets, contacts, items, reportDefinitions, tagGroups, tags } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 
 export type RefKind = 'account' | 'contact' | 'item' | 'tag' | 'tagGroup' | 'budget';
@@ -171,21 +171,74 @@ const TABLE = { account: accounts, contact: contacts, item: items, tag: tags, ta
 
 // ── Missing references (Q-PRA2c) ───────────────────────────────────
 
-/**
- * An id of a saved definition that is no longer a row of this tenant visible
- * to the company (deleted, or hard-deleted by a merge before report-refs-v1).
- * `ids` are the missing ones of that list or scalar, in definition order.
- * `field` is the filter field for a builder filter (account, contact, item,
- * tag), `groupBy.tagGroupId` for a builder group-by, and the option path for
- * a standard report (filters.accountIds … , tagSplit.tagGroupId,
- * columnTagGroupId, budgetId).
- */
-export interface MissingReference { path: string; nodeId: string | null; field: string; kind: RefKind; ids: string[] }
+/** The row a merged-away contact or tag went into (the merge audit row's after.merged_into), when this company sees it. */
+export interface MergedInto { id: string; label: string }
 
 /**
- * The missing references of each definition, in one query per kind for the
- * whole batch. Inactive (deactivated) rows still exist and are not missing.
- * A definition that holds no recognisable id sites gives [].
+ * An id of a saved definition that no longer names a usable row of this
+ * company. reason `deleted`: not a row of this tenant visible to the company
+ * (a deleted tag, tag group or budget). reason `merged`: a contact or tag that
+ * was merged into another before report-refs-v1 (merges since then rewrite
+ * saved reports): an inactive contact, or a deleted tag, whose merge audit row
+ * (entity contact / tag, after.merged_into; written by every merge since the
+ * first release, never pruned) names the row it went into; `mergedInto` is
+ * that row (followed through later merges, at most 5) when it is live and
+ * visible to this company, else absent. A merely deactivated row (no merge
+ * row, or reactivated since) still works and is not missing.
+ * `ids` are the ids of that list or scalar with that reason (and survivor), in
+ * definition order: one entry per path, reason and survivor. `field` is the
+ * filter field for a builder filter (account, contact, item, tag),
+ * `groupBy.tagGroupId` for a builder group-by, and the option path for a
+ * standard report (filters.accountIds … , tagSplit.tagGroupId,
+ * columnTagGroupId, budgetId).
+ */
+export interface MissingReference {
+  path: string; nodeId: string | null; field: string; kind: RefKind; ids: string[];
+  reason: 'deleted' | 'merged'; mergedInto?: MergedInto;
+}
+
+const MERGE_HOPS = 5;
+
+/** id -> merged_into of the latest merge audit row of each id (contact or tag). */
+async function mergedIntoOf(exec: DbOrTx, tenantId: string, kind: 'contact' | 'tag', ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  // auditLog() stores after_data as a JSON text scalar (JSON.stringify); rows written as objects are read too.
+  const rows = await exec.select({ id: auditLog.entityId, after: auditLog.afterData }).from(auditLog)
+    .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, kind), inArray(auditLog.entityId, ids),
+      sql`position('merged_into' in ${auditLog.afterData}::text) > 0`))
+    .orderBy(asc(auditLog.id));
+  for (const r of rows) {
+    let after: unknown = r.after;
+    if (typeof after === 'string') { try { after = JSON.parse(after); } catch { continue; } }
+    const into = isObj(after) ? after['merged_into'] : undefined;
+    if (r.id && typeof into === 'string' && UUID_RE.test(into)) out.set(r.id.toLowerCase(), into.toLowerCase());
+  }
+  return out;
+}
+
+/** Live rows visible to the company: id -> label (contacts: active only). */
+async function liveLabels(exec: DbOrTx, tenantId: string, companyId: string, kind: 'contact' | 'tag', ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  if (kind === 'contact') {
+    const rows = await exec.select({ id: contacts.id, name: contacts.displayName, type: contacts.contactType }).from(contacts)
+      .where(and(eq(contacts.tenantId, tenantId), or(isNull(contacts.companyId), eq(contacts.companyId, companyId)),
+        eq(contacts.isActive, true), inArray(contacts.id, ids)));
+    for (const r of rows) out.set(r.id.toLowerCase(), `${r.name} (${['customer', 'vendor', 'both'].includes(r.type) ? r.type : 'both'})`);
+  } else {
+    const rows = await exec.select({ id: tags.id, name: tags.name, groupName: tagGroups.name }).from(tags)
+      .leftJoin(tagGroups, and(eq(tagGroups.id, tags.groupId), eq(tagGroups.tenantId, tenantId)))
+      .where(and(eq(tags.tenantId, tenantId), or(isNull(tags.companyId), eq(tags.companyId, companyId)), inArray(tags.id, ids)));
+    for (const r of rows) out.set(r.id.toLowerCase(), r.groupName ? `${r.groupName}: ${r.name}` : r.name);
+  }
+  return out;
+}
+
+/**
+ * The missing references of each definition, in a few queries per kind for
+ * the whole batch. Deactivated rows that were not merged away still exist and
+ * are not missing. A definition that holds no recognisable id sites gives [].
  */
 export async function missingReferencesMany(exec: DbOrTx, tenantId: string, companyId: string, definitions: unknown[]): Promise<MissingReference[][]> {
   const perDef = definitions.map((d) => (isObj(d) ? idSites(JSON.parse(JSON.stringify(d)) as Record<string, unknown>).sites : []));
@@ -200,21 +253,53 @@ export async function missingReferencesMany(exec: DbOrTx, tenantId: string, comp
     }
   }
   const found = new Set<string>();
+  const inactiveContacts: string[] = [];
   for (const [kind, ids] of want) {
     const t = TABLE[kind];
-    const rows = await exec.select({ id: t.id }).from(t)
+    const rows = await exec.select({ id: t.id, active: kind === 'contact' ? contacts.isActive : sql<boolean>`TRUE` }).from(t)
       .where(and(eq(t.tenantId, tenantId), or(isNull(t.companyId), eq(t.companyId, companyId)), inArray(t.id, [...ids])));
-    for (const r of rows) found.add(`${kind}:${r.id.toLowerCase()}`);
+    for (const r of rows) {
+      found.add(`${kind}:${r.id.toLowerCase()}`);
+      if (kind === 'contact' && r.active === false) inactiveContacts.push(r.id.toLowerCase());
+    }
+  }
+  // Merged away before report-refs-v1: an inactive contact or a deleted tag with a merge audit row.
+  const merged = new Map<string, MergedInto | null>(); // "<kind>:<id>" -> survivor (null: not live here)
+  const goneTags = [...(want.get('tag') ?? [])].filter((id) => !found.has(`tag:${id}`));
+  for (const [kind, start] of [['contact', inactiveContacts], ['tag', goneTags]] as const) {
+    const first = await mergedIntoOf(exec, tenantId, kind, start);
+    if (first.size === 0) continue;
+    // Follow later merges of the survivor (a chain), at most MERGE_HOPS.
+    const final = new Map(first);
+    for (let hop = 0; hop < MERGE_HOPS; hop++) {
+      const next = await mergedIntoOf(exec, tenantId, kind, [...new Set(final.values())]);
+      const live = await liveLabels(exec, tenantId, companyId, kind, [...new Set(final.values())]);
+      let moved = false;
+      for (const [from, to] of final) if (!live.has(to) && next.has(to)) { final.set(from, next.get(to)!); moved = true; }
+      if (!moved) break;
+    }
+    const labels = await liveLabels(exec, tenantId, companyId, kind, [...new Set(final.values())]);
+    for (const [from, to] of final) merged.set(`${kind}:${from}`, labels.has(to) ? { id: to, label: labels.get(to)! } : null);
   }
   return perDef.map((sites) => {
     const out: MissingReference[] = [];
-    const byPath = new Map<string, MissingReference>();
+    const byKey = new Map<string, MissingReference>();
     for (const s of sites) {
       const v = s.get();
-      if (typeof v !== 'string' || !UUID_RE.test(v) || found.has(`${s.kind}:${v.toLowerCase()}`)) continue;
-      let m = byPath.get(s.at.path);
-      if (!m) { m = { path: s.at.path, nodeId: s.at.nodeId, field: s.at.field, kind: s.kind, ids: [] }; byPath.set(s.at.path, m); out.push(m); }
-      if (!m.ids.includes(v.toLowerCase())) m.ids.push(v.toLowerCase());
+      if (typeof v !== 'string' || !UUID_RE.test(v)) continue;
+      const id = v.toLowerCase();
+      const k = `${s.kind}:${id}`;
+      const isMerged = merged.has(k);
+      if (found.has(k) && !isMerged) continue;
+      const into = isMerged ? merged.get(k) ?? undefined : undefined;
+      const key = `${s.at.path}\u0000${isMerged ? 'merged' : 'deleted'}\u0000${into?.id ?? ''}`;
+      let m = byKey.get(key);
+      if (!m) {
+        m = { path: s.at.path, nodeId: s.at.nodeId, field: s.at.field, kind: s.kind, ids: [], reason: isMerged ? 'merged' : 'deleted', ...(into ? { mergedInto: into } : {}) };
+        byKey.set(key, m);
+        out.push(m);
+      }
+      if (!m.ids.includes(id)) m.ids.push(id);
     }
     return out;
   });
@@ -235,6 +320,19 @@ export function referenceMissing(missing: MissingReference[]): AppError {
     'This report uses a name that was deleted. Pick another one or remove it from the report, then run it again.',
     'REPORT_REFERENCE_MISSING',
     { ...missing[0]!, missing } as unknown as Record<string, unknown>,
+  );
+}
+
+/**
+ * An inline definition (the desktop's editor run) naming a missing record:
+ * 400 DEFINITION_INVALID {path, code: NOT_IN_COMPANY} as before, at the first
+ * missing reference's path, with `missing` (all of them) added.
+ */
+export function inlineReferenceMissing(missing: MissingReference[]): AppError {
+  return AppError.badRequest(
+    'This report uses a name that was deleted. Pick another one or remove it from the report, then run it again.',
+    'DEFINITION_INVALID',
+    { path: missing[0]!.path, code: 'NOT_IN_COMPANY', missing } as unknown as Record<string, unknown>,
   );
 }
 

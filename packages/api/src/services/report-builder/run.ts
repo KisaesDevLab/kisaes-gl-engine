@@ -46,7 +46,7 @@ import { apOpenItemsAsOf } from '../ap-open-items.js';
 import { BANK_DETAIL_TYPES } from '../bank-account-types.js';
 import { fiscalYearStartIn, priorRange, shiftYear } from '../report-columns/planner.js';
 import { definitionForAccess, parseBuilder, assertRefsInScope, stale, definitionNotFound } from '../report-definitions.service.js';
-import { missingReferences, referenceMissing } from '../report-definition-refs.js';
+import { inlineReferenceMissing, missingReferences, referenceMissing } from '../report-definition-refs.js';
 import { ZERO_COMPANY_UUID } from '../ledger-version.service.js';
 import { AppError } from '../../utils/errors.js';
 import {
@@ -152,6 +152,10 @@ export async function loadDefinition(exec: RunExec, v: Viewer, req: Pick<RunRequ
   }
   if (req.definition !== undefined) {
     const { definition, refs } = parseBuilder(req.definition);
+    // report-refs-v1: a reference to a record that no longer exists here (deleted, or merged away before merges
+    // re-pointed saved reports) keeps 400 DEFINITION_INVALID NOT_IN_COMPANY at its path, with `missing` added.
+    const missing = await missingReferences(exec.tx, v.tenantId, v.companyId, definition);
+    if (missing.length > 0) throw inlineReferenceMissing(missing);
     await assertRefsInScope(exec.tx, v.tenantId, v.companyId, refs, 'NOT_IN_COMPANY');
     return definition;
   }
