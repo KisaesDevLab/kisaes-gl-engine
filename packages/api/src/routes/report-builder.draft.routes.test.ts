@@ -861,6 +861,40 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(words).toContain('bills');
   });
 
+  it('a word that held a number is dropped whole: "30-day" and "Net-30" never send "Day & Night HVAC" or "Net Solutions" (PR-A2 S-2)', async () => {
+    // The word picker: the whole word that held the number goes, not only its digits.
+    expect(questionWords('Bills on 30-day terms')).toEqual(['bills', 'terms']);
+    expect(questionWords('Net-30 vendors over $500')).toEqual(['over']);
+    expect(questionWords('thirty-day invoices')).toEqual(['invoices']);
+    expect(questionWords('Bills over five hundred dollars')).toEqual(['bills', 'over']);
+    // A description without numbers: the same words as before masking existed.
+    expect(questionWords('Bills from Day & Night HVAC on net terms')).toEqual(['bills', 'day', 'night', 'hvac', 'net', 'terms']);
+    // Never a word the description did not hold as typed.
+    for (const q of ['Net-30 vendors', '30-day terms', 'thirty-day invoices', 'five hundred', 'Q1 2026 bills over $1,250.50', 'USD 500 to Day & Night']) {
+      const typed = new Set(q.normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}&'.-]+/u).map((w) => w.replace(/^['.-]+|['.-]+$/g, '')));
+      for (const w of questionWords(q)) expect(typed.has(w), `${q}: ${w}`).toBe(true);
+    }
+
+    await enableAi();
+    await db.insert(contacts).values([
+      { tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Day & Night HVAC' },
+      { tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Net Solutions Inc' },
+    ]);
+    const descriptions = ['Bills on 30-day terms', 'Net-30 vendors over $500', 'thirty-day invoices', 'Bills over five hundred dollars'];
+    for (let i = 0; i < descriptions.length; i++) {
+      m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+      const r = await post(request({ description: descriptions[i]! }));
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      expect(sent(i), descriptions[i]).toContain('Contacts: (none)');
+    }
+    // The control: named by the owner, both are still sent.
+    m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+    const ctl = await post(request({ description: 'Bills from Day & Night HVAC and Net Solutions' }));
+    expect(ctl.status, JSON.stringify(ctl.json)).toBe(200);
+    expect(sent(descriptions.length)).toContain('Day & Night HVAC');
+    expect(sent(descriptions.length)).toContain('Net Solutions Inc');
+  });
+
   it('validates the request: a description of 1 to 1,000 characters, no extra keys', async () => {
     await enableAi();
     expect((await post(request({ description: '   ' }))).status).toBe(400);
