@@ -330,3 +330,41 @@ describe('report-defs-transfer-v1 (U-220)', () => {
     expect((await call(a, 'POST', '/definitions', { name: `Bad ${suffix()}`, origin: 'paste', definition: { schemaVersion: 1, kind: 'standard', reportKey: 'profit_and_loss', options: {} } })).status).toBe(400);
   });
 });
+
+describe('account matching needs the name (report-refs-v1, Q-PRA2d, 5-S1)', () => {
+  it('a number whose account has another name is unresolved with candidates; number + name (case and spacing aside) matches', async () => {
+    const s = suffix().slice(-5);
+    const [payroll] = await db.insert(accounts).values({ tenantId: b.tenantId, companyId: b.companyId, accountNumber: `961${s}`, name: `Payroll Taxes ${s}`, accountType: 'expense' }).returning();
+    const [rent] = await db.insert(accounts).values({ tenantId: b.tenantId, companyId: b.companyId, accountNumber: `962${s}`, name: `Rent ${s}`, accountType: 'expense' }).returning();
+    const [office] = await db.insert(accounts).values({ tenantId: b.tenantId, companyId: b.companyId, accountNumber: `963${s}`, name: `Office Supplies ${s}`, accountType: 'expense' }).returning();
+    const def = (ref: string) => {
+      const d = clone(BUILDER_STARTERS.find((x) => x.key === 'expenses_by_category')!.definition);
+      const sec = d.nodes.find((n) => n.type === 'section');
+      if (!sec || sec.type !== 'section') throw new Error('starter');
+      sec.filters.push({ field: 'account', op: 'in', ids: [ref] });
+      return d;
+    };
+    // "Rent by month" from a company where 6100 was Rent: here 6100 is Payroll Taxes and Rent is 6200.
+    const rentRef = { kind: 'account', number: `961${s}`, name: `Rent ${s}`, accountType: 'expense' };
+    const p = await preview(b, [{ name: `Rent by month ${s}`, kind: 'builder', definition: def('$ref:0'), references: [rentRef] }]);
+    expect(p.status, JSON.stringify(p.json)).toBe(200);
+    const r = p.json.reports[0];
+    expect(r.ready).toBe(false);
+    expect(r.unresolved).toEqual([{
+      ref: '$ref:0', reference: rentRef,
+      candidates: [{ id: payroll!.id, label: `961${s} · Payroll Taxes ${s}` }, { id: rent!.id, label: `962${s} · Rent ${s}` }],
+    }]);
+    // Same number and the same name, case and spacing aside: a match.
+    const officeRef = { kind: 'account', number: `963${s}`, name: `  office   SUPPLIES ${s} `, accountType: 'expense' };
+    const ok = await preview(b, [{ name: `Office ${s}`, kind: 'builder', definition: def('$ref:0'), references: [officeRef] }]);
+    expect(ok.json.reports[0].unresolved).toEqual([]);
+    expect(JSON.stringify(ok.json.reports[0].definition)).toContain(office!.id);
+    // Q-A09v unchanged: a number this company doesn't have lists the same-name account.
+    const gone = await preview(b, [{ name: `Gone ${s}`, kind: 'builder', definition: def('$ref:0'), references: [{ kind: 'account', number: `969${s}`, name: `Rent ${s}` }] }]);
+    expect(gone.json.reports[0].unresolved[0].candidates).toEqual([{ id: rent!.id, label: `962${s} · Rent ${s}` }]);
+    // No number: the name still matches case and spacing aside (M-8).
+    const bare = await preview(b, [{ name: `Bare ${s}`, kind: 'builder', definition: def('$ref:0'), references: [{ kind: 'account', name: `Office  supplies ${s}`, accountType: 'expense' }] }]);
+    expect(bare.json.reports[0].unresolved, JSON.stringify(bare.json.reports[0].unresolved)).toEqual([]);
+    expect(JSON.stringify(bare.json.reports[0].definition)).toContain(office!.id);
+  });
+});

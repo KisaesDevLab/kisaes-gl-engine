@@ -809,9 +809,11 @@ export function buildDraftPrompt(
 
 /**
  * Names the model may see: those of /reports/ask plus active items and tag
- * groups. Names only. Contacts come from the description's words without a
- * digit (as /reports/ask), so a contact named only by digits ("3M") is not
- * picked: the digits the owner typed never choose what the model sees.
+ * groups. Names only. Contacts come from the description's words with every
+ * number masked (digits and number words, Q-PRA2e; as /reports/ask), so a
+ * contact named only by digits ("3M") is not picked and "five hundred" never
+ * picks "Hundred Acre Farms": numbers the owner typed never choose what the
+ * model sees.
  */
 export async function draftPromptNames(tenantId: string, companyId: string, description: string) {
   const base = await promptNames(tenantId, companyId, description);
@@ -874,6 +876,23 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
   const audit = (who: { provider: string; model: string | null; reader: 'self_hosted' | 'cloud' }, after: Record<string, unknown>) =>
     auditLog(tenantId, 'create', 'report_builder_draft', job.id, null, { companyId, ...who, ...after }, userId);
   const sentTo: Array<{ provider: string; model: string | null }> = [];
+  // Q-PRA2e (report-refs-v1): every provider the names were sent to, once per provider and model, in order, with
+  // its reader and outcome: the one that answered gets the row's outcome, every other one `failed`.
+  // The answering provider is the last attempt told to onSent (the call returns from it); it is added when the
+  // provider layer did not report it.
+  const sentList = (answered: { provider: string; model: string | null } | null, outcome: 'drafted' | 'refused' | 'failed') => {
+    const list = sentTo.map((s) => ({ provider: s.provider, model: s.model, outcome: 'failed' as string }));
+    if (answered) {
+      const last = list[list.length - 1];
+      if (last && last.provider === answered.provider) { last.outcome = outcome; last.model = answered.model ?? last.model; }
+      else list.push({ ...answered, outcome });
+    }
+    const once = new Map<string, (typeof list)[number]>();
+    for (const e of list) once.set(`${e.provider}\u0000${e.model ?? ''}`, e);
+    return [...once.values()].map((e) => ({
+      provider: e.provider, model: e.model, reader: (isLocal(e.provider, e.model ?? undefined) ? 'self_hosted' : 'cloud') as 'self_hosted' | 'cloud', outcome: e.outcome,
+    }));
+  };
   let result: CompletionResult | null = null;
   try {
     result = await executeWithFallback(
@@ -905,7 +924,9 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
       // Sent, then failed: the last provider tried; cloud if any provider tried is not local.
       const last = sentTo[sentTo.length - 1]!;
       const reader = sentTo.some((s) => !isLocal(s.provider, s.model ?? undefined)) ? 'cloud' : 'self_hosted';
-      await audit({ provider: last.provider, model: last.model, reader }, { outcome: 'failed', reason: offline ? 'offline' : 'provider_error' });
+      await audit({ provider: last.provider, model: last.model, reader }, {
+        outcome: 'failed', reason: offline ? 'offline' : 'provider_error', sentTo: sentList(null, 'failed'),
+      });
     }
     throw unavailable(
       offline
@@ -917,7 +938,10 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
   }
 
   const usage = { provider: result.provider, model: result.model, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
-  const reader = isLocal(result.provider, result.model) ? 'self_hosted' : 'cloud';
+  // provider and model: the one that answered. reader (audit row and response): cloud if any provider the names were
+  // sent to is not local, as on the failed path (Q-PRA2e: a cloud try that failed before a local answer still read them).
+  const sentOk = sentList({ provider: result.provider, model: result.model }, 'drafted');
+  const reader: 'self_hosted' | 'cloud' = sentOk.some((s) => s.reader === 'cloud') ? 'cloud' : 'self_hosted';
   const answered = { provider: result.provider, model: result.model, reader } as const;
 
   let out: Awaited<ReturnType<typeof draftFromReply>>;
@@ -930,7 +954,10 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
     const reason = err instanceof AppError ? String((err.details as { reason?: string } | undefined)?.reason ?? err.code ?? 'error') : 'error';
     await orchestrator.failJob(job.id, `unmapped:${reason}`, usage);
     // A fixed code only (no_report, number, MIXED_POLARITY …); anything else is 'error'.
-    await audit(answered, { outcome: 'refused', reason: /^[A-Za-z_]{1,40}$/.test(reason) ? reason : 'error' });
+    await audit(answered, {
+      outcome: 'refused', reason: /^[A-Za-z_]{1,40}$/.test(reason) ? reason : 'error',
+      sentTo: sentList({ provider: result.provider, model: result.model }, 'refused'),
+    });
     throw err;
   }
 
@@ -940,7 +967,7 @@ export async function draft(tenantId: string, companyId: string, input: DraftReq
     unresolved: out.unresolved.length,
   }, 1);
 
-  await audit(answered, { outcome: 'drafted', nodes: countNodes(out.definition.nodes), unresolved: out.unresolved.length });
+  await audit(answered, { outcome: 'drafted', nodes: countNodes(out.definition.nodes), unresolved: out.unresolved.length, sentTo: sentOk });
   return { ...out, savable: out.unresolved.length === 0, reader, provider: result.provider, model: result.model };
 }
 

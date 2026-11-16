@@ -15,6 +15,7 @@ import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.
 import * as ledger from './ledger.service.js';
 import { guardMergeTransactions } from './merge-lock.service.js';
 import { repointDocumentContact } from './document-draft-contacts.js';
+import { repointDefinitionRefs } from './report-definition-refs.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 
@@ -352,6 +353,11 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
     const docs = await repointDocumentContact(tx, tenantId, sourceId, targetId);
     moved['documentDrafts'] = docs.drafts;
     moved['vendorLayouts'] = docs.templates + docs.templatesMerged;
+    // Saved reports (memorized, builder and standard) that filtered on the duplicate now name the kept contact
+    // (report-refs-v1, Q-PRA2b); each gets the next version. Skipped: the kept contact is another company's.
+    const reports = await repointDefinitionRefs(tx, tenantId, 'contact', sourceId, targetId, userId);
+    moved['reportDefinitions'] = reports.updated;
+    if (reports.skipped > 0) moved['reportDefinitionsSkipped'] = reports.skipped;
     await tx
       .update(contacts)
       .set({ isActive: false, updatedAt: new Date() })

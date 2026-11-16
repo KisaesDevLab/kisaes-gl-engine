@@ -45,6 +45,7 @@ import {
   DRAFT_STRUCTURAL_DIGITS, NUMBER_WORDS, REPORT_DRAFT_SYSTEM_PROMPT, draftNotes, hasNumberWord, maskNumbers, nodeIdFor, prescreen, resolveNames,
 } from '../services/report-builder/draft.js';
 import { OfflineUnavailableError } from '../utils/offline.js';
+import { questionWords } from '../services/report-ask.service.js';
 import { makeCompany, cleanTenant, type Co } from '../services/templates/templates.test-helpers.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { parseBuilderDefinition } from '@kis-books/shared';
@@ -283,7 +284,10 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(draftRows[0]!).toMatchObject({ action: 'create', userId: c.userId, entityId: rows[0]!.id, beforeData: null });
     const raw = draftRows[0]!.afterData;
     const after = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
-    expect(after).toEqual({ companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'drafted', nodes: 6, unresolved: 0 });
+    expect(after).toEqual({
+      companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'drafted', nodes: 6, unresolved: 0,
+      sentTo: [{ provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'drafted' }],
+    });
     for (const s of ['Rent', 'Rivera', 'Kumquat', 'Granite', 'Crews', '500', 'row_a', 'section', 'onthly']) expect(JSON.stringify(raw).replace(UUID_G, '')).not.toContain(s);
 
     // Savable as is: the real save route takes it, and nothing was saved before.
@@ -488,8 +492,8 @@ describe('POST /report-builder/draft (U-120)', () => {
     const audits = await draftAudits();
     const base = { companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud' };
     expect(audits.map((a) => a.after)).toEqual([
-      { ...base, outcome: 'drafted', nodes: 1, unresolved: 0 },
-      { ...base, outcome: 'refused', reason: 'number' },
+      { ...base, outcome: 'drafted', nodes: 1, unresolved: 0, sentTo: [{ provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'drafted' }] },
+      { ...base, outcome: 'refused', reason: 'number', sentTo: [{ provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'refused' }] },
     ]);
     expect(audits.map((a) => [a.action, a.userId, a.beforeData])).toEqual([['create', c.userId, null], ['create', c.userId, null]]);
     expect(JSON.stringify(audits.map((a) => a.afterData))).not.toMatch(/five|hundred|bills|caption|rows|AMOUNT/i);
@@ -663,6 +667,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     // Q-A10k: names were sent, so the refusal is audited: its code only.
     expect((await draftAudits()).map((a) => a.after)).toEqual([{
       companyId: c.companyId, provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'refused', reason,
+      sentTo: [{ provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'refused' }],
     }]);
   });
 
@@ -764,9 +769,12 @@ describe('POST /report-builder/draft (U-120)', () => {
     const base = { companyId: c.companyId, outcome: 'failed' };
     const after = (a: typeof audits[number]) => (typeof a.afterData === 'string' ? JSON.parse(a.afterData) : a.afterData) as Record<string, unknown>;
     expect(audits.map(after).sort((x, y) => String(x['reason']).localeCompare(String(y['reason'])) || String(x['provider']).localeCompare(String(y['provider'])))).toEqual([
-      { ...base, provider: 'anthropic', model: 'claude-test', reader: 'cloud', reason: 'offline' },
-      { ...base, provider: 'anthropic', model: 'claude-test', reader: 'cloud', reason: 'provider_error' },
-      { ...base, provider: 'openai', model: null, reader: 'cloud', reason: 'provider_error' },
+      { ...base, provider: 'anthropic', model: 'claude-test', reader: 'cloud', reason: 'offline', sentTo: [{ provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'failed' }] },
+      { ...base, provider: 'anthropic', model: 'claude-test', reader: 'cloud', reason: 'provider_error', sentTo: [{ provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'failed' }] },
+      // Q-PRA2e: every provider the names went to, the local one too.
+      { ...base, provider: 'openai', model: null, reader: 'cloud', reason: 'provider_error', sentTo: [
+        { provider: 'ollama', model: 'llama3', reader: 'self_hosted', outcome: 'failed' }, { provider: 'openai', model: null, reader: 'cloud', outcome: 'failed' },
+      ] },
     ]);
     expect(audits.map((a) => [a.action, a.userId, a.beforeData])).toEqual(Array(3).fill(['create', c.userId, null]));
     expect(new Set(audits.map((a) => a.entityId))).toEqual(new Set(jobRows.map((j) => j.id)));
@@ -781,6 +789,7 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(res.status).toBe(503);
     expect((await draftAudits()).map((a) => a.after)).toEqual([{
       companyId: c.companyId, provider: 'ollama', model: 'llama3', reader: 'self_hosted', outcome: 'failed', reason: 'provider_error',
+      sentTo: [{ provider: 'ollama', model: 'llama3', reader: 'self_hosted', outcome: 'failed' }],
     }]);
   });
 
@@ -808,6 +817,82 @@ describe('POST /report-builder/draft (U-120)', () => {
     expect(res.json).toMatchObject({ reader: 'self_hosted', provider: 'ollama', savable: true });
     // executeWithFallback(params, rawConfig, fallbackChain, provider, model, opts): the local provider was asked.
     expect(m.execute.mock.calls[0]![3]).toBe('ollama');
+  });
+
+  it('a cloud try that failed, then Ollama answered: the audit row names both, reader cloud (Q-PRA2e, 6-S1)', async () => {
+    await enableAi();
+    m.execute.mockImplementationOnce((_p: unknown, _cfg: unknown, _chain: unknown, _prov: unknown, _model: unknown, opts: { onSent?: (s: { provider: string; model: string | null }) => void }) => {
+      opts.onSent?.({ provider: 'anthropic', model: 'claude-test' });
+      opts.onSent?.({ provider: 'ollama', model: null });
+      return Promise.resolve(reply(GOOD, { provider: 'ollama', model: 'llama3' }));
+    });
+    const res = await post(request());
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    // The answering provider stays provider / model; the names were read by a cloud provider too.
+    expect(res.json).toMatchObject({ reader: 'cloud', provider: 'ollama', model: 'llama3' });
+    const audits = await draftAudits();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.after).toMatchObject({
+      companyId: c.companyId, provider: 'ollama', model: 'llama3', reader: 'cloud', outcome: 'drafted',
+      sentTo: [
+        { provider: 'anthropic', model: 'claude-test', reader: 'cloud', outcome: 'failed' },
+        { provider: 'ollama', model: 'llama3', reader: 'self_hosted', outcome: 'drafted' },
+      ],
+    });
+  });
+
+  it('number words never choose the contacts sent: "five hundred" does not send "Hundred Acre Farms" (Q-PRA2e, 6-S2)', async () => {
+    await enableAi();
+    await db.insert(contacts).values({ tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Hundred Acre Farms' });
+    m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+    const r1 = await post(request({ description: 'Bills over five hundred dollars' }));
+    expect(r1.status, JSON.stringify(r1.json)).toBe(200);
+    expect(sentDescription(0)).toContain('Bills over [AMOUNT]');
+    expect(sent(0)).toContain('Contacts: (none)');
+    expect(sent(0)).not.toContain('Hundred Acre');
+    // Named by the owner, it is still sent (its other words choose it).
+    m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+    const r2 = await post(request({ description: 'Bills from Hundred Acre Farms' }));
+    expect(r2.status, JSON.stringify(r2.json)).toBe(200);
+    expect(sent(1)).toContain('Contacts: Hundred Acre Farms');
+    // The same word picker serves /reports/ask: no number word, no mask marker.
+    const words = questionWords('Bills over five hundred dollars, about twenty-five invoices');
+    for (const w of ['five', 'hundred', 'twenty', 'amount', 'number', 'dollars']) expect(words.join(' ')).not.toContain(w);
+    expect(words).toContain('bills');
+  });
+
+  it('a word that held a number is dropped whole: "30-day" and "Net-30" never send "Day & Night HVAC" or "Net Solutions" (PR-A2 S-2)', async () => {
+    // The word picker: the whole word that held the number goes, not only its digits.
+    expect(questionWords('Bills on 30-day terms')).toEqual(['bills', 'terms']);
+    expect(questionWords('Net-30 vendors over $500')).toEqual(['over']);
+    expect(questionWords('thirty-day invoices')).toEqual(['invoices']);
+    expect(questionWords('Bills over five hundred dollars')).toEqual(['bills', 'over']);
+    // A description without numbers: the same words as before masking existed.
+    expect(questionWords('Bills from Day & Night HVAC on net terms')).toEqual(['bills', 'day', 'night', 'hvac', 'net', 'terms']);
+    // Never a word the description did not hold as typed.
+    for (const q of ['Net-30 vendors', '30-day terms', 'thirty-day invoices', 'five hundred', 'Q1 2026 bills over $1,250.50', 'USD 500 to Day & Night']) {
+      const typed = new Set(q.normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}&'.-]+/u).map((w) => w.replace(/^['.-]+|['.-]+$/g, '')));
+      for (const w of questionWords(q)) expect(typed.has(w), `${q}: ${w}`).toBe(true);
+    }
+
+    await enableAi();
+    await db.insert(contacts).values([
+      { tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Day & Night HVAC' },
+      { tenantId: c.tenantId, companyId: c.companyId, contactType: 'vendor', displayName: 'Net Solutions Inc' },
+    ]);
+    const descriptions = ['Bills on 30-day terms', 'Net-30 vendors over $500', 'thirty-day invoices', 'Bills over five hundred dollars'];
+    for (let i = 0; i < descriptions.length; i++) {
+      m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+      const r = await post(request({ description: descriptions[i]! }));
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      expect(sent(i), descriptions[i]).toContain('Contacts: (none)');
+    }
+    // The control: named by the owner, both are still sent.
+    m.execute.mockResolvedValueOnce(reply(OPEN_INVOICES));
+    const ctl = await post(request({ description: 'Bills from Day & Night HVAC and Net Solutions' }));
+    expect(ctl.status, JSON.stringify(ctl.json)).toBe(200);
+    expect(sent(descriptions.length)).toContain('Day & Night HVAC');
+    expect(sent(descriptions.length)).toContain('Net Solutions Inc');
   });
 
   it('validates the request: a description of 1 to 1,000 characters, no extra keys', async () => {

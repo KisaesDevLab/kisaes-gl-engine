@@ -109,7 +109,12 @@ const listQuery = z.object({
  */
 const bodyDoc = (schema: z.ZodTypeAny) => describe({ body: schema });
 
-const ROW_DOC = '`{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310).';
+const ROW_DOC = '`{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt, missing}`; canEdit is true for the author, an owner or a super admin (Q-310). '
+  + 'missing (report-refs-v1, Q-PRA2c): `[{path, nodeId|null, field, kind: account|contact|item|tag|tagGroup|budget, ids, reason: deleted|merged, mergedInto?: {id, label}}]`: '
+  + 'reason deleted, ids no longer rows of this company (a deleted tag, tag group or budget); reason merged, a contact or tag merged into another before report-refs-v1 '
+  + '(an inactive contact or deleted tag with a merge audit row), mergedInto the live row it went into (through later merges) when this company sees it. A deactivated row '
+  + 'that was not merged still works. One entry per path, reason and survivor (path dotted from definition; field the builder filter field, '
+  + 'groupBy.tagGroupId, or the standard option path such as filters.tagIds); [] when none. A contact or tag merge rewrites saved reports to the kept row (version + 1).';
 const GROUP_DOC = '`{id, name, sort, version, definitionCount, updatedAt}`';
 
 /** 404 for another company's (or a deleted) report; 403 NOT_AUTHOR unless author, owner or super admin. */
@@ -224,7 +229,8 @@ reportBuilderRouter.post('/definitions/export', describe({
 reportBuilderRouter.post('/definitions/import/preview', describe({
   summary: 'Match a report file to this company (report-defs-transfer-v1)',
   description: 'Body `{reports: [{name, groupName?, kind, definition, references}] (1..200), choices?}` (the export shape). Writes nothing. '
-    + 'Matches references in this company (shared rows or this company\'s, inactive included): account by number when given (else by name), contact by name and type '
+    + 'Matches references in this company (shared rows or this company\'s, inactive included): account by number when given and only when that account\'s name also matches, case and spacing aside '
+    + '(report-refs-v1, Q-PRA2d; a number whose account has another name, or no account, is unresolved: candidates the account with that number, then the accounts of that name), else by name; contact by name and type '
     + '(customer: customer|both, vendor: vendor|both), item by name, tag by name and group name, tag group by name, budget by name and fiscal year; names case-insensitive, trimmed. '
     + 'Response `{reports: [{name, kind, ready, definition, unresolved: [{ref, reference, candidates: [{id, label}] (≤20)}], dropped: [{ref, effect}], groupId|null, '
     + 'nameTaken: {id, version, kind, canEdit}|null, problem?: {path, code}}]}`: definition has the matched and chosen ids in place (tokens left for unresolved references); '
@@ -299,8 +305,13 @@ async function runViewer(req: Request): Promise<RunViewer> {
 const RUN_DOC = 'Response `{columns: [{key, caption, kind, field?, range?}], rows: [{kind, nodeId, level, path, caption, cells: (string|null)[], fields?: {txnId, txnType, lineId}, drill?, expandable, expanded, cursor?}], meta: {basis, dates, notes[], truncated, hiddenNotice, denied[]}, fingerprint, stamp}`. '
   + 'Row kinds: header, group, line (a group-by line), detail, subtotal, total, formula, text, blank, page_break, more, denied, earnings, opening. '
   + 'Column kinds: field, total, period, prior, change, pct_change, percent, bucket, and for tb_net the *_debit / *_credit pairs; kind hidden marks a compare amount that only feeds a change (its cells are null). '
+  + 'The multi-period Total (report-builder-ties-v1) adds flows only: a range report whose sections are all balances (balance, tb_net, open items) has no Total column; in a mixed report a balance\'s Total cell is its last period\'s value. '
+  + 'Trial Balance (tb_net) debit / credit are decided per account, as the standard Trial Balance: an account\'s side is its whole net for the section\'s scope (dates, basis, filters; zero or more is debit), and every line, group subtotal and the section Total show their facts in their accounts\' columns, whatever is expanded, so the Total = the standard Trial Balance for every group-by. '
+  + 'A slice of an account (account then tag or contact) shows its part in the account\'s column, negative there when it goes against the account\'s side (never positive in the other column); slices sum to their account. '
   + 'Paths are ["n:<nodeId>", "<key>:<id|value|none>", …]. Amounts are exact strings (never -0); percents 1 place, null on a zero base. '
-  + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter), 404 (deleted saved report), 409 STALE_VERSION {current}, 422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
+  + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter; NOT_IN_COMPANY for an inline id not of this company; when the cause is a missing record, deleted or merged away, details add missing as on GET), 404 (deleted saved report), 409 STALE_VERSION {current}, '
+  + '422 REPORT_REFERENCE_MISSING {path, nodeId, field, kind, ids, reason, mergedInto?, missing: [{path, nodeId, field, kind, ids, reason, mergedInto?}]} (report-refs-v1: a saved report, definitionId, naming a record that no longer exists in this company; as GET missing), '
+  + '422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
   + 'Drills: line and total rows {type: detail, nodeId, path} (page /run/detail), detail rows {type: transaction, txnId, txnType}, earnings rows {type: profit_loss, from, to, tagIds?} (tagIds: a tag-filtered section; the lines carry one of them) or null in Trial Balance tag mode; detail rows of open items carry the path of their line. '
   + 'Aging columns age as of the report date: periodRanges (other than one range ending on it) and compareRanges are 400 INVALID_PARAM. '
   + 'A section the role cannot see is one denied row, and anything built on it shows null cells.';
@@ -324,9 +335,12 @@ reportBuilderRouter.post('/run', describe({
 reportBuilderRouter.post('/run/detail', describe({
   summary: 'Page the detail rows of one Report Builder row (report-builder-v1, report-builder-drill-v1)',
   description: 'The same definition, dates and ranges as the run, the nodeId and path of the row, range? (one column), cursor? (from a more row or a previous page), fingerprint and stamp of the run. '
-    + 'The path is any drill path of the run (report-builder-drill-v1): a group-by line at any level (all lines under it), a section ["n:<id>"] (its Total: every line of the section plus, for an earnings section, the earnings lines), or an earnings row ["n:<id>", "earnings:prior" | "earnings:current"] (income-statement lines, credit - debit; debit - credit for a tb or debit section). In Trial Balance tag mode the section and earnings paths are 400 INVALID_PARAM. '
+    + 'The path is any drill path of the run (report-builder-drill-v1): a group-by line at any level (all lines under it), a section ["n:<id>"] (its Total: every line of the section plus, for an earnings section, the earnings lines; a Trial Balance adds only the prior years\' income lines, as its earnings row), or an earnings row ["n:<id>", "earnings:prior" | "earnings:current"] (income-statement lines, credit - debit; debit - credit for a tb or debit section). In Trial Balance tag mode the section and earnings paths are 400 INVALID_PARAM. '
     + 'range is the range of one column as the run gave it ({from: null, to} for an as-of column): rows and subtotal hold that column only (its other value columns are null); a range of no column, or a range on aging columns, is 400 INVALID_PARAM. '
     + 'Response `{rows (≤ 500, kind detail; a range balance starts with an opening row), cursor: string|null, subtotal: cells}`; subtotal is the own cells of the row, for an equality check (percent cells are null). A running balance is filled only on an innermost line. '
+    + 'report-builder-ties-v1: a balance (balance, tb_net) in a range report starts, on the first page, with an opening row (kind opening, caption "Balance before <first date>") whose amount cells hold each selected column\'s balance before the drill\'s first date (tb_net: on the debit or credit side; the Total cell: the last column\'s), so opening + rows = the row\'s cells; a flow with a running balance keeps its "Opening balance" row with only the running-balance cell. '
+    + 'The subtotal fills only the columns the rows fill: without range, compare columns and their changes are null; an open-item drill reads, and fills, the last selected column. With range, a flow\'s multi-period Total cell holds that column\'s share (the rows\' sum), not the run\'s Total. '
+    + 'A tb_net row\'s subtotal debit / credit are the row\'s own cells (each account\'s side decided on the whole section, as the run); its detail rows keep each line on its own side, so the rows\' debit - credit = the row\'s debit - credit. '
     + '409 RUN_CHANGED {reason: params} when the fingerprint differs, {reason: books} when the ledger stamp moved; 403 PERMISSION_DENIED for a denied section; 400 CURSOR_INVALID.',
   body: detailRequestSchema,
 }), validate(detailRequestSchema), async (req, res) => {
@@ -367,9 +381,11 @@ reportBuilderRouter.post('/draft', expensiveOpLimiter, describe({
     + '(case and spacing aside) the name of an account, contact, item, tag or tag group of this company, found by lookup (the name only, not '
     + 'an account\'s "number name" form; "401(k) Match" is kept, "401(k) Match over 500" is refused). '
     + 'One audit row for every send (whenever the request may have left for a provider): create report_builder_draft (entity the ai_jobs id), '
-    + 'after {companyId, provider, model, reader, outcome: drafted, nodes, unresolved}, {…, outcome: refused, reason} (the 422 reason code) or '
+    + 'after {companyId, provider, model, reader, outcome: drafted, nodes, unresolved, sentTo}, {…, outcome: refused, reason, sentTo} (the 422 reason code) or '
     + '{…, outcome: failed, reason: provider_error | offline} (the call erred or timed out after it was sent; provider the last one tried, model '
-    + 'null when its default was used, reader cloud if any provider tried is not local). If the engine cannot tell whether bytes left, an '
+    + 'null when its default was used, reader cloud if any provider tried is not local). report-refs-v1 (Q-PRA2e): sentTo [{provider, model, reader, outcome}] lists every provider '
+    + 'the names were sent to (the one that answered has the row\'s outcome, the others failed), and on every outcome provider/model are the answering (or last) one and reader '
+    + '(audit row and response) is cloud if any provider sent to is not local. Contacts sent are chosen from the description with every number masked. If the engine cannot tell whether bytes left, an '
     + 'attempted send counts as sent. None for 400, 403, a 503 decided before the call (no_provider, function_disabled) or a call no provider '
     + 'took (no credentials, every try refused before connecting); never the description, prompt, reply or definition. '
     + 'Errors: 400 VALIDATION_ERROR (empty or > 1,000 character description, an unknown key); 403 AI_CONSENT_REQUIRED {reason, task: report_summary} '
