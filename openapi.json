@@ -3652,6 +3652,58 @@
         ]
       }
     },
+    "/api/v1/accounts/{id}/sensitive": {
+      "put": {
+        "description": "Body {isSensitive}. Response {account}. Admin only (owner or super admin): 403 OWNER_REQUIRED otherwise. A sensitive account and its sub-accounts are hidden from users without the sensitive_accounts right. Idempotent: setting the current value changes nothing and writes no audit row; otherwise one audit row (entity account, action update, before/after {isSensitive}). Marking a bank or credit card account, or a built-in account (A/R, A/P, undeposited funds, payments clearing, retained earnings, opening balances, sales tax payable, customer deposits, unapplied receipts, inventory asset, suspense) is 422 SENSITIVE_NOT_ALLOWED; unmarking is always allowed. PUT /accounts/:id and /accounts/bulk ignore isSensitive.",
+        "operationId": "put_api_v1_accounts_by_id_sensitive",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "isSensitive": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "isSensitive"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Mark or unmark an account sensitive",
+        "tags": [
+          "accounts"
+        ]
+      }
+    },
     "/api/v1/admin/backup-verify": {
       "post": {
         "operationId": "post_api_v1_admin_backup_verify",
@@ -27226,7 +27278,8 @@
                         "tags",
                         "company_settings",
                         "ai_chat",
-                        "audit_log"
+                        "audit_log",
+                        "sensitive_accounts"
                       ]
                     },
                     "type": "object"
@@ -27356,7 +27409,8 @@
                         "tags",
                         "company_settings",
                         "ai_chat",
-                        "audit_log"
+                        "audit_log",
+                        "sensitive_accounts"
                       ]
                     },
                     "type": "object"
@@ -28111,7 +28165,8 @@
                         "tags",
                         "company_settings",
                         "ai_chat",
-                        "audit_log"
+                        "audit_log",
+                        "sensitive_accounts"
                       ]
                     },
                     "type": "object"

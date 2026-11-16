@@ -1394,5 +1394,32 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * a contact merged before this capability then reads as plainly inactive. No migration.
    */
   'report-refs-v1',
+  /**
+   * Sensitive accounts (U-33, ClientLedger P29; migration 0278 accounts.is_sensitive). PUT /accounts/:id/sensitive
+   * {isSensitive} marks or unmarks one: owner or super admin only (403 OWNER_REQUIRED), idempotent, one audit row
+   * (entity account, action update, before/after {isSensitive}) per change; a bank or credit card account or a built-in
+   * account (A/R, A/P, undeposited funds, payments clearing, retained earnings, opening balances, sales tax payable,
+   * customer deposits, unapplied receipts, inventory asset, suspense) is 422 SENSITIVE_NOT_ALLOWED. Accounts carry
+   * isSensitive; PUT /accounts/:id and /bulk ignore it. New right `sensitive_accounts` (none | view, group Manage,
+   * elevated): owner, accountant and super admin hold it; readonly, unknown roles and a bookkeeper with no permission
+   * row do not; a template or override can grant it. For a viewer without it, a marked account and all its
+   * sub-accounts are hidden: left out of /accounts lists, export, pickers, merge and bulk edit; an id of one in a URL
+   * path is 404. A transaction with any line on one (id in a URL path or query) is 403 SENSITIVE_ACCOUNT ("This
+   * transaction uses an account hidden for your role") to open, edit, void, delete or bulk edit, before the
+   * closed-period 423; posting a line to one is 403 SENSITIVE_ACCOUNT; GET /transactions leaves such transactions out.
+   * Registers of visible accounts keep the row's amount, payee, memo and running balance, with the other-account
+   * caption null and `hiddenSplit: true` (absent otherwise; not editable). Reports: P&L (every variant), Balance Sheet,
+   * Trial Balance, General Ledger (GET, POST) and Transaction List (GET, POST) leave hidden lines out at the account
+   * join; every total and derived row (net income, earnings, retained earnings) follows, so the Balance Sheet and
+   * Trial Balance do not balance for that viewer and the gap is the hidden accounts' net (Q-P29a). Their responses
+   * carry `hiddenNotice: true` (PDF/CSV add "Some amounts are hidden for your role, so totals may not balance.") when
+   * the viewer has hidden accounts, and no key otherwise. Refusal rule: while the viewer has hidden accounts, every
+   * other route under /reports, /report-builder, /dashboard, /budgets, /export, /chat and /ai is 403 SENSITIVE_HIDDEN
+   * ("This needs access to sensitive accounts") until converted. Audit log rows about a hidden account or a transaction
+   * touching one keep their place with before_data/after_data null and `redacted: true`. Nothing changes until an
+   * account is marked. Accepted limits: a bank register shows a paycheck's amount and payee; document totals on
+   * control accounts stay visible; a duplicate account number is 409.
+   */
+  'sensitive-accounts-v1',
 ];
 
