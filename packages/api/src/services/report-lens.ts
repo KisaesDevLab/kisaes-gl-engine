@@ -35,6 +35,7 @@ import {
   adjustingCond, cashBasisLinesWith, executeCashBasis, executeCashBasisIn, type AdjustingFilter,
 } from './report.service.js';
 import { dec, type Dec } from './report-exact.js';
+import { andVisible, hiddenAccountIds } from './visibility.js';
 
 export const REPORTS_COLUMNS_CAPABILITY = 'reports-columns-v1';
 export const REPORTS_DRILL_CAPABILITY = 'reports-drill-v1';
@@ -245,6 +246,11 @@ export async function lineSums(tenantId: string, o: LineSumOptions): Promise<Lin
   const winExpr = wins ? sql`win.i` : sql`0`;
 
   const exec = o.exec ?? db;
+  // Sensitive accounts (U-33): hidden accounts' lines are dropped at the
+  // outer account join (never inside the cash-basis allocation), so every
+  // earnings row built from these sums leaves them out the same way the
+  // statements do. Empty set: identical SQL.
+  const visible = andVisible(await hiddenAccountIds(), sql`a.id`);
   const res = cash
     ? await executeCashBasisIn(exec, sql`
         WITH ${cashBasisLinesWith(tenantId, from, to, o.companyId, o.adjusting)}
@@ -253,7 +259,7 @@ export async function lineSums(tenantId: string, o: LineSumOptions): Promise<Lin
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}
         ${winJoin}
-        WHERE ${typeCond} AND ${lens}
+        WHERE ${typeCond} AND ${lens}${visible}
         GROUP BY 1, 2, 3, 4, 5
       `)
     : await exec.execute(sql`
@@ -269,7 +275,7 @@ export async function lineSums(tenantId: string, o: LineSumOptions): Promise<Lin
           AND t.txn_date <= ${to}
           AND ${o.companyId ? sql`t.company_id = ${o.companyId}` : sql`TRUE`}
           AND ${adjustingCond(o.adjusting, 't.is_adjusting')}
-          AND ${typeCond} AND ${lens}
+          AND ${typeCond} AND ${lens}${visible}
         GROUP BY 1, 2, 3, 4, 5
       `);
   return (res.rows as Array<Record<string, unknown>>).map((r) => ({

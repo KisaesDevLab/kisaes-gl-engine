@@ -15,6 +15,7 @@
 // 400 INVALID_DATE_RANGE (details.param) when the start date is after the
 // end date; 403 FORBIDDEN from the router's permission check.
 
+import { hiddenAccountIds, hiddenNotice } from '../services/visibility.js';
 import type { Request, Response, NextFunction, Router } from 'express';
 import { z } from 'zod';
 import { AppError } from '../utils/errors.js';
@@ -373,7 +374,10 @@ function exactOnly(handler: ExactHandler) {
     const exact = readExact(req);
     if (!exact || req.query['format'] !== undefined && req.query['format'] !== '') { next(); return; }
     const body = await handler(req, res);
-    res.json(normalizeReportDates(body));
+    // Sensitive accounts (U-33): converted reports say when the viewer has
+    // hidden accounts (absent otherwise).
+    const notice = hiddenNotice(await hiddenAccountIds());
+    res.json(normalizeReportDates(notice && body && typeof body === 'object' ? { ...(body as object), hiddenNotice: true } : body));
   };
 }
 

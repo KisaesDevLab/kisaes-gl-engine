@@ -23,6 +23,10 @@ import * as tbReports from '../services/tb/tb-reports.service.js';
 import { parseActivityView, type TbViewFilters } from '../services/tb/activity-view.service.js';
 import * as featureFlags from '../services/feature-flags.service.js';
 import { taxEstimateReportScope } from '../middleware/tax-estimator-scope.js';
+import { hiddenAccountIds, hiddenNotice } from '../services/visibility.js';
+
+/** U-33: the line added to CSV and PDF exports when the viewer has hidden accounts. */
+const HIDDEN_NOTICE_TEXT = 'Some amounts are hidden for your role, so totals may not balance.';
 import * as taxEstimateDocuments from '../services/tax-estimator/estimate-documents.service.js';
 
 // Build-plan Phase 5 cache-invalidation hook. We don't run a Redis
@@ -894,6 +898,16 @@ function asciiFilename(title: unknown): string {
 }
 
 async function respond(res: any, reportData: any, format: string | undefined) {
+  // Sensitive accounts (U-33): every report answered here is a converted
+  // one (unconverted paths are refused in authenticate), so when the viewer
+  // has hidden accounts the response says so: hiddenNotice in JSON, a note
+  // in the PDF header and a last line in the CSV. Absent otherwise.
+  if (hiddenNotice(await hiddenAccountIds())) {
+    const join = (a: unknown, sep: string) => [a, HIDDEN_NOTICE_TEXT].filter((s) => typeof s === 'string' && s.length > 0).join(sep);
+    reportData = format === 'csv' || format === 'pdf'
+      ? { ...reportData, hiddenNotice: true, _headerNote: join(reportData._headerNote, ' '), footer: join(reportData.footer, '\n') }
+      : { ...reportData, hiddenNotice: true };
+  }
   // Footer is only set by the three financial-statement builders (P&L,
   // Balance Sheet, Cash Flow). For other reports it's empty/undefined,
   // which both renderers treat as "no footer".
