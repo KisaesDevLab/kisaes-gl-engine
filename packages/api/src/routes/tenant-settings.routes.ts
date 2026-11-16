@@ -21,7 +21,8 @@ import { describe } from '../middleware/describe.js';
 import * as service from '../services/tenant-report-settings.service.js';
 import * as detailTypesService from '../services/detail-types.service.js';
 import * as adminService from '../services/admin.service.js';
-import { AppError } from '../utils/errors.js';
+import { AppError } from '../utils/errors.js';
+import { hiddenAccountIds } from '../services/visibility.js';
 
 export const tenantSettingsRouter = Router();
 tenantSettingsRouter.use(authenticate);
@@ -107,9 +108,12 @@ tenantSettingsRouter.get('/system-accounts', async (req, res) => {
   // Only the accounts a tenant admin could legitimately pick, so the UI never
   // offers something the API will reject. Eligibility is computed by the
   // shared helper, so this list and the write check cannot drift.
+  // Sensitive accounts (U-33) are never offered to a viewer who can't see them.
+  const hidden = new Set(await hiddenAccountIds());
   const candidates = TENANT_ASSIGNABLE_SYSTEM_ROLES.map((role) => ({
     tag: role.tag,
     accounts: info.accounts.filter((a) => {
+      if (hidden.has(a.id)) return false;
       if (a.systemTag && a.systemTag !== role.tag) return false;
       return roleEligibilityError(role, a) === null;
     }),

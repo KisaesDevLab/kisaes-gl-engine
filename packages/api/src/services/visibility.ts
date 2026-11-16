@@ -179,6 +179,10 @@ export const REFUSE_PREFIXES: readonly string[] = [
   '/api/v1/export',
   '/api/v1/chat',
   '/api/v1/ai',
+  // Found by the canary sweep: the integration API (its own account and
+  // report reads) and the 1099 account mappings.
+  '/api/v2',
+  '/api/v1/practice/1099',
 ];
 
 /**

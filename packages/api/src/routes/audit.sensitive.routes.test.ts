@@ -31,9 +31,13 @@ describe('GET /audit-log for a viewer without sensitive_accounts', () => {
     expect(bk.text).not.toContain('Canary');
     expect(bk.text).not.toContain('4321.09');
     const rows = bk.json.data as Array<{ entity_id: string | null; entity_type: string; before_data: unknown; after_data: unknown; redacted?: boolean }>;
-    const wagesRows = rows.filter((r) => r.entity_id === h.acct.wages);
-    expect(wagesRows.length).toBeGreaterThan(0);
-    for (const r of wagesRows) expect(r).toMatchObject({ before_data: null, after_data: null, redacted: true });
+    // The hidden account's rows stay listed, blanked, without its id.
+    expect(rows.some((r) => r.entity_id === h.acct.wages)).toBe(false);
+    const redacted = rows.filter((r) => r.redacted === true);
+    expect(redacted.length).toBeGreaterThanOrEqual(3); // create, mark, the payroll transaction
+    for (const r of redacted) expect(r).toMatchObject({ before_data: null, after_data: null });
+    expect(redacted.some((r) => r.entity_type === 'account' && r.entity_id === null)).toBe(true);
+    expect((await h.call('bk', 'GET', '/api/v1/audit-log/export')).text).not.toContain(h.acct.wages);
     const supplies = rows.find((r) => r.entity_id === h.acct.supplies);
     expect(supplies?.redacted).toBeUndefined();
     expect(supplies?.after_data).not.toBeNull();

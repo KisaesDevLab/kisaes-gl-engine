@@ -137,7 +137,9 @@ async function redactHiddenRows(tenantId: string, rows: Array<Record<string, unk
     const id = typeof r['entity_id'] === 'string' ? r['entity_id'] : null;
     const text = `${JSON.stringify(r['before_data'] ?? null)} ${JSON.stringify(r['after_data'] ?? null)}`;
     const touches = (id !== null && (hiddenSet.has(id) || hiddenTxns.has(id))) || hidden.some((h) => text.includes(h));
-    return touches ? { ...r, before_data: null, after_data: null, redacted: true } : r;
+    if (!touches) return r;
+    // A hidden account's own id is withheld too (its rows stay listed).
+    return { ...r, entity_id: id !== null && hiddenSet.has(id) ? null : r['entity_id'], before_data: null, after_data: null, redacted: true };
   });
 }
 
@@ -159,13 +161,16 @@ auditRouter.get('/export', async (req, res) => {
   // — a synthetic entity_id starting with `=` would inject a
   // HYPERLINK formula when an accountant opened the export in Excel.
   let csv = 'Timestamp,Action,Entity Type,Entity ID\n';
+  // Sensitive accounts (U-33): a hidden account's id is withheld, as in the list.
+  const hidden = new Set(await hiddenAccountIds());
   for (const row of result.rows as Array<{
     created_at: string | Date;
     action: string;
     entity_type: string;
     entity_id: string | null;
   }>) {
-    csv += toCsvRow([row.created_at, row.action, row.entity_type, row.entity_id]) + '\n';
+    const entityId = row.entity_id && hidden.has(row.entity_id) ? null : row.entity_id;
+    csv += toCsvRow([row.created_at, row.action, row.entity_type, entityId]) + '\n';
   }
 
   res.setHeader('Content-Type', 'text/csv');
