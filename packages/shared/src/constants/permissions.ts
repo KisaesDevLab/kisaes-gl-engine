@@ -13,6 +13,8 @@ import type { AccessLevel, ResourceDef } from '../types/permissions.js';
 //   - the `requireResource(<key>)` guards on each domain router
 //
 // `writable: false` = read-only surface (only none/view apply).
+// `elevated: true` = role defaults grant it only to super admin, owner and
+// accountant (see resolveEffectivePermissions).
 export const PERMISSION_GROUPS = [
   'Transactions',
   'Sales',
@@ -70,6 +72,9 @@ export const PERMISSION_RESOURCES = [
   { key: 'company_settings', label: 'Company Settings', group: 'Manage', writable: true },
   { key: 'ai_chat', label: 'AI Assistant', group: 'Manage', writable: true },
   { key: 'audit_log', label: 'Audit Log', group: 'Manage', writable: false },
+  // U-33: see the accounts an Admin marked sensitive, and their
+  // sub-accounts. Elevated: see the note at the top of the file.
+  { key: 'sensitive_accounts', label: 'Sensitive accounts', group: 'Manage', writable: false, elevated: true },
 ] as const satisfies readonly ResourceDef[];
 
 export type ResourceKey = typeof PERMISSION_RESOURCES[number]['key'];

@@ -27,4 +27,9 @@ export interface ResourceDef {
   label: string;
   group: string;
   writable: boolean;
+  /** Role defaults grant it only to super admin, owner and accountant;
+   *  readonly and a bookkeeper with no permission row resolve to none.
+   *  A template or override can still grant it to a bookkeeper or a
+   *  client user (U-33 sensitive accounts). */
+  elevated?: boolean;
 }
