@@ -9,6 +9,7 @@ import { can } from '@kis-books/shared';
 import { createAccountSchema, updateAccountSchema, accountFiltersSchema, mergeAccountsSchema, bulkUpdateAccountsSchema, importAccountsSchema } from '@kis-books/shared';
 import { authenticate } from '../middleware/auth.js';
 import { requireResource, resolvePermissionsForRequest } from '../middleware/permission.js';
+import { requireTenantCapability } from '../middleware/firm-capabilities.js';
 import { db } from '../db/index.js';
 import { firms, firmUsers, tenantFirmAssignments } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
@@ -98,6 +99,24 @@ accountsRouter.put('/bulk', validate(bulkUpdateAccountsSchema), describe({
   const updated = await accountsService.bulkUpdate(req.tenantId, req.body, req.userId);
   res.json({ updated: updated.length, accounts: updated });
 });
+
+// Sensitive accounts (U-33, sensitive-accounts-v1): only the company Admin
+// (owner or super admin, team_management) marks or unmarks one.
+const setSensitiveSchema = z.object({ isSensitive: z.boolean() }).strict();
+accountsRouter.put('/:id/sensitive', requireTenantCapability('team_management', 'Only the Admin can mark accounts sensitive'),
+  validate(setSensitiveSchema), describe({
+    summary: 'Mark or unmark an account sensitive',
+    description: 'Body {isSensitive}. Response {account}. Admin only (owner or super admin): 403 OWNER_REQUIRED otherwise. '
+      + 'A sensitive account and its sub-accounts are hidden from users without the sensitive_accounts right. '
+      + 'Idempotent: setting the current value changes nothing and writes no audit row; otherwise one audit row '
+      + '(entity account, action update, before/after {isSensitive}). Marking a bank or credit card account, or a built-in '
+      + 'account (A/R, A/P, undeposited funds, payments clearing, retained earnings, opening balances, sales tax payable, '
+      + 'customer deposits, unapplied receipts, inventory asset, suspense) is 422 SENSITIVE_NOT_ALLOWED; unmarking is always '
+      + 'allowed. PUT /accounts/:id and /accounts/bulk ignore isSensitive.',
+  }), async (req, res) => {
+    const account = await accountsService.setSensitive(req.tenantId, req.params['id']!, req.body.isSensitive, req.userId);
+    res.json({ account });
+  });
 
 accountsRouter.get('/:id', async (req, res) => {
   const account = await accountsService.getById(req.tenantId, req.params['id']!);

@@ -14,6 +14,7 @@ import * as coaTemplatesService from './coa-templates.service.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertAccountNotInventory } from './inventory.service.js';
+import { isBankDetailType } from './bank-account-types.js';
 
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
@@ -495,6 +496,54 @@ export async function importFromCsv(
   }
 
   return { imported: created.length, updated, skipped, accounts: created };
+}
+
+/**
+ * Built-in accounts that can never be marked sensitive (U-33, Q-P29d): every
+ * bank feed, reconcile, open-item and sales-tax surface reads them, so hiding
+ * them would hide (or break) those screens rather than one account.
+ */
+export const SENSITIVE_REFUSED_SYSTEM_TAGS: readonly string[] = [
+  'accounts_receivable', 'accounts_payable', 'undeposited_funds', 'payments_clearing', 'retained_earnings',
+  'opening_balances', 'sales_tax_payable', 'customer_deposits', 'unapplied_receipts', 'inventory_asset', 'suspense',
+];
+
+/** Why an account can't be marked sensitive, or null when it can. */
+export function sensitiveRefusal(a: { accountType: string; detailType: string | null; systemTag: string | null }): string | null {
+  if (a.accountType === 'asset' && isBankDetailType(a.detailType)) return 'A bank account can not be marked sensitive';
+  if (a.accountType === 'liability' && a.detailType === 'credit_card') return 'A credit card account can not be marked sensitive';
+  if (a.systemTag && SENSITIVE_REFUSED_SYSTEM_TAGS.includes(a.systemTag)) return 'A built-in account can not be marked sensitive';
+  return null;
+}
+
+/**
+ * Marks or unmarks an account sensitive (U-33). The route allows only the
+ * company Admin (owner or super admin). Idempotent: setting the current value
+ * changes nothing and writes no audit row. The row is locked so two Admins
+ * toggling at once both commit in turn (last write wins, both audited).
+ * Audit row: entity account, action update, before/after hold only
+ * {isSensitive}. Unmarking is always allowed; marking a bank, credit card or
+ * named built-in account is 422 SENSITIVE_NOT_ALLOWED.
+ */
+export async function setSensitive(tenantId: string, id: string, isSensitive: boolean, userId?: string) {
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(accounts)
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
+      .for('update');
+    if (!row) throw AppError.notFound('Account not found');
+    if (row.isSensitive === isSensitive) return row;
+    if (isSensitive) {
+      const reason = sensitiveRefusal(row);
+      if (reason) throw new AppError(422, reason, 'SENSITIVE_NOT_ALLOWED');
+    }
+    const [updated] = await tx.update(accounts)
+      .set({ isSensitive, updatedAt: new Date() })
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
+      .returning();
+    if (!updated) throw AppError.internal('Failed to update account');
+    await auditLog(tenantId, 'update', 'account', id, { isSensitive: row.isSensitive }, { isSensitive }, userId, tx);
+    return updated;
+  });
 }
 
 export async function exportToCsv(tenantId: string): Promise<string> {
