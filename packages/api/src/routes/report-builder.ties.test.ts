@@ -165,8 +165,7 @@ describe('a balance in a range report (1-B1)', () => {
             const opening = d.rows.filter((r) => r.kind === 'opening');
             expect(opening, `${path.join('/')} opening`).toHaveLength(1);
             expect(d.rows[0]!.kind).toBe('opening');
-            expect(opening[0]!.caption).toBe('Balance before Jan 1, 2026');
-            expect(D(opening[0]!.cells[v])).toBe(savingsAt(bsOpen));
+            expect(opening[0]!.caption).toBe('Balance before Jan 1, 2026');            expect(D(opening[0]!.cells[v])).toBe(savingsAt(bsOpen));
             expect(d.rows.filter((r) => r.kind === 'detail').map((r) => D(r.cells[v]))).toEqual([D('250')]);
             expect(d.sums[v]!.toFixed(4), 'opening + rows = the figure').toBe(D(target.cells[v]));
             expect(D(d.subtotal[v])).toBe(D(target.cells[v]));
@@ -252,6 +251,60 @@ describe('a balance in a range report (1-B1)', () => {
       const mar = await drill(def, ref, run, 'banks', line.path, MONTHS_Q1[2]);
       expect(D(mar.subtotal[t])).toBe(D('1250'));
       expect(mar.sums[t]!.toFixed(4)).toBe(D('1250'));
+    });
+  }
+
+  const DEC_FEB = [{ from: '2025-12-01', to: '2025-12-31' }, { from: '2026-01-01', to: '2026-01-31' }, { from: '2026-02-01', to: '2026-02-28' }];
+  /** Every line, Total and earnings row drills to opening + rows = its cells, in every column, with and without range. */
+  const drillsTie = async (def: BuilderDefinition, ref: Record<string, unknown>, run: RunJson, periods: number[]) => {
+    let checked = 0;
+    for (const r of run.rows.filter((x) => x.drill?.type === 'detail' || x.kind === 'earnings')) {
+      const path = r.kind === 'total' ? [`n:${r.nodeId}`] : r.path;
+      for (const range of [undefined, ...periods.map((i) => run.columns[i]!.range)]) {
+        const d = await drill(def, ref, run, r.nodeId, path, range);
+        for (const i of periods) {
+          if (range && run.columns[i]!.range !== range) { expect(d.subtotal[i]).toBeNull(); continue; }
+          expect(d.sums[i]!.toFixed(4), `${path.join('/')} ${run.columns[i]!.key} ${range ? 'range' : 'all'}`).toBe(D(r.cells[i]));
+          expect(D(d.subtotal[i])).toBe(D(r.cells[i]));
+          checked++;
+        }
+      }
+    }
+    return checked;
+  };
+
+  for (const basis of ['accrual', 'cash'] as const) {
+    it(`each column's fiscal-year rule: revenue balances across a year end, and the Balance Sheet by month in a range report (${basis})`, async () => {
+      const ref = { dates: { from: '2025-12-01', to: '2026-02-28' }, basis, periodRanges: DEC_FEB };
+      // A revenue balance: from each column's fiscal year start (Dec 2025: the 2025 income; Jan 2026: nothing yet).
+      const rev = bankRange();
+      rev.columns.periods = 'month';
+      rev.nodes = [{ ...sectionOf(starter('profit_loss_by_month'), 'income'), id: 'rev', measure: 'balance' } as RbSectionNode];
+      const rrun = await runDef(rev, ref);
+      const periods = rrun.columns.map((x, i) => (x.kind === 'period' ? i : -1)).filter((i) => i >= 0);
+      const line = rrun.rows.find((r) => r.kind === 'line' && r.path[1] === `account:${c.income}`)!;
+      expect(periods.map((i) => D(line.cells[i]))).toEqual([D('1070'), D('0'), D('250')]);
+      const all = await drill(rev, ref, rrun, 'rev', line.path);
+      expect(periods.map((i) => D(all.rows.find((r) => r.kind === 'opening')!.cells[i]))).toEqual([D('70'), D('0'), D('0')]);
+      expect(await drillsTie(rev, ref, rrun, periods)).toBeGreaterThan(0);
+
+      // The Balance Sheet switched to a range, by month: totals = the standard Balance Sheet at each month's end; every
+      // line, Total and earnings row drills to opening + rows.
+      const bs = starter('balance_sheet');
+      bs.dates = { mode: 'range', preset: 'this_year_to_date' } as BuilderDefinition['dates'];
+      bs.columns.periods = 'month';
+      const brun = await runDef(bs, ref);
+      expect(brun.columns.some((x) => x.key === 'total')).toBe(false);
+      const bp = brun.columns.map((x, i) => (x.kind === 'period' ? i : -1)).filter((i) => i >= 0);
+      for (const [j, i] of bp.entries()) {
+        const std = await reportService.buildBalanceSheet(c.tenantId, DEC_FEB[j]!.to, basis, c.companyId, null, null, { exactAmounts: true, fiscalYearStart: j === 0 ? '2025-01-01' : '2026-01-01' }) as unknown as Record<string, string>;
+        const at = (id: string) => D(brun.rows.find((r) => r.kind === 'total' && r.nodeId === id)!.cells[i]);
+        expect(at('assets'), `${DEC_FEB[j]!.to} assets`).toBe(D(std['totalAssetsExact']));
+        expect(at('liabilities')).toBe(D(std['totalLiabilitiesExact']));
+        expect(at('equity'), `${DEC_FEB[j]!.to} equity`).toBe(D(std['totalEquityExact']));
+      }
+      expect(brun.rows.some((r) => r.kind === 'earnings')).toBe(true);
+      expect(await drillsTie(bs, ref, brun, bp)).toBeGreaterThan(20);
     });
   }
 
