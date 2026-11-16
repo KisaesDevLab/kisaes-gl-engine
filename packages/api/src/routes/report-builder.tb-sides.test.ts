@@ -225,6 +225,15 @@ describe('Trial Balance debit / credit per account (B-1)', () => {
           expect([Dn(d.subtotal[v]), Dn(d.subtotal[v + 1])], `${label} drill ${l.path.join('/')}`).toEqual(pair(l));
           expect(d.net.toFixed(4), `${label} drill rows ${l.path.join('/')}`).toBe(new Decimal(l.cells[v] ?? 0).minus(l.cells[v + 1] ?? 0).toFixed(4));
         }
+        // The section path (every line plus the earnings lines) = the Total; the earnings row's path = that row.
+        // (The Total row itself carries drill null; the section path is its figure's drill.)
+        const earningsRow = full.rows.find((r) => r.kind === 'earnings');
+        expect(earningsRow, `${label} earnings row`).toBeDefined();
+        for (const [path, r] of [[['n:accounts'], total], [earningsRow!.path, earningsRow!]] as Array<[string[], Row]>) {
+          const d = await drill(tbDef(groupBy, 'expandable'), ref, full, path, v);
+          expect([Dn(d.subtotal[v]), Dn(d.subtotal[v + 1])], `${label} drill ${path.join('/')}`).toEqual(pair(r));
+          expect(d.net.toFixed(4), `${label} drill rows ${path.join('/')}`).toBe(new Decimal(r.cells[v] ?? 0).minus(r.cells[v + 1] ?? 0).toFixed(4));
+        }
       }
 
       // Savings by job: 900.00 debit = 1,000.00 and (100.00), both in Debit.

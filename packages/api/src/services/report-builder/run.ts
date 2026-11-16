@@ -1188,7 +1188,10 @@ async function detailPage(
   opts: { keys?: Array<string | null>; earnings?: EarningsPart; sel?: number[] } = {},
 ): Promise<{ rows: RunRow[]; cursor: string | null }> {
   const keys = opts.keys ?? pathKeys(s, path);
+  // A Trial Balance's earnings row is the prior years' income only (this year's income lines are its own lines), so
+  // its section path adds the prior years' lines, never this year's twice (B-1: the drill rows sum to the Total).
   const earnings = opts.earnings ?? 'none';
+  const ePart: EarningsPart = earnings === 'all' && s.earnings === 'trial_balance' ? 'prior' : earnings;
   const { plan } = ctx;
   const sel = opts.sel ?? plan.base;
   if (RB_SOURCE_INFO[s.source].openItems) return openDetailPage(ctx, s, keys, path, cursor, limit, sel);
@@ -1258,7 +1261,7 @@ async function detailPage(
     // Earnings lines (equity-earnings' rule): income-statement lines, credit - debit (debit - credit for a debit or tb section).
     const es = earningsSection(s);
     const E = linesSql(ctx, es, null, maxTo);
-    const partCond = sql.join(slots.map((sl) => sql`(${date} <= ${sl.to}::date${earnings === 'prior' ? sql` AND ${date} < ${sl.fy}::date` : earnings === 'current' ? sql` AND ${date} >= ${sl.fy}::date` : sql``})`), sql` OR `);
+    const partCond = sql.join(slots.map((sl) => sql`(${date} <= ${sl.to}::date${ePart === 'prior' ? sql` AND ${date} < ${sl.fy}::date` : ePart === 'current' ? sql` AND ${date} >= ${sl.fy}::date` : sql``})`), sql` OR `);
     const value = s.earnings === 'trial_balance' || s.polarity === 'debit' ? sql`(${raw(k.d)} - ${raw(k.c)})` : sql`(${raw(k.c)} - ${raw(k.d)})`;
     parts.push(select('e', sql`${E.where} AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense') AND (${partCond})`, value, es));
   }
@@ -1301,7 +1304,7 @@ async function detailPage(
     const val = dec(r['v_text'] ?? '0');
     const bs = r0['bs'] === true;
     const member = (si: number) => sel.includes(si)
-      && (r['part'] === 'e' ? inEarnings(earnings, plan.slots[si]!, day) : inSlot(flow, plan.slots[si]!, day, bs));
+      && (r['part'] === 'e' ? inEarnings(ePart, plan.slots[si]!, day) : inSlot(flow, plan.slots[si]!, day, bs));
     const cells = plan.specs.map((sp, i): string | null => {
       if (plan.cols[i]!.kind === 'hidden') return null;
       if (sp.t === 'field') return detailField(sp.field, r, day, opening, running);
