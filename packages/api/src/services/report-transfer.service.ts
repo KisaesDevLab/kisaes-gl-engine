@@ -53,7 +53,8 @@ import { auditLogMany } from '../middleware/audit.js';
 import {
   assertRefsInScope, canEdit, definitionNotFound, groupNotFound, parseDefinition, refCode, type Viewer,
 } from './report-definitions.service.js';
-import { idSites, type RefKind, type Site } from './report-definition-refs.js';
+import { hiddenReferences, idSites, type RefKind, type Site } from './report-definition-refs.js';
+import { hiddenAccountIds, visibleAccount } from './visibility.js';
 
 export type { RefKind };
 
@@ -101,8 +102,10 @@ export async function describeRows(tenantId: string, companyId: string, kind: Re
   if (ids.length === 0) return out;
   switch (kind) {
     case 'account': {
+      // An account hidden from the viewer (U-33) is not described: an export names it {kind, missing: true}, a
+      // choice of it is a row not in this company, and it is never a candidate.
       const rows = await db.select({ id: accounts.id, name: accounts.name, number: accounts.accountNumber, type: accounts.accountType })
-        .from(accounts).where(and(inCompany(accounts, tenantId, companyId), inArray(accounts.id, ids)));
+        .from(accounts).where(and(inCompany(accounts, tenantId, companyId), inArray(accounts.id, ids), visibleAccount(await hiddenAccountIds(), accounts.id)));
       for (const r of rows) {
         out.set(r.id, {
           id: r.id, label: r.number ? `${r.number} · ${r.name}` : r.name,
@@ -159,15 +162,16 @@ async function matches(tenantId: string, companyId: string, ref: TransferReferen
   const ids = (rows: Array<{ id: string }>) => rows.map((r) => r.id);
   switch (ref.kind) {
     case 'account': {
-      // Case and spacing aside, with or without a number (Q-PRA2d; review M-8).
+      // Case and spacing aside, with or without a number (Q-PRA2d; review M-8). Never an account hidden from the viewer (U-33).
+      const visible = visibleAccount(await hiddenAccountIds(), accounts.id);
       const byName = ids(await db.select({ id: accounts.id }).from(accounts)
-        .where(and(inCompany(accounts, tenantId, companyId), sql`${spacedSql(accounts.name)} = ${normSpaced(name)}`))
+        .where(and(inCompany(accounts, tenantId, companyId), sql`${spacedSql(accounts.name)} = ${normSpaced(name)}`, visible))
         .orderBy(accounts.accountNumber, accounts.id).limit(lim));
       if (ref.number && ref.number.trim()) {
         // Q-PRA2d (report-refs-v1): the number matches only with the name (case and spacing aside). A row with the
         // number and another name is a candidate, never a match; then the rows of that name (Q-A09v).
         const numbered = await db.select({ id: accounts.id, name: accounts.name }).from(accounts)
-          .where(and(inCompany(accounts, tenantId, companyId), eq(accounts.accountNumber, ref.number.trim()))).limit(lim);
+          .where(and(inCompany(accounts, tenantId, companyId), eq(accounts.accountNumber, ref.number.trim()), visible)).limit(lim);
         const exact = numbered.filter((r) => normSpaced(r.name) === normSpaced(name)).map((r) => r.id);
         if (exact.length > 0) return { exact, byName };
         return { exact: [], byName: [...new Set([...ids(numbered), ...byName])].slice(0, lim) };
@@ -366,6 +370,7 @@ export async function previewImport(tenantId: string, companyId: string, viewer:
   }
 
   const out: PreviewReport[] = [];
+  const hiddenIds = await hiddenAccountIds();
   for (const { rep, i, definition, at, compact } of work) {
     const resolved = new Map<number, string | null>();
     const unresolved: PreviewReport['unresolved'] = [];
@@ -417,7 +422,7 @@ export async function previewImport(tenantId: string, companyId: string, viewer:
     out.push({
       name: rep.name, kind: rep.kind, ready: ready && !problem, definition: finalDef, unresolved, dropped,
       groupId: rep.groupName ? groupsByName.get(rep.groupName.toLowerCase()) ?? null : null,
-      nameTaken: taken ? { id: taken.id, version: taken.version, kind: taken.kind, canEdit: canEdit(taken, viewer) } : null,
+      nameTaken: taken ? { id: taken.id, version: taken.version, kind: taken.kind, canEdit: canEdit(taken, viewer) && hiddenReferences(taken.definitionJson, hiddenIds).length === 0 } : null,
       ...(problem ? { problem } : {}),
     });
   }

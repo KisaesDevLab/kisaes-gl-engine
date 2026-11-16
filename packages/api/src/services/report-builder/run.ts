@@ -48,6 +48,7 @@ import { fiscalYearStartIn, priorRange, shiftYear } from '../report-columns/plan
 import { definitionForAccess, parseBuilder, assertRefsInScope, stale, definitionNotFound } from '../report-definitions.service.js';
 import { inlineReferenceMissing, missingReferences, referenceMissing } from '../report-definition-refs.js';
 import { ZERO_COMPANY_UUID } from '../ledger-version.service.js';
+import { andVisible, hiddenAccountIds, hiddenNotice } from '../visibility.js';
 import { AppError } from '../../utils/errors.js';
 import {
   inSnapshot, tooLargeError, MAX_LINE_ROWS, MAX_DETAIL_ROWS_SCREEN, MAX_DETAIL_ROWS_EXPORT, DETAIL_PAGE_ROWS, PREVIEW_DETAIL_ROWS_PER_LINE, type RunExec,
@@ -154,7 +155,8 @@ export async function loadDefinition(exec: RunExec, v: Viewer, req: Pick<RunRequ
     const { definition, refs } = parseBuilder(req.definition);
     // report-refs-v1: a reference to a record that no longer exists here (deleted, or merged away before merges
     // re-pointed saved reports) keeps 400 DEFINITION_INVALID NOT_IN_COMPANY at its path, with `missing` added.
-    const missing = await missingReferences(exec.tx, v.tenantId, v.companyId, definition);
+    // U-33: an account hidden from the caller is answered exactly as a deleted one (no existence hint).
+    const missing = await missingReferences(exec.tx, v.tenantId, v.companyId, definition, { hiddenAccounts: await hiddenAccountIds() });
     if (missing.length > 0) throw inlineReferenceMissing(missing);
     await assertRefsInScope(exec.tx, v.tenantId, v.companyId, refs, 'NOT_IN_COMPANY');
     return definition;
@@ -310,7 +312,8 @@ function clearedExpr(tenantId: string, lineCol: string): SQL {
   return sql`(CASE WHEN ${raw(lineCol)} IS NULL THEN 'uncleared' WHEN ${done} THEN 'reconciled' WHEN ${any} THEN 'cleared' ELSE 'uncleared' END)`;
 }
 
-interface Ctx { v: Viewer; exec: RunExec; plan: Plan; fyStarts: string[] }
+/** `hidden`: the accounts hidden from the viewer (U-33; [] when none), left out at the outer accounts join of every line read. */
+interface Ctx { v: Viewer; exec: RunExec; plan: Plan; fyStarts: string[]; hidden: string[] }
 
 function sourceCond(s: RbSectionNode, cash: boolean, k: LineCols): SQL {
   const purchaseTypes = cash ? ['bill', 'vendor_credit', 'expense', 'bill_payment'] : ['bill', 'vendor_credit', 'expense'];
@@ -446,7 +449,8 @@ function linesSql(ctx: Ctx, s: RbSectionNode, from: string | null, to: string): 
       with: sql`WITH ${cashBasisLinesWith(tenantId, from, to, companyId, adj)}`,
       from: sql`FROM cb_lines cb JOIN transactions t ON t.id = cb.transaction_id AND t.tenant_id = ${tenantId}
         JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}`,
-      where: sql`${sourceCond(s, true, k)} AND ${filterSql(ctx, s, k, true)}`,
+      // Hidden accounts (U-33) are left out at the outer join, never inside the cash allocation (it splits payments).
+      where: sql`${sourceCond(s, true, k)} AND ${filterSql(ctx, s, k, true)}${andVisible(ctx.hidden, sql`a.id`)}`,
       k, cash,
     };
   }
@@ -457,7 +461,7 @@ function linesSql(ctx: Ctx, s: RbSectionNode, from: string | null, to: string): 
     where: sql`jl.tenant_id = ${tenantId} AND t.status = 'posted' AND t.basis <> 'cash'
       AND t.company_id = ${companyId} AND ${adjustingCond(adj, 't.is_adjusting')}
       ${from ? sql`AND t.txn_date >= ${from}` : sql``} AND t.txn_date <= ${to}
-      AND ${sourceCond(s, false, k)} AND ${filterSql(ctx, s, k, false)}`,
+      AND ${sourceCond(s, false, k)} AND ${filterSql(ctx, s, k, false)}${andVisible(ctx.hidden, sql`a.id`)}`,
     k, cash,
   };
 }
@@ -728,7 +732,8 @@ const linePairs = (pairs: Array<Dec | null>) => pairs.map((x) => (x === null || 
 
 async function namesFor(ctx: Ctx, kind: 'account' | 'contact' | 'item' | 'tag', ids: string[]): Promise<Map<string, { name: string; sort: string }>> {
   const m = new Map<string, { name: string; sort: string }>();
-  const real = ids.filter((x) => /^[0-9a-f-]{36}$/i.test(x));
+  // A hidden account (U-33) never gets a name.
+  const real = ids.filter((x) => /^[0-9a-f-]{36}$/i.test(x) && !(kind === 'account' && ctx.hidden.includes(x.toLowerCase())));
   if (real.length === 0) return m;
   const t = ctx.v.tenantId;
   const q = kind === 'account'
@@ -800,7 +805,7 @@ export interface RunResult {
   columns: RunColumn[];
   rows: RunRow[];
   meta: {
-    basis: string; dates: unknown; notes: string[]; truncated: boolean; hiddenNotice: null; denied: string[];
+    basis: string; dates: unknown; notes: string[]; truncated: boolean; hiddenNotice: true | null; denied: string[];
     /** Preview runs only (report-builder-preview-v1): the per-line detail row cut. */
     preview?: { detailRowsPerLine: number };
   };
@@ -815,10 +820,11 @@ async function readStamp(ctx: Ctx): Promise<number> {
 }
 
 export async function runReport(v: Viewer, req: RunRequest, signal?: AbortSignal): Promise<RunResult> {
+  const hidden = await hiddenAccountIds();
   return inSnapshot(async (exec) => {
     const def = await loadDefinition(exec, v, req);
     const plan = await makePlan(v, def, req);
-    const ctx: Ctx = { v, exec, plan, fyStarts: req.fiscalYearStarts };
+    const ctx: Ctx = { v, exec, plan, fyStarts: req.fiscalYearStarts, hidden };
     const stamp = await readStamp(ctx);
     const out = await assemble(ctx, req);
     return { ...out, fingerprint: fingerprintOf(req), stamp, meta: { ...out.meta, basis: plan.basis, dates: req.dates } };
@@ -1048,7 +1054,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
     columns: plan.cols.filter((c) => c.kind !== 'hidden').length === plan.cols.length ? plan.cols : plan.cols,
     rows,
     meta: {
-      basis: plan.basis, dates: null, notes, truncated, hiddenNotice: null, denied,
+      basis: plan.basis, dates: null, notes, truncated, hiddenNotice: hiddenNotice(ctx.hidden), denied,
       ...(preview ? { preview: { detailRowsPerLine: PREVIEW_DETAIL_ROWS_PER_LINE } } : {}),
     },
   };
@@ -1060,7 +1066,10 @@ async function checkPolarity(ctx: Ctx, s: RbSectionNode): Promise<void> {
   if (typeFilter) return;
   const acc = s.filters.find((f) => f.field === 'account' && f.op === 'in');
   if (!acc) return;
-  const r = await ctx.exec.execute(sql`SELECT DISTINCT account_type FROM accounts WHERE tenant_id = ${ctx.v.tenantId} AND id IN (${uuids(acc.ids!)})`);
+  // A hidden account (U-33) gives no MIXED_POLARITY hint: only the visible ones decide.
+  const ids = ctx.hidden.length > 0 ? acc.ids!.filter((id) => !ctx.hidden.includes(id.toLowerCase())) : acc.ids!;
+  if (ids.length === 0) return;
+  const r = await ctx.exec.execute(sql`SELECT DISTINCT account_type FROM accounts WHERE tenant_id = ${ctx.v.tenantId} AND id IN (${uuids(ids)})`);
   const sides = new Set((r.rows as Array<{ account_type: string }>).map((x) => isDebitNormal(x.account_type)));
   if (sides.size > 1) throw invalidAt(`node:${s.id}.polarity`, 'MIXED_POLARITY', 'Natural signs need accounts of one kind (all debit or all credit); choose Debit or Credit.');
 }
@@ -1414,11 +1423,12 @@ export interface DetailResult { rows: RunRow[]; cursor: string | null; subtotal:
  * subtotal's other value columns are null. Without `range`, every base column.
  */
 export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSignal): Promise<DetailResult> {
+  const hidden = await hiddenAccountIds();
   return inSnapshot(async (exec) => {
     if (fingerprintOf(req) !== req.fingerprint) throw runChanged('params');
     const def = await loadDefinition(exec, v, req);
     const plan = await makePlan(v, def, req);
-    const ctx: Ctx = { v, exec, plan, fyStarts: req.fiscalYearStarts };
+    const ctx: Ctx = { v, exec, plan, fyStarts: req.fiscalYearStarts, hidden };
     if ((await readStamp(ctx)) !== req.stamp) throw runChanged('books');
     const s = sectionsOf(def.nodes).find((x) => x.id === req.nodeId);
     if (!s) throw AppError.badRequest('No such part of the report.', 'INVALID_PARAM', { field: 'nodeId' });
@@ -1426,6 +1436,10 @@ export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSig
       throw AppError.forbidden('Your role can\'t see this part of the report.', 'PERMISSION_DENIED');
     }
     const { keys, earnings } = parseDetailPath(s, req.path);
+    // A drill keyed on a hidden account (U-33) is 404, as the account itself is.
+    if (hidden.length > 0 && keys.some((k, i) => k !== null && s.groupBy[i]?.key === 'account' && hidden.includes(k.toLowerCase()))) {
+      throw AppError.notFound('Not found');
+    }
     const sel = drillSlots(plan, req.range);
     const cursor = req.cursor ? decodeCursor(req.cursor) : null;
     const page = await detailPage(ctx, s, req.path, cursor, DETAIL_PAGE_ROWS, { keys, earnings, sel });

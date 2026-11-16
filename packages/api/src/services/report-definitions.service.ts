@@ -40,7 +40,8 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog, auditLogMany } from '../middleware/audit.js';
 import { claimAndRecord } from './idempotency.service.js';
-import { missingReferences, missingReferencesMany, type MissingReference } from './report-definition-refs.js';
+import { hiddenReferences, missingReferences, missingReferencesMany, type HiddenReference, type MissingReference } from './report-definition-refs.js';
+import { hiddenAccountIds } from './visibility.js';
 
 export type DefinitionRow = typeof reportDefinitions.$inferSelect;
 export type GroupRow = typeof reportDefinitionGroups.$inferSelect;
@@ -214,12 +215,15 @@ const REF_TABLES = { accounts, contacts, tags, items, tagGroups, budgets } as co
  * (builder definitions: NOT_IN_COMPANY) goes in the error's details.
  */
 export async function assertRefsInScope(tx: Tx, tenantId: string, companyId: string, refs: DefinitionRefs, code?: string): Promise<void> {
+  // An account hidden from the viewer (U-33) is answered as an id not in this company: no existence hint.
+  const hidden = refs.some((r) => r.kind === 'accounts' && r.ids.length > 0) ? new Set(await hiddenAccountIds()) : new Set<string>();
   for (const { kind, path, ids } of refs) {
     if (ids.length === 0) continue;
     const table = REF_TABLES[kind];
     const rows = await tx.select({ id: table.id, companyId: table.companyId }).from(table)
       .where(and(eq(table.tenantId, tenantId), inArray(table.id, ids)));
-    if (rows.length !== ids.length || rows.some((r) => r.companyId !== null && r.companyId !== companyId)) {
+    if (rows.length !== ids.length || rows.some((r) => r.companyId !== null && r.companyId !== companyId)
+      || (kind === 'accounts' && ids.some((id) => hidden.has(id.toLowerCase())))) {
       throw invalid('The saved report names something that is not in this company.', path, code);
     }
   }
@@ -243,8 +247,22 @@ export function canEdit(row: Pick<DefinitionRow, 'createdBy'>, viewer: Viewer): 
   return !!viewer.isSuperAdmin || viewer.userRole === 'owner' || (!!viewer.userId && row.createdBy === viewer.userId);
 }
 
-/** report-refs-v1 (Q-PRA2c): `missing` lists the ids the definition names that are no longer rows of this company. */
-function toApi(r: DefinitionRow, createdByName: string | null, viewer: Viewer, missing: MissingReference[]) {
+/** U-33 (Q-309): 403 SENSITIVE_DEFINITION, a saved report naming an account hidden from the viewer can't be changed by them. */
+export function sensitiveDefinition(): AppError {
+  return AppError.forbidden('This saved report uses an account hidden for your role, so you can\'t change it. You can still run it.', 'SENSITIVE_DEFINITION');
+}
+
+/** Refuses a change to a saved report that names an account hidden from the viewer (U-33, Q-309). */
+export async function assertNoHiddenRefs(row: Pick<DefinitionRow, 'definitionJson'>): Promise<void> {
+  if (hiddenReferences(row.definitionJson, await hiddenAccountIds()).length > 0) throw sensitiveDefinition();
+}
+
+/**
+ * report-refs-v1 (Q-PRA2c): `missing` lists the ids the definition names that are no longer rows of this company.
+ * U-33 (Q-309): a definition naming an account hidden from the viewer has `canEdit: false`, `hiddenRefs: true` and
+ * `hidden` (the missing-reference shape, no reason, no name); both keys are absent otherwise.
+ */
+function toApi(r: DefinitionRow, createdByName: string | null, viewer: Viewer, missing: MissingReference[], hidden: HiddenReference[] = []) {
   return {
     id: r.id,
     groupId: r.groupId,
@@ -254,13 +272,15 @@ function toApi(r: DefinitionRow, createdByName: string | null, viewer: Viewer, m
     version: r.version,
     createdBy: r.createdBy,
     createdByName,
-    canEdit: canEdit(r, viewer),
+    canEdit: canEdit(r, viewer) && hidden.length === 0,
     updatedAt: r.updatedAt.toISOString(),
     missing,
+    ...(hidden.length > 0 ? { hiddenRefs: true as const, hidden } : {}),
   };
 }
 
 export async function listDefinitions(tenantId: string, companyId: string, viewer: Viewer, opts: { groupId?: string | 'none'; kind?: ReportDefinitionKind } = {}) {
+  const hiddenIds = await hiddenAccountIds();
   const conds = [defScope(tenantId, companyId)];
   if (opts.groupId === 'none') conds.push(isNull(reportDefinitions.groupId));
   else if (opts.groupId) conds.push(eq(reportDefinitions.groupId, opts.groupId));
@@ -271,7 +291,7 @@ export async function listDefinitions(tenantId: string, companyId: string, viewe
     .where(and(...conds))
     .orderBy(sql`lower(${reportDefinitions.name})`, asc(reportDefinitions.id));
   const missing = await missingReferencesMany(db, tenantId, companyId, rows.map((r) => r.d.definitionJson));
-  return rows.map((r, i) => toApi(r.d, r.createdByName ?? null, viewer, missing[i]!));
+  return rows.map((r, i) => toApi(r.d, r.createdByName ?? null, viewer, missing[i]!, hiddenReferences(r.d.definitionJson, hiddenIds)));
 }
 
 export async function getDefinition(tenantId: string, companyId: string, id: string, viewer: Viewer) {
@@ -281,7 +301,8 @@ export async function getDefinition(tenantId: string, companyId: string, id: str
     .where(and(defScope(tenantId, companyId), eq(reportDefinitions.id, id)))
     .limit(1);
   if (!r) throw definitionNotFound();
-  return toApi(r.d, r.createdByName ?? null, viewer, await missingReferences(db, tenantId, companyId, r.d.definitionJson));
+  return toApi(r.d, r.createdByName ?? null, viewer, await missingReferences(db, tenantId, companyId, r.d.definitionJson),
+    hiddenReferences(r.d.definitionJson, await hiddenAccountIds()));
 }
 
 /** The live row of this company, for the route's access check; 404 otherwise. */
@@ -346,6 +367,7 @@ export async function updateDefinition(tenantId: string, companyId: string, view
   try {
     await db.transaction(async (tx) => {
       const row = await lockDefinition(tx, tenantId, companyId, id);
+      await assertNoHiddenRefs(row);
       if (!canEdit(row, viewer)) throw notAuthor();
       if (row.version !== input.version) throw stale(row.version);
       if (parsed && parsed.definition.kind !== row.kind) throw invalid('A saved report cannot change its kind.', 'definition.kind');
@@ -376,6 +398,7 @@ export function notAuthor(): AppError {
 export async function deleteDefinition(tenantId: string, companyId: string, viewer: Viewer, id: string, version: number) {
   await db.transaction(async (tx) => {
     const row = await lockDefinition(tx, tenantId, companyId, id);
+    await assertNoHiddenRefs(row);
     if (!canEdit(row, viewer)) throw notAuthor();
     if (row.version !== version) throw stale(row.version);
     await tx.update(reportDefinitions).set({ deletedAt: new Date(), version: row.version + 1, updatedBy: viewer.userId ?? null, updatedAt: new Date() })

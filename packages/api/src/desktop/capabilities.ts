@@ -1422,6 +1422,25 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'sensitive-accounts-v1',
   /**
+   * Sensitive accounts in the Report Builder, report files, the AI draft and Ask (U-33 part 2, ClientLedger P29; no
+   * migration). For a viewer with hidden accounts (sensitive-accounts-v1), these routes leave them out instead of
+   * refusing: POST /report-builder/run and /run/detail drop hidden lines at the outer accounts join on both bases
+   * (rows, group subtotals, section totals, formulas, percent bases, earnings and opening rows, Trial Balance tag
+   * mode's prior years' figure), so every total follows the sensitive-accounts-v1 rule (a section over all accounts
+   * shows the hidden net as its gap; Q-P29a); meta.hiddenNotice is true when the viewer has hidden accounts, null
+   * otherwise; a hidden account gets no name and gives no MIXED_POLARITY hint; a /run/detail path keyed on a hidden
+   * account is 404. Saved reports (GET /definitions, /definitions/:id): one naming a hidden account has canEdit
+   * false, hiddenRefs true and hidden [{path, nodeId, field, kind: account, ids}] (the missing-reference shape, no
+   * name; both keys absent otherwise); PUT and DELETE of it are 403 SENSITIVE_DEFINITION; a run of it by
+   * definitionId hides as above (Q-309). A hidden id in a definition sent (inline run, save, change) is 400
+   * DEFINITION_INVALID NOT_IN_COMPANY, as an id not in the company. Report files: export names a hidden account
+   * {kind: account, missing: true}; the import preview never matches it (by name or number) nor offers it as a
+   * candidate, and a choice of it is 400 VALIDATION_ERROR {field: choices}, as an unknown row. AI draft and Ask:
+   * hidden account names are never in the prompt, never resolved and never kept as text. Other routes under the
+   * refuse prefixes keep refusing (403 SENSITIVE_HIDDEN) until converted. Nothing changes until an account is marked.
+   */
+  'sensitive-accounts-builder-v1',
+  /**
    * Report areas (U-227, ClientLedger P29; no migration). Besides `reports` read, every report route needs read on
    * the area its data belongs to (services/report-areas.ts): A/R reports and customer statements `invoices`, A/P and
    * 1099 reports `bills`, bank and reconciliation reports `banking`, sales tax reports `sales_tax`, inventory reports

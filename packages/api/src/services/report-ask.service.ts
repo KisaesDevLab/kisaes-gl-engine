@@ -57,6 +57,7 @@ import { sanitize } from './pii-sanitizer.service.js';
 import { executeWithFallback, MYBOOKS_TASK_CLASSES, type CompletionResult } from './ai-providers/index.js';
 import { isOfflineUnavailable } from '../utils/offline.js';
 import { maskNumbers } from './report-builder/draft-numbers.js';
+import { hiddenAccountIds, visibleAccount } from './visibility.js';
 
 /** Report keys, presets, columns and extras: the client's catalog tokens. */
 export const ASK_TOKEN_RE = /^[a-z0-9_]{1,64}$/;
@@ -220,8 +221,10 @@ export function dbNameResolver(tenantId: string, companyId: string): NameResolve
       if (kind === 'account') {
         // Matches the name, or "number name" as the account lists show it (not with nameOnly).
         const numbered = !opts?.nameOnly;
+        // Never an account hidden from the viewer (U-33): its name resolves to nothing, as an unknown name.
         const rows = await db.select({ id: accounts.id, name: accounts.name, number: accounts.accountNumber }).from(accounts)
           .where(and(eq(accounts.tenantId, tenantId), inCompany(accounts.companyId, companyId), eq(accounts.isActive, true),
+            visibleAccount(await hiddenAccountIds(), accounts.id),
             numbered
               ? or(inArray(sql`lower(${accounts.name})`, keys),
                 inArray(sql`lower(coalesce(${accounts.accountNumber}, '') || ' ' || ${accounts.name})`, keys))
@@ -256,10 +259,11 @@ export function dbNameResolver(tenantId: string, companyId: string): NameResolve
   };
 }
 
-/** The names the model may see. Ids and names only — never a balance or an amount. */
+/** The names the model may see. Ids and names only — never a balance or an amount; never an account hidden from the viewer (U-33). */
 export async function promptNames(tenantId: string, companyId: string, question: string): Promise<{ accounts: string[]; tags: string[]; contacts: string[] }> {
   const acc = await db.select({ name: accounts.name }).from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), inCompany(accounts.companyId, companyId), eq(accounts.isActive, true)))
+    .where(and(eq(accounts.tenantId, tenantId), inCompany(accounts.companyId, companyId), eq(accounts.isActive, true),
+      visibleAccount(await hiddenAccountIds(), accounts.id)))
     .orderBy(sql`lower(${accounts.name})`).limit(ASK_LIMITS.promptAccounts);
   const tg = await db.select({ name: tags.name }).from(tags)
     .where(and(eq(tags.tenantId, tenantId), inCompany(tags.companyId, companyId), eq(tags.isActive, true)))

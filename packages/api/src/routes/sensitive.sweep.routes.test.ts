@@ -214,7 +214,7 @@ describe('sensitive accounts canary sweep', () => {
     const R = { from: '2026-01-01', to: '2026-12-31' };
 
     /** One POST read: the owner must answer 200 (and show a canary when `live`); the bookkeeper must not leak. */
-    const check = async (label: string, path: string, body: unknown, o: { live?: boolean; prompt?: boolean; okStatus?: number[] } = {}) => {
+    const check = async (label: string, path: string, body: unknown, o: { live?: boolean; prompt?: boolean; okStatus?: number[]; scan?: (json: any) => unknown } = {}) => {
       const key = path.split('?')[0]!;
       swept.add(`POST ${key}`);
       const converted = isConvertedRoute('POST', key);
@@ -232,7 +232,8 @@ describe('sensitive accounts canary sweep', () => {
       if (!converted) leaks.push(`${label}: unconverted route answered ${bk.status}, not SENSITIVE_HIDDEN`);
       if (bk.status !== 200 && !(o.okStatus ?? []).includes(bk.status)) leaks.push(`${label}: bookkeeper ${bk.status} ${bk.text.slice(0, 200)}`);
       const sent = o.prompt ? JSON.stringify(m.execute.mock.calls.slice(before)) : '';
-      const found = canariesIn(bk.text + sent, { idsAllowed: idsAllowedOn(key) });
+      const text = o.scan && bk.json ? JSON.stringify(o.scan(bk.json)) : bk.text;
+      const found = canariesIn(text + sent, { idsAllowed: idsAllowedOn(key) });
       if (found.length > 0) leaks.push(`${label} (${bk.status}): ${found.join(', ')}`);
       return { own, bk };
     };
@@ -287,8 +288,9 @@ describe('sensitive accounts canary sweep', () => {
       columns: { detailFields: [], compare: [], headers: {} },
       nodes: [section('tb', 'gl', 'tb_net', { filters: [{ field: 'tag', op: 'in', ids: [seed.tagId] }], earnings: 'trial_balance', display: 'summary' })],
     };
-    runs.push({ label: 'run TB tag mode', live: true, body: { definition: tbTag, dates: { asOf: '2026-12-31' }, fiscalYearStarts: FY, expandAll: true } });
-    runs.push({ label: 'run TB tag mode cash', live: true, body: { definition: tbTag, dates: { asOf: '2026-12-31' }, fiscalYearStarts: FY, expandAll: true, basis: 'cash' } });
+    // Its hidden figure is the prior years' earnings only (asserted exactly in report-builder.sensitive.routes.test.ts).
+    runs.push({ label: 'run TB tag mode', live: false, body: { definition: tbTag, dates: { asOf: '2026-12-31' }, fiscalYearStarts: FY, expandAll: true } });
+    runs.push({ label: 'run TB tag mode cash', live: false, body: { definition: tbTag, dates: { asOf: '2026-12-31' }, fiscalYearStarts: FY, expandAll: true, basis: 'cash' } });
     runs.push({ label: 'run saved report', live: true, body: { definitionId: savedDefId, version: savedDefVersion, dates: R, fiscalYearStarts: FY, expandAll: true } });
 
     for (const run of runs) {
@@ -322,7 +324,10 @@ describe('sensitive accounts canary sweep', () => {
       }],
     };
     // The preview echoes the file's own references (the caller sent them); everything else must hold no canary.
-    const prev = await check('import preview', '/api/v1/report-builder/definitions/import/preview', file, { live: false });
+    const prev = await check('import preview', '/api/v1/report-builder/definitions/import/preview', file, {
+      live: false,
+      scan: (j: { reports: Array<Record<string, any>> }) => j.reports.map((r) => ({ ...r, unresolved: r['unresolved'].map((u: Record<string, unknown>) => ({ ...u, reference: null })) })),
+    });
     if (prev && prev.bk.status === 200) {
       const own = prev.own.json.reports[0];
       if (!JSON.stringify(own.definition).includes(h.acct.wages)) leaks.push('import preview: owner did not resolve Canary Wages (seed not live)');

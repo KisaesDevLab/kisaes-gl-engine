@@ -143,13 +143,17 @@ export async function startSensitiveHarness(slugPrefix: string): Promise<Sensiti
  *     unpaid bills) next to a visible Supplies line;
  *   - a journal entry whose every line is hidden (other expense, asset,
  *     liability, equity, other revenue);
- *   - a 2025 entry tagged "Canary Tag Job" with prior-year income on Canary
+ *   - a 2025 entry tagged "Plain Tag Job" with prior-year income on Canary
  *     Revenue (Trial Balance tag mode, prior years' earnings), balanced by
- *     two visible lines so no visible line equals an owner-only sum.
- * Visible amounts are whole dollars. `amounts` are the hidden lines' own
- * amounts plus owner-only sums (Canary Wages rollup, the tagged entry's
- * prior-year income); none may reach the bookkeeper. Call after the base
- * activity of the test, before or after markWages (it marks only its own).
+ *     two visible lines.
+ * Visible amounts are whole dollars. `amounts` are hidden lines' own amounts
+ * that no visible total can equal by Q-P29a: a hidden line next to visible
+ * lines shows up as the gap of any total over all of its transaction's
+ * accounts (the accepted Balance Sheet / Trial Balance gap, §3), so the
+ * tagged entry's 2999.31, its owner-only income 3011.00 and the Canary Wages
+ * rollup 5555.66 are not canaries here (report-builder.sensitive.routes.test
+ * asserts them exactly instead). Call after the base activity of the test,
+ * before or after markWages (it marks only its own).
  */
 export interface CanarySeed {
   hidden: { revenue: string; cogs: string; otherExpense: string; otherRevenue: string; asset: string; liability: string; equity: string };
@@ -218,7 +222,7 @@ export async function seedCanaries(h: SensitiveHarness): Promise<CanarySeed> {
   return {
     hidden,
     hiddenIds: [h.acct.wages, h.acct.wagesSub, ...Object.values(hidden)],
-    amounts: ['1234.57', '5555.66', '2111.13', '3222.24', '4333.35', '6555.57', '7666.68', '1777.79', '1444.45', '2999.31', '3011.00'],
+    amounts: ['1234.57', '2111.13', '3222.24', '4333.35', '6555.57', '7666.68', '1777.79', '1444.45'],
     customer: cust!.id, vendor: vend!.id, item: it!.id, tagId: tg!.id, loan,
     invoiceId: invoice.id, billId: bill.id, allHiddenTxn: all.id,
   };

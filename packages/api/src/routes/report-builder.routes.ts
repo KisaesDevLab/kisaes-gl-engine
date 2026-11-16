@@ -114,12 +114,16 @@ const ROW_DOC = '`{id, groupId, name, kind, definition, version, createdBy, crea
   + 'reason deleted, ids no longer rows of this company (a deleted tag, tag group or budget); reason merged, a contact or tag merged into another before report-refs-v1 '
   + '(an inactive contact or deleted tag with a merge audit row), mergedInto the live row it went into (through later merges) when this company sees it. A deactivated row '
   + 'that was not merged still works. One entry per path, reason and survivor (path dotted from definition; field the builder filter field, '
-  + 'groupBy.tagGroupId, or the standard option path such as filters.tagIds); [] when none. A contact or tag merge rewrites saved reports to the kept row (version + 1).';
+  + 'groupBy.tagGroupId, or the standard option path such as filters.tagIds); [] when none. A contact or tag merge rewrites saved reports to the kept row (version + 1). '
+  + 'sensitive-accounts-builder-v1 (U-33, Q-309): a report naming an account hidden from the caller has canEdit false, hiddenRefs: true and hidden: '
+  + '`[{path, nodeId|null, field, kind: account, ids}]` (as missing, no reason, no name); both keys are absent otherwise. It still runs, hidden.';
 const GROUP_DOC = '`{id, name, sort, version, definitionCount, updatedAt}`';
 
 /** 404 for another company's (or a deleted) report; 403 NOT_AUTHOR unless author, owner or super admin. */
 async function authorMw(req: Request, _res: Response, next: NextFunction) {
   const row = await defs.definitionForAccess(req.tenantId, req.companyId, uuidParam(req.params['id'], defs.definitionNotFound));
+  // U-33 (Q-309): a report naming an account hidden from the caller can't be changed by them (checked again under the lock).
+  await defs.assertNoHiddenRefs(row);
   if (!defs.canEdit(row, viewer(req))) throw defs.notAuthor();
   next();
 }
@@ -161,7 +165,7 @@ reportBuilderRouter.get('/definitions/:id', describe({
 
 reportBuilderRouter.put('/definitions/:id', describe({
   summary: 'Change a saved report (report-defs-v1)',
-  description: `Body \`{version, name?, groupId?, kind?, definition?}\` (groupId null moves it to no group; the kind cannot change: kind and definition.kind must equal it). Response: the row with the next version. 403 NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.`,
+  description: `Body \`{version, name?, groupId?, kind?, definition?}\` (groupId null moves it to no group; the kind cannot change: kind and definition.kind must equal it). Response: the row with the next version. 403 SENSITIVE_DEFINITION (the report names an account hidden from the caller, U-33), NOT_AUTHOR (only the author, an owner or a super admin, Q-310); 409 STALE_VERSION {details.current}, NAME_TAKEN; 400 DEFINITION_INVALID {details.path}; 413 DEFINITION_TOO_LARGE.`,
   params: idParams,
 }), authorMw, idempotent({
   successStatus: 200,
@@ -173,7 +177,7 @@ reportBuilderRouter.put('/definitions/:id', describe({
 
 reportBuilderRouter.delete('/definitions/:id', describe({
   summary: 'Delete a saved report (soft) (report-defs-v1)',
-  description: '204. 403 NOT_AUTHOR (only the author, an owner or a super admin); 409 STALE_VERSION {details.current}.',
+  description: '204. 403 SENSITIVE_DEFINITION (the report names an account hidden from the caller, U-33), NOT_AUTHOR (only the author, an owner or a super admin); 409 STALE_VERSION {details.current}.',
   params: idParams, query: versionQuery,
 }), authorMw, async (req, res) => {
   const { version } = versionQuery.parse(req.query);
@@ -218,7 +222,7 @@ reportBuilderRouter.post('/definitions/export', describe({
   summary: 'Export saved reports as an id-free report file (report-defs-transfer-v1)',
   description: 'Body `{ids: uuid[1..200]}` or `{groupId}` (every report of the group, by name; more than 200 is 400 VALIDATION_ERROR). '
     + 'Response `{reports: [{name, groupName|null, kind, definition, references}]}` in the order asked: each id at an id path of the definition is replaced by the token "$ref:N" '
-    + `(one per distinct id per report), references[N] a ${REF_DOC}; an id that is no longer a row of this company is {kind, missing: true}. `
+    + `(one per distinct id per report), references[N] a ${REF_DOC}; an id that is no longer a row of this company, or an account hidden from the caller (U-33), is {kind, missing: true}. `
     + 'The response holds no ids, no author and no figures. One audit row per report: action download, entity report_definition, after {kind, reportKey, format: clreport}. '
     + 'A report or group not in this company: 404. Reports read access.',
   body: exportSchema,
@@ -229,7 +233,7 @@ reportBuilderRouter.post('/definitions/export', describe({
 reportBuilderRouter.post('/definitions/import/preview', describe({
   summary: 'Match a report file to this company (report-defs-transfer-v1)',
   description: 'Body `{reports: [{name, groupName?, kind, definition, references}] (1..200), choices?}` (the export shape). Writes nothing. '
-    + 'Matches references in this company (shared rows or this company\'s, inactive included): account by number when given and only when that account\'s name also matches, case and spacing aside '
+    + 'Matches references in this company (shared rows or this company\'s, inactive included; never an account hidden from the caller, U-33, which is also refused as a choice like an unknown row): account by number when given and only when that account\'s name also matches, case and spacing aside '
     + '(report-refs-v1, Q-PRA2d; a number whose account has another name, or no account, is unresolved: candidates the account with that number, then the accounts of that name), else by name; contact by name and type '
     + '(customer: customer|both, vendor: vendor|both), item by name, tag by name and group name, tag group by name, budget by name and fiscal year; names case-insensitive, trimmed. '
     + 'Response `{reports: [{name, kind, ready, definition, unresolved: [{ref, reference, candidates: [{id, label}] (≤20)}], dropped: [{ref, effect}], groupId|null, '
@@ -314,7 +318,10 @@ const RUN_DOC = 'Response `{columns: [{key, caption, kind, field?, range?}], row
   + '422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
   + 'Drills: line and total rows {type: detail, nodeId, path} (page /run/detail), detail rows {type: transaction, txnId, txnType}, earnings rows {type: profit_loss, from, to, tagIds?} (tagIds: a tag-filtered section; the lines carry one of them) or null in Trial Balance tag mode; detail rows of open items carry the path of their line. '
   + 'Aging columns age as of the report date: periodRanges (other than one range ending on it) and compareRanges are 400 INVALID_PARAM. '
-  + 'A section the role cannot see is one denied row, and anything built on it shows null cells.';
+  + 'A section the role cannot see is one denied row, and anything built on it shows null cells. '
+  + 'Sensitive accounts (sensitive-accounts-builder-v1, U-33): lines of accounts hidden from the caller are left out of every row, total, formula, '
+  + 'earnings and opening row (a total over all accounts then shows the hidden net as a gap); meta.hiddenNotice is true when the caller has hidden '
+  + 'accounts, else null; a drill path keyed on a hidden account is 404; a hidden id in an inline definition is 400 DEFINITION_INVALID NOT_IN_COMPANY.';
 
 reportBuilderRouter.post('/run', describe({
   summary: 'Run a Report Builder report (report-builder-v1)',
@@ -366,7 +373,7 @@ reportBuilderRouter.post('/draft', expensiveOpLimiter, describe({
   description: 'The company\'s AI provider (the chat function, Ollama included) drafts a builder definition (sections, sources, filters, group-bys, '
     + 'columns) from a plain-language description, for the owner to review. Nothing is saved. The model sees the description (PII-redacted), the '
     + 'field catalogue, the sent date presets and names from the books (active accounts, items and tags, tag groups, contacts the description '
-    + `names); never an amount. Response ${DRAFT_DOC}. The definition is Report Builder schema v1 with engine-made node ids; names are resolved `
+    + `names; never an account hidden from the caller, U-33, which is also never resolved or kept); never an amount. Response ${DRAFT_DOC}. The definition is Report Builder schema v1 with engine-made node ids; names are resolved `
     + 'to ids by the engine (the model never gives an id). An unresolved name (none or several matches) leaves the token "$ref:N" at each of its '
     + 'id paths (sites[].path): the token is not an id, so a save or run refuses the definition (400 DEFINITION_INVALID) until the client puts '
     + 'an id there (a candidate, or any row the owner picks) or removes it (an emptied filter, or the tag group-by, must then be removed). savable is '
