@@ -13,6 +13,7 @@ import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
 import { toCsvRow } from '../services/export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { hiddenAccountIds } from '../services/visibility.js';
 
 export const auditRouter = Router();
 auditRouter.use(authenticate);
@@ -106,10 +107,39 @@ auditRouter.get('/', describe({
   ]);
 
   res.json({
-    data: dataResult.rows,
+    data: await redactHiddenRows(req.tenantId, dataResult.rows as Array<Record<string, unknown>>),
     total: parseInt((countResult.rows as any[])[0]?.total || '0'),
   });
 });
+
+/**
+ * Sensitive accounts (U-33, Q-P29f): for a viewer with hidden accounts, a row
+ * about a hidden account, about a transaction with a line on one, or whose
+ * before/after names a hidden account id stays listed with before_data and
+ * after_data null and `redacted: true`. Other rows are unchanged (no
+ * `redacted` key). Nothing happens when no account is hidden.
+ */
+async function redactHiddenRows(tenantId: string, rows: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
+  const hidden = await hiddenAccountIds();
+  if (hidden.length === 0 || rows.length === 0) return rows;
+  const hiddenSet = new Set(hidden);
+  const entityIds = [...new Set(rows.map((r) => r['entity_id']).filter((v): v is string => typeof v === 'string'))];
+  const hiddenTxns = new Set<string>();
+  if (entityIds.length > 0) {
+    const res = await db.execute<{ id: string }>(sql`
+      SELECT DISTINCT transaction_id::text AS id FROM journal_lines
+      WHERE tenant_id = ${tenantId}
+        AND transaction_id IN (${sql.join(entityIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        AND account_id IN (${sql.join(hidden.map((id) => sql`${id}::uuid`), sql`, `)})`);
+    for (const r of res.rows) hiddenTxns.add(r.id);
+  }
+  return rows.map((r) => {
+    const id = typeof r['entity_id'] === 'string' ? r['entity_id'] : null;
+    const text = `${JSON.stringify(r['before_data'] ?? null)} ${JSON.stringify(r['after_data'] ?? null)}`;
+    const touches = (id !== null && (hiddenSet.has(id) || hiddenTxns.has(id))) || hidden.some((h) => text.includes(h));
+    return touches ? { ...r, before_data: null, after_data: null, redacted: true } : r;
+  });
+}
 
 // Export audit log as CSV
 auditRouter.get('/export', async (req, res) => {
