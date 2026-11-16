@@ -185,7 +185,18 @@ export const REFUSE_PREFIXES: readonly string[] = [
  * Routes under REFUSE_PREFIXES that leave hidden accounts out (converted).
  * Method plus a path pattern; `:x` matches one path segment.
  */
-export const CONVERTED: ReadonlyArray<{ method: string; path: string }> = [];
+export const CONVERTED: ReadonlyArray<{ method: string; path: string }> = [
+  // Statements (E7): every variant on these paths (compare, by_tag, exact,
+  // csv, pdf) composes the filtered builders.
+  { method: 'GET', path: '/api/v1/reports/profit-loss' },
+  { method: 'GET', path: '/api/v1/reports/balance-sheet' },
+  { method: 'GET', path: '/api/v1/reports/trial-balance' },
+  // Ledger drills (E8).
+  { method: 'GET', path: '/api/v1/reports/general-ledger' },
+  { method: 'POST', path: '/api/v1/reports/general-ledger' },
+  { method: 'GET', path: '/api/v1/reports/transaction-list' },
+  { method: 'POST', path: '/api/v1/reports/transaction-list' },
+];
 
 function segments(p: string): string[] {
   return p.split('/').filter((s) => s.length > 0);
