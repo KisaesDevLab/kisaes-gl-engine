@@ -295,30 +295,80 @@ function uuidsOf(values: Iterable<string>): string[] {
   return [...out];
 }
 
+/** Bounds of the request-body walk: nesting depth and how many string values are read. */
+const BODY_MAX_DEPTH = 12;
+const BODY_MAX_VALUES = 5000;
+
 /**
- * Generic guard on ids named in the URL, for every router (document loaders,
- * their edits, voids, prints, attachments, sends): while the viewer has
- * hidden accounts,
+ * Every UUID string value in a parsed JSON body (keys of any name: payment
+ * applications name invoices and bills `invoiceId` / `billId`, merges
+ * `keepId` / `voidId`, links `attachableId`), bounded by depth and count.
+ */
+export function bodyUuids(body: unknown): string[] {
+  const out = new Set<string>();
+  let seen = 0;
+  const walk = (v: unknown, depth: number): void => {
+    if (seen >= BODY_MAX_VALUES || depth > BODY_MAX_DEPTH || v === null || v === undefined) return;
+    if (typeof v === 'string') {
+      seen++;
+      if (v.length === 36 && UUID_RE.test(v)) out.add(v.toLowerCase());
+      return;
+    }
+    if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }
+    if (typeof v === 'object') { for (const x of Object.values(v as Record<string, unknown>)) walk(x, depth + 1); }
+  };
+  walk(body, 0);
+  return [...out];
+}
+
+/** Whether any of `ids` is a transaction of `tenantId` with a line on one of `hidden`. */
+async function anyHiddenTransaction(tenantId: string, ids: readonly string[], hidden: readonly string[]): Promise<boolean> {
+  if (ids.length === 0 || hidden.length === 0) return false;
+  const rows = await db.execute(sql`
+    SELECT 1 FROM journal_lines
+    WHERE tenant_id = ${tenantId} AND transaction_id = ANY(${uuidArray(ids)})
+      AND account_id = ANY(${uuidArray(hidden)})
+    LIMIT 1`);
+  return rows.rows.length > 0;
+}
+
+/**
+ * 403 SENSITIVE_ACCOUNT when any of `ids` is a transaction touching an
+ * account hidden from the current viewer. Service choke points whose ids
+ * arrive where `refuseHiddenIds` can't read them (multipart fields) call it.
+ */
+export async function assertTransactionsVisible(tenantId: string, ids: Iterable<string | null | undefined>): Promise<void> {
+  const list = uuidsOf([...ids].filter((x): x is string => typeof x === 'string'));
+  if (list.length === 0) return;
+  const hidden = await hiddenAccountIds();
+  if (await anyHiddenTransaction(tenantId, list, hidden)) throw sensitiveAccountError();
+}
+
+/**
+ * Generic guard on ids named in the request, for every router (document
+ * loaders, their edits, voids, prints, attachments, sends, payment
+ * applications, feed matches, merges): while the viewer has hidden accounts,
  *   - a hidden account id in the path is 404 (no existence hint), and
- *   - a transaction id in the path or query string whose lines touch a
- *     hidden account is 403 SENSITIVE_ACCOUNT.
- * Costs nothing when no account is hidden from the viewer.
+ *   - a transaction id in the path, the query string or anywhere in a JSON
+ *     body whose lines touch a hidden account is 403 SENSITIVE_ACCOUNT.
+ * Body ids get only the transaction check (a hidden account id in a body is
+ * the route's own business: a report filter leaves it out, a write refuses).
+ * Multipart bodies are not parsed yet here; their choke points call
+ * `assertTransactionsVisible`. Costs nothing when no account is hidden from
+ * the viewer.
  */
 export async function refuseHiddenIds(req: Request): Promise<void> {
   const [rawPath, rawQuery] = (req.originalUrl ?? req.url).split('?', 2) as [string, string | undefined];
   const pathIds = uuidsOf(segments(rawPath).map((s) => { try { return decodeURIComponent(s); } catch { return s; } }));
   const queryIds = rawQuery ? uuidsOf([...new URLSearchParams(rawQuery).values()].flatMap((v) => v.split(','))) : [];
-  if (pathIds.length === 0 && queryIds.length === 0) return;
+  const body: unknown = req.body;
+  const hasBody = body !== null && typeof body === 'object' && Object.keys(body as object).length > 0;
+  if (pathIds.length === 0 && queryIds.length === 0 && !hasBody) return;
   const hidden = await hiddenAccountIdsFor(req);
   if (hidden.length === 0) return;
   if (pathIds.some((id) => hidden.includes(id))) throw AppError.notFound('Not found');
-  const ids = [...new Set([...pathIds, ...queryIds])];
-  const rows = await db.execute(sql`
-    SELECT 1 FROM journal_lines
-    WHERE tenant_id = ${req.tenantId} AND transaction_id = ANY(${uuidArray(ids)})
-      AND account_id = ANY(${uuidArray(hidden)})
-    LIMIT 1`);
-  if (rows.rows.length > 0) throw sensitiveAccountError();
+  const ids = [...new Set([...pathIds, ...queryIds, ...(hasBody ? bodyUuids(body) : [])])];
+  if (await anyHiddenTransaction(req.tenantId, ids, hidden)) throw sensitiveAccountError();
 }
 
 /**

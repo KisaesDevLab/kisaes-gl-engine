@@ -20,6 +20,7 @@ import { AppError } from '../utils/errors.js';
 import { parseLimit, parseOffset } from '../utils/pagination.js';
 import { log } from '../utils/logger.js';
 import { describe } from '../middleware/describe.js';
+import { reenterViewer } from '../services/visibility.js';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp',
@@ -223,7 +224,7 @@ attachmentsRouter.post('/', describe({
     autoOcr: z.enum(['0', '1', 'false', 'true']).optional()
       .describe('0 / false: start no OCR or AI processing for this upload. It never turns OCR on: desktop mode and the attachments.autoOcr server setting decide that (bill-ocr-v2).'),
   }),
-}), upload.single('file'), async (req, res) => {
+}), upload.single('file'), reenterViewer, async (req, res) => {
   if (!req.file) { res.status(400).json({ error: { message: 'No file uploaded' } }); return; }
 
   const { attachableType, attachableId } = req.body;
