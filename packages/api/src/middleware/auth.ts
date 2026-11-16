@@ -14,6 +14,7 @@ import { apiKeyAuth } from './api-key-auth.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
 import { isDesktop } from '../desktop/profile.js';
 import { workspaceFence } from '../desktop/workspace.js';
+import { refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
 
 declare global {
   namespace Express {
@@ -57,7 +58,24 @@ function parseExpiryToSeconds(expiry: string): number {
   }
 }
 
+/**
+ * Authenticates the request (session JWT, API key or download token). On
+ * success the rest of the request runs with this principal as the viewer
+ * for sensitive accounts (U-33, services/visibility.ts), and an unconverted
+ * reporting route is refused (403 SENSITIVE_HIDDEN) when the viewer has
+ * hidden accounts. Mounting it twice is harmless.
+ */
 export async function authenticate(req: Request, res: Response, next: NextFunction) {
+  return authenticatePrincipal(req, res, (err?: unknown) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    refuseUnconvertedReport(req).then(() => runAsViewer(req, () => next()), next);
+  });
+}
+
+async function authenticatePrincipal(req: Request, res: Response, next: NextFunction) {
   const hasApiKey = !!req.headers['x-api-key'];
   const hasJwt = !!req.headers.authorization?.startsWith('Bearer ');
 
