@@ -25,7 +25,7 @@ import crypto from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { sessions, users } from '../db/schema/index.js';
+import { apiKeys, sessions, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -101,8 +101,11 @@ export async function recoverPassword(input: RecoverInput): Promise<{ recoveryKe
   if (!user) throw invalid();
   const match = equal && stored !== null && normalizeRecoveryKey(input.recoveryKey).length > 0;
   if (!match || !user.isActive) {
-    await auditLog(user.tenantId, 'update', 'user_password_recovery_failed', user.id, null,
-      { reason: stored === null ? 'no_key' : !match ? 'wrong_key' : 'inactive' }, user.id);
+    // Security review Minor 2: the refusal does not wait for the audit row, so a known email answers as fast as an
+    // unknown one (no email guessing by timing). The row is still written.
+    auditLog(user.tenantId, 'update', 'user_password_recovery_failed', user.id, null,
+      { reason: stored === null ? 'no_key' : !match ? 'wrong_key' : 'inactive' }, user.id)
+      .catch(() => { /* best effort; the refusal stands either way */ });
     throw invalid();
   }
 
@@ -118,11 +121,13 @@ export async function recoverPassword(input: RecoverInput): Promise<{ recoveryKe
       .returning({ id: users.id });
     if (rows.length === 0) return false;
     await tx.delete(sessions).where(eq(sessions.userId, user.id));
+    // Security review S3: recovery ends every way in, API keys included.
+    await tx.update(apiKeys).set({ isActive: false }).where(and(eq(apiKeys.userId, user.id), eq(apiKeys.isActive, true)));
     return true;
   });
   // Lost a race with another use of the same key: it no longer works.
   if (!swapped) throw invalid();
   await auditLog(user.tenantId, 'update', 'user_password_recovery', user.id, null,
-    { sessionsRevoked: true, lockoutCleared: true, recoveryKeyRotated: true }, user.id);
+    { sessionsRevoked: true, apiKeysRevoked: true, lockoutCleared: true, recoveryKeyRotated: true }, user.id);
   return { recoveryKey: fresh.key };
 }
