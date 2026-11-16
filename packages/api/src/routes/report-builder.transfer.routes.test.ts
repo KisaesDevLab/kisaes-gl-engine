@@ -362,5 +362,9 @@ describe('account matching needs the name (report-refs-v1, Q-PRA2d, 5-S1)', () =
     // Q-A09v unchanged: a number this company doesn't have lists the same-name account.
     const gone = await preview(b, [{ name: `Gone ${s}`, kind: 'builder', definition: def('$ref:0'), references: [{ kind: 'account', number: `969${s}`, name: `Rent ${s}` }] }]);
     expect(gone.json.reports[0].unresolved[0].candidates).toEqual([{ id: rent!.id, label: `962${s} · Rent ${s}` }]);
+    // No number: the name still matches case and spacing aside (M-8).
+    const bare = await preview(b, [{ name: `Bare ${s}`, kind: 'builder', definition: def('$ref:0'), references: [{ kind: 'account', name: `Office  supplies ${s}`, accountType: 'expense' }] }]);
+    expect(bare.json.reports[0].unresolved, JSON.stringify(bare.json.reports[0].unresolved)).toEqual([]);
+    expect(JSON.stringify(bare.json.reports[0].definition)).toContain(office!.id);
   });
 });

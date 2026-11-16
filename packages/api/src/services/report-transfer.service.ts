@@ -159,8 +159,9 @@ async function matches(tenantId: string, companyId: string, ref: TransferReferen
   const ids = (rows: Array<{ id: string }>) => rows.map((r) => r.id);
   switch (ref.kind) {
     case 'account': {
+      // Case and spacing aside, with or without a number (Q-PRA2d; review M-8).
       const byName = ids(await db.select({ id: accounts.id }).from(accounts)
-        .where(and(inCompany(accounts, tenantId, companyId), sql`lower(trim(${accounts.name})) = ${norm(name)}`))
+        .where(and(inCompany(accounts, tenantId, companyId), sql`${spacedSql(accounts.name)} = ${normSpaced(name)}`))
         .orderBy(accounts.accountNumber, accounts.id).limit(lim));
       if (ref.number && ref.number.trim()) {
         // Q-PRA2d (report-refs-v1): the number matches only with the name (case and spacing aside). A row with the
@@ -169,10 +170,7 @@ async function matches(tenantId: string, companyId: string, ref: TransferReferen
           .where(and(inCompany(accounts, tenantId, companyId), eq(accounts.accountNumber, ref.number.trim()))).limit(lim);
         const exact = numbered.filter((r) => normSpaced(r.name) === normSpaced(name)).map((r) => r.id);
         if (exact.length > 0) return { exact, byName };
-        const spaced = ids(await db.select({ id: accounts.id }).from(accounts)
-          .where(and(inCompany(accounts, tenantId, companyId), sql`${spacedSql(accounts.name)} = ${normSpaced(name)}`))
-          .orderBy(accounts.accountNumber, accounts.id).limit(lim));
-        return { exact: [], byName: [...new Set([...ids(numbered), ...spaced, ...byName])].slice(0, lim) };
+        return { exact: [], byName: [...new Set([...ids(numbered), ...byName])].slice(0, lim) };
       }
       return { exact: byName, byName };
     }
