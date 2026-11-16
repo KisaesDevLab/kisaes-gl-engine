@@ -8,13 +8,14 @@
 // ledger path, so balance enforcement and lock dates stay in one
 // place (ledger.postTransaction).
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { CreateJeTemplateInput, UpdateJeTemplateInput, DuplicateJeTemplateInput, JeTemplateLineInput } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { jeTemplates, jeTemplateLines } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
 import { assertTagsInTenant } from './tags.service.js';
 import { AppError } from '../utils/errors.js';
+import { assertNoHiddenLines, hiddenAccountIds, isHiddenSql } from './visibility.js';
 
 export async function getTemplate(tenantId: string, id: string) {
   const tpl = await db.query.jeTemplates.findFirst({
@@ -24,12 +25,18 @@ export async function getTemplate(tenantId: string, id: string) {
   const lines = await db.select().from(jeTemplateLines)
     .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.templateId, id)))
     .orderBy(jeTemplateLines.sortOrder);
+  // Sensitive accounts (U-33): a template with a line on a hidden account is 403 SENSITIVE_ACCOUNT on every door
+  // (read, change, duplicate, lines, delete), as a transaction is.
+  await assertNoHiddenLines(lines.map((l) => l.accountId));
   return { ...tpl, lines };
 }
 
 export async function listTemplates(tenantId: string) {
+  const hidden = await hiddenAccountIds();
   return db.select().from(jeTemplates)
-    .where(and(eq(jeTemplates.tenantId, tenantId), eq(jeTemplates.isActive, true)))
+    .where(and(eq(jeTemplates.tenantId, tenantId), eq(jeTemplates.isActive, true),
+      hidden.length === 0 ? undefined : sql`NOT EXISTS (SELECT 1 FROM je_template_lines l
+        WHERE l.tenant_id = ${jeTemplates.tenantId} AND l.template_id = ${jeTemplates.id} AND ${isHiddenSql(hidden, sql.raw('l.account_id'))})`))
     .orderBy(jeTemplates.name);
 }
 
@@ -94,6 +101,7 @@ export async function deleteTemplate(tenantId: string, id: string, userId?: stri
 // unlike daily-sales entry values — so no soft-remove needed).
 export async function replaceTemplateLines(tenantId: string, templateId: string, lines: JeTemplateLineInput[], userId?: string) {
   await getTemplate(tenantId, templateId); // tenant-scope check
+  await assertNoHiddenLines(lines.map((l) => l.accountId));
   await assertTagsInTenant(tenantId, lines.flatMap((l) => (l.tagId ? [l.tagId] : [])));
   const existing = await db.select({ id: jeTemplateLines.id }).from(jeTemplateLines)
     .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.templateId, templateId)));

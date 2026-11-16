@@ -29,11 +29,13 @@ import {
 import { AppError } from '../../utils/errors.js';
 import { auditLog } from '../../middleware/audit.js';
 import {
-  assertDraftRefsInScope, draftHeader, draftToRows, draftTotal, draftWarnings, parseDraft, rowsToDraft, withoutMissing,
+  assertDraftRefsInScope, draftHeader, draftRefs, draftToRows, draftTotal, draftWarnings, parseDraft, rowsToDraft, withoutMissing,
 } from './draft.js';
 import { loadSource, snapshotForCreate, snapshotTransaction } from './snapshot.js';
 import { autoUnsupported } from './replay.js';
 import { assertNoBillableCostsForRecurring } from '../billable-links.js';
+import { assertNoHiddenLines, hiddenAccountIds } from '../visibility.js';
+import { assertTemplateVisible, visibleTemplate } from './visibility.js';
 
 export type TemplateRow = typeof templateTransactions.$inferSelect;
 export type ScheduleRow = typeof recurringSchedules.$inferSelect;
@@ -229,6 +231,9 @@ export async function listTemplates(tenantId: string, companyId: string, opts: {
   const conds = [scope(tenantId, companyId), isNull(templateTransactions.deletedAt)];
   if (opts.groupId) conds.push(eq(templateTransactions.groupId, opts.groupId));
   if (opts.kind) conds.push(eq(templateTransactions.kind, opts.kind as TemplateRow['kind']));
+  // Sensitive accounts (U-33): a template touching a hidden account is left out (and out of total).
+  const visible = visibleTemplate(await hiddenAccountIds());
+  if (visible) conds.push(visible);
   const where = and(...conds);
   const rows = await db.select().from(templateTransactions).where(where)
     .orderBy(sql`lower(${templateTransactions.name})`, asc(templateTransactions.id)).limit(limit).offset(offset);
@@ -240,6 +245,7 @@ export async function getTemplate(tenantId: string, companyId: string, id: strin
   const [row] = await db.select().from(templateTransactions)
     .where(and(scope(tenantId, companyId), eq(templateTransactions.id, id), isNull(templateTransactions.deletedAt))).limit(1);
   if (!row) throw templateNotFound();
+  await assertTemplateVisible(db, tenantId, row.id);
   const [t] = await present(db, tenantId, [row], true);
   return t!;
 }
@@ -249,6 +255,9 @@ export async function templateRowForAccess(tenantId: string, companyId: string, 
   const [row] = await db.select().from(templateTransactions)
     .where(and(scope(tenantId, companyId), eq(templateTransactions.id, id), isNull(templateTransactions.deletedAt))).limit(1);
   if (!row) throw templateNotFound();
+  // Sensitive accounts (U-33): every door that loads a template for access (get, draft, change, enter, skip,
+  // resolve, delete) refuses one touching a hidden account (403 SENSITIVE_ACCOUNT).
+  await assertTemplateVisible(db, tenantId, row.id);
   return row;
 }
 
@@ -257,6 +266,7 @@ export async function getDraftForUse(tenantId: string, companyId: string, id: st
   const [row] = await db.select().from(templateTransactions)
     .where(and(scope(tenantId, companyId), eq(templateTransactions.id, id), isNull(templateTransactions.deletedAt))).limit(1);
   if (!row) throw templateNotFound();
+  await assertTemplateVisible(db, tenantId, row.id);
   const td = await templateDraft(db, row);
   if (!td) return { kind: row.kind, clientForm: row.clientForm ?? null, draft: null, warnings: [] };
   const warnings = await draftWarnings(db, tenantId, companyId, td);
@@ -387,6 +397,7 @@ export async function createTemplate(tenantId: string, companyId: string, userId
   schedule?: TemplateScheduleInput | null;
 }) {
   const td = parseDraft(input.kind, input.draft);
+  await assertNoHiddenLines(draftRefs(td).accountIds);
   try {
     const id = await db.transaction(async (tx) => {
       await assertGroup(tx, tenantId, companyId, input.groupId);
@@ -455,6 +466,7 @@ export async function updateTemplate(tenantId: string, companyId: string, userId
       const tpl = await lockTemplate(tx, tenantId, companyId, id, 'update');
       if (!tpl) throw templateNotFound();
       if (tpl.version !== input.version) throw stale(tpl.version);
+      await assertTemplateVisible(tx, tenantId, tpl.id);
       if (input.groupId !== undefined) await assertGroup(tx, tenantId, companyId, input.groupId);
 
       // A legacy template whose source reads as a template kind converts now.
@@ -470,6 +482,7 @@ export async function updateTemplate(tenantId: string, companyId: string, userId
             'TEMPLATE_FIELD_NOT_ALLOWED', { field: 'draft' });
         }
         td = parseDraft(kind as TemplateDraftKind, input.draft);
+        await assertNoHiddenLines(draftRefs(td).accountIds);
       }
       const patch: Partial<typeof templateTransactions.$inferInsert> = {
         version: tpl.version + 1, updatedAt: new Date(), kind,
@@ -506,6 +519,7 @@ export async function deleteTemplate(tenantId: string, companyId: string, userId
     const tpl = await lockTemplate(tx, tenantId, companyId, id, 'update');
     if (!tpl) throw templateNotFound();
     if (tpl.version !== version) throw stale(tpl.version);
+    await assertTemplateVisible(tx, tenantId, tpl.id);
     await tx.update(templateTransactions).set({ deletedAt: new Date(), version: tpl.version + 1, updatedAt: new Date() })
       .where(and(eq(templateTransactions.tenantId, tenantId), eq(templateTransactions.id, id)));
     const sched = await lockSchedule(tx, tenantId, id);

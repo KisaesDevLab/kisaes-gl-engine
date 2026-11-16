@@ -27,6 +27,7 @@ import { journalLines, transactionTags, transactions } from '../../db/schema/ind
 import { AppError } from '../../utils/errors.js';
 import { depositGroupingRefused, validateDraft } from './draft.js';
 import { isDerivedRole } from '../inventory-costing.service.js';
+import { assertNoHiddenLines, hiddenAccountIds } from '../visibility.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -37,6 +38,19 @@ export type SnapshotResult =
 const pos = (v: string | null | undefined) => new Decimal(v ?? '0').greaterThan(0);
 const s4 = (v: string | null | undefined) => new Decimal(v ?? '0').toFixed(4);
 const optStr = (v: string | null | undefined) => (v === null || v === undefined ? {} : { description: v });
+
+/**
+ * Sensitive accounts (U-33): 403 SENSITIVE_ACCOUNT when any line of the
+ * source transaction is on an account hidden from the current viewer, so a
+ * transaction the viewer can't open can't be copied into a template either.
+ */
+export async function assertSourceVisible(exec: DbOrTx, tenantId: string, txnId: string): Promise<void> {
+  const hidden = await hiddenAccountIds();
+  if (hidden.length === 0) return;
+  const rows = await exec.select({ accountId: journalLines.accountId }).from(journalLines)
+    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+  await assertNoHiddenLines(rows.map((r) => r.accountId));
+}
 
 export interface SourceTxn {
   id: string;
@@ -203,6 +217,7 @@ export async function snapshotForCreate(exec: DbOrTx, tenantId: string, companyI
   if (txn.status !== 'posted') {
     throw new AppError(400, 'A void or deleted transaction can’t be saved as a template.', 'TEMPLATE_SOURCE_INVALID');
   }
+  await assertSourceVisible(exec, tenantId, txn.id);
   const snap = await snapshotTransaction(exec, tenantId, txn);
   if (snap.kind === 'legacy' && snap.reason === 'DEPOSIT_GROUPING') throw depositGroupingRefused();
   return { txn, snap };
