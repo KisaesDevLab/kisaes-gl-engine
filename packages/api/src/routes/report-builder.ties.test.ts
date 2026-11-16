@@ -9,8 +9,9 @@
 //     a report of balances only has no multi-period Total, and in a report
 //     that mixes flows and balances a balance's Total is its last period;
 //   - a Trial Balance section with two group-bys totals its debit and credit
-//     once, from the innermost lines, in every display mode, = the one-level
-//     TB and buildTrialBalance; outer lines never net across accounts;
+//     once, per account, in every display mode, = the one-level TB and
+//     buildTrialBalance; outer lines never net across accounts (every other
+//     group-by: report-builder.tb-sides.test.ts, B-1);
 //   - a drill without range fills no compare / change cell its rows don't.
 // Books: Savings 1,000.00 on 2025-12-15 and 250.00 on 2026-02-10 (income);
 // A/R 70.00 on 2025-02-10 and 40.00 on 2026-03-05 (income); later dates add
@@ -356,9 +357,9 @@ describe('a Trial Balance section with two group-bys (1-B2)', () => {
           const std = await reportService.buildTrialBalance(c.tenantId, '2026-01-01', asOf, c.companyId, null, basis, { exactAmounts: true }) as unknown as Record<string, string>;
           expect(oneTotal).toEqual([D(std['totalDebitsExact']), D(std['totalCreditsExact'])]);
         }
-        // No group-by: the section is its one innermost line (its net on one side, plus the earnings row): debit - credit ties.
+        // No group-by: still each account's TB figure on its side (B-1), so the same Total as by account.
         const none = pair((await runDef(tbDef([], 'summary', earnings), ref)).rows.find((r) => r.kind === 'total')!, v);
-        expect(new Decimal(none[0] ?? 0).minus(none[1] ?? 0).toFixed(4)).toBe(new Decimal(oneTotal[0]!).minus(oneTotal[1]!).toFixed(4));
+        expect(none).toEqual(oneTotal);
         const leaf = Object.fromEntries(one.rows.filter((r) => r.kind === 'line').map((r) => [r.path[1]!, pair(r, v)]));
         const two = tbDef(['account_type', 'account'], 'summary', earnings);
         const modes: Array<[string, BuilderDefinition, Record<string, unknown>]> = [

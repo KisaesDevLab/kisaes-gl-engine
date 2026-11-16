@@ -466,7 +466,7 @@ function linesSql(ctx: Ctx, s: RbSectionNode, from: string | null, to: string): 
  * `keep`: the line shows even when zero (an account with only an opening balance, U-119f).
  * `nv`: the value in the section's normal sign when it differs from `v` (U-218).
  */
-interface Fact { keys: Array<string | null>; slot: number; v: Dec; nv?: Dec; keep?: boolean }
+interface Fact { keys: Array<string | null>; slot: number; v: Dec; nv?: Dec; keep?: boolean; acct?: string }
 
 /**
  * Facts of every line section of a run in ONE statement (one cash-basis
@@ -480,7 +480,11 @@ interface Fact { keys: Array<string | null>; slot: number; v: Dec; nv?: Dec; kee
  * (credit - debit over income-statement lines, the section's line-level tag).
  */
 interface BatchItem { sid: string; s: RbSectionNode; pathKeys: Array<string | null>; earningsOf?: boolean }
-interface BucketRow { keys: Array<string | null>; lo: string; hi: string; bs: boolean; v: Dec; nv?: Dec }
+/** `acct`: a tb_net section's account (a hidden key, whatever the group-bys; U-225 B-1), else null. */
+interface BucketRow { keys: Array<string | null>; acct: string | null; lo: string; hi: string; bs: boolean; v: Dec; nv?: Dec }
+
+/** A Trial Balance section (not its earnings lines) splits debit and credit per account (U-225 B-1). */
+const tbAccounts = (it: BatchItem) => !it.earningsOf && it.s.measure === 'tb_net';
 
 async function bucketFacts(ctx: Ctx, items: BatchItem[]): Promise<Map<string, BucketRow[]>> {
   const out = new Map<string, BucketRow[]>(items.map((x) => [x.sid, []]));
@@ -503,17 +507,19 @@ async function bucketFacts(ctx: Ctx, items: BatchItem[]): Promise<Map<string, Bu
     // The normal-sign sum (U-218), only where it can differ from the shown one.
     const nval = !it.earningsOf && signSet(it.s) ? sql`SUM(${valueExpr(it.s, L.k, true)})::text` : sql`NULL::text`;
     const pl = it.earningsOf ? sql`AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')` : sql``;
+    const acct = tbAccounts(it) ? sql`a.id::text` : sql`NULL::text`;
     return sql`SELECT ${it.sid}::text AS sid, ${k3[0]!} AS k0, ${k3[1]!} AS k1, ${k3[2]!} AS k2, b.i AS b,
-        (a.account_type IN ('asset', 'liability', 'equity')) AS bs, SUM(${val})::text AS v, ${nval} AS nv
+        (a.account_type IN ('asset', 'liability', 'equity')) AS bs, ${acct} AS acct, SUM(${val})::text AS v, ${nval} AS nv
       ${L.from} JOIN ${buckets} ON ${raw(L.k.date)} >= b.lo AND ${raw(L.k.date)} <= b.hi
       WHERE ${L.where} ${pl} ${eq.length ? sql`AND ${sql.join(eq, sql` AND `)}` : sql``}
-      GROUP BY 1, 2, 3, 4, 5, 6`;
+      GROUP BY 1, 2, 3, 4, 5, 6, 7`;
   });
   const res = await ctx.exec.execute(sql`${L0.with} ${sql.join(parts, sql` UNION ALL `)}`);
   for (const r of res.rows as Array<Record<string, unknown>>) {
     const bi = Number(r['b']);
     out.get(String(r['sid']))!.push({
       keys: [r['k0'], r['k1'], r['k2']].map((x) => (x as string | null) ?? null),
+      acct: (r['acct'] as string | null) ?? null,
       lo: bi === 0 ? '0001-01-01' : addDays(cuts[bi - 1]!, 1), hi: cuts[bi]!, bs: r['bs'] === true, v: dec(String(r['v'] ?? '0')),
       ...(r['nv'] === null || r['nv'] === undefined ? {} : { nv: dec(String(r['nv'])) }),
     });
@@ -530,7 +536,7 @@ function factsFromBuckets(ctx: Ctx, s: RbSectionNode, rows: BucketRow[]): Fact[]
     ctx.plan.slots.forEach((sl, si) => {
       if (r.hi > sl.to) return;
       if (flow) { if (sl.from !== null && r.lo < sl.from) return; } else if (!r.bs && r.lo < sl.fy) return;
-      out.push({ keys, slot: si, v: r.v, ...(r.nv ? { nv: r.nv } : {}) });
+      out.push({ keys, slot: si, v: r.v, ...(r.nv ? { nv: r.nv } : {}), ...(r.acct !== null ? { acct: r.acct } : {}) });
     });
   }
   return withTotal(ctx.plan, s, out);
@@ -688,17 +694,31 @@ function addSplit(plan: Plan, out: Array<Dec | null>, vals: Vals): void {
 const zeroPairs = (plan: Plan): Array<Dec | null> => plan.specs.map((sp) => (sp.t === 'debit' || sp.t === 'credit' ? ZERO() : null));
 
 /**
- * Trial Balance debit / credit cells of a tree node `below` levels above its innermost lines (U-225): the sums of its
- * innermost lines' debit and credit, never a net across them. The same figures whatever is shown or expanded.
+ * The Trial Balance side of each account per value column (U-225 B-1), as buildTrialBalance decides it: the account's
+ * whole net over the section's facts (its dates, basis and filters, so a tag filter decides on the filtered net), debit
+ * when the net is zero or more, credit when it is less. Never per tag, contact or account type.
  */
-function tbPairs(plan: Plan, t: Tree, below: number): Array<Dec | null> {
-  const out = zeroPairs(plan);
-  const leaves = (x: Tree, d: number) => {
-    if (d > 0) { for (const c of x.children.values()) leaves(c, d - 1); return; }
-    addSplit(plan, out, x.vals);
-  };
-  leaves(t, below);
-  return out;
+type TbSides = Map<string, boolean[]>;
+function tbSides(facts: Fact[], n: number): TbSides {
+  const net = new Map<string, Vals>();
+  for (const f of facts) {
+    if (f.acct === undefined) continue;
+    let v = net.get(f.acct);
+    if (!v) { v = zeros(n); net.set(f.acct, v); }
+    v[f.slot] = v[f.slot]!.plus(f.v);
+  }
+  return new Map([...net].map(([a, v]) => [a, v.map((x) => !x.lt(0))]));
+}
+
+/**
+ * Trial Balance debit / credit cells of a tree node (U-225 B-1): every fact under the node in the column its ACCOUNT
+ * falls in (tbSides). A node of whole accounts (account, account type, no group-by, the Total) shows the sums of its
+ * accounts' TB figures; a slice of an account (account then tag or contact) shows its part in the account's column —
+ * negative when the slice goes against the account's side, never positive in the other column — so the slices of an
+ * account sum to the account's figure, and any lines sum to the Total. The same figures whatever is shown or expanded.
+ */
+function nodePairs(plan: Plan, t: Tree): Array<Dec | null> {
+  return plan.specs.map((sp) => (sp.t === 'debit' ? t.dr?.[sp.slot] ?? ZERO() : sp.t === 'credit' ? t.cr?.[sp.slot] ?? ZERO() : null));
 }
 
 /** A line's debit / credit cells show nothing on a side that sums to zero (as a single account's net does). */
@@ -743,19 +763,28 @@ function keyCaption(key: string, value: string | null, names: Map<string, { name
 
 // ── The run ────────────────────────────────────────────────────────
 
-interface Tree { key: string | null; vals: Vals; children: Map<string, Tree>; keep?: boolean }
+/** `dr` / `cr` (Trial Balance sections only, U-225 B-1): the node's facts in their accounts' debit / credit column. */
+interface Tree { key: string | null; vals: Vals; children: Map<string, Tree>; keep?: boolean; dr?: Vals; cr?: Vals }
 
-function buildTree(facts: Fact[], depth: number, n: number): Tree {
-  const root: Tree = { key: null, vals: zeros(n), children: new Map() };
+function buildTree(facts: Fact[], depth: number, n: number, sides?: TbSides): Tree {
+  const mk = (key: string | null): Tree => ({ key, vals: zeros(n), children: new Map(), ...(sides ? { dr: zeros(n), cr: zeros(n) } : {}) });
+  const add = (t: Tree, f: Fact) => {
+    t.vals[f.slot] = t.vals[f.slot]!.plus(f.v);
+    if (!sides) return;
+    // A fact without an account (none in a tb_net section) falls by its own sign, as before.
+    const debit = f.acct !== undefined ? sides.get(f.acct)![f.slot]! : !f.v.lt(0);
+    if (debit) t.dr![f.slot] = t.dr![f.slot]!.plus(f.v); else t.cr![f.slot] = t.cr![f.slot]!.minus(f.v);
+  };
+  const root = mk(null);
   for (const f of facts) {
     let node = root;
-    node.vals[f.slot] = node.vals[f.slot]!.plus(f.v);
+    add(node, f);
     for (let i = 0; i < depth; i++) {
       const k = f.keys[i] ?? null;
       const id = k ?? '\u0000none';
       let c = node.children.get(id);
-      if (!c) { c = { key: k, vals: zeros(n), children: new Map() }; node.children.set(id, c); }
-      c.vals[f.slot] = c.vals[f.slot]!.plus(f.v);
+      if (!c) { c = mk(k); node.children.set(id, c); }
+      add(c, f);
       if (f.keep) c.keep = true;
       node = c;
     }
@@ -847,19 +876,19 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
         }
         const facts = RB_SOURCE_INFO[node.source].openItems ? await openFacts(ctx, node) : factsFromBuckets(ctx, node, prefetched.get(node.id)!);
         if (listsOpeningOnly(plan, node)) facts.push(...await openingOnlyFacts(ctx, node));
-        const tree = buildTree(facts, node.groupBy.length, n);
+        const tree = buildTree(facts, node.groupBy.length, n, node.measure === 'tb_net' ? tbSides(facts, n) : undefined);
         const earnings = node.earnings ? await earningsRows(ctx, node, prefetched.get(`${node.id}#earnings`) ?? []) : [];
         const vals = tree.vals.slice();
         const nat = zeros(n);
         for (const f of facts) nat[f.slot] = nat[f.slot]!.plus(f.nv ?? f.v);
         for (const e of earnings) { addInto(vals, e.vals); addInto(nat, e.nat); }
         sectionData.set(node.id, { tree, earnings });
-        // Trial Balance debit / credit (U-225): a tb_net section sums its innermost lines' sides and its earnings row's,
+        // Trial Balance debit / credit (U-225 B-1): a tb_net section sums each account's TB figure and its earnings row's,
         // from the facts, before anything is rendered; any other section in a TB report shows its net on one side.
         let pairs: Array<Dec | null> | undefined;
         if (tbReport) {
           if (node.measure === 'tb_net') {
-            pairs = tbPairs(plan, tree, node.groupBy.length);
+            pairs = nodePairs(plan, tree);
             for (const e of earnings) addSplit(plan, pairs, e.vals);
           } else {
             pairs = zeroPairs(plan);
@@ -970,8 +999,9 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
           const inner = depth + 1 === s.groupBy.length;
           const hasMore = !inner || s.display !== 'summary';
           const exp = s.display === 'detail' || (s.display === 'summary' && !inner) || (s.display === 'expandable' && hasMore && expanded(p));
-          // An outer Trial Balance line shows the sums of its innermost lines' debit and credit, never their net (U-225).
-          const cells = tb && !inner ? cellsOf(plan, c.vals, base, linePairs(tbPairs(plan, c, s.groupBy.length - depth - 1))) : cellsOf(plan, c.vals, base);
+          // A Trial Balance line shows its facts in their accounts' columns, never a net across accounts nor a slice of
+          // an account on the other side (U-225 B-1).
+          const cells = tb ? cellsOf(plan, c.vals, base, linePairs(nodePairs(plan, c))) : cellsOf(plan, c.vals, base);
           row({
             kind: 'line', nodeId: s.id, level: level2, path: p, caption, cells,
             drill: { type: 'detail', nodeId: s.id, path: p },
@@ -1401,11 +1431,20 @@ export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSig
     const tbLine = s.measure === 'tb_net';
     let pairs: Array<Dec | null> | undefined = tbLine ? zeroPairs(plan) : undefined;
     if (earnings === 'none' || earnings === 'all') {
-      const facts = RB_SOURCE_INFO[s.source].openItems ? await openFacts(ctx, s, keys) : await lineFacts(ctx, s, keys);
-      const tree = buildTree(facts, s.groupBy.length, n);
+      let tree: Tree;
+      if (tbLine) {
+        // A Trial Balance line's debit / credit, as the run shows them (U-225 B-1): each account's side is decided on the
+        // whole section (never on the drilled slice), then the facts under the path are placed in their accounts' columns.
+        const all = await lineFacts(ctx, s);
+        const sides = tbSides(all, n);
+        const under = all.filter((f) => keys.every((k, i) => (f.keys[i] ?? null) === k));
+        tree = buildTree(under, s.groupBy.length, n, sides);
+        pairs = nodePairs(plan, tree);
+      } else {
+        const facts = RB_SOURCE_INFO[s.source].openItems ? await openFacts(ctx, s, keys) : await lineFacts(ctx, s, keys);
+        tree = buildTree(facts, s.groupBy.length, n);
+      }
       addInto(vals, tree.vals);
-      // A Trial Balance line's debit / credit: its innermost lines' sides, as the run shows them (U-225).
-      if (pairs) pairs = tbPairs(plan, tree, s.groupBy.length);
     }
     if (earnings !== 'none') {
       const pre = await bucketFacts(ctx, [{ sid: 'e', s: earningsSection(s), pathKeys: [], earningsOf: true }]);
@@ -1424,7 +1463,7 @@ export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSig
       const flow = summable(s);
       const totalFilled = flow ? plan.base.some((b) => filled.includes(b)) : filled.includes(plan.lastBase);
       setTotal(plan, vals, flow);
-      const cells = cellsOf(plan, vals, null, pairs && (tbLine && keys.length < s.groupBy.length ? linePairs(pairs) : undefined));
+      const cells = cellsOf(plan, vals, null, pairs && linePairs(pairs));
       const isFilled = (i: number): boolean => {
         const sp = plan.specs[i]!;
         if (sp.t === 'amount' || sp.t === 'debit' || sp.t === 'credit') return filled.includes(sp.slot);
