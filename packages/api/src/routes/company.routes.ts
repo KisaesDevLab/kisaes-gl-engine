@@ -44,6 +44,9 @@ import { env } from '../config/env.js';
 import { formatTaxRate } from '../utils/sales-compute.js';
 import { inventorySettings } from '../services/inventory.service.js';
 import { desktopOnly } from '../desktop/features.js';
+import * as company1099ThresholdsService from '../services/company-1099-thresholds.service.js';
+import { THRESHOLD_AMOUNT_RE } from '../services/company-1099-thresholds.service.js';
+import { FORM_1099_BOXES, type FormBox } from '../services/portal-1099.boxes.js';
 
 // Force the on-disk extension from the claimed MIME, not from the upload
 // filename. An uploader can send `Content-Type: image/png` with an
@@ -284,6 +287,65 @@ companyRouter.put('/intake-settings', requireCompanySettingsWrite, validate(putI
   response: intakeSettingsResponse,
 }), async (req, res) => {
   res.json(await intakeSettingsService.putIntakeSettings(req.tenantId, req.companyId, req.body, req.userId));
+});
+
+// ── 1099 thresholds (U-215, capability 1099-thresholds-v1) ──
+// The company's own reporting threshold per 1099 box; null = the year table.
+// Reading needs company_settings view; writing is for the owner or a super
+// admin (403 OWNER_REQUIRED). Amounts are decimal strings, never numbers.
+const thresholdBoxValues = FORM_1099_BOXES.map((b) => b.value) as [FormBox, ...FormBox[]];
+const thresholdAmount = z.string().regex(THRESHOLD_AMOUNT_RE, 'an amount of 0 or more with at most 4 decimal places, like 600 or 600.00');
+const put1099ThresholdsBody = z.object({
+  thresholds: z.object(Object.fromEntries(thresholdBoxValues.map((b) => [b, thresholdAmount.nullable().optional()])) as Record<FormBox, z.ZodOptional<z.ZodNullable<typeof thresholdAmount>>>)
+    .strict()
+    .describe('box code -> amount (decimal string) or null to use the year table; boxes left out keep their amount'),
+}).strict();
+const thresholdsYearQuery = z.object({ year: z.string().regex(/^\d{4}$/).optional() });
+const company1099ThresholdsResponse = z.object({
+  year: z.number().int(),
+  boxes: z.array(z.object({
+    box: z.enum(thresholdBoxValues), form: z.string(), boxNumber: z.string(), label: z.string(),
+    amount: z.string().nullable().describe("the company's own threshold, or null (the year table applies)"),
+    defaultExact: z.string().describe('the year table threshold for year'),
+    effectiveExact: z.string().describe('what the 1099 reports use for year: amount, else defaultExact'),
+  })),
+});
+
+function thresholdsYear(req: import('express').Request): number {
+  const q = thresholdsYearQuery.safeParse(req.query);
+  if (!q.success) throw AppError.badRequest('year must be a four-digit year', 'VALIDATION_ERROR');
+  return q.data.year ? Number(q.data.year) : new Date().getFullYear();
+}
+
+companyRouter.get('/1099-thresholds', requirePermission('company_settings', 'read'), describe({
+  summary: "The company's 1099 reporting thresholds per box (1099-thresholds-v1)",
+  description: 'Response {year, boxes[]}: per 1099 box the company amount (null = the year table), the year table amount and the one the '
+    + '1099 Summary, 1099 Preparation and the 1099 Center use. The general threshold (1099 Preparation over_threshold, the Center tiles, '
+    + "statuses and threshold scan) is the NEC-1 one. The 1099 Center (tenant-wide) uses the amounts of the tenant's only company; with "
+    + 'several companies it uses the year table. ?year= defaults to the current year.',
+  query: thresholdsYearQuery,
+  response: company1099ThresholdsResponse,
+}), async (req, res) => {
+  res.json(await company1099ThresholdsService.getCompany1099Thresholds(req.tenantId, req.companyId, thresholdsYear(req)));
+});
+
+function requireOwnerForThresholds(req: import('express').Request, _res: import('express').Response, next: import('express').NextFunction) {
+  if (req.userRole === 'owner' || req.isSuperAdmin) return next();
+  next(AppError.forbidden('Only the company owner can change 1099 thresholds.', 'OWNER_REQUIRED'));
+}
+
+companyRouter.put('/1099-thresholds', requireOwnerForThresholds, validate(put1099ThresholdsBody), describe({
+  summary: "Set or clear the company's 1099 reporting thresholds (1099-thresholds-v1)",
+  description: 'Body {thresholds: {box code: "600.00" | null}}; boxes left out keep their amount. Owner or super admin only (403 OWNER_REQUIRED). '
+    + '400 VALIDATION_ERROR for an unknown box or an amount that is not a decimal string of 0 or more with at most 4 places. '
+    + 'Response as GET (for ?year=). Audit row update company_1099_thresholds {box: amount | null} for the boxes that changed.',
+  body: put1099ThresholdsBody,
+  query: thresholdsYearQuery,
+  response: company1099ThresholdsResponse,
+}), async (req, res) => {
+  const year = thresholdsYear(req);
+  await company1099ThresholdsService.putCompany1099Thresholds(req.tenantId, req.companyId, req.body.thresholds, req.userId);
+  res.json(await company1099ThresholdsService.getCompany1099Thresholds(req.tenantId, req.companyId, year));
 });
 
 // ── Closing-date password (U-15, capability closing-password-v1) ──

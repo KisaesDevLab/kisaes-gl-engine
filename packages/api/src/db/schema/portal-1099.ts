@@ -14,10 +14,12 @@ import {
   decimal,
   index,
   jsonb,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { tenants } from './auth.js';
 import { contacts } from './contacts.js';
 import { accounts } from './accounts.js';
+import { companies } from './company.js';
 
 // VIBE_MYBOOKS_PRACTICE_BUILD_PLAN Phase 14 + 15 — 1099 / W-9.
 // Three tables: vendor_1099_profile, w9_requests, annual filings.
@@ -150,4 +152,20 @@ export const vendor1099AccountMappings = pgTable('vendor_1099_account_mappings',
 }, (table) => ({
   accountIdx: index('idx_vendor_1099_account_mappings_account').on(table.tenantId, table.accountId),
   formBoxIdx: index('idx_vendor_1099_account_mappings_form_box').on(table.tenantId, table.formBox),
+}));
+
+// U-215 (ClientLedger P29): a company's own 1099 reporting threshold per
+// box. No row = the year table (portal-1099.boxes.ts, U-212). Read through
+// company-1099-thresholds.service.ts only.
+export const company1099Thresholds = pgTable('company_1099_thresholds', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  companyId: uuid('company_id').notNull().references(() => companies.id, { onDelete: 'cascade' }),
+  formBox: varchar('form_box', { length: 10 }).notNull(),
+  amount: decimal('amount', { precision: 19, scale: 4 }).notNull(),
+  updatedBy: uuid('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  companyBoxUq: uniqueIndex('uniq_company_1099_thresholds_company_box').on(t.companyId, t.formBox),
+  tenantIdx: index('idx_company_1099_thresholds_tenant').on(t.tenantId),
 }));

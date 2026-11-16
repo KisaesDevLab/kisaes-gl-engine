@@ -25001,6 +25001,307 @@
         ]
       }
     },
+    "/api/v1/company/1099-thresholds": {
+      "get": {
+        "description": "Response {year, boxes[]}: per 1099 box the company amount (null = the year table), the year table amount and the one the 1099 Summary, 1099 Preparation and the 1099 Center use. The general threshold (1099 Preparation over_threshold, the Center tiles, statuses and threshold scan) is the NEC-1 one. The 1099 Center (tenant-wide) uses the amounts of the tenant's only company; with several companies it uses the year table. ?year= defaults to the current year.",
+        "operationId": "get_api_v1_company_1099_thresholds",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "year",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "boxes": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "amount": {
+                            "description": "the company's own threshold, or null (the year table applies)",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "box": {
+                            "enum": [
+                              "NEC-1",
+                              "MISC-1",
+                              "MISC-2",
+                              "MISC-3",
+                              "MISC-6",
+                              "MISC-10"
+                            ],
+                            "type": "string"
+                          },
+                          "boxNumber": {
+                            "type": "string"
+                          },
+                          "defaultExact": {
+                            "description": "the year table threshold for year",
+                            "type": "string"
+                          },
+                          "effectiveExact": {
+                            "description": "what the 1099 reports use for year: amount, else defaultExact",
+                            "type": "string"
+                          },
+                          "form": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "box",
+                          "form",
+                          "boxNumber",
+                          "label",
+                          "amount",
+                          "defaultExact",
+                          "effectiveExact"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "year": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "year",
+                    "boxes"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The company's 1099 reporting thresholds per box (1099-thresholds-v1)",
+        "tags": [
+          "company"
+        ]
+      },
+      "put": {
+        "description": "Body {thresholds: {box code: \"600.00\" | null}}; boxes left out keep their amount. Owner or super admin only (403 OWNER_REQUIRED). 400 VALIDATION_ERROR for an unknown box or an amount that is not a decimal string of 0 or more with at most 4 places. Response as GET (for ?year=). Audit row update company_1099_thresholds {box: amount | null} for the boxes that changed.",
+        "operationId": "put_api_v1_company_1099_thresholds",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "year",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "thresholds": {
+                    "additionalProperties": false,
+                    "description": "box code -> amount (decimal string) or null to use the year table; boxes left out keep their amount",
+                    "properties": {
+                      "MISC-1": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "MISC-10": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "MISC-2": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "MISC-3": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "MISC-6": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "NEC-1": {
+                        "anyOf": [
+                          {
+                            "pattern": "^\\d{1,15}(\\.\\d{1,4})?$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "thresholds"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "boxes": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "amount": {
+                            "description": "the company's own threshold, or null (the year table applies)",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "box": {
+                            "enum": [
+                              "NEC-1",
+                              "MISC-1",
+                              "MISC-2",
+                              "MISC-3",
+                              "MISC-6",
+                              "MISC-10"
+                            ],
+                            "type": "string"
+                          },
+                          "boxNumber": {
+                            "type": "string"
+                          },
+                          "defaultExact": {
+                            "description": "the year table threshold for year",
+                            "type": "string"
+                          },
+                          "effectiveExact": {
+                            "description": "what the 1099 reports use for year: amount, else defaultExact",
+                            "type": "string"
+                          },
+                          "form": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "box",
+                          "form",
+                          "boxNumber",
+                          "label",
+                          "amount",
+                          "defaultExact",
+                          "effectiveExact"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "year": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "year",
+                    "boxes"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Set or clear the company's 1099 reporting thresholds (1099-thresholds-v1)",
+        "tags": [
+          "company"
+        ]
+      }
+    },
     "/api/v1/company/closing-password": {
       "get": {
         "operationId": "get_api_v1_company_closing_password",

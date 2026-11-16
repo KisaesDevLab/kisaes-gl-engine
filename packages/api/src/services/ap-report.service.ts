@@ -7,7 +7,7 @@ import { db } from '../db/index.js';
 import { tagIn } from './report.service.js';
 import { ReportDecimal as Decimal, dec, dsum, exactStr, legacyNum } from './report-exact.js';
 import { reportable1099Buckets } from './vendor-1099-summary.service.js';
-import { boxThreshold, general1099Threshold } from './portal-1099.boxes.js';
+import { threshold1099Resolver } from './company-1099-thresholds.service.js';
 import { PAYMENT_1099_TXN_TYPES } from './portal-1099.service.js';
 
 // Helper: add `b` to `a` via Decimal and return a plain number rounded
@@ -364,15 +364,17 @@ export async function buildAp1099Prep(
   // to the vendor; reportable_total is what a 1099 reports (0 for a vendor
   // excluded on its 1099 profile or paid only from unmapped accounts).
   const { buckets } = await reportable1099Buckets(tenantId, taxYear, companyId);
+  // U-215: the company's own thresholds, else the year table.
+  const thresholds = await threshold1099Resolver(tenantId, companyId);
   const reportable = new Map<string, { total: InstanceType<typeof Decimal>; meets: boolean }>();
   for (const b of buckets) {
     const cur = reportable.get(b.contactId) ?? { total: new Decimal(0), meets: false };
     cur.total = cur.total.plus(b.total);
-    cur.meets = cur.meets || dec(b.total).gte(dec(boxThreshold(b.formBox, taxYear)));
+    cur.meets = cur.meets || dec(b.total).gte(dec(thresholds.box(b.formBox, taxYear)));
     reportable.set(b.contactId, cur);
   }
 
-  const overThreshold = dec(general1099Threshold(taxYear));
+  const overThreshold = dec(thresholds.general(taxYear));
   const data = (rows.rows as any[]).map((row) => {
     const parts = [row.billing_line1, row.billing_city, row.billing_state, row.billing_zip].filter(Boolean);
     // 1099 threshold check must not drift — $599.99999 should NOT hit
