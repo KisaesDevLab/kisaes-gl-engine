@@ -199,12 +199,28 @@ describe('a merge re-points saved reports (Q-PRA2b, 5-B1)', () => {
     const stale = await runSaved(byContact.id, 1);
     expect(stale.status).toBe(409);
 
-    // The merges' audit rows count the reports; no audit row per report.
+    // The merges' audit rows count the reports; each rewritten report has its own update row naming the merge (S-1).
     expect((await mergeAudit('contact', dup)).moved['reportDefinitions']).toBe(3);
     expect((await mergeAudit('tag', crewA!.id)).moved['reportDefinitions']).toBe(2);
     const perReport = await db.select().from(auditLog)
       .where(and(eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'report_definition'), eq(auditLog.action, 'update')));
-    expect(perReport).toHaveLength(0);
+    const shape = (x: unknown) => x as Record<string, unknown>;
+    const merged = (kind: string) => perReport.filter((r) => shape(r.afterData)['reason'] === 'merged' && shape(r.afterData)['mergedKind'] === kind);
+    // Contact merge: byContact, standard (company A) and inB (company B); tag merge: byTag and standard.
+    expect(merged('contact').map((r) => r.entityId).sort()).toEqual([byContact.id, standard.id, inB.id].sort());
+    expect(merged('tag').map((r) => r.entityId).sort()).toEqual([byTag.id, standard.id].sort());
+    expect(perReport).toHaveLength(5);
+    for (const r of merged('contact')) {
+      expect(r.userId).toBe(c.userId);
+      expect(shape(r.afterData)).toMatchObject({ mergedFrom: dup, mergedInto: c.customer });
+      expect(shape(r.afterData)['version']).toBe(shape(r.beforeData)['version'] as number + 1);
+      // Never the definition body.
+      expect(JSON.stringify(r.afterData)).not.toContain('filters');
+      expect(JSON.stringify(r.beforeData)).not.toContain('filters');
+    }
+    for (const r of merged('tag')) expect(shape(r.afterData)).toMatchObject({ mergedFrom: crewA!.id, mergedInto: crewB!.id });
+    // Reports the merges did not change have none.
+    expect(perReport.some((r) => [otherB.id, other.id].includes(r.entityId!))).toBe(false);
   });
 
   it('a report whose company cannot see the kept row is left as it is and counted as skipped', async () => {

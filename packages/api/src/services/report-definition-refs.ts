@@ -29,6 +29,7 @@ import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { DbOrTx, Tx } from '../db/index.js';
 import { accounts, auditLog, budgets, contacts, items, reportDefinitions, tagGroups, tags } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditLogMany } from '../middleware/audit.js';
 
 export type RefKind = 'account' | 'contact' | 'item' | 'tag' | 'tagGroup' | 'budget';
 
@@ -329,8 +330,9 @@ export function referenceMissing(missing: MissingReference[]): AppError {
  * missing reference's path, with `missing` (all of them) added.
  */
 export function inlineReferenceMissing(missing: MissingReference[]): AppError {
+  // The definition comes from the caller, so an id may be another company's (review M-3): the message says either.
   return AppError.badRequest(
-    'This report uses a name that was deleted. Pick another one or remove it from the report, then run it again.',
+    'This report uses a name that was deleted or isn\'t available in this company. Pick another one or remove it from the report, then run it again.',
     'DEFINITION_INVALID',
     { path: missing[0]!.path, code: 'NOT_IN_COMPANY', missing } as unknown as Record<string, unknown>,
   );
@@ -353,8 +355,13 @@ export interface RepointResult {
  * user) as an edit does, so an editor open on the old version gets 409
  * STALE_VERSION. A report whose company cannot see the kept row (the kept row
  * belongs to another company) is not changed and is counted as skipped; its
- * reference then reads as missing if the merged-away row is gone. No audit
- * row per report: the merge's audit row carries the counts.
+ * reference then reads as missing if the merged-away row is gone. Each
+ * rewritten report gets its own audit row in the same transaction (S-1): an
+ * `update` of `report_definition` as the merging user, before / after its
+ * kind, reportKey, groupId and version (never the definition body), the
+ * after adding reason 'merged' with which kind of record (`mergedKind`) was
+ * merged from which id into which (`mergedFrom`, `mergedInto`), as a group delete records
+ * reason 'group_deleted'. The merge's own audit row keeps the counts.
  */
 export async function repointDefinitionRefs(
   tx: Tx, tenantId: string, kind: RefKind, sourceId: string, targetId: string, userId?: string,
@@ -363,16 +370,22 @@ export async function repointDefinitionRefs(
   const to = targetId.toLowerCase();
   if (from === to) return { updated: 0, skipped: 0 };
   // Text prefilter: an id can only sit inside the JSON text; the sites decide.
-  const rows = await tx.select({ id: reportDefinitions.id, companyId: reportDefinitions.companyId, version: reportDefinitions.version, definitionJson: reportDefinitions.definitionJson })
+  // Locked in id order, so two merges that touch the same reports cannot deadlock (M-4).
+  const rows = await tx.select({
+    id: reportDefinitions.id, companyId: reportDefinitions.companyId, version: reportDefinitions.version, definitionJson: reportDefinitions.definitionJson,
+    kind: reportDefinitions.kind, groupId: reportDefinitions.groupId,
+  })
     .from(reportDefinitions)
     .where(and(eq(reportDefinitions.tenantId, tenantId), isNull(reportDefinitions.deletedAt),
       sql`position(${from} in lower(${reportDefinitions.definitionJson}::text)) > 0`))
+    .orderBy(asc(reportDefinitions.id))
     .for('update');
   if (rows.length === 0) return { updated: 0, skipped: 0 };
   const t = TABLE[kind];
   const [target] = await tx.select({ companyId: t.companyId }).from(t).where(and(eq(t.tenantId, tenantId), eq(t.id, targetId))).limit(1);
   let updated = 0;
   let skipped = 0;
+  const audits: Parameters<typeof auditLogMany>[1][number][] = [];
   for (const r of rows) {
     const definition = JSON.parse(JSON.stringify(r.definitionJson)) as Record<string, unknown>;
     const { sites, compact } = idSites(definition);
@@ -386,7 +399,14 @@ export async function repointDefinitionRefs(
     await tx.update(reportDefinitions).set({
       definitionJson: definition, version: r.version + 1, updatedBy: userId ?? null, updatedAt: new Date(),
     }).where(and(eq(reportDefinitions.tenantId, tenantId), eq(reportDefinitions.id, r.id)));
+    const shape = { kind: r.kind, reportKey: (r.definitionJson as { reportKey?: unknown } | null)?.reportKey ?? null, groupId: r.groupId };
+    audits.push({
+      action: 'update', entityType: 'report_definition', entityId: r.id,
+      before: { ...shape, version: r.version },
+      after: { ...shape, version: r.version + 1, reason: 'merged', mergedKind: kind, mergedFrom: sourceId, mergedInto: targetId },
+    });
     updated++;
   }
+  if (audits.length > 0) await auditLogMany(tenantId, audits, userId, tx);
   return { updated, skipped };
 }
