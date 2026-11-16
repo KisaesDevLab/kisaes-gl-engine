@@ -30,6 +30,7 @@ import { db } from '../db/index.js';
 import { dec, type Dec } from './report-exact.js';
 import { lineSums, type LineLens, type LineSum, type SumDimension, type SqlExecutor } from './report-lens.js';
 import { adjustingCond, cashBasisLinesWith, executeCashBasisIn, tagIn, type AdjustingFilter } from './report.service.js';
+import { andVisible, hiddenAccountIds } from './visibility.js';
 
 export const PL_ACCOUNT_TYPES = ['revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'] as const;
 
@@ -104,6 +105,8 @@ export async function priorYearsIncomeByTransactionTag(tenantId: string, o: {
   fiscalYearStart: string; tagId: string; endDate: string; exec?: SqlExecutor;
 }): Promise<Dec> {
   const exec = o.exec ?? db;
+  // Hidden accounts (U-33) are left out at the accounts join, as in every total.
+  const visible = andVisible(await hiddenAccountIds(), sql`a.id`);
   const types = sql.join(PL_ACCOUNT_TYPES.map((t) => sql`${t}`), sql`, `);
   const res = o.basis === 'cash'
     ? await executeCashBasisIn(exec, sql`
@@ -111,7 +114,7 @@ export async function priorYearsIncomeByTransactionTag(tenantId: string, o: {
         SELECT COALESCE(SUM(cb.credit - cb.debit), 0) AS n
         FROM cb_lines cb
         JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}
-        WHERE a.account_type IN (${types}) AND cb.txn_date < ${o.fiscalYearStart}
+        WHERE a.account_type IN (${types}) AND cb.txn_date < ${o.fiscalYearStart}${visible}
           AND EXISTS (SELECT 1 FROM cb_lines cb2 WHERE cb2.transaction_id = cb.transaction_id AND cb2.tag_id IN ${tagIn(o.tagId)})`)
     : await exec.execute(sql`
         SELECT COALESCE(SUM(jl.credit - jl.debit), 0) AS n
@@ -122,7 +125,7 @@ export async function priorYearsIncomeByTransactionTag(tenantId: string, o: {
           AND t.txn_date < ${o.fiscalYearStart}
           AND ${o.companyId ? sql`t.company_id = ${o.companyId}` : sql`TRUE`}
           AND ${adjustingCond(o.adjusting, 't.is_adjusting')}
-          AND a.account_type IN (${types})
+          AND a.account_type IN (${types})${visible}
           AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = t.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id IN ${tagIn(o.tagId)})`);
   return dec(String((res.rows[0] as { n: string | number } | undefined)?.n ?? 0));
 }

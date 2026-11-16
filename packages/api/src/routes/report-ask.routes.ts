@@ -50,7 +50,8 @@ reportAskRouter.post('/ask',
     summary: 'Ask a question: map it to a catalog report (reports-ask-v1)',
     description: 'The company\'s AI provider maps a plain-language question to ONE report of the catalog the client sends, with its options; ' +
       'the client then runs the report and the engine computes every figure. The model sees the question, the catalog, today\'s date and ' +
-      'names from the books (active accounts, active tags, contacts the question names); never an amount. ' +
+      'names from the books (active accounts, active tags, contacts the question names; never an account hidden from the caller, U-33, ' +
+      'which is also never resolved); never an amount. ' +
       `Response ${RESPONSE_DOC}: only tokens the client sent, ISO dates, and ids the engine resolved from names (the model never gives an id). ` +
       'An unresolved name is returned only when it is text from the question with no digit. There is no amount filter. ' +
       'Errors: 403 AI_CONSENT_REQUIRED {reason, task: report_summary} (AI off, the company not opted in, a stale disclosure, or the ' +

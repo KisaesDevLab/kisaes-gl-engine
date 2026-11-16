@@ -2403,8 +2403,10 @@ export async function buildSalesByCustomer(
   // U-202 (E11): the U-60 adjusting lens (default include).
   adjusting: AdjustingFilter | null = null,
 ) {
-  const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
-  const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
+  // Hidden accounts (U-33) are left out at the accounts join; nothing changes when none is hidden.
+  const visible = andVisible(await hiddenAccountIds(), sql`a.id`);
+  const tagClause = sql`${tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``}${visible}`;
+  const cbTag = sql`${tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``}${visible}`;
   // The sales rule (U-119, Q-A07b, above): natural net of sale lines by the
   // line's client, else the document's; cash basis recognizes revenue when
   // the customer pays (cb_lines rule 3; cash sales pass through).
@@ -2453,8 +2455,10 @@ export async function buildSalesByItem(
   // U-202 (E11): the U-60 adjusting lens (default include).
   adjusting: AdjustingFilter | null = null,
 ) {
-  const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
-  const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
+  // Hidden accounts (U-33) are left out at the accounts join; nothing changes when none is hidden.
+  const visible = andVisible(await hiddenAccountIds(), sql`a.id`);
+  const tagClause = sql`${tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``}${visible}`;
+  const cbTag = sql`${tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``}${visible}`;
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
         WITH ${cashBasisLinesWith(tenantId, startDate, endDate, companyId, adjusting)}

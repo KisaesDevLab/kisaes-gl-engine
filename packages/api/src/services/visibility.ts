@@ -200,6 +200,67 @@ export const CONVERTED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'POST', path: '/api/v1/reports/general-ledger' },
   { method: 'GET', path: '/api/v1/reports/transaction-list' },
   { method: 'POST', path: '/api/v1/reports/transaction-list' },
+  // Report Builder (E14-E17, PR 2): runs and drills leave hidden lines out at
+  // the outer accounts join (both bases, earnings and opening rows included);
+  // a drill keyed on a hidden account is 404; saved reports naming one are
+  // listed with canEdit false and hiddenRefs, and can't be changed (403
+  // SENSITIVE_DEFINITION); a hidden id in a definition sent is NOT_IN_COMPANY.
+  { method: 'POST', path: '/api/v1/report-builder/run' },
+  { method: 'POST', path: '/api/v1/report-builder/run/detail' },
+  { method: 'GET', path: '/api/v1/report-builder/definitions' },
+  { method: 'POST', path: '/api/v1/report-builder/definitions' },
+  { method: 'GET', path: '/api/v1/report-builder/definitions/:id' },
+  { method: 'PUT', path: '/api/v1/report-builder/definitions/:id' },
+  { method: 'DELETE', path: '/api/v1/report-builder/definitions/:id' },
+  { method: 'GET', path: '/api/v1/report-builder/definition-groups' },
+  { method: 'POST', path: '/api/v1/report-builder/definition-groups' },
+  { method: 'PUT', path: '/api/v1/report-builder/definition-groups/:id' },
+  { method: 'DELETE', path: '/api/v1/report-builder/definition-groups/:id' },
+  { method: 'GET', path: '/api/v1/report-builder/fields' },
+  { method: 'GET', path: '/api/v1/report-builder/starters' },
+  // Report files (E18-E19): a hidden account is exported as {kind, missing:
+  // true}; the import preview never matches, offers or accepts one.
+  { method: 'POST', path: '/api/v1/report-builder/definitions/export' },
+  { method: 'POST', path: '/api/v1/report-builder/definitions/import/preview' },
+  // A/R and A/P reports (E10): they read documents, never a per-account
+  // split; a document's total on its control account is an accepted limit.
+  { method: 'GET', path: '/api/v1/reports/ar-aging-summary' },
+  { method: 'GET', path: '/api/v1/reports/ar-aging-detail' },
+  { method: 'GET', path: '/api/v1/reports/ap-aging-summary' },
+  { method: 'GET', path: '/api/v1/reports/ap-aging-detail' },
+  { method: 'GET', path: '/api/v1/reports/unpaid-bills' },
+  { method: 'GET', path: '/api/v1/reports/invoice-list' },
+  { method: 'GET', path: '/api/v1/reports/customer-balance-summary' },
+  { method: 'GET', path: '/api/v1/reports/customer-balance-detail' },
+  { method: 'GET', path: '/api/v1/reports/vendor-balance-summary' },
+  { method: 'GET', path: '/api/v1/reports/bill-payment-history' },
+  { method: 'GET', path: '/api/v1/reports/vendor-statement' },
+  { method: 'GET', path: '/api/v1/reports/transaction-list-by-vendor' },
+  // E8/E9: their SQL leaves hidden accounts out at the accounts join.
+  { method: 'GET', path: '/api/v1/reports/expense-by-category' },
+  { method: 'GET', path: '/api/v1/reports/sales-by-customer' },
+  { method: 'GET', path: '/api/v1/reports/sales-by-item' },
+  { method: 'GET', path: '/api/v1/reports/journal-entry-report' },
+  { method: 'GET', path: '/api/v1/reports/account-report' },
+  { method: 'GET', path: '/api/v1/reports/check-register' },
+  // Bank accounts can't be marked.
+  { method: 'GET', path: '/api/v1/reports/bank-balances' },
+  // Dashboard (E11): revenue and expenses leave hidden accounts out; budget
+  // performance leaves their budget lines out; cash, card and control
+  // accounts can't be marked.
+  { method: 'GET', path: '/api/v1/dashboard/summary' },
+  { method: 'GET', path: '/api/v1/dashboard/snapshot' },
+  { method: 'GET', path: '/api/v1/dashboard/trend' },
+  { method: 'GET', path: '/api/v1/dashboard/cash-position' },
+  { method: 'GET', path: '/api/v1/dashboard/account-balances' },
+  { method: 'GET', path: '/api/v1/dashboard/receivables' },
+  { method: 'GET', path: '/api/v1/dashboard/payables' },
+  { method: 'GET', path: '/api/v1/dashboard/action-items' },
+  { method: 'GET', path: '/api/v1/dashboard/budget-performance' },
+  { method: 'GET', path: '/api/v1/dashboard/banking-health' },
+  // AI draft and Ask (E20): hidden names are never sent, resolved or kept.
+  { method: 'POST', path: '/api/v1/report-builder/draft' },
+  { method: 'POST', path: '/api/v1/reports/ask' },
 ];
 
 function segments(p: string): string[] {

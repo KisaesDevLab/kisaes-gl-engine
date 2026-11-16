@@ -7,6 +7,7 @@ import { db } from '../db/index.js';
 import DecimalLib from 'decimal.js';
 import { listPendingDepositItems } from './payment.service.js';
 import { BANK_DETAIL_TYPES } from './bank-account-types.js';
+import { andVisible, hiddenAccountIds } from './visibility.js';
 
 /** BANK_DETAIL_TYPES as a SQL list: `a.detail_type IN (${bankDetailTypesSql()})`. */
 function bankDetailTypesSql(): SQL {
@@ -84,8 +85,9 @@ async function getFiscalYearStart(tenantId: string, today: string): Promise<stri
   return `${year}-${pad2(fyStartMonth)}-01`;
 }
 
-/** Revenue and expenses posted between two dates, signed by normal balance. */
+/** Revenue and expenses posted between two dates, signed by normal balance; accounts hidden from the viewer left out (U-33). */
 async function profitAndLoss(tenantId: string, start: string, end: string): Promise<{ revenue: DecimalT; expenses: DecimalT }> {
+  const visible = andVisible(await hiddenAccountIds(), sql`a.id`);
   const rows = await db.execute(sql`
     SELECT a.account_type,
       COALESCE(SUM(jl.debit), 0)::text as total_debit,
@@ -95,7 +97,7 @@ async function profitAndLoss(tenantId: string, start: string, end: string): Prom
     JOIN transactions t ON t.id = jl.transaction_id
     WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted'
       AND t.txn_date >= ${start} AND t.txn_date <= ${end}
-      AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+      AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')${visible}
     GROUP BY a.account_type
   `);
 

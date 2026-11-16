@@ -241,7 +241,12 @@ async function liveLabels(exec: DbOrTx, tenantId: string, companyId: string, kin
  * the whole batch. Deactivated rows that were not merged away still exist and
  * are not missing. A definition that holds no recognisable id sites gives [].
  */
-export async function missingReferencesMany(exec: DbOrTx, tenantId: string, companyId: string, definitions: unknown[]): Promise<MissingReference[][]> {
+export async function missingReferencesMany(
+  exec: DbOrTx, tenantId: string, companyId: string, definitions: unknown[],
+  /** U-33: accounts to answer as deleted (an inline definition naming an account hidden from the caller, as an unknown id). */
+  opts: { hiddenAccounts?: readonly string[] } = {},
+): Promise<MissingReference[][]> {
+  const asDeleted = new Set((opts.hiddenAccounts ?? []).map((x) => `account:${x.toLowerCase()}`));
   const perDef = definitions.map((d) => (isObj(d) ? idSites(JSON.parse(JSON.stringify(d)) as Record<string, unknown>).sites : []));
   const want = new Map<RefKind, Set<string>>();
   for (const sites of perDef) {
@@ -260,6 +265,7 @@ export async function missingReferencesMany(exec: DbOrTx, tenantId: string, comp
     const rows = await exec.select({ id: t.id, active: kind === 'contact' ? contacts.isActive : sql<boolean>`TRUE` }).from(t)
       .where(and(eq(t.tenantId, tenantId), or(isNull(t.companyId), eq(t.companyId, companyId)), inArray(t.id, [...ids])));
     for (const r of rows) {
+      if (asDeleted.has(`${kind}:${r.id.toLowerCase()}`)) continue;
       found.add(`${kind}:${r.id.toLowerCase()}`);
       if (kind === 'contact' && r.active === false) inactiveContacts.push(r.id.toLowerCase());
     }
@@ -306,8 +312,39 @@ export async function missingReferencesMany(exec: DbOrTx, tenantId: string, comp
   });
 }
 
-export async function missingReferences(exec: DbOrTx, tenantId: string, companyId: string, definition: unknown): Promise<MissingReference[]> {
-  return (await missingReferencesMany(exec, tenantId, companyId, [definition]))[0]!;
+export async function missingReferences(
+  exec: DbOrTx, tenantId: string, companyId: string, definition: unknown, opts: { hiddenAccounts?: readonly string[] } = {},
+): Promise<MissingReference[]> {
+  return (await missingReferencesMany(exec, tenantId, companyId, [definition], opts))[0]!;
+}
+
+// ── Hidden references (U-33 sensitive accounts, Q-309) ─────────────
+
+/**
+ * An account a definition names that is hidden from the viewer: the shape of a
+ * missing reference without a reason (one entry per path, ids in definition
+ * order). No name: the viewer only learns that the id there is hidden.
+ */
+export interface HiddenReference { path: string; nodeId: string | null; field: string; kind: 'account'; ids: string[] }
+
+/** The hidden accounts a definition names; [] when `hidden` is empty (nothing read). */
+export function hiddenReferences(definition: unknown, hidden: readonly string[]): HiddenReference[] {
+  if (hidden.length === 0 || !isObj(definition)) return [];
+  const set = new Set(hidden.map((x) => x.toLowerCase()));
+  const out: HiddenReference[] = [];
+  const byPath = new Map<string, HiddenReference>();
+  for (const s of idSites(JSON.parse(JSON.stringify(definition)) as Record<string, unknown>).sites) {
+    const v = s.get();
+    if (s.kind !== 'account' || typeof v !== 'string' || !set.has(v.toLowerCase())) continue;
+    let e = byPath.get(s.at.path);
+    if (!e) {
+      e = { path: s.at.path, nodeId: s.at.nodeId, field: s.at.field, kind: 'account', ids: [] };
+      byPath.set(s.at.path, e);
+      out.push(e);
+    }
+    if (!e.ids.includes(v.toLowerCase())) e.ids.push(v.toLowerCase());
+  }
+  return out;
 }
 
 /**
