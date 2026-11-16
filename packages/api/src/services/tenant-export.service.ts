@@ -740,7 +740,7 @@ export async function importAsNewTenant(
       INSERT INTO accounts (
         id, tenant_id, company_id, account_number, name, account_type,
         detail_type, description, is_active, is_system, system_tag,
-        parent_id, balance
+        parent_id, balance, is_sensitive
       ) VALUES (
         ${newId}, ${tenantId}, ${companyId},
         ${(acc['account_number'] as string) || null},
@@ -752,7 +752,8 @@ export async function importAsNewTenant(
         ${acc['is_system'] === true},
         ${(acc['system_tag'] as string) || null},
         ${parentId},
-        ${(acc['balance'] as string) || '0'}
+        ${(acc['balance'] as string) || '0'},
+        ${acc['is_sensitive'] === true}
       )
     `);
     counts.accounts++;
@@ -1375,7 +1376,7 @@ export async function importMergeIntoTenant(
         INSERT INTO accounts (
           id, tenant_id, company_id, account_number, name, account_type,
           detail_type, description, is_active, is_system, system_tag,
-          parent_id, balance
+          parent_id, balance, is_sensitive
         ) VALUES (
           ${newId}, ${targetTenantId}, ${companyId},
           ${accNumber},
@@ -1387,7 +1388,8 @@ export async function importMergeIntoTenant(
           ${false},
           ${null},
           ${parentId},
-          ${(acc['balance'] as string) || '0'}
+          ${(acc['balance'] as string) || '0'},
+          ${acc['is_sensitive'] === true}
         )
       `);
       counts.accounts++;

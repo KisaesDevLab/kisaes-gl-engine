@@ -14,9 +14,14 @@ import * as coaTemplatesService from './coa-templates.service.js';
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertAccountNotInventory } from './inventory.service.js';
+import { isBankDetailType } from './bank-account-types.js';
+import { hiddenAccountIds, isHiddenAccount, visibleAccount } from './visibility.js';
 
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
+  // Sensitive accounts (U-33): left out for a viewer without the right.
+  const hidden = visibleAccount(await hiddenAccountIds(), accounts.id);
+  if (hidden) conditions.push(hidden);
 
   if (Array.isArray(filters.accountType)) {
     if (filters.accountType.length > 0) conditions.push(inArray(accounts.accountType, filters.accountType));
@@ -70,7 +75,8 @@ export async function getById(tenantId: string, id: string) {
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)),
   });
-  if (!account) {
+  // A hidden account (U-33) is not found, with no existence hint.
+  if (!account || (await isHiddenAccount(account.id))) {
     throw AppError.notFound('Account not found');
   }
   return account;
@@ -96,6 +102,8 @@ export async function create(tenantId: string, input: CreateAccountInput, userId
     const [account] = await tx.insert(accounts).values({
       tenantId,
       ...input,
+      // Marked only through setSensitive (U-33); never on create.
+      isSensitive: false,
     }).returning();
 
     if (!account) {
@@ -123,6 +131,9 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
   delete sanitized['balance'];
   delete sanitized['tenantId'];
   delete sanitized['companyId'];
+  // The sensitive flag (U-33) changes only through setSensitive (Admin).
+  delete sanitized['isSensitive'];
+  delete sanitized['is_sensitive'];
 
   // Inventory accounts stay active and keep their type (U-156, S12): 409 ACCOUNT_IN_USE.
   if (input.isActive === false || (input.accountType && input.accountType !== existing.accountType)) {
@@ -194,7 +205,7 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
   }
 
   const existing = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, ids)));
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, ids), visibleAccount(await hiddenAccountIds(), accounts.id)));
   const byId = new Map(existing.map((a) => [a.id, a]));
   const missing = ids.filter((id) => !byId.has(id));
   if (missing.length > 0) {
@@ -425,7 +436,9 @@ export async function importFromCsv(
     ? await db
         .select({ id: accounts.id, accountNumber: accounts.accountNumber, isSystem: accounts.isSystem })
         .from(accounts)
-        .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.accountNumber, numbers)))
+        // A hidden account (U-33) is never overwritten: its number reports
+        // as taken (the insert below conflicts and skips).
+        .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.accountNumber, numbers), visibleAccount(await hiddenAccountIds(), accounts.id)))
     : [];
   const existingByNumber = new Map(existing.map((a) => [a.accountNumber as string, a]));
 
@@ -492,11 +505,72 @@ export async function importFromCsv(
   return { imported: created.length, updated, skipped, accounts: created };
 }
 
+/**
+ * Built-in accounts that can never be marked sensitive (U-33, Q-P29d): every
+ * bank feed, reconcile, open-item and sales-tax surface reads them, so hiding
+ * them would hide (or break) those screens rather than one account.
+ */
+export const SENSITIVE_REFUSED_SYSTEM_TAGS: readonly string[] = [
+  'accounts_receivable', 'accounts_payable', 'undeposited_funds', 'payments_clearing', 'retained_earnings',
+  'opening_balances', 'sales_tax_payable', 'customer_deposits', 'unapplied_receipts', 'inventory_asset', 'suspense',
+];
+
+/** Why an account can't be marked sensitive, or null when it can. */
+export function sensitiveRefusal(a: { accountType: string; detailType: string | null; systemTag: string | null }): string | null {
+  if (a.accountType === 'asset' && isBankDetailType(a.detailType)) return 'A bank account can not be marked sensitive';
+  if (a.accountType === 'liability' && a.detailType === 'credit_card') return 'A credit card account can not be marked sensitive';
+  if (a.systemTag && SENSITIVE_REFUSED_SYSTEM_TAGS.includes(a.systemTag)) return 'A built-in account can not be marked sensitive';
+  return null;
+}
+
+/**
+ * Marks or unmarks an account sensitive (U-33). The route allows only the
+ * company Admin (owner or super admin). Idempotent: setting the current value
+ * changes nothing and writes no audit row. The row is locked so two Admins
+ * toggling at once both commit in turn (last write wins, both audited).
+ * Audit row: entity account, action update, before/after hold only
+ * {isSensitive}. Unmarking is always allowed; marking a bank, credit card or
+ * named built-in account is 422 SENSITIVE_NOT_ALLOWED.
+ */
+export async function setSensitive(tenantId: string, id: string, isSensitive: boolean, userId?: string) {
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(accounts)
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
+      .for('update');
+    if (!row) throw AppError.notFound('Account not found');
+    if (row.isSensitive === isSensitive) return row;
+    if (isSensitive) {
+      const reason = sensitiveRefusal(row);
+      if (reason) throw new AppError(422, reason, 'SENSITIVE_NOT_ALLOWED');
+      // Marking hides every sub-account too, so none of them may be a refused one.
+      const subs = await tx.execute<{ account_type: string; detail_type: string | null; system_tag: string | null }>(sql`
+        WITH RECURSIVE d AS (
+          SELECT id, account_type, detail_type, system_tag FROM accounts WHERE tenant_id = ${tenantId} AND parent_id = ${id}
+          UNION
+          SELECT a.id, a.account_type, a.detail_type, a.system_tag FROM accounts a JOIN d ON a.parent_id = d.id WHERE a.tenant_id = ${tenantId}
+        )
+        SELECT account_type, detail_type, system_tag FROM d`);
+      for (const s of subs.rows) {
+        if (sensitiveRefusal({ accountType: s.account_type, detailType: s.detail_type, systemTag: s.system_tag })) {
+          throw new AppError(422, 'A sub-account of this account can not be hidden (bank, credit card or built-in)', 'SENSITIVE_NOT_ALLOWED');
+        }
+      }
+    }
+    const [updated] = await tx.update(accounts)
+      .set({ isSensitive, updatedAt: new Date() })
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
+      .returning();
+    if (!updated) throw AppError.internal('Failed to update account');
+    await auditLog(tenantId, 'update', 'account', id, { isSensitive: row.isSensitive }, { isSensitive }, userId, tx);
+    return updated;
+  });
+}
+
 export async function exportToCsv(tenantId: string): Promise<string> {
   const data = await db
     .select()
     .from(accounts)
-    .where(eq(accounts.tenantId, tenantId))
+    .where(and(eq(accounts.tenantId, tenantId), visibleAccount(await hiddenAccountIds(), accounts.id)))
     .orderBy(accounts.accountNumber, accounts.name);
 
   const header = 'Account Number,Name,Type,Detail Type,Balance,Active,System\n';

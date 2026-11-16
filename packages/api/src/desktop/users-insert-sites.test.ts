@@ -20,6 +20,7 @@ const KNOWN_SITES: Record<string, { count: number; desktop: string }> = {
   'desktop/workspace.ts': { count: 1, desktop: 'initialize: the owner, homed in the workspace' },
   'routes/admin.routes.ts': { count: 1, desktop: 'admin users/create: homed in the workspace' },
   'routes/receivables.test-support.ts': { count: 1, desktop: 'test support only (imported by *.test.ts): a staff user in the test tenant' },
+  'routes/sensitive.test-fixtures.ts': { count: 2, desktop: 'test support only (imported by *.test.ts): an owner and a bookkeeper in the test tenant (U-33)' },
   'services/auth.service.ts': { count: 2, desktop: 'register: 404 on desktop; inviteUser: homed in the workspace' },
   'services/setup.service.ts': { count: 2, desktop: 'createAdminUser / adoptRestoredTenants: throw on desktop' },
   'services/tenant-portability/identity.ts': { count: 1, desktop: 'archive import: unmatched users homed in the workspace with a readonly workspace row, never super admin' },

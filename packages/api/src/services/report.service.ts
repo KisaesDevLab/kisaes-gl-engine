@@ -36,6 +36,12 @@ import {
   ACCRUAL_COLS, CASH_COLS, lensIsEmpty, lensSql, loadGroupTags, type LineLens,
 } from './report-lens.js';
 import { equityEarnings, earningsTotal } from './equity-earnings.js';
+import { andVisible, hiddenAccountIds, isHiddenSql } from './visibility.js';
+
+/** U-33: true when the viewer has hidden accounts; undefined (absent from JSON) otherwise. */
+function noticeOf(hidden: readonly string[]): true | undefined {
+  return hidden.length > 0 ? true : undefined;
+}
 
 // Money parsers. Reports expose `number` to the UI, but every SUM /
 // DIFFERENCE runs through Decimal so aggregating hundreds of rows
@@ -735,8 +741,10 @@ export async function executeCashBasisIn(exec: Pick<typeof db, 'execute'>, query
 // Exact reports: the tenant's accounts with their parents, for the
 // account tree on P&L / Balance Sheet / Trial Balance rows.
 export async function loadAccountTree(tenantId: string): Promise<Map<string, AccountTreeNode>> {
+  // Hidden accounts (U-33) are not in the tree, so no ancestor row is ever
+  // re-added for one.
   const res = await db.execute(sql`
-    SELECT id, parent_id, name, account_number, account_type FROM accounts WHERE tenant_id = ${tenantId}
+    SELECT id, parent_id, name, account_number, account_type FROM accounts WHERE tenant_id = ${tenantId}${andVisible(await hiddenAccountIds(), sql`id`)}
   `);
   const map = new Map<string, AccountTreeNode>();
   for (const r of res.rows as Array<Record<string, unknown>>) {
@@ -889,6 +897,8 @@ export interface PLResult {
   grossProfitExact?: string | null;
   operatingIncomeExact?: string | null;
   netIncomeExact?: string;
+  /** U-33: true when the viewer has hidden (sensitive) accounts; absent otherwise. */
+  hiddenNotice?: true;
   // Additive fields — present only when built with groupBy: 'detail_type'.
   groupBy?: ReportGroupBy;
   groups?: {
@@ -934,6 +944,10 @@ export async function buildProfitAndLoss(
   // applies to both bases.
   const tagJoinClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const grouped = groupBy !== null;
+  // Sensitive accounts (U-33): hidden rows left out at the account join, so
+  // every total follows; empty set = identical SQL.
+  const hidden = await hiddenAccountIds();
+  const visible = andVisible(hidden, sql`a.id`);
 
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
@@ -944,7 +958,7 @@ export async function buildProfitAndLoss(
         FROM accounts a
         LEFT JOIN cb_lines jl ON jl.account_id = a.id${tagJoinClause}
         WHERE a.tenant_id = ${tenantId}
-          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')${visible}
         GROUP BY a.id, a.account_number, a.name, a.account_type, a.detail_type
         ORDER BY a.account_number, a.name
       `)
@@ -961,7 +975,7 @@ export async function buildProfitAndLoss(
             AND ${companyCond} AND ${adjustingCond(adjusting, 'is_adjusting')}
           )${tagJoinClause}
         WHERE a.tenant_id = ${tenantId}
-          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')
+          AND a.account_type IN ('revenue', 'cogs', 'expense', 'other_revenue', 'other_expense')${visible}
         GROUP BY a.id ORDER BY a.account_number, a.name
       `);
 
@@ -1073,6 +1087,8 @@ export async function buildProfitAndLoss(
     operatingIncome,
     netIncome,
     ...exactTotals,
+    // U-33: present (true) only when the viewer has hidden accounts.
+    ...(hidden.length > 0 ? { hiddenNotice: true as const } : {}),
     ...(grouped
       ? await (async () => {
           // Detail types: stock groups keep first-occurrence order,
@@ -1120,6 +1136,10 @@ export async function buildBalanceSheet(
   const adjusting = bsOpts.adjusting ?? null;
   const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const grouped = groupBy !== null;
+  // Sensitive accounts (U-33): rows and the earnings rows leave hidden
+  // accounts out, so the sheet does not balance for that viewer (Q-P29a).
+  const hidden = await hiddenAccountIds();
+  const visible = andVisible(hidden, sql`a.id`);
   // Cash basis balance sheet: built from the virtual cash-basis ledger
   // (cashBasisLinesWith). AR/AP documents drop out entirely, payment
   // AR/AP legs are replaced by scaled document distributions, so:
@@ -1138,7 +1158,7 @@ export async function buildBalanceSheet(
           COALESCE(SUM(jl.credit), 0) as total_credit
         FROM accounts a
         LEFT JOIN cb_lines jl ON jl.account_id = a.id${tagClause}
-        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
+        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')${visible}
         GROUP BY a.id, a.account_number, a.name, a.account_type, a.detail_type, a.system_tag
         ORDER BY a.account_number, a.name
       `)
@@ -1154,7 +1174,7 @@ export async function buildBalanceSheet(
             AND txn_date <= ${asOfDate}
             AND ${companyCond} AND ${adjustingCond(adjusting, 'is_adjusting')}
           )${tagClause}
-        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')
+        WHERE a.tenant_id = ${tenantId} AND a.account_type IN ('asset', 'liability', 'equity')${visible}
         GROUP BY a.id ORDER BY a.account_number, a.name
       `);
 
@@ -1315,6 +1335,8 @@ export async function buildBalanceSheet(
     liabilities: sections.liabilities, totalLiabilities,
     equity: sections.equity, totalEquity,
     totalLiabilitiesAndEquity: legacyNum(liabD.plus(equityD)),
+    // U-33: present (true) only when the viewer has hidden accounts.
+    ...(hidden.length > 0 ? { hiddenNotice: true as const } : {}),
     ...(exactMode
       ? {
           totalAssetsExact: exactStr(assetsD),
@@ -1851,15 +1873,17 @@ export async function buildExpenseByCategory(
   const hasIdFilter = !!accountIds && accountIds.length > 0;
   // colRef is a code-controlled constant ('a.id' / 'id'), never user
   // input; the ids themselves are bound parameters.
+  // Sensitive accounts (U-33): hidden accounts never match (empty set: no change).
+  const hiddenIds = await hiddenAccountIds();
   const idFilter = (colRef: string) =>
-    hasIdFilter
+    (hasIdFilter
       ? sql`AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
-      : sql``;
+      : sql``).append(andVisible(hiddenIds, sql.raw(colRef)));
   // Cash-basis filters over the virtual ledger (cb_lines).
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
-  const cbId = hasIdFilter
+  const cbId = (hasIdFilter
     ? sql`AND cb.account_id IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
-    : sql``;
+    : sql``).append(andVisible(hiddenIds, sql`cb.account_id`));
 
   const rows = basis === 'cash'
     ? await executeCashBasis(sql`
@@ -2128,10 +2152,12 @@ export async function buildAccountDetailReport(
   const creditNormal = normalSide === 'credit';
   const tagClause = tagId ? sql`AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const hasIdFilter = !!accountIds && accountIds.length > 0;
+  // Sensitive accounts (U-33): hidden accounts never match (empty set: no change).
+  const hiddenIds = await hiddenAccountIds();
   const idFilter = (colRef: string) =>
-    hasIdFilter
+    (hasIdFilter
       ? sql`AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
-      : sql``;
+      : sql``).append(andVisible(hiddenIds, sql.raw(colRef)));
   // accountTypes / normalSide are code-controlled constants, never user input.
   const typeList = sql.join(accountTypes.map((t) => sql`${t}`), sql`, `);
   const sideCol = sql.raw(creditNormal ? 'jl.credit' : 'jl.debit');
@@ -2144,9 +2170,9 @@ export async function buildAccountDetailReport(
   const basis = opts.basis ?? 'accrual';
   const cbSideCol = sql.raw(creditNormal ? 'cb.credit' : 'cb.debit');
   const cbTag = tagId ? sql`AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
-  const cbId = hasIdFilter
+  const cbId = (hasIdFilter
     ? sql`AND cb.account_id IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
-    : sql``;
+    : sql``).append(andVisible(hiddenIds, sql`cb.account_id`));
 
   // Summary total per account (U-216, reports-revenue-net-v1): the natural
   // net — normal side minus the other side — like the P&L, Expenses by
@@ -2924,6 +2950,9 @@ export async function buildCheckRegister(
   if (dateRange?.startDate) conditions.push(sql`t.txn_date >= ${dateRange.startDate}`);
   if (dateRange?.endDate) conditions.push(sql`t.txn_date <= ${dateRange.endDate}`);
   if (tagId) conditions.push(sql`jl.tag_id IN ${tagIn(tagId)}`);
+  // Sensitive accounts (U-33): a hidden account's register is empty.
+  const hiddenIds = await hiddenAccountIds();
+  if (hiddenIds.length > 0) conditions.push(sql`NOT (${isHiddenSql(hiddenIds, sql`jl.account_id`)})`);
 
   const rows = await db.execute(sql`
     SELECT t.id, t.txn_type, t.txn_number, t.txn_date, t.memo,
@@ -3057,10 +3086,12 @@ export async function buildGeneralLedger(
   const hasIdFilter = !!accountIds && accountIds.length > 0;
   // colRef is a code-controlled constant, never user input; the ids
   // themselves are bound parameters.
+  // Sensitive accounts (U-33): hidden accounts never match (empty set: no change).
+  const hiddenIds = await hiddenAccountIds();
   const idFilter = (colRef: string) =>
-    hasIdFilter
+    (hasIdFilter
       ? sql` AND ${sql.raw(colRef)} IN (${sql.join(accountIds!.map((id) => sql`${id}`), sql`, `)})`
-      : sql``;
+      : sql``).append(andVisible(hiddenIds, sql.raw(colRef)));
   // Evaluated as an inline conjunct. Empty sql`` is a no-op append.
   const tagClause = tagId ? sql` AND jl.tag_id IN ${tagIn(tagId)}` : sql``;
   const cbTag = tagId ? sql` AND cb.tag_id IN ${tagIn(tagId)}` : sql``;
@@ -3529,6 +3560,11 @@ export async function buildTrialBalance(
   const tagExistsClause = tagId
     ? sql` AND EXISTS (SELECT 1 FROM journal_lines jl2 WHERE jl2.transaction_id = transactions.id AND jl2.tenant_id = ${tenantId} AND jl2.tag_id IN ${tagIn(tagId)})`
     : sql``;
+  // Sensitive accounts (U-33): hidden rows and their part of the
+  // retained-earnings row are left out, so the TB does not balance for that
+  // viewer (Q-P29a); the notice says so.
+  const hidden = await hiddenAccountIds();
+  const visible = andVisible(hidden, sql`a.id`);
 
   // For balance sheet accounts (asset, liability, equity): show cumulative balance through end date
   // For income statement accounts (revenue, expense): show balance only from fiscal year start through end date
@@ -3566,7 +3602,7 @@ export async function buildTrialBalance(
           ), 0) as total_credit
         FROM accounts a
         LEFT JOIN cb_lines cb ON cb.account_id = a.id ${cashTagClause}
-        WHERE a.tenant_id = ${tenantId}
+        WHERE a.tenant_id = ${tenantId}${visible}
         GROUP BY a.id
         HAVING COALESCE(SUM(cb.debit), 0) > 0 OR COALESCE(SUM(cb.credit), 0) > 0
         ORDER BY a.account_number, a.name
@@ -3600,7 +3636,7 @@ export async function buildTrialBalance(
         ${tagExistsClause}
       )
     LEFT JOIN transactions t ON t.id = jl.transaction_id
-    WHERE a.tenant_id = ${tenantId}
+    WHERE a.tenant_id = ${tenantId}${visible}
     GROUP BY a.id
     HAVING COALESCE(SUM(jl.debit), 0) > 0 OR COALESCE(SUM(jl.credit), 0) > 0
     ORDER BY a.account_number, a.name
@@ -3713,9 +3749,10 @@ export async function buildTrialBalance(
     return {
       title: 'Trial Balance', startDate, endDate, data: out, totalDebits, totalCredits,
       totalDebitsExact: exactStr(td), totalCreditsExact: exactStr(tc),
+      hiddenNotice: noticeOf(hidden),
     };
   }
-  return { title: 'Trial Balance', startDate, endDate, data, totalDebits, totalCredits };
+  return { title: 'Trial Balance', startDate, endDate, data, totalDebits, totalCredits, hiddenNotice: noticeOf(hidden) };
 }
 
 // Account Activity Summary — per-account TOTAL DEBITS and TOTAL CREDITS
@@ -3829,6 +3866,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
   const lens = lensIsEmpty(filters?.lens) ? null : filters!.lens!;
   const ids = filters?.accountIds && filters.accountIds.length > 0 ? filters.accountIds : null;
   const idsIn = (col: string) => sql`${sql.raw(col)} IN (${sql.join(ids!.map((id) => sql`${id}`), sql`, `)})`;
+  const hiddenIds = await hiddenAccountIds();
   // Cash basis: list the virtual cash-basis ledger (income/expense recognition
   // moved to payment dates), one row per cash-basis line. Accrual: the posted
   // journal (excluding cash-only entries).
@@ -3855,7 +3893,7 @@ export async function buildTransactionList(tenantId: string, filters?: {
       JOIN accounts a ON a.id = cb.account_id AND a.tenant_id = ${tenantId}
       LEFT JOIN contacts c ON c.id = cb.txn_contact_id AND c.tenant_id = ${tenantId}
       LEFT JOIN tags tg ON tg.id = cb.tag_id AND tg.tenant_id = ${tenantId}
-      WHERE (cb.debit <> 0 OR cb.credit <> 0) ${typeCond} ${acctCond} ${tagCond} ${idsCond} ${lensCond}
+      WHERE (cb.debit <> 0 OR cb.credit <> 0) ${typeCond} ${acctCond} ${tagCond} ${idsCond} ${lensCond}${andVisible(hiddenIds, sql`a.id`)}
       ORDER BY cb.txn_date DESC, cb.transaction_id, cb.line_order
     `);
     return { title: 'Transaction List', data: cashRows.rows };
@@ -3874,6 +3912,9 @@ export async function buildTransactionList(tenantId: string, filters?: {
   }
   if (ids) conditions.push(idsIn('jl.account_id'));
   if (lens) conditions.push(lensSql(tenantId, lens, ACCRUAL_COLS));
+  // Sensitive accounts (U-33): hidden lines are left out; a mixed entry
+  // shows only its visible lines (no condition when nothing is hidden).
+  if (hiddenIds.length > 0) conditions.push(sql`NOT (${isHiddenSql(hiddenIds, sql`jl.account_id`)})`);
 
   // One row per journal LINE (not per transaction), so a split shows each of
   // its lines with its account instead of a single "Split" row. `amount` is

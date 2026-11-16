@@ -13,6 +13,7 @@ import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
 import { toCsvRow } from '../services/export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
+import { hiddenAccountIds } from '../services/visibility.js';
 
 export const auditRouter = Router();
 auditRouter.use(authenticate);
@@ -106,10 +107,41 @@ auditRouter.get('/', describe({
   ]);
 
   res.json({
-    data: dataResult.rows,
+    data: await redactHiddenRows(req.tenantId, dataResult.rows as Array<Record<string, unknown>>),
     total: parseInt((countResult.rows as any[])[0]?.total || '0'),
   });
 });
+
+/**
+ * Sensitive accounts (U-33, Q-P29f): for a viewer with hidden accounts, a row
+ * about a hidden account, about a transaction with a line on one, or whose
+ * before/after names a hidden account id stays listed with before_data and
+ * after_data null and `redacted: true`. Other rows are unchanged (no
+ * `redacted` key). Nothing happens when no account is hidden.
+ */
+async function redactHiddenRows(tenantId: string, rows: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
+  const hidden = await hiddenAccountIds();
+  if (hidden.length === 0 || rows.length === 0) return rows;
+  const hiddenSet = new Set(hidden);
+  const entityIds = [...new Set(rows.map((r) => r['entity_id']).filter((v): v is string => typeof v === 'string'))];
+  const hiddenTxns = new Set<string>();
+  if (entityIds.length > 0) {
+    const res = await db.execute<{ id: string }>(sql`
+      SELECT DISTINCT transaction_id::text AS id FROM journal_lines
+      WHERE tenant_id = ${tenantId}
+        AND transaction_id IN (${sql.join(entityIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        AND account_id IN (${sql.join(hidden.map((id) => sql`${id}::uuid`), sql`, `)})`);
+    for (const r of res.rows) hiddenTxns.add(r.id);
+  }
+  return rows.map((r) => {
+    const id = typeof r['entity_id'] === 'string' ? r['entity_id'] : null;
+    const text = `${JSON.stringify(r['before_data'] ?? null)} ${JSON.stringify(r['after_data'] ?? null)}`;
+    const touches = (id !== null && (hiddenSet.has(id) || hiddenTxns.has(id))) || hidden.some((h) => text.includes(h));
+    if (!touches) return r;
+    // A hidden account's own id is withheld too (its rows stay listed).
+    return { ...r, entity_id: id !== null && hiddenSet.has(id) ? null : r['entity_id'], before_data: null, after_data: null, redacted: true };
+  });
+}
 
 // Export audit log as CSV
 auditRouter.get('/export', async (req, res) => {
@@ -129,13 +161,16 @@ auditRouter.get('/export', async (req, res) => {
   // — a synthetic entity_id starting with `=` would inject a
   // HYPERLINK formula when an accountant opened the export in Excel.
   let csv = 'Timestamp,Action,Entity Type,Entity ID\n';
+  // Sensitive accounts (U-33): a hidden account's id is withheld, as in the list.
+  const hidden = new Set(await hiddenAccountIds());
   for (const row of result.rows as Array<{
     created_at: string | Date;
     action: string;
     entity_type: string;
     entity_id: string | null;
   }>) {
-    csv += toCsvRow([row.created_at, row.action, row.entity_type, row.entity_id]) + '\n';
+    const entityId = row.entity_id && hidden.has(row.entity_id) ? null : row.entity_id;
+    csv += toCsvRow([row.created_at, row.action, row.entity_type, entityId]) + '\n';
   }
 
   res.setHeader('Content-Type', 'text/csv');

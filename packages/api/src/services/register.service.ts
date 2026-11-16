@@ -9,6 +9,7 @@ import { accounts, journalLines, transactions, contacts, reconciliationLines, re
 import { AppError } from '../utils/errors.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { isBankDetailType } from './bank-account-types.js';
+import { hiddenAccountIds, isHiddenAccount, isHiddenSql } from './visibility.js';
 import DecimalLib from 'decimal.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
@@ -85,6 +86,9 @@ interface RegisterLine<M extends RegisterMoney = RegisterMoney> {
   hasSplits: boolean;
   isEditable: boolean;
   status: string;
+  /** U-33: true when the other side includes an account hidden from the viewer
+   *  (categoryName/accountName are then null). Absent otherwise. */
+  hiddenSplit?: true;
 }
 
 // Determine which inline transaction types are allowed per account detail type
@@ -135,7 +139,9 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
   });
-  if (!account) throw AppError.notFound('Account not found');
+  // Sensitive accounts (U-33): a hidden account's register is not found.
+  const hidden = await hiddenAccountIds();
+  if (!account || hidden.includes(account.id)) throw AppError.notFound('Account not found');
 
   const debitNormal = isDebitNormal(account.accountType);
   const money = moneyFormatter(filters.exact);
@@ -326,7 +332,8 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
       rec.is_cleared,
       rec.is_reconciled,
       cat.category_name,
-      cat.category_account_id,
+      cat.category_account_id,${hidden.length > 0 ? sql`
+      cat.has_hidden,` : sql``}
       l.running_balance::text AS running_balance
     ${filteredFrom}
     -- Resolve the "other side" account(s) for the transaction. If exactly one
@@ -341,7 +348,8 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
         CASE
           WHEN COUNT(DISTINCT oa.id) = 1 THEN MIN(oa.id::text)
           ELSE NULL
-        END AS category_account_id
+        END AS category_account_id${hidden.length > 0 ? sql`,
+        bool_or(${isHiddenSql(hidden, sql`oa.id`)}) AS has_hidden` : sql``}
       FROM journal_lines ojl
       JOIN accounts oa ON oa.id = ojl.account_id AND oa.tenant_id = ${tenantId}
       WHERE ojl.transaction_id = l.transaction_id
@@ -400,8 +408,12 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
 
     // The real "other side" account, resolved via the lateral join above.
     // A transaction with >1 distinct other-side account is a split.
-    const categoryName: string | null = row.category_name ?? null;
-    const categoryAccountId: string | null = row.category_account_id ?? null;
+    // Sensitive accounts (U-33): when any other-side line is on a hidden
+    // account the caption is withheld (null) and the row says hiddenSplit.
+    // The row's own amount, payee, memo and running balance stay as they are.
+    const hiddenSplit = row.has_hidden === true;
+    const categoryName: string | null = hiddenSplit ? null : (row.category_name ?? null);
+    const categoryAccountId: string | null = hiddenSplit ? null : (row.category_account_id ?? null);
 
     // Payee fallback: prefer the contact display name, then fall back to a
     // human-readable label for imported rows that have no linked contact
@@ -428,8 +440,10 @@ async function buildRegister(tenantId: string, accountId: string, filters: Regis
       reconciliationStatus,
       hasAttachments: false, // would need join to attachments
       hasSplits: splitCounts.has(row.transaction_id),
-      isEditable: reconciliationStatus !== 'reconciled' && row.status !== 'void',
+      isEditable: !hiddenSplit && reconciliationStatus !== 'reconciled' && row.status !== 'void',
       status: row.status,
+      // Present (true) only on rows with a hidden other-side account.
+      ...(hiddenSplit ? { hiddenSplit: true as const } : {}),
     };
   });
 
@@ -464,7 +478,7 @@ export async function getRegisterSummary(
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)),
   });
-  if (!account) throw AppError.notFound('Account not found');
+  if (!account || (await isHiddenAccount(account.id))) throw AppError.notFound('Account not found');
 
   // Current balance (the stored accounts.balance, as before)
   const currentBalanceDec = new Decimal(account.balance ?? '0');

@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import type { AccessLevel, PermissionAction } from '../types/permissions.js';
+import type { AccessLevel, PermissionAction, ResourceDef } from '../types/permissions.js';
 import {
   PERMISSION_RESOURCES,
   getResourceDef,
@@ -50,10 +50,14 @@ export interface ResolvePermissionsInput {
   overrides?: PermissionMap | null;
 }
 
-function fillAll(level: AccessLevel): EffectivePermissions {
+// Role defaults. `elevated` resources (U-33 sensitive accounts) are granted
+// by default only when `withElevated` is true (super admin, owner,
+// accountant); everyone else resolves them to `none` until a template or
+// override grants them.
+function fillAll(level: AccessLevel, withElevated: boolean): EffectivePermissions {
   const out = {} as EffectivePermissions;
-  for (const r of PERMISSION_RESOURCES) {
-    out[r.key] = cap(level, r.writable);
+  for (const r of PERMISSION_RESOURCES as readonly ResourceDef[]) {
+    out[r.key as ResourceKey] = r.elevated && !withElevated ? 'none' : cap(level, r.writable);
   }
   return out;
 }
@@ -75,7 +79,7 @@ function fillAll(level: AccessLevel): EffectivePermissions {
 export function resolveEffectivePermissions(input: ResolvePermissionsInput): EffectivePermissions {
   const { role, userType, isSuperAdmin, hasPermissionRow, templateMap, overrides } = input;
 
-  if (isSuperAdmin) return fillAll('full');
+  if (isSuperAdmin) return fillAll('full', true);
 
   // Template-driven path: a bookkeeper or external client user who has been
   // given a permission row resolves entirely from template + overrides.
@@ -100,15 +104,16 @@ export function resolveEffectivePermissions(input: ResolvePermissionsInput): Eff
   switch (role) {
     case 'owner':
     case 'accountant':
-      return fillAll('full');
+      return fillAll('full', true);
     case 'readonly':
-      return fillAll('view');
+      return fillAll('view', false);
     case 'bookkeeper':
       // Legacy compatibility: a bookkeeper who has never been given a
-      // permission row behaves exactly as today (full access).
-      return fillAll('full');
+      // permission row behaves exactly as today (full access), except for
+      // elevated resources, which nobody held before they existed.
+      return fillAll('full', false);
     default:
-      return fillAll('none');
+      return fillAll('none', false);
   }
 }
 

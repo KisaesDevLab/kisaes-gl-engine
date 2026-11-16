@@ -26,9 +26,9 @@ describe('resolveEffectivePermissions — role defaults', () => {
     }
   });
 
-  it('readonly gets view everywhere', () => {
+  it('readonly gets view everywhere except elevated resources', () => {
     const perms = resolveEffectivePermissions({ role: 'readonly' });
-    for (const key of everyKey) expect(perms[key]).toBe('view');
+    for (const key of everyKey) expect(perms[key]).toBe(key === 'sensitive_accounts' ? 'none' : 'view');
   });
 
   it('super-admin overrides role and gets full', () => {
@@ -142,5 +142,46 @@ describe('can', () => {
     expect(can({ invoices: 'full' }, 'invoices', 'delete')).toBe(true);
     expect(can({ invoices: 'none' }, 'invoices', 'read')).toBe(false);
     expect(can(undefined, 'invoices', 'read')).toBe(false);
+  });
+});
+
+describe('resolveEffectivePermissions — sensitive_accounts truth table (U-33)', () => {
+  const level = (input: Parameters<typeof resolveEffectivePermissions>[0]) =>
+    resolveEffectivePermissions(input).sensitive_accounts;
+
+  it('super admin, owner and accountant see sensitive accounts', () => {
+    expect(level({ role: 'bookkeeper', isSuperAdmin: true })).toBe('view');
+    expect(level({ role: 'owner' })).toBe('view');
+    expect(level({ role: 'accountant' })).toBe('view');
+  });
+
+  it('a bookkeeper with no permission row does not (legacy full access stops here)', () => {
+    const perms = resolveEffectivePermissions({ role: 'bookkeeper', hasPermissionRow: false });
+    expect(perms.sensitive_accounts).toBe('none');
+    expect(perms.accounts).toBe('full');
+  });
+
+  it('a bookkeeper or client user with a row: override, else template, else none', () => {
+    for (const userType of ['staff', 'client'] as const) {
+      const role = userType === 'client' ? 'readonly' : 'bookkeeper';
+      expect(level({ role, userType, hasPermissionRow: true })).toBe('none');
+      expect(level({ role, userType, hasPermissionRow: true, templateMap: { sensitive_accounts: 'view' } })).toBe('view');
+      expect(level({
+        role, userType, hasPermissionRow: true,
+        templateMap: { sensitive_accounts: 'view' }, overrides: { sensitive_accounts: 'none' },
+      })).toBe('none');
+      expect(level({ role, userType, hasPermissionRow: true, overrides: { sensitive_accounts: 'full' } })).toBe('view');
+    }
+  });
+
+  it('readonly never sees them by default; unknown roles see nothing', () => {
+    expect(level({ role: 'readonly' })).toBe('none');
+    expect(level({ role: 'weird' })).toBe('none');
+    expect(level({ role: undefined })).toBe('none');
+  });
+
+  it('is a read-only Manage row in the catalog', () => {
+    const row = PERMISSION_RESOURCES.find((r) => r.key === 'sensitive_accounts');
+    expect(row).toMatchObject({ label: 'Sensitive accounts', group: 'Manage', writable: false, elevated: true });
   });
 });
