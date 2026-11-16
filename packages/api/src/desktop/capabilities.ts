@@ -1421,5 +1421,19 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * control accounts stay visible; a duplicate account number is 409.
    */
   'sensitive-accounts-v1',
+  /**
+   * Report areas (U-227, ClientLedger P29; no migration). Besides `reports` read, every report route needs read on
+   * the area its data belongs to (services/report-areas.ts): A/R reports and customer statements `invoices`, A/P and
+   * 1099 reports `bills`, bank and reconciliation reports `banking`, sales tax reports `sales_tax`, inventory reports
+   * `items`, closing-date exceptions `audit_log`; the statements, ledgers, journal, account reports, expense and
+   * revenue by category, tax estimate, report packs, Ask and Budget vs. Actual need the new right `financial_reports`
+   * (none | view, group Reporting). A template or override that does not name `financial_reports` takes its `reports`
+   * level (`inheritsFrom` on the resource catalog); an explicit level wins. POST /reports/email takes the area of
+   * body reportKey (route slug or catalog key, `_` or `-`); a missing or unknown key, and any unknown /reports path,
+   * needs `financial_reports`. Refused with 403 PERMISSION_DENIED. Report Builder: a `gl` section needs
+   * `financial_reports` (a denied row on /run, 403 on /run/detail). Saved report definitions keep needing `reports`
+   * only. Owner, accountant, readonly and a bookkeeper with no permission row are unchanged.
+   */
+  'report-areas-v1',
 ];
 

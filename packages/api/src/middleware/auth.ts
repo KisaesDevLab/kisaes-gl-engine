@@ -15,6 +15,7 @@ import { consumeDownloadToken } from '../utils/download-token.js';
 import { isDesktop } from '../desktop/profile.js';
 import { workspaceFence } from '../desktop/workspace.js';
 import { hiddenAccountIdsFor, refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
+import { refuseReportOutsideArea } from '../services/report-areas.js';
 
 declare global {
   namespace Express {
@@ -63,7 +64,9 @@ function parseExpiryToSeconds(expiry: string): number {
  * success the rest of the request runs with this principal as the viewer
  * for sensitive accounts (U-33, services/visibility.ts), and an unconverted
  * reporting route is refused (403 SENSITIVE_HIDDEN) when the viewer has
- * hidden accounts. Mounting it twice is harmless.
+ * hidden accounts. A report route outside the viewer's report areas is
+ * refused with 403 PERMISSION_DENIED (U-227, services/report-areas.ts).
+ * Mounting it twice is harmless.
  */
 export async function authenticate(req: Request, res: Response, next: NextFunction) {
   return authenticatePrincipal(req, res, (err?: unknown) => {
@@ -72,6 +75,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       return;
     }
     refuseUnconvertedReport(req)
+      .then(() => refuseReportOutsideArea(req))
       .then(() => refuseHiddenIds(req))
       // Resolve the hidden set now, on the pool, so no service ever needs a
       // second pool connection for it while holding a transaction open.

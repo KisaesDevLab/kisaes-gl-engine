@@ -32,4 +32,9 @@ export interface ResourceDef {
    *  A template or override can still grant it to a bookkeeper or a
    *  client user (U-33 sensitive accounts). */
   elevated?: boolean;
+  /** A template or override that does not name this key takes the level of
+   *  `inheritsFrom` (then capped), so a key added later keeps the access
+   *  existing templates already gave (U-227 `financial_reports`). An
+   *  explicit level, `none` included, always wins. */
+  inheritsFrom?: string;
 }

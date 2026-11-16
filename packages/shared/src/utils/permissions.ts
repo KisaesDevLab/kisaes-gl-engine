@@ -88,11 +88,14 @@ export function resolveEffectivePermissions(input: ResolvePermissionsInput): Eff
   // (the switch below) until that row exists.
   if (isCustomizablePrincipal(role, userType) && hasPermissionRow) {
     const out = {} as EffectivePermissions;
-    for (const r of PERMISSION_RESOURCES) {
-      const fromTemplate = templateMap?.[r.key];
-      const fromOverride = overrides?.[r.key];
-      const level: AccessLevel = fromOverride ?? fromTemplate ?? 'none';
-      out[r.key] = cap(level, r.writable);
+    const explicit = (key: ResourceKey): AccessLevel | undefined => overrides?.[key] ?? templateMap?.[key];
+    for (const r of PERMISSION_RESOURCES as readonly ResourceDef[]) {
+      const key = r.key as ResourceKey;
+      // U-227: a key the template and overrides leave out takes its
+      // parent's level (one step; parents never inherit).
+      const parent = r.inheritsFrom as ResourceKey | undefined;
+      const level: AccessLevel = explicit(key) ?? (parent ? explicit(parent) : undefined) ?? 'none';
+      out[key] = cap(level, r.writable);
     }
     return out;
   }

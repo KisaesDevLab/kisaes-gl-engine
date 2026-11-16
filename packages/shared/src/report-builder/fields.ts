@@ -105,7 +105,7 @@ export type RbSign = 'credit_minus_debit' | 'debit_minus_credit' | 'natural' | '
 
 /** Rights areas (shared/src/constants/permissions.ts resources), read access. */
 export type RbRight =
-  | 'reports' | 'invoices' | 'receive_payment' | 'items' | 'bills' | 'pay_bills' | 'checks' | 'banking' | 'sales_tax';
+  | 'reports' | 'financial_reports' | 'invoices' | 'receive_payment' | 'items' | 'bills' | 'pay_bills' | 'checks' | 'banking' | 'sales_tax';
 
 export interface RbSourceInfo {
   key: RbSource;
@@ -188,7 +188,8 @@ export const RB_SOURCE_INFO: Record<RbSource, RbSourceInfo> = {
     sign: 'natural', openItems: false,
     measures: ['amount', 'debit', 'credit', 'balance', 'tb_net', 'count'], accrualOnly: [],
     filters: [...LINE_FILTERS, 'cleared'], groupBy: LINE_GROUPS, detailFields: [...LINE_FIELDS, 'cleared', 'running_balance'],
-    rights: ['reports'], tiesTo: 'general-ledger',
+    // U-227: every posted line, so the financial reports area.
+    rights: ['reports', 'financial_reports'], tiesTo: 'general-ledger',
   },
   bank: {
     key: 'bank', caption: 'Bank accounts',
