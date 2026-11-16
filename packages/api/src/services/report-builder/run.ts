@@ -1396,7 +1396,7 @@ export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSig
       const tree = buildTree(facts, s.groupBy.length, n);
       addInto(vals, tree.vals);
       // A Trial Balance line's debit / credit: its innermost lines' sides, as the run shows them (U-225).
-      if (pairs) pairs = tbPairs(plan, tree, s.groupBy.length - keys.length);
+      if (pairs) pairs = tbPairs(plan, tree, s.groupBy.length);
     }
     if (earnings !== 'none') {
       const pre = await bucketFacts(ctx, [{ sid: 'e', s: earningsSection(s), pathKeys: [], earningsOf: true }]);
