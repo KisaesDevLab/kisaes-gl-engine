@@ -1436,8 +1436,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * DEFINITION_INVALID NOT_IN_COMPANY, as an id not in the company. Report files: export names a hidden account
    * {kind: account, missing: true}; the import preview never matches it (by name or number) nor offers it as a
    * candidate, and a choice of it is 400 VALIDATION_ERROR {field: choices}, as an unknown row. AI draft and Ask:
-   * hidden account names are never in the prompt, never resolved and never kept as text. Other routes under the
-   * refuse prefixes keep refusing (403 SENSITIVE_HIDDEN) until converted. Nothing changes until an account is marked.
+   * hidden account names are never in the prompt, never resolved and never kept as text. Standard reports converted
+   * with it (they answer instead of refusing, hidden accounts left out, hiddenNotice as sensitive-accounts-v1 where
+   * the report reads accounts): A/R and A/P agings (summary, detail), unpaid bills, invoice list, customer balance
+   * summary and detail, vendor balance summary, bill payment history, vendor statement, transactions by vendor
+   * (documents only; a document total on its control account is the accepted limit), expense by category, sales by
+   * customer, sales by item, journal entry report, account report, check register, bank balances, and every
+   * dashboard panel (/dashboard/summary, snapshot, trend, cash-position, account-balances, receivables, payables,
+   * action-items, budget-performance, banking-health; revenue, expenses and budget lines leave hidden accounts out).
+   * Other routes under the refuse prefixes (cash flow, expense by vendor, account activity summary, budgets and
+   * Budget vs. Actual, sales tax, inventory, 1099, report packs, email, exports, chat, AI, /api/v2) keep refusing
+   * (403 SENSITIVE_HIDDEN) until converted. Nothing changes until an account is marked.
    */
   'sensitive-accounts-builder-v1',
   /**

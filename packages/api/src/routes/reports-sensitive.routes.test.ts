@@ -128,12 +128,28 @@ describe('statements and ledger reports for a viewer without sensitive_accounts'
     expect(own.text).toContain('1234.57');
   });
 
+  it('dashboard (E11): revenue and expenses leave hidden accounts out, exact strings', async () => {
+    const bk = await h.call('bk', 'GET', '/api/v1/dashboard/snapshot?exact=1&asOf=2026-03-31');
+    expect(bk.status).toBe(200);
+    expect(bk.json.mtd).toEqual({ revenue: '1000.0000', expenses: '15.0000', netIncome: '985.0000' });
+    noCanary(bk.text);
+    const own = await h.call('owner', 'GET', '/api/v1/dashboard/snapshot?exact=1&asOf=2026-03-31');
+    expect(own.json.mtd).toEqual({ revenue: '1000.0000', expenses: '5570.6600', netIncome: '-4570.6600' });
+    const sum = await h.call('bk', 'GET', '/api/v1/dashboard/summary?exact=1&asOf=2026-03-31');
+    expect(sum.status).toBe(200);
+    expect(sum.json.snapshot.mtd.expenses).toBe('15.0000');
+    expect(sum.json.errors).toEqual([]);
+    noCanary(sum.text);
+    const trend = await h.call('bk', 'GET', '/api/v1/dashboard/trend?exact=1&asOf=2026-03-31&months=1');
+    expect(trend.json.data[0].expenses).toBe('15.0000');
+  });
+
   it('unconverted report routes refuse the bookkeeper, not the owner', async () => {
-    for (const p of ['/api/v1/reports/expense-by-category', '/api/v1/reports/ar-aging-summary', '/api/v1/chat/conversations', '/api/v1/dashboard/summary']) {
+    for (const p of ['/api/v1/reports/cash-flow', '/api/v1/reports/sales-tax-liability', '/api/v1/chat/conversations', '/api/v1/budgets']) {
       const r = await h.call('bk', 'GET', p);
       expect(r.status, p).toBe(403);
       expect(r.json.error.code).toBe('SENSITIVE_HIDDEN');
     }
-    expect((await h.call('owner', 'GET', `/api/v1/reports/expense-by-category?${R}`)).status).toBe(200);
+    expect((await h.call('owner', 'GET', `/api/v1/reports/cash-flow?${R}`)).status).toBe(200);
   });
 });

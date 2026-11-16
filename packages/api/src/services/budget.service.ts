@@ -11,6 +11,7 @@ import * as reportService from './report.service.js';
 import { env } from '../config/env.js';
 import * as exact from './budget-exact.service.js';
 import { claimAndRecord } from './idempotency.service.js';
+import { andVisible, hiddenAccountIds } from './visibility.js';
 
 // U-203 (budgets-exact-v1): the read/write paths take an optional company
 // (the budgets router passes the request's; MyBooks Online callers without
@@ -137,11 +138,12 @@ export async function remove(tenantId: string, id: string, userId?: string, comp
 
 export async function getLines(tenantId: string, budgetId: string, companyId: string | null = null) {
   await getById(tenantId, budgetId, companyId);
+  // Lines of accounts hidden from the viewer (U-33) are left out, so Budget vs. Actual (and the dashboard) never show them.
   const lines = await db.execute(sql`
     SELECT bl.*, a.name as account_name, a.account_number, a.account_type
     FROM budget_lines bl
     JOIN accounts a ON a.id = bl.account_id
-    WHERE bl.budget_id = ${budgetId}
+    WHERE bl.budget_id = ${budgetId}${andVisible(await hiddenAccountIds(), sql`a.id`)}
     ORDER BY a.account_type, a.account_number, a.name
   `);
   return lines.rows;

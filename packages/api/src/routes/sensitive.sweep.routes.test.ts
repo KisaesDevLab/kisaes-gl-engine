@@ -165,6 +165,17 @@ function canariesIn(text: string, opts: { idsAllowed?: boolean } = {}): string[]
  */
 const WRITES_TESTED_ELSEWHERE = ['/api/v1/report-builder/definitions', '/api/v1/report-builder/definition-groups'];
 
+/**
+ * Accepted gaps (Q-P29a, §3): a total over every visible line of a mixed entry is minus its hidden line. Removed from
+ * the text before the scan, in that signed form only, so the hidden line itself (a debit of 1234.57) is still a leak.
+ */
+const ACCEPTED_GAPS: Array<{ path: string; text: string }> = [
+  // The Journal's totals: the mixed entry's visible lines (5.00 debit, 1239.57 credit) total -1234.57.
+  { path: '/api/v1/reports/journal-entry-report', text: '-1234.57' },
+];
+const withoutGaps = (path: string, text: string) =>
+  ACCEPTED_GAPS.filter((g) => g.path === path).reduce((t, g) => t.split(g.text).join(''), text);
+
 /** Definition routes return the ids a saved report names (allowed); names and amounts never. */
 const idsAllowedOn = (path: string) => /^\/api\/v1\/report-builder\/definitions(\/[0-9a-f-]{36})?$/i.test(path.split('?')[0]!);
 
@@ -181,24 +192,28 @@ describe('sensitive accounts canary sweep', () => {
     const seen = new Set<string>();
     for (const r of gets) {
       const variants = r.path.includes(':') ? fills.map((id) => r.path.replace(/:[A-Za-z_]+(\([^)]*\))?\??/g, id)) : [r.path];
-      for (const path of variants) {
+      // A converted route is also read in its exact and CSV forms (other routers serve them on the same path).
+      const forms = (p: string) => (isConvertedRoute('GET', p) ? ['', '&exact=1', '&format=csv'] : ['']);
+      for (const path of variants.flatMap((p) => forms(p).map((f) => `${p}\u0000${f}`))) {
         if (seen.has(path)) continue;
         seen.add(path);
+        const [p0, form] = path.split('\u0000') as [string, string];
         const res = await Promise.race([
-          h.call('bk', 'GET', `${path}?${RANGE}`),
+          h.call('bk', 'GET', `${p0}?${RANGE}${form}`),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 20_000)),
         ]);
         if (res === null) continue; // a stream or long poll; nothing returned
         checked++;
-        if (res.status === 429) { leaks.push(`${path}: 429 (rate limited, not checked)`); continue; }
-        const converted = isConvertedRoute('GET', path);
+        const label = `${p0}${form ? ` [${form.slice(1)}]` : ''}`;
+        if (res.status === 429) { leaks.push(`${label}: 429 (rate limited, not checked)`); continue; }
+        const converted = isConvertedRoute('GET', p0);
         if (res.status === 403 && res.json?.error?.code === 'SENSITIVE_HIDDEN') {
           refused++;
-          if (converted) leaks.push(`${path}: converted route refused`);
+          if (converted) leaks.push(`${label}: converted route refused`);
           continue;
         }
-        const found = canariesIn(res.text, { idsAllowed: idsAllowedOn(path) });
-        if (found.length > 0) leaks.push(`${path} (${res.status}): ${found.join(', ')}`);
+        const found = canariesIn(withoutGaps(p0, res.text), { idsAllowed: idsAllowedOn(p0) });
+        if (found.length > 0) leaks.push(`${label} (${res.status}): ${found.join(', ')}`);
       }
     }
     // eslint-disable-next-line no-console
@@ -382,5 +397,8 @@ describe('sensitive accounts canary sweep', () => {
     expect(canariesIn(accts.text)).toEqual(expect.arrayContaining(['Canary', ...seed.hiddenIds]));
     const tl = await h.call('owner', 'GET', `/api/v1/reports/transaction-list?${RANGE}`);
     for (const a of ['1234.57', '2111.13', '3222.24', '4333.35', '6555.57', '7666.68', '1777.79', '1444.45']) expect(tl.text).toContain(a);
+    // The budget canary: the owner's month of expense budget holds the hidden line.
+    const bp = await h.call('owner', 'GET', '/api/v1/dashboard/budget-performance');
+    expect(bp.text).toContain('877.71');
   });
 });

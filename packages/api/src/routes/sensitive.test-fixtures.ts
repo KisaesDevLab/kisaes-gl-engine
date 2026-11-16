@@ -14,7 +14,7 @@ import type { Express } from 'express';
 import jwt from 'jsonwebtoken';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { contacts, items, tags, tenants, users } from '../db/schema/index.js';
+import { budgetLines, budgets, contacts, items, tags, tenants, users } from '../db/schema/index.js';
 import { createCompanyForTenant } from '../services/company.service.js';
 import * as accountsService from '../services/accounts.service.js';
 import * as ledger from '../services/ledger.service.js';
@@ -215,6 +215,15 @@ export async function seedCanaries(h: SensitiveHarness): Promise<CanarySeed> {
     { accountId: hidden.revenue, debit: '0', credit: '2999.31', tagId: tg!.id },
     { accountId: h.acct.sales, debit: '0', credit: '11.69', tagId: tg!.id },
   ]);
+  // The active budget of the current fiscal year (the dashboard reads today's): 777.71 a month on Canary Wages,
+  // 100.00 on Supplies, so a month's expense budget is 877.71 for the owner and 100.00 for the bookkeeper.
+  const year = new Date().getUTCFullYear();
+  const [bud] = await db.insert(budgets).values({ tenantId, companyId, name: 'Plain Budget', fiscalYear: year, fiscalYearStart: `${year}-01-01`, isActive: true }).returning();
+  const months = (v: string) => Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`month${i + 1}`, v]));
+  await db.insert(budgetLines).values([
+    { budgetId: bud!.id, accountId: h.acct.wages, ...months('777.71') },
+    { budgetId: bud!.id, accountId: h.acct.supplies, ...months('100.00') },
+  ] as never);
   for (const id of Object.values(hidden)) {
     const r = await h.call('owner', 'PUT', `/api/v1/accounts/${id}/sensitive`, { isSensitive: true });
     if (r.status !== 200) throw new Error(`seedCanaries mark: ${r.status} ${r.text}`);
@@ -222,7 +231,7 @@ export async function seedCanaries(h: SensitiveHarness): Promise<CanarySeed> {
   return {
     hidden,
     hiddenIds: [h.acct.wages, h.acct.wagesSub, ...Object.values(hidden)],
-    amounts: ['1234.57', '2111.13', '3222.24', '4333.35', '6555.57', '7666.68', '1777.79', '1444.45'],
+    amounts: ['1234.57', '2111.13', '3222.24', '4333.35', '6555.57', '7666.68', '1777.79', '1444.45', '777.71', '877.71'],
     customer: cust!.id, vendor: vend!.id, item: it!.id, tagId: tg!.id, loan,
     invoiceId: invoice.id, billId: bill.id, allHiddenTxn: all.id,
   };
