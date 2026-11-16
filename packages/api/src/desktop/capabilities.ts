@@ -1339,5 +1339,20 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * AI_UNAVAILABLE {provider, reason}. No migration.
    */
   'report-builder-ai-v1',
+  /**
+   * Report Builder figures tie to their drills (U-225, ClientLedger PR-A2 checkpoint). POST /report-builder/run and
+   * /run/detail: (1) a balance (measure balance or tb_net) in a range report drills to an opening row first (kind opening,
+   * caption "Balance before <first date>", first page only) whose amount cells hold each selected column's balance before
+   * the drill's first date (debit / credit by side for tb_net; the Total cell: the last column's), then the activity rows, so
+   * opening + rows = the line in every column; /run's own detail rows under such a line start with the same row. (2) The
+   * multi-period Total column of a range report adds flows only: a report whose sections are all balances (balance, tb_net,
+   * open items) has no Total column (as the Trial Balance); in a report that mixes them a balance's Total cell (and a
+   * group's / formula's share of it) is its last period's value. (3) A tb_net section's Total debit / credit, its outer
+   * group-by lines and group subtotals are the sums of its innermost lines' debit and credit (plus the earnings row), from
+   * the facts, whatever is expanded (was summed from the rows shown: doubled with two group-bys); an outer line no longer nets
+   * debit and credit accounts. (4) A /run/detail subtotal shows only the columns its rows fill: without range, compare
+   * columns and their $ / % change are null; an open-item drill without range fills its last column only. No migration.
+   */
+  'report-builder-ties-v1',
 ];
 

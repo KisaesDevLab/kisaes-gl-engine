@@ -28,6 +28,7 @@ import { errorHandler } from '../middleware/error-handler.js';
 import * as ledger from '../services/ledger.service.js';
 import * as reportService from '../services/report.service.js';
 import { ReportDecimal as Decimal } from '../services/report-exact.js';
+import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { makeCompany, cleanTenant, suffix, type Co } from '../services/templates/templates.test-helpers.js';
 
 let server: Server | null = null;
@@ -136,6 +137,10 @@ const bankRange = (fields?: string[]) => {
 };
 
 describe('a balance in a range report (1-B1)', () => {
+  it('is listed as a desktop capability (report-builder-ties-v1)', () => {
+    expect(DESKTOP_CAPABILITIES).toContain('report-builder-ties-v1');
+  });
+
   for (const basis of ['accrual', 'cash'] as const) {
     it(`drills to an opening row + rows that sum to the line, with and without range and running balance; ties to the Balance Sheet (${basis})`, async () => {
       const bsEnd = await reportService.buildBalanceSheet(c.tenantId, Q1.to, basis, c.companyId, null, null, { exactAmounts: true }) as unknown as Record<string, unknown>;
@@ -154,7 +159,7 @@ describe('a balance in a range report (1-B1)', () => {
         expect(D(line.cells[v])).toBe(savingsAt(bsEnd));
         const tot = run.rows.find((r) => r.kind === 'total' && r.nodeId === 'banks')!;
         expect(D(tot.cells[v])).toBe(D('1250'));
-        for (const [target, path] of [[line, line.path], [tot, ['n:banks']]] as const) {
+        for (const [target, path] of [[line, line.path], [tot, ['n:banks']]] as Array<[Row, string[]]>) {
           for (const range of [undefined, run.columns[v]!.range]) {
             const d = await drill(def, ref, run, 'banks', path, range);
             const opening = d.rows.filter((r) => r.kind === 'opening');
@@ -298,6 +303,9 @@ describe('a Trial Balance section with two group-bys (1-B2)', () => {
           const std = await reportService.buildTrialBalance(c.tenantId, '2026-01-01', asOf, c.companyId, null, basis, { exactAmounts: true }) as unknown as Record<string, string>;
           expect(oneTotal).toEqual([D(std['totalDebitsExact']), D(std['totalCreditsExact'])]);
         }
+        // No group-by: the section is its one innermost line (its net on one side, plus the earnings row): debit - credit ties.
+        const none = pair((await runDef(tbDef([], 'summary', earnings), ref)).rows.find((r) => r.kind === 'total')!, v);
+        expect(new Decimal(none[0] ?? 0).minus(none[1] ?? 0).toFixed(4)).toBe(new Decimal(oneTotal[0]!).minus(oneTotal[1]!).toFixed(4));
         const leaf = Object.fromEntries(one.rows.filter((r) => r.kind === 'line').map((r) => [r.path[1]!, pair(r, v)]));
         const two = tbDef(['account_type', 'account'], 'summary', earnings);
         const modes: Array<[string, BuilderDefinition, Record<string, unknown>]> = [
