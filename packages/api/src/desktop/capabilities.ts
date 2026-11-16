@@ -1347,11 +1347,21 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * opening + rows = the line in every column; /run's own detail rows under such a line start with the same row. (2) The
    * multi-period Total column of a range report adds flows only: a report whose sections are all balances (balance, tb_net,
    * open items) has no Total column (as the Trial Balance); in a report that mixes them a balance's Total cell (and a
-   * group's / formula's share of it) is its last period's value. (3) A tb_net section's Total debit / credit, its outer
-   * group-by lines and group subtotals are the sums of its innermost lines' debit and credit (plus the earnings row), from
-   * the facts, whatever is expanded (was summed from the rows shown: doubled with two group-bys); an outer line no longer nets
-   * debit and credit accounts. (4) A /run/detail subtotal shows only the columns its rows fill: without range, compare
-   * columns and their $ / % change are null; an open-item drill without range fills its last column only. No migration.
+   * group's / formula's share of it) is its last period's value. (3) Trial Balance (tb_net) debit / credit are decided
+   * per account, as the standard Trial Balance: each account's side is its whole net for the section's scope (dates,
+   * basis, filters; a tag filter decides on the filtered net; zero or more is debit), and every line, group subtotal and
+   * the section Total show their facts in their accounts' columns (plus the earnings row on its side), from the facts,
+   * whatever is expanded or exported. So the Total = the standard Trial Balance for every group-by (none, account,
+   * account type, tag, contact, any order), an account line shows its TB figure on one side, a line above the account
+   * (account type, tag then account) shows its accounts' debit and credit sums, and a slice of an account (account then
+   * tag or contact) shows its part in the account's column: NEGATIVE there when the slice goes against the account's
+   * side (Savings 900.00 debit = 1,000.00 and -100.00, both in debit), never positive in the other column; slices sum to
+   * their account. (Was: split per innermost line, so slices showed both sides and account-type lines or no group-by
+   * netted accounts together.) A /run/detail subtotal of a tb_net row shows the same cells; its detail rows keep each
+   * line on its own side, so rows' debit - credit = the row's debit - credit. (4) A /run/detail subtotal shows only the
+   * columns its rows fill: without range, compare columns and their $ / % change are null; an open-item drill without
+   * range fills its last column only; with range, a flow's Total cell holds that column's share (not the run's Total).
+   * No migration.
    */
   'report-builder-ties-v1',
   /**
@@ -1361,7 +1371,9 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * company that can see the kept row (else left as is and counted as skipped); a list holding the kept id twice holds it
    * once; each changed report gets version + 1, updatedAt and updatedBy (an editor on the old version gets 409
    * STALE_VERSION). The merge's audit row counts them: after.moved.reportDefinitions (and reportDefinitionsSkipped when
-   * any). Account merge (it moves no lines yet) and items (no merge) are unchanged. (2) Missing references: GET
+   * any); each rewritten report also gets its own audit row in the merge's transaction (action update, entity
+   * report_definition, the merging user; before / after {kind, reportKey, groupId, version}, after adding reason
+   * "merged", mergedKind contact | tag, mergedFrom, mergedInto; never the definition body). Account merge (it moves no lines yet) and items (no merge) are unchanged. (2) Missing references: GET
    * /report-builder/definitions and /definitions/:id rows add `missing: [{path, nodeId|null, field, kind: account |
    * contact | item | tag | tagGroup | budget, ids, reason: deleted | merged, mergedInto?: {id, label}}]`: deleted, ids no
    * longer rows of this tenant visible to the company (a deleted tag, tag group or budget); merged, a contact or tag
@@ -1370,12 +1382,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * rows that were not merged still work and are not missing. POST /report-builder/run (every purpose) and /run/detail
    * of a saved builder report (definitionId) holding one are 422 REPORT_REFERENCE_MISSING {details: the first entry,
    * missing: [all]}; an inline definition keeps 400 DEFINITION_INVALID {path, code: NOT_IN_COMPANY} at the first missing
-   * path and adds missing: [all]. (3) Report-file import (POST /definitions/import/preview): an account matches by
-   * number only when its name also matches (case and spacing aside); otherwise unresolved with candidates (the account
-   * with that number, then the accounts of that name). (4) POST /report-builder/draft: the audit row's after adds
+   * path and adds missing: [all] (message: deleted or not available in this company). (3) Report-file import (POST
+   * /definitions/import/preview): an account matches by number only when its name also matches (case and spacing
+   * aside); otherwise unresolved with candidates (the account with that number, then the accounts of that name); with no
+   * number, by name, case and spacing aside. (4) POST /report-builder/draft: the audit row's after adds
    * sentTo: [{provider, model, reader, outcome}] (every provider the names were sent to; the one that answered has the
    * row's outcome, the others failed) and reader is cloud if any of them is not local (response too); contacts are chosen
-   * from the description with numbers masked (also /reports/ask), so number words never choose names. No migration.
+   * from the description's words with every word that held a number dropped whole (digits and number words; "30-day",
+   * "Net-30": no "day" or "net"; also /reports/ask), so a number never chooses names, and never a word the description
+   * did not hold as typed. A tenant archive exported without its audit log (includeAudit off) loses the `merged` hint:
+   * a contact merged before this capability then reads as plainly inactive. No migration.
    */
   'report-refs-v1',
 ];
