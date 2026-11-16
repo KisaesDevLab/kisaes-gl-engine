@@ -40,6 +40,7 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog, auditLogMany } from '../middleware/audit.js';
 import { claimAndRecord } from './idempotency.service.js';
+import { missingReferences, missingReferencesMany, type MissingReference } from './report-definition-refs.js';
 
 export type DefinitionRow = typeof reportDefinitions.$inferSelect;
 export type GroupRow = typeof reportDefinitionGroups.$inferSelect;
@@ -242,7 +243,8 @@ export function canEdit(row: Pick<DefinitionRow, 'createdBy'>, viewer: Viewer): 
   return !!viewer.isSuperAdmin || viewer.userRole === 'owner' || (!!viewer.userId && row.createdBy === viewer.userId);
 }
 
-function toApi(r: DefinitionRow, createdByName: string | null, viewer: Viewer) {
+/** report-refs-v1 (Q-PRA2c): `missing` lists the ids the definition names that are no longer rows of this company. */
+function toApi(r: DefinitionRow, createdByName: string | null, viewer: Viewer, missing: MissingReference[]) {
   return {
     id: r.id,
     groupId: r.groupId,
@@ -254,6 +256,7 @@ function toApi(r: DefinitionRow, createdByName: string | null, viewer: Viewer) {
     createdByName,
     canEdit: canEdit(r, viewer),
     updatedAt: r.updatedAt.toISOString(),
+    missing,
   };
 }
 
@@ -267,7 +270,8 @@ export async function listDefinitions(tenantId: string, companyId: string, viewe
     .leftJoin(users, eq(users.id, reportDefinitions.createdBy))
     .where(and(...conds))
     .orderBy(sql`lower(${reportDefinitions.name})`, asc(reportDefinitions.id));
-  return rows.map((r) => toApi(r.d, r.createdByName ?? null, viewer));
+  const missing = await missingReferencesMany(db, tenantId, companyId, rows.map((r) => r.d.definitionJson));
+  return rows.map((r, i) => toApi(r.d, r.createdByName ?? null, viewer, missing[i]!));
 }
 
 export async function getDefinition(tenantId: string, companyId: string, id: string, viewer: Viewer) {
@@ -277,7 +281,7 @@ export async function getDefinition(tenantId: string, companyId: string, id: str
     .where(and(defScope(tenantId, companyId), eq(reportDefinitions.id, id)))
     .limit(1);
   if (!r) throw definitionNotFound();
-  return toApi(r.d, r.createdByName ?? null, viewer);
+  return toApi(r.d, r.createdByName ?? null, viewer, await missingReferences(db, tenantId, companyId, r.d.definitionJson));
 }
 
 /** The live row of this company, for the route's access check; 404 otherwise. */

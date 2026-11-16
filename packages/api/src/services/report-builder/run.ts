@@ -46,6 +46,7 @@ import { apOpenItemsAsOf } from '../ap-open-items.js';
 import { BANK_DETAIL_TYPES } from '../bank-account-types.js';
 import { fiscalYearStartIn, priorRange, shiftYear } from '../report-columns/planner.js';
 import { definitionForAccess, parseBuilder, assertRefsInScope, stale, definitionNotFound } from '../report-definitions.service.js';
+import { missingReferences, referenceMissing } from '../report-definition-refs.js';
 import { ZERO_COMPANY_UUID } from '../ledger-version.service.js';
 import { AppError } from '../../utils/errors.js';
 import {
@@ -157,6 +158,10 @@ export async function loadDefinition(exec: RunExec, v: Viewer, req: Pick<RunRequ
   const row = await definitionForAccess(v.tenantId, v.companyId, req.definitionId!).catch(() => { throw definitionNotFound(); });
   if (row.kind !== 'builder') throw invalidAt('definitionId', 'SCHEMA', 'This saved report is not a Report Builder report.');
   if (req.version !== undefined && req.version !== row.version) throw stale(row.version);
+  // report-refs-v1 (Q-PRA2c): a saved report naming a record that no longer exists (a deleted tag, tag group …) is
+  // refused, never run as if nothing matched. An inline definition keeps 400 DEFINITION_INVALID NOT_IN_COMPANY.
+  const missing = await missingReferences(exec.tx, v.tenantId, v.companyId, row.definitionJson);
+  if (missing.length > 0) throw referenceMissing(missing);
   return row.definitionJson as unknown as BuilderDefinition;
 }
 

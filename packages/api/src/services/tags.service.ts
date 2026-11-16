@@ -11,6 +11,7 @@ import { auditLog } from '../middleware/audit.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { guardMergeTransactions } from './merge-lock.service.js';
+import { repointDefinitionRefs } from './report-definition-refs.js';
 
 // Defense-in-depth tenant checks for transaction-tag mutations. Without
 // these, a caller who knows (or guesses) a txn/tag UUID from another
@@ -303,6 +304,12 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
     await repoint('contacts', sql`UPDATE contacts SET default_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND default_tag_id = ${sourceId}`);
     await repoint('bankRules', sql`UPDATE bank_rules SET assign_tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND assign_tag_id = ${sourceId}`);
     await repoint('budgets', sql`UPDATE budgets SET tag_id = ${targetId} WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}`);
+    // Saved reports (memorized, builder and standard) that filtered on the merged tag now name the kept one
+    // (report-refs-v1, Q-PRA2b); each gets the next version. Skipped: the kept tag is another company's (the report
+    // then reads its reference as missing, 422 REPORT_REFERENCE_MISSING on a run).
+    const reports = await repointDefinitionRefs(tx, tenantId, 'tag', sourceId, targetId, userId);
+    moved['reportDefinitions'] = reports.updated;
+    if (reports.skipped > 0) moved['reportDefinitionsSkipped'] = reports.skipped;
 
     // Re-tag: update transaction_tags from source to target (skip duplicates)
     await tx.execute(sql`

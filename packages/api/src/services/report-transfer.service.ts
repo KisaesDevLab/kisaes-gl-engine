@@ -17,9 +17,13 @@
  *
  * Import preview matches the references in this company (tenant rows shared
  * or of this company, inactive rows included):
- *   - account: by number when the reference has one (one exact match); when
- *     it has none, by name (case-insensitive, trimmed). A number with no
- *     match is unresolved, with the accounts of the same name as candidates.
+ *   - account: by number when the reference has one, and only when that
+ *     account's name also equals the reference's (case and spacing aside;
+ *     Q-PRA2d, report-refs-v1); when it has none, by name (case-insensitive,
+ *     trimmed). A number whose account has another name, or a number with no
+ *     account (Q-A09v), is unresolved: candidates are the account with that
+ *     number, then the accounts of the same name. Id sites: see
+ *     report-definition-refs.ts.
  *   - contact: by name and type (customer: customer or both; vendor: vendor
  *     or both; both: any).
  *   - item: by name. tag: by name and its group's name (no group = no group).
@@ -49,8 +53,9 @@ import { auditLogMany } from '../middleware/audit.js';
 import {
   assertRefsInScope, canEdit, definitionNotFound, groupNotFound, parseDefinition, refCode, type Viewer,
 } from './report-definitions.service.js';
+import { idSites, type RefKind, type Site } from './report-definition-refs.js';
 
-export type RefKind = 'account' | 'contact' | 'item' | 'tag' | 'tagGroup' | 'budget';
+export type { RefKind };
 
 export interface TransferReference {
   kind: RefKind;
@@ -75,132 +80,12 @@ export interface TransferReport {
 export const MAX_TRANSFER_REPORTS = 200;
 const MAX_CANDIDATES = 20;
 const TOKEN_RE = /^\$ref:(0|[1-9]\d{0,5})$/;
-const NODE_DEPTH = 16;
 
 const isObj = (v: unknown): v is Record<string, unknown> => Object.prototype.toString.call(v) === '[object Object]';
 const norm = (s: string) => s.trim().toLowerCase();
-
-// ── Id sites ───────────────────────────────────────────────────────
-
-/**
- * One place an id sits in a definition: a list (filters) or a scalar.
- * `drop` removes it as the drop rules say and returns the effect.
- */
-interface Site {
-  kind: RefKind;
-  path: string;
-  get(): unknown;
-  set(v: string): void;
-  drop(): string;
-}
-
-const BUILDER_FIELD_KIND: Record<string, RefKind> = { account: 'account', contact: 'contact', item: 'item', tag: 'tag' };
-const STANDARD_LISTS: Record<string, RefKind> = { accountIds: 'account', contactIds: 'contact', tagIds: 'tag', itemIds: 'item' };
-
-/**
- * The id sites of a raw definition (mutable views into it) and its id lists.
- * Unknown shapes are skipped: the save check refuses them later. A list site
- * is a slot object, so drops never shift another site's position; `compact`
- * writes the lists back (dropped slots out, duplicates once, as a save stores
- * them) and runs the empty-list rules.
- */
-interface Sites { sites: Site[]; compact(): void }
-
-function idSites(def: Record<string, unknown>): Sites {
-  const sites: Site[] = [];
-  const lists: Array<{ list: unknown[]; slots: Array<{ v: unknown; gone: boolean }>; onEmpty: () => void }> = [];
-  const listSites = (list: unknown[], kind: RefKind, path: string, onEmpty: () => void, emptyEffect: string) => {
-    const slots = list.map((v) => ({ v, gone: false }));
-    lists.push({ list, slots, onEmpty });
-    slots.forEach((slot, i) => {
-      sites.push({
-        kind, path: `${path}.${i}`,
-        get: () => slot.v,
-        set: (v) => { slot.v = v; },
-        drop: () => { slot.gone = true; return slots.every((x) => x.gone) ? emptyEffect : 'removed_from_list'; },
-      });
-    });
-  };
-  const compact = () => {
-    for (const l of lists) {
-      if (!l.slots.some((x) => x.gone) && new Set(l.slots.map((x) => x.v)).size === l.slots.length) {
-        l.slots.forEach((x, i) => { l.list[i] = x.v; });
-        continue;
-      }
-      const kept = [...new Set(l.slots.filter((x) => !x.gone).map((x) => x.v))];
-      l.list.splice(0, l.list.length, ...kept);
-      if (kept.length === 0) l.onEmpty();
-    }
-  };
-  if (def['kind'] === 'builder') {
-    const walk = (nodes: unknown, path: string, depth: number) => {
-      if (!Array.isArray(nodes) || depth > NODE_DEPTH) return;
-      nodes.forEach((n, ni) => {
-        if (!isObj(n)) return;
-        const np = `${path}.${ni}`;
-        if (n['type'] === 'group') { walk(n['children'], `${np}.children`, depth + 1); return; }
-        if (n['type'] !== 'section') return;
-        const filters = n['filters'];
-        if (Array.isArray(filters)) {
-          filters.forEach((f, fi) => {
-            if (!isObj(f) || !Array.isArray(f['ids'])) return;
-            const kind = BUILDER_FIELD_KIND[String(f['field'])];
-            if (!kind) return;
-            listSites(f['ids'] as unknown[], kind, `${np}.filters.${fi}.ids`, () => {
-              const at = filters.indexOf(f);
-              if (at >= 0) filters.splice(at, 1);
-            }, 'filter_removed');
-          });
-        }
-        const groupBy = n['groupBy'];
-        if (Array.isArray(groupBy)) {
-          groupBy.forEach((g, gi) => {
-            if (!isObj(g) || g['tagGroupId'] === undefined) return;
-            sites.push({
-              kind: 'tagGroup', path: `${np}.groupBy.${gi}.tagGroupId`,
-              get: () => g['tagGroupId'], set: (v) => { g['tagGroupId'] = v; },
-              drop: () => { const at = groupBy.indexOf(g); if (at >= 0) groupBy.splice(at, 1); return 'group_by_removed'; },
-            });
-          });
-        }
-      });
-    };
-    walk(def['nodes'], 'definition.nodes', 0);
-    return { sites, compact };
-  }
-  const options = def['options'];
-  if (!isObj(options)) return { sites, compact };
-  const filters = options['filters'];
-  if (isObj(filters)) {
-    for (const [key, kind] of Object.entries(STANDARD_LISTS)) {
-      const list = filters[key];
-      if (Array.isArray(list)) listSites(list, kind, `definition.options.filters.${key}`, () => {}, 'removed_from_list');
-    }
-  }
-  const split = options['tagSplit'];
-  if (isObj(split) && split['tagGroupId'] !== undefined && split['tagGroupId'] !== null) {
-    sites.push({
-      kind: 'tagGroup', path: 'definition.options.tagSplit.tagGroupId',
-      get: () => split['tagGroupId'], set: (v) => { split['tagGroupId'] = v; },
-      drop: () => { options['tagSplit'] = null; return 'tag_split_removed'; },
-    });
-  }
-  if (typeof options['columnTagGroupId'] === 'string') {
-    sites.push({
-      kind: 'tagGroup', path: 'definition.options.columnTagGroupId',
-      get: () => options['columnTagGroupId'], set: (v) => { options['columnTagGroupId'] = v; },
-      drop: () => { delete options['columnTagGroupId']; options['columns'] = 'total'; return 'columns_total'; },
-    });
-  }
-  if (typeof options['budgetId'] === 'string') {
-    sites.push({
-      kind: 'budget', path: 'definition.options.budgetId',
-      get: () => options['budgetId'], set: (v) => { options['budgetId'] = v; },
-      drop: () => { throw new Error('a budget cannot be left out'); },
-    });
-  }
-  return { sites, compact };
-}
+/** Case and spacing aside (Q-PRA2d): trimmed, inner runs of white space as one space, lower case. */
+const normSpaced = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+const spacedSql = (col: PgColumn) => sql`lower(regexp_replace(trim(${col}), '\\s+', ' ', 'g'))`;
 
 // ── Lookups ────────────────────────────────────────────────────────
 
@@ -278,9 +163,16 @@ async function matches(tenantId: string, companyId: string, ref: TransferReferen
         .where(and(inCompany(accounts, tenantId, companyId), sql`lower(trim(${accounts.name})) = ${norm(name)}`))
         .orderBy(accounts.accountNumber, accounts.id).limit(lim));
       if (ref.number && ref.number.trim()) {
-        const exact = ids(await db.select({ id: accounts.id }).from(accounts)
-          .where(and(inCompany(accounts, tenantId, companyId), eq(accounts.accountNumber, ref.number.trim()))).limit(lim));
-        return { exact, byName };
+        // Q-PRA2d (report-refs-v1): the number matches only with the name (case and spacing aside). A row with the
+        // number and another name is a candidate, never a match; then the rows of that name (Q-A09v).
+        const numbered = await db.select({ id: accounts.id, name: accounts.name }).from(accounts)
+          .where(and(inCompany(accounts, tenantId, companyId), eq(accounts.accountNumber, ref.number.trim()))).limit(lim);
+        const exact = numbered.filter((r) => normSpaced(r.name) === normSpaced(name)).map((r) => r.id);
+        if (exact.length > 0) return { exact, byName };
+        const spaced = ids(await db.select({ id: accounts.id }).from(accounts)
+          .where(and(inCompany(accounts, tenantId, companyId), sql`${spacedSql(accounts.name)} = ${normSpaced(name)}`))
+          .orderBy(accounts.accountNumber, accounts.id).limit(lim));
+        return { exact: [], byName: [...new Set([...ids(numbered), ...spaced, ...byName])].slice(0, lim) };
       }
       return { exact: byName, byName };
     }
