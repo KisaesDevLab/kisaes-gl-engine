@@ -397,12 +397,18 @@ describe('reports-exact-v1 (U-14, U-205)', () => {
     expect(D(aas.totalDebitsExact).eq(sumOf(aas.data, 'total_debitExact'))).toBe(true);
     const prep = (await get('/ap-1099-prep?tax_year=2026&exact=1')).body;
     expect(D(prep.totalPaidExact).eq(sumOf(prep.data, 'total_paidExact'))).toBe(true);
-    // U-213: the exact report shows the tax id's last four digits only; the legacy response is unchanged.
+    // U-213: the exact report shows the tax id's last four digits only;
+    // U-232: so does the legacy one, in JSON and in its exports.
     const ada = prep.data.find((r: any) => r.vendor_name === 'Ada Contractor');
     expect(ada).toMatchObject({ tax_id: '6789', tinLast4: '6789' });
     expect(JSON.stringify(prep)).not.toContain('3456789');
     const legacyPrep = (await get('/ap-1099-prep?tax_year=2026')).body;
-    expect(legacyPrep.data.find((r: any) => r.vendor_name === 'Ada Contractor').tax_id).toBe('12-3456789');
+    expect(legacyPrep.data.find((r: any) => r.vendor_name === 'Ada Contractor')).toMatchObject({ tax_id: '6789', tinLast4: '6789' });
+    expect(JSON.stringify(legacyPrep)).not.toContain('3456789');
+    const legacyCsv = await get('/ap-1099-prep?tax_year=2026&format=csv');
+    expect(legacyCsv.status).toBe(200);
+    expect(String(legacyCsv.body)).toContain('6789');
+    expect(String(legacyCsv.body)).not.toContain('3456789');
     // Cash basis carries the rules note.
     const cash = (await get('/profit-loss?start_date=2026-01-01&end_date=2026-12-31&basis=cash&exact=1')).body;
     expect(cash.meta.basis).toBe('cash');
