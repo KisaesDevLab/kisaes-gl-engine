@@ -163,7 +163,12 @@ function canariesIn(text: string, opts: { idsAllowed?: boolean } = {}): string[]
  * Converted POST routes that write and read no amounts; report-builder.sensitive.routes.test.ts covers them (a
  * hidden id in a saved definition is NOT_IN_COMPANY; groups name no account).
  */
-const WRITES_TESTED_ELSEWHERE = ['/api/v1/report-builder/definitions', '/api/v1/report-builder/definition-groups'];
+const WRITES_TESTED_ELSEWHERE = [
+  '/api/v1/report-builder/definitions', '/api/v1/report-builder/definition-groups',
+  // P29 review B2: budgets.sensitive.routes.test.ts (a budget header names no account; consent reads none; the
+  // categorize preview offers only visible accounts).
+  '/api/v1/budgets', '/api/v1/budgets/', '/api/v1/ai/consent/:companyId/accept', '/api/v1/ai/consent/:companyId/revoke', '/api/v1/ai/categorize/preview',
+];
 
 /**
  * Accepted gaps (Q-P29a, §3): a total over every visible line of a mixed entry is minus its hidden line. Removed from
@@ -185,7 +190,7 @@ describe('sensitive accounts canary sweep', () => {
     const gets = routes.filter((r) => r.method === 'GET' && r.path.startsWith('/api/') && !SKIP.some((s) => r.path.startsWith(s)));
     expect(gets.length).toBeGreaterThan(200);
 
-    const fills = [h.acct.bank, h.acct.wages, seed.hidden.revenue, hiddenTxn, mixedTxn, seed.invoiceId, seed.allHiddenTxn, savedDefId];
+    const fills = [h.acct.bank, h.acct.wages, seed.hidden.revenue, hiddenTxn, mixedTxn, seed.invoiceId, seed.allHiddenTxn, savedDefId, ...seed.templateIds];
     const leaks: string[] = [];
     let refused = 0;
     let checked = 0;

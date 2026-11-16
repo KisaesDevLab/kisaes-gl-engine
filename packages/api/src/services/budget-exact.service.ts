@@ -32,6 +32,7 @@
 
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { db, type Tx } from '../db/index.js';
+import { assertNoHiddenLines, hiddenAccountIds } from './visibility.js';
 import { budgets } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -182,7 +183,9 @@ export async function linesTotals(tenantId: string, budgetId: string, exec: Tx |
     WHERE bl.budget_id = ${budgetId}
   `);
   const typeOf = new Map((res.rows as Array<Record<string, unknown>>).map((r) => [String(r['account_id']), String(r['account_type'])]));
-  const lines = await readLines(budgetId, exec);
+  // Sensitive accounts (U-33): a line on an account hidden from the viewer is not shown and not in any total.
+  const hidden = new Set(await hiddenAccountIds());
+  const lines = (await readLines(budgetId, exec)).filter((l) => !hidden.has(l.accountId));
   const perLine = new Map<string, { periodsExact: string[]; totalExact: string }>();
   const sec: Record<SectionKey, Dec[]> = Object.fromEntries(SECTIONS.map((k) => [k, Array.from({ length: PERIODS }, ZERO)])) as Record<SectionKey, Dec[]>;
   for (const l of lines) {
@@ -273,6 +276,9 @@ export async function putLines(tenantId: string, companyId: string | null, budge
   await db.transaction(async (tx) => {
     const row = await lockBudget(tx, tenantId, companyId, budgetId);
     checkVersion(row, input.version);
+    // Sensitive accounts (U-33): a line on a hidden account is not editable (403 SENSITIVE_ACCOUNT); lines the viewer
+    // can't see are kept as they are (each saved line replaces only its own account's cells).
+    await assertNoHiddenLines(input.lines.map((l) => l.accountId));
     // 3-4 places pass only unchanged (a row saved back with an old sub-cent cell).
     if (input.lines.some((l) => l.subCent)) {
       const stored = new Map((await readLines(budgetId, tx)).map((l) => [l.accountId, l.cells]));

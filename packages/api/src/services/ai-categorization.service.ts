@@ -19,6 +19,7 @@ import * as orchestrator from './ai-orchestrator.service.js';
 import { usageOf } from './ai-providers/usage.js';
 import { normalizePayeePattern, isIdentifyingPattern } from './categorization-ai.service.js';
 import { sanitize, type PiiType } from './pii-sanitizer.service.js';
+import { hiddenAccountIds, isHiddenAccount, visibleAccount } from './visibility.js';
 
 // Built-in default categorization prompt. Exported so the prompt-template seeder
 // installs the SAME prompt the runtime falls back to (single source of truth).
@@ -165,7 +166,7 @@ export async function buildCategorizationContext(tenantId: string, amount?: numb
   // deterministic (same list on a retry / batch re-render, and index→id
   // resolution never drifts).
   const coaAccounts = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, accountType: accounts.accountType })
-    .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true)))
+    .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true), visibleAccount(await hiddenAccountIds(), accounts.id)))
     .orderBy(accounts.accountNumber, accounts.name);
   const refAccounts = offerAccountsForAmount(coaAccounts, amount);
   const coaList = renderCoaRefList(refAccounts);
@@ -1242,7 +1243,7 @@ export async function previewCategorize(
     (s || '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500);
 
   const coaAccounts = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber, accountType: accounts.accountType })
-    .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true)))
+    .from(accounts).where(and(eq(accounts.tenantId, tenantId), eq(accounts.isActive, true), visibleAccount(await hiddenAccountIds(), accounts.id)))
     .orderBy(accounts.accountNumber, accounts.name);
   const vendors = await db.select({ id: contacts.id, displayName: contacts.displayName })
     .from(contacts).where(and(eq(contacts.tenantId, tenantId), eq(contacts.isActive, true))).limit(200);

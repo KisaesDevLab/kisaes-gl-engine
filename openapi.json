@@ -12682,6 +12682,7 @@
     },
     "/api/v1/audit-log/export": {
       "get": {
+        "description": "The list filters. Desktop: owner or super admin only, else 403 OWNER_REQUIRED (Q-P29t); the list stays readable with the audit_log right. While accounts are hidden from the caller, `search` never matches the images of a row that touches one (list and export alike), and `total` counts only rows that may match.",
         "operationId": "get_api_v1_audit_log_export",
         "responses": {
           "default": {
@@ -12696,6 +12697,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Export the audit trail as CSV",
         "tags": [
           "audit-log"
         ]
@@ -69416,6 +69418,29 @@
           "sales-tax"
         ],
         "x-idempotency": true
+      }
+    },
+    "/api/v1/sensitive-doors": {
+      "get": {
+        "description": "Response `{hidesSensitive: boolean, refusePrefixes: string[], converted: [{method, path}]}`. A request is refused (403 SENSITIVE_HIDDEN) when hidesSensitive is true, its lower-cased path lies under a refusePrefixes entry and no converted entry matches its method (HEAD = GET) and path (`:x` matches one segment). Nothing hidden: false and empty lists. Any signed-in user.",
+        "operationId": "get_api_v1_sensitive_doors",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Routes still refused for this viewer because of sensitive accounts (sensitive-accounts-doors-v1)",
+        "tags": [
+          "sensitive-doors"
+        ]
       }
     },
     "/api/v1/settings/storage": {

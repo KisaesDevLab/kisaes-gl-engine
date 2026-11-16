@@ -261,6 +261,29 @@ export const CONVERTED: ReadonlyArray<{ method: string; path: string }> = [
   // AI draft and Ask (E20): hidden names are never sent, resolved or kept.
   { method: 'POST', path: '/api/v1/report-builder/draft' },
   { method: 'POST', path: '/api/v1/reports/ask' },
+  // P29 review B2 (sensitive-accounts-doors-v1). AI status and consent read no account; the categorize preview
+  // offers the model (and so the reply) only visible accounts.
+  { method: 'GET', path: '/api/v1/ai/status' },
+  { method: 'GET', path: '/api/v1/ai/consent' },
+  { method: 'GET', path: '/api/v1/ai/consent/:id/disclosure' },
+  { method: 'POST', path: '/api/v1/ai/consent/:id/accept' },
+  { method: 'POST', path: '/api/v1/ai/consent/:id/revoke' },
+  { method: 'POST', path: '/api/v1/ai/categorize/preview' },
+  // Budgets: the header reads and writes name no account; lines and their totals leave hidden accounts out, and a
+  // line on one can't be saved (403 SENSITIVE_ACCOUNT; hidden lines are kept). Fill, copy, adjust, Budget vs.
+  // Actual, overview and tag actuals stay refused.
+  { method: 'GET', path: '/api/v1/budgets' },
+  { method: 'POST', path: '/api/v1/budgets' },
+  { method: 'GET', path: '/api/v1/budgets/:id' },
+  { method: 'PUT', path: '/api/v1/budgets/:id' },
+  { method: 'DELETE', path: '/api/v1/budgets/:id' },
+  { method: 'GET', path: '/api/v1/budgets/:id/lines' },
+  { method: 'PUT', path: '/api/v1/budgets/:id/lines' },
+  // Customer statements read only the A/R control account's lines (documents, as the A/R reports: E10's limit).
+  { method: 'GET', path: '/api/v1/reports/customer-statement' },
+  { method: 'GET', path: '/api/v1/reports/customer-statements' },
+  // Closing Date Exceptions: rows about a transaction touching a hidden account are left out (and out of total).
+  { method: 'GET', path: '/api/v1/reports/closing-date-exceptions' },
 ];
 
 function segments(p: string): string[] {
@@ -330,6 +353,18 @@ async function anyHiddenTransaction(tenantId: string, ids: readonly string[], hi
       AND account_id = ANY(${uuidArray(hidden)})
     LIMIT 1`);
   return rows.rows.length > 0;
+}
+
+/** Which of `ids` are transactions with a line on an account hidden from the current viewer (empty when none hidden). */
+export async function transactionsTouchingHidden(tenantId: string, ids: Iterable<string | null | undefined>): Promise<Set<string>> {
+  const list = uuidsOf([...ids].filter((x): x is string => typeof x === 'string'));
+  const hidden = await hiddenAccountIds();
+  if (list.length === 0 || hidden.length === 0) return new Set();
+  const rows = await db.execute<{ id: string }>(sql`
+    SELECT DISTINCT transaction_id::text AS id FROM journal_lines
+    WHERE tenant_id = ${tenantId} AND transaction_id = ANY(${uuidArray(list)})
+      AND account_id = ANY(${uuidArray(hidden)})`);
+  return new Set(rows.rows.map((r) => r.id));
 }
 
 /**

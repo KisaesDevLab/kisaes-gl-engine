@@ -145,7 +145,7 @@ describe('statements and ledger reports for a viewer without sensitive_accounts'
   });
 
   it('unconverted report routes refuse the bookkeeper, not the owner', async () => {
-    for (const p of ['/api/v1/reports/cash-flow', '/api/v1/reports/sales-tax-liability', '/api/v1/chat/conversations', '/api/v1/budgets']) {
+    for (const p of ['/api/v1/reports/cash-flow', '/api/v1/reports/sales-tax-liability', '/api/v1/chat/conversations', '/api/v1/reports/vendor-1099-summary']) {
       const r = await h.call('bk', 'GET', p);
       expect(r.status, p).toBe(403);
       expect(r.json.error.code).toBe('SENSITIVE_HIDDEN');
