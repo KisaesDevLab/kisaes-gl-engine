@@ -69,6 +69,11 @@ export const users = pgTable('users', {
   // Peer screen share per-user override (D9). Tri-state: null inherits the
   // tenant setting; false blocks this user from sharing AND viewing.
   shareAllowed: boolean('share_allowed'),
+  // Desktop recovery key (U-23, migration 0279): SHA-256 hex of the
+  // normalised key, never the key. Null = no key.
+  recoveryKeyHash: varchar('recovery_key_hash', { length: 64 }),
+  // Must choose a new password before anything else (U-230, desktop only).
+  passwordChangeRequired: boolean('password_change_required').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

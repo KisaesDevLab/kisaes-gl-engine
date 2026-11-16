@@ -63,11 +63,13 @@ export function requireResource(resource: ResourceKey) {
 // method (e.g. a POST that is semantically a read, or gating delete
 // separately from update).
 export function requirePermission(resource: ResourceKey, action: PermissionAction) {
-  return async (req: Request, _res: Response, next: NextFunction) => {
+  const guard = async (req: Request, _res: Response, next: NextFunction) => {
     const perms = await resolvePermissionsForRequest(req);
     if (!can(perms, resource, action)) {
       throw AppError.forbidden('You do not have permission for this feature', 'PERMISSION_DENIED');
     }
     next();
   };
+  // Read by route walks in tests (U-227 report areas); no runtime effect.
+  return Object.assign(guard, { permission: { resource, action } as const });
 }

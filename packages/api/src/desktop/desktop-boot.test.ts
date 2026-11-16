@@ -346,6 +346,8 @@ describe('desktop first run: info and initialize', () => {
       userId: expect.any(String),
       companyTenantId: expect.any(String),
       warnings: [],
+      // U-23: the owner's recovery key, returned once.
+      recoveryKey: expect.stringMatching(/^[A-HJ-NP-Z2-9]{5}(-[A-HJ-NP-Z2-9]{5}){4}$/),
     });
     workspaceTenantId = r.json.workspaceTenantId;
     companyTenantId = r.json.companyTenantId;

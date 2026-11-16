@@ -16,7 +16,8 @@ import { setRefreshCookie, clearRefreshCookie, readRefreshCookie } from '../util
 import { requireTurnstile } from '../utils/turnstile.js';
 import { isRegistrationEnabled } from '../services/auth-availability.service.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
-import { notInDesktop } from '../desktop/features.js';
+import { desktopOnly, notInDesktop } from '../desktop/features.js';
+import * as recoveryKeys from '../services/desktop-recovery-key.service.js';
 
 // Per-IP limiter — the existing loose bound (10 requests / minute from
 // the same IP across any auth endpoint). Redis-backed when
@@ -340,6 +341,29 @@ authRouter.post('/change-password', authenticate, changePasswordLimiter, validat
   res.json({ message: 'Password changed', tokens: { accessToken: tokens.accessToken } });
 });
 
+// Desktop recovery key (U-23, recovery-key-v1): a new key for the caller,
+// returned once; the old one stops working. Owner or super admin, real
+// session only. Desktop only (404 on the server). Not keyed: the reply
+// holds a secret.
+const rotateRecoveryKeyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: getRateLimitStore('recovery-key-rotate'),
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { error: { message: 'Too many recovery key changes. Try again in 15 minutes.', code: 'RATE_LIMIT' } },
+});
+
+authRouter.post('/recovery-key/rotate', desktopOnly(), authenticate, requireSessionAuth, rotateRecoveryKeyLimiter, async (req, res) => {
+  if (!req.isSuperAdmin && req.userRole !== 'owner') {
+    throw AppError.forbidden('Only an Admin can make a new recovery key', 'OWNER_REQUIRED');
+  }
+  const recoveryKey = await recoveryKeys.rotateRecoveryKey(req.tenantId, req.userId);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ recoveryKey });
+});
+
 authRouter.get('/me', authenticate, async (req, res) => {
   const user = await authService.getMe(req.userId);
   const companyService = await import('../services/company.service.js');
@@ -451,7 +475,7 @@ authRouter.put('/me/preferences', authenticate, validate(updatePreferencesSchema
   res.json({ displayPreferences: merged });
 });
 
-function sanitizeUser(user: { id: string; tenantId: string; email: string; displayName: string | null; role: string; userType: string | null; isActive: boolean | null; isSuperAdmin: boolean | null; lastLoginAt: Date | null; displayPreferences: unknown; createdAt: Date | null; updatedAt: Date | null }) {
+function sanitizeUser(user: { id: string; tenantId: string; email: string; displayName: string | null; role: string; userType: string | null; isActive: boolean | null; isSuperAdmin: boolean | null; lastLoginAt: Date | null; displayPreferences: unknown; createdAt: Date | null; updatedAt: Date | null; passwordChangeRequired?: boolean | null }) {
   // Narrow user_type to the known enum. A column-level CHECK in
   // migration 0065 enforces this at the DB layer, but coercing at
   // the serialization boundary means a stale server that ran
@@ -470,5 +494,7 @@ function sanitizeUser(user: { id: string; tenantId: string; email: string; displ
     displayPreferences: user.displayPreferences || { fontScale: 1, theme: 'system' },
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
+    // U-230: must choose a new password before anything else (desktop).
+    passwordChangeRequired: user.passwordChangeRequired === true,
   };
 }

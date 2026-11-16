@@ -186,6 +186,21 @@ export function notInDesktop(reason: string): RequestHandler {
   };
 }
 
+/**
+ * The opposite of notInDesktop: a route that exists only in desktop mode
+ * (U-23 recovery-key rotation, U-230 temporary passwords). The server
+ * answers 404 as if the route were not mounted.
+ */
+export function desktopOnly(): RequestHandler {
+  return function clDesktopOnly(req, res, next) {
+    if (isDesktop()) {
+      next();
+      return;
+    }
+    res.status(404).json({ error: { message: `Cannot ${req.method} ${req.originalUrl.split('?')[0]}`, code: 'NOT_FOUND' } });
+  };
+}
+
 /** The listed family a mount path belongs to (the prefix itself or below it). */
 export function familyOf(mountPath: string): UnmountedFamily | undefined {
   return DESKTOP_UNMOUNTED.find((x) => mountPath === x.prefix || mountPath.startsWith(`${x.prefix}/`));

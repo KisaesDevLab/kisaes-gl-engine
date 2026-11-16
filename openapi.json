@@ -13273,6 +13273,27 @@
         ]
       }
     },
+    "/api/v1/auth/recovery-key/rotate": {
+      "post": {
+        "operationId": "post_api_v1_auth_recovery_key_rotate",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/v1/auth/refresh": {
       "post": {
         "operationId": "post_api_v1_auth_refresh",
@@ -27268,6 +27289,7 @@
                         "banking",
                         "daily_sales",
                         "reports",
+                        "financial_reports",
                         "budgets",
                         "dashboard",
                         "trial_balance",
@@ -27399,6 +27421,7 @@
                         "banking",
                         "daily_sales",
                         "reports",
+                        "financial_reports",
                         "budgets",
                         "dashboard",
                         "trial_balance",
@@ -28155,6 +28178,7 @@
                         "banking",
                         "daily_sales",
                         "reports",
+                        "financial_reports",
                         "budgets",
                         "dashboard",
                         "trial_balance",
@@ -28264,6 +28288,59 @@
             "ApiKeyAuth": []
           }
         ],
+        "tags": [
+          "company"
+        ]
+      }
+    },
+    "/api/v1/company/users/{userId}/temporary-password": {
+      "post": {
+        "description": "Response {temporaryPassword} (16 characters, shown once). The user must choose a new password at the next sign-in (passwordChangeRequired; until then every route but change-password, me, logout and refresh is 403 PASSWORD_CHANGE_REQUIRED). Clears the lockout and ends every session of the user. 403 CANNOT_TARGET_SELF, USER_NOT_IN_TENANT, SUPER_ADMIN_TARGET; team_management (owner) only. Audit row update user_temporary_password, without the password.",
+        "operationId": "post_api_v1_company_users_by_userId_temporary_password",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "temporaryPassword": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "temporaryPassword"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Set a temporary password for a team member (temp-password-v1, desktop only)",
         "tags": [
           "company"
         ]

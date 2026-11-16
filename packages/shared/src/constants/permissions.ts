@@ -55,6 +55,11 @@ export const PERMISSION_RESOURCES = [
   { key: 'daily_sales', label: 'Daily Sales (POS)', group: 'Banking', writable: true },
   // Reporting
   { key: 'reports', label: 'Reports', group: 'Reporting', writable: false },
+  // U-227 report areas: a report also needs read on the area its data
+  // belongs to (A/R reports invoices, A/P reports bills, ...). This key
+  // covers the statements, ledgers, journal, account reports, packs and
+  // Ask. A template without it takes its Reports level.
+  { key: 'financial_reports', label: 'Financial reports', group: 'Reporting', writable: false, inheritsFrom: 'reports' },
   { key: 'budgets', label: 'Budgets', group: 'Reporting', writable: true },
   { key: 'dashboard', label: 'Dashboard', group: 'Reporting', writable: false },
   // Trial Balance — one resource covering the whole TB module router

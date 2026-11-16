@@ -7,8 +7,8 @@
  * source's base areas (fields.ts) plus the areas of the transaction types it
  * admits: a cash Sales section admits customer payments (receive_payment), a
  * Bank section that admits checks needs checks, bill payments pay_bills,
- * and so on. `gl` needs only reports (A/R and A/P are readable through it
- * until P29 decides). Read access is enough.
+ * and so on. `gl` needs reports and financial_reports (U-227; a template
+ * without financial_reports inherits reports). Read access is enough.
  */
 
 import { RB_SOURCE_INFO, RB_TXN_TYPES, type RbSectionNode, type RbRight } from '@kis-books/shared';

@@ -942,7 +942,7 @@ export async function resetPassword(token: string, newPassword: string): Promise
 
   // Update password
   const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
-  await db.update(users).set({ passwordHash, updatedAt: new Date() })
+  await db.update(users).set({ passwordHash, passwordChangeRequired: false, updatedAt: new Date() })
     .where(eq(users.id, resetRecord.userId));
 
   // Mark this token as used and purge any other outstanding reset tokens for
@@ -1001,7 +1001,8 @@ export async function changePassword(
   }
 
   const passwordHash = await bcrypt.hash(input.newPassword, env.BCRYPT_ROUNDS);
-  await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
+  // Choosing a password clears a temporary password's must-change (U-230).
+  await db.update(users).set({ passwordHash, passwordChangeRequired: false, updatedAt: new Date() }).where(eq(users.id, userId));
 
   await db.delete(sessions).where(eq(sessions.userId, userId));
 
@@ -1074,6 +1075,9 @@ export async function inviteUser(tenantId: string, input: { email: string; displ
     displayName: input.displayName,
     role,
     userType,
+    // Desktop (U-230): the invite's temporary password must be changed at
+    // the first sign-in. The server keeps its flow (no must-change screen).
+    passwordChangeRequired: isDesktop(),
   }).returning();
 
   if (!user) throw AppError.internal('Failed to create user');
@@ -1112,7 +1116,7 @@ export async function listTenantUsers(tenantId: string) {
   const rows = await db.execute(sql`
     SELECT u.id, u.email, u.display_name, u.role as user_role, u.user_type, u.is_active as user_active,
       u.is_super_admin, u.last_login_at, u.created_at, u.tenant_id, u.share_allowed,
-      u.login_locked_until, u.login_failed_attempts,
+      u.login_locked_until, u.login_failed_attempts, u.password_change_required,
       uta.role as tenant_role, uta.is_active as tenant_active
     FROM user_tenant_access uta
     JOIN users u ON u.id = uta.user_id
@@ -1138,6 +1142,8 @@ export async function listTenantUsers(tenantId: string) {
     // was removed (see login()); only an explicit admin unlock clears it.
     isLocked: !!r.login_locked_until,
     loginFailedAttempts: r.login_failed_attempts ?? 0,
+    // Must choose a new password at the next sign-in (U-230).
+    passwordChangeRequired: r.password_change_required === true,
   }));
 }
 
@@ -1172,6 +1178,44 @@ export async function unlockUserForTenant(tenantId: string, userId: string, acti
     actingUserId,
   );
   return { unlocked: true, wasLocked, email: user.email };
+}
+
+/**
+ * An Admin sets a temporary password for another user of this tenant (U-230,
+ * temp-password-v1; the route is desktop only). 64 random bits, returned
+ * once and never stored or logged; the user must change it at the next
+ * sign-in (password_change_required). Clears the lockout and ends every
+ * session of the target. Refused (403) for yourself, for a user without
+ * access to this tenant, and for a super admin.
+ */
+export async function setTemporaryPassword(
+  tenantId: string,
+  userId: string,
+  actingUserId: string,
+): Promise<{ temporaryPassword: string }> {
+  if (userId === actingUserId) {
+    throw AppError.forbidden('Use Change password for your own account', 'CANNOT_TARGET_SELF');
+  }
+  const access = await db.query.userTenantAccess.findFirst({
+    where: and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, tenantId)),
+  });
+  if (!access) throw AppError.forbidden('This person is not on this company\'s team', 'USER_NOT_IN_TENANT');
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) throw AppError.forbidden('This person is not on this company\'s team', 'USER_NOT_IN_TENANT');
+  if (user.isSuperAdmin) {
+    throw AppError.forbidden('The main Admin resets their password with the recovery key', 'SUPER_ADMIN_TARGET');
+  }
+  const temporaryPassword = crypto.randomBytes(8).toString('hex');
+  const passwordHash = await bcrypt.hash(temporaryPassword, env.BCRYPT_ROUNDS);
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({
+      passwordHash, passwordChangeRequired: true, loginFailedAttempts: 0, loginLockedUntil: null, updatedAt: new Date(),
+    }).where(eq(users.id, userId));
+    await tx.delete(sessions).where(eq(sessions.userId, userId));
+  });
+  await auditLog(tenantId, 'update', 'user_temporary_password', userId, null,
+    { passwordChangeRequired: true, sessionsRevoked: true, lockoutCleared: true }, actingUserId);
+  return { temporaryPassword };
 }
 
 export async function deactivateUser(tenantId: string, userId: string) {

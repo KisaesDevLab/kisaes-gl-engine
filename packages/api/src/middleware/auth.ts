@@ -15,6 +15,7 @@ import { consumeDownloadToken } from '../utils/download-token.js';
 import { isDesktop } from '../desktop/profile.js';
 import { workspaceFence } from '../desktop/workspace.js';
 import { hiddenAccountIdsFor, refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
+import { refuseReportOutsideArea } from '../services/report-areas.js';
 
 declare global {
   namespace Express {
@@ -63,7 +64,9 @@ function parseExpiryToSeconds(expiry: string): number {
  * success the rest of the request runs with this principal as the viewer
  * for sensitive accounts (U-33, services/visibility.ts), and an unconverted
  * reporting route is refused (403 SENSITIVE_HIDDEN) when the viewer has
- * hidden accounts. Mounting it twice is harmless.
+ * hidden accounts. A report route outside the viewer's report areas is
+ * refused with 403 PERMISSION_DENIED (U-227, services/report-areas.ts).
+ * Mounting it twice is harmless.
  */
 export async function authenticate(req: Request, res: Response, next: NextFunction) {
   return authenticatePrincipal(req, res, (err?: unknown) => {
@@ -72,12 +75,25 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       return;
     }
     refuseUnconvertedReport(req)
+      .then(() => refuseReportOutsideArea(req))
       .then(() => refuseHiddenIds(req))
       // Resolve the hidden set now, on the pool, so no service ever needs a
       // second pool connection for it while holding a transaction open.
       .then(() => hiddenAccountIdsFor(req))
       .then(() => runAsViewer(req, () => next()), next);
   });
+}
+
+/** Routes a session that must change its password may still use (U-230). Logout and refresh do not authenticate. */
+const MUST_CHANGE_ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
+  { method: 'POST', path: '/api/v1/auth/change-password' },
+  { method: 'GET', path: '/api/v1/auth/me' },
+];
+
+function mustChangeAllows(req: Request): boolean {
+  const path = '/' + (req.originalUrl ?? req.url).split('?')[0]!.toLowerCase().split('/').filter(Boolean).join('/');
+  const method = req.method === 'HEAD' ? 'GET' : req.method;
+  return MUST_CHANGE_ALLOWED.some((r) => r.method === method && r.path === path);
 }
 
 async function authenticatePrincipal(req: Request, res: Response, next: NextFunction) {
@@ -169,6 +185,11 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
     const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });
     if (!user || !user.isActive) {
       throw AppError.unauthorized('Account is deactivated');
+    }
+    // U-230: after a temporary password (desktop only) the session may only
+    // change the password, read /auth/me and sign out until it does.
+    if (user.passwordChangeRequired && !mustChangeAllows(req)) {
+      throw AppError.forbidden('Choose a new password to continue', 'PASSWORD_CHANGE_REQUIRED');
     }
 
     req.userId = payload.userId;

@@ -1421,5 +1421,46 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * control accounts stay visible; a duplicate account number is 409.
    */
   'sensitive-accounts-v1',
+  /**
+   * Report areas (U-227, ClientLedger P29; no migration). Besides `reports` read, every report route needs read on
+   * the area its data belongs to (services/report-areas.ts): A/R reports and customer statements `invoices`, A/P and
+   * 1099 reports `bills`, bank and reconciliation reports `banking`, sales tax reports `sales_tax`, inventory reports
+   * `items`, closing-date exceptions `audit_log`; the statements, ledgers, journal, account reports, expense and
+   * revenue by category, tax estimate, report packs, Ask and Budget vs. Actual need the new right `financial_reports`
+   * (none | view, group Reporting). A template or override that does not name `financial_reports` takes its `reports`
+   * level (`inheritsFrom` on the resource catalog); an explicit level wins. POST /reports/email takes the area of
+   * body reportKey (route slug or catalog key, `_` or `-`); a missing or unknown key, and any unknown /reports path,
+   * needs `financial_reports`. Refused with 403 PERMISSION_DENIED. Report Builder: a `gl` section needs
+   * `financial_reports` (a denied row on /run, 403 on /run/detail). Saved report definitions keep needing `reports`
+   * only. Owner, accountant, readonly and a bookkeeper with no permission row are unchanged.
+   */
+  'report-areas-v1',
+  /**
+   * Desktop recovery key (U-23, ClientLedger P08/P29, Q-210, Q-P29m; migration 0279 users.recovery_key_hash). POST
+   * /desktop/initialize returns the owner's key once as recoveryKey (25 letters and digits in five groups of five).
+   * Only the SHA-256 of the normalised key is stored (uppercase letters and digits; spaces, hyphens and case are
+   * ignored). POST /desktop/recover-password {email, recoveryKey, newPassword} (launch-token gated, no session):
+   * 200 {recovered: true, recoveryKey}: sets the password, clears the lockout and the must-change flag, ends every
+   * session of the user, and replaces the key with the fresh one in the reply (the used key stops working); 401
+   * INVALID_CREDENTIALS for a wrong key, an unknown email or a user without a key; 429 RATE_LIMIT after 5 tries per
+   * email or 20 in all per 15 minutes. Audit rows update user_password_recovery {sessionsRevoked, lockoutCleared,
+   * recoveryKeyRotated} and user_password_recovery_failed {reason: wrong_key | no_key | inactive}; never the key.
+   * POST /auth/recovery-key/rotate (owner or super admin, session only; else 403 OWNER_REQUIRED): {recoveryKey},
+   * the old key stops working; audit row update user_recovery_key {rotated: true}. Desktop only: the server has
+   * neither route.
+   */
+  'recovery-key-v1',
+  /**
+   * Temporary passwords (U-230, ClientLedger P29, Q-P29n; migration 0279 users.password_change_required). POST
+   * /company/users/:userId/temporary-password (team_management, i.e. owner; desktop only): {temporaryPassword} (16
+   * characters, 64 random bits, returned once, never stored or logged); clears the user's lockout, ends every session
+   * of the user and sets passwordChangeRequired; 403 CANNOT_TARGET_SELF, USER_NOT_IN_TENANT (no access row in this
+   * company), SUPER_ADMIN_TARGET (the main Admin uses the recovery key); audit row update user_temporary_password
+   * {passwordChangeRequired, sessionsRevoked, lockoutCleared}. A desktop invite also sets passwordChangeRequired. Login,
+   * /auth/me (user.passwordChangeRequired) and GET /company/users report it. While set, every authenticated route
+   * except POST /auth/change-password and GET /auth/me answers 403 PASSWORD_CHANGE_REQUIRED (logout and refresh need no
+   * session); change-password, a reset link and recovery clear it. The server never sets the flag.
+   */
+  'temp-password-v1',
 ];
 

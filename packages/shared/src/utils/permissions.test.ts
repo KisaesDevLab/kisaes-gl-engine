@@ -185,3 +185,33 @@ describe('resolveEffectivePermissions — sensitive_accounts truth table (U-33)'
     expect(row).toMatchObject({ label: 'Sensitive accounts', group: 'Manage', writable: false, elevated: true });
   });
 });
+
+describe('financial_reports inherits reports (U-227)', () => {
+  const fin = (input: Parameters<typeof resolveEffectivePermissions>[0]) => resolveEffectivePermissions(input).financial_reports;
+  const bk = { role: 'bookkeeper', hasPermissionRow: true } as const;
+
+  it('a template without the key takes the reports level', () => {
+    expect(fin({ ...bk, templateMap: { reports: 'view' } })).toBe('view');
+    expect(fin({ ...bk, templateMap: { reports: 'full' } })).toBe('view'); // capped
+    expect(fin({ ...bk, templateMap: {} })).toBe('none');
+    expect(fin({ ...bk, templateMap: { reports: 'view' }, overrides: { reports: 'none' } })).toBe('none');
+  });
+
+  it('an explicit level, none included, wins over the parent', () => {
+    expect(fin({ ...bk, templateMap: { reports: 'view', financial_reports: 'none' } })).toBe('none');
+    expect(fin({ ...bk, templateMap: { reports: 'none', financial_reports: 'view' } })).toBe('view');
+    expect(fin({ ...bk, templateMap: { financial_reports: 'none' }, overrides: { financial_reports: 'view' } })).toBe('view');
+  });
+
+  it('role defaults are unchanged: owner, readonly and a legacy bookkeeper see it', () => {
+    expect(fin({ role: 'owner' })).toBe('view');
+    expect(fin({ role: 'readonly' })).toBe('view');
+    expect(fin({ role: 'bookkeeper' })).toBe('view');
+    expect(fin({ role: 'weird' })).toBe('none');
+  });
+
+  it('is a read-only Reporting row that inherits reports', () => {
+    expect(PERMISSION_RESOURCES.find((r) => r.key === 'financial_reports'))
+      .toMatchObject({ group: 'Reporting', writable: false, inheritsFrom: 'reports' });
+  });
+});
