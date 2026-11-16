@@ -119,6 +119,11 @@ export function andVisible(hidden: readonly string[], column: SQL): SQL {
   return sql` AND ${column} <> ALL(${uuidArray(hidden)})`;
 }
 
+/** `<column> = ANY(hidden)`; only call with a non-empty set. */
+export function isHiddenSql(hidden: readonly string[], column: SQL): SQL {
+  return sql`${column} = ANY(${uuidArray(hidden)})`;
+}
+
 /** Drizzle condition form of `andVisible`: undefined (no condition) when nothing is hidden. */
 export function visibleAccount(hidden: readonly string[], column: AnyColumn): SQL | undefined {
   if (hidden.length === 0) return undefined;
@@ -205,6 +210,40 @@ export function underRefusePrefix(path: string): boolean {
 }
 
 export const SENSITIVE_HIDDEN_MESSAGE = 'This needs access to sensitive accounts';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function uuidsOf(values: Iterable<string>): string[] {
+  const out = new Set<string>();
+  for (const v of values) if (UUID_RE.test(v)) out.add(v.toLowerCase());
+  return [...out];
+}
+
+/**
+ * Generic guard on ids named in the URL, for every router (document loaders,
+ * their edits, voids, prints, attachments, sends): while the viewer has
+ * hidden accounts,
+ *   - a hidden account id in the path is 404 (no existence hint), and
+ *   - a transaction id in the path or query string whose lines touch a
+ *     hidden account is 403 SENSITIVE_ACCOUNT.
+ * Costs nothing when no account is hidden from the viewer.
+ */
+export async function refuseHiddenIds(req: Request): Promise<void> {
+  const [rawPath, rawQuery] = (req.originalUrl ?? req.url).split('?', 2) as [string, string | undefined];
+  const pathIds = uuidsOf(segments(rawPath).map((s) => { try { return decodeURIComponent(s); } catch { return s; } }));
+  const queryIds = rawQuery ? uuidsOf([...new URLSearchParams(rawQuery).values()].flatMap((v) => v.split(','))) : [];
+  if (pathIds.length === 0 && queryIds.length === 0) return;
+  const hidden = await hiddenAccountIdsFor(req);
+  if (hidden.length === 0) return;
+  if (pathIds.some((id) => hidden.includes(id))) throw AppError.notFound('Not found');
+  const ids = [...new Set([...pathIds, ...queryIds])];
+  const rows = await db.execute(sql`
+    SELECT 1 FROM journal_lines
+    WHERE tenant_id = ${req.tenantId} AND transaction_id = ANY(${uuidArray(ids)})
+      AND account_id = ANY(${uuidArray(hidden)})
+    LIMIT 1`);
+  if (rows.rows.length > 0) throw sensitiveAccountError();
+}
 
 /**
  * Called by `authenticate` once the principal is known. Refuses an

@@ -25,6 +25,7 @@ import * as costing from './inventory-costing.service.js';
 import { resolveLineUnits } from './unit-lines.service.js';
 import { reopenDraftsOfDeletedTransaction } from './document-draft-reopen.service.js';
 import { carryLineReferences } from './line-identity.service.js';
+import { assertNoHiddenLines, hiddenAccountIds, isHiddenSql } from './visibility.js';
 
 // ADR 0XY §3.2 — belt-and-suspenders default-tag resolution at the
 // ledger write path. When the split-level tags flag is on we batch-load
@@ -627,6 +628,8 @@ export async function postTransaction(
   // memory, and a fast-fail on bad input avoids unnecessary lock churn.
   // Exact decimal comparison, no tolerance (U-65).
   const { debits: totalDebits, credits: totalCredits } = assertBalanced(input.lines);
+  // Sensitive accounts (U-33): 403 SENSITIVE_ACCOUNT before the closed-period check.
+  await assertNoHiddenLines(input.lines.map((l) => l.accountId));
 
   // A document with no amount is refused, except one that moves inventory
   // (U-157, U-158): a quantity-only adjustment or a $0 sale of a part (a
@@ -924,6 +927,8 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
       .limit(1);
 
     if (!txn || txn.status === 'deleted' || inOtherCompany(txn, opts.companyId)) throw AppError.notFound('Transaction not found');
+    // Sensitive accounts (U-33): before the closed-period check.
+    await assertTxnVisible(tx, tenantId, txnId);
     if (opts.expectType && txn.txnType !== opts.expectType) {
       throw AppError.badRequest(opts.expectType === 'bill' ? 'Not a bill' : opts.expectType === 'vendor_credit' ? 'Not a vendor credit'
         : opts.expectType === 'invoice' ? 'Not an invoice' : 'Wrong transaction type');
@@ -1366,6 +1371,8 @@ export async function deleteTransactionInTx(
     if (txn.status === 'deleted') {
       throw AppError.conflict('This transaction has already been deleted.', 'TXN_ALREADY_DELETED');
     }
+    // Sensitive accounts (U-33): before the closed-period check.
+    await assertTxnVisible(tx, tenantId, txnId);
     if (txn.txnType === 'aje') {
       throw AppError.badRequest('Adjusting journal entries are managed in the Trial Balance module', 'TB_AJE_ROUTE');
     }
@@ -1606,6 +1613,9 @@ export async function updateTransaction(
       throw AppError.notFound('Transaction not found');
     }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
+    // Sensitive accounts (U-33): old and new lines, before the closed-period check.
+    await assertTxnVisible(tx, tenantId, txnId);
+    await assertNoHiddenLines(input.lines.map((l) => l.accountId));
 
     // An invoice keeps its client while anything points at it (U-145, U-146
     // B1). Every edit path (PUT /invoices/:id, PUT /transactions/:id) comes
@@ -2180,6 +2190,19 @@ export async function getTransactionType(tenantId: string, txnId: string): Promi
  * transaction's own): a billed cost line names its invoice only when that
  * invoice is of this company (review S-5).
  */
+/**
+ * Sensitive accounts (U-33): 403 SENSITIVE_ACCOUNT when any line of the
+ * transaction (void reversals and derived lines included) is on an account
+ * hidden from the current viewer. No query when nothing is hidden.
+ */
+export async function assertTxnVisible(executor: DbOrTx, tenantId: string, txnId: string): Promise<void> {
+  const hidden = await hiddenAccountIds();
+  if (hidden.length === 0) return;
+  const rows = await executor.select({ accountId: journalLines.accountId }).from(journalLines)
+    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+  await assertNoHiddenLines(rows.map((r) => r.accountId));
+}
+
 export async function getTransaction(tenantId: string, txnId: string, companyId?: string | null) {
   const txn = await db.query.transactions.findFirst({
     where: and(eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)),
@@ -2196,6 +2219,10 @@ export async function getTransaction(tenantId: string, txnId: string, companyId?
     });
     contactName = c?.displayName ?? null;
   }
+
+  // Sensitive accounts (U-33): a transaction with any line on an account
+  // hidden from the viewer is 403 SENSITIVE_ACCOUNT, never a masked copy.
+  await assertTxnVisible(db, tenantId, txnId);
 
   const allLines = await db.select({
     id: journalLines.id,
@@ -2361,6 +2388,13 @@ export async function listTransactions(tenantId: string, filters: {
   }
   if (filters.tagId) {
     conditions.push(sql`EXISTS (SELECT 1 FROM journal_lines jl WHERE jl.transaction_id = ${transactions.id} AND jl.tenant_id = ${tenantId} AND jl.tag_id = ${filters.tagId})`);
+  }
+  // Sensitive accounts (U-33): a transaction with any line on a hidden
+  // account is left out (no condition, so identical SQL, when none is hidden).
+  const hidden = await hiddenAccountIds();
+  if (hidden.length > 0) {
+    conditions.push(sql`NOT EXISTS (SELECT 1 FROM journal_lines jlh WHERE jlh.transaction_id = ${transactions.id}
+      AND jlh.tenant_id = ${tenantId} AND ${isHiddenSql(hidden, sql`jlh.account_id`)})`);
   }
   if (filters.search) {
     const term = '%' + escapeLike(filters.search) + '%';
@@ -2686,6 +2720,10 @@ export async function bulkUpdateTransactions(
   let updated = 0;
 
   return await db.transaction(async (tx) => {
+    // Sensitive accounts (U-33): a hidden target, or any selected transaction
+    // touching a hidden account, refuses the whole batch (403 SENSITIVE_ACCOUNT).
+    await assertNoHiddenLines([setCategoryAccountId, tagAccountId, moveFromAccountId, moveToAccountId]);
+    for (const id of txnIds) await assertTxnVisible(tx, tenantId, id);
     // Validate targets once up front — a bad account/contact id should 400
     // the whole batch rather than silently no-op per transaction.
     if (setCategoryAccountId !== undefined) {

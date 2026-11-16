@@ -14,7 +14,7 @@ import { apiKeyAuth } from './api-key-auth.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
 import { isDesktop } from '../desktop/profile.js';
 import { workspaceFence } from '../desktop/workspace.js';
-import { refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
+import { refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
 
 declare global {
   namespace Express {
@@ -71,7 +71,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       next(err);
       return;
     }
-    refuseUnconvertedReport(req).then(() => runAsViewer(req, () => next()), next);
+    refuseUnconvertedReport(req)
+      .then(() => refuseHiddenIds(req))
+      .then(() => runAsViewer(req, () => next()), next);
   });
 }
 
