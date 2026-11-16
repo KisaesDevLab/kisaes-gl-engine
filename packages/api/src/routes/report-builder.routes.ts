@@ -110,8 +110,10 @@ const listQuery = z.object({
 const bodyDoc = (schema: z.ZodTypeAny) => describe({ body: schema });
 
 const ROW_DOC = '`{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt, missing}`; canEdit is true for the author, an owner or a super admin (Q-310). '
-  + 'missing (report-refs-v1, Q-PRA2c): `[{path, nodeId|null, field, kind: account|contact|item|tag|tagGroup|budget, ids}]`, the ids the definition names that are no longer rows of this company '
-  + '(a deleted tag, tag group or budget; a deactivated row still exists), one entry per list or scalar (path dotted from definition; field the builder filter field, '
+  + 'missing (report-refs-v1, Q-PRA2c): `[{path, nodeId|null, field, kind: account|contact|item|tag|tagGroup|budget, ids, reason: deleted|merged, mergedInto?: {id, label}}]`: '
+  + 'reason deleted, ids no longer rows of this company (a deleted tag, tag group or budget); reason merged, a contact or tag merged into another before report-refs-v1 '
+  + '(an inactive contact or deleted tag with a merge audit row), mergedInto the live row it went into (through later merges) when this company sees it. A deactivated row '
+  + 'that was not merged still works. One entry per path, reason and survivor (path dotted from definition; field the builder filter field, '
   + 'groupBy.tagGroupId, or the standard option path such as filters.tagIds); [] when none. A contact or tag merge rewrites saved reports to the kept row (version + 1).';
 const GROUP_DOC = '`{id, name, sort, version, definitionCount, updatedAt}`';
 
@@ -305,8 +307,8 @@ const RUN_DOC = 'Response `{columns: [{key, caption, kind, field?, range?}], row
   + 'Column kinds: field, total, period, prior, change, pct_change, percent, bucket, and for tb_net the *_debit / *_credit pairs; kind hidden marks a compare amount that only feeds a change (its cells are null). '
   + 'The multi-period Total (report-builder-ties-v1) adds flows only: a range report whose sections are all balances (balance, tb_net, open items) has no Total column; in a mixed report a balance\'s Total cell is its last period\'s value. A tb_net Total, outer group-by line and group subtotal show the sums of the innermost lines\' debit and credit, whatever is expanded. '
   + 'Paths are ["n:<nodeId>", "<key>:<id|value|none>", …]. Amounts are exact strings (never -0); percents 1 place, null on a zero base. '
-  + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter; NOT_IN_COMPANY for an inline id not of this company, a deleted one included), 404 (deleted saved report), 409 STALE_VERSION {current}, '
-  + '422 REPORT_REFERENCE_MISSING {path, nodeId, field, kind, ids, missing: [{path, nodeId, field, kind, ids}]} (report-refs-v1: a saved report, definitionId, naming a record that no longer exists in this company; as GET missing), '
+  + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter; NOT_IN_COMPANY for an inline id not of this company; when the cause is a missing record, deleted or merged away, details add missing as on GET), 404 (deleted saved report), 409 STALE_VERSION {current}, '
+  + '422 REPORT_REFERENCE_MISSING {path, nodeId, field, kind, ids, reason, mergedInto?, missing: [{path, nodeId, field, kind, ids, reason, mergedInto?}]} (report-refs-v1: a saved report, definitionId, naming a record that no longer exists in this company; as GET missing), '
   + '422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
   + 'Drills: line and total rows {type: detail, nodeId, path} (page /run/detail), detail rows {type: transaction, txnId, txnType}, earnings rows {type: profit_loss, from, to, tagIds?} (tagIds: a tag-filtered section; the lines carry one of them) or null in Trial Balance tag mode; detail rows of open items carry the path of their line. '
   + 'Aging columns age as of the report date: periodRanges (other than one range ending on it) and compareRanges are 400 INVALID_PARAM. '

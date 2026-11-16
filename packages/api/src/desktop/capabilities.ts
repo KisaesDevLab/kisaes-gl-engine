@@ -1363,11 +1363,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * STALE_VERSION). The merge's audit row counts them: after.moved.reportDefinitions (and reportDefinitionsSkipped when
    * any). Account merge (it moves no lines yet) and items (no merge) are unchanged. (2) Missing references: GET
    * /report-builder/definitions and /definitions/:id rows add `missing: [{path, nodeId|null, field, kind: account |
-   * contact | item | tag | tagGroup | budget, ids}]`, the ids no longer rows of this tenant visible to the company (a
-   * deleted tag, tag group or budget; deactivated rows still exist and are not missing). POST /report-builder/run (every
-   * purpose) and /run/detail of a saved builder report (definitionId) holding one are 422 REPORT_REFERENCE_MISSING
-   * {details: the first {path, nodeId, field, kind, ids}, missing: [all]}; an inline definition keeps 400
-   * DEFINITION_INVALID NOT_IN_COMPANY. (3) Report-file import (POST /definitions/import/preview): an account matches by
+   * contact | item | tag | tagGroup | budget, ids, reason: deleted | merged, mergedInto?: {id, label}}]`: deleted, ids no
+   * longer rows of this tenant visible to the company (a deleted tag, tag group or budget); merged, a contact or tag
+   * merged into another before this capability (an inactive contact or a deleted tag whose merge audit row names
+   * after.merged_into), mergedInto the live survivor (through later merges, ≤ 5) when the company sees it. Deactivated
+   * rows that were not merged still work and are not missing. POST /report-builder/run (every purpose) and /run/detail
+   * of a saved builder report (definitionId) holding one are 422 REPORT_REFERENCE_MISSING {details: the first entry,
+   * missing: [all]}; an inline definition keeps 400 DEFINITION_INVALID {path, code: NOT_IN_COMPANY} at the first missing
+   * path and adds missing: [all]. (3) Report-file import (POST /definitions/import/preview): an account matches by
    * number only when its name also matches (case and spacing aside); otherwise unresolved with candidates (the account
    * with that number, then the accounts of that name). (4) POST /report-builder/draft: the audit row's after adds
    * sentTo: [{provider, model, reader, outcome}] (every provider the names were sent to; the one that answered has the
