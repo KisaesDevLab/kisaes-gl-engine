@@ -1435,5 +1435,32 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * only. Owner, accountant, readonly and a bookkeeper with no permission row are unchanged.
    */
   'report-areas-v1',
+  /**
+   * Desktop recovery key (U-23, ClientLedger P08/P29, Q-210, Q-P29m; migration 0279 users.recovery_key_hash). POST
+   * /desktop/initialize returns the owner's key once as recoveryKey (25 letters and digits in five groups of five).
+   * Only the SHA-256 of the normalised key is stored (uppercase letters and digits; spaces, hyphens and case are
+   * ignored). POST /desktop/recover-password {email, recoveryKey, newPassword} (launch-token gated, no session):
+   * 200 {recovered: true, recoveryKey}: sets the password, clears the lockout and the must-change flag, ends every
+   * session of the user, and replaces the key with the fresh one in the reply (the used key stops working); 401
+   * INVALID_CREDENTIALS for a wrong key, an unknown email or a user without a key; 429 RATE_LIMIT after 5 tries per
+   * email or 20 in all per 15 minutes. Audit rows update user_password_recovery {sessionsRevoked, lockoutCleared,
+   * recoveryKeyRotated} and user_password_recovery_failed {reason: wrong_key | no_key | inactive}; never the key.
+   * POST /auth/recovery-key/rotate (owner or super admin, session only; else 403 OWNER_REQUIRED): {recoveryKey},
+   * the old key stops working; audit row update user_recovery_key {rotated: true}. Desktop only: the server has
+   * neither route.
+   */
+  'recovery-key-v1',
+  /**
+   * Temporary passwords (U-230, ClientLedger P29, Q-P29n; migration 0279 users.password_change_required). POST
+   * /company/users/:userId/temporary-password (team_management, i.e. owner; desktop only): {temporaryPassword} (16
+   * characters, 64 random bits, returned once, never stored or logged); clears the user's lockout, ends every session
+   * of the user and sets passwordChangeRequired; 403 CANNOT_TARGET_SELF, USER_NOT_IN_TENANT (no access row in this
+   * company), SUPER_ADMIN_TARGET (the main Admin uses the recovery key); audit row update user_temporary_password
+   * {passwordChangeRequired, sessionsRevoked, lockoutCleared}. A desktop invite also sets passwordChangeRequired. Login,
+   * /auth/me (user.passwordChangeRequired) and GET /company/users report it. While set, every authenticated route
+   * except POST /auth/change-password and GET /auth/me answers 403 PASSWORD_CHANGE_REQUIRED (logout and refresh need no
+   * session); change-password, a reset link and recovery clear it. The server never sets the flag.
+   */
+  'temp-password-v1',
 ];
 

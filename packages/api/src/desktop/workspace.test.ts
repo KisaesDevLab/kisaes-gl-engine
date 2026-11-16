@@ -200,10 +200,16 @@ describe('desktop workspace: initialize with a company', () => {
       userId: expect.any(String),
       companyTenantId: expect.any(String),
       warnings: [],
+      recoveryKey: expect.stringMatching(/^[A-HJ-NP-Z2-9]{5}(-[A-HJ-NP-Z2-9]{5}){4}$/),
     });
     ws = r.json.workspaceTenantId;
     company = r.json.companyTenantId;
     ownerId = r.json.userId;
+    // U-23: only the SHA-256 of the normalised key is stored.
+    const keyHash = crypto.createHash('sha256').update(String(r.json.recoveryKey).replace(/-/g, '')).digest('hex');
+    await onDb(DB.main, async (c) => {
+      expect((await c.query('SELECT recovery_key_hash FROM users')).rows).toEqual([{ recovery_key_hash: keyHash }]);
+    });
 
     await onDb(DB.main, async (c) => {
       const wsRows = (await c.query('SELECT id, name, slug FROM tenants WHERE is_workspace')).rows;

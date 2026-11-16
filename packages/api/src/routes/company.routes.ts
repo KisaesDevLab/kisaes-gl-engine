@@ -43,6 +43,7 @@ import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { formatTaxRate } from '../utils/sales-compute.js';
 import { inventorySettings } from '../services/inventory.service.js';
+import { desktopOnly } from '../desktop/features.js';
 
 // Force the on-disk extension from the claimed MIME, not from the upload
 // filename. An uploader can send `Content-Type: image/png` with an
@@ -534,6 +535,8 @@ companyRouter.get('/users', async (req, res) => {
     isActive: u.isActive, lastLoginAt: u.lastLoginAt, createdAt: u.createdAt,
     // Login lockout state, so the Team page can show it and offer Unlock.
     isLocked: u.isLocked, loginFailedAttempts: u.loginFailedAttempts,
+    // Must choose a new password at the next sign-in (U-230).
+    passwordChangeRequired: u.passwordChangeRequired,
     // Peer screen share per-user override (D9); tri-state, null = inherit.
     shareAllowed: u.shareAllowed ?? null,
   }));
@@ -604,6 +607,26 @@ companyRouter.post('/users/:userId/unlock', requireTeamManagement, async (req, r
       : `${result.email} was not locked; failed-attempt count cleared`,
     ...result,
   });
+});
+
+// Temporary password (U-230, temp-password-v1), desktop only (404 on the
+// server, which has no must-change screen). Owner-parity; never for
+// yourself, a user outside this tenant or a super admin (403). Returned once
+// and never stored; not keyed (the reply holds a secret).
+companyRouter.post('/users/:userId/temporary-password', desktopOnly(), requireTeamManagement, describe({
+  summary: 'Set a temporary password for a team member (temp-password-v1, desktop only)',
+  description: 'Response {temporaryPassword} (16 characters, shown once). The user must choose a new password at the next sign-in '
+    + '(passwordChangeRequired; until then every route but change-password, me, logout and refresh is 403 PASSWORD_CHANGE_REQUIRED). '
+    + 'Clears the lockout and ends every session of the user. 403 CANNOT_TARGET_SELF, USER_NOT_IN_TENANT, SUPER_ADMIN_TARGET; '
+    + 'team_management (owner) only. Audit row update user_temporary_password, without the password.',
+  params: z.object({ userId: z.string().uuid() }),
+  response: z.object({ temporaryPassword: z.string() }),
+}), async (req, res) => {
+  const userId = req.params['userId']!;
+  if (!z.string().uuid().safeParse(userId).success) throw AppError.forbidden('This person is not on this company\'s team', 'USER_NOT_IN_TENANT');
+  const result = await authService.setTemporaryPassword(req.tenantId, userId, req.userId);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(result);
 });
 
 // Email the user a password-reset link (same flow as self-service

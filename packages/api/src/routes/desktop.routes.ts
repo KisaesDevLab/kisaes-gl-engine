@@ -47,6 +47,7 @@ import { getCurrentVersion } from '../services/updates.service.js';
 import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { describe } from '../middleware/describe.js';
 import * as sessionSecrets from '../desktop/session-secrets.js';
+import * as recoveryKeys from '../services/desktop-recovery-key.service.js';
 
 export const desktopRouter = Router();
 
@@ -77,6 +78,8 @@ export interface DesktopInitializeResult {
   userId: string;
   companyTenantId: string | null;
   warnings: string[];
+  /** The owner's recovery key (U-23, recovery-key-v1), shown once; only its hash is kept. */
+  recoveryKey: string;
 }
 
 desktopRouter.post('/initialize', validate(desktopInitializeSchema), async (req, res) => {
@@ -100,11 +103,13 @@ desktopRouter.post('/initialize', validate(desktopInitializeSchema), async (req,
         );
       }
       const owner = await createWorkspaceWithOwner(input.admin);
+      // The owner's recovery key (U-23), returned once in this reply.
+      const recoveryKey = await recoveryKeys.issueRecoveryKey(owner.userId);
       // Non-secret marker under CONFIG_DIR (= CL_DATA_DIR/config) so
       // /api/setup/status reports the install as set up.
       setupService.markInitialized({ via: 'desktop/initialize', workspaceTenantId: owner.workspaceTenantId });
 
-      const result: DesktopInitializeResult = { ...owner, companyTenantId: null, warnings: [] };
+      const result: DesktopInitializeResult = { ...owner, companyTenantId: null, warnings: [], recoveryKey };
       if (input.company) {
         try {
           const company = await authService.createDesktopCompany(owner.userId, {
@@ -165,6 +170,64 @@ desktopRouter.get('/info', async (_req, res) => {
     capabilities: [...DESKTOP_CAPABILITIES],
   });
 });
+
+// ─── Password recovery with the recovery key (U-23) ─────────────
+
+export const recoverPasswordSchema = z.object({
+  email: z.string().trim().min(1).max(320),
+  recoveryKey: z.string().min(1).max(200),
+  newPassword: z.string()
+    .min(PASSWORD_MIN_LENGTH, PASSWORD_MIN_MESSAGE)
+    .refine((p) => Buffer.byteLength(p, 'utf8') <= 72, 'Password must be at most 72 bytes (UTF-8)'),
+}).strict();
+
+const recoverReply = z.object({ recovered: z.literal(true), recoveryKey: z.string() });
+
+// Per email and overall: the desktop gate exempts the app from the global
+// limiter, so these bound guessing. Wrong keys are audited (never the key).
+const recoverEmailLimiter = rateLimit({
+  store: getRateLimitStore('desktop:recover-email'),
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    return `recover:${email}`;
+  },
+  message: { error: { message: 'Too many recovery attempts. Wait 15 minutes and try again.', code: 'RATE_LIMIT' } },
+});
+const recoverAllLimiter = rateLimit({
+  store: getRateLimitStore('desktop:recover-all'),
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: () => 'recover:all',
+  message: { error: { message: 'Too many recovery attempts. Wait 15 minutes and try again.', code: 'RATE_LIMIT' } },
+});
+
+desktopRouter.post(
+  '/recover-password',
+  recoverAllLimiter,
+  recoverEmailLimiter,
+  validate(recoverPasswordSchema),
+  describe({
+    summary: 'Reset a password with the recovery key (recovery-key-v1)',
+    description: 'Launch-token gated, no session. Body {email, recoveryKey (any case; spaces and hyphens ignored), newPassword}. '
+      + 'On success: the new password is set, the lockout and must-change flag are cleared, every session of the user ends, '
+      + 'the key stops working and a fresh one is returned once as recoveryKey. 401 INVALID_CREDENTIALS for a wrong key, an '
+      + 'unknown email or a user without a key (one audit row per wrong try, without the key); 429 RATE_LIMIT after 5 tries '
+      + 'per email or 20 in all per 15 minutes. Never retried; not keyed (the reply holds a secret).',
+    body: recoverPasswordSchema,
+    response: recoverReply,
+  }),
+  async (req, res) => {
+    const { recoveryKey } = await recoveryKeys.recoverPassword(req.body as z.infer<typeof recoverPasswordSchema>);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ recovered: true, recoveryKey });
+  },
+);
 
 // ─── Session secrets (E6) ───────────────────────────────────────
 //

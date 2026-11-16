@@ -1954,6 +1954,13 @@
       "when": 1788200027380,
       "tag": "0278_accounts_is_sensitive",
       "breakpoints": true
+    },
+    {
+      "idx": 279,
+      "version": "7",
+      "when": 1788200028380,
+      "tag": "0279_users_recovery_key",
+      "breakpoints": true
     }
   ]
 }

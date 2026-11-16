@@ -84,6 +84,18 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   });
 }
 
+/** Routes a session that must change its password may still use (U-230). Logout and refresh do not authenticate. */
+const MUST_CHANGE_ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
+  { method: 'POST', path: '/api/v1/auth/change-password' },
+  { method: 'GET', path: '/api/v1/auth/me' },
+];
+
+function mustChangeAllows(req: Request): boolean {
+  const path = '/' + (req.originalUrl ?? req.url).split('?')[0]!.toLowerCase().split('/').filter(Boolean).join('/');
+  const method = req.method === 'HEAD' ? 'GET' : req.method;
+  return MUST_CHANGE_ALLOWED.some((r) => r.method === method && r.path === path);
+}
+
 async function authenticatePrincipal(req: Request, res: Response, next: NextFunction) {
   const hasApiKey = !!req.headers['x-api-key'];
   const hasJwt = !!req.headers.authorization?.startsWith('Bearer ');
@@ -173,6 +185,11 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
     const user = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });
     if (!user || !user.isActive) {
       throw AppError.unauthorized('Account is deactivated');
+    }
+    // U-230: after a temporary password (desktop only) the session may only
+    // change the password, read /auth/me and sign out until it does.
+    if (user.passwordChangeRequired && !mustChangeAllows(req)) {
+      throw AppError.forbidden('Choose a new password to continue', 'PASSWORD_CHANGE_REQUIRED');
     }
 
     req.userId = payload.userId;
