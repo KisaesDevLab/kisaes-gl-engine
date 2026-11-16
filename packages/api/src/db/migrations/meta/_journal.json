@@ -1961,6 +1961,13 @@
       "when": 1788200028380,
       "tag": "0279_users_recovery_key",
       "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1788200029380,
+      "tag": "0280_company_1099_thresholds",
+      "breakpoints": true
     }
   ]
 }

@@ -22,7 +22,8 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { contacts, vendor1099Profile } from '../db/schema/index.js';
 import { ytdTotalsByBoxExact } from './portal-1099.service.js';
-import { FORM_1099_BOXES, boxThreshold, type FormBox } from './portal-1099.boxes.js';
+import { FORM_1099_BOXES, type FormBox } from './portal-1099.boxes.js';
+import { threshold1099Resolver } from './company-1099-thresholds.service.js';
 import { dec, dsum, exactStr } from './report-exact.js';
 
 export interface Vendor1099SummaryRow {
@@ -82,6 +83,8 @@ export async function buildVendor1099SummaryByBox(
   companyId: string | null,
 ): Promise<Vendor1099Summary> {
   const { buckets, people: byId } = await reportable1099Buckets(tenantId, year, companyId);
+  // U-215: the company's own thresholds, else the year table.
+  const thresholds = await threshold1099Resolver(tenantId, companyId);
 
   const perVendor = new Map<string, Partial<Record<FormBox, string>>>();
   for (const b of buckets) {
@@ -101,7 +104,7 @@ export async function buildVendor1099SummaryByBox(
       is1099Eligible: true,
       boxes,
       totalExact: exactStr(dsum(entries.map(([, v]) => v))),
-      meetsThreshold: entries.some(([box, v]) => dec(v).gte(dec(boxThreshold(box, year)))),
+      meetsThreshold: entries.some(([box, v]) => dec(v).gte(dec(thresholds.box(box, year)))),
     };
   }).sort((a, b) => a.name.localeCompare(b.name) || a.contactId.localeCompare(b.contactId));
 
@@ -116,7 +119,7 @@ export async function buildVendor1099SummaryByBox(
     title: '1099 Summary',
     year: String(year),
     boxCatalog: FORM_1099_BOXES.map((b) => ({
-      box: b.value, form: b.form, boxNumber: b.box, label: b.label, thresholdExact: exactStr(boxThreshold(b.value, year)),
+      box: b.value, form: b.form, boxNumber: b.box, label: b.label, thresholdExact: exactStr(thresholds.box(b.value, year)),
     })),
     rows,
     totalsExact,

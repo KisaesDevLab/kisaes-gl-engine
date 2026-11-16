@@ -16,6 +16,7 @@ import { registerExactReportRoutes } from './reports-exact.routes.js';
 import { registerControlReportRoutes } from './reports-controls.routes.js';
 import { buildReconciliationDiscrepancy } from '../services/reconciliation-discrepancy.service.js';
 import * as apReportService from '../services/ap-report.service.js';
+import { tinLast4 } from '../services/vendor-1099-summary.service.js';
 import * as exportService from '../services/report-export.service.js';
 import { renderProofHtml, proofCsvRows, PROOF_CSV_COLUMNS } from '../services/reconciliation-proof-render.js';
 import * as comparisonService from '../services/report-comparison.service.js';
@@ -1305,7 +1306,11 @@ reportsRouter.get('/vendor-statement', async (req, res) => {
 reportsRouter.get('/ap-1099-prep', async (req, res) => {
   const { tax_year, format } = req.query as Record<string, string>;
   const year = tax_year ? parseInt(tax_year, 10) : new Date().getFullYear();
-  const data = await apReportService.buildAp1099Prep(req.tenantId, year, resolveCompanyScope(req));
+  const built = await apReportService.buildAp1099Prep(req.tenantId, year, resolveCompanyScope(req));
+  // U-232: a report shows the last four digits of the tax id only (as the
+  // exact route, U-213), on screen and in every export format; tinLast4 is
+  // the same value. The full number stays on the vendor record.
+  const data = { ...built, data: built.data.map((r) => { const last4 = tinLast4(r.tax_id); return { ...r, tax_id: last4, tinLast4: last4 }; }) };
   await respond(res, { ...data, _exportColumns: [
     { key: 'vendor_name', label: 'Vendor' },
     { key: 'address', label: 'Address' },

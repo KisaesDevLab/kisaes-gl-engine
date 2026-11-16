@@ -1462,5 +1462,31 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * session); change-password, a reset link and recovery clear it. The server never sets the flag.
    */
   'temp-password-v1',
+  /**
+   * U-229 (ClientLedger P29, Q-155): the closing date and its password are for the company owner or a super admin
+   * only, on the server too. PUT /company/settings with a changed lockDate: anyone else gets 403
+   * CLOSING_DATE_ADMIN_ONLY before any password check, and nothing is saved (an unchanged lockDate and the other
+   * settings still save with company_settings update; a closingPassword sent with an unchanged date is ignored for
+   * them). PUT /company/closing-password: 403 CLOSING_DATE_ADMIN_ONLY when a password is set (before currentPassword
+   * is checked), 403 CLOSING_PASSWORD_OWNER_REQUIRED when none is (as before). POST /company/closing-password/reset and
+   * PUT /tb/closing-date keep their owner gates (CLOSING_PASSWORD_OWNER_REQUIRED, TB_FIRM_ADMIN_REQUIRED). Refusals
+   * leave audit row update closing_password_failed {context: closing_date_not_admin | change_password_not_admin} and do
+   * not count toward the closing-password rate limit. Entering the password to post into the closed period is unchanged.
+   */
+  'closing-date-admin-v1',
+  /**
+   * U-215 (ClientLedger P29, Q-PR6i): a company's own 1099 reporting threshold per box (migration 0280,
+   * company_1099_thresholds). GET /company/1099-thresholds?year= (company_settings view) -> {year, boxes[] {box, form,
+   * boxNumber, label, amount (decimal string or null = the year table), defaultExact (year table), effectiveExact}}.
+   * PUT /company/1099-thresholds?year= {thresholds: {box code: "600.00" | null}} (boxes left out keep theirs; owner or
+   * super admin, else 403 OWNER_REQUIRED; 400 VALIDATION_ERROR for an unknown box or an amount that is not
+   * ^\d{1,15}(\.\d{1,4})?$) -> as GET; audit row update company_1099_thresholds {box: amount | null}. Amounts are
+   * stored numeric(19,4) and returned with 4 places. Used by the 1099 Summary (meetsThreshold, boxCatalog
+   * thresholdExact), 1099 Preparation (reportable_meets_threshold per box; over_threshold takes the NEC-1 amount) and
+   * the 1099 Center (tiles, vendor status, threshold scan and filing; the NEC-1 amount for the general threshold).
+   * Which company: the report's; a consolidated report and the tenant-wide 1099 Center use the tenant's only company,
+   * or the year table when the tenant has several.
+   */
+  '1099-thresholds-v1',
 ];
 

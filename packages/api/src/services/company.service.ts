@@ -171,9 +171,10 @@ export async function updateCompany(
     const lockChanges = requestedLock !== undefined && ((requestedLock as string | null) || null) !== (locked.lockDate || null);
     let passwordSetNow = false;
     if (lockChanges || closing?.password !== undefined) {
+      // U-229: a date change is owner / super admin only (no actor: refused).
       const { newHash } = await authorizeLockDateChange(tx, tenantId, companyId, closing?.password, {
         userId, ...closing?.actor,
-      });
+      }, { dateChanges: lockChanges });
       if (newHash) {
         updates['closingPasswordHash'] = newHash;
         passwordSetNow = true;

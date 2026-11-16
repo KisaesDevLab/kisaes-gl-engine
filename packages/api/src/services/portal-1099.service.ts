@@ -36,9 +36,8 @@ import {
   type ExclusionReason,
   type VendorStatus,
 } from './portal-1099.status.js';
+import { threshold1099Resolver } from './company-1099-thresholds.service.js';
 import {
-  boxThreshold,
-  general1099Threshold,
   FORM_BOX_LABELS,
   FORM_1099_BOXES,
   formOf,
@@ -302,7 +301,8 @@ export async function summary(tenantId: string, taxYear: number): Promise<Summar
   const reportable = await ytdReportableTotals(tenantId, taxYear);
   const inScopeTotals = [...inScopeIds].map((id) => reportable.get(id) ?? 0);
   const ytdPaymentTotal = inScopeTotals.reduce((s, t) => s + t, 0);
-  const necThreshold = Number(general1099Threshold(taxYear));
+  // U-215: the company's NEC-1 threshold when set (tenant-wide: the only company's).
+  const necThreshold = Number((await threshold1099Resolver(tenantId, null)).general(taxYear));
   const vendorsOverThreshold = inScopeTotals.filter((t) => t >= necThreshold).length;
 
   let w9sMissing = 0;
@@ -372,6 +372,8 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
     .from(vendor1099Profile)
     .where(eq(vendor1099Profile.tenantId, tenantId));
   const profileMap = new Map(profiles.map((p) => [p.contactId, p]));
+  // U-215: the company's NEC-1 threshold when set (tenant-wide: the only company's).
+  const necThreshold = Number((await threshold1099Resolver(tenantId, null)).general(taxYear));
 
   return vendors
     .map((v) => {
@@ -383,7 +385,7 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
       ytdTotal: total,
       w9OnFile: w9,
       exclusionReason: profile?.exclusionReason ?? null,
-      necThreshold: Number(general1099Threshold(taxYear)),
+      necThreshold,
     });
     return {
       contactId: v.contactId,
@@ -425,9 +427,10 @@ export async function scanThresholds(
   taxYear: number,
 ): Promise<ThresholdHit[]> {
   const rows = await listVendors(tenantId, taxYear);
+  const necThreshold = Number((await threshold1099Resolver(tenantId, null)).general(taxYear));
   return rows
     .filter(
-      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && r.ytdTotal >= Number(general1099Threshold(taxYear)),
+      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && r.ytdTotal >= necThreshold,
     )
     .map((r) => ({
       contactId: r.contactId,
@@ -1456,9 +1459,11 @@ export async function exportFiling(
   // Filter to the requested form. The operator picks "1099-NEC" or
   // "1099-MISC" at export time; we emit every (vendor, formBox) row
   // whose form matches and whose amount clears the box-specific
-  // threshold for the tax year (boxThreshold, U-212).
+  // threshold for the tax year (boxThreshold, U-212), or the company's own
+  // (U-215; tenant-wide: the only company's).
+  const thresholds = await threshold1099Resolver(tenantId, null);
   const formMatches = byBox.filter(
-    (r) => formOf(r.formBox) === input.formType && r.total >= Number(boxThreshold(r.formBox, input.taxYear)),
+    (r) => formOf(r.formBox) === input.formType && r.total >= Number(thresholds.box(r.formBox, input.taxYear)),
   );
 
   if (formMatches.length === 0) {

@@ -411,6 +411,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'companies.sales_discount_account_id': 'tenant-ref:accounts',
   'companies.lock_date_set_by': 'identity',
   'company_tax_profiles.company_id': 'tenant-ref:companies',
+  // Per-company 1099 thresholds (U-215, migration 0280); company_id is an FK.
+  'company_1099_thresholds.updated_by': 'identity',
   'conditional_rule_audit.bank_feed_item_id': 'tenant-ref:bank_feed_items',
   'conditional_rule_audit.transaction_id': 'tenant-ref:transactions',
   'conditional_rule_audit.effective_firm_id': 'excluded-ref:firms',
