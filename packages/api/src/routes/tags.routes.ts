@@ -140,6 +140,7 @@ const mergeTagsBodyDoc = mergeTagsSchema.extend({
 
 tagsRouter.post('/merge', closingPasswordLimiter, lockContextMiddleware, validate(mergeTagsSchema), describe({
   summary: 'Merge a tag into another and delete it (closing date enforced; merge-closing-date-v1)',
+  description: 'report-refs-v1: saved reports (memorized, builder and standard) of every company that can see the kept tag now name it instead of the merged one (version + 1), in the same transaction; the merge audit row counts them (after.moved.reportDefinitions, reportDefinitionsSkipped).',
   body: mergeTagsBodyDoc,
 }), async (req, res) => {
   const result = await tagsService.merge(req.tenantId, req.body.sourceTagId, req.body.targetTagId, req.userId);

@@ -75,6 +75,7 @@ const mergeContactsBodyDoc = mergeContactsSchema.extend({
 
 contactsRouter.post('/merge', closingPasswordLimiter, lockContextMiddleware, validate(mergeContactsSchema), describe({
   summary: 'Merge a duplicate contact into another (closing date enforced; merge-closing-date-v1)',
+  description: 'report-refs-v1: saved reports (memorized, builder and standard) of every company that can see the kept contact now name it instead of the duplicate (version + 1), in the same transaction; the merge audit row counts them (after.moved.reportDefinitions, reportDefinitionsSkipped).',
   body: mergeContactsBodyDoc,
 }), async (req, res) => {
   const result = await contactsService.merge(req.tenantId, req.body.sourceId, req.body.targetId, req.userId);

@@ -109,7 +109,10 @@ const listQuery = z.object({
  */
 const bodyDoc = (schema: z.ZodTypeAny) => describe({ body: schema });
 
-const ROW_DOC = '`{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt}`; canEdit is true for the author, an owner or a super admin (Q-310).';
+const ROW_DOC = '`{id, groupId, name, kind, definition, version, createdBy, createdByName, canEdit, updatedAt, missing}`; canEdit is true for the author, an owner or a super admin (Q-310). '
+  + 'missing (report-refs-v1, Q-PRA2c): `[{path, nodeId|null, field, kind: account|contact|item|tag|tagGroup|budget, ids}]`, the ids the definition names that are no longer rows of this company '
+  + '(a deleted tag, tag group or budget; a deactivated row still exists), one entry per list or scalar (path dotted from definition; field the builder filter field, '
+  + 'groupBy.tagGroupId, or the standard option path such as filters.tagIds); [] when none. A contact or tag merge rewrites saved reports to the kept row (version + 1).';
 const GROUP_DOC = '`{id, name, sort, version, definitionCount, updatedAt}`';
 
 /** 404 for another company's (or a deleted) report; 403 NOT_AUTHOR unless author, owner or super admin. */
@@ -224,7 +227,8 @@ reportBuilderRouter.post('/definitions/export', describe({
 reportBuilderRouter.post('/definitions/import/preview', describe({
   summary: 'Match a report file to this company (report-defs-transfer-v1)',
   description: 'Body `{reports: [{name, groupName?, kind, definition, references}] (1..200), choices?}` (the export shape). Writes nothing. '
-    + 'Matches references in this company (shared rows or this company\'s, inactive included): account by number when given (else by name), contact by name and type '
+    + 'Matches references in this company (shared rows or this company\'s, inactive included): account by number when given and only when that account\'s name also matches, case and spacing aside '
+    + '(report-refs-v1, Q-PRA2d; a number whose account has another name, or no account, is unresolved: candidates the account with that number, then the accounts of that name), else by name; contact by name and type '
     + '(customer: customer|both, vendor: vendor|both), item by name, tag by name and group name, tag group by name, budget by name and fiscal year; names case-insensitive, trimmed. '
     + 'Response `{reports: [{name, kind, ready, definition, unresolved: [{ref, reference, candidates: [{id, label}] (≤20)}], dropped: [{ref, effect}], groupId|null, '
     + 'nameTaken: {id, version, kind, canEdit}|null, problem?: {path, code}}]}`: definition has the matched and chosen ids in place (tokens left for unresolved references); '
@@ -301,7 +305,9 @@ const RUN_DOC = 'Response `{columns: [{key, caption, kind, field?, range?}], row
   + 'Column kinds: field, total, period, prior, change, pct_change, percent, bucket, and for tb_net the *_debit / *_credit pairs; kind hidden marks a compare amount that only feeds a change (its cells are null). '
   + 'The multi-period Total (report-builder-ties-v1) adds flows only: a range report whose sections are all balances (balance, tb_net, open items) has no Total column; in a mixed report a balance\'s Total cell is its last period\'s value. A tb_net Total, outer group-by line and group subtotal show the sums of the innermost lines\' debit and credit, whatever is expanded. '
   + 'Paths are ["n:<nodeId>", "<key>:<id|value|none>", …]. Amounts are exact strings (never -0); percents 1 place, null on a zero base. '
-  + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter), 404 (deleted saved report), 409 STALE_VERSION {current}, 422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
+  + 'Errors: 400 DEFINITION_INVALID {path, code} (also NOT_ON_CASH, MIXED_POLARITY for an account filter; NOT_IN_COMPANY for an inline id not of this company, a deleted one included), 404 (deleted saved report), 409 STALE_VERSION {current}, '
+  + '422 REPORT_REFERENCE_MISSING {path, nodeId, field, kind, ids, missing: [{path, nodeId, field, kind, ids}]} (report-refs-v1: a saved report, definitionId, naming a record that no longer exists in this company; as GET missing), '
+  + '422 REPORT_TOO_LARGE (more than 100,000 group-by lines), 503 REPORT_TIMEOUT (30 s). '
   + 'Drills: line and total rows {type: detail, nodeId, path} (page /run/detail), detail rows {type: transaction, txnId, txnType}, earnings rows {type: profit_loss, from, to, tagIds?} (tagIds: a tag-filtered section; the lines carry one of them) or null in Trial Balance tag mode; detail rows of open items carry the path of their line. '
   + 'Aging columns age as of the report date: periodRanges (other than one range ending on it) and compareRanges are 400 INVALID_PARAM. '
   + 'A section the role cannot see is one denied row, and anything built on it shows null cells.';
@@ -370,9 +376,11 @@ reportBuilderRouter.post('/draft', expensiveOpLimiter, describe({
     + '(case and spacing aside) the name of an account, contact, item, tag or tag group of this company, found by lookup (the name only, not '
     + 'an account\'s "number name" form; "401(k) Match" is kept, "401(k) Match over 500" is refused). '
     + 'One audit row for every send (whenever the request may have left for a provider): create report_builder_draft (entity the ai_jobs id), '
-    + 'after {companyId, provider, model, reader, outcome: drafted, nodes, unresolved}, {…, outcome: refused, reason} (the 422 reason code) or '
+    + 'after {companyId, provider, model, reader, outcome: drafted, nodes, unresolved, sentTo}, {…, outcome: refused, reason, sentTo} (the 422 reason code) or '
     + '{…, outcome: failed, reason: provider_error | offline} (the call erred or timed out after it was sent; provider the last one tried, model '
-    + 'null when its default was used, reader cloud if any provider tried is not local). If the engine cannot tell whether bytes left, an '
+    + 'null when its default was used, reader cloud if any provider tried is not local). report-refs-v1 (Q-PRA2e): sentTo [{provider, model, reader, outcome}] lists every provider '
+    + 'the names were sent to (the one that answered has the row\'s outcome, the others failed), and on every outcome provider/model are the answering (or last) one and reader '
+    + '(audit row and response) is cloud if any provider sent to is not local. Contacts sent are chosen from the description with every number masked. If the engine cannot tell whether bytes left, an '
     + 'attempted send counts as sent. None for 400, 403, a 503 decided before the call (no_provider, function_disabled) or a call no provider '
     + 'took (no credentials, every try refused before connecting); never the description, prompt, reply or definition. '
     + 'Errors: 400 VALIDATION_ERROR (empty or > 1,000 character description, an unknown key); 403 AI_CONSENT_REQUIRED {reason, task: report_summary} '
