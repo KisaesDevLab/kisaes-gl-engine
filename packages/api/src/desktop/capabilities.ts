@@ -1354,5 +1354,26 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * columns and their $ / % change are null; an open-item drill without range fills its last column only. No migration.
    */
   'report-builder-ties-v1',
+  /**
+   * Saved-report references follow list maintenance (U-226, ClientLedger PR-A2, Q-PRA2b–e). (1) Merges: POST
+   * /contacts/merge and /tags/merge rewrite the merged-away id to the kept one in every live saved report of the tenant
+   * (builder: nodes.**.filters.N.ids; standard: options.filters.contactIds / tagIds), in the merge's transaction, for every
+   * company that can see the kept row (else left as is and counted as skipped); a list holding the kept id twice holds it
+   * once; each changed report gets version + 1, updatedAt and updatedBy (an editor on the old version gets 409
+   * STALE_VERSION). The merge's audit row counts them: after.moved.reportDefinitions (and reportDefinitionsSkipped when
+   * any). Account merge (it moves no lines yet) and items (no merge) are unchanged. (2) Missing references: GET
+   * /report-builder/definitions and /definitions/:id rows add `missing: [{path, nodeId|null, field, kind: account |
+   * contact | item | tag | tagGroup | budget, ids}]`, the ids no longer rows of this tenant visible to the company (a
+   * deleted tag, tag group or budget; deactivated rows still exist and are not missing). POST /report-builder/run (every
+   * purpose) and /run/detail of a saved builder report (definitionId) holding one are 422 REPORT_REFERENCE_MISSING
+   * {details: the first {path, nodeId, field, kind, ids}, missing: [all]}; an inline definition keeps 400
+   * DEFINITION_INVALID NOT_IN_COMPANY. (3) Report-file import (POST /definitions/import/preview): an account matches by
+   * number only when its name also matches (case and spacing aside); otherwise unresolved with candidates (the account
+   * with that number, then the accounts of that name). (4) POST /report-builder/draft: the audit row's after adds
+   * sentTo: [{provider, model, reader, outcome}] (every provider the names were sent to; the one that answered has the
+   * row's outcome, the others failed) and reader is cloud if any of them is not local (response too); contacts are chosen
+   * from the description with numbers masked (also /reports/ask), so number words never choose names. No migration.
+   */
+  'report-refs-v1',
 ];
 
