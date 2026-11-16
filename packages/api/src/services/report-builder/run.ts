@@ -94,6 +94,8 @@ type ColSpec =
   | { t: 'field'; field: RbDetailField }
   | { t: 'amount' | 'debit' | 'credit'; slot: number; base: boolean }
   | { t: 'sum'; slots: number[] }
+  /** The multi-period Total of a range report: value index `vi` (U-225): a flow's sum over `slots`, a balance's last period. */
+  | { t: 'total'; vi: number; slots: number[] }
   | { t: 'change' | 'pct_change'; a: number; b: number }
   | { t: 'percent'; of: number };
 
@@ -105,6 +107,10 @@ interface Plan {
   slots: Slot[];
   /** Base (non-compare) slot indexes. */
   base: number[];
+  /** The last base slot (a balance's multi-period Total). */
+  lastBase: number;
+  /** The value index of the multi-period Total column (after every slot), or null when the report has none (U-225). */
+  totalVi: number | null;
   buckets: boolean;
   cols: RunColumn[];
   specs: ColSpec[];
@@ -208,6 +214,7 @@ async function makePlan(v: Viewer, def: BuilderDefinition, req: RunRequest | Det
     return add({ key, caption: caption(key, cap), kind, range }, { t: 'amount', slot: si, base: isBase });
   };
   const buckets = !!def.columns.agingBuckets;
+  let totalVi: number | null = null;
   if (buckets) {
     // Aging columns: one slot (the as-of date); bucket b is value index b, the total sums them.
     RB_BUCKETS.forEach((b, i) => add({ key: `bucket:${b}`, caption: caption(`bucket:${b}`, BUCKET_CAPTION[b]!), kind: 'bucket' }, { t: 'amount', slot: i, base: true }));
@@ -229,8 +236,12 @@ async function makePlan(v: Viewer, def: BuilderDefinition, req: RunRequest | Det
       });
       if (def.columns.percentOf && !tb) add({ key: `${key}:pct`, caption: caption(`${key}:pct`, '%'), kind: 'percent' }, { t: 'percent', of: cur });
     });
-    if (multi && mode === 'range' && !tb) {
-      const tot = add({ key: 'total', caption: caption('total', 'Total'), kind: 'total' }, { t: 'sum', slots: base });
+    // The multi-period Total (U-225): only when some section is a flow. Balances (balance, tb_net, open items) don't add
+    // across periods: a report of balances only has no Total column (as the Trial Balance); in a report that mixes them, a
+    // balance's Total cell is its last period's balance (its value index `totalVi` carries that per node).
+    if (multi && mode === 'range' && !tb && sections.some(summable)) {
+      totalVi = slots.length;
+      const tot = add({ key: 'total', caption: caption('total', 'Total'), kind: 'total' }, { t: 'total', vi: totalVi, slots: base });
       if (def.columns.percentOf) add({ key: 'total:pct', caption: caption('total:pct', '%'), kind: 'percent' }, { t: 'percent', of: tot });
     }
     // Compare columns not shown as amounts are still computed (they feed the changes); hide them from the wire.
@@ -248,7 +259,7 @@ async function makePlan(v: Viewer, def: BuilderDefinition, req: RunRequest | Det
       throw invalidAt(`node:${s.id}.measure`, 'NOT_ON_CASH', 'Quantity is not available on cash basis.');
     }
   }
-  return { def, basis, adjusting, mode, slots, base, buckets, cols, specs, firstValue };
+  return { def, basis, adjusting, mode, slots, base, lastBase: base[base.length - 1]!, totalVi, buckets, cols, specs, firstValue };
 }
 
 function sectionsOf(nodes: RbNode[]): RbSectionNode[] {
@@ -394,6 +405,26 @@ const signSet = (s: RbSectionNode) => !RB_SOURCE_INFO[s.source].openItems && (s.
   && s.polarity !== undefined && s.polarity !== 'natural';
 
 const isFlow = (s: RbSectionNode) => s.measure !== 'balance' && s.measure !== 'tb_net';
+/**
+ * Whether a section's figures add up across periods (U-225): a flow of a line source. A balance (balance, tb_net) and every
+ * open-item measure (open balance, original amount, count of open items: a snapshot as of each column's date) do not.
+ */
+const summable = (s: RbSectionNode) => !RB_SOURCE_INFO[s.source].openItems && isFlow(s);
+
+/** Adds a section's facts for the multi-period Total (U-225): a flow's every base column, a balance's last one. */
+function withTotal(plan: Plan, s: RbSectionNode, facts: Fact[]): Fact[] {
+  const vi = plan.totalVi;
+  if (vi === null) return facts;
+  const flow = summable(s);
+  const extra = facts.filter((f) => (flow ? plan.base.includes(f.slot) : f.slot === plan.lastBase)).map((f) => ({ ...f, slot: vi }));
+  return [...facts, ...extra];
+}
+
+/** The multi-period Total of values that have no facts (earnings rows): a flow's sum of the base columns, a balance's last. */
+function setTotal(plan: Plan, vals: Vals, flow: boolean): Vals {
+  if (plan.totalVi !== null) vals[plan.totalVi] = flow ? plan.base.reduce((acc, i) => acc.plus(vals[i]!), ZERO()) : vals[plan.lastBase]!;
+  return vals;
+}
 
 /** The lines of a section through `to` (from `from` when given): FROM … WHERE … for either basis. */
 function linesSql(ctx: Ctx, s: RbSectionNode, from: string | null, to: string): { with: SQL; from: SQL; where: SQL; k: LineCols; cash: boolean } {
@@ -493,7 +524,7 @@ function factsFromBuckets(ctx: Ctx, s: RbSectionNode, rows: BucketRow[]): Fact[]
       out.push({ keys, slot: si, v: r.v, ...(r.nv ? { nv: r.nv } : {}) });
     });
   }
-  return out;
+  return withTotal(ctx.plan, s, out);
 }
 
 /**
@@ -528,7 +559,7 @@ async function openingOnlyFacts(ctx: Ctx, s: RbSectionNode): Promise<Fact[]> {
     const k = s.groupBy.map((_, i) => r[`k${i}`] ?? null);
     for (const slot of plan.base) out.push({ keys: k, slot, v: ZERO(), keep: true });
   }
-  return out;
+  return withTotal(plan, s, out);
 }
 
 async function lineFacts(ctx: Ctx, s: RbSectionNode, pathKeys: Array<string | null> = []): Promise<Fact[]> {
@@ -596,14 +627,14 @@ async function openFacts(ctx: Ctx, s: RbSectionNode, pathKeys: Array<string | nu
       out.push({ keys, slot, v: openValue(s, i) });
     }
   }
-  return out;
+  return withTotal(ctx.plan, s, out);
 }
 
 // ── Values to cells ────────────────────────────────────────────────
 
 type Vals = Dec[];
 const zeros = (n: number): Vals => Array.from({ length: n }, ZERO);
-const nVals = (p: Plan) => (p.buckets ? RB_BUCKETS.length : p.slots.length);
+const nVals = (p: Plan) => (p.buckets ? RB_BUCKETS.length : p.slots.length + (p.totalVi === null ? 0 : 1));
 const addInto = (a: Vals, b: Vals) => { for (let i = 0; i < a.length; i++) a[i] = a[i]!.plus(b[i]!); };
 
 /** Cells of a row from its values; tb sections show the net in debit or credit. `base` gives percent-of bases per column. */
@@ -617,6 +648,7 @@ function cellsOf(plan: Plan, vals: Vals | null, base: Array<Dec | null> | null, 
       case 'debit': out.push(pairs ? pairs[i] ?? null : (vals[s.slot]!.gt(0) ? vals[s.slot]! : null)); break;
       case 'credit': out.push(pairs ? pairs[i] ?? null : (vals[s.slot]!.lt(0) ? vals[s.slot]!.neg() : null)); break;
       case 'sum': out.push(s.slots.reduce((acc, x) => acc.plus(vals[x]!), ZERO())); break;
+      case 'total': out.push(vals[s.vi]!); break;
       case 'change': out.push((out[s.a] as Dec).minus(out[s.b] as Dec)); break;
       case 'pct_change': { const a = out[s.a] as Dec, b = out[s.b] as Dec; out.push(percent1(a.minus(b), b.abs())); break; }
       case 'percent': { const b = base?.[s.of] ?? null; out.push(b === null ? null : percent1(out[s.of] as Dec, b)); break; }
@@ -631,9 +663,37 @@ function decCells(plan: Plan, vals: Vals | null): Array<Dec | null> {
   return plan.specs.map((s) => {
     if (s.t === 'amount') return vals[s.slot]!;
     if (s.t === 'sum') return s.slots.reduce((acc, x) => acc.plus(vals[x]!), ZERO());
+    if (s.t === 'total') return vals[s.vi]!;
     return null;
   });
 }
+
+/** Adds a net figure per column to Trial Balance debit / credit cells: the debit side when positive, the credit side when negative. */
+function addSplit(plan: Plan, out: Array<Dec | null>, vals: Vals): void {
+  plan.specs.forEach((sp, i) => {
+    if (sp.t === 'debit' && vals[sp.slot]!.gt(0)) out[i] = out[i]!.plus(vals[sp.slot]!);
+    if (sp.t === 'credit' && vals[sp.slot]!.lt(0)) out[i] = out[i]!.minus(vals[sp.slot]!);
+  });
+}
+
+const zeroPairs = (plan: Plan): Array<Dec | null> => plan.specs.map((sp) => (sp.t === 'debit' || sp.t === 'credit' ? ZERO() : null));
+
+/**
+ * Trial Balance debit / credit cells of a tree node `below` levels above its innermost lines (U-225): the sums of its
+ * innermost lines' debit and credit, never a net across them. The same figures whatever is shown or expanded.
+ */
+function tbPairs(plan: Plan, t: Tree, below: number): Array<Dec | null> {
+  const out = zeroPairs(plan);
+  const leaves = (x: Tree, d: number) => {
+    if (d > 0) { for (const c of x.children.values()) leaves(c, d - 1); return; }
+    addSplit(plan, out, x.vals);
+  };
+  leaves(t, below);
+  return out;
+}
+
+/** A line's debit / credit cells show nothing on a side that sums to zero (as a single account's net does). */
+const linePairs = (pairs: Array<Dec | null>) => pairs.map((x) => (x === null || x.isZero() ? null : x));
 
 // ── Names ──────────────────────────────────────────────────────────
 
@@ -751,6 +811,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
   const denied: string[] = [];
   const totals = new Map<string, NodeTotal>();
   const sectionData = new Map<string, { tree: Tree; earnings: EarningsRow[] }>();
+  const tbReport = plan.specs.some((sp) => sp.t === 'debit' || sp.t === 'credit');
 
   // Rights, then every line section's facts (and line-mode earnings) in one statement.
   const allowed = sectionsOf(def.nodes).filter((x) => {
@@ -784,19 +845,33 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
         for (const f of facts) nat[f.slot] = nat[f.slot]!.plus(f.nv ?? f.v);
         for (const e of earnings) { addInto(vals, e.vals); addInto(nat, e.nat); }
         sectionData.set(node.id, { tree, earnings });
-        totals.set(node.id, { vals, nat, denied: false });
+        // Trial Balance debit / credit (U-225): a tb_net section sums its innermost lines' sides and its earnings row's,
+        // from the facts, before anything is rendered; any other section in a TB report shows its net on one side.
+        let pairs: Array<Dec | null> | undefined;
+        if (tbReport) {
+          if (node.measure === 'tb_net') {
+            pairs = tbPairs(plan, tree, node.groupBy.length);
+            for (const e of earnings) addSplit(plan, pairs, e.vals);
+          } else {
+            pairs = zeroPairs(plan);
+            addSplit(plan, pairs, vals);
+          }
+        }
+        totals.set(node.id, { vals, nat, denied: false, ...(pairs ? { pairs } : {}) });
       } else if (node.type === 'group') {
         await visit(node.children);
         let acc: Vals | null = zeros(n);
         let nat: Vals | null = zeros(n);
+        let pairs: Array<Dec | null> | undefined = tbReport ? zeroPairs(plan) : undefined;
         for (const c of node.children) {
           if (c.type !== 'section' && c.type !== 'group') continue;
           const t = totals.get(c.id)!;
-          if (t.vals === null || t.nat === null) { acc = null; nat = null; break; }
+          if (t.vals === null || t.nat === null) { acc = null; nat = null; pairs = undefined; break; }
           addInto(acc, t.vals);
           addInto(nat!, t.nat);
+          if (pairs && t.pairs) pairs = pairs.map((x, i) => (x === null ? null : x.plus(t.pairs![i] ?? ZERO())));
         }
-        totals.set(node.id, { vals: acc, nat, denied: acc === null });
+        totals.set(node.id, { vals: acc, nat, denied: acc === null, ...(pairs ? { pairs } : {}) });
       } else if (node.type === 'formula') {
         // Terms in their normal sign (U-218, Q-A08ai): a section's polarity never changes a formula.
         let acc: Vals | null = zeros(n);
@@ -852,7 +927,7 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
         await render(node.children, level + 1);
         if (node.showTotal) {
           const t = totals.get(node.id)!;
-          row({ kind: 'subtotal', nodeId: node.id, level, path: np, caption: node.totalCaption ?? `Total ${node.caption}`, cells: cellsOf(plan, t.vals, percentBase(null)) });
+          row({ kind: 'subtotal', nodeId: node.id, level, path: np, caption: node.totalCaption ?? `Total ${node.caption}`, cells: cellsOf(plan, t.vals, percentBase(null), t.pairs) });
         }
         continue;
       }
@@ -867,11 +942,6 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
       const base = percentBase(secTotal);
       row({ kind: 'header', nodeId: s.id, level, path: np, caption: s.caption, cells: plan.cols.map(() => null) });
       const tb = s.measure === 'tb_net';
-      const tbSum = plan.specs.map(() => ZERO());
-      const emitLine = (cells: Array<string | null>) => {
-        if (!tb) return;
-        cells.forEach((c, i) => { if (c !== null && (plan.specs[i]!.t === 'debit' || plan.specs[i]!.t === 'credit')) tbSum[i] = tbSum[i]!.plus(dec(c)); });
-      };
       const expanded = (p: string[]) => req.expandAll || open.has(pathId(p)) || (s.defaultExpanded && !collapsed.has(pathId(p)));
       const walk = async (t: Tree, level2: number, path: string[]): Promise<void> => {
         const depth = path.length - 1;
@@ -891,8 +961,8 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
           const inner = depth + 1 === s.groupBy.length;
           const hasMore = !inner || s.display !== 'summary';
           const exp = s.display === 'detail' || (s.display === 'summary' && !inner) || (s.display === 'expandable' && hasMore && expanded(p));
-          const cells = cellsOf(plan, c.vals, base);
-          emitLine(cells);
+          // An outer Trial Balance line shows the sums of its innermost lines' debit and credit, never their net (U-225).
+          const cells = tb && !inner ? cellsOf(plan, c.vals, base, linePairs(tbPairs(plan, c, s.groupBy.length - depth - 1))) : cellsOf(plan, c.vals, base);
           row({
             kind: 'line', nodeId: s.id, level: level2, path: p, caption, cells,
             drill: { type: 'detail', nodeId: s.id, path: p },
@@ -923,13 +993,11 @@ async function assemble(ctx: Ctx, req: RunRequest): Promise<{ columns: RunColumn
       }
       for (const e of data.earnings) {
         const cells = cellsOf(plan, e.vals, base);
-        emitLine(cells);
         row({ kind: 'earnings', nodeId: s.id, level: level + 1, path: [...np, `earnings:${e.part}`], caption: e.caption, cells, drill: e.drill });
       }
       if (s.showTotal) {
-        const cells = tb
-          ? cellsOf(plan, secTotal, base, tbSum.map((x, i) => (plan.specs[i]!.t === 'debit' || plan.specs[i]!.t === 'credit' ? x : null)))
-          : cellsOf(plan, secTotal, base);
+        // A TB Total: the debit and credit summed from the facts in pass 1 (never from the rows shown).
+        const cells = tb ? cellsOf(plan, secTotal, base, totals.get(s.id)!.pairs) : cellsOf(plan, secTotal, base);
         row({ kind: 'total', nodeId: s.id, level, path: np, caption: s.totalCaption ?? `Total ${s.caption}`, cells, drill: tb ? null : { type: 'detail', nodeId: s.id, path: np } });
       }
     }
@@ -991,6 +1059,7 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
         : await priorYearsIncomeByTransactionTag(ctx.v.tenantId, { basis: plan.basis, companyId: ctx.v.companyId, adjusting: plan.adjusting, fiscalYearStart: sl.fy, tagId: tagF.ids!.join(','), endDate: sl.to, exec: ctx.exec.tx });
       prior[i] = income.neg();
     }
+    setTotal(plan, prior, false);
     if (prior.every((x) => x.isZero())) return [];
     // In tag mode the transaction-level figure has no line-level drill (the one exemption).
     const sl = slots[0]!;
@@ -1008,6 +1077,9 @@ async function earningsRows(ctx: Ctx, s: RbSectionNode, buckets: BucketRow[]): P
       else current[i] = current[i]!.plus(v);
     });
   }
+  // Earnings are balances: their multi-period Total is the last period's (U-225).
+  setTotal(plan, prior, false);
+  setTotal(plan, current, false);
   const sl = slots[0]!;
   // A tag-filtered section drills to a P&L of the same lines: tagIds = the tags a line may carry (every tag filter holds).
   const tagFs = s.filters.filter((f) => f.field === 'tag' && f.op === 'in');
@@ -1098,7 +1170,23 @@ async function detailPage(
   // A running balance runs within one innermost line, over its own lines.
   const running = fields.includes('running_balance') && keys.length === s.groupBy.length && earnings === 'none';
   let opening = ZERO();
-  if (running && lowFrom) {
+  // A balance in a range report (U-225): its lines start at the first date, so the detail starts with the balance before
+  // it, per column by the column's own rule (balance-sheet accounts from the start, income-statement accounts from the
+  // column's fiscal year start; as factsFromBuckets): opening + the rows a column holds = that column's figure.
+  let openings: Map<string, Dec> | null = null;
+  if (!flow && lowFrom && withLines) {
+    const OL = linesSql(ctx, s, null, addDays(lowFrom, -1));
+    const fys = [...new Set(sel.map((i) => plan.slots[i]!.fy))];
+    const sums = fys.map((fy, j) => sql`COALESCE(SUM(CASE WHEN a.account_type IN ('asset', 'liability', 'equity') OR ${date} >= ${fy}::date
+      THEN ${valueExpr(s, k)} END), 0)::text AS ${raw(`o${j}`)}`);
+    const ob = await ctx.exec.execute(sql`${OL.with}
+      SELECT ${sql.join(sums, sql`, `)}
+      ${OL.from} WHERE ${OL.where} ${keyEq.length ? sql`AND ${sql.join(keyEq, sql` AND `)}` : sql``}`);
+    const r = ob.rows[0] as Record<string, string>;
+    openings = new Map(fys.map((fy, j) => [fy, dec(String(r[`o${j}`] ?? '0'))]));
+    if (running) opening = openings.get(plan.slots[sel[sel.length - 1]!]!.fy)!;
+  }
+  if (running && lowFrom && flow) {
     const OL = linesSql(ctx, s, null, addDays(lowFrom, -1));
     const ob = await ctx.exec.execute(sql`${OL.with}
       SELECT COALESCE(SUM(${valueExpr(s, k)}), 0)::text AS v
@@ -1151,7 +1239,21 @@ async function detailPage(
   const more = all.length > limit;
   const page = all.slice(0, limit);
   const out: RunRow[] = [];
-  if (!cursor && running && lowFrom) {
+  if (!cursor && openings) {
+    // The opening row of a balance (U-225): every selected column's balance before the first date; the Total cell (a
+    // balance's last column) and debit / credit by side; the running balance starts from it.
+    const at = (si: number) => (sel.includes(si) ? openings!.get(plan.slots[si]!.fy)! : null);
+    const cells = plan.specs.map((sp, i): string | null => {
+      if (plan.cols[i]!.kind === 'hidden') return null;
+      if (sp.t === 'field') return sp.field === 'running_balance' && running ? exactStr(opening) : null;
+      if (sp.t === 'amount') { const v = at(sp.slot); return v === null ? null : exactStr(v); }
+      if (sp.t === 'debit') { const v = at(sp.slot); return v !== null && v.gt(0) ? exactStr(v) : null; }
+      if (sp.t === 'credit') { const v = at(sp.slot); return v !== null && v.lt(0) ? exactStr(v.neg()) : null; }
+      if (sp.t === 'total') { const v = at(plan.lastBase); return v === null ? null : exactStr(v); }
+      return null;
+    });
+    out.push({ kind: 'opening', nodeId: s.id, level: 0, path, caption: `Balance before ${fmtDay(lowFrom!)}`, cells, expandable: false, expanded: false });
+  } else if (!cursor && running && lowFrom) {
     out.push({ kind: 'opening', nodeId: s.id, level: 0, path, caption: 'Opening balance', cells: plan.specs.map((sp) => (sp.t === 'field' && sp.field === 'running_balance' ? exactStr(opening) : null)), expandable: false, expanded: false });
   }
   for (const r0 of page) {
@@ -1168,6 +1270,8 @@ async function detailPage(
       if (sp.t === 'debit') return member(sp.slot) && val.gt(0) ? exactStr(val) : null;
       if (sp.t === 'credit') return member(sp.slot) && val.lt(0) ? exactStr(val.neg()) : null;
       if (sp.t === 'sum') return sp.slots.some(member) ? exactStr(val) : null;
+      // The multi-period Total (U-225): a flow's row in any column; a balance's row in its last column.
+      if (sp.t === 'total') return (flow ? sp.slots.some(member) : member(plan.lastBase)) ? exactStr(val) : null;
       return null;
     });
     out.push({
@@ -1244,6 +1348,8 @@ async function openDetailPage(ctx: Ctx, s: RbSectionNode, keys: Array<string | n
       }
       if (sp.t === 'amount') return plan.buckets ? (RB_BUCKETS[sp.slot] === bucket ? exactStr(val) : null) : sp.slot === asOfSlot ? exactStr(val) : null;
       if (sp.t === 'sum') return plan.buckets || sp.slots.includes(asOfSlot) ? exactStr(val) : null;
+      // Open items are balances: the multi-period Total is the last period's (U-225).
+      if (sp.t === 'total') return asOfSlot === plan.lastBase ? exactStr(val) : null;
       return null;
     });
     return {
@@ -1283,28 +1389,41 @@ export async function runDetail(v: Viewer, req: DetailRequest, signal?: AbortSig
     const page = await detailPage(ctx, s, req.path, cursor, DETAIL_PAGE_ROWS, { keys, earnings, sel });
     const n = nVals(plan);
     const vals = zeros(n);
+    const tbLine = s.measure === 'tb_net';
+    let pairs: Array<Dec | null> | undefined = tbLine ? zeroPairs(plan) : undefined;
     if (earnings === 'none' || earnings === 'all') {
       const facts = RB_SOURCE_INFO[s.source].openItems ? await openFacts(ctx, s, keys) : await lineFacts(ctx, s, keys);
-      addInto(vals, buildTree(facts, keys.length, n).vals);
+      const tree = buildTree(facts, s.groupBy.length, n);
+      addInto(vals, tree.vals);
+      // A Trial Balance line's debit / credit: its innermost lines' sides, as the run shows them (U-225).
+      if (pairs) pairs = tbPairs(plan, tree, s.groupBy.length - keys.length);
     }
     if (earnings !== 'none') {
       const pre = await bucketFacts(ctx, [{ sid: 'e', s: earningsSection(s), pathKeys: [], earningsOf: true }]);
       for (const e of await earningsRows(ctx, s, pre.get('e') ?? [])) {
-        if (earnings === 'all' || earnings === e.part) addInto(vals, e.vals);
+        if (earnings === 'all' || earnings === e.part) { addInto(vals, e.vals); if (pairs) addSplit(plan, pairs, e.vals); }
       }
     }
     let subtotal: Array<string | null>;
-    if (req.range) {
-      // One column: the other columns' values are not part of this drill.
-      for (let i = 0; i < n; i++) if (!sel.includes(i)) vals[i] = ZERO();
-      const cells = cellsOf(plan, vals, null);
-      subtotal = plan.specs.map((sp, i) => {
-        if (sp.t === 'amount' || sp.t === 'debit' || sp.t === 'credit') return sel.includes(sp.slot) ? cells[i]! : null;
-        if (sp.t === 'sum') return sp.slots.some((x) => sel.includes(x)) ? cells[i]! : null;
-        return null;
-      });
-    } else {
+    if (plan.buckets) {
       subtotal = cellsOf(plan, vals, null);
+    } else {
+      // Only the columns the rows fill (1-S1): the selected columns (every base column without range; an open-item drill
+      // reads its last one); compare columns a drill without range never fills, and the changes built on them, are null.
+      const filled = RB_SOURCE_INFO[s.source].openItems ? [sel[sel.length - 1]!] : sel;
+      for (let i = 0; i < plan.slots.length; i++) if (!filled.includes(i)) vals[i] = ZERO();
+      const flow = summable(s);
+      const totalFilled = flow ? plan.base.some((b) => filled.includes(b)) : filled.includes(plan.lastBase);
+      setTotal(plan, vals, flow);
+      const cells = cellsOf(plan, vals, null, pairs && (tbLine && keys.length < s.groupBy.length ? linePairs(pairs) : undefined));
+      const isFilled = (i: number): boolean => {
+        const sp = plan.specs[i]!;
+        if (sp.t === 'amount' || sp.t === 'debit' || sp.t === 'credit') return filled.includes(sp.slot);
+        if (sp.t === 'total') return totalFilled;
+        if (sp.t === 'change' || sp.t === 'pct_change') return isFilled(sp.a) && isFilled(sp.b);
+        return false;
+      };
+      subtotal = plan.specs.map((_, i) => (isFilled(i) ? cells[i]! : null));
     }
     return { rows: page.rows.map((r) => ({ ...r, path: req.path })), cursor: page.cursor, subtotal };
   }, { signal });
