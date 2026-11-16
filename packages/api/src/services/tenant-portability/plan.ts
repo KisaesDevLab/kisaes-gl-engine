@@ -822,6 +822,8 @@ export const SECRET_COLUMNS: Record<string, SecretColumnRule> = {
   'users.tfa_totp_verified': { action: 'redact', reason: 'TFA state; not in the users projection' },
   'users.tfa_recovery_codes_encrypted': { action: 'redact', reason: 'TFA recovery codes; not in the users projection' },
   'users.tfa_totp_last_step': { action: 'redact', reason: 'TFA replay guard; not in the users projection' },
+  'users.recovery_key_hash': { action: 'redact', reason: 'desktop recovery key hash (U-23); never leaves the install; not in the users projection' },
+  'users.password_change_required': { action: 'redact', reason: 'desktop must-change flag (U-230); not in the users projection, imported users default to false' },
   'vendor_1099_profile.tin_encrypted': {
     action: 'reencrypt',
     reason: 'vendor TIN: decrypted on export, carried inside the encrypted archive, encrypted again under the importing install key (M5)',

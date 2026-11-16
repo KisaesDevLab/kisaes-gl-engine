@@ -137,7 +137,9 @@ describe('the GET-only /reports routers keep their own permission (U-208)', () =
     const denied = await h.request('GET', url, bankingOnly);
     expect([denied.status, denied.json['error']?.code], url).toEqual([403, 'PERMISSION_DENIED']);
 
-    const viewer = await h.staffToken(c, { reports: 'view' });
+    // U-227: a report also needs read on its data area (customer
+    // statements: invoices, sales tax: sales_tax, inventory: items).
+    const viewer = await h.staffToken(c, { reports: 'view', invoices: 'view', sales_tax: 'view', items: 'view' });
     for (const token of [viewer, c.token]) {
       const ok = await h.request('GET', url, token);
       expect(ok.status, JSON.stringify(ok.json)).toBe(200);
