@@ -56,7 +56,8 @@ describe('tenant export → import round-trip (v2 package)', () => {
       folders: [{ id: crypto.randomUUID(), name: 'Bills', path: `C:\\Scans\\${intakeMarker}`, defaultKind: 'bills', autoRead: false, keepOriginals: false }],
     } });
     const [acct] = await db.insert(accounts).values({ tenantId, name: 'Cash', accountType: 'asset', accountNumber: '1000', detailType: 'checking' }).returning();
-    const [rev] = await db.insert(accounts).values({ tenantId, name: 'Sales', accountType: 'revenue', accountNumber: '4000', detailType: 'service' }).returning();
+    // Sensitive flag (U-33) travels in the package.
+    const [rev] = await db.insert(accounts).values({ tenantId, name: 'Sales', accountType: 'revenue', accountNumber: '4000', detailType: 'service', isSensitive: true }).returning();
     const [txn] = await db.insert(transactions).values({ tenantId, txnType: 'journal_entry', txnDate: '2026-05-01', memo: 'seed' }).returning();
     await db.insert(journalLines).values([
       { tenantId, transactionId: txn!.id, accountId: acct!.id, debit: '100.0000', credit: '0' },
@@ -118,6 +119,12 @@ describe('tenant export → import round-trip (v2 package)', () => {
     // The imported company has the column default: no folders.
     const intake = await db.execute(sql`SELECT intake_settings AS s FROM companies WHERE tenant_id = ${result.tenant_id}`);
     expect((intake.rows[0] as { s: unknown }).s).toEqual({ version: 1, folders: [], updatedAt: null });
+
+    const flags = await db.execute(sql`SELECT account_number, is_sensitive FROM accounts WHERE tenant_id = ${result.tenant_id} ORDER BY account_number`);
+    expect(flags.rows).toEqual([
+      { account_number: '1000', is_sensitive: false },
+      { account_number: '4000', is_sensitive: true },
+    ]);
 
     // Audit history landed: the transaction row's entity_id was re-keyed to
     // the imported transaction, and jsonb payloads (incl. arrays) survived.

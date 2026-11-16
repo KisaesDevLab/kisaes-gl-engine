@@ -27,6 +27,10 @@ export interface Account {
   balance: string;
   /** Last four digits of a credit card account (U-92, document-drafts-v1). */
   cardLast4?: string | null;
+  /** Hidden, with its sub-accounts, from users without the
+   *  `sensitive_accounts` right (U-33, sensitive-accounts-v1). Set only
+   *  through PUT /accounts/:id/sensitive. */
+  isSensitive?: boolean;
   createdAt: string;
   updatedAt: string;
 }

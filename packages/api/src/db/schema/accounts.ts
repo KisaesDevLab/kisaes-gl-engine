@@ -21,6 +21,10 @@ export const accounts = pgTable('accounts', {
   // Last four digits of a credit card account (U-92, migration 0233): four
   // digits or null, only on detail type credit_card (accounts.service).
   cardLast4: char('card_last4', { length: 4 }),
+  // Sensitive account (U-33, migration 0278): hidden, with its sub-accounts,
+  // from anyone without the `sensitive_accounts` right. Set only through
+  // PUT /accounts/:id/sensitive (Admin); create/update/bulk ignore it.
+  isSensitive: boolean('is_sensitive').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

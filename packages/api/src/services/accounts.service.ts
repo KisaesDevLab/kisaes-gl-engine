@@ -96,6 +96,8 @@ export async function create(tenantId: string, input: CreateAccountInput, userId
     const [account] = await tx.insert(accounts).values({
       tenantId,
       ...input,
+      // Marked only through setSensitive (U-33); never on create.
+      isSensitive: false,
     }).returning();
 
     if (!account) {
@@ -123,6 +125,9 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
   delete sanitized['balance'];
   delete sanitized['tenantId'];
   delete sanitized['companyId'];
+  // The sensitive flag (U-33) changes only through setSensitive (Admin).
+  delete sanitized['isSensitive'];
+  delete sanitized['is_sensitive'];
 
   // Inventory accounts stay active and keep their type (U-156, S12): 409 ACCOUNT_IN_USE.
   if (input.isActive === false || (input.accountType && input.accountType !== existing.accountType)) {
