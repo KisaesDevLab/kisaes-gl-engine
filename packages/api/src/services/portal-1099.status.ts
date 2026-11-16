@@ -8,6 +8,10 @@
 // the rule precedence is in one place. Threshold values are
 // passed as args (rather than imported) to keep the module pure.
 
+import DecimalLib from 'decimal.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
+
 export type VendorStatus = 'compliant' | 'warning' | 'blocked' | 'excluded';
 
 export const EXCLUSION_REASONS = [
@@ -39,7 +43,8 @@ export interface VendorStatusInputs {
   ytdTotal: number;
   w9OnFile: boolean;
   exclusionReason: string | null;
-  necThreshold: number;
+  /** The threshold as the setting's decimal string (or a number); compared exactly (review S5). */
+  necThreshold: number | string;
 }
 
 /**
@@ -57,12 +62,14 @@ export interface VendorStatusInputs {
  */
 export function decodeVendorStatus(inputs: VendorStatusInputs): VendorStatus {
   if (inputs.exclusionReason) return 'excluded';
-  if (inputs.is1099Eligible && inputs.ytdTotal >= inputs.necThreshold && !inputs.w9OnFile) {
+  const total = new Decimal(String(inputs.ytdTotal));
+  const threshold = new Decimal(String(inputs.necThreshold));
+  if (inputs.is1099Eligible && total.gte(threshold) && !inputs.w9OnFile) {
     return 'blocked';
   }
   if (
     inputs.is1099Eligible &&
-    inputs.ytdTotal >= inputs.necThreshold * 0.8 &&
+    total.gte(threshold.times('0.8')) &&
     !inputs.w9OnFile
   ) {
     return 'warning';

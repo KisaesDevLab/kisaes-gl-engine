@@ -1450,6 +1450,23 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'sensitive-accounts-builder-v1',
   /**
+   * Sensitive-account doors (U-33, ClientLedger P29 review fixes; no migration). GET /sensitive-doors (any signed-in
+   * user) answers {hidesSensitive, refusePrefixes[], converted[{method, path}]}: a request is refused 403
+   * SENSITIVE_HIDDEN when hidesSensitive is true, its lower-cased path lies under a refusePrefixes entry and no
+   * converted entry matches its method (HEAD = GET) and path (`:x` = one segment); both lists are empty when nothing
+   * is hidden from the caller. Newly served for such a viewer: GET /ai/status, /ai/consent,
+   * /ai/consent/:id/disclosure, POST /ai/consent/:id/accept and /revoke, POST /ai/categorize/preview (the model is
+   * offered visible accounts only), and budgets GET / POST /budgets, GET / PUT / DELETE /budgets/:id, GET and PUT
+   * /budgets/:id/lines (lines and totalsExact leave hidden accounts out; a saved line on one is 403
+   * SENSITIVE_ACCOUNT; lines the caller can't see are kept). Also (security review): templates, recurring schedules
+   * and journal-entry layouts touching a hidden account are left out of lists and 403 SENSITIVE_ACCOUNT on every door;
+   * a transaction id anywhere in a JSON body (and an upload's attach target) touching one is 403 SENSITIVE_ACCOUNT;
+   * the audit `search` never matches a withheld row's images; desktop audit export is owner only (403
+   * OWNER_REQUIRED); a bank, card or built-in account can't be created, moved or retyped under a sensitive account
+   * (422 SENSITIVE_NOT_ALLOWED).
+   */
+  'sensitive-accounts-doors-v1',
+  /**
    * Report areas (U-227, ClientLedger P29; no migration). Besides `reports` read, every report route needs read on
    * the area its data belongs to (services/report-areas.ts): A/R reports and customer statements `invoices`, A/P and
    * 1099 reports `bills`, bank and reconciliation reports `banking`, sales tax reports `sales_tax`, inventory reports

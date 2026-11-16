@@ -13,7 +13,8 @@ import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
 import { toCsvRow } from '../services/export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
-import { hiddenAccountIds } from '../services/visibility.js';
+import { hiddenAccountIds, isHiddenSql } from '../services/visibility.js';
+import { isDesktop } from '../desktop/profile.js';
 
 export const auditRouter = Router();
 auditRouter.use(authenticate);
@@ -34,6 +35,26 @@ const doc = (col: string) => sql.raw(`(CASE WHEN jsonb_typeof(${col}) = 'string'
  * kept, rows of another company are left out.
  */
 async function auditFilters(req: Request): Promise<SQL> {
+  return auditConditions(req);
+}
+
+/**
+ * SQL form of redactHiddenRows' rule (same three tests): the row is about a
+ * hidden account, about a transaction with a line on one, or its images name
+ * a hidden account id. Only call with a non-empty set.
+ */
+function rowTouchesHidden(hidden: readonly string[]): SQL {
+  const likes = sql`ARRAY[${sql.join(hidden.map((id) => sql`${'%' + id + '%'}`), sql`, `)}]::text[]`;
+  return sql`(
+    COALESCE(${isHiddenSql(hidden, sql.raw('a.entity_id'))}, false)
+    OR EXISTS (SELECT 1 FROM journal_lines jl_h WHERE jl_h.tenant_id = a.tenant_id AND jl_h.transaction_id = a.entity_id
+               AND ${isHiddenSql(hidden, sql.raw('jl_h.account_id'))})
+    OR COALESCE(CAST(a.before_data AS TEXT), '') LIKE ANY(${likes})
+    OR COALESCE(CAST(a.after_data AS TEXT), '') LIKE ANY(${likes})
+  )`;
+}
+
+async function auditConditions(req: Request): Promise<SQL> {
   const { entity_type, action, start_date, end_date, search, user_id, entity_id, company } = req.query as Record<string, string>;
   const conditions = [sql`a.tenant_id = ${req.tenantId}`];
   if (entity_type) conditions.push(sql`a.entity_type = ${entity_type}`);
@@ -42,7 +63,13 @@ async function auditFilters(req: Request): Promise<SQL> {
   if (end_date) conditions.push(sql`a.created_at <= ${end_date}::timestamptz + interval '1 day'`);
   if (search) {
     const pattern = '%' + escapeLike(String(search)) + '%';
-    conditions.push(sql`(a.entity_type ILIKE ${pattern} OR CAST(a.before_data AS TEXT) ILIKE ${pattern} OR CAST(a.after_data AS TEXT) ILIKE ${pattern})`);
+    // Sensitive accounts (U-33, security review S1): the images of a row redactHiddenRows withholds are never
+    // searched, so a search can't rebuild a hidden amount from what matches (or from the total).
+    const hidden = await hiddenAccountIds();
+    const images = sql`(CAST(a.before_data AS TEXT) ILIKE ${pattern} OR CAST(a.after_data AS TEXT) ILIKE ${pattern})`;
+    conditions.push(hidden.length === 0
+      ? sql`(a.entity_type ILIKE ${pattern} OR ${images})`
+      : sql`(a.entity_type ILIKE ${pattern} OR (NOT ${rowTouchesHidden(hidden)} AND ${images}))`);
   }
   for (const [name, value] of [['user_id', user_id], ['entity_id', entity_id]] as const) {
     if (value === undefined) continue;
@@ -143,8 +170,17 @@ async function redactHiddenRows(tenantId: string, rows: Array<Record<string, unk
   });
 }
 
-// Export audit log as CSV
-auditRouter.get('/export', async (req, res) => {
+// Export audit log as CSV. On the desktop (Q-P29t, security review S1) only the owner or a super admin may export:
+// the built-in roles that read the trail (Bookkeeper, read-only) may not take it away in bulk. Server builds unchanged.
+auditRouter.get('/export', describe({
+  summary: 'Export the audit trail as CSV',
+  description: 'The list filters. Desktop: owner or super admin only, else 403 OWNER_REQUIRED (Q-P29t); the list stays readable '
+    + 'with the audit_log right. While accounts are hidden from the caller, `search` never matches the images of a row that '
+    + 'touches one (list and export alike), and `total` counts only rows that may match.',
+}), async (req, res) => {
+  if (isDesktop() && !(req.userRole === 'owner' || req.isSuperAdmin)) {
+    throw AppError.forbidden('Only the company Admin can export the audit trail', 'OWNER_REQUIRED');
+  }
   const where = await auditFilters(req);
 
   const result = await db.execute(sql`

@@ -6,7 +6,13 @@
 // transaction touching one stay listed for a restricted viewer, with
 // before/after blank and redacted: true. The owner sees them whole.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+
+const state = vi.hoisted(() => ({ desktop: false }));
+vi.mock('../desktop/profile.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../desktop/profile.js')>();
+  return { ...actual, isDesktop: () => state.desktop };
+});
 import * as ledger from '../services/ledger.service.js';
 import { startSensitiveHarness, type SensitiveHarness } from './sensitive.test-fixtures.js';
 
@@ -47,5 +53,38 @@ describe('GET /audit-log for a viewer without sensitive_accounts', () => {
     expect(own.json.data.every((r: { redacted?: boolean }) => r.redacted === undefined)).toBe(true);
     // Filtering on the hidden transaction is refused outright.
     expect((await h.call('bk', 'GET', `/api/v1/audit-log?entity_id=${hiddenTxn}`)).status).toBe(403);
+  });
+});
+
+describe('audit search and export (security review S1)', () => {
+  it('a search never matches the images of a withheld row, and total counts only what may match', async () => {
+    // The attack: rebuild the paycheck amount digit by digit from which searches match.
+    for (const q of ['4321.09', '"4321', 'Canary', h.acct.wages]) {
+      const bk = await h.call('bk', 'GET', `/api/v1/audit-log?limit=500&search=${encodeURIComponent(q)}`);
+      expect(bk.status).toBe(200);
+      expect([q, bk.json.total, bk.json.data.length]).toEqual([q, 0, 0]);
+    }
+    // A search still finds rows that touch nothing hidden, and the entity type of a withheld row.
+    const plain = await h.call('bk', 'GET', `/api/v1/audit-log?limit=500&search=Supplies`);
+    expect(plain.json.total).toBeGreaterThan(0);
+    expect(plain.json.total).toBe(plain.json.data.length);
+    const byType = await h.call('bk', 'GET', `/api/v1/audit-log?limit=500&search=transaction`);
+    expect(byType.json.data.some((r: { redacted?: boolean }) => r.redacted === true)).toBe(true);
+    // The owner searches everything.
+    const own = await h.call('owner', 'GET', `/api/v1/audit-log?limit=500&search=Canary`);
+    expect(own.json.total).toBeGreaterThan(0);
+  });
+
+  it('on the desktop only the owner may export; reads are unchanged; the server build is unchanged', async () => {
+    state.desktop = true;
+    try {
+      const bk = await h.call('bk', 'GET', '/api/v1/audit-log/export');
+      expect([bk.status, bk.json?.error?.code]).toEqual([403, 'OWNER_REQUIRED']);
+      expect((await h.call('bk', 'GET', '/api/v1/audit-log?limit=5')).status).toBe(200);
+      expect((await h.call('owner', 'GET', '/api/v1/audit-log/export')).status).toBe(200);
+    } finally {
+      state.desktop = false;
+    }
+    expect((await h.call('bk', 'GET', '/api/v1/audit-log/export')).status).toBe(200);
   });
 });

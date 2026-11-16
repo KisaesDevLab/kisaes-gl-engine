@@ -8,6 +8,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { apiKeys, users } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { assertUserUsable } from './principal-check.js';
 
 function hashKey(key: string): string {
   return crypto.createHash('sha256').update(key).digest('hex');
@@ -48,10 +49,10 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
   // The key is only as alive as its owner: a deactivated (offboarded) user
   // must not keep API access through a key issued while they were active —
   // JWT auth enforces the same check on every request.
+  // Security review S3: and while the owner must choose a new password (U-230), the key waits too.
   const owner = await db.query.users.findFirst({ where: eq(users.id, record.userId) });
-  if (!owner || !owner.isActive) {
-    throw AppError.unauthorized('Account is deactivated');
-  }
+  assertUserUsable(req, owner);
+  if (!owner) throw AppError.unauthorized('Account is deactivated');
 
   // Set request context
   req.userId = record.userId;

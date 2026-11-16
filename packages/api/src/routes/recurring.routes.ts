@@ -46,6 +46,12 @@ export const updateScheduleSchema = z.object({
 export const recurringRouter = Router();
 recurringRouter.use(authenticate);
 recurringRouter.use(requireResource('recurring'));
+// Sensitive accounts (U-33): a schedule whose template touches a hidden account is 403 SENSITIVE_ACCOUNT on every
+// /:id door (change, stop, post now, archive).
+recurringRouter.param('id', (req, _res, next, id: string) => {
+  if (!z.string().uuid().safeParse(id).success) { next(); return; }
+  recurringService.assertScheduleVisible(req.tenantId, id).then(() => next(), next);
+});
 
 recurringRouter.get('/', async (req, res) => {
   const limit = req.query['limit'] ? Number(req.query['limit']) : undefined;

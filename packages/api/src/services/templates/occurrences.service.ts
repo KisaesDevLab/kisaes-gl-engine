@@ -68,6 +68,8 @@ import { log } from '../../utils/logger.js';
 import { checkLockDate } from '../ledger.service.js';
 import * as ledger from '../ledger.service.js';
 import { runWithoutOverride } from '../lock-context.js';
+import { hiddenAccountIds, runWithoutViewer } from '../visibility.js';
+import { andVisibleTemplate, visibleTemplate } from './visibility.js';
 import { postLegacyClone } from '../recurring.service.js';
 import { draftRefs, draftTotal } from './draft.js';
 import { ownerMayPost, templateResource, type OwnerPermissionCache } from './permissions.js';
@@ -706,6 +708,7 @@ async function dueAutoSchedules(actor: Actor, asOf: string, filter?: RunDueFilte
 }
 
 async function postedInRun(actor: Actor, runId: string) {
+  const hidden = await hiddenAccountIds();
   const res = await db.execute(sql`
     SELECT o.template_id, t.name, t.kind, t.client_form, o.occurrence_date::text AS occurrence_date, o.transaction_id,
            COALESCE(x.total, (SELECT SUM(jl.debit) FROM journal_lines jl
@@ -714,7 +717,7 @@ async function postedInRun(actor: Actor, runId: string) {
     JOIN template_transactions t ON t.id = o.template_id AND t.tenant_id = o.tenant_id
     LEFT JOIN transactions x ON x.id = o.transaction_id AND x.tenant_id = o.tenant_id
     WHERE o.tenant_id = ${actor.tenantId} AND ${companyCond('t.company_id', actor.companyId)}
-      AND o.run_id = ${runId} AND o.status = 'posted'
+      AND o.run_id = ${runId} AND o.status = 'posted'${andVisibleTemplate(hidden, 't')}
     ORDER BY o.occurrence_date, lower(t.name), o.template_id
   `);
   return (res.rows as Array<Record<string, string | null>>).map((r) => ({
@@ -730,12 +733,13 @@ interface SkippedEntry {
 
 /** Open skipped dates (oldest first, at most SKIPPED_LIST_CAP) and how many there are in all. */
 async function openSkipped(actor: Actor, fresh: Set<string>): Promise<{ items: SkippedEntry[]; total: number }> {
+  const hidden = await hiddenAccountIds();
   const open = sql`
     FROM template_occurrences o
     JOIN template_transactions t ON t.id = o.template_id AND t.tenant_id = o.tenant_id
     WHERE o.tenant_id = ${actor.tenantId} AND ${companyCond('t.company_id', actor.companyId)} AND t.deleted_at IS NULL
       AND (o.status = 'skipped'
-        OR (o.status = 'claiming' AND o.created_at < now() - make_interval(mins => ${CLAIM_STALE_MINUTES})))`;
+        OR (o.status = 'claiming' AND o.created_at < now() - make_interval(mins => ${CLAIM_STALE_MINUTES})))${andVisibleTemplate(hidden, 't')}`;
   const res = await db.execute(sql`
     SELECT o.id, o.template_id, t.name, t.kind, t.client_form, o.occurrence_date::text AS occurrence_date, o.status, o.reason
     ${open}
@@ -756,13 +760,14 @@ async function openSkipped(actor: Actor, fresh: Set<string>): Promise<{ items: S
 /** Schedules a run stopped at CATCH_UP_CAP that are still due: listed as skipped / CATCH_UP_CAPPED. */
 async function cappedEntries(actor: Actor, templateIds: string[], asOf: string): Promise<SkippedEntry[]> {
   if (templateIds.length === 0) return [];
+  const hidden = await hiddenAccountIds();
   const res = await db.execute(sql`
     SELECT t.id AS template_id, t.name, t.kind, t.client_form, rs.next_occurrence::text AS occurrence_date
     FROM recurring_schedules rs
     JOIN template_transactions t ON t.id = rs.template_id AND t.tenant_id = rs.tenant_id
     WHERE rs.tenant_id = ${actor.tenantId} AND t.id IN (${sql.join(templateIds.map((i) => sql`${i}`), sql`, `)})
       AND t.deleted_at IS NULL AND rs.is_active = true AND rs.archived_at IS NULL AND rs.mode = 'auto'
-      AND rs.next_occurrence <= ${asOf}::date
+      AND rs.next_occurrence <= ${asOf}::date${andVisibleTemplate(hidden, 't')}
     ORDER BY rs.next_occurrence, lower(t.name), t.id
   `);
   return (res.rows as Array<Record<string, string | null>>).map((r) => ({
@@ -785,6 +790,8 @@ async function dueReminders(actor: Actor, asOf: string) {
       sql`${recurringSchedules.archivedAt} IS NULL`,
       eq(recurringSchedules.mode, 'reminder'),
       sql`${recurringSchedules.nextOccurrence} <= ${asOf}::date`,
+      // Sensitive accounts (U-33): a template touching a hidden account is not listed.
+      visibleTemplate(await hiddenAccountIds()),
     ))
     .orderBy(recurringSchedules.nextOccurrence, recurringSchedules.id)
     .limit(REMINDER_SCHEDULES_CAP + 1);
@@ -864,7 +871,10 @@ async function runDueInternal(
   const failed: RunDueResult['failed'] = [];
   const capped = new Set<string>();
 
-  await runWithoutOverride(async () => {
+  // The auto posts are the system's (as on the server tick; the template owner's rights decide, permissions.ts),
+  // so they run with no viewer: a restricted caller's run still posts a template that touches a hidden account.
+  // What the caller is shown below is filtered for the caller (U-33).
+  await runWithoutViewer(() => runWithoutOverride(async () => {
     for (const templateId of await dueAutoSchedules(actor, asOf, filter)) {
       let steps = 0;
       while (handled < limit) {
@@ -892,7 +902,7 @@ async function runDueInternal(
       }
       if (handled >= limit) break;
     }
-  });
+  }));
 
   // A capped schedule waits for the next run, so it doesn't make `more`.
   const more = handled >= limit && (await dueAutoSchedules(actor, asOf, filter)).some((id) => !capped.has(id));
@@ -906,9 +916,20 @@ async function runDueInternal(
     remindersTruncated: reminders.truncated,
     skipped: [...open.items, ...cappedNow],
     skippedTotal: open.total + cappedNow.length,
-    failed,
+    failed: await visibleFailed(actor, failed),
   };
   return { result, postedNow, handled };
+}
+
+/** ailed without templates that touch an account hidden from the caller (U-33). */
+async function visibleFailed(actor: Actor, failed: RunDueResult['failed']): Promise<RunDueResult['failed']> {
+  const hidden = await hiddenAccountIds();
+  if (hidden.length === 0 || failed.length === 0) return failed;
+  const res = await db.execute(sql`
+    SELECT t.id FROM template_transactions t
+    WHERE t.tenant_id = ${actor.tenantId} AND t.id IN (${sql.join(failed.map((f) => sql`${f.templateId}`), sql`, `)})${andVisibleTemplate(hidden, 't')}`);
+  const ok = new Set((res.rows as Array<{ id: string }>).map((r) => r.id));
+  return failed.filter((f) => ok.has(f.templateId));
 }
 
 /** GET /recurring/attention: due reminders and open skipped dates; changes nothing. */

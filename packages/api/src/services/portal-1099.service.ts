@@ -37,6 +37,23 @@ import {
   type VendorStatus,
 } from './portal-1099.status.js';
 import { threshold1099Resolver } from './company-1099-thresholds.service.js';
+import { dec } from './payment-compute.js';
+
+/**
+ * Review S5: 1099 money is compared and summed as exact decimals. `total` is
+ * a stored decimal read as a number (its shortest form round-trips), the
+ * threshold the decimal string of the company's setting.
+ */
+export function meets1099Threshold(total: number | string, threshold: string | number): boolean {
+  return dec(total).gte(dec(threshold));
+}
+
+/** Exact sum of 1099 amounts (cents), returned as a number for the response shapes. */
+export function sum1099(values: Iterable<number | string>): number {
+  let s = dec(0);
+  for (const v of values) s = s.plus(dec(v));
+  return Number(s.toFixed(2));
+}
 import {
   FORM_BOX_LABELS,
   FORM_1099_BOXES,
@@ -249,10 +266,10 @@ export async function ytdReportableTotals(
   taxYear: number,
 ): Promise<Map<string, number>> {
   const byBox = await ytdTotalsByBox(tenantId, taxYear);
+  const parts = new Map<string, number[]>();
+  for (const r of byBox) parts.set(r.contactId, [...(parts.get(r.contactId) ?? []), r.total]);
   const map = new Map<string, number>();
-  for (const r of byBox) {
-    map.set(r.contactId, (map.get(r.contactId) ?? 0) + r.total);
-  }
+  for (const [id, totals] of parts) map.set(id, sum1099(totals));
   return map;
 }
 
@@ -300,10 +317,10 @@ export async function summary(tenantId: string, taxYear: number): Promise<Summar
   // $0 to a mapped account contributes $0 here and never trips the tile.
   const reportable = await ytdReportableTotals(tenantId, taxYear);
   const inScopeTotals = [...inScopeIds].map((id) => reportable.get(id) ?? 0);
-  const ytdPaymentTotal = inScopeTotals.reduce((s, t) => s + t, 0);
+  const ytdPaymentTotal = sum1099(inScopeTotals);
   // U-215: the company's NEC-1 threshold when set (tenant-wide: the only company's).
-  const necThreshold = Number((await threshold1099Resolver(tenantId, null)).general(taxYear));
-  const vendorsOverThreshold = inScopeTotals.filter((t) => t >= necThreshold).length;
+  const necThreshold = (await threshold1099Resolver(tenantId, null)).general(taxYear);
+  const vendorsOverThreshold = inScopeTotals.filter((t) => meets1099Threshold(t, necThreshold)).length;
 
   let w9sMissing = 0;
   let w9sExpiring = 0;
@@ -373,7 +390,7 @@ export async function listVendors(tenantId: string, taxYear: number): Promise<Ve
     .where(eq(vendor1099Profile.tenantId, tenantId));
   const profileMap = new Map(profiles.map((p) => [p.contactId, p]));
   // U-215: the company's NEC-1 threshold when set (tenant-wide: the only company's).
-  const necThreshold = Number((await threshold1099Resolver(tenantId, null)).general(taxYear));
+  const necThreshold = (await threshold1099Resolver(tenantId, null)).general(taxYear);
 
   return vendors
     .map((v) => {
@@ -427,10 +444,10 @@ export async function scanThresholds(
   taxYear: number,
 ): Promise<ThresholdHit[]> {
   const rows = await listVendors(tenantId, taxYear);
-  const necThreshold = Number((await threshold1099Resolver(tenantId, null)).general(taxYear));
+  const necThreshold = (await threshold1099Resolver(tenantId, null)).general(taxYear);
   return rows
     .filter(
-      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && r.ytdTotal >= necThreshold,
+      (r) => r.is1099Eligible && !r.w9OnFile && !r.exclusionReason && meets1099Threshold(r.ytdTotal, necThreshold),
     )
     .map((r) => ({
       contactId: r.contactId,
@@ -1463,7 +1480,7 @@ export async function exportFiling(
   // (U-215; tenant-wide: the only company's).
   const thresholds = await threshold1099Resolver(tenantId, null);
   const formMatches = byBox.filter(
-    (r) => formOf(r.formBox) === input.formType && r.total >= Number(thresholds.box(r.formBox, input.taxYear)),
+    (r) => formOf(r.formBox) === input.formType && meets1099Threshold(r.total, thresholds.box(r.formBox, input.taxYear)),
   );
 
   if (formMatches.length === 0) {

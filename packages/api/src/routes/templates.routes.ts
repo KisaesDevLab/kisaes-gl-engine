@@ -35,7 +35,7 @@ import { lockContextMiddleware } from '../services/lock-context.js';
 import * as templates from '../services/templates/templates.service.js';
 import * as occurrences from '../services/templates/occurrences.service.js';
 import { kindResource, templateResource, txnResource } from '../services/templates/permissions.js';
-import { loadSource } from '../services/templates/snapshot.js';
+import { assertSourceVisible, loadSource } from '../services/templates/snapshot.js';
 import { db } from '../db/index.js';
 import * as ledger from '../services/ledger.service.js';
 import { AppError } from '../utils/errors.js';
@@ -163,6 +163,8 @@ templatesRouter.post('/from-transaction', describe({
 }), validate(createTxnTemplateFromTransactionSchema), async (req, _res, next) => {
   const src = await loadSource(db, req.tenantId, req.companyId, req.body.transactionId);
   if (!src) throw AppError.notFound('Transaction not found');
+  // Sensitive accounts (U-33): a source the viewer can't open is 403 SENSITIVE_ACCOUNT, before any replay.
+  await assertSourceVisible(db, req.tenantId, src.id);
   await requireAccess(req, txnResource(src.txnType, src.printStatus), 'create');
   next();
 }, keyedTemplateCreate, async (req, res) => {

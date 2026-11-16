@@ -16,6 +16,7 @@ import { tenantStorageKey } from './storage/storage-keys.js';
 import { keyBelongsToTenant } from '../utils/contained-path.js';
 import { SystemSettingsKeys } from '../constants/system-settings-keys.js';
 import { isDesktop } from '../desktop/profile.js';
+import { assertTransactionsVisible } from './visibility.js';
 
 /**
  * Whether an upload may start OCR / AI processing on its own (U-89).
@@ -125,6 +126,9 @@ export async function assertAttachTarget(
     if (!target || target.status === 'deleted' || (companyId && target.company_id && target.company_id !== companyId)) {
       throw AppError.notFound('The transaction to attach to was not found');
     }
+    // Sensitive accounts (U-33): the upload's multipart fields are read after `authenticate`, so the transaction is
+    // checked here for upload and link alike (403 SENSITIVE_ACCOUNT).
+    await assertTransactionsVisible(tenantId, [attachableId as string]);
     return;
   }
   if (!companyId || !isUuid) return;

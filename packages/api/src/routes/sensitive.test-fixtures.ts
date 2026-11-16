@@ -35,6 +35,8 @@ export interface SensitiveHarness {
   /** Accounts every fixture has. `wages` is marked sensitive by `markWages`. */
   acct: { bank: string; wages: string; wagesSub: string; supplies: string; sales: string; ar: string; ap: string };
   call: (who: Who, method: string, path: string, body?: unknown) => Promise<CallResult>;
+  /** A call with a raw body and content type (multipart uploads). */
+  raw: (who: Who, method: string, path: string, body: string, contentType: string) => Promise<CallResult>;
   markWages: () => Promise<void>;
   close: () => Promise<void>;
 }
@@ -91,14 +93,13 @@ export async function startSensitiveHarness(slugPrefix: string): Promise<Sensiti
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as AddressInfo).port;
 
-  const call = (who: Who, method: string, path: string, body?: unknown) => new Promise<CallResult>((resolve, reject) => {
-    const payload = body === undefined ? undefined : JSON.stringify(body);
+  const raw = (who: Who, method: string, path: string, payload: string | undefined, contentType: string) => new Promise<CallResult>((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1', port, path, method,
       headers: {
         Authorization: `Bearer ${tokens[who]}`,
         'X-Company-Id': company.id,
-        ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+        ...(payload ? { 'Content-Type': contentType, 'Content-Length': Buffer.byteLength(payload) } : {}),
       },
     }, (res) => {
       const chunks: Buffer[] = [];
@@ -114,6 +115,8 @@ export async function startSensitiveHarness(slugPrefix: string): Promise<Sensiti
     if (payload) req.write(payload);
     req.end();
   });
+  const call = (who: Who, method: string, path: string, body?: unknown) =>
+    raw(who, method, path, body === undefined ? undefined : JSON.stringify(body), 'application/json');
 
   return {
     tenantId,
@@ -122,6 +125,7 @@ export async function startSensitiveHarness(slugPrefix: string): Promise<Sensiti
     bookkeeperId: bk!.id,
     acct: { bank, wages, wagesSub, supplies, sales, ar, ap },
     call,
+    raw: (who: Who, method: string, path: string, body: string, contentType: string) => raw(who, method, path, body, contentType),
     markWages: async () => {
       const r = await call('owner', 'PUT', `/api/v1/accounts/${wages}/sensitive`, { isSensitive: true });
       if (r.status !== 200) throw new Error(`markWages: ${r.status} ${r.text}`);
@@ -168,6 +172,8 @@ export interface CanarySeed {
   invoiceId: string;
   billId: string;
   allHiddenTxn: string;
+  /** Templates (memorized transactions) that touch hidden accounts: a draft with a reminder, a legacy one (P29 B1). */
+  templateIds: string[];
 }
 
 export const CANARY_NAME = 'Canary';
@@ -224,6 +230,21 @@ export async function seedCanaries(h: SensitiveHarness): Promise<CanarySeed> {
     { budgetId: bud!.id, accountId: h.acct.wages, ...months('777.71') },
     { budgetId: bud!.id, accountId: h.acct.supplies, ...months('100.00') },
   ] as never);
+  // Templates (P29 security B1): a journal-entry draft on hidden accounts with a due reminder (1888.81, an amount
+  // nothing else carries) and a legacy template of the canary invoice. No ledger activity.
+  const tpl = async (body: Record<string, unknown>, path = '/api/v1/templates') => {
+    const r = await h.call('owner', 'POST', path, body);
+    if (r.status !== 201) throw new Error(`seedCanaries template: ${r.status} ${r.text}`);
+    return r.json.template.id as string;
+  };
+  const templateIds = [
+    await tpl({
+      name: 'Canary Officer Accrual', kind: 'journal_entry',
+      draft: { lines: [{ accountId: hidden.otherExpense, debit: '1888.81' }, { accountId: hidden.liability, credit: '1888.81' }] },
+      schedule: { mode: 'remind', frequency: 'monthly', intervalValue: 1, nextDate: '2026-01-01' },
+    }),
+    await tpl({ transactionId: invoice.id, name: 'Canary Invoice Copy' }, '/api/v1/templates/from-transaction'),
+  ];
   for (const id of Object.values(hidden)) {
     const r = await h.call('owner', 'PUT', `/api/v1/accounts/${id}/sensitive`, { isSensitive: true });
     if (r.status !== 200) throw new Error(`seedCanaries mark: ${r.status} ${r.text}`);
@@ -231,8 +252,8 @@ export async function seedCanaries(h: SensitiveHarness): Promise<CanarySeed> {
   return {
     hidden,
     hiddenIds: [h.acct.wages, h.acct.wagesSub, ...Object.values(hidden)],
-    amounts: ['1234.57', '2111.13', '3222.24', '4333.35', '6555.57', '7666.68', '1777.79', '1444.45', '777.71', '877.71'],
+    amounts: ['1234.57', '2111.13', '3222.24', '4333.35', '6555.57', '7666.68', '1777.79', '1444.45', '777.71', '877.71', '1888.81'],
     customer: cust!.id, vendor: vend!.id, item: it!.id, tagId: tg!.id, loan,
-    invoiceId: invoice.id, billId: bill.id, allHiddenTxn: all.id,
+    invoiceId: invoice.id, billId: bill.id, allHiddenTxn: all.id, templateIds,
   };
 }

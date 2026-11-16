@@ -9,7 +9,7 @@ import { eq, and, sql, asc, inArray } from 'drizzle-orm';
 import type { RegisterInput, LoginInput, AuthTokens, JwtPayload } from '@kis-books/shared';
 import { entityTypes } from '@kis-books/shared';
 import { db } from '../db/index.js';
-import { tenants, users, sessions, userTenantAccess, companies, passwordResetTokens } from '../db/schema/index.js';
+import { apiKeys, tenants, users, sessions, userTenantAccess, companies, passwordResetTokens } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -1212,9 +1212,11 @@ export async function setTemporaryPassword(
       passwordHash, passwordChangeRequired: true, loginFailedAttempts: 0, loginLockedUntil: null, updatedAt: new Date(),
     }).where(eq(users.id, userId));
     await tx.delete(sessions).where(eq(sessions.userId, userId));
+    // Security review S3: a reset ends every way in, API keys included.
+    await tx.update(apiKeys).set({ isActive: false }).where(and(eq(apiKeys.userId, userId), eq(apiKeys.isActive, true)));
   });
   await auditLog(tenantId, 'update', 'user_temporary_password', userId, null,
-    { passwordChangeRequired: true, sessionsRevoked: true, lockoutCleared: true }, actingUserId);
+    { passwordChangeRequired: true, sessionsRevoked: true, apiKeysRevoked: true, lockoutCleared: true }, actingUserId);
   return { temporaryPassword };
 }
 

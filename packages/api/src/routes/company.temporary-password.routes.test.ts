@@ -17,7 +17,8 @@ import jwt from 'jsonwebtoken';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Express } from 'express';
 import { db } from '../db/index.js';
-import { auditLog, sessions, tenants, userTenantAccess, users } from '../db/schema/index.js';
+import crypto from 'node:crypto';
+import { apiKeys, auditLog, sessions, tenants, userTenantAccess, users } from '../db/schema/index.js';
 import { createCompanyForTenant } from '../services/company.service.js';
 import { deleteTenant } from './sensitive.test-fixtures.js';
 
@@ -36,6 +37,7 @@ async function cleanup(): Promise<void> {
   for (const t of rows) {
     const us = await db.select({ id: users.id }).from(users).where(eq(users.tenantId, t.id));
     if (us.length) {
+      await db.delete(apiKeys).where(inArray(apiKeys.userId, us.map((u) => u.id)));
       await db.delete(sessions).where(inArray(sessions.userId, us.map((u) => u.id)));
       await db.delete(userTenantAccess).where(inArray(userTenantAccess.userId, us.map((u) => u.id)));
     }
@@ -81,7 +83,7 @@ async function loadApp(mode: 'desktop' | 'server'): Promise<Express> {
   return (await import('../app.js')).app;
 }
 
-type Call = (p: string, init?: { method?: string; body?: unknown; jwt?: string }) => Promise<{ status: number; text: string; json: any }>;
+type Call = (p: string, init?: { method?: string; body?: unknown; jwt?: string; key?: string }) => Promise<{ status: number; text: string; json: any }>;
 
 async function withServer<T>(app: Express, fn: (call: Call) => Promise<T>): Promise<T> {
   const server = http.createServer(app);
@@ -92,6 +94,7 @@ async function withServer<T>(app: Express, fn: (call: Call) => Promise<T>): Prom
   const call: Call = async (p, init = {}) => {
     const headers: Record<string, string> = { 'x-cl-token': TOKEN, 'x-company-id': companyId };
     if (init.jwt) headers['authorization'] = `Bearer ${init.jwt}`;
+    if (init.key) headers['x-api-key'] = init.key;
     if (init.body !== undefined) headers['content-type'] = 'application/json';
     const r = await fetch(`http://127.0.0.1:${port}${p}`, {
       method: init.method ?? 'GET', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body),
@@ -185,5 +188,65 @@ describe('temporary passwords (desktop)', () => {
     const authService = await import('../services/auth.service.js');
     const r = await authService.inviteUser(tenantId, { email: `invitee-${SLUG}@example.com`, displayName: 'Invitee', role: 'readonly' }, ids['owner']);
     expect(r.user.passwordChangeRequired).toBe(false);
+  });
+});
+
+describe('API keys and download tokens (security review S3)', () => {
+  const keyFor = async (who: string) => {
+    const key = `kb_s3_${who}_${crypto.randomBytes(12).toString('hex')}`;
+    await db.insert(apiKeys).values({
+      tenantId, userId: ids[who]!, name: `s3 ${who}`, keyPrefix: key.slice(0, 12),
+      keyHash: crypto.createHash('sha256').update(key).digest('hex'), role: 'bookkeeper',
+    });
+    return key;
+  };
+  const dl = async (who: string) => (await import('../utils/download-token.js'))
+    .issueDownloadToken({ userId: ids[who]!, tenantId, userRole: 'bookkeeper', isSuperAdmin: false, companyId }).token;
+  const viaKey = (call: Call, key: string) => call('/api/v1/accounts?limit=1', { key });
+
+  it('a temporary password revokes the user\'s API keys; a must-change user\'s key and download token wait', async () => {
+    const app = await loadApp('desktop');
+    await withServer(app, async (call) => {
+      const key = await keyFor('bk');
+      expect((await viaKey(call, key)).status).toBe(200);
+      const r = await tp(call, 'owner', ids['bk']!);
+      expect(r.status, r.text).toBe(200);
+      const after = await viaKey(call, key);
+      expect(after.status).toBe(401);
+      expect((await db.select().from(apiKeys).where(eq(apiKeys.userId, ids['bk']!))).every((k) => k.isActive === false)).toBe(true);
+      // A key made after the reset (or one the reset missed) still waits for the new password, as does a download token.
+      const late = await keyFor('bk');
+      const k2 = await viaKey(call, late);
+      expect([k2.status, k2.json?.error?.code]).toEqual([403, 'PASSWORD_CHANGE_REQUIRED']);
+      const d = await call(`/api/v1/accounts?limit=1&_dl=${await dl('bk')}`);
+      expect([d.status, d.json?.error?.code]).toEqual([403, 'PASSWORD_CHANGE_REQUIRED']);
+      await db.update(users).set({ passwordChangeRequired: false }).where(eq(users.id, ids['bk']!));
+      expect((await call(`/api/v1/accounts?limit=1&_dl=${await dl('bk')}`)).status).toBe(200);
+    });
+  });
+
+  it('recovery with the recovery key revokes the user\'s API keys', async () => {
+    const recovery = await import('../services/desktop-recovery-key.service.js');
+    const rk = await recovery.issueRecoveryKey(ids['owner']!);
+    const key = await keyFor('owner');
+    await recovery.recoverPassword({ email: `owner-${SLUG}@example.com`, recoveryKey: rk, newPassword: 'owner-recovered-pass-9' });
+    const rows = await db.select().from(apiKeys).where(eq(apiKeys.userId, ids['owner']!));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((k) => k.isActive === false)).toBe(true);
+    expect(key).toBeTruthy();
+  });
+
+  it('a turned-off user\'s download token is refused (server build too)', async () => {
+    await db.update(users).set({ passwordChangeRequired: false, isActive: true }).where(eq(users.id, ids['member']!));
+    const app = await loadApp('server');
+    await withServer(app, async (call) => {
+      expect((await call(`/api/v1/accounts?limit=1&_dl=${await dl('member')}`)).status).toBe(200);
+      await db.update(users).set({ isActive: false }).where(eq(users.id, ids['member']!));
+      try {
+        expect((await call(`/api/v1/accounts?limit=1&_dl=${await dl('member')}`)).status).toBe(401);
+      } finally {
+        await db.update(users).set({ isActive: true }).where(eq(users.id, ids['member']!));
+      }
+    });
   });
 });

@@ -145,3 +145,31 @@ describe('PUT /accounts/:id/sensitive', () => {
     expect(await flagOf(h.acct.supplies)).toBe(false);
   });
 });
+
+describe('no bank, card or built-in account under a sensitive account (review S4)', () => {
+  it('create, move and type change under a sensitive ancestor are 422; elsewhere unchanged', async () => {
+    await h.markWages();
+    for (const body of [
+      { name: 'Payroll Checking', accountType: 'asset', detailType: 'bank', accountNumber: '1012', parentId: h.acct.wagesSub },
+      { name: 'Payroll Card', accountType: 'liability', detailType: 'credit_card', accountNumber: '2101', parentId: h.acct.wages },
+    ]) {
+      const r = await h.call('owner', 'POST', '/api/v1/accounts', body);
+      expect([body.name, r.status, r.json?.error?.code]).toEqual([body.name, 422, 'SENSITIVE_NOT_ALLOWED']);
+    }
+    // Moving the bank account under the sensitive one, or a sub-account into a bank under it.
+    const mv = await h.call('owner', 'PUT', `/api/v1/accounts/${h.acct.bank}`, { parentId: h.acct.wages });
+    expect([mv.status, mv.json?.error?.code]).toEqual([422, 'SENSITIVE_NOT_ALLOWED']);
+    const retype = await h.call('owner', 'PUT', `/api/v1/accounts/${h.acct.wagesSub}`, { accountType: 'asset', detailType: 'bank' });
+    expect([retype.status, retype.json?.error?.code]).toEqual([422, 'SENSITIVE_NOT_ALLOWED']);
+    // A parent holding a bank account can't move under the sensitive account either.
+    const holder = await h.call('owner', 'POST', '/api/v1/accounts', { name: 'Cash Group', accountType: 'asset', accountNumber: '1050' });
+    await h.call('owner', 'POST', '/api/v1/accounts', { name: 'Cash Drawer', accountType: 'asset', detailType: 'bank', accountNumber: '1051', parentId: holder.json.account?.id ?? holder.json.id });
+    const mvHolder = await h.call('owner', 'PUT', `/api/v1/accounts/${holder.json.account?.id ?? holder.json.id}`, { parentId: h.acct.wages });
+    expect([mvHolder.status, mvHolder.json?.error?.code]).toEqual([422, 'SENSITIVE_NOT_ALLOWED']);
+    // Plain accounts still go anywhere.
+    const fine = await h.call('owner', 'POST', '/api/v1/accounts', { name: 'Officer Bonus', accountType: 'expense', accountNumber: '6997', parentId: h.acct.wages });
+    expect(fine.status).toBe(201);
+    const bankElsewhere = await h.call('owner', 'POST', '/api/v1/accounts', { name: 'Savings', accountType: 'asset', detailType: 'bank', accountNumber: '1013' });
+    expect(bankElsewhere.status).toBe(201);
+  });
+});

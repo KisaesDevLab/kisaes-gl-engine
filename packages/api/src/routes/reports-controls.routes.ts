@@ -20,6 +20,7 @@ import { buildClosingDateExceptions, CLOSING_EXCEPTIONS_MAX_ROWS } from '../serv
 import { reportEmailSchema, sendReportEmail } from '../services/report-email.service.js';
 import { date } from './reports-exact.routes.js';
 import { AppError } from '../utils/errors.js';
+import { transactionsTouchingHidden } from '../services/visibility.js';
 
 const exceptionsQuery = z.object({
   start_date: z.string().optional().describe('YYYY-MM-DD: changes made on or after this day (the day of the change, not the transaction date)'),
@@ -56,6 +57,16 @@ export function registerControlReportRoutes(router: Router): void {
       }
     }
     const result = await buildClosingDateExceptions(req.tenantId, req.companyId, { startDate, endDate, limit });
+    // Sensitive accounts (U-33, P29 review B2): rows about a transaction touching an account hidden from the viewer
+    // are left out (and out of total). No change while nothing is hidden.
+    const hiddenTxns = await transactionsTouchingHidden(req.tenantId,
+      (result.data as Array<{ transactionId?: string | null }>).map((r) => r.transactionId));
+    if (hiddenTxns.size > 0) {
+      const data = (result.data as Array<{ transactionId?: string | null }>).filter((r) => !r.transactionId || !hiddenTxns.has(r.transactionId));
+      const removed = result.data.length - data.length;
+      res.json({ ...result, data, total: Math.max(0, Number(result.total) - removed), hiddenNotice: true, meta: { from: startDate ?? null, to: endDate ?? null } });
+      return;
+    }
     res.json({ ...result, meta: { from: startDate ?? null, to: endDate ?? null } });
   });
 

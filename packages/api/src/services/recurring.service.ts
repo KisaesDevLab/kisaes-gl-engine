@@ -2,13 +2,15 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { eq, and, sql, getTableColumns } from 'drizzle-orm';
+import { eq, and, sql, getTableColumns, type SQL } from 'drizzle-orm';
 import { nextRecurrenceDate } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
 import { db } from '../db/index.js';
 import { recurringSchedules, accounts, templateTransactions, transactions } from '../db/schema/index.js';
 import { templateForSchedule } from './templates/templates.service.js';
+import { templateTouchesHidden } from './templates/visibility.js';
+import { hiddenAccountIds, isHiddenSql, sensitiveAccountError } from './visibility.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
@@ -62,6 +64,33 @@ export async function create(tenantId: string, templateTransactionId: string, sc
   return sched;
 }
 
+/**
+ * Sensitive accounts (U-33): condition leaving out schedules whose template
+ * touches a hidden account or whose source transaction has a hidden line;
+ * undefined when nothing is hidden.
+ */
+function visibleSchedule(hidden: readonly string[]): SQL | undefined {
+  if (hidden.length === 0) return undefined;
+  return sql`NOT EXISTS (SELECT 1 FROM template_transactions tt
+      WHERE tt.tenant_id = ${recurringSchedules.tenantId} AND tt.id = ${recurringSchedules.templateId}
+        AND ${templateTouchesHidden(hidden, 'tt')})
+    AND NOT EXISTS (SELECT 1 FROM journal_lines jl
+      WHERE jl.tenant_id = ${recurringSchedules.tenantId} AND jl.transaction_id = ${recurringSchedules.templateTransactionId}
+        AND ${isHiddenSql(hidden, sql.raw('jl.account_id'))})`;
+}
+
+/** 403 SENSITIVE_ACCOUNT when schedule `id` is one `visibleSchedule` leaves out for the current viewer. */
+export async function assertScheduleVisible(tenantId: string, id: string): Promise<void> {
+  const hidden = await hiddenAccountIds();
+  if (hidden.length === 0) return;
+  const [row] = await db.select({ id: recurringSchedules.id }).from(recurringSchedules)
+    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id))).limit(1);
+  if (!row) return;
+  const [ok] = await db.select({ id: recurringSchedules.id }).from(recurringSchedules)
+    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id), visibleSchedule(hidden))).limit(1);
+  if (!ok) throw sensitiveAccountError();
+}
+
 export const RECURRING_SORT_KEYS = ['name', 'frequency', 'mode', 'nextOccurrence', 'lastPostedAt', 'status'] as const;
 export type RecurringSortKey = (typeof RECURRING_SORT_KEYS)[number];
 
@@ -91,7 +120,8 @@ export async function list(tenantId: string, opts: {
   // Return ALL statuses (active, paused, archived) so the UI can filter/sort
   // them — paused plans were previously invisible. The scheduler uses its own
   // isActive query (processAllDue), so this only affects the management list.
-  const where = eq(recurringSchedules.tenantId, tenantId);
+  // Sensitive accounts (U-33): a schedule whose template or source touches a hidden account is left out.
+  const where = and(eq(recurringSchedules.tenantId, tenantId), visibleSchedule(await hiddenAccountIds()));
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
   const offset = Math.max(opts.offset ?? 0, 0);
 
