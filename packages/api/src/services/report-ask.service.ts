@@ -56,6 +56,7 @@ import { checkTenantTaskConsent } from './ai-consent.service.js';
 import { sanitize } from './pii-sanitizer.service.js';
 import { executeWithFallback, MYBOOKS_TASK_CLASSES, type CompletionResult } from './ai-providers/index.js';
 import { isOfflineUnavailable } from '../utils/offline.js';
+import { maskNumbers } from './report-builder/draft-numbers.js';
 
 /** Report keys, presets, columns and extras: the client's catalog tokens. */
 export const ASK_TOKEN_RE = /^[a-z0-9_]{1,64}$/;
@@ -169,8 +170,17 @@ const STOP = new Set(['the', 'and', 'for', 'from', 'with', 'what', 'how', 'much'
   'me', 'my', 'is', 'are', 'was', 'were', 'have', 'has', 'any', 'report', 'income', 'expenses', 'expense', 'customer', 'customers',
   'vendor', 'vendors', 'client', 'clients', 'account', 'accounts', 'total', 'totals', 'between', 'since', 'until', 'about']);
 
+/**
+ * Q-PRA2e (report-refs-v1): the words are read from the question with every
+ * number masked (digits and number words such as "five hundred", as the draft
+ * prompt masks them) and the mask markers taken out, so a number never chooses
+ * which contacts are sent ("Bills over five hundred dollars" sends no
+ * "Hundred Acre Farms"). A contact the owner names keeps its other words
+ * ("Hundred Acre Farms" still matches on "acre").
+ */
 export function questionWords(question: string): string[] {
-  const words = norm(question).split(/[^\p{L}\p{N}&'.-]+/u)
+  const masked = maskNumbers(question).text.replace(/\[\s*(?:amount|number)\s*\]/gi, ' ');
+  const words = norm(masked).split(/[^\p{L}\p{N}&'.-]+/u)
     .map((w) => w.replace(/^['.-]+|['.-]+$/g, ''))
     .filter((w) => w.length >= 3 && !STOP.has(w) && !hasDigit(w));
   return [...new Set(words)].slice(0, 20);
