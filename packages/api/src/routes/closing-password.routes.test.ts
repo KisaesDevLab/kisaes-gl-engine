@@ -512,3 +512,93 @@ describe('owner reset of a forgotten closing-date password (Q-239)', () => {
     expect(limited.json.error.code).toBe('CLOSING_PASSWORD_RATE_LIMIT');
   });
 });
+
+describe('closing date and password are Admin only (U-229, closing-date-admin-v1)', () => {
+  async function company() {
+    const [row] = await db.select().from(companies).where(eq(companies.id, companyId));
+    return row!;
+  }
+  async function failedContexts() {
+    const rows = await db.select().from(auditLog)
+      .where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'closing_password_failed')));
+    return rows.map((r) => (typeof r.afterData === 'string' ? JSON.parse(r.afterData) : r.afterData as any).context as string).sort();
+  }
+
+  for (const role of ['accountant', 'bookkeeper']) {
+    it(`a ${role} who knows the password can't move or clear the date; other settings still save`, async () => {
+      await setPassword();
+      const staff = await seedUser(role);
+      const hashBefore = (await company()).closingPasswordHash;
+      for (const lockDate of ['2026-09-30', null]) {
+        const r = await call('PUT', '/api/v1/company/settings', { lockDate, currency: 'EUR', closingPassword: PASSWORD }, staff.token);
+        expect(r.status).toBe(403);
+        expect(r.json.error.code).toBe('CLOSING_DATE_ADMIN_ONLY');
+      }
+      const after = await company();
+      expect(after.lockDate).toBe('2026-06-30');
+      expect(after.currency).not.toBe('EUR');
+      expect(after.closingPasswordHash).toBe(hashBefore);
+      // The same user still saves other settings, and an unchanged date.
+      expect((await call('PUT', '/api/v1/company/settings', { currency: 'USD' }, staff.token)).status).toBe(200);
+      expect((await call('PUT', '/api/v1/company/settings', { lockDate: '2026-06-30', currency: 'USD' }, staff.token)).status).toBe(200);
+      // A password sent along with an unchanged date is ignored, wrong or right.
+      expect((await call('PUT', '/api/v1/company/settings', { lockDate: '2026-06-30', closingPassword: 'wrong-wrong' }, staff.token)).status).toBe(200);
+      expect(await failedContexts()).toEqual(['closing_date_not_admin', 'closing_date_not_admin']);
+    });
+  }
+
+  it('without a password set, a non-admin still can not change the date', async () => {
+    const staff = await seedUser('accountant');
+    const r = await call('PUT', '/api/v1/company/settings', { lockDate: '2026-09-30' }, staff.token);
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe('CLOSING_DATE_ADMIN_ONLY');
+    expect((await company()).lockDate).toBe('2026-06-30');
+  });
+
+  it('a non-admin can not change or clear the password, even with the right one, and learns nothing about it', async () => {
+    await setPassword();
+    const staff = await seedUser('accountant');
+    const hashBefore = (await company()).closingPasswordHash;
+    for (const body of [
+      { currentPassword: PASSWORD, newPassword: 'another-pass' },
+      { currentPassword: PASSWORD, newPassword: null },
+      { currentPassword: 'wrong-guess', newPassword: null },
+    ]) {
+      const r = await call('PUT', '/api/v1/company/closing-password', body, staff.token);
+      expect(r.status).toBe(403);
+      expect(r.json.error.code).toBe('CLOSING_DATE_ADMIN_ONLY');
+    }
+    expect((await company()).closingPasswordHash).toBe(hashBefore);
+    expect(await failedContexts()).toEqual(['change_password_not_admin', 'change_password_not_admin', 'change_password_not_admin']);
+    expect(await auditText()).not.toContain('wrong-guess');
+  });
+
+  it('the owner moves the date and changes the password (200); a super admin too', async () => {
+    await setPassword();
+    const moved = await call('PUT', '/api/v1/company/settings', { lockDate: '2026-09-30', closingPassword: PASSWORD });
+    expect(moved.status).toBe(200);
+    expect(moved.json.settings.lockDate).toBe('2026-09-30');
+    const changed = await call('PUT', '/api/v1/company/closing-password', { currentPassword: PASSWORD, newPassword: 'another-pass' });
+    expect(changed.json).toEqual({ closingPasswordSet: true });
+    await expect(closingPasswordService.setClosingPassword(tenantId, companyId,
+      { currentPassword: 'another-pass', newPassword: null }, { userRole: 'accountant', isSuperAdmin: true }))
+      .resolves.toEqual({ closingPasswordSet: false });
+    expect(await failedContexts()).toEqual([]);
+  });
+
+  it('the service refuses a date change without an actor', async () => {
+    await expect(db.transaction((tx) => closingPasswordService.authorizeLockDateChange(tx, tenantId, companyId, undefined, {})))
+      .rejects.toMatchObject({ statusCode: 403, code: 'CLOSING_DATE_ADMIN_ONLY' });
+  });
+
+  it('a non-admin still posts into the closed period with the password, and refusals are no rate-limit strike', async () => {
+    await setPassword();
+    const staff = await seedUser('accountant');
+    for (let i = 0; i < 11; i++) {
+      expect((await call('PUT', '/api/v1/company/closing-password', { currentPassword: PASSWORD, newPassword: null }, staff.token)).status).toBe(403);
+    }
+    const ok = await call('POST', '/api/v1/transactions', deposit('2026-05-01', '100.00', { closingPassword: PASSWORD }), staff.token);
+    expect(ok.status).toBe(201);
+    expect((await overrideRows())[0]!.userId).toBe(staff.id);
+  });
+});

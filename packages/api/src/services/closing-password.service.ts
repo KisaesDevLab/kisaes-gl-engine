@@ -24,7 +24,10 @@ export const CLOSING_PASSWORD_MAX_BYTES = 72;
 export const CLOSING_PASSWORD_MIN_LENGTH = 8;
 
 /** Where a wrong closing-date password was tried (closing_password_failed audit rows). */
-export type ClosingPasswordFailure = 'posting' | 'change_password' | 'closing_date' | 'reset_not_owner';
+export type ClosingPasswordFailure =
+  | 'posting' | 'change_password' | 'closing_date' | 'reset_not_owner'
+  // U-229: a non-admin tried to move the closing date or change the password.
+  | 'closing_date_not_admin' | 'change_password_not_admin';
 
 /**
  * Records a failed closing-date password attempt as `closing_password_failed`:
@@ -150,8 +153,31 @@ function canSetFirstPassword(actor: ClosingPasswordActor): boolean {
 }
 
 /**
- * Set, change or clear the password. With one set, `currentPassword` must
- * match. With none set, only an owner or super admin may set one.
+ * U-229 (closing-date-admin-v1, Q-155): moving or clearing the closing date
+ * and setting, changing, clearing or resetting its password are for the
+ * company owner or a super admin only, the rule PUT /tb/closing-date already
+ * used. Entering the password to post into the closed period is not
+ * affected.
+ */
+export function isClosingDateAdmin(actor: ClosingPasswordActor | undefined): boolean {
+  return !!actor && canSetFirstPassword(actor);
+}
+
+export const CLOSING_DATE_ADMIN_ONLY = 'CLOSING_DATE_ADMIN_ONLY';
+
+export function closingDateAdminOnly(): AppError {
+  return AppError.forbidden(
+    'Only the company owner can change the closing date or the closing date password.',
+    CLOSING_DATE_ADMIN_ONLY,
+  );
+}
+
+/**
+ * Set, change or clear the password. Owner or super admin only (U-229):
+ * with one set, anyone else gets 403 CLOSING_DATE_ADMIN_ONLY before the
+ * current password is checked (so the route is no password oracle for
+ * them); with none set, 403 CLOSING_PASSWORD_OWNER_REQUIRED as before.
+ * With one set, `currentPassword` must match.
  * Audited as `closing_password` with only a set/not-set flag
  * (`closingDateProtected`: a key auditLog() does not strip as secret-looking).
  */
@@ -169,6 +195,11 @@ export async function setClosingPassword(
       .limit(1);
     if (!row) throw AppError.notFound('Company not found');
     const wasSet = !!row.hash;
+    if (wasSet && !isClosingDateAdmin(actor)) {
+      // Own connection (as the wrong-password row below), kept on rollback.
+      await auditClosingPasswordFailed(tenantId, companyId, actor.userId, 'change_password_not_admin');
+      throw closingDateAdminOnly();
+    }
     if (wasSet) {
       if (!(await closingPasswordMatches(row.hash, input.currentPassword))) {
         await auditClosingPasswordFailed(tenantId, companyId, actor.userId, 'change_password');
@@ -247,6 +278,12 @@ export async function resetClosingPassword(
  * - None set and a password given: it becomes the company's password
  *   ("set or confirm"); only an owner or super admin may do that.
  * Returns the hash to store when a first password is being set.
+ *
+ * U-229: only the owner or a super admin may change the date (403
+ * CLOSING_DATE_ADMIN_ONLY, audited, checked before any password). With
+ * `dateChanges: false` (a password sent along with an unchanged date) a
+ * non-admin changes nothing: a set password is not checked, and setting a
+ * first one stays 403 CLOSING_PASSWORD_OWNER_REQUIRED.
  */
 export async function authorizeLockDateChange(
   // The caller's transaction: the company row stays locked until the new
@@ -256,8 +293,15 @@ export async function authorizeLockDateChange(
   companyId: string,
   password: string | undefined,
   actor: ClosingPasswordActor,
+  opts: { dateChanges?: boolean } = {},
 ): Promise<{ newHash: string | null }> {
+  const admin = isClosingDateAdmin(actor);
+  if (!admin && opts.dateChanges !== false) {
+    await auditClosingPasswordFailed(tenantId, companyId, actor.userId, 'closing_date_not_admin');
+    throw closingDateAdminOnly();
+  }
   const hash = await lockAndReadHash(tx, tenantId, companyId);
+  if (hash && !admin) return { newHash: null };
   if (hash) {
     if (password === undefined) throw closingPasswordRequired();
     if (!(await closingPasswordMatches(hash, password))) {

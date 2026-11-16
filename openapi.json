@@ -25063,6 +25063,7 @@
         ]
       },
       "put": {
+        "description": "Owner or super admin only (closing-date-admin-v1): 403 CLOSING_DATE_ADMIN_ONLY when a password is set, 403 CLOSING_PASSWORD_OWNER_REQUIRED when none is; 403 CLOSING_PASSWORD_INVALID for a wrong currentPassword.",
         "operationId": "put_api_v1_company_closing_password",
         "requestBody": {
           "content": {
@@ -27484,7 +27485,7 @@
         ]
       },
       "put": {
-        "description": "Response {settings}. inventoryEnabled (company-inventory-flag-v1, NULL stored = off): true adopts the active other-current-asset account named \"Inventory Asset\" or creates it, tags it inventory_asset (inventory-account-v1) and makes sure a cost of goods sold account exists; false while any item still has stock or value is 409 INVENTORY_IN_USE.",
+        "description": "Response {settings}. inventoryEnabled (company-inventory-flag-v1, NULL stored = off): true adopts the active other-current-asset account named \"Inventory Asset\" or creates it, tags it inventory_asset (inventory-account-v1) and makes sure a cost of goods sold account exists; false while any item still has stock or value is 409 INVENTORY_IN_USE. lockDate (closing-date-admin-v1, U-229): a change is for the company owner or a super admin only, 403 CLOSING_DATE_ADMIN_ONLY for anyone else (nothing saved); an unchanged lockDate and the other settings still save with company_settings update.",
         "operationId": "put_api_v1_company_settings",
         "requestBody": {
           "content": {

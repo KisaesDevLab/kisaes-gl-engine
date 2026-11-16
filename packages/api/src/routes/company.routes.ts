@@ -29,7 +29,7 @@ import { companyContext } from '../middleware/company.js';
 import { requirePermission } from '../middleware/permission.js';
 import { describe } from '../middleware/describe.js';
 import { validate } from '../middleware/validate.js';
-import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { closingPasswordLimiter, markClosingDateAdminRefusal } from '../middleware/closing-password-limiter.js';
 import { takeClosingPassword } from '../services/lock-context.js';
 import * as closingPasswordService from '../services/closing-password.service.js';
 import * as companyService from '../services/company.service.js';
@@ -217,13 +217,15 @@ companyRouter.put('/settings', requireCompanySettingsWrite, closingPasswordLimit
   summary: 'Update company settings',
   description: 'Response {settings}. inventoryEnabled (company-inventory-flag-v1, NULL stored = off): true adopts the active other-current-asset '
     + 'account named "Inventory Asset" or creates it, tags it inventory_asset (inventory-account-v1) and makes sure a cost of goods sold account '
-    + 'exists; false while any item still has stock or value is 409 INVENTORY_IN_USE.',
+    + 'exists; false while any item still has stock or value is 409 INVENTORY_IN_USE. '
+    + 'lockDate (closing-date-admin-v1, U-229): a change is for the company owner or a super admin only, 403 CLOSING_DATE_ADMIN_ONLY '
+    + 'for anyone else (nothing saved); an unchanged lockDate and the other settings still save with company_settings update.',
   body: updateCompanySettingsBodyDoc,
 }), async (req, res) => {
-  const company = await companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId, {
+  const company = await markClosingDateAdminRefusal(res, () => companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId, {
     password: res.locals['closingPassword'] as string | undefined,
     actor: { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin },
-  });
+  }));
   res.json({
     settings: {
       fiscalYearStartMonth: company.fiscalYearStartMonth,
@@ -296,9 +298,11 @@ companyRouter.get('/closing-password', describe({
   res.json(await closingPasswordService.getClosingDateStatus(req.tenantId, req.companyId));
 });
 
-// Set, change or clear (newPassword: null). With a password set the
-// current one is required; setting the first one is for the owner or a
-// super admin. Wrong current password: 403 CLOSING_PASSWORD_INVALID.
+// Set, change or clear (newPassword: null). Owner or super admin only
+// (U-229): with a password set anyone else gets 403 CLOSING_DATE_ADMIN_ONLY
+// (before the current password is checked); setting the first one stays
+// 403 CLOSING_PASSWORD_OWNER_REQUIRED. With a password set the current one
+// is required. Wrong current password: 403 CLOSING_PASSWORD_INVALID.
 const closingPasswordBody = z.object({
   currentPassword: z.string().max(200).optional(),
   newPassword: z.string().max(200).nullable(),
@@ -306,12 +310,14 @@ const closingPasswordBody = z.object({
 
 companyRouter.put('/closing-password', requireCompanySettingsWrite, closingPasswordLimiter, validate(closingPasswordBody), describe({
   summary: 'Set, change or clear the closing-date password',
+  description: 'Owner or super admin only (closing-date-admin-v1): 403 CLOSING_DATE_ADMIN_ONLY when a password is set, '
+    + '403 CLOSING_PASSWORD_OWNER_REQUIRED when none is; 403 CLOSING_PASSWORD_INVALID for a wrong currentPassword.',
   response: z.object({ closingPasswordSet: z.boolean() }),
 }), async (req, res) => {
-  const result = await closingPasswordService.setClosingPassword(req.tenantId, req.companyId, {
+  const result = await markClosingDateAdminRefusal(res, () => closingPasswordService.setClosingPassword(req.tenantId, req.companyId, {
     currentPassword: req.body.currentPassword,
     newPassword: req.body.newPassword,
-  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin });
+  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin }));
   res.json(result);
 });
 

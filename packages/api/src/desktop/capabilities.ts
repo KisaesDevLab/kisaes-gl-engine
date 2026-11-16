@@ -1462,5 +1462,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * session); change-password, a reset link and recovery clear it. The server never sets the flag.
    */
   'temp-password-v1',
+  /**
+   * U-229 (ClientLedger P29, Q-155): the closing date and its password are for the company owner or a super admin
+   * only, on the server too. PUT /company/settings with a changed lockDate: anyone else gets 403
+   * CLOSING_DATE_ADMIN_ONLY before any password check, and nothing is saved (an unchanged lockDate and the other
+   * settings still save with company_settings update; a closingPassword sent with an unchanged date is ignored for
+   * them). PUT /company/closing-password: 403 CLOSING_DATE_ADMIN_ONLY when a password is set (before currentPassword
+   * is checked), 403 CLOSING_PASSWORD_OWNER_REQUIRED when none is (as before). POST /company/closing-password/reset and
+   * PUT /tb/closing-date keep their owner gates (CLOSING_PASSWORD_OWNER_REQUIRED, TB_FIRM_ADMIN_REQUIRED). Refusals
+   * leave audit row update closing_password_failed {context: closing_date_not_admin | change_password_not_admin} and do
+   * not count toward the closing-password rate limit. Entering the password to post into the closed period is unchanged.
+   */
+  'closing-date-admin-v1',
 ];
 
