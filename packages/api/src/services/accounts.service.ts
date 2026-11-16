@@ -96,6 +96,11 @@ export async function create(tenantId: string, input: CreateAccountInput, userId
     }
   }
 
+  // Sensitive accounts (U-33, review S4): no bank, card or built-in account under a sensitive ancestor.
+  await assertSensitivePlacement(tenantId, null, input.parentId ?? null, {
+    accountType: input.accountType, detailType: input.detailType ?? null, systemTag: (input as { systemTag?: string | null }).systemTag ?? null,
+  });
+
   // The insert, its audit row and an Idempotency-Key (U-18) commit together.
   return await db.transaction(async (tx) => {
     await claimIdempotency(tx);
@@ -164,6 +169,16 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
     if (duplicate) {
       throw AppError.conflict(`Account number ${input.accountNumber} already exists`, 'ACCOUNT_NUMBER_EXISTS');
     }
+  }
+
+  // Sensitive accounts (U-33, review S4): a move or a type change may not put a bank, card or built-in account under
+  // a sensitive ancestor (or keep one marked).
+  const parentChanged = input.parentId !== undefined && (input.parentId ?? null) !== (existing.parentId ?? null);
+  if (parentChanged || input.accountType !== undefined || input.detailType !== undefined) {
+    await assertSensitivePlacement(tenantId, parentChanged ? id : null,
+      input.parentId !== undefined ? input.parentId ?? null : existing.parentId ?? null,
+      { accountType: input.accountType ?? existing.accountType, detailType: nextDetailType ?? null, systemTag: existing.systemTag ?? null },
+      existing.isSensitive === true);
   }
 
   const [updated] = await db
@@ -514,6 +529,47 @@ export const SENSITIVE_REFUSED_SYSTEM_TAGS: readonly string[] = [
   'accounts_receivable', 'accounts_payable', 'undeposited_funds', 'payments_clearing', 'retained_earnings',
   'opening_balances', 'sales_tax_payable', 'customer_deposits', 'unapplied_receipts', 'inventory_asset', 'suspense',
 ];
+
+/**
+ * Sensitive accounts (U-33, review S4): 422 SENSITIVE_NOT_ALLOWED when an
+ * account of a refused kind (bank, credit card, named built-in) would sit
+ * under a sensitive ancestor (`parentId` or any account above it) or is
+ * itself marked (`selfSensitive`); with `movingId` (a re-parent) also when
+ * any of its sub-accounts is of a refused kind. No query without a parent.
+ */
+export async function assertSensitivePlacement(
+  tenantId: string, movingId: string | null, parentId: string | null,
+  self: { accountType: string; detailType: string | null; systemTag: string | null }, selfSensitive = false,
+): Promise<void> {
+  let hiddenAbove = false;
+  if (parentId) {
+    const r = await db.execute<{ n: number }>(sql`
+      WITH RECURSIVE up AS (
+        SELECT id, parent_id, is_sensitive FROM accounts WHERE tenant_id = ${tenantId} AND id = ${parentId}
+        UNION
+        SELECT a.id, a.parent_id, a.is_sensitive FROM accounts a JOIN up ON a.id = up.parent_id WHERE a.tenant_id = ${tenantId}
+      )
+      SELECT COUNT(*)::int AS n FROM up WHERE is_sensitive = true`);
+    hiddenAbove = Number(r.rows[0]?.n ?? 0) > 0;
+  }
+  if (!hiddenAbove && !selfSensitive) return;
+  if (sensitiveRefusal(self)) {
+    throw new AppError(422, 'A bank, credit card or built-in account can not sit under a sensitive account', 'SENSITIVE_NOT_ALLOWED');
+  }
+  if (!movingId) return;
+  const subs = await db.execute<{ account_type: string; detail_type: string | null; system_tag: string | null }>(sql`
+    WITH RECURSIVE d AS (
+      SELECT id, account_type, detail_type, system_tag FROM accounts WHERE tenant_id = ${tenantId} AND parent_id = ${movingId}
+      UNION
+      SELECT a.id, a.account_type, a.detail_type, a.system_tag FROM accounts a JOIN d ON a.parent_id = d.id WHERE a.tenant_id = ${tenantId}
+    )
+    SELECT account_type, detail_type, system_tag FROM d`);
+  for (const s of subs.rows) {
+    if (sensitiveRefusal({ accountType: s.account_type, detailType: s.detail_type, systemTag: s.system_tag })) {
+      throw new AppError(422, 'A sub-account of this account can not be hidden (bank, credit card or built-in)', 'SENSITIVE_NOT_ALLOWED');
+    }
+  }
+}
 
 /** Why an account can't be marked sensitive, or null when it can. */
 export function sensitiveRefusal(a: { accountType: string; detailType: string | null; systemTag: string | null }): string | null {
