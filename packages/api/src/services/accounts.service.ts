@@ -15,9 +15,13 @@ import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertAccountNotInventory } from './inventory.service.js';
 import { isBankDetailType } from './bank-account-types.js';
+import { hiddenAccountIds, isHiddenAccount, visibleAccount } from './visibility.js';
 
 export async function list(tenantId: string, filters: AccountFilters) {
   const conditions = [eq(accounts.tenantId, tenantId)];
+  // Sensitive accounts (U-33): left out for a viewer without the right.
+  const hidden = visibleAccount(await hiddenAccountIds(), accounts.id);
+  if (hidden) conditions.push(hidden);
 
   if (Array.isArray(filters.accountType)) {
     if (filters.accountType.length > 0) conditions.push(inArray(accounts.accountType, filters.accountType));
@@ -71,7 +75,8 @@ export async function getById(tenantId: string, id: string) {
   const account = await db.query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)),
   });
-  if (!account) {
+  // A hidden account (U-33) is not found, with no existence hint.
+  if (!account || (await isHiddenAccount(account.id))) {
     throw AppError.notFound('Account not found');
   }
   return account;
@@ -200,7 +205,7 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
   }
 
   const existing = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, ids)));
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, ids), visibleAccount(await hiddenAccountIds(), accounts.id)));
   const byId = new Map(existing.map((a) => [a.id, a]));
   const missing = ids.filter((id) => !byId.has(id));
   if (missing.length > 0) {
@@ -431,7 +436,9 @@ export async function importFromCsv(
     ? await db
         .select({ id: accounts.id, accountNumber: accounts.accountNumber, isSystem: accounts.isSystem })
         .from(accounts)
-        .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.accountNumber, numbers)))
+        // A hidden account (U-33) is never overwritten: its number reports
+        // as taken (the insert below conflicts and skips).
+        .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.accountNumber, numbers), visibleAccount(await hiddenAccountIds(), accounts.id)))
     : [];
   const existingByNumber = new Map(existing.map((a) => [a.accountNumber as string, a]));
 
@@ -550,7 +557,7 @@ export async function exportToCsv(tenantId: string): Promise<string> {
   const data = await db
     .select()
     .from(accounts)
-    .where(eq(accounts.tenantId, tenantId))
+    .where(and(eq(accounts.tenantId, tenantId), visibleAccount(await hiddenAccountIds(), accounts.id)))
     .orderBy(accounts.accountNumber, accounts.name);
 
   const header = 'Account Number,Name,Type,Detail Type,Balance,Active,System\n';

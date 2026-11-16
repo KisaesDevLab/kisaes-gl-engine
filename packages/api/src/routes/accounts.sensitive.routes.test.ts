@@ -25,6 +25,65 @@ async function auditRows(id: string) {
   return db.select().from(auditLog).where(and(eq(auditLog.tenantId, h.tenantId), eq(auditLog.entityId, id), eq(auditLog.action, 'update')));
 }
 
+describe('accounts list, pickers and registers for a viewer without the right (E1-E3)', () => {
+  it('leaves hidden accounts out of the list and export; their ids are 404', async () => {
+    await h.markWages();
+    const bk = await h.call('bk', 'GET', '/api/v1/accounts?limit=500');
+    expect(bk.status).toBe(200);
+    const ids = bk.json.data.map((a: { id: string }) => a.id);
+    expect(ids).toContain(h.acct.supplies);
+    expect(ids).not.toContain(h.acct.wages);
+    expect(ids).not.toContain(h.acct.wagesSub);
+    expect(bk.text).not.toContain('Canary');
+    expect(bk.json.total).toBe(ids.length);
+    const csv = await h.call('bk', 'GET', '/api/v1/accounts/export');
+    expect(csv.status).toBe(200);
+    expect(csv.text).not.toContain('Canary');
+    expect(csv.text).toContain('Supplies');
+    const own = await h.call('owner', 'GET', '/api/v1/accounts?limit=500');
+    expect(own.json.data.map((a: { id: string }) => a.id)).toEqual(expect.arrayContaining([h.acct.wages, h.acct.wagesSub]));
+    expect(own.json.data.find((a: { id: string }) => a.id === h.acct.wages).isSensitive).toBe(true);
+    // Merge and bulk edit can't reach a hidden account.
+    expect((await h.call('bk', 'POST', '/api/v1/accounts/merge', { sourceId: h.acct.supplies, targetId: h.acct.wages })).status).toBe(404);
+    expect((await h.call('bk', 'PUT', '/api/v1/accounts/bulk', { updates: [{ id: h.acct.wages, name: 'x' }] })).status).toBe(404);
+  });
+
+  it('bank register: the paycheck line keeps its amount and balance, the other side is withheld', async () => {
+    const { postTransaction } = await import('../services/ledger.service.js');
+    await postTransaction(h.tenantId, {
+      txnType: 'expense', txnDate: '2026-03-01', memo: 'payroll',
+      lines: [{ accountId: h.acct.wagesSub, debit: '4321.09', credit: '0' }, { accountId: h.acct.bank, debit: '0', credit: '4321.09' }],
+    }, h.ownerId, h.companyId);
+    await postTransaction(h.tenantId, {
+      txnType: 'expense', txnDate: '2026-03-02', memo: 'paper',
+      lines: [{ accountId: h.acct.supplies, debit: '10.0000', credit: '0' }, { accountId: h.acct.bank, debit: '0', credit: '10.0000' }],
+    }, h.ownerId, h.companyId);
+    const path = `/api/v1/accounts/${h.acct.bank}/register?start_date=2026-01-01&end_date=2026-12-31&exact=1`;
+    const before = await h.call('bk', 'GET', path);
+    expect(before.json.lines.every((l: { hiddenSplit?: boolean }) => l.hiddenSplit === undefined)).toBe(true);
+    await h.markWages();
+    const bk = await h.call('bk', 'GET', path);
+    const owner = await h.call('owner', 'GET', path);
+    expect(bk.status).toBe(200);
+    expect(bk.json.endingBalance).toBe('-4331.0900');
+    expect(bk.json.endingBalance).toBe(owner.json.endingBalance);
+    const pay = bk.json.lines.find((l: { memo: string }) => l.memo === 'payroll');
+    expect(pay).toMatchObject({ payment: '4321.0900', categoryName: null, categoryAccountId: null, accountName: null, hiddenSplit: true, isEditable: false });
+    const ownerPay = owner.json.lines.find((l: { memo: string }) => l.memo === 'payroll');
+    expect(ownerPay.categoryName).toBe('Canary Wages Officers');
+    expect(ownerPay.hiddenSplit).toBeUndefined();
+    expect(pay.runningBalance).toBe(ownerPay.runningBalance);
+    const paper = bk.json.lines.find((l: { memo: string }) => l.memo === 'paper');
+    expect(paper.categoryName).toBe('Supplies');
+    expect(paper.hiddenSplit).toBeUndefined();
+    expect(bk.text).not.toContain('Canary');
+    expect(bk.text).not.toContain(h.acct.wagesSub);
+    // The hidden account's own register and summary are not found.
+    expect((await h.call('bk', 'GET', `/api/v1/accounts/${h.acct.wagesSub}/register`)).status).toBe(404);
+    expect((await h.call('bk', 'GET', `/api/v1/accounts/${h.acct.wages}/register/summary`)).status).toBe(404);
+  });
+});
+
 describe('PUT /accounts/:id/sensitive', () => {
   it('lets the owner mark and unmark an account, one audit row per change', async () => {
     const r = await h.call('owner', 'PUT', `/api/v1/accounts/${h.acct.wages}/sensitive`, { isSensitive: true });
