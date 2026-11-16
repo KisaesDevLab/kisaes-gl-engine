@@ -121,6 +121,12 @@ describe('PUT /accounts/:id/sensitive', () => {
       expect(r.json.error.code).toBe('SENSITIVE_NOT_ALLOWED');
       expect(await flagOf(id)).toBe(false);
     }
+    // A parent whose sub-account is a bank account can't be marked either.
+    await db.update(accounts).set({ parentId: h.acct.supplies }).where(eq(accounts.id, h.acct.bank));
+    const parent = await h.call('owner', 'PUT', `/api/v1/accounts/${h.acct.supplies}/sensitive`, { isSensitive: true });
+    expect(parent.status).toBe(422);
+    expect(parent.json.error.code).toBe('SENSITIVE_NOT_ALLOWED');
+    expect(await flagOf(h.acct.supplies)).toBe(false);
     // Unmarking is always allowed (a no-op here).
     expect((await h.call('owner', 'PUT', `/api/v1/accounts/${h.acct.bank}/sensitive`, { isSensitive: false })).status).toBe(200);
   });

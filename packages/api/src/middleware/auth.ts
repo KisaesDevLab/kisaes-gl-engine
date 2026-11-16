@@ -14,7 +14,7 @@ import { apiKeyAuth } from './api-key-auth.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
 import { isDesktop } from '../desktop/profile.js';
 import { workspaceFence } from '../desktop/workspace.js';
-import { refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
+import { hiddenAccountIdsFor, refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
 
 declare global {
   namespace Express {
@@ -73,6 +73,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     }
     refuseUnconvertedReport(req)
       .then(() => refuseHiddenIds(req))
+      // Resolve the hidden set now, on the pool, so no service ever needs a
+      // second pool connection for it while holding a transaction open.
+      .then(() => hiddenAccountIdsFor(req))
       .then(() => runAsViewer(req, () => next()), next);
   });
 }

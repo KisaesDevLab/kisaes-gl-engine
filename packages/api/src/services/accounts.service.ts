@@ -542,6 +542,19 @@ export async function setSensitive(tenantId: string, id: string, isSensitive: bo
     if (isSensitive) {
       const reason = sensitiveRefusal(row);
       if (reason) throw new AppError(422, reason, 'SENSITIVE_NOT_ALLOWED');
+      // Marking hides every sub-account too, so none of them may be a refused one.
+      const subs = await tx.execute<{ account_type: string; detail_type: string | null; system_tag: string | null }>(sql`
+        WITH RECURSIVE d AS (
+          SELECT id, account_type, detail_type, system_tag FROM accounts WHERE tenant_id = ${tenantId} AND parent_id = ${id}
+          UNION
+          SELECT a.id, a.account_type, a.detail_type, a.system_tag FROM accounts a JOIN d ON a.parent_id = d.id WHERE a.tenant_id = ${tenantId}
+        )
+        SELECT account_type, detail_type, system_tag FROM d`);
+      for (const s of subs.rows) {
+        if (sensitiveRefusal({ accountType: s.account_type, detailType: s.detail_type, systemTag: s.system_tag })) {
+          throw new AppError(422, 'A sub-account of this account can not be hidden (bank, credit card or built-in)', 'SENSITIVE_NOT_ALLOWED');
+        }
+      }
     }
     const [updated] = await tx.update(accounts)
       .set({ isSensitive, updatedAt: new Date() })

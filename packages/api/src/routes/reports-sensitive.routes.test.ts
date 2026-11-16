@@ -114,6 +114,13 @@ describe('statements and ledger reports for a viewer without sensitive_accounts'
       expect(r.json.hiddenNotice, p).toBe(true);
       noCanary(r.text);
     }
+    // The converted POST forms (account lists in the body) too.
+    for (const p of ['/api/v1/reports/general-ledger?exact=1', '/api/v1/reports/transaction-list?exact=1']) {
+      const r = await h.call('bk', 'POST', p, { start_date: '2026-01-01', end_date: '2026-12-31', account_ids: [h.acct.wages, h.acct.supplies] });
+      expect(r.status, `${p} ${r.text.slice(0, 200)}`).toBe(200);
+      expect(r.json.hiddenNotice, p).toBe(true);
+      noCanary(r.text);
+    }
     const tl = await h.call('bk', 'GET', `/api/v1/reports/transaction-list?${R}&exact=1`);
     const mixed = tl.json.data.filter((l: { memo: string }) => l.memo === 'mixed');
     expect(mixed.map((l: { account_name: string }) => l.account_name).sort()).toEqual(['Checking', 'Supplies']);
