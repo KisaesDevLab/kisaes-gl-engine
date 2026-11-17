@@ -52,6 +52,8 @@ export const BACKFILL: Record<string, { addedIn: number; expression: string }> =
  */
 export const RELAXED_COLUMNS: Record<string, { relaxedIn: number }> = {
   'recurring_schedules.template_transaction_id': { relaxedIn: 226 },
+  // 0281 (U-251): a payroll import may discard its stored upload on post.
+  'payroll_import_sessions.file_path': { relaxedIn: 282 },
 };
 
 /**

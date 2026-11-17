@@ -29,7 +29,8 @@ export const payrollImportSessions = pgTable('payroll_import_sessions', {
   importMode: varchar('import_mode', { length: 20 }).notNull(), // 'employee_level' | 'prebuilt_je' | 'check_register'
   templateId: uuid('template_id'),
   originalFilename: varchar('original_filename', { length: 255 }).notNull(),
-  filePath: varchar('file_path', { length: 500 }).notNull(),
+  // NULL once the upload was discarded on post (U-251, migration 0281).
+  filePath: varchar('file_path', { length: 500 }),
   fileHash: varchar('file_hash', { length: 64 }).notNull(),
   companionFilename: varchar('companion_filename', { length: 255 }),
   companionFilePath: varchar('companion_file_path', { length: 500 }),
@@ -49,6 +50,8 @@ export const payrollImportSessions = pgTable('payroll_import_sessions', {
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+  /** When the employee rows and the stored upload were discarded on post (U-251). */
+  detailDiscardedAt: timestamp('detail_discarded_at', { withTimezone: true }),
 }, (table) => ({
   tenantIdx: index('idx_payroll_sess_tenant').on(table.tenantId),
   companyStatusIdx: index('idx_payroll_sess_company_status').on(table.companyId, table.status),

@@ -17,6 +17,8 @@ import {
   PayrollLineType,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
+import type { DbOrTx } from '../db/index.js';
+import { log } from '../utils/logger.js';
 import {
   payrollImportSessions,
   payrollImportRows,
@@ -41,19 +43,23 @@ import {
   storePayrollFile,
   hashBuffer,
   applyColumnMapping,
-  parseCurrency,
   pivotLongFormat,
 } from './payroll-parse.service.js';
+import { glRowAmounts } from './payroll-modeb.service.js';
+import DecimalLib from 'decimal.js';
 import { env } from '../config/env.js';
 
 const UPLOAD_DIR = env.UPLOAD_DIR || '/data/uploads';
+const Decimal = DecimalLib.default || DecimalLib;
+type DecimalValue = InstanceType<typeof Decimal>;
 
 // ── Idempotency Key Computation ──
 
-function computeIdempotencyKey(
+export function computeIdempotencyKey(
   provider: string | null,
   rows: string[][],
   headers: string[],
+  checkDate?: string | null,
 ): string | null {
   if (!provider || !rows.length) return null;
 
@@ -65,43 +71,52 @@ function computeIdempotencyKey(
     return idx !== undefined ? (row[idx] || '').trim() : '';
   }
 
-  function getAmount(row: string[], colName: string): number {
+  // The key material must stay byte-identical to the float-era keys stored
+  // on posted sessions (U-250): each cell is read the way parseFloat read it
+  // (so "(12.30)" still counts as 0), but the sum is exact.
+  function getAmount(row: string[], colName: string): DecimalValue {
     const val = getCol(row, colName);
-    return parseFloat(val.replace(/[$,]/g, '')) || 0;
+    const f = parseFloat(val.replace(/[$,]/g, ''));
+    return Number.isFinite(f) && f !== 0 ? new Decimal(String(f)) : new Decimal(0);
   }
+  const sum = (vals: DecimalValue[]) => vals.reduce((s, v) => s.plus(v), new Decimal(0));
 
   switch (provider) {
     case 'gusto': {
       const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
       const ppStart = rows.map(r => getCol(r, 'Pay Period Start')).filter(Boolean);
       const ppEnd = rows.map(r => getCol(r, 'Pay Period End')).filter(Boolean);
-      const totalGross = rows.reduce((sum, r) => sum + getAmount(r, 'Gross Pay'), 0);
+      const totalGross = sum(rows.map(r => getAmount(r, 'Gross Pay')));
       const material = `${dates[0] || ''}|${ppStart[0] || ''}|${ppEnd[0] || ''}|${totalGross.toFixed(2)}|${rows.length}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'adp_run_gli': {
       const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
-      const totalDebit = rows.reduce((sum, r) => sum + getAmount(r, 'Debit Amount'), 0);
+      const totalDebit = sum(rows.map(r => getAmount(r, 'Debit Amount')));
       const material = `${dates[0] || ''}|${totalDebit.toFixed(2)}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'paychex_flex_gls': {
       const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
-      const totalDebit = rows.reduce((sum, r) => sum + getAmount(r, 'Debit'), 0);
-      const totalCredit = rows.reduce((sum, r) => sum + getAmount(r, 'Credit'), 0);
+      const totalDebit = sum(rows.map(r => getAmount(r, 'Debit')));
+      const totalCredit = sum(rows.map(r => getAmount(r, 'Credit')));
       const material = `${dates[0] || ''}|${totalDebit.toFixed(2)}|${totalCredit.toFixed(2)}|${rows.length}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'onpay_gl_summary': {
       const dates = rows.map(r => getCol(r, 'Pay Date')).filter(Boolean);
-      const totalAmount = rows.reduce((sum, r) => sum + getAmount(r, 'Amount'), 0);
+      const totalAmount = sum(rows.map(r => getAmount(r, 'Amount')));
       const material = `${dates[0] || ''}|${totalAmount.toFixed(2)}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'square_payroll': {
       const dates = rows.map(r => getCol(r, 'Pay Period Start')).filter(Boolean);
       const endDates = rows.map(r => getCol(r, 'Pay Period End')).filter(Boolean);
-      const material = `${dates[0] || ''}|${endDates[0] || ''}`;
+      // Period, pay date, net total and row count (U-243): an off-cycle run in
+      // the same period is a different run. Square could never balance before
+      // U-243, so no posted Square session carries the old period-only key.
+      const netTotal = sum(rows.map(r => getAmount(r, 'Net Pay')));
+      const material = `${dates[0] || ''}|${endDates[0] || ''}|${checkDate || ''}|${netTotal.toFixed(2)}|${rows.length}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'toast_je_report': {
@@ -164,7 +179,7 @@ export async function uploadPayrollFile(
 
   // Compute idempotency key
   const dataRows = rows.slice(headerRowIdx + 1);
-  const idempotencyKey = computeIdempotencyKey(detection?.provider || null, dataRows, headers);
+  const idempotencyKey = computeIdempotencyKey(detection?.provider || null, dataRows, headers, options.checkDate);
 
   // Check idempotency key duplicate (in addition to file hash check)
   let isDuplicateByKey = false;
@@ -276,6 +291,8 @@ export async function getPreview(tenantId: string, sessionId: string) {
     session,
     headers: (session.metadata as any)?.headers || [],
     rows: rows.map(r => ({ rowNumber: r.rowNumber, rawData: r.rawData, mappedData: r.mappedData })),
+    // U-251: the employee rows were discarded when the import posted.
+    detailDiscarded: !!session.detailDiscardedAt,
   };
 }
 
@@ -428,6 +445,21 @@ export async function deleteSession(tenantId: string, sessionId: string, userId:
   await auditLog(tenantId, 'delete', 'payroll_import_session', sessionId, { status: session.status }, null, userId);
 }
 
+/**
+ * Deletes a stored payroll upload after its session discarded it (U-251).
+ * Only a regular file inside UPLOAD_DIR/payroll is unlinked; a failure is
+ * logged, never thrown (the database no longer points at it).
+ */
+export async function discardStoredUpload(filePath: string | null): Promise<void> {
+  const safe = resolveInside(path.join(UPLOAD_DIR, 'payroll'), filePath);
+  if (!safe) return;
+  try {
+    await fs.promises.unlink(safe);
+  } catch (err) {
+    log.warn({ component: 'payroll_import', event: 'upload_discard_failed', code: (err as NodeJS.ErrnoException)?.code ?? 'unknown' });
+  }
+}
+
 // ── Template CRUD ──
 
 export async function listTemplates(tenantId: string) {
@@ -507,7 +539,7 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
     .where(eq(payrollImportRows.sessionId, sessionId))
     .orderBy(payrollImportRows.rowNumber);
 
-  const descriptionEntries = new Map<string, { debit: number; credit: number; sampleAmount: string }>();
+  const descriptionEntries = new Map<string, { debit: boolean; credit: boolean; sampleAmount: string }>();
 
   for (const row of rows) {
     const raw = row.rawData as Record<string, string>;
@@ -520,33 +552,15 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
     const desc = (raw[descCol] || raw[descCol.toLowerCase()] || raw['Description'] || raw['description'] || '').trim();
     if (!desc) continue;
 
-    let debit = 0;
-    let credit = 0;
-
-    if (columnConfig.amountConvention === 'separate_dr_cr') {
-      const drCol = columnConfig.debitColumn || 'Debit';
-      const crCol = columnConfig.creditColumn || 'Credit';
-      debit = parseCurrency(raw[drCol] || raw[drCol.toLowerCase()]);
-      credit = parseCurrency(raw[crCol] || raw[crCol.toLowerCase()]);
-    } else if (columnConfig.amountConvention === 'signed_single') {
-      const amtCol = columnConfig.amountColumn || 'Amount';
-      const val = parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]);
-      if (val >= 0) debit = val;
-      else credit = Math.abs(val);
-    } else if (columnConfig.amountConvention === 'category_derived') {
-      const amtCol = columnConfig.amountColumn || 'Amount';
-      const catCol = columnConfig.accountCategoryColumn || 'Category';
-      const amount = Math.abs(parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]));
-      const category = (raw[catCol] || raw[catCol.toLowerCase()] || '').toLowerCase().trim();
-      if (category.startsWith('expense') || category.startsWith('cost')) debit = amount;
-      else credit = amount;
-    }
+    // Exact amounts (U-250); a bad cell shows as 0.00 here and is refused
+    // by validation and generate-je.
+    const { debit, credit } = glRowAmounts(raw, columnConfig);
 
     if (!descriptionEntries.has(desc)) {
       descriptionEntries.set(desc, {
-        debit: debit > 0 ? debit : 0,
-        credit: credit > 0 ? credit : 0,
-        sampleAmount: debit > 0 ? debit.toFixed(2) : credit.toFixed(2),
+        debit: debit.gt(0),
+        credit: credit.gt(0),
+        sampleAmount: debit.gt(0) ? debit.toFixed(2) : credit.toFixed(2),
       });
     }
   }
@@ -592,7 +606,7 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
   const result = Array.from(descriptionEntries.entries()).map(([description, info]) => {
     const existing = existingMap.get(description);
     const acct = existing ? accts.find(a => a.id === existing.accountId) : null;
-    const debitOrCredit = info.debit > 0 ? 'debit' : 'credit';
+    const debitOrCredit = info.debit ? 'debit' : 'credit';
 
     // Try auto-suggestion
     let suggestedAccountId: string | null = null;
@@ -774,11 +788,11 @@ export async function autoMapAccounts(tenantId: string, companyId: string) {
 // ── Duplicate File Guard (shared by Mode A + Mode B posting) ──
 
 /** Every ledger transaction a posted import created (JEs + check rows). */
-export async function sessionTransactionIds(sessionId: string, session: Pick<typeof payrollImportSessions.$inferSelect, 'journalEntryId' | 'journalEntryIds'>): Promise<string[]> {
+export async function sessionTransactionIds(sessionId: string, session: Pick<typeof payrollImportSessions.$inferSelect, 'journalEntryId' | 'journalEntryIds'>, executor: DbOrTx = db): Promise<string[]> {
   const ids = new Set<string>();
   if (session.journalEntryId) ids.add(session.journalEntryId);
   if (Array.isArray(session.journalEntryIds)) for (const id of session.journalEntryIds as string[]) ids.add(id);
-  const rows = await db.select({ transactionId: payrollCheckRegisterRows.transactionId })
+  const rows = await executor.select({ transactionId: payrollCheckRegisterRows.transactionId })
     .from(payrollCheckRegisterRows)
     .where(and(eq(payrollCheckRegisterRows.sessionId, sessionId), eq(payrollCheckRegisterRows.posted, true)));
   for (const r of rows) if (r.transactionId) ids.add(r.transactionId);
@@ -792,32 +806,38 @@ export async function sessionTransactionIds(sessionId: string, session: Pick<typ
  * it (status cancelled, check rows unposted, audited) and report that it was
  * stale. Returns true when the prior import still has live transactions.
  */
-async function priorImportStillLive(tenantId: string, priorId: string): Promise<boolean> {
-  const prior = await db.query.payrollImportSessions.findFirst({
+async function priorImportStillLive(tenantId: string, priorId: string, executor: DbOrTx = db): Promise<boolean> {
+  const prior = await executor.query.payrollImportSessions.findFirst({
     where: and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, priorId)),
   });
   if (!prior) return false;
-  const ids = await sessionTransactionIds(prior.id, prior);
+  const ids = await sessionTransactionIds(prior.id, prior, executor);
   if (ids.length > 0) {
-    const [live] = await db.select({ n: count() }).from(transactions)
+    const [live] = await executor.select({ n: count() }).from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids), notInArray(transactions.status, ['void', 'deleted'])));
     if ((live?.n ?? 0) > 0) return true;
   }
-  await db.update(payrollCheckRegisterRows)
+  await executor.update(payrollCheckRegisterRows)
     .set({ posted: false, transactionId: null })
     .where(eq(payrollCheckRegisterRows.sessionId, prior.id));
-  await db.update(payrollImportSessions)
+  await executor.update(payrollImportSessions)
     .set({ status: 'cancelled', updatedAt: new Date() })
     .where(and(eq(payrollImportSessions.id, prior.id), eq(payrollImportSessions.status, 'posted')));
   await auditLog(tenantId, 'update', 'payroll_import_reverse', prior.id, { status: 'posted' }, {
     status: 'cancelled',
     reason: 'Its transactions were already removed from the books; released so the file can be posted again',
     missingTransactions: ids.length,
-  });
+  }, undefined, executor);
   return false;
 }
 
-export async function checkDuplicateFileHash(tenantId: string, session: typeof payrollImportSessions.$inferSelect) {
+/**
+ * Refuses a second post of the same payroll (U-244): the same provider run
+ * (409 PAYROLL_DUPLICATE_RUN) or the same file (409 PAYROLL_DUPLICATE_FILE),
+ * details {priorSessionId, postedAt}. Scoped to the session's company when it
+ * has one. Runs on the posting transaction after the session row lock.
+ */
+export async function checkDuplicateFileHash(tenantId: string, session: typeof payrollImportSessions.$inferSelect, executor: DbOrTx = db) {
   // Check idempotency key first (provider-specific composite key)
   if (session.idempotencyKey && session.detectedProvider) {
     const conditions = [
@@ -831,7 +851,7 @@ export async function checkDuplicateFileHash(tenantId: string, session: typeof p
     if (session.companyId) {
       conditions.push(eq(payrollImportSessions.companyId, session.companyId));
     }
-    const [priorByKey] = await db.select({
+    const [priorByKey] = await executor.select({
       id: payrollImportSessions.id,
       createdAt: payrollImportSessions.createdAt,
       originalFilename: payrollImportSessions.originalFilename,
@@ -840,35 +860,41 @@ export async function checkDuplicateFileHash(tenantId: string, session: typeof p
       .where(and(...conditions))
       .limit(1);
 
-    if (priorByKey && await priorImportStillLive(tenantId, priorByKey.id)) {
+    if (priorByKey && await priorImportStillLive(tenantId, priorByKey.id, executor)) {
       const date = priorByKey.createdAt ? new Date(priorByKey.createdAt).toLocaleDateString() : 'unknown date';
-      throw AppError.badRequest(
+      throw AppError.conflict(
         `A payroll import with matching data was already posted on ${date} (file "${priorByKey.originalFilename}"). ` +
-        `Reverse that import first if you need to re-post.`
+        `Reverse that import first if you need to re-post.`,
+        'PAYROLL_DUPLICATE_RUN',
+        { priorSessionId: priorByKey.id, postedAt: priorByKey.createdAt ? new Date(priorByKey.createdAt).toISOString() : null },
       );
     }
   }
 
   // Fall back to file hash check (backward compat for Payroll Relief and unknown providers)
-  const [priorPosted] = await db.select({
+  const hashConditions = [
+    eq(payrollImportSessions.tenantId, tenantId),
+    eq(payrollImportSessions.fileHash, session.fileHash),
+    eq(payrollImportSessions.status, 'posted'),
+    ne(payrollImportSessions.id, session.id),
+  ];
+  if (session.companyId) hashConditions.push(eq(payrollImportSessions.companyId, session.companyId));
+  const [priorPosted] = await executor.select({
     id: payrollImportSessions.id,
     createdAt: payrollImportSessions.createdAt,
     originalFilename: payrollImportSessions.originalFilename,
   })
     .from(payrollImportSessions)
-    .where(and(
-      eq(payrollImportSessions.tenantId, tenantId),
-      eq(payrollImportSessions.fileHash, session.fileHash),
-      eq(payrollImportSessions.status, 'posted'),
-      ne(payrollImportSessions.id, session.id),
-    ))
+    .where(and(...hashConditions))
     .limit(1);
 
-  if (priorPosted && await priorImportStillLive(tenantId, priorPosted.id)) {
+  if (priorPosted && await priorImportStillLive(tenantId, priorPosted.id, executor)) {
     const date = priorPosted.createdAt ? new Date(priorPosted.createdAt).toLocaleDateString() : 'unknown date';
-    throw AppError.badRequest(
+    throw AppError.conflict(
       `This payroll file was already posted on ${date} (file "${priorPosted.originalFilename}"). ` +
-      `Reverse that import first if you need to re-post.`
+      `Reverse that import first if you need to re-post.`,
+      'PAYROLL_DUPLICATE_FILE',
+      { priorSessionId: priorPosted.id, postedAt: priorPosted.createdAt ? new Date(priorPosted.createdAt).toISOString() : null },
     );
   }
 }

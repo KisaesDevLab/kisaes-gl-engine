@@ -187,7 +187,7 @@ describe('reversing an import whose checks were already deleted', () => {
 
 describe('payroll JE post tags', () => {
   const previews: PayrollJEPreview[] = [{
-    date: '2026-07-10', memo: 'Payroll', totalDebits: '10.00', totalCredits: '10.00', isBalanced: true,
+    date: '2026-07-10', memo: 'Payroll', totalDebits: '10.00', totalCredits: '10.00', difference: '0.00', isBalanced: true,
     lines: [
       { lineType: 'w', description: 'Wages', accountId: null, accountName: null, accountNumber: null, debit: '10.00', credit: '0.00' },
       { lineType: 'n', description: 'Net', accountId: null, accountName: null, accountNumber: null, debit: '0.00', credit: '10.00' },
@@ -214,7 +214,8 @@ describe('payroll JE post tags', () => {
   });
 
   it('gross pay defaults to net pay when the file has none', () => {
-    expect(grossOf({ net_pay: 759.21 })).toBe(759.21);
-    expect(grossOf({ net_pay: 700, gross_pay: 900 })).toBe(900);
+    expect(grossOf({ net_pay: 759.21 }).toFixed(2)).toBe('759.21');
+    expect(grossOf({ net_pay: '759.21', gross_pay: '' }).toFixed(2)).toBe('759.21');
+    expect(grossOf({ net_pay: 700, gross_pay: 900 }).toFixed(2)).toBe('900.00');
   });
 });

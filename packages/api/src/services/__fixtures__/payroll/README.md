@@ -13,3 +13,4 @@ on build plan descriptions.
 - `onpay-listing.csv` — TODO: verify with real OnPay Payroll Listing CSV
 - `toast-je-report.csv` — TODO: verify with real Toast JE Report export
 - `toast-custom-report.csv` — TODO: verify with real Toast Custom Reports export
+- `square-payroll.csv` — synthetic, built from the Square seed template headers (no date column; the pay date comes from the upload). TODO: verify with a real Square Payroll export

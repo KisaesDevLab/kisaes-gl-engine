@@ -83,9 +83,16 @@ export const postCheckRegisterSchema = z.object({
   message: 'Choose the account the checks post to', path: ['offsetAccountId'],
 });
 
+/** Department name (as in the file) → tag id, or null for "no tag" (U-246).
+ *  Employee-level summary entries only; Mode B files ignore it. */
+export const departmentTagMapSchema = z
+  .record(z.string().max(100), z.string().uuid().nullable())
+  .refine((m) => Object.keys(m).length <= 200, { message: 'At most 200 departments' });
+
 export const generateJeSchema = z.object({
   aggregationMode: z.enum(['summary', 'per_employee']).default('summary'),
   accountMappings: z.record(z.string(), z.string().uuid()).optional(),
+  departmentTagMap: departmentTagMapSchema.optional(),
 });
 
 export const PAYROLL_SESSION_SORT_KEYS = ['payPeriod', 'originalFilename', 'importMode', 'status', 'rowCount', 'errorCount', 'jeCount', 'createdAt'] as const;
@@ -119,6 +126,13 @@ export const postPayrollSchema = z.object({
   aggregationMode: z.enum(['summary', 'per_employee']).optional().default('summary'),
   tagId: z.string().uuid().nullable().optional(),
   lineTags: z.array(payrollLineTagSchema).max(10000).optional(),
+  departmentTagMap: departmentTagMapSchema.optional(),
+  /** previewToken from generate-je; a different regenerated preview is 409 PAYROLL_PREVIEW_CHANGED (U-244). */
+  previewToken: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  /** Delete the employee rows and the stored upload in the posting transaction (U-251). */
+  discardEmployeeDetail: z.boolean().optional().default(false),
+  /** Entries dated on or before the closing date (U-245); closingPassword is taken out of the body by lockContextMiddleware. */
+  overrideConfirmed: z.boolean().optional(),
 });
 
 export const accountMappingSaveSchema = z.object({
@@ -127,6 +141,8 @@ export const accountMappingSaveSchema = z.object({
 
 export const reversePayrollSchema = z.object({
   reason: z.string().min(1).max(500).default('Payroll import reversal'),
+  /** Entries dated on or before the closing date (U-245); closingPassword is taken out of the body by lockContextMiddleware. */
+  overrideConfirmed: z.boolean().optional(),
 });
 
 export type ApplyMappingInput = z.infer<typeof applyMappingSchema>;

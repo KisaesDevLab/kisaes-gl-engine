@@ -1546,6 +1546,42 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'sensitive-accounts-grant-v1',
   /**
+   * U-250, U-242, U-243, U-246 (ClientLedger P30; no migration). Payroll import money is exact: every money cell is
+   * parsed with decimal.js (`$`, commas, spaces, `(x)`, trailing `-`, bare `-` = 0); more than 2 places is row error
+   * AMOUNT_PRECISION, anything else non-numeric AMOUNT_INVALID (validation messages carry {field, code, rowNumber}, no
+   * cell text; Mode B generate-je answers 422 PAYROLL_AMOUNT_INVALID {rows[{rowNumber, code}]}). Mapped money is stored
+   * as decimal strings ("1234.50"). Sums are exact; previews gain `difference` (totalDebits − totalCredits, "0.00" when
+   * balanced) and `isBalanced` is exact equality. The < $0.10 plug is gone: POST /post refuses 422 PAYROLL_UNBALANCED
+   * {date, totalDebits, totalCredits, difference} and 422 PAYROLL_UNMAPPED {lineTypes[]} before anything posts.
+   * Employee-level summary mode posts one entry per pay date (a row without a date takes the upload's checkDate),
+   * ascending, memo "Payroll <start>–<end> — <provider> — pay date <date>"; overlap checks every pay date against
+   * prior imports' posted entries (±3 days) and each overlap gains `matchingDates[]`; validation warns
+   * CHECK_DATE_NOT_IN_FILE. New line type other_tax_payable (other EE + ER tax); dental/vision EE credits
+   * health_ins_payable. Square's duplicate key is start|end|checkDate|netTotal|rowCount. generate-je and post accept
+   * `departmentTagMap` {department: tagId | null} (≤ 200 keys, ≤ 100 chars; unknown tag 400): employee-level summary
+   * expense lines split per department (line `department`, `tagId`), liability and net-pay lines stay one per date.
+   */
+  'payroll-import-exact-v1',
+  /**
+   * U-244, U-245, U-251 (ClientLedger P30; migration 0281). POST /payroll-import/sessions/:id/post and /reverse run in
+   * ONE database transaction with the session row locked (SELECT … FOR UPDATE): all entries post (or void) and the
+   * session updates, or nothing changes. Both take Idempotency-Key (idempotency-v1; replay {journalEntryIds, count} /
+   * {reversed, journalEntryIds}) and the closing password (closingPassword, overrideConfirmed; 423 TB_PERIOD_LOCKED,
+   * 403 CLOSING_PASSWORD_INVALID, 429 from the limiter; one password covers every entry, each writes its own
+   * closing-date exception audit row). Refusals are 409: PAYROLL_ALREADY_POSTED, PAYROLL_NOT_READY {status} (Mode A
+   * not validated), PAYROLL_DUPLICATE_FILE / PAYROLL_DUPLICATE_RUN {priorSessionId, postedAt} (were 400; the file
+   * check is now scoped to the session's company), PAYROLL_PREVIEW_CHANGED (body previewToken ≠ the regenerated
+   * preview's), PAYROLL_NOT_POSTED {status} on reverse. The overlap prompt stays 200 {overlaps, requiresConfirmation}
+   * and writes nothing; it does not claim the Idempotency-Key (the forcePost retry may reuse it or send a new one).
+   * generate-je returns `previewToken` (sha256 of [date, [lineType, accountId, department, debit, credit, tagId]]).
+   * Post body `discardEmployeeDetail: true` deletes the session's payroll_import_rows and payroll_import_errors and
+   * the stored upload (file_path NULL, detail_discarded_at set) in the same transaction; refused 422
+   * PAYROLL_DISCARD_UNSUPPORTED when the session has check-register rows. GET /sessions/:id/preview then answers
+   * rows [] with `detailDiscarded: true`. Hash, key, dates, provider and entry ids stay, so duplicate, overlap and
+   * Reverse still work.
+   */
+  'payroll-import-post-v1',
+  /**
    * U-247 (ClientLedger P30; no migration). Sensitive accounts on payroll import: `/api/v1/payroll-import` is in
    * REFUSE_PREFIXES with no CONVERTED entries, so a viewer with any hidden account gets 403 SENSITIVE_HIDDEN on every
    * payroll import route (GET /sessions included); GET /sensitive-doors lists the prefix. GET

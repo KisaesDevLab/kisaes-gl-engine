@@ -16,10 +16,19 @@ import {
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
-import { parseCurrency, parseDate, parseFile, detectHeaderRow, detectProvider } from './payroll-parse.service.js';
+import DecimalLib from 'decimal.js';
+import { parseCurrency, parseDate, parseFile, detectHeaderRow, detectProvider, parsePayrollMoney, type PayrollMoneyErrorCode } from './payroll-parse.service.js';
 import * as ledger from './ledger.service.js';
 import * as importService from './payroll-import.service.js';
-import { resolvePayrollPostTags, stampPayrollHeaderTags, type PayrollPostTags } from './payroll-je.service.js';
+import {
+  resolvePayrollPostTags,
+  stampPayrollHeaderTags,
+  postPayrollSession,
+  type PayrollPostTags,
+} from './payroll-je.service.js';
+import type { DbOrTx } from '../db/index.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
 
 // ── Default column config (Payroll Relief backward compat) ──
 
@@ -43,57 +52,74 @@ function col(row: Record<string, string>, colName: string): string {
 
 // ── Mode B: Parse GL Entries (generalized) ──
 
-interface GLEntryRow {
+type Dec = InstanceType<typeof Decimal>;
+
+export interface GLEntryRow {
   date: string;
   reference: string;
   description: string;
-  debit: number;
-  credit: number;
+  debit: Dec;
+  credit: Dec;
   memo: string;
   accountCode: string;
+  /** Position of the source row in the input (0-based). */
+  index: number;
+  /** Set when an amount cell is not a whole-cent number (U-250). */
+  amountError?: PayrollMoneyErrorCode;
+}
+
+/** Exact debit/credit for one GL row under a provider's amount convention.
+ *  An unparseable cell is reported, never read as 0 (U-250). */
+export function glRowAmounts(
+  r: Record<string, string>,
+  c: ModeBColumnConfig,
+): { debit: Dec; credit: Dec; error?: PayrollMoneyErrorCode } {
+  const zero = new Decimal(0);
+  const read = (v: string) => parsePayrollMoney(v);
+  switch (c.amountConvention) {
+    case 'separate_dr_cr': {
+      const d = read(col(r, c.debitColumn || 'Debit'));
+      const cr = read(col(r, c.creditColumn || 'Credit'));
+      if (!d.ok) return { debit: zero, credit: zero, error: d.code };
+      if (!cr.ok) return { debit: zero, credit: zero, error: cr.code };
+      return { debit: new Decimal(d.value), credit: new Decimal(cr.value) };
+    }
+    case 'signed_single': {
+      const a = read(col(r, c.amountColumn || 'Amount'));
+      if (!a.ok) return { debit: zero, credit: zero, error: a.code };
+      const amount = new Decimal(a.value);
+      return amount.gte(0) ? { debit: amount, credit: zero } : { debit: zero, credit: amount.abs() };
+    }
+    case 'category_derived': {
+      const a = read(col(r, c.amountColumn || 'Amount'));
+      if (!a.ok) return { debit: zero, credit: zero, error: a.code };
+      const amount = new Decimal(a.value).abs();
+      const category = col(r, c.accountCategoryColumn || 'Category').toLowerCase().trim();
+      // Expenses are debits; Liabilities and Assets (net pay) are credits
+      return category.startsWith('expense') || category.startsWith('cost')
+        ? { debit: amount, credit: zero }
+        : { debit: zero, credit: amount };
+    }
+    default:
+      return { debit: zero, credit: zero };
+  }
 }
 
 export function parseGLEntries(rows: Record<string, string>[], config?: ModeBColumnConfig): GLEntryRow[] {
   const c = config || DEFAULT_CONFIG;
 
   return rows
-    .filter(r => col(r, c.descriptionColumn))
-    .map(r => {
+    .map((r, index) => ({ r, index }))
+    .filter(({ r }) => col(r, c.descriptionColumn))
+    .map(({ r, index }) => {
       const description = col(r, c.descriptionColumn).trim();
       const dateStr = col(r, c.dateColumn);
       const memo = c.memoColumn ? col(r, c.memoColumn).trim() : '';
       const reference = c.referenceColumn ? col(r, c.referenceColumn) : '';
       const accountCode = c.accountCodeColumn ? col(r, c.accountCodeColumn) : '';
+      const { debit, credit, error } = glRowAmounts(r, c);
 
-      let debit = 0;
-      let credit = 0;
-
-      switch (c.amountConvention) {
-        case 'separate_dr_cr': {
-          debit = parseCurrency(col(r, c.debitColumn || 'Debit'));
-          credit = parseCurrency(col(r, c.creditColumn || 'Credit'));
-          break;
-        }
-        case 'signed_single': {
-          const amount = parseCurrency(col(r, c.amountColumn || 'Amount'));
-          if (amount >= 0) debit = amount;
-          else credit = Math.abs(amount);
-          break;
-        }
-        case 'category_derived': {
-          const amount = Math.abs(parseCurrency(col(r, c.amountColumn || 'Amount')));
-          const category = col(r, c.accountCategoryColumn || 'Category').toLowerCase().trim();
-          // Expenses are debits; Liabilities and Assets (net pay) are credits
-          if (category.startsWith('expense') || category.startsWith('cost')) {
-            debit = amount;
-          } else {
-            credit = amount;
-          }
-          break;
-        }
-      }
-
-      return {
+      const entry: GLEntryRow = {
         date: parseDate(dateStr) || '',
         reference,
         description,
@@ -101,9 +127,12 @@ export function parseGLEntries(rows: Record<string, string>[], config?: ModeBCol
         credit,
         memo,
         accountCode,
+        index,
       };
+      if (error) entry.amountError = error;
+      return entry;
     })
-    .filter(r => r.description && (r.debit > 0 || r.credit > 0));
+    .filter(r => r.description && (r.amountError || r.debit.gt(0) || r.credit.gt(0)));
 }
 
 // ── Group by Date ──
@@ -144,20 +173,21 @@ export function extractPayPeriod(memo: string, periodRegex?: string): { start: s
 
 // ── Balance Check ──
 
-export function checkBalance(entries: GLEntryRow[]): { totalDebits: number; totalCredits: number; balanced: boolean } {
-  let totalDebits = 0;
-  let totalCredits = 0;
+/** Exact totals (U-250): balanced only when debits equal credits to the cent. */
+export function checkBalance(entries: Pick<GLEntryRow, 'debit' | 'credit'>[]): { totalDebits: string; totalCredits: string; difference: string; balanced: boolean } {
+  let totalDebits = new Decimal(0);
+  let totalCredits = new Decimal(0);
   for (const e of entries) {
-    totalDebits += e.debit;
-    totalCredits += e.credit;
+    totalDebits = totalDebits.plus(e.debit);
+    totalCredits = totalCredits.plus(e.credit);
   }
   return {
-    totalDebits: Math.round(totalDebits * 100) / 100,
-    totalCredits: Math.round(totalCredits * 100) / 100,
-    balanced: Math.abs(totalDebits - totalCredits) < 0.01,
+    totalDebits: totalDebits.toFixed(2),
+    totalCredits: totalCredits.toFixed(2),
+    difference: totalDebits.minus(totalCredits).toFixed(2),
+    balanced: totalDebits.eq(totalCredits),
   };
 }
-
 // ── Check Classification ──
 
 function classifyCheck(payeeName: string, memo: string): 'employee' | 'contractor' | 'tax_payment' {
@@ -247,7 +277,7 @@ export async function getChecks(tenantId: string, sessionId: string): Promise<Pa
 
 // ── Generate Mode B JE Preview ──
 
-export async function generateModeBJE(tenantId: string, sessionId: string): Promise<{ previews: PayrollJEPreview[] }> {
+export async function generateModeBJE(tenantId: string, sessionId: string, executor: DbOrTx = db): Promise<{ previews: PayrollJEPreview[] }> {
   const session = await importService.getSession(tenantId, sessionId);
   const companyId = session.companyId;
   const metadata = session.metadata as any;
@@ -256,15 +286,24 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
   const providerName = PROVIDER_DISPLAY_NAMES[providerKey] || 'Payroll';
 
   // Get all raw rows
-  const rawRows = await db.select().from(payrollImportRows)
+  const rawRows = await executor.select().from(payrollImportRows)
     .where(eq(payrollImportRows.sessionId, sessionId))
     .orderBy(payrollImportRows.rowNumber);
 
   const entries = parseGLEntries(rawRows.map(r => r.rawData as Record<string, string>), columnConfig);
+  const badAmounts = entries.filter(e => e.amountError);
+  if (badAmounts.length > 0) {
+    // Never read a bad cell as 0 (U-250): name the rows, never the cell text.
+    throw AppError.unprocessableEntity(
+      `${badAmounts.length} row(s) have an amount that is not a whole-cent number. Fix the file and upload it again.`,
+      'PAYROLL_AMOUNT_INVALID',
+      { rows: badAmounts.map(e => ({ rowNumber: rawRows[e.index]?.rowNumber ?? e.index + 1, code: e.amountError })) },
+    );
+  }
   const groups = groupByDate(entries);
 
   // Get description→account mappings
-  const descMappings = companyId ? await db.select()
+  const descMappings = companyId ? await executor.select()
     .from(payrollDescriptionAccountMap)
     .where(and(
       eq(payrollDescriptionAccountMap.tenantId, tenantId),
@@ -276,7 +315,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
   // Get account details
   const accountIds = [...new Set(descMappings.map(m => m.accountId))];
   const accts = accountIds.length > 0
-    ? await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
+    ? await executor.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
         .from(accounts).where(inArray(accounts.id, accountIds))
     : [];
   const acctMap = new Map(accts.map(a => [a.id, a]));
@@ -285,7 +324,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
   // mapping was saved leaves its lines untagged rather than dangling).
   const mappedTagIds = [...new Set(descMappings.flatMap(m => (m.tagId ? [m.tagId] : [])))];
   const liveTagIds = new Set(mappedTagIds.length > 0
-    ? (await db.select({ id: tags.id }).from(tags)
+    ? (await executor.select({ id: tags.id }).from(tags)
         .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, mappedTagIds)))).map(t => t.id)
     : []);
 
@@ -293,7 +332,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
 
   for (const [date, dateEntries] of groups) {
     const payPeriod = dateEntries[0]?.memo ? extractPayPeriod(dateEntries[0].memo) : null;
-    const { totalDebits, totalCredits, balanced } = checkBalance(dateEntries);
+    const { totalDebits, totalCredits, difference, balanced } = checkBalance(dateEntries);
 
     const lines = dateEntries.map(e => {
       const mapping = descMap.get(e.description);
@@ -304,8 +343,8 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
         accountId: mapping?.accountId || null,
         accountName: acct?.name || null,
         accountNumber: acct?.accountNumber || null,
-        debit: e.debit > 0 ? e.debit.toFixed(2) : '0.00',
-        credit: e.credit > 0 ? e.credit.toFixed(2) : '0.00',
+        debit: e.debit.gt(0) ? e.debit.toFixed(2) : '0.00',
+        credit: e.credit.gt(0) ? e.credit.toFixed(2) : '0.00',
         tagId: mapping?.tagId && liveTagIds.has(mapping.tagId) ? mapping.tagId : null,
       };
     });
@@ -318,12 +357,14 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
       date,
       memo,
       lines,
-      totalDebits: totalDebits.toFixed(2),
-      totalCredits: totalCredits.toFixed(2),
+      totalDebits,
+      totalCredits,
+      difference,
       isBalanced: balanced,
     });
   }
 
+  previews.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   return { previews };
 }
 
@@ -336,76 +377,22 @@ export async function postModeBJE(
   forcePost = false,
   companyId?: string,
   tags?: PayrollPostTags,
+  opts: { previewToken?: string; discardEmployeeDetail?: boolean } = {},
 ) {
-  const session = await importService.getSession(tenantId, sessionId);
-  if (session.status === 'posted') throw AppError.badRequest('Session already posted');
-
-  await importService.checkDuplicateFileHash(tenantId, session);
-
-  if (!forcePost) {
-    const { checkPayrollPeriodOverlap } = await import('./payroll-je.service.js');
-    const overlaps = await checkPayrollPeriodOverlap(tenantId, session);
-    if (overlaps.length > 0) {
-      return { overlaps, requiresConfirmation: true };
-    }
-  }
-
-  const { previews } = await generateModeBJE(tenantId, sessionId);
-
-  // Verify all descriptions are mapped
-  for (const preview of previews) {
-    const unmapped = preview.lines.filter(l => !l.accountId);
-    if (unmapped.length > 0) {
-      throw AppError.badRequest(
-        `Unmapped descriptions: ${unmapped.map(l => l.description).join(', ')}. Map all descriptions before posting.`
-      );
-    }
-    if (!preview.isBalanced) {
-      throw AppError.badRequest(`JE for ${preview.date} does not balance`);
-    }
-  }
-
-  const tagFor = await resolvePayrollPostTags(tenantId, previews, tags);
-  const postedIds: string[] = [];
-
-  for (const [jeIndex, preview] of previews.entries()) {
-    const lines = preview.lines.map((l, lineIndex) => ({
-      accountId: l.accountId!,
-      debit: l.debit !== '0.00' ? l.debit : '0',
-      credit: l.credit !== '0.00' ? l.credit : '0',
-      description: l.description,
-      tagId: tagFor(jeIndex, lineIndex),
-    }));
-
-    const txn = await ledger.postTransaction(tenantId, {
-      txnType: 'journal_entry' as any,
-      txnDate: preview.date,
-      memo: preview.memo,
-      source: 'payroll_import',
-      sourceId: sessionId,
-      lines,
-    }, userId, companyId);
-    await stampPayrollHeaderTags(tenantId, companyId, txn.id, lines.map(l => l.tagId));
-
-    postedIds.push(txn.id);
-  }
-
-  // Update session
-  await db.update(payrollImportSessions)
-    .set({
-      status: 'posted',
-      journalEntryIds: postedIds,
-      jeCount: postedIds.length,
-      updatedAt: new Date(),
-    })
-    .where(eq(payrollImportSessions.id, sessionId));
-
-  await auditLog(tenantId, 'create', 'payroll_import_post', sessionId, null,
-    { mode: 'prebuilt_je', jeCount: postedIds.length, journalEntryIds: postedIds, tagId: tags?.tagId ?? null, lineTagOverrides: tags?.lineTags?.length ?? 0 }, userId);
-
-  return { journalEntryIds: postedIds, count: postedIds.length };
+  // One database transaction with the session locked (U-244); see
+  // postPayrollSession. Mode B keeps its old rule: no validated status needed.
+  return postPayrollSession(tenantId, sessionId, userId, {
+    forcePost,
+    companyId,
+    tags,
+    previewToken: opts.previewToken,
+    discardEmployeeDetail: opts.discardEmployeeDetail,
+    mode: 'prebuilt_je',
+    requireValidated: false,
+    generate: async (tx) => (await generateModeBJE(tenantId, sessionId, tx)).previews,
+    unmappedNoun: 'descriptions',
+  });
 }
-
 // ── Post Checks ──
 
 export async function postChecks(
