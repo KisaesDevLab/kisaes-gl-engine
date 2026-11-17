@@ -39,6 +39,7 @@ import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 let server: Server | null = null;
 let port = 0;
 const tenantIds: string[] = [];
+const openGates: Array<() => void> = [];
 
 interface Res { status: number; json: any }
 
@@ -116,6 +117,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  while (openGates.length) openGates.pop()!();
+  await new Promise((r) => setTimeout(r, 50));
   delete __payrollPostTestHooks.beforeEntry;
   delete __payrollDeleteTestHooks.afterLock;
   if (server) { await new Promise<void>((r) => server!.close(() => r())); server = null; }
@@ -167,6 +170,8 @@ function gate() {
   const enteredP = new Promise<void>((r) => { entered = r; });
   const releaseP = new Promise<void>((r) => { release = r; });
   let used = false;
+  // A failing test must not leave a transaction held open.
+  openGates.push(() => release());
   return {
     hook: async () => {
       if (used) return;
