@@ -1,0 +1,4 @@
+Name,Pay Period Start,Pay Period End,Gross Pay,Total Employee Taxes,Employer Social Security,Employer Medicare,FUTA,SUTA,Total Deductions,Net Pay,Total Employer Taxes
+Sample Worker A,2026-07-01,2026-07-15,"1,250.00",195.63,77.50,18.13,7.50,33.75,50.00,"1,004.37",136.88
+Sample Worker B,2026-07-01,2026-07-15,980.40,149.98,60.78,14.22,5.88,26.47,0.00,830.42,107.35
+Sample Worker C,2026-07-01,2026-07-15,2100.10,412.07,130.21,30.45,12.60,56.70,125.00,1563.03,229.96
