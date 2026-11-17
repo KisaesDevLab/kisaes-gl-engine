@@ -23,6 +23,7 @@ import { escapeLike } from '../utils/sql-like.js';
 import { computeSplitLines, type StagedSplitsConfig } from './bank-feed-splits.js';
 import { lineCandidatePredicate, resolveMatchLine, matchMismatch } from './bank-feed-lines.js';
 import { claimIdempotency } from './idempotency.service.js';
+import { transactionsTouchingHidden, assertTransactionsVisible } from './visibility.js';
 import { errorSummaryForLog } from '../utils/log-safe.js';
 import { isDesktop } from '../desktop/profile.js';
 import { bucketSql, transferCandidateSql, waitingSql } from './bank-feed-buckets.js';
@@ -407,7 +408,11 @@ export async function checkPayrollOverlap(
       })}
     ORDER BY ABS(t.txn_date - CAST(${item.feedDate} AS date)), t.id, jl.line_order NULLS LAST, jl.id`);
   const amount = new Decimal(item.amount).toFixed(2);
-  return (rows.rows as Array<{ txn_id: string; journal_line_id: string; memo: string | null; txn_date: string }>).map((r) => ({
+  const found = rows.rows as Array<{ txn_id: string; journal_line_id: string; memo: string | null; txn_date: string }>;
+  // U-247: an entry with a line on an account hidden from the viewer (wages
+  // marked sensitive) is left out; nothing of it is shown.
+  const hiddenTxns = await transactionsTouchingHidden(tenantId, found.map((r) => r.txn_id));
+  return found.filter((r) => !hiddenTxns.has(r.txn_id)).map((r) => ({
     txnId: r.txn_id,
     journalLineId: r.journal_line_id,
     memo: r.memo || 'Payroll JE',
@@ -965,6 +970,14 @@ export interface MatchOptions {
  * Idempotency-Key). See matchInTx.
  */
 export async function match(tenantId: string, feedItemId: string, transactionId: string, opts: MatchOptions = {}) {
+  // U-247: an entry (or the entry of the named line) with a line on an
+  // account hidden from the viewer is 403 SENSITIVE_ACCOUNT, as the payroll
+  // overlap list leaves it out. No-op when nothing is hidden.
+  const lineTxn = opts.journalLineId
+    ? (await db.select({ transactionId: journalLines.transactionId }).from(journalLines)
+        .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, opts.journalLineId))).limit(1))[0]?.transactionId
+    : undefined;
+  await assertTransactionsVisible(tenantId, [transactionId, lineTxn]);
   return db.transaction(async (tx) => {
     await claimIdempotency(tx);
     return matchInTx(tx, tenantId, feedItemId, transactionId, opts);

@@ -1581,5 +1581,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Reverse still work.
    */
   'payroll-import-post-v1',
+  /**
+   * U-247 (ClientLedger P30; no migration). Sensitive accounts on payroll import: `/api/v1/payroll-import` is in
+   * REFUSE_PREFIXES with no CONVERTED entries, so a viewer with any hidden account gets 403 SENSITIVE_HIDDEN on every
+   * payroll import route (GET /sessions included); GET /sensitive-doors lists the prefix. GET
+   * /banking/feed/:id/payroll-overlap leaves out entries with a line on an account hidden from the viewer. PUT
+   * /banking/feed/:id/match whose transactionId, or journalLineId's entry, touches a hidden account is 403
+   * SENSITIVE_ACCOUNT before anything changes. Nothing changes for a viewer with no hidden account.
+   */
+  'payroll-import-sensitive-v1',
 ];
 

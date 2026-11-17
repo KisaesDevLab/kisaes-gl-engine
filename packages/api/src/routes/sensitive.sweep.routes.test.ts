@@ -397,6 +397,18 @@ describe('sensitive accounts canary sweep', () => {
     expect(leaks).toEqual([]);
   }, 900_000);
 
+  it('payroll import is behind the refuse prefix (U-247); the GET and POST sweeps above cover each of its routes', async () => {
+    expect(underRefusePrefix('/api/v1/payroll-import/sessions')).toBe(true);
+    const routes = (await routesOf()).filter((r) => r.path.startsWith('/api/v1/payroll-import'));
+    expect(routes.length).toBeGreaterThan(20);
+    for (const r of routes) {
+      const path = r.path.replace(/:[A-Za-z_]+(\([^)]*\))?\??/g, h.companyId);
+      const bk = await h.call('bk', r.method, path, r.method === 'GET' ? undefined : {});
+      expect([r.method, r.path, bk.status, bk.json?.error?.code]).toEqual([r.method, r.path, 403, 'SENSITIVE_HIDDEN']);
+    }
+    // The two bank-feed payroll doors are not under the prefix: payroll-sensitive.routes.test.ts checks them.
+  });
+
   it('the seed is live: the owner sees the canaries', async () => {
     const accts = await h.call('owner', 'GET', '/api/v1/accounts?limit=500');
     expect(canariesIn(accts.text)).toEqual(expect.arrayContaining(['Canary', ...seed.hiddenIds]));

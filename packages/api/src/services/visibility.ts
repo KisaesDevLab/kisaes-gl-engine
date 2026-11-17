@@ -183,6 +183,10 @@ export const REFUSE_PREFIXES: readonly string[] = [
   // report reads) and the 1099 account mappings.
   '/api/v2',
   '/api/v1/practice/1099',
+  // U-247 (ClientLedger P30): payroll imports read wage amounts and wage
+  // account names (previews, mappings, sessions), so the whole module is
+  // refused while the viewer has any hidden account. No CONVERTED entries.
+  '/api/v1/payroll-import',
 ];
 
 /**
