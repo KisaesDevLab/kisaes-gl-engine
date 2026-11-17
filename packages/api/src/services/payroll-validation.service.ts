@@ -10,7 +10,7 @@ import { payrollImportSessions, payrollImportRows, payrollImportErrors, accounts
 import { AppError } from '../utils/errors.js';
 import { readPayrollMoney, parseDate, PAYROLL_AMOUNT_ERRORS_KEY } from './payroll-parse.service.js';
 import * as importService from './payroll-import.service.js';
-import { grossOf, rowPayDate } from './payroll-je.service.js';
+import { grossOf, rowPayDate, departmentOf } from './payroll-je.service.js';
 import { glRowAmounts } from './payroll-modeb.service.js';
 import DecimalLib from 'decimal.js';
 
@@ -152,6 +152,31 @@ export async function dispatchValidation(tenantId: string, sessionId: string): P
     return { totalRows: session.rowCount ?? 0, validRows: session.rowCount ?? 0, warningRows: 0, errorRows: 0, messages: [] };
   }
   return validateSession(tenantId, sessionId);
+}
+
+// ── Departments in the file (Mode A, payroll-import-review-v1) ──
+
+/** Most departments the validate answer lists. */
+export const PAYROLL_DEPARTMENTS_MAX = 200;
+
+/**
+ * Every distinct department of the rows the mapping kept (a row with mapped
+ * data that is not marked skipped), read as departmentTagMap keys name them
+ * (trimmed, blank left out), code-unit sorted like the entry's department
+ * split, cut at PAYROLL_DEPARTMENTS_MAX. Only department names: no other
+ * cell of the file is returned.
+ */
+export function departmentsOfRows(
+  rows: ReadonlyArray<{ mappedData: unknown; validationStatus: string | null }>,
+): { departments: string[]; departmentsTruncated: boolean } {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (row.mappedData == null || row.validationStatus === 'skipped') continue;
+    const dept = departmentOf(row.mappedData as Record<string, unknown>);
+    if (dept !== null) seen.add(dept);
+  }
+  const all = [...seen].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return { departments: all.slice(0, PAYROLL_DEPARTMENTS_MAX), departmentsTruncated: all.length > PAYROLL_DEPARTMENTS_MAX };
 }
 
 // ── Validate Session (Mode A) ──
@@ -298,6 +323,8 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
     warningRows,
     errorRows,
     messages: allMessages,
+    // Read after the loop: every row of the file, not only the sample.
+    ...departmentsOfRows(rows),
   };
 }
 

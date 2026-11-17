@@ -281,7 +281,8 @@ export function rowPayDate(row: Record<string, any>, sessionCheckDate: string | 
   return sessionCheckDate || '';
 }
 
-function departmentOf(row: Record<string, any>): string | null {
+/** A row's department as departmentTagMap keys name it: trimmed, null when blank. */
+export function departmentOf(row: Record<string, any>): string | null {
   const d = row['department'];
   if (d === undefined || d === null) return null;
   const s = String(d).trim();
