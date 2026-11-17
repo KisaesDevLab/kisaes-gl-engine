@@ -511,6 +511,11 @@ export interface PayrollValidationSummary {
   warningRows: number;
   errorRows: number;
   messages: PayrollValidationMessage[];
+  /** Mode A only (payroll-import-review-v1): every distinct, trimmed, non-empty
+   *  `department` of the rows the mapping kept, code-unit sorted, at most 200. */
+  departments?: string[];
+  /** True when the file has more than 200 departments (the list is cut). */
+  departmentsTruncated?: boolean;
 }
 
 export interface PayrollJEPreviewLine {

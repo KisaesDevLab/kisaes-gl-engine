@@ -8,9 +8,9 @@ import { MODE_B_COLUMN_CONFIGS } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { payrollImportSessions, payrollImportRows, payrollImportErrors, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
-import { readPayrollMoney, PAYROLL_AMOUNT_ERRORS_KEY } from './payroll-parse.service.js';
+import { readPayrollMoney, parseDate, PAYROLL_AMOUNT_ERRORS_KEY } from './payroll-parse.service.js';
 import * as importService from './payroll-import.service.js';
-import { grossOf, rowPayDate } from './payroll-je.service.js';
+import { grossOf, rowPayDate, departmentOf } from './payroll-je.service.js';
 import { glRowAmounts } from './payroll-modeb.service.js';
 import DecimalLib from 'decimal.js';
 
@@ -152,6 +152,32 @@ export async function dispatchValidation(tenantId: string, sessionId: string): P
     return { totalRows: session.rowCount ?? 0, validRows: session.rowCount ?? 0, warningRows: 0, errorRows: 0, messages: [] };
   }
   return validateSession(tenantId, sessionId);
+}
+
+// ── Departments in the file (Mode A, payroll-import-review-v1) ──
+
+/** Most departments the validate answer lists. */
+export const PAYROLL_DEPARTMENTS_MAX = 200;
+
+/**
+ * Every distinct department of the rows the mapping kept (a row with mapped
+ * data that is not marked skipped), read as departmentTagMap keys name them
+ * (trimmed, blank left out), code-unit sorted like the entry's department
+ * split, cut at PAYROLL_DEPARTMENTS_MAX. Only department names: no other
+ * cell of the file is returned.
+ */
+export function departmentsOfRows(
+  rows: ReadonlyArray<{ mappedData: unknown; validationStatus: string | null }>,
+): { departments: string[]; departmentsTruncated: boolean } {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    // U-252: a row the mapping dropped carries the marker and no mapped data.
+    if (row.mappedData == null || row.validationStatus === importService.PAYROLL_ROW_SKIPPED) continue;
+    const dept = departmentOf(row.mappedData as Record<string, unknown>);
+    if (dept !== null) seen.add(dept);
+  }
+  const all = [...seen].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return { departments: all.slice(0, PAYROLL_DEPARTMENTS_MAX), departmentsTruncated: all.length > PAYROLL_DEPARTMENTS_MAX };
 }
 
 // ── Validate Session (Mode A) ──
@@ -315,6 +341,8 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
     warningRows,
     errorRows,
     messages: allMessages,
+    // Read after the loop: every row of the file, not only the sample.
+    ...departmentsOfRows(rows),
   };
 }
 
@@ -346,6 +374,7 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
 
   const dateGroups = new Map<string, { debits: InstanceType<typeof Decimal>; credits: InstanceType<typeof Decimal> }>();
   let amountErrors = 0;
+  let dateErrors = 0;
   let toastSaasFeeDetected = false;
   let adpClearingDetected = false;
   let toastAccountIdBlank = true;
@@ -374,16 +403,32 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
       });
     }
 
-    if (date) {
-      const group = dateGroups.get(date) || { debits: new Decimal(0), credits: new Decimal(0) };
-      group.debits = group.debits.plus(debit);
-      group.credits = group.credits.plus(credit);
-      dateGroups.set(date, group);
-    }
-
     // Provider-specific line-level checks
     const descCol = columnConfig.descriptionColumn;
     const desc = (raw[descCol] || raw[descCol.toLowerCase()] || '').toLowerCase();
+
+    // An entry row (a description and an amount, as generate-je reads it)
+    // whose date is missing or does not parse is a row error, never silently
+    // left out of the entry (payroll-import-review-v1).
+    const parsedDate = parseDate(date);
+    if (!error && !parsedDate && desc.trim() && (debit.gt(0) || credit.gt(0))) {
+      dateErrors++;
+      messages.push({
+        field: 'date',
+        code: 'DATE_INVALID',
+        message: `Row ${row.rowNumber} has no date or a date that cannot be read`,
+        severity: 'error',
+        rowNumber: row.rowNumber,
+      });
+    }
+
+    if (date) {
+      const key = parsedDate || date;
+      const group = dateGroups.get(key) || { debits: new Decimal(0), credits: new Decimal(0) };
+      group.debits = group.debits.plus(debit);
+      group.credits = group.credits.plus(credit);
+      dateGroups.set(key, group);
+    }
 
     if (provider === 'toast_je_report') {
       if (desc.includes('service fee') || desc.includes('saas fee')) toastSaasFeeDetected = true;
@@ -412,6 +457,7 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
   if (ssnDetected) errorCount++;
   if (rows.length < 2) errorCount++;
   errorCount += amountErrors;
+  errorCount += dateErrors;
 
   // Balance check per date group — exact (U-250)
   let balanceErrors = 0;

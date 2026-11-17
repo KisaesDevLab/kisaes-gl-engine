@@ -286,8 +286,8 @@ export async function uploadPayrollFile(
 
 // ── Get Session ──
 
-export async function getSession(tenantId: string, sessionId: string) {
-  const [session] = await db.select().from(payrollImportSessions)
+export async function getSession(tenantId: string, sessionId: string, executor: DbOrTx = db) {
+  const [session] = await executor.select().from(payrollImportSessions)
     .where(and(
       eq(payrollImportSessions.tenantId, tenantId),
       eq(payrollImportSessions.id, sessionId),
@@ -452,28 +452,47 @@ export async function listSessions(tenantId: string, filters: PayrollSessionFilt
 
 // ── Delete Draft Session ──
 
+/** Test seam: runs inside the delete transaction right after the session row lock. */
+export const __payrollDeleteTestHooks: { afterLock?: () => Promise<void> | void } = {};
+
+/**
+ * Deletes a draft import in ONE database transaction with the session row
+ * locked (SELECT … FOR UPDATE), the same lock post and reverse take
+ * (payroll-import-review-v1). A delete racing a post either runs entirely
+ * first (the post then finds no session: 404, nothing posted) or waits for
+ * the post and is refused on the re-read status (400, the posted import and
+ * its duplicate guard stay). The stored files go after the commit.
+ */
 export async function deleteSession(tenantId: string, sessionId: string, userId: string) {
-  const session = await getSession(tenantId, sessionId);
-  if (session.status === 'posted') {
-    throw AppError.badRequest('Cannot delete a posted import. Use reverse instead.');
-  }
+  const session = await db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(payrollImportSessions)
+      .where(and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, sessionId)))
+      .for('update').limit(1);
+    if (!locked) throw AppError.notFound('Import session not found');
+    if (__payrollDeleteTestHooks.afterLock) await __payrollDeleteTestHooks.afterLock();
+    if (locked.status === 'posted') {
+      throw AppError.badRequest('Cannot delete a posted import. Use reverse instead.');
+    }
 
-  await db.delete(payrollImportRows).where(eq(payrollImportRows.sessionId, sessionId));
-  await db.delete(payrollImportErrors).where(eq(payrollImportErrors.sessionId, sessionId));
-  await db.delete(payrollImportColumnMappings).where(eq(payrollImportColumnMappings.sessionId, sessionId));
-  await db.delete(payrollCheckRegisterRows).where(eq(payrollCheckRegisterRows.sessionId, sessionId));
-  await db.delete(payrollImportSessions).where(eq(payrollImportSessions.id, sessionId));
+    await tx.delete(payrollImportRows).where(eq(payrollImportRows.sessionId, sessionId));
+    await tx.delete(payrollImportErrors).where(eq(payrollImportErrors.sessionId, sessionId));
+    await tx.delete(payrollImportColumnMappings).where(eq(payrollImportColumnMappings.sessionId, sessionId));
+    await tx.delete(payrollCheckRegisterRows).where(eq(payrollCheckRegisterRows.sessionId, sessionId));
+    await tx.delete(payrollImportSessions)
+      .where(and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, sessionId)));
 
-  // Clean up uploaded files. The stored path is data: only a regular file
-  // inside UPLOAD_DIR/payroll is ever unlinked (H2).
+    await auditLog(tenantId, 'delete', 'payroll_import_session', sessionId, { status: locked.status }, null, userId, tx);
+    return locked;
+  });
+
+  // After the commit: clean up uploaded files. The stored path is data: only
+  // a regular file inside UPLOAD_DIR/payroll is ever unlinked (H2).
   for (const filePath of [session.filePath, session.companionFilePath]) {
     const safe = resolveInside(path.join(UPLOAD_DIR, 'payroll'), filePath);
     if (safe) {
       try { await fs.promises.unlink(safe); } catch { /* file may already be deleted */ }
     }
   }
-
-  await auditLog(tenantId, 'delete', 'payroll_import_session', sessionId, { status: session.status }, null, userId);
 }
 
 /**

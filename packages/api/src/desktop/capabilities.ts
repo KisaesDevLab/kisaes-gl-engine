@@ -1590,5 +1590,23 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * SENSITIVE_ACCOUNT before anything changes. Nothing changes for a viewer with no hidden account.
    */
   'payroll-import-sensitive-v1',
+  /**
+   * ClientLedger P30 review fixes (no migration). DELETE /payroll-import/sessions/:id runs in ONE database transaction
+   * with the session row locked (SELECT … FOR UPDATE, the lock post and reverse take) and re-reads the status: a delete
+   * racing a post either runs first (the post then answers 404 NOT_FOUND, nothing posted) or waits and is refused 400
+   * "Cannot delete a posted import" (unchanged answer); the stored files go after the commit. POST /post serializes
+   * posts per tenant + session company with a transaction advisory lock taken before the duplicate checks, so two
+   * sessions of the same file (same file hash) or the same provider run (same run key) posted at once give one 200 and
+   * one 409 PAYROLL_DUPLICATE_FILE / PAYROLL_DUPLICATE_RUN {priorSessionId, postedAt}. Mode B (prebuilt_je) amounts:
+   * a negative debit is a credit and a negative credit a debit (were dropped), and category_derived keeps the sign
+   * (a negative amount is the reverse of its category's side; was abs). A Mode B entry row (description and amount)
+   * whose date is missing or does not parse is refused: validate adds row error {field 'date', code DATE_INVALID,
+   * rowNumber}; generate-je and post answer 422 PAYROLL_DATE_INVALID {rows[{rowNumber, code 'DATE_INVALID'}]}
+   * (were silently left out; when amount errors are present too, 422 PAYROLL_AMOUNT_INVALID's rows list also carries
+   * the DATE_INVALID rows). Mode A POST /validate adds `departments` (distinct trimmed non-empty `department` values
+   * of every mapped row the mapping kept, code-unit sorted, ≤ 200) and `departmentsTruncated`; Mode B and
+   * check-register validation leave both out.
+   */
+  'payroll-import-review-v1',
 ];
 
