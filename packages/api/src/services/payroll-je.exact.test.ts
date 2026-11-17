@@ -25,7 +25,7 @@ const USER_ID = '00000000-0000-4000-8000-0000000000bb';
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'payroll');
 let tenantId = '';
 let companyId = '';
-const acct: Record<string, string> = {};
+const acct = { wages: '', erTax: '', fit: '', ss: '', med: '', futa: '', suta: '', other: '', ded: '', cash: '' };
 
 async function cleanup() {
   if (!tenantId) return;
