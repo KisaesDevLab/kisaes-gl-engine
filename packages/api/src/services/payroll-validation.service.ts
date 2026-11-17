@@ -171,7 +171,8 @@ export function departmentsOfRows(
 ): { departments: string[]; departmentsTruncated: boolean } {
   const seen = new Set<string>();
   for (const row of rows) {
-    if (row.mappedData == null || row.validationStatus === 'skipped') continue;
+    // U-252: a row the mapping dropped carries the marker and no mapped data.
+    if (row.mappedData == null || row.validationStatus === importService.PAYROLL_ROW_SKIPPED) continue;
     const dept = departmentOf(row.mappedData as Record<string, unknown>);
     if (dept !== null) seen.add(dept);
   }
