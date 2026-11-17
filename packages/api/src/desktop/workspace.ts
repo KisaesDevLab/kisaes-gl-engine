@@ -19,7 +19,7 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
 import type { Request } from 'express';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { tenants, users, userTenantAccess } from '../db/schema/index.js';
 import { env } from '../config/env.js';
@@ -82,6 +82,29 @@ export async function assertNotWorkspace(tenantId: string | null | undefined): P
   if (await isWorkspaceTenant(tenantId)) {
     throw AppError.conflict('This action needs a company, not the workspace.', 'WORKSPACE_TENANT');
   }
+}
+
+/**
+ * Which tenant(s) a per-user security audit row (own password change,
+ * recovery, failed sign-in) goes to. The server, and any user whose home
+ * tenant is a real company: `[homeTenantId]`, unchanged and without a query.
+ * Desktop users are homed in the workspace, whose audit log nobody can read
+ * (GET /audit-log is 409 WORKSPACE_TENANT there), so the row goes to the
+ * company the request is in (`contextTenantId`, when it is a company the user
+ * belongs to), else to every company the user is an active member of. A user
+ * with no company yet keeps the workspace, so the row is never dropped.
+ */
+export async function auditTenantsForUser(
+  homeTenantId: string,
+  userId: string,
+  contextTenantId?: string | null,
+): Promise<string[]> {
+  if (!(await isWorkspaceTenant(homeTenantId))) return [homeTenantId];
+  const rows = await db.select({ tenantId: userTenantAccess.tenantId }).from(userTenantAccess)
+    .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.isActive, true)));
+  const companies = [...new Set(rows.map((r) => r.tenantId).filter((t) => t !== homeTenantId))];
+  if (contextTenantId && companies.includes(contextTenantId)) return [contextTenantId];
+  return companies.length > 0 ? companies : [homeTenantId];
 }
 
 /** Whether a request path (no query string) may be used from a workspace session. */

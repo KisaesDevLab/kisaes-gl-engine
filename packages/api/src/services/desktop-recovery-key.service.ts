@@ -29,6 +29,7 @@ import { apiKeys, sessions, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { auditTenantsForUser } from '../desktop/workspace.js';
 
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 letters: no I, O, 0, 1
 const KEY_CHARS = 25;
@@ -68,10 +69,25 @@ export async function issueRecoveryKey(userId: string): Promise<string> {
   return key;
 }
 
+/**
+ * One per-user audit row, written where the company can read it: the user's
+ * home tenant, or on the desktop (home = the workspace) the context company
+ * or every company the user belongs to (auditTenantsForUser).
+ */
+async function auditUser(
+  homeTenantId: string, userId: string, entityType: string, after: unknown, contextTenantId?: string | null,
+): Promise<void> {
+  for (const t of await auditTenantsForUser(homeTenantId, userId, contextTenantId)) {
+    await auditLog(t, 'update', entityType, userId, null, after, userId);
+  }
+}
+
 /** Rotates the caller's own key (owner or super admin; the route checks). */
 export async function rotateRecoveryKey(tenantId: string, userId: string): Promise<string> {
   const key = await issueRecoveryKey(userId);
-  await auditLog(tenantId, 'update', 'user_recovery_key', userId, null, { rotated: true }, userId);
+  // `tenantId` is the session's: a company (the row goes there, as before),
+  // or the workspace, in which case it goes to the caller's companies.
+  await auditUser(tenantId, userId, 'user_recovery_key', { rotated: true });
   return key;
 }
 
@@ -103,8 +119,9 @@ export async function recoverPassword(input: RecoverInput): Promise<{ recoveryKe
   if (!match || !user.isActive) {
     // Security review Minor 2: the refusal does not wait for the audit row, so a known email answers as fast as an
     // unknown one (no email guessing by timing). The row is still written.
-    auditLog(user.tenantId, 'update', 'user_password_recovery_failed', user.id, null,
-      { reason: stored === null ? 'no_key' : !match ? 'wrong_key' : 'inactive' }, user.id)
+    // The tenant lookup stays inside the un-awaited chain for the same reason.
+    const reason = stored === null ? 'no_key' : !match ? 'wrong_key' : 'inactive';
+    auditUser(user.tenantId, user.id, 'user_password_recovery_failed', { reason })
       .catch(() => { /* best effort; the refusal stands either way */ });
     throw invalid();
   }
@@ -127,7 +144,7 @@ export async function recoverPassword(input: RecoverInput): Promise<{ recoveryKe
   });
   // Lost a race with another use of the same key: it no longer works.
   if (!swapped) throw invalid();
-  await auditLog(user.tenantId, 'update', 'user_password_recovery', user.id, null,
-    { sessionsRevoked: true, apiKeysRevoked: true, lockoutCleared: true, recoveryKeyRotated: true }, user.id);
+  await auditUser(user.tenantId, user.id, 'user_password_recovery',
+    { sessionsRevoked: true, apiKeysRevoked: true, lockoutCleared: true, recoveryKeyRotated: true });
   return { recoveryKey: fresh.key };
 }

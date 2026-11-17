@@ -327,7 +327,7 @@ authRouter.post('/reset-password', authLimiter, validate(resetPasswordSchema), a
 });
 
 authRouter.post('/change-password', authenticate, changePasswordLimiter, validate(changePasswordSchema), async (req, res) => {
-  await authService.changePassword(req.userId, req.body);
+  await authService.changePassword(req.userId, req.body, req.tenantId);
   // changePassword revoked every session (trust-boundary event). Keep THIS
   // device signed in by minting a fresh pair under the current operating
   // tenant/role — which also rotates this device's refresh token.
