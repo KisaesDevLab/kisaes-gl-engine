@@ -24,7 +24,7 @@ import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.se
 import { assignTenantToApplianceFirm, resolveFirmForNewClient } from './firm-provisioning.service.js';
 import * as tenantFirmAssignmentService from './tenant-firm-assignment.service.js';
 import { isDesktop } from '../desktop/profile.js';
-import { assertNotWorkspace, requireWorkspaceTenantId } from '../desktop/workspace.js';
+import { assertNotWorkspace, auditTenantsForUser, requireWorkspaceTenantId } from '../desktop/workspace.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
 // user. Oldest refresh token is revoked when the limit is exceeded —
@@ -557,15 +557,18 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
     // row is attributable even when the attempt is from a third party
     // guessing the email — the audit trail still captures which account
     // was targeted.
-    await auditLog(
-      user.tenantId,
-      'login',
-      'user_login_failed',
-      user.id,
-      null,
-      { attempts, locked: !!lockUntil, reason: 'invalid_password' },
-      user.id,
-    );
+    // Desktop: the user's companies, not the unreadable workspace.
+    for (const t of await auditTenantsForUser(user.tenantId, user.id)) {
+      await auditLog(
+        t,
+        'login',
+        'user_login_failed',
+        user.id,
+        null,
+        { attempts, locked: !!lockUntil, reason: 'invalid_password' },
+        user.id,
+      );
+    }
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
 
@@ -972,9 +975,17 @@ export async function resetPassword(token: string, newPassword: string): Promise
 export async function changePassword(
   userId: string,
   input: { currentPassword: string; newPassword: string },
+  // The session's tenant. Desktop: the row goes to this company, or to the
+  // user's companies from a workspace session (auditTenantsForUser).
+  contextTenantId?: string | null,
 ): Promise<void> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
+  const audit = async (entityType: string, after: unknown | null) => {
+    for (const t of await auditTenantsForUser(user.tenantId, userId, contextTenantId)) {
+      await auditLog(t, 'update', entityType, userId, null, after, userId);
+    }
+  };
 
   const validPassword = await bcrypt.compare(input.currentPassword, user.passwordHash);
   if (!validPassword) {
@@ -982,7 +993,7 @@ export async function changePassword(
     // admin-unlock-only, so counting here would let anyone at an unlocked
     // browser lock the account out. The per-user rate limit on the route
     // bounds guessing instead.
-    await auditLog(user.tenantId, 'update', 'user_password_change_failed', userId, null, null, userId);
+    await audit('user_password_change_failed', null);
     // 400, not 401 — the web apiClient treats any 401 as an expired access
     // token and burns a refresh+retry cycle on it.
     throw AppError.badRequest('Current password is incorrect', 'INVALID_CURRENT_PASSWORD');
@@ -1006,7 +1017,7 @@ export async function changePassword(
 
   await db.delete(sessions).where(eq(sessions.userId, userId));
 
-  await auditLog(user.tenantId, 'update', 'user_password_change', userId, null, { sessionsRevoked: true }, userId);
+  await audit('user_password_change', { sessionsRevoked: true });
 }
 
 export async function inviteUser(tenantId: string, input: { email: string; displayName: string; role: string; userType?: 'staff' | 'client' }, inviterUserId?: string): Promise<{ user: typeof users.$inferSelect; temporaryPassword: string | null; existingUser: boolean }> {

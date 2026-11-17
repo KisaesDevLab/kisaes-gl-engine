@@ -28,7 +28,10 @@ const TOKEN = 'wstest_' + 'z'.repeat(44);
 const baseUrl = process.env['DATABASE_URL'] || 'postgresql://kisbooks:kisbooks@localhost:5434/kisbooks_test';
 const stamp = `${process.pid}_${Date.now()}`;
 const TEMPLATE = `cl_ws_tmpl_${stamp}`;
-const DB = { main: `cl_ws_main_${stamp}`, empty: `cl_ws_empty_${stamp}`, fail: `cl_ws_fail_${stamp}`, conc: `cl_ws_conc_${stamp}` };
+const DB = {
+  main: `cl_ws_main_${stamp}`, empty: `cl_ws_empty_${stamp}`, fail: `cl_ws_fail_${stamp}`, conc: `cl_ws_conc_${stamp}`,
+  audit: `cl_ws_audit_${stamp}`,
+};
 const OWNER = { email: 'Owner@Example.com', displayName: 'Pat Owner', password: 'correct horse battery' };
 
 function urlFor(db: string): string {
@@ -637,6 +640,130 @@ describe('desktop workspace: initialize without a company', () => {
       expect(line.message).not.toContain('Stray');
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+// --- per-user security audit rows reach the company -----------------------
+
+describe('desktop workspace: per-user security audit rows go to the company', () => {
+  let e: Engine;
+  let ws = '';
+  let company = '';
+  let ownerId = '';
+  let bkId = '';
+  let recoveryKey = '';
+  const BK = { email: 'clerk@example.com', chosen: 'clerk-chose-this-one-7', second: 'clerk-second-choice-8' };
+  const EVENTS = ['user_password_change', 'user_password_change_failed', 'user_password_recovery',
+    'user_password_recovery_failed', 'user_login_failed', 'user_recovery_key'];
+  const secrets: string[] = [];
+
+  beforeAll(async () => {
+    if (!dbReady) return;
+    e = await startDesktop(DB.audit);
+  }, 120_000);
+
+  afterAll(async () => {
+    if (e) await e.close();
+  });
+
+  const rowsIn = (tenant: string) => onDb(DB.audit, async (c) => (await c.query(
+    `SELECT entity_type, entity_id, user_id, before_data, after_data FROM audit_log
+      WHERE tenant_id = $1 AND entity_type = ANY($2) ORDER BY created_at`, [tenant, EVENTS])).rows);
+
+  it('set up: a company, its owner and an invited bookkeeper (homed in the workspace)', async () => {
+    if (!dbReady) return;
+    const r = await e.call('/api/v1/desktop/initialize', { method: 'POST', body: { admin: OWNER, company: { name: 'Audit Co' } } });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    ({ workspaceTenantId: ws, companyTenantId: company, userId: ownerId, recoveryKey } = r.json);
+    const coJwt = await switchTo(e, (await login(e)).jwt, company);
+    const inv = await e.call('/api/v1/company/invite-user', {
+      method: 'POST', jwt: coJwt, body: { email: BK.email, displayName: 'Clerk', role: 'bookkeeper' },
+    });
+    expect(inv.status, JSON.stringify(inv.json)).toBe(201);
+    bkId = inv.json.user.id;
+    await onDb(DB.audit, async (c) => {
+      expect((await c.query('SELECT tenant_id FROM users WHERE id = $1', [bkId])).rows).toEqual([{ tenant_id: ws }]);
+      const temp = (await c.query('SELECT password_change_required FROM users WHERE id = $1', [bkId])).rows[0];
+      expect(temp.password_change_required).toBe(true);
+    });
+    // The invite's temporary password is set by us so the test knows it.
+    const { default: bcryptLib } = await import('bcrypt');
+    await onDb(DB.audit, (c) => c.query('UPDATE users SET password_hash = $1 WHERE id = $2', [bcryptLib.hashSync('clerk-temp-pass-1', 4), bkId]));
+    secrets.push('clerk-temp-pass-1', BK.chosen, BK.second, recoveryKey, recoveryKey.replace(/-/g, ''));
+  });
+
+  it('own password changes (forced from the workspace, failed, ordinary from the company) and a failed sign-in', async () => {
+    if (!dbReady) return;
+    const l = await e.call('/api/v1/auth/login', { method: 'POST', body: { email: BK.email, password: 'clerk-temp-pass-1' } });
+    expect(l.status, JSON.stringify(l.json)).toBe(200);
+    expect(l.json.user.passwordChangeRequired).toBe(true);
+    const wsJwt = l.json.tokens.accessToken as string;
+    // Forced change from the workspace session the sign-in lands in.
+    const forced = await e.call('/api/v1/auth/change-password', {
+      method: 'POST', jwt: wsJwt, body: { currentPassword: 'clerk-temp-pass-1', newPassword: BK.chosen },
+    });
+    expect(forced.status, JSON.stringify(forced.json)).toBe(200);
+    const wsJwt2 = forced.json.tokens.accessToken as string;
+    const wrong = await e.call('/api/v1/auth/change-password', {
+      method: 'POST', jwt: wsJwt2, body: { currentPassword: 'not-my-password-0', newPassword: BK.second },
+    });
+    expect(wrong.status).toBe(400);
+    expect(wrong.json.error.code).toBe('INVALID_CURRENT_PASSWORD');
+    // Ordinary change from a company session.
+    const coJwt = await switchTo(e, wsJwt2, company);
+    const normal = await e.call('/api/v1/auth/change-password', {
+      method: 'POST', jwt: coJwt, body: { currentPassword: BK.chosen, newPassword: BK.second },
+    });
+    expect(normal.status, JSON.stringify(normal.json)).toBe(200);
+    const badLogin = await e.call('/api/v1/auth/login', { method: 'POST', body: { email: BK.email, password: 'guessing-wrong-1' } });
+    expect(badLogin.status).toBe(401);
+
+    const rows = await rowsIn(company);
+    const of = (t: string) => rows.filter((x) => x.entity_type === t);
+    expect(of('user_password_change')).toHaveLength(2);
+    for (const row of of('user_password_change')) {
+      expect(row).toMatchObject({ entity_id: bkId, user_id: bkId, before_data: null });
+      expect(JSON.parse(row.after_data)).toEqual({ sessionsRevoked: true });
+    }
+    expect(of('user_password_change_failed')).toEqual([expect.objectContaining({ entity_id: bkId, user_id: bkId, after_data: null })]);
+    expect(of('user_login_failed')).toHaveLength(1);
+    expect(JSON.parse(of('user_login_failed')[0]!.after_data)).toMatchObject({ attempts: 1, locked: false });
+  });
+
+  it('recovery-key use and failure, and a rotation from the workspace', async () => {
+    if (!dbReady) return;
+    const recover = (key: string, newPassword: string) =>
+      e.call('/api/v1/desktop/recover-password', { method: 'POST', body: { email: OWNER.email, recoveryKey: key, newPassword } });
+    expect((await recover('AAAAA-BBBBB-CCCCC-DDDDD-EEEEE', 'owner-recovered-pass-9')).status).toBe(401);
+    const ok = await recover(recoveryKey, OWNER.password);
+    expect(ok.status, JSON.stringify(ok.json)).toBe(200);
+    secrets.push(ok.json.recoveryKey);
+    const rot = await e.call('/api/v1/auth/recovery-key/rotate', { method: 'POST', jwt: (await login(e)).jwt });
+    expect(rot.status, JSON.stringify(rot.json)).toBe(200);
+    secrets.push(rot.json.recoveryKey);
+    // The failure row is written without waiting (no email guessing by timing).
+    await expect.poll(async () => (await rowsIn(company)).filter((x) => x.entity_type === 'user_password_recovery_failed').length).toBe(1);
+    const rows = (await rowsIn(company)).filter((x) => x.user_id === ownerId);
+    expect(rows.map((x) => x.entity_type).sort()).toEqual(['user_password_recovery', 'user_password_recovery_failed', 'user_recovery_key']);
+    expect(JSON.parse(rows.find((x) => x.entity_type === 'user_password_recovery_failed')!.after_data)).toEqual({ reason: 'wrong_key' });
+  });
+
+  it('the owner sees them in GET /audit-log?company=current; none is left in the workspace; no secret anywhere', async () => {
+    if (!dbReady) return;
+    const coJwt = await switchTo(e, (await login(e)).jwt, company);
+    let text = '';
+    for (const t of EVENTS) {
+      const listed = await e.call(`/api/v1/audit-log?company=current&entity_type=${t}`, { jwt: coJwt });
+      expect(listed.status, JSON.stringify(listed.json)).toBe(200);
+      expect(listed.json.total, t).toBe(t === 'user_password_change' ? 2 : 1);
+      text += JSON.stringify(listed.json);
+    }
+    expect(await rowsIn(ws)).toEqual([]);
+    const [hashes] = await onDb(DB.audit, async (c) => [(await c.query('SELECT password_hash, recovery_key_hash FROM users')).rows]);
+    text += JSON.stringify(await rowsIn(company));
+    for (const s of [...secrets, ...hashes.flatMap((h: Record<string, string>) => Object.values(h))]) {
+      if (s) expect(text).not.toContain(s);
     }
   });
 });
